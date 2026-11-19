@@ -130,6 +130,10 @@ pub enum JitCompileError {
     /// The program failed the op-shape or program-slot admission that every
     /// native code owner applies.
     Admission(molt_ir::ir_schema::FunctionOpShapeDiagnostic),
+    /// A function reference in the incoming document cannot be resolved.
+    FunctionReferences(String),
+    /// A final TIR body was refused before the code owner finalized it.
+    Lowering(Vec<String>),
     /// The JIT tier compiles with Cranelift only.
     UnsupportedCodegenBackend(String),
     /// Generated code imports symbols the loaded runtime does not define.
@@ -146,6 +150,12 @@ impl std::fmt::Display for JitCompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(diagnostic) => write!(f, "program admission failed: {diagnostic}"),
+            Self::Lowering(errors) => {
+                write!(f, "Cranelift lowering failed:\n{}", errors.join("\n"))
+            }
+            Self::FunctionReferences(message) => {
+                write!(f, "program function references: {message}")
+            }
             Self::UnsupportedCodegenBackend(backend) => write!(
                 f,
                 "the JIT tier compiles with Cranelift; MOLT_BACKEND={backend} is not supported"
@@ -200,13 +210,17 @@ impl SimpleBackend {
         {
             return Err(JitCompileError::UnsupportedCodegenBackend(backend));
         }
+        let mut ir = ir;
+        ir.resolve_function_references()
+            .map_err(JitCompileError::FunctionReferences)?;
         self.admit_program(&ir)
             .map_err(JitCompileError::Admission)?;
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
-        let mut ir = ir;
         let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
-        let (func_count, total_ops) = self.emit_cranelift_program(program, timing);
+        let (func_count, total_ops) = self
+            .emit_cranelift_program(program, timing)
+            .map_err(JitCompileError::Lowering)?;
         let SimpleBackend { module, .. } = self;
         let CodeOwner::ProcessMemory(owner) = module else {
             panic!("JIT compilation requires a process-memory code owner");

@@ -7,7 +7,6 @@
 
 mod app_callable_manifest;
 mod dead_functions;
-mod guard_elision;
 mod megafunction_split;
 mod profile_order;
 mod rc_coalescing;
@@ -19,15 +18,15 @@ mod tests;
 pub use self::app_callable_manifest::{
     AppCallableKind, AppCallableManifest, AppCallableRequirements,
     collect_app_callable_requirements, compute_app_callable_manifest,
-    compute_app_callable_manifest_checked,
+    compute_app_callable_manifest_checked, visit_gpu_descriptor_body_symbols,
 };
 pub use self::dead_functions::{
     eliminate_dead_functions, eliminate_dead_functions_with_roots, reachable_functions,
-    visit_function_reference_targets,
+    reachable_with_callees, visit_function_reference_targets,
 };
-pub use self::guard_elision::{RuntimeGuardFacts, SsaRuntimeGuardFacts};
+pub(crate) use self::megafunction_split::split_megafunctions_at_limit;
 pub use self::megafunction_split::{
-    split_large_function, split_megafunctions, split_megafunctions_with_filter,
+    max_function_ops, split_large_function, split_megafunctions, split_megafunctions_with_filter,
 };
 pub use self::profile_order::apply_profile_order;
 pub use self::rc_coalescing::{build_const_int_map, compute_rc_coalesce_skips};

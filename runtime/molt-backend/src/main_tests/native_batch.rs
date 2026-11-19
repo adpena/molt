@@ -4,17 +4,6 @@ use super::*;
 #[cfg(molt_backend_daemon)]
 fn daemon_native_path_written_output_skips_oversized_memory_cache() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
-    unsafe {
-        std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
-        std::env::remove_var("MOLT_STDLIB_OBJ");
-        std::env::remove_var("MOLT_STDLIB_CACHE_KEY");
-        std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
-        std::env::remove_var("MOLT_STDLIB_MODULES");
-        std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS");
-        std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256");
-        std::env::remove_var("MOLT_ENTRY_MODULE");
-    }
-
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-native-cache-budget-{}-{}",
         std::process::id(),
@@ -24,6 +13,10 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+    let _scope = calling_program_scope(
+        &tmp_dir,
+        serde_json::json!({"MOLT_BACKEND_BATCH_SIZE": "1"}),
+    );
     let output = tmp_dir.join("out.a");
     let job = DaemonJobRequest {
         id: "job0".to_string(),
@@ -229,21 +222,16 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let output = tmp_dir.join("out.a");
     let stdlib = tmp_dir.join("stdlib.a");
-    // The main application object emits the per-app callable resolver, which
-    // requires the linked runtime staticlib's `molt_*` callable-symbol set
-    // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
-    // exposes this before native codegen; replicate that precondition through
-    // the daemon's env-passthrough so this test exercises the real resolver
-    // path instead of hitting the fail-closed guard. These IR functions take
-    // no callable addresses (no candidate ops), so the resolved manifest is
-    // empty regardless; the file just satisfies the required-symbol-set
-    // contract with the symbols this object actually references.
     let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
-    std::fs::write(
+    let runtime_digest = calling_program::write_symbols(
         &runtime_symbols,
-        "molt_init_sys\nmolt_init_demo\nmolt_main\nmolt_host_init\n",
-    )
-    .expect("write runtime callable symbol set");
+        &[
+            "molt_init_sys",
+            "molt_init_demo",
+            "molt_main",
+            "molt_host_init",
+        ],
+    );
     let request = serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "config_digest": "daemon-test",
@@ -253,7 +241,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
             "MOLT_STDLIB_MODULES": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
-            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "0aa03a78eef109ee7a11441b8078048f3ae517cd57748508e637a73f7b4c7bdf",
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": runtime_digest,
             "MOLT_BACKEND_BATCH_SIZE": "1",
         },
         "jobs": [{

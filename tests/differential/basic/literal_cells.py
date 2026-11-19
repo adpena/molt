@@ -75,8 +75,7 @@ for thread in threads:
 for thread in threads:
     thread.join()
 print("threads", len(results), all(value == "two words" for value in results))
-# Cross-thread identity (one object for every thread) joins this test with the
-# W3 switch: Cranelift's prologue literals build one object per thread until then.
+print("threads same object", all(value is results[0] for value in results))
 
 # Mutating a value built from a literal never changes the literal.
 built = bytearray(bytes_literal())

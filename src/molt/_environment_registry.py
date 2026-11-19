@@ -2170,42 +2170,12 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_BLOCK_ORIGINS",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Prints BLOCK_ORIGIN lines for branch and loop cleanup blocks the native backend creates; the value 1 covers every function, any other value selects functions whose name equals or contains it, and unset prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_BOUND_METHOD",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/attributes/state.rs",
       "summary": "Prints the function bits, self type and last attribute name to stderr when bound-method creation receives a non-function object, when set to exactly 1; read once per process, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_DEBUG_CHECK_EXC",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Prints the exception-check count per compiled function and each check_exception target lookup to stderr in the native backend while the variable is present with any value; the CLI also streams backend stderr when it is truthy, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_DEBUG_CHECK_EXCEPTION",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
-      "summary": "Prints one line per check_exception op the native backend lowers when set to exactly 1, narrowed to functions whose name contains MOLT_DEBUG_FUNC_FILTER when that is set; default off.",
       "values": []
     },
     {
@@ -2234,7 +2204,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_COMPILED_FUNCS",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "Appends the name of every function the native backend compiles to native/compiled_funcs.txt under the debug artifact root when set to exactly 1; default off.",
       "values": []
     },
@@ -2484,32 +2454,12 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_FUNC_FILTER",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Function-name substring that narrows MOLT_DEBUG_TRACKED_CLEANUP and MOLT_DEBUG_CHECK_EXCEPTION output in the native backend to matching functions; unset covers every function.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_GUARD",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/accessors.rs",
       "summary": "Set to exactly 1 to print a '[guard]' line on stderr with pointer, type id, and class bits for each class layout guard check; read once per process, and unset or any other value disables it.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_IF_MERGE_SLOTS",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/control_flow.rs",
-      "summary": "Exact function name for which the native backend prints IF_MERGE_SLOTS and IF_MERGE_INIT lines on stderr while it builds if/else merge slots; unset prints nothing.",
       "values": []
     },
     {
@@ -2544,16 +2494,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_LABEL_BINDINGS",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/ret_jump.rs",
-      "summary": "Exact function name for which the native backend prints LABEL_BIND lines on stderr with label id, block, and block params as it materializes label blocks; unset prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_LIST_BUILDER",
@@ -2570,16 +2510,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/frames.rs",
       "summary": "Set to 1 to print a 'molt debug locals frame_locals_set' line on stderr with frame depth, previous locals, code, and new dict bits each time a frame's locals dict is replaced; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_LOOP_CFG",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Set to 1 for every function, or to a function-name substring, to print LOOP_CFG lines on stderr that describe loop lowering decisions (block filled, depth, linearized, backedge, phi) in the native backend; unset prints nothing.",
       "values": []
     },
     {
@@ -2608,8 +2538,8 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_MODULE_GET_ATTR",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/modules.rs",
-      "summary": "Set to 1 to record every module_get_attr op the native backend lowers in native/module_get_attr_diag.txt under the backend debug artifact root and to print non-module receiver diagnostics from the runtime on stderr; default off.",
+      "owner": "runtime/molt-runtime/src/builtins/modules.rs",
+      "summary": "Set to 1 to print non-module receiver diagnostics from the runtime module attribute lookup.",
       "values": []
     },
     {
@@ -2644,26 +2574,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_DEBUG_OP_INDEX",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "IR op index that narrows MOLT_DEBUG_TRACKED_CLEANUP records in the native backend to one op; unset or a non-integer value records every op.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_PHI_ARGS",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/control_flow.rs",
-      "summary": "Exact function name for which the native backend appends MERGE_INIT and MERGE_REBIND lines to native/ifmerge_debug.txt under the backend debug artifact root, and echoes rebind lines on stderr, while it lowers if/else merges; unset records nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_RC_OBJECT",
@@ -2680,26 +2590,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-wasm-facts/src/main.rs",
       "summary": "Set to 1 to print a warning on stderr when a compiler or WASM inspection process cannot install its committed-memory rlimit (sized by MOLT_BACKEND_MAX_PROCESS_RSS_GB) on Unix; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_SEAL",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Exact function name for which the native backend prints SEAL_TRACE lines on stderr (tag, op index, block) as it seals Cranelift blocks; unset prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_DEBUG_SEAL_FILE",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "File to which the native backend also appends the SEAL_TRACE lines that MOLT_DEBUG_SEAL enables; unset writes them to stderr only.",
       "values": []
     },
     {
@@ -2736,16 +2626,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_DEBUG_TRACKED_CLEANUP",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Set to 1 to append per-op tracked-cleanup records (function, op index, kind, block, tracked and released names) to native/tracked_cleanup_debug.txt under the backend debug artifact root; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_DEBUG_TYPES_BOOTSTRAP",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/types.rs",
@@ -2760,16 +2640,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/serialization_exception_ops.py",
       "summary": "Any non-empty value prints a [WARN_SERIALIZE] line on stderr for each warn_stderr op the frontend serializes to IR JSON; unset or empty prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DEBUG_WARN_BACKEND",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/runtime_ops.rs",
-      "summary": "Any set value prints a [WARN_BACKEND] line on stderr with function, args, and block state for each warn_stderr op the native backend lowers; unset prints nothing.",
       "values": []
     },
     {
@@ -3545,7 +3415,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_DUMP_CLIF",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "Prints the finished Cranelift IR of compiled functions to stderr; 1 dumps every function, any other value dumps functions whose name equals or contains it, unset dumps nothing, and a truthy value also makes the CLI stream backend stderr.",
       "values": []
     },
@@ -3555,7 +3425,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DUMP_CLIF_FILE",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "File that receives the Cranelift IR of each compiled function whose name contains MOLT_DUMP_CLIF_FILE_FILTER; both variables must be set, each match overwrites the file, and unset writes nothing.",
       "values": []
     },
@@ -3565,7 +3435,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_DUMP_CLIF_FILE_FILTER",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "Substring of a function name that selects whose Cranelift IR is written to MOLT_DUMP_CLIF_FILE; required together with that path, and unset writes nothing.",
       "values": []
     },
@@ -3575,7 +3445,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_DUMP_CLIF_FUNC",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "Function-name filter (exact name or substring) that prints the Cranelift IR of each matching function to stderr before block sealing; unset prints nothing.",
       "values": []
     },
@@ -3585,7 +3455,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DUMP_CLIF_ON_CFG_ERROR",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs",
       "summary": "Logs zero-predecessor blocks and the full Cranelift IR of the affected function to stderr when the variable is present with any value; unset stays silent.",
       "values": []
     },
@@ -3595,7 +3465,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_DUMP_FINAL_FUNC_IR",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Substring filter on function names; the native backend writes the final lowered IR of each matching function to a debug artifact before Cranelift compilation, and empty or unset writes nothing.",
       "values": []
     },
@@ -3607,16 +3477,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs",
       "summary": "Substring filter on function names; the native backend dumps the raw pre-rewrite IR of each non-extern matching function, an empty value matches every function, and unset dumps nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DUMP_INT_STORE_TARGETS",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Exact function name; when it matches, the native backend prints that function's scalar int store targets to stderr, and unset prints nothing.",
       "values": []
     },
     {
@@ -6243,7 +6103,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_COMPILE_FUNC",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Truthy values 1, true, yes or on (case-insensitive, trimmed) make the native backend print [molt-native-compile] start <function> ops=<n> params=<n> on stderr and append the same record to the native/compile_trace.txt debug artifact for every function it compiles; the molt debug trace compile_func family sets it to 1 for the child run, and unset, empty or any other value prints nothing.",
       "values": []
     },
@@ -6674,8 +6534,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_TRACE_OP_PROGRESS",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/trace_ops.rs",
-      "summary": "Selector <filter>[:<stride>] that makes the native backend insert a molt_debug_trace call every <stride> ops in matching functions, which print trace <function> op=<index> on stderr at run time; filter 1 or all (case-insensitive) matches every function, any other text matches functions whose name equals or contains it, stride is a positive integer with default 5000, and unset or blank inserts nothing.",
+      "owner": "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
+      "summary": "Selector <filter>[:<stride>] that makes the native backend insert a molt_debug_trace call every <stride> terminal TIR operations in matching functions, which print trace <function> op=<index> on stderr at run time; filter 1 or all (case-insensitive) matches every function, any other text matches functions whose name equals or contains it, stride is a positive integer with default 5000, and unset or blank inserts nothing.",
       "values": []
     },
     {
@@ -6684,7 +6544,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_OP_PROGRESS_STDERR",
       "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+      "owner": "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
       "summary": "Set to 1 to make the native backend also print [molt-native-op] func=<name> op=<index> kind=<op> block=<id> filled=<bool> on stderr at compile time for each op that MOLT_TRACE_OP_PROGRESS instruments; it has no effect without MOLT_TRACE_OP_PROGRESS, and unset or any other value prints nothing.",
       "values": []
     },

@@ -2,6 +2,9 @@
 //! it unlinks its socket, finishes the connections it accepted, and exits.
 #![cfg(unix)]
 
+#[path = "support/calling_program.rs"]
+mod calling_program;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -39,7 +42,7 @@ impl Daemon {
         }
         std::fs::create_dir_all(&dir).expect("create daemon directory");
         let socket = dir.join("d.sock");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        let child = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
             .arg("--daemon")
             .arg("--socket")
             .arg(&socket)
@@ -47,15 +50,18 @@ impl Daemon {
             .stdout(Stdio::null())
             .spawn()
             .expect("start daemon");
+        // Own the child before the first readiness check. Unwinding a timed-out
+        // start must reap it and unlink its socket just like an active daemon.
+        let mut daemon = Self { child, socket, dir };
         let deadline = Instant::now() + START_PATIENCE;
-        while UnixStream::connect(&socket).is_err() {
-            if let Some(status) = child.try_wait().expect("poll daemon") {
+        while UnixStream::connect(&daemon.socket).is_err() {
+            if let Some(status) = daemon.child.try_wait().expect("poll daemon") {
                 panic!("daemon exited before it listened: {status}");
             }
             assert!(Instant::now() < deadline, "daemon never listened");
             std::thread::sleep(Duration::from_millis(10));
         }
-        Self { child, socket, dir }
+        daemon
     }
 
     fn connect(&self) -> Client {
@@ -160,8 +166,12 @@ fn retirement_unlinks_the_socket_finishes_open_connections_and_exits() {
 fn native_compile_request(
     output: &std::path::Path,
     key: &str,
-    env: serde_json::Value,
+    mut env: serde_json::Value,
 ) -> serde_json::Value {
+    let symbols = output.with_extension("symbols");
+    env["MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256"] =
+        calling_program::write_symbols(&symbols, &[]).into();
+    env["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = serde_json::json!(symbols);
     let lease = output.with_extension("msgpack");
     let mut file = std::fs::OpenOptions::new()
         .write(true)

@@ -1,8 +1,8 @@
 //! TIR -> SimpleIR lowering.
 //!
 //! This module is the canonical custody boundary for projecting optimized TIR
-//! back into the SimpleIR stream consumed by the current native and WASM
-//! backend entrypoints.  It preserves SimpleIR naming facts, labels, structured
+//! back into the SimpleIR stream used by source-level transformations,
+//! the structural splitter and explicit diagnostic and round-trip consumers.  It preserves SimpleIR naming facts, labels, structured
 //! control flow, exception edges, and non-semantic backend metadata without
 //! duplicating ownership or representation authority.
 
@@ -17,5 +17,5 @@ mod structured;
 mod tests;
 
 pub use self::cleanup::validate_labels;
-pub use self::runner::{lower_to_simple_ir, lower_to_simple_ir_with_names};
+pub use self::runner::lower_to_simple_ir;
 pub use crate::tir::simple_value_names::SimpleValueNames;

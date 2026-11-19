@@ -12,7 +12,33 @@ use molt_ir::tir::blocks::BlockId;
 use molt_ir::tir::ops::{AttrValue, TirOp};
 use molt_ir::tir::values::ValueId;
 
+pub(crate) fn poll_frame<B: super::task::TaskPlacement>(b: &B) -> Option<B::Word> {
+    b.poll_parameter()
+        .filter(|&value| b.kind(value) == super::builder::MachineKind::Word)
+        .map(|value| b.expect_word(value))
+}
+
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    pub(crate) fn frame_context_set(&mut self, b: &mut B, op: &TirOp) {
+        use super::custody::{CallTarget, RuntimeArg};
+        use super::function::ResultCustody;
+        let [argument_zero, argument_kind, class_cell] = op.operands.as_slice() else {
+            self.fatal("frame_context_set requires three context operands");
+            return;
+        };
+        let callee = b.runtime_callee(RuntimeFn::FrameContextSet);
+        let args = [*argument_zero, *argument_kind, *class_cell].map(RuntimeArg::Operand);
+        self.runtime_call(
+            b,
+            op,
+            CallTarget::Callee(callee),
+            &args,
+            ResultCustody::canonical(RuntimeFn::FrameContextSet, args.len()),
+            "frame_context_set",
+            "frame_context_set",
+        );
+    }
+
     /// A raw scalar can alias the sentinel's bit pattern. Poll and wait
     /// require an object whose custody stays explicit in TIR.
     fn activation_object(&self, b: &mut B, op: &TirOp) -> B::Word {

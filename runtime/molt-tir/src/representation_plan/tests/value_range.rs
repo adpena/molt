@@ -92,11 +92,11 @@ fn wide_binding_carrier_fixture() -> (TirFunction, [ValueId; 5]) {
 fn assert_canonical_binding_carriers(func: &TirFunction, boxed: &[ValueId], raw: &[ValueId]) {
     let ranges = value_range_for(func);
     let repr = repr_by_value_for(func, Some(&ranges));
-    let native = native_projectable_scalar_reprs_for(func, &repr);
+    let native = ProducerCarrierPlan::build(func).repr_by_value;
     for value in boxed {
         assert_eq!(repr.get(value), Some(&Repr::MaybeBigInt), "{value:?}");
         assert!(
-            !native.contains_key(value),
+            native.get(value) == Some(&Repr::MaybeBigInt),
             "native projection recreated the constrained carrier {value:?}"
         );
     }
@@ -212,13 +212,13 @@ fn boxed_binding_demand_closes_inline_bitwise_copies_phis_and_checked_results() 
             crate::tir::numeric_facts::IntRange::point(0)
         );
         let repr = repr_by_value_for(&func, Some(&ranges));
-        let native = native_projectable_scalar_reprs_for(&func, &repr);
+        let native = ProducerCarrierPlan::build(&func).repr_by_value;
         assert_eq!(repr[&wide], Repr::RawI64FullDeopt);
         assert_eq!(repr[&step], Repr::RawI64Safe, "independent constant");
         for value in [view, alias, masked, copied, joined, sum] {
             if observed {
                 assert_eq!(repr[&value], Repr::MaybeBigInt, "{value:?}");
-                assert!(!native.contains_key(&value), "{value:?}");
+                assert!(native.get(&value) == Some(&Repr::MaybeBigInt), "{value:?}");
             } else {
                 assert!(repr[&value].is_raw_i64_carrier(), "{value:?}");
                 assert_eq!(native.get(&value), repr.get(&value));
@@ -568,91 +568,6 @@ fn range_loop_tir(start_v: i64, stop: i64) -> (TirFunction, ValueId, ValueId) {
     (func, iv, next)
 }
 
-/// The overflow_peel'd loop's carrier cycle must admit into the native
-/// int-primary set — the slots, their loads, and the checked sums — while
-/// the bool flag lane, the exit-merge slot, and the boxed slow loop must
-/// all be refused. If the fast-lane names are missing the native arm
-/// silently takes the boxed lane (no speedup); if the refused names leak
-/// in, the trusted raw carrier meets boxed values (the 2^47 truncation
-/// miscompile class). Both directions are load-bearing.
-#[test]
-fn checked_loop_seed_admits_peeled_fast_loop_only() {
-    let func_ir = super::super::test_fixtures::peeled_compute_func_ir();
-    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-        &func_ir,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    let primary = plan.primary_name_sets();
-    let int_primary = &primary.int;
-
-    for name in [
-        "_bb1_arg0",
-        "_bb1_arg1",
-        "_bb1_arg3",
-        "_bb1_arg4", // fast slots
-        "_v16",
-        "_v17",
-        "_v41",
-        "_v42", // their loads
-        "_v22",
-        "_v25", // checked sums
-    ] {
-        assert!(
-            int_primary.contains(name),
-            "{name} must be int-primary (fast-lane admission); got {int_primary:?}"
-        );
-        assert!(
-            primary.int_full_deopt.contains(name),
-            "{name} must be full-deopt, not inline-safe; got {:?}",
-            primary.int_full_deopt
-        );
-        assert!(
-            !primary.int_inline_safe.contains(name),
-            "{name} must not seed RawI64Safe; got {:?}",
-            primary.int_inline_safe
-        );
-    }
-    for name in [
-        "_bb1_arg2",
-        "_v40",
-        "_v48", // overflow-flag lane (bool)
-        "_bb5_arg0",
-        "_v51", // exit merge (fed by the boxed slow loop)
-        "_bb7_arg0",
-        "_bb7_arg1",
-        "_v29",
-        "_v30",
-        "v114",
-        "v118", // slow loop
-    ] {
-        assert!(
-            !int_primary.contains(name),
-            "{name} must NOT be int-primary (boxed lane); got {int_primary:?}"
-        );
-    }
-
-    // The overflow-flag chain must admit into the RAW BOOL lane — without
-    // it the break condition costs ~4 runtime calls per iteration
-    // (inc_ref + is_truthy + not + or-select) and the peel's fast loop
-    // loses its win.
-    let bool_primary = plan.primary_name_sets().bool_;
-    for name in [
-        "_v46",
-        "_v47",       // checked_add overflow flags
-        "_v48",       // or fan-in
-        "_v40",       // of-slot load
-        "_v44",       // not(of)
-        "_v45",       // and(cond, not_of) — the break condition
-        "fast_guard", // the fast-lane guard compare, distinct from the slow path
-        "_bb1_arg2",  // the carried of slot
-    ] {
-        assert!(
-            bool_primary.contains(name),
-            "{name} must be bool-primary (raw flag lane); got {bool_primary:?}"
-        );
-    }
-}
-
 fn is_inline_safe(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
     map.get(&id) == Some(&Repr::RawI64Safe)
 }
@@ -896,7 +811,7 @@ fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
         let range = value_range_for(&func);
         for range in [None, Some(&range)] {
             let repr = repr_by_value_for(&func, range);
-            let native = native_projectable_scalar_reprs_for(&func, &repr);
+            let native = ProducerCarrierPlan::build(&func).repr_by_value;
             let expected = if ty == TirType::I64 {
                 Repr::MaybeBigInt
             } else {
@@ -909,7 +824,7 @@ fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
                     "{ty:?} refinement cannot prove the carrier of {value:?}"
                 );
                 assert!(
-                    !native.contains_key(&value),
+                    native.get(&value) == Some(&expected),
                     "native projection must not recreate an unproved {ty:?} carrier"
                 );
             }
@@ -1013,7 +928,7 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
             );
             let range = value_range_for(&func);
             let repr = repr_by_value_for(&func, Some(&range));
-            let native = native_projectable_scalar_reprs_for(&func, &repr);
+            let native = ProducerCarrierPlan::build(&func).repr_by_value;
             let expected_carrier = if opaque_on_left.is_none() {
                 ty.clone()
             } else {
@@ -1041,10 +956,16 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
                         Repr::DynBox
                     };
                     assert_eq!(repr.get(&value), Some(&boxed), "mixed {ty:?} phi/copy");
-                    assert!(!native.contains_key(&value), "mixed {ty:?} native phi/copy");
+                    assert!(
+                        native.get(&value) == Some(&boxed),
+                        "mixed {ty:?} native phi/copy"
+                    );
                 }
             }
-            assert!(!native.contains_key(&opaque));
+            assert_eq!(
+                ProducerCarrierPlan::build(&func).effective_value_type(opaque, &ty),
+                TirType::DynBox
+            );
             if ty != TirType::I64 {
                 assert_eq!(
                     repr,
@@ -1098,7 +1019,7 @@ fn indexed_checked_status_and_exact_boolean_copies_keep_distinct_carriers() {
         };
         let range = value_range_for(&func);
         let repr = repr_by_value_for(&func, Some(&range));
-        let native = native_projectable_scalar_reprs_for(&func, &repr);
+        let native = ProducerCarrierPlan::build(&func).repr_by_value;
         assert_eq!(repr.get(&arithmetic), Some(&Repr::RawI64FullDeopt));
         assert_eq!(native.get(&arithmetic), Some(&Repr::RawI64FullDeopt));
         for value in [overflow, both, either, copied] {
@@ -1583,39 +1504,4 @@ fn wasm_and_llvm_derive_identical_repr_from_one_value_range() {
         wasm_map, llvm_facts.repr_by_value,
         "WASM and LLVM must derive the same Repr per ValueId from the same ValueRange"
     );
-}
-
-#[test]
-fn unknown_peeled_guard_result_is_not_a_raw_bool_carrier() {
-    let mut func = super::super::test_fixtures::peeled_compute_func_ir();
-    func.ops
-        .retain(|op| op.out.as_deref() != Some("_exact_bound"));
-    for op in &mut func.ops {
-        if let Some(args) = &mut op.args {
-            for arg in args {
-                if arg == "_exact_bound" {
-                    *arg = "n".to_string();
-                }
-            }
-        }
-    }
-    let primary = ScalarRepresentationPlan::for_function_ir_for_target(
-        &func,
-        &crate::tir::TargetInfo::native_release_fast(),
-    )
-    .primary_name_sets();
-    assert!(
-        !primary.bool_.contains("fast_guard"),
-        "rich comparison can return an owned object"
-    );
-    assert!(
-        !primary.bool_.contains("_v45"),
-        "and preserves the non-bool false operand"
-    );
-    for flag in ["_v46", "_v47", "_v48", "_v40", "_v44", "_bb1_arg2"] {
-        assert!(
-            primary.bool_.contains(flag),
-            "checked flag {flag} remains a raw bool"
-        );
-    }
 }

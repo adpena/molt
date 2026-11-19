@@ -55,28 +55,17 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return;
         };
         let (operands, results) = (op.operands.len(), op.results.len());
-        if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(Some(kind)) {
-            self.fatal(format!(
-                "unhandled preserved SimpleIR op `{kind}` (operands={operands}, \
-                 results={results}) reached the LLVM `Copy` passthrough — \
-                 lowering it as a copy of operand 0 would silently \
-                 miscompile or drop its side effect; add a \
-                 `lower_preserved_simpleir_op` arm for it (or confirm \
-                 `molt_{kind}` is a boxed runtime intrinsic so the \
-                 generic fallback claims it)"
-            ));
-        } else {
-            self.fatal(format!(
-                "fresh-value SimpleIR op `{kind}` (operands={operands}, \
-                 results={results}) reached the LLVM `Copy` passthrough — \
-                 lowering it as a copy of operand 0 would silently \
-                 miscompile AND make the result alias operand 0 (a \
-                 drop-insertion double-free); it is in \
-                 `alias_analysis::copy_kind_mints_owned_value` so it \
-                 MUST have a `lower_preserved_simpleir_op` arm (the \
-                 classifier and the LLVM lowering have drifted)"
-            ));
-        }
+        let obligation =
+            if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(Some(
+                kind,
+            )) {
+                "its shared lowering must preserve the operation's effects"
+            } else {
+                "its shared lowering must produce a fresh owned result"
+            };
+        self.fatal(format!(
+            "unhandled preserved SimpleIR op `{kind}` (operands={operands}, results={results}): {obligation}"
+        ));
     }
 
     /// `Alloc`: a raw object of the operand's size, published initialized.

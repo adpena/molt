@@ -4,6 +4,7 @@ use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
+    let _runtime = super::enter_full_runtime_fixture();
     use object::{BinaryFormat, Object, ObjectSymbol};
 
     let caller = FunctionIR {

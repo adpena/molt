@@ -420,7 +420,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `maintained-regalloc-moves` | 1 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 13 | 2 |
-| `backend-llvm` | 6 | 1 |
+| `backend-llvm` | 7 | 1 |
 | `tir-midend` | 9 | 2 |
 | `wasm-host` | 9 | 2 |
 | `gpu-runtime` | 3 | 1 |
@@ -430,12 +430,12 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `python-identity-catalog-authority` | 9 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
-| `native-callable-abi` | 16 | 1 |
+| `native-callable-abi` | 17 | 1 |
 | `native-launch-abi` | 9 | 1 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
-| `pending-call-source-authority` | 17 | 1 |
+| `pending-call-source-authority` | 18 | 1 |
 | `compression-stream-state` | 1 | 1 |
 | `release-work-state` | 5 | 0 |
 | `runtime-name-registry` | 4 | 0 |

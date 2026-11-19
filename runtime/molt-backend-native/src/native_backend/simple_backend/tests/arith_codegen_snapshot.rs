@@ -143,6 +143,7 @@ fn compile_arith_families_object() -> Vec<u8> {
 
 #[test]
 fn arith_codegen_is_deterministic_and_size_bounded() {
+    let _runtime = super::enter_full_runtime_fixture();
     let first = compile_arith_families_object();
     let second = compile_arith_families_object();
     assert_eq!(
@@ -176,6 +177,7 @@ const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
 #[test]
 #[ignore = "capture-only: prints the golden digest, does not assert"]
 fn arith_codegen_golden_capture() {
+    let _runtime = super::enter_full_runtime_fixture();
     let bytes = compile_arith_families_object();
     println!(
         "ARITH_GOLDEN_LEN = {};\nARITH_GOLDEN_DIGEST = 0x{:016x};",

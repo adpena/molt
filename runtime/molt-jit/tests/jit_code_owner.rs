@@ -227,6 +227,27 @@ fn jit_program_calls_its_imports_through_the_lookup() {
 }
 
 #[test]
+fn jit_refuses_a_required_callee_missing_from_the_document() {
+    let mut ir = program();
+    ir.functions[0].ops[1] = OpIR {
+        s_value: Some("absent_provider".into()),
+        out: Some("result".into()),
+        args: Some(vec!["payload".into()]),
+        ..op(molt_ir::OpKind::CallGuarded)
+    };
+    match backend(provider()).compile_jit(ir) {
+        Err(JitCompileError::FunctionReferences(message)) => {
+            assert!(
+                message.contains(ENTRY) && message.contains("absent_provider"),
+                "{message}"
+            );
+        }
+        Err(other) => panic!("expected a missing function reference, got {other}"),
+        Ok(_) => panic!("missing function resolved"),
+    }
+}
+
+#[test]
 fn an_import_the_runtime_lacks_fails_before_any_code_runs() {
     let mut symbols = provider();
     symbols.remove(SYMBOL);

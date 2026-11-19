@@ -65,17 +65,16 @@ fn require_function_linkage_abi<'a>(
             .get(&func.name)
             .cloned()
             .unwrap_or_else(|| crate::representation_plan::ProducerCarrierPlan::build(func));
-        std::borrow::Cow::Owned(molt_ir::linkage_abi::NativeFunctionLinkageAbi {
-            source_signature: crate::ir::ExternFunctionSignature {
+        std::borrow::Cow::Owned(facts.linkage_abi(
+            func,
+            crate::ir::ExternFunctionSignature {
                 arity: func.param_types.len(),
                 has_closure: false,
                 returns_value,
                 execution_context: func.execution_context,
             },
-            parameter_custody: Vec::new(),
-            param_types: facts.effective_param_types(func),
-            return_type: returns_value.then(|| facts.effective_return_type(func)),
-        })
+            Vec::new(),
+        ))
     }
     #[cfg(not(test))]
     panic!(
@@ -90,7 +89,6 @@ mod codegen_builder;
 #[cfg(feature = "llvm")]
 pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
-#[cfg(feature = "llvm")]
 mod field_slot;
 #[cfg(feature = "llvm")]
 mod frame_record;
@@ -103,8 +101,6 @@ mod numeric_ops;
 #[cfg(feature = "llvm")]
 mod op_dispatch;
 #[cfg(feature = "llvm")]
-mod preserved_ops;
-#[cfg(feature = "llvm")]
 mod refcount;
 #[cfg(feature = "llvm")]
 mod runtime_helpers;
@@ -114,9 +110,6 @@ mod state_machine_ops;
 mod task_site;
 #[cfg(feature = "llvm")]
 mod value_materialization;
-#[cfg(feature = "llvm")]
-use crate::codegen_ssa::function::ResultCustody;
-use value_materialization::RuntimeArg;
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,14 +323,8 @@ struct FunctionLowering<'ctx, 'func> {
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
     /// verification, optimization, or emission.
     diagnostics: RefCell<Vec<String>>,
-    /// Shared representation facts for this function, derived from the
-    /// `ScalarRepresentationPlan`. Drives the overflow-safe integer-carrier and
-    /// container dispatch decisions so the LLVM backend reads the same typed
-    /// facts as the native/WASM backends instead of trusting `TirType`.
+    /// The terminal body's SSA carrier plan.
     repr_facts: crate::representation_plan::ProducerCarrierPlan,
-    /// The entry slot holding the base address of the binding homes that own
-    /// a synchronous Python frame's bindings: its frame record's base.
-    frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
     /// The entry slot holding the base of the frame record this invocation
     /// entered, zero until it does.
     owned_frame_entered:
@@ -382,6 +369,9 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         )]));
     }
 
+    let frame_layout = crate::codegen_ssa::frame::FrameLayout::for_function(func)
+        .map_err(|message| LlvmLoweringError::new(vec![message]))?;
+
     // 1. Build or reuse the LLVM function signature.
     let llvm_fn = declare_tir_function(func, backend);
     // A split activation publishes its frame size; task constructors read it.
@@ -407,7 +397,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
-        frame_homes: None,
         owned_frame_entered: None,
         state: codegen_builder::LlvmFunctionState::new(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
@@ -466,8 +455,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     backend
         .builder
         .position_at_end(llvm_fn.get_first_basic_block().expect("physical entry"));
-    let frame_layout = crate::codegen_ssa::frame::FrameLayout::for_function(func)
-        .map_err(|message| LlvmLoweringError::new(vec![message]))?;
     lowering.initialize_owned_execution_frame(frame_layout);
     if let Some(trampoline_bb) = lowering.entry_trampoline_bb {
         lowering.enter_through_trampoline(trampoline_bb);

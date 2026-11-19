@@ -35,6 +35,27 @@ pub(crate) struct NativeCodegen<'a, 'b> {
     pub(crate) imports: &'a mut NativeFunctionImports,
 }
 
+/// Logical signature of a compiled definition or import. The object and JIT
+/// declaration boundary adds the attached execution context exactly once.
+pub(super) fn linkage_signature(
+    module: &dyn Module,
+    abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+) -> cranelift_codegen::ir::Signature {
+    let machine = |ty: &crate::tir::types::TirType| {
+        NativeCodegen::machine_type(crate::codegen_ssa::control::carrier_kind(
+            crate::codegen_ssa::HeldCarrier::of(ty),
+        ))
+    };
+    let mut signature = module.make_signature();
+    for ty in &abi.param_types {
+        signature.params.push(AbiParam::new(machine(ty)));
+    }
+    if let Some(ty) = &abi.return_type {
+        signature.returns.push(AbiParam::new(machine(ty)));
+    }
+    signature
+}
+
 impl<'b> NativeCodegen<'_, 'b> {
     fn ins(&mut self) -> cranelift_frontend::FuncInstBuilder<'_, 'b> {
         self.words.builder.ins()
@@ -108,7 +129,15 @@ impl<'b> NativeCodegen<'_, 'b> {
                 let overflow = self.ins().icmp_imm_s(IntCC::SignedLessThan, both, 0);
                 (sum, overflow)
             }
-            CheckedBinary::Mul => imul_overflow64(self.words.builder, left, right),
+            CheckedBinary::Mul => {
+                // Compare the high signed half to the sign extension of the low half.
+                let low = self.ins().imul(left, right);
+                let high = self.ins().smulhi(left, right);
+                let shift = self.ins().iconst(types::I64, 63);
+                let sign = self.ins().sshr(low, shift);
+                let overflow = self.ins().icmp(IntCC::NotEqual, high, sign);
+                (low, overflow)
+            }
         }
     }
 }
@@ -303,18 +332,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         symbol: &str,
         abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
     ) -> FuncRef {
-        let machine = |ty: &crate::tir::types::TirType| {
-            Self::machine_type(crate::codegen_ssa::control::carrier_kind(
-                crate::codegen_ssa::HeldCarrier::of(ty),
-            ))
-        };
-        let mut signature = self.module.make_signature();
-        for ty in &abi.param_types {
-            signature.params.push(AbiParam::new(machine(ty)));
-        }
-        if let Some(ty) = &abi.return_type {
-            signature.returns.push(AbiParam::new(machine(ty)));
-        }
+        let signature = linkage_signature(self.module, abi);
         let id =
             declare_compiled_execution_function(self.module, symbol, Linkage::Import, &signature)
                 .unwrap_or_else(|error| panic!("declare compiled function `{symbol}`: {error}"));
@@ -540,11 +558,6 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let execution = builder.block_params(entry)[0];
                 let words = builder.block_params(entry)[1..].to_vec();
                 let mut imports = NativeFunctionImports::default();
-                imports.set_refcount_admission(thread_record_word(
-                    &mut builder,
-                    execution,
-                    molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
-                ));
                 {
                     let mut helper = NativeCodegen {
                         words: NativeWords {
@@ -575,13 +588,17 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             RefcountOperation::Retain => RuntimeFn::IncRefObj,
             RefcountOperation::Release => RuntimeFn::DecRefObj,
         });
-        self.imports.refcount_site(slow, operation)
+        NativeRefcountSite {
+            slow,
+            operation,
+            admission: self.imports.refcount_admission(self.words.builder),
+        }
     }
     fn refcount(&mut self, site: NativeRefcountSite, word: Value) {
         emit_refcount(self.words.builder, word, site);
     }
     fn refcount_admission(&mut self) -> Value {
-        self.refcount_site(RefcountOperation::Retain).admission
+        self.imports.refcount_admission(self.words.builder)
     }
     fn profile_enabled(&mut self) -> Value {
         let record = self.thread_record_word();
@@ -595,13 +612,11 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     /// is the trailing word.
     fn site(&mut self, body: SiteBody, args: &[Value]) -> Value {
         let sites = self.frame_sites();
-        let mut sealed = BTreeSet::new();
         match (body, args) {
             (SiteBody::FieldGet { offset }, &[object, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::ObjectFieldGetPtr);
                 emit_field_slot_get(
                     self.words.builder,
-                    &mut sealed,
                     sites,
                     object,
                     offset,
@@ -616,7 +631,6 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let cold = self.runtime_callee(RuntimeFn::ObjectFieldSetPtr);
                 emit_field_slot_set(
                     self.words.builder,
-                    &mut sealed,
                     sites,
                     object,
                     offset,
@@ -632,7 +646,6 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let cold = self.runtime_callee(cold);
                 emit_list_item_get(
                     self.words.builder,
-                    &mut sealed,
                     sites,
                     sequence,
                     index,
@@ -644,21 +657,13 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 )
             }
             (SiteBody::ClosureLoad, &[owner, offset, _]) => {
-                emit_closure_load(self.words.builder, &mut sealed, sites, owner, offset)
+                emit_closure_load(self.words.builder, sites, owner, offset)
             }
             (SiteBody::ClosureStore, &[owner, offset, value, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::ClosureStore);
-                emit_closure_store(
-                    self.words.builder,
-                    &mut sealed,
-                    sites,
-                    owner,
-                    offset,
-                    value,
-                    |builder| {
-                        builder.ins().call(cold, &[owner, offset, value]);
-                    },
-                );
+                emit_closure_store(self.words.builder, sites, owner, offset, value, |builder| {
+                    builder.ins().call(cold, &[owner, offset, value]);
+                });
                 self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
             }
             (SiteBody::ListItemSet, &[list, index, value, _]) => {
@@ -666,7 +671,6 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let none = self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);
                 emit_list_item_set(
                     self.words.builder,
-                    &mut sealed,
                     sites,
                     list,
                     index,
@@ -772,13 +776,20 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             self.jump(target, args);
         }
     }
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.imports.frame_homes
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.imports.frame_homes = slot;
+    }
+
     fn pop_frame(
         &mut self,
         base: Value,
         kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     ) {
         let sites = self.frame_sites();
-        let record = FrameThread::PreloadedWord(kind.map(|_| self.thread_record_word()));
+        let record = kind.map(|_| self.thread_record_word());
         emit_frame_record_pop(self.words.builder, sites, record, base, kind);
     }
     fn return_value(&mut self, value: Option<Value>) {
@@ -790,15 +801,27 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
 }
 
 impl crate::codegen_ssa::frame::RecordPlacement for NativeCodegen<'_, '_> {
-    fn frame_homes(&self) -> Option<Self::Slot> {
-        self.imports.frame_homes
-    }
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
-        self.imports.frame_homes = slot;
+    fn push_frame(
+        &mut self,
+        code: Value,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+        payload: Option<Value>,
+    ) -> Value {
+        let sites = self.frame_sites();
+        let record = kind.map(|_| self.thread_record_word());
+        emit_frame_record_push(self.words.builder, sites, record, code, kind, payload)
     }
 }
 
 impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn poll_parameter(&self) -> Option<Value> {
+        let function = &self.words.builder.func;
+        let params = function.dfg.block_params(function.layout.entry_block()?);
+        match params {
+            [_, frame] => Some(*frame),
+            _ => None,
+        }
+    }
     fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
         load_stateful_frame_size(self.module, self.words.builder, symbol)
     }
@@ -815,7 +838,6 @@ impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
         let tasks = NativeTaskSites::with_imports(|entry| self.runtime_callee(entry));
         emit_task_construction(
             self.words.builder,
-            &mut BTreeSet::new(),
             frames,
             tasks,
             layout,

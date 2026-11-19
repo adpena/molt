@@ -207,17 +207,10 @@ pub enum OpCode {
     // Refcount
     IncRef,
     DecRef,
-    /// Python lifetime boundary: a function-scope `del x` of a (non-closure)
-    /// local. Operand 0 is the binding's current value. The frontend emits it
-    /// so the boundary FACT survives to the backend (pre-#58 the `del` lowered
-    /// to nothing and the release timing was whatever SSA-last-use happened to
-    /// be). The terminal drop phase NORMALIZES it: rewritten in place to the
-    /// releasing `DecRef` when the root is pass-owned (droppable), deleted
-    /// otherwise (raw/param/borrowed — CPython's frame-slot decref is equally
-    /// unobservable there). On targets where the drop phase does not run (the
-    /// dormant-native value-tracking lane) codegen ignores it; its operand USE
-    /// pins the native `last_use` to the `del` statement, which IS the correct
-    /// release point for that lane. side_effecting=true so DCE keeps it.
+    /// A function-scope `del` of a local binding. Operand zero is the bound
+    /// value. The effect survives DCE until terminal drop insertion releases
+    /// the owned root at this statement or removes the boundary when the
+    /// binding carries no ownership obligation.
     DelBoundary,
     // Build containers
     BuildList,
@@ -600,7 +593,7 @@ pub const NATIVE_ABI_ATTR: &str = "native_abi";
 /// On a `GuardType` or `GuardTag` `Copy`: the function proves the guard's tag
 /// a valid builtin tag, so a mismatch only profiles. A backend emits the
 /// guard's runtime call behind the profile flag. Set once on final TIR by
-/// `guard_elision::mark_profile_only_guards`; never re-derived by a backend.
+/// `guard_profile::mark_profile_only_guards`; never re-derived by a backend.
 pub const GUARD_PROFILE_ONLY_ATTR: &str = "guard_profile_only";
 
 /// Attribute projection of a call's typed per-operand custody: the

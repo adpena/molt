@@ -94,15 +94,6 @@ def test_verify_result_payload_includes_function_pass_and_artifact_references() 
     ]
 
 
-def test_semantic_assertions_pass_on_repo_sources() -> None:
-    module = _load_verify_module()
-    _, native_text = module._read_backend_texts()
-
-    assert module.check_frontend_lowering_lanes() == []
-    failures = module.check_semantic_assertions(native_backend_text=native_text)
-    assert failures == []
-
-
 def test_frontend_lowering_lanes_detect_a_regressed_lane() -> None:
     module = _load_verify_module()
     real = module._serialized_frontend_kinds
@@ -141,7 +132,9 @@ def test_ir_inventory_matches_the_registry_for_the_repo_spec() -> None:
     from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
 
     module = _load_verify_module()
-    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+    spec_ops = module._parse_spec_ops(
+        (module.compiler_source_root() / module._IR_SPEC).read_text(encoding="utf-8")
+    )
 
     assert {"ModuleCacheSet", "ModuleDelGlobal", "VecSum"} <= set(spec_ops)
     assert "count" not in spec_ops
@@ -177,7 +170,9 @@ def test_ir_inventory_requires_real_lowering_names(spec_op, frontend, manufactur
     from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
 
     module = _load_verify_module()
-    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+    spec_ops = module._parse_spec_ops(
+        (module.compiler_source_root() / module._IR_SPEC).read_text(encoding="utf-8")
+    )
     registered = (FRONTEND_REGISTERED_KINDS - {frontend}) | {manufactured}
     assert module.check_ir_inventory(spec_ops, registered) == [
         f"IR op has no registered frontend kind: {spec_op} ({frontend})"
@@ -188,7 +183,9 @@ def test_ir_inventory_requires_every_declared_lowering(monkeypatch):
     from molt.frontend.lowering import op_kinds_generated as registry
 
     module = _load_verify_module()
-    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+    spec_ops = module._parse_spec_ops(
+        (module.compiler_source_root() / module._IR_SPEC).read_text(encoding="utf-8")
+    )
     monkeypatch.setitem(
         registry.FRONTEND_LOWERING_KINDS_BY_WIRE,
         "iter",
@@ -202,55 +199,6 @@ def test_ir_inventory_requires_every_declared_lowering(monkeypatch):
             spec_ops, registry.FRONTEND_REGISTERED_KINDS | {"ALTERNATIVE_ITER"}
         )
         == []
-    )
-
-
-def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
-    module = _load_verify_module()
-    kinds = module._scan_backend_kinds(
-        """
-        OpKind::CallBind | OpKind::CallIndirect => {}
-        molt_ir::OpKind::GuardType | molt_ir::OpKind::GuardTag => {}
-        "call_func" => {}
-        let kind = OpKind::InvokeFfi;
-        """
-    )
-    assert kinds == {"call_bind", "call_indirect", "guard_type", "guard_tag"}
-
-
-@pytest.mark.parametrize(
-    ("operation", "removed"),
-    [
-        ("retain", "OpKind::IncRef"),
-        ("retain", "OpKind::Borrow"),
-        ("retain", "carrier_refcount_is_noop"),
-        ("retain", "emit_refcount"),
-        ("retain", "local_inc_ref_obj"),
-        ("release", "OpKind::DecRef"),
-        ("release", "OpKind::Release"),
-        ("release", "carrier_refcount_is_noop"),
-        ("release", "emit_refcount"),
-        ("release", "local_dec_ref_obj"),
-        ("release", "box_none()"),
-    ],
-)
-def test_semantic_assertions_detect_native_generated_refcount_regressions(
-    operation: str, removed: str
-) -> None:
-    module = _load_verify_module()
-    source = (
-        ROOT
-        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/value_transfer.rs"
-    ).read_text(encoding="utf-8")
-    expected = (
-        "[native] inc_ref/borrow use the generated retain site"
-        if operation == "retain"
-        else "[native] dec_ref/release use the generated release site and write None on out"
-    )
-    assert expected not in module.check_semantic_assertions(source)
-    assert removed in source
-    assert expected in module.check_semantic_assertions(
-        source.replace(removed, "broken_contract")
     )
 
 

@@ -1040,6 +1040,13 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap();
     }
 
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.state.frame_homes.get()
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.state.frame_homes.set(slot);
+    }
+
     fn pop_frame(
         &mut self,
         base: Self::Word,

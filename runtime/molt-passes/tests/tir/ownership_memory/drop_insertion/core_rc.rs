@@ -537,6 +537,69 @@ fn branch_arg_transfer_not_edge_dropped() {
     );
 }
 
+/// A discarded iterator item is released once, right after the step. The
+/// runtime writes the owned item, or the immortal None on every path that
+/// yields none (molt_iter_next_unboxed, molt_iter_next_unpack2), so the
+/// release is exact on both paths; skipping it leaked one reference per item
+/// (the W3 switch cleanup matrix's iterator-discard cases).
+#[test]
+fn a_discarded_iterator_item_is_released_after_its_step() {
+    for (opcode, values) in [
+        (OpCode::IterNextUnboxed, 1usize),
+        (OpCode::IterNextUnpack2, 2),
+    ] {
+        let mut func = TirFunction::new(
+            format!("discard_{opcode:?}"),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let iter = func.fresh_value();
+        let items: Vec<_> = (0..values).map(|_| func.fresh_value()).collect();
+        let done = func.fresh_value();
+        func.value_types.insert(iter, TirType::DynBox);
+        for &item in &items {
+            func.value_types.insert(item, TirType::DynBox);
+        }
+        func.value_types.insert(done, TirType::Bool);
+        let exit = func.fresh_block();
+        let entry = func.entry_block;
+        let mut results = items.clone();
+        results.push(done);
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(iter));
+            b.ops.push(op(opcode, vec![iter], results));
+            b.terminator = Terminator::Branch {
+                target: exit,
+                args: vec![],
+            };
+        }
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        run(&mut func, &mut AnalysisManager::new());
+        let ops = &func.blocks[&entry].ops;
+        let step = ops.iter().position(|o| o.opcode == opcode).unwrap();
+        for &item in &items {
+            let releases: Vec<_> = ops
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.opcode == OpCode::DecRef && o.operands == vec![item])
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(releases.len(), 1, "{opcode:?}: {:?}", ops);
+            assert!(releases[0] > step, "{opcode:?}: released before its step");
+        }
+    }
+}
+
 /// `IterNextUnboxed` writes its value result only on the not-done edge. A
 /// Python-bound local fed from that value may be released through the loop
 /// phi that carries the previous valid element, but the raw value result
@@ -3284,6 +3347,11 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
     // immediate-returning mutation all obey the same custody protocol.
     for (kind, arity) in [
         (molt_ir::OpKind::DictGet, 3),
+        // The walker retains the runtime's borrowed answer before releasing
+        // its inputs, so a bound result is an owner (op_kinds.toml
+        // classifier_owned_value, 1b3d0aa771).
+        (molt_ir::OpKind::DictSet, 3),
+        (molt_ir::OpKind::DictUpdateMissing, 3),
         (molt_ir::OpKind::ListCopy, 1),
         (molt_ir::OpKind::ListIntNew, 2),
         (molt_ir::OpKind::ModuleNew, 1),
@@ -3347,11 +3415,8 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
 
 #[test]
 fn runtime_nonowning_copy_results_do_not_release_borrowed_storage() {
-    for (kind, arity) in [
-        (molt_ir::OpKind::DictSet, 3),
-        (molt_ir::OpKind::DictUpdateMissing, 3),
-        (molt_ir::OpKind::FunctionClosureBits, 1),
-    ] {
+    let (kind, arity) = (molt_ir::OpKind::FunctionClosureBits, 1);
+    {
         let mut function = TirFunction::new(
             format!("{kind}_borrow"),
             vec![TirType::DynBox],

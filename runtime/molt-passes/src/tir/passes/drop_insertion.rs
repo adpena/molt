@@ -165,9 +165,11 @@
 //!    beside a path-conditioned Python rebind/delete or later scope-exit
 //!    boundary can release the same local owner twice.
 //! 4. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
-//!    result (from the generated result-validity table) is initialized ONLY
-//!    below its not-done edge; on the exhaustion edge its slot holds stale
-//!    bits. Validity is a program-point fact. `OwnershipRootFacts` records the
+//!    result (from the generated result-validity table) holds an owned item
+//!    only below its not-done edge; on every path that yields none the runtime
+//!    writes the immortal None there, so a dead value result is released right
+//!    after its step like any dead owned result. Validity is a program-point
+//!    fact for the rest. `OwnershipRootFacts` records the
 //!    initialized region: the not-done target, when that edge is its sole
 //!    entry. Point-sensitive consumers release or retain the value only inside
 //!    that region, never on the exhaustion edge: entry and arc releases, phi

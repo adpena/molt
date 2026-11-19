@@ -59,7 +59,7 @@ NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
 NATIVE_CALL_LANE_SCOPES = (
     "tests/test_native_import_bootstrap_regressions.py",
     "runtime/molt-runtime/src/call/function.rs",
-    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/modules.rs",
+    "runtime/molt-backend-native/src/codegen_ssa/globals.rs",
     "runtime/molt-runtime/src/call/class_init.rs",
     "runtime/molt-runtime/src/builtins/containers.rs",
     "runtime/molt-runtime/src/builtins/exceptions.rs",

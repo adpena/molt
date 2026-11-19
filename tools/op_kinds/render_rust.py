@@ -37,7 +37,7 @@ from .render_rust_analysis import (
     _render_module_slot_promotion_roles,
     _render_operand_independent_result_type,
     _render_range_devirt_role,
-    _render_repr_projectable_result_rules,
+    _render_repr_raw_i64_seed_rules,
     _render_residual_tir_semantic_roles,
     _render_negated_predicate,
     _render_sccp_constant_eval_rule,
@@ -348,7 +348,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_vectorize_opcode_facts(opcodes, data))
     out.append("\n")
     out.append("\n")
-    out.append(_render_repr_projectable_result_rules(opcodes, data))
+    out.append(_render_repr_raw_i64_seed_rules(opcodes, data))
     out.append("\n")
     out.append(_render_counted_loop_comparison_roles(opcodes, data))
     out.append("\n")

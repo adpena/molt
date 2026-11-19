@@ -2,135 +2,29 @@ use super::*;
 use molt_ir::OpKind;
 
 #[test]
-fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![OpIR {
-                ..OpIR::new(OpKind::Ret)
-            }],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-
-    let analysis = analyze_native_backend_ir(
-        &final_functions_for_test(&ir.functions),
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-    );
-
-    let molt_main = molt_ir::FunctionId(0);
-    assert_eq!(analysis.function_table.symbol(molt_main), "molt_main");
-    assert!(analysis.function_table.defines(molt_main));
-}
-
-#[test]
-fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![OpIR {
-                out: Some("poll_obj".to_string()),
-                s_value: Some("worker_poll".to_string()),
-                task_kind: Some("coroutine".to_string()),
-                task_closure_size: Some(3),
-                ..OpIR::new(OpKind::FuncNewClosure)
-            }],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-
-    let analysis = analyze_native_backend_ir(
-        &final_functions_for_test(&ir.functions),
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-    );
-
-    assert!(analysis.closure_functions.contains("worker_poll"));
-    assert_eq!(
-        analysis.task_kinds.get("worker_poll"),
-        Some(&TrampolineKind::Coroutine)
-    );
-    assert_eq!(analysis.task_closure_sizes.get("worker_poll"), Some(&3));
-}
-
-/// The effective whole-program metadata for a batch is the UNION of the
-/// module context (cross-batch) and the batch's LOCAL scan  never a replace
-/// (design-20 finding #3C activation). A module context built from a
-/// different function set (e.g. the stdlib cache) does NOT carry a
-/// closure/task defined only in this batch; replacing the local scan
-/// dropped it, so a `call_guarded` to that closure skipped env extraction and
-/// the callee received a garbage closure (`'object' is not subscriptable`).
-#[test]
-fn effective_metadata_unions_module_context_with_local_scan() {
-    // A module context that knows ONLY a stdlib closure / task.
-    let mut stdlib_funcs = vec![FunctionIR {
-        module: None,
+fn batch_declarations_preserve_provider_and_local_closure_signatures() {
+    let closure = |name: &str| FunctionIR {
+        name: name.into(),
+        params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.into()],
         return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "contextlib___inner".to_string(),
-        params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
-        ops: vec![OpIR {
-            s_value: Some("contextlib___inner".to_string()),
-            out: Some("v0".to_string()),
-            ..OpIR::new(OpKind::FuncNewClosure)
-        }],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    }];
-    let ctx = SimpleBackend::prepare_module_context(&mut stdlib_funcs);
-    assert!(ctx.closure_functions.contains("contextlib___inner"));
-
-    // The current batch defines its OWN closure that the context never saw.
-    let mut local_closures = BTreeSet::new();
-    local_closures.insert("app__inner".to_string());
-    let merged = merge_closure_functions(Some(&ctx), local_closures);
-    assert!(
-        merged.contains("app__inner"),
-        "the batch's own closure must survive the merge (no replace)"
-    );
-    assert!(
-        merged.contains("contextlib___inner"),
-        "the module context's cross-batch closures must also be present"
-    );
-
-    // None context  pure local (user-only / non-batched build).
-    let mut only_local = BTreeSet::new();
-    only_local.insert("app__inner".to_string());
-    let merged_none = merge_closure_functions(None, only_local);
-    assert!(merged_none.contains("app__inner"));
-    assert_eq!(merged_none.len(), 1);
-
-    // Same union contract for task kinds. Callback facts are finalized locally.
-    let mut local_tasks = BTreeMap::new();
-    local_tasks.insert("app_poll".to_string(), TrampolineKind::Coroutine);
-    let merged_tasks = merge_task_kinds(Some(&ctx), local_tasks);
-    assert_eq!(
-        merged_tasks.get("app_poll"),
-        Some(&TrampolineKind::Coroutine)
-    );
+        ops: vec![OpIR::new(OpKind::RetVoid)],
+        ..Default::default()
+    };
+    let provider = closure("stdlib__inner");
+    let context = SimpleBackend::prepare_module_context(&mut vec![provider.clone()]);
+    let functions = NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
+        functions: vec![
+            provider.extern_declaration().unwrap(),
+            closure("app__inner"),
+        ],
+        profile: None,
+    });
+    let table = molt_ir::FunctionTable::of(&functions.ir().functions);
+    for id in table.ids() {
+        let abi = functions.linkage(id, Some(&context));
+        assert!(abi.source_signature.has_closure, "{}", table.symbol(id));
+        assert_eq!(abi.param_types.len(), 1);
+    }
 }
 
 #[test]
@@ -174,8 +68,10 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
 
     let context = SimpleBackend::prepare_module_context(&mut functions);
 
-    assert_eq!(context.function_arities.get("helper"), Some(&2));
-    assert_eq!(context.function_has_ret.get("helper"), Some(&true));
+    let abi = context.function_linkage_abi("helper").unwrap();
+    assert_eq!(abi.source_signature.arity, 2);
+    assert_eq!(abi.param_types.len(), 2);
+    assert!(abi.return_type.is_some());
     assert!(
         serde_json::to_value(&context)
             .unwrap()
@@ -224,8 +120,20 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
 
     let context = SimpleBackend::prepare_module_context(&mut functions);
 
-    assert_eq!(context.function_has_ret.get("value_helper"), Some(&true));
-    assert_eq!(context.function_has_ret.get("void_helper"), Some(&false));
+    assert!(
+        context
+            .function_linkage_abi("value_helper")
+            .unwrap()
+            .return_type
+            .is_some()
+    );
+    assert!(
+        context
+            .function_linkage_abi("void_helper")
+            .unwrap()
+            .return_type
+            .is_none()
+    );
 }
 
 // This fixture exercises the production pre-batch preparation, not a proxy
@@ -335,14 +243,11 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
         functions: vec![finalized, pure, unfinalized, exception_only],
         profile: None,
     };
-    let analysis = analyze_native_backend_ir(
-        &final_functions_for_test(&ir.functions),
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-    );
-    assert!(!analysis.leaf_functions.contains("released_local"));
-    assert!(analysis.leaf_functions.contains("pure_local"));
-    assert!(!analysis.leaf_functions.contains("unfinalized_local"));
-    assert!(!analysis.leaf_functions.contains("exception_only_local"));
+    let leaves = terminal_leaf_oracle(&final_functions_for_test(&ir.functions));
+    assert!(!leaves.contains("released_local"));
+    assert!(leaves.contains("pure_local"));
+    assert!(!leaves.contains("unfinalized_local"));
+    assert!(!leaves.contains("exception_only_local"));
 }
 
 fn callback_op(kind: OpKind, args: &[&str], out: Option<&str>) -> OpIR {
@@ -363,6 +268,16 @@ fn callback_function(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR 
     }
 }
 
+/// The independent whole-module graph sees the terminal bodies, including
+/// operations introduced after the last point with a SimpleIR encoding.
+pub(super) fn terminal_leaf_oracle(finalized: &NativeFinalFunctions) -> BTreeSet<String> {
+    let table = molt_ir::FunctionTable::of(&finalized.ir().functions);
+    let ids: Vec<_> = table.ids().filter(|&id| table.defines(id)).collect();
+    assert_eq!(ids.len(), finalized.bodies().count());
+    let bodies = ids.into_iter().zip(finalized.bodies().cloned());
+    graph_leaf_oracle(table, bodies)
+}
+
 fn assert_callback_rewrite_preserves_oracle(mut function: FunctionIR) -> FunctionIR {
     function
         .ops
@@ -381,22 +296,17 @@ fn assert_callback_rewrite_preserves_oracle(mut function: FunctionIR) -> Functio
         },
         vec![(false, typed)],
     );
-    let after = final_leaf_oracle(&finalized.ir().functions);
+    let after = terminal_leaf_oracle(&finalized);
     assert_eq!(
         before, after,
         "typed final rewrite changed callback eligibility"
     );
-    let analysis = analyze_native_backend_ir(
-        &finalized,
-        molt_tir::trampolines::CallableMetadata::from_functions(&finalized.ir().functions),
-    );
-    assert_eq!(analysis.leaf_functions, after);
-    finalized
-        .into_local_functions()
-        .next()
-        .unwrap()
-        .into_parts()
-        .0
+    // These source rewrite fixtures intentionally run before final-only expansion.
+    // Re-emit just this fixture to check its source-level rewrites below.
+    let mut source = finalized.ir().functions[0].clone();
+    source.ops =
+        crate::tir::lower_to_simple::lower_to_simple_ir(finalized.bodies().next().unwrap());
+    source
 }
 
 #[test]
@@ -652,13 +562,12 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
                 ir.functions.is_empty(),
                 "source custody moved into final owner"
             );
-            let expected = final_leaf_oracle(&finalized.ir().functions);
-            let analysis = analyze_native_backend_ir(&finalized, prepared.source_callables);
+            let leaves = terminal_leaf_oracle(&finalized);
             assert_eq!(
-                analysis.leaf_functions, expected,
-                "skip={skip_ir_passes}, callback={callback}"
+                leaves.contains("molt_main"),
+                !callback,
+                "skip={skip_ir_passes}"
             );
-            assert_eq!(analysis.leaf_functions.contains("molt_main"), !callback);
         }
     }
 }
@@ -682,20 +591,111 @@ fn final_function_custody_retires_dead_bodies_and_preserves_externs() {
     sources[2] = sources[2].extern_declaration().unwrap();
     let mut finalized = final_functions_for_test(&sources);
     finalized.retain_reachable(&BTreeSet::from(["externalized".into()]));
-    let analysis = analyze_native_backend_ir(
-        &finalized,
-        molt_tir::trampolines::CallableMetadata::from_functions(&finalized.ir().functions),
-    );
-    assert_eq!(analysis.leaf_functions, BTreeSet::from(["local".into()]));
-    assert_eq!(
-        analysis.leaf_functions,
-        final_leaf_oracle(&finalized.ir().functions)
-    );
+    let leaves = terminal_leaf_oracle(&finalized);
+    assert_eq!(leaves, BTreeSet::from(["local".into()]));
+
     let emitted: Vec<_> = finalized
         .into_local_functions()
-        .map(|function| function.function().name.clone())
+        .map(|(_, function)| function.tir.name)
         .collect();
     assert_eq!(emitted, vec!["local"]);
+}
+
+#[test]
+fn terminal_call_retains_and_remaps_its_provider_after_source_calls_retire() {
+    let _guard = acquire_backend_env_lock();
+    let _dfe = ScopedEnvVar::set("MOLT_DISABLE_DEAD_FUNC_ELIM", None);
+    let mut call = callback_op(OpKind::CallInternal, &[], None);
+    call.callee = Some(molt_ir::FunctionId(2));
+    let ret = callback_op(OpKind::RetVoid, &[], None);
+    let mut ir = SimpleIR {
+        functions: vec![
+            callback_function("entry", &[], vec![call, ret.clone()]),
+            callback_function("dead", &[], vec![ret.clone()]),
+            callback_function("provider", &[], vec![ret]),
+        ],
+        profile: None,
+    };
+    let typed = ir
+        .functions
+        .iter()
+        .map(|source| (false, crate::tir::lower_from_simple::lower_to_tir(source)))
+        .collect();
+    // Optimizing away the source call to "dead" must allow that row to
+    // disappear even though the terminal caller still needs "provider".
+    ir.functions[0].ops[0].callee = Some(molt_ir::FunctionId(1));
+    let mut finalized = NativeFinalFunctions::from_final_tir(ir, typed);
+    finalized.retain_reachable(&BTreeSet::new());
+    let table = molt_ir::FunctionTable::of(&finalized.ir().functions);
+    let rows = finalized.into_local_functions().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.tir.name, "provider");
+    let callees = rows[0]
+        .1
+        .tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| op.callee)
+        .collect::<Vec<_>>();
+    assert_eq!(callees, [rows[1].0]);
+    assert_eq!(table.symbol(callees[0]), "provider");
+}
+
+#[test]
+fn externalized_calls_validate_the_terminal_arguments_after_source_retirement() {
+    use molt_ir::tir::ops::OpCode;
+    let mut call = callback_op(OpKind::CallGuarded, &["callable", "value"], Some("result"));
+    call.callee = Some(molt_ir::FunctionId(1));
+    let entry = callback_function(
+        "entry",
+        &["callable", "value"],
+        vec![call, callback_op(OpKind::RetVoid, &[], None)],
+    );
+    let provider = callback_function("provider", &["value"], vec![])
+        .extern_declaration()
+        .unwrap();
+    let ir = SimpleIR {
+        functions: vec![entry, provider],
+        profile: None,
+    };
+    for (opcode, operands, admitted) in [
+        (OpCode::Call, 1, true), // default binding still owns the missing argument
+        (OpCode::DirectCall, 1, false),
+        (OpCode::DirectCall, 2, true),
+    ] {
+        let mut typed = ir
+            .functions
+            .iter()
+            .map(|source| {
+                (
+                    source.is_extern,
+                    crate::tir::lower_from_simple::lower_to_tir(source),
+                )
+            })
+            .collect::<Vec<_>>();
+        let op = typed[0]
+            .1
+            .blocks
+            .values_mut()
+            .flat_map(|block| &mut block.ops)
+            .find(|op| op.callee.is_some())
+            .unwrap();
+        op.opcode = opcode;
+        if opcode == OpCode::DirectCall {
+            op.origin = None;
+        }
+        op.operands.truncate(operands);
+        let functions = NativeFinalFunctions::from_final_tir(ir.clone(), typed);
+        let result = functions.validate_extern_calls();
+        assert_eq!(result.is_ok(), admitted, "{opcode:?}: {result:?}");
+        if let Err(error) = result {
+            assert!(
+                error.contains("caller `entry` supplies 0 parameter(s) to declaration `provider`"),
+                "{error}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -742,15 +742,15 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
     let roots = BTreeSet::from(["compiler_partition".into()]);
     for needs_reachability in [false, true] {
         let mut finalized = final_functions_for_test(&sources);
-        assert!(
-            analyze_native_backend_ir(&finalized, Default::default())
-                .leaf_functions
-                .contains("stdlib__helper")
-        );
+        assert!(terminal_leaf_oracle(&finalized).contains("stdlib__helper"));
         if !needs_reachability {
             finalized.retain_reachable(&roots);
         }
-        let mut oracle = finalized.ir().clone();
+        let mut oracle = SimpleIR {
+            functions: sources.clone(),
+            profile: None,
+        };
+        oracle.resolve_function_references().unwrap();
         crate::native_backend::simple_backend::externalize_shared_stdlib_partition(
             &mut oracle,
             &roots,
@@ -784,17 +784,14 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
                 "compiler_partition"
             ]
         );
-        let analysis = analyze_native_backend_ir(&finalized, Default::default());
-        assert!(!analysis.leaf_functions.contains("stdlib__helper"));
-        assert!(!analysis.leaf_functions.contains("compiler_partition"));
-        assert!(!analysis.leaf_functions.contains("dead"));
-        assert_eq!(
-            analysis.leaf_functions,
-            final_leaf_oracle(&finalized.ir().functions)
-        );
+        let leaves = terminal_leaf_oracle(&finalized);
+        assert!(!leaves.contains("stdlib__helper"));
+        assert!(!leaves.contains("compiler_partition"));
+        assert!(!leaves.contains("dead"));
+
         let names = finalized
             .into_local_functions()
-            .map(|f| f.function().name.clone())
+            .map(|(_, function)| function.tir.name)
             .collect::<Vec<_>>();
         assert_eq!(names, ["molt_main", "application__helper"]);
     }
@@ -804,8 +801,7 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
 fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
     use crate::tir::pipeline_cache::{
         TirOwnedModulePipelineMode, TirOwnedModulePipelineOptions, TirPipelineCacheFlavor,
-        TirPipelineInput, TirPipelineRunOptions, run_cached_tir_pipeline,
-        run_owned_module_pipeline_from_cached_tir,
+        TirPipelineRunOptions, run_cached_tir_pipeline, run_owned_module_pipeline_from_cached_tir,
     };
     let _guard = acquire_backend_env_lock();
     let cache_dir = std::env::temp_dir().join(format!(
@@ -832,9 +828,9 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
     ] {
         let mut reference = None;
         for warm in [false, true] {
-            let mut functions = vec![source.clone()];
+            let functions = vec![source.clone()];
             let mut run = run_cached_tir_pipeline(
-                TirPipelineInput::SimpleIr(&mut functions),
+                &functions,
                 TirPipelineRunOptions {
                     target_info: target.clone(),
                     cache_flavor: TirPipelineCacheFlavor::Native,
@@ -871,21 +867,24 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                 typed,
             );
             assert_eq!(
-                analyze_native_backend_ir(&finalized, Default::default()).leaf_functions,
+                terminal_leaf_oracle(&finalized),
                 BTreeSet::from(["cached_final".into()])
             );
-            let (body, plan) = finalized
-                .into_local_functions()
-                .next()
-                .unwrap()
-                .into_parts();
+            let table = molt_ir::FunctionTable::of(&finalized.ir().functions);
+            let (_, body) = finalized.into_local_functions().next().unwrap();
             let literal = body
-                .ops
-                .iter()
-                .find(|operation| operation.kind == OpKind::Const && operation.value == Some(7))
+                .tir
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .find(|op| {
+                    op.opcode == crate::tir::ops::OpCode::ConstInt
+                        && op.attrs.get("value") == Some(&crate::tir::ops::AttrValue::Int(7))
+                })
                 .expect("constant return value");
-            assert!(plan.is_inline_safe_int_name(literal.out.as_deref().unwrap()));
-            let snapshot = (serde_json::to_vec(&body).unwrap(), plan);
+            assert!(body.carriers.is_inline_safe_int(literal.results[0]));
+            let snapshot =
+                crate::tir::serialize::serialize_tir_function(&body.tir, &table).unwrap();
             if let Some(reference) = &reference {
                 assert_eq!(
                     &snapshot, reference,
@@ -897,4 +896,25 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
         }
     }
     std::fs::remove_dir_all(cache_dir).unwrap();
+}
+
+#[test]
+fn rewritten_dump_can_show_a_final_only_operation() {
+    use crate::tir::ops::{OpCode, TirOp};
+    use crate::tir::types::TirType;
+    let mut function = crate::tir::TirFunction::new(
+        "poll".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    function
+        .blocks
+        .get_mut(&function.entry_block)
+        .unwrap()
+        .ops
+        .push(TirOp::new(OpCode::RecursionRelease, vec![], vec![]));
+    let text = super::super::program_pipeline::rewritten_ir_text(&function);
+    assert!(text.contains("recursion_release"), "{text}");
+    assert!(text.contains("func @poll"), "{text}");
 }

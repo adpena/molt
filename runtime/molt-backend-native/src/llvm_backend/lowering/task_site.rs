@@ -278,6 +278,12 @@ impl<'ctx> LlvmBackend<'ctx> {
 }
 
 impl<'ctx> crate::codegen_ssa::task::TaskPlacement for LlvmCodegen<'_, 'ctx> {
+    fn poll_parameter(&self) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let function = self.words.builder.get_insert_block()?.get_parent()?;
+        (function.count_params() == 2)
+            .then(|| function.get_nth_param(1))
+            .flatten()
+    }
     fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
         self.words
             .builder

@@ -291,7 +291,6 @@ fn make_dummy_lowering<'ctx, 'func>(
         call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
-        frame_homes: None,
         state: super::codegen_builder::LlvmFunctionState::new(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
         ),

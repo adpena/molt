@@ -146,7 +146,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 
     fn load_attr(&mut self, b: &mut B, op: &TirOp) {
-        let result = op.results[0];
         let origin = op.origin;
         if origin == Some(OpKind::GetAttrName) && op.operands.len() >= 2 {
             let callee = CallTarget::Callee(b.runtime_callee(RuntimeFn::GetAttrName));
@@ -162,7 +161,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 "get_attr_name",
                 "get_attr_name_dyn",
             );
-            self.bind_boxed(b, result, word);
+            self.bind_owned(b, op, b.word_value(word));
             return;
         }
         if matches!(origin, Some(OpKind::Load | OpKind::GuardedLoad)) && !op.operands.is_empty() {
@@ -177,7 +176,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let word = self
                 .operands()
                 .call(b, callee, &args, false, "field_load", "field_get");
-            self.bind_boxed(b, result, word);
+            self.bind_owned(b, op, b.word_value(word));
             return;
         }
         if origin == Some(OpKind::GuardedFieldGet) {
@@ -205,7 +204,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 "guarded_field_get",
                 "guarded_field_get",
             );
-            self.bind_boxed(b, result, word);
+            self.bind_owned(b, op, b.word_value(word));
             return;
         }
         let name = attr_name(op);
@@ -239,7 +238,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         // leak bound-method receivers.
         let operands = self.operands();
         let word = operands.finish(b, custody, word, "get_attr_result", |_| {});
-        self.bind_boxed(b, result, word);
+        self.bind_owned(b, op, b.word_value(word));
     }
 
     fn store_attr(&mut self, b: &mut B, op: &TirOp) {
@@ -417,7 +416,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let word = self
             .operands()
             .call(b, callee, &args, false, "index", runtime.symbol());
-        self.bind_boxed(b, op.results[0], word);
+        self.bind_owned(b, op, b.word_value(word));
     }
 
     /// Item assignment and deletion borrow their operands; the container

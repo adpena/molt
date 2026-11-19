@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
-use cranelift_codegen::ir::StackSlot;
 use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
@@ -29,10 +28,6 @@ pub(crate) struct NativeFrameBuilder<'a, 'b> {
     pub(crate) sites: NativeFrameSites,
     /// The cold block of each open `attempt`, innermost last.
     pub(crate) slow_blocks: Vec<Block>,
-    /// Every block this generator sealed. Its last one is the caller's
-    /// current block when it returns, so a caller that tracks sealed blocks
-    /// must learn them or it seals that continuation a second time.
-    pub(crate) sealed: Vec<Block>,
     /// Set only for a task construction (`task_site.rs`).
     pub(crate) tasks: Option<NativeTaskSites>,
 }
@@ -58,12 +53,7 @@ impl NativeFrameBuilder<'_, '_> {
         // Every block here is private to the generator and entered once all
         // its predecessors exist.
         self.words.builder.switch_to_block(block);
-        self.seal(block);
-    }
-
-    fn seal(&mut self, block: Block) {
         self.words.builder.seal_block(block);
-        self.sealed.push(block);
     }
 }
 
@@ -186,49 +176,31 @@ impl FrameBuilder for NativeFrameBuilder<'_, '_> {
         body(self, index);
         self.words.builder.ins().jump(header, &[]);
         // The back edge is in: the header has all its predecessors.
-        self.seal(header);
+        self.words.builder.seal_block(header);
         self.enter_block(done);
     }
 }
 
-/// The thread record an inline frame transition works on.
-fn load_thread_record(builder: &mut FunctionBuilder<'_>, slot: Option<StackSlot>) -> Value {
-    builder.ins().stack_load(
-        types::I64,
-        types::I64,
-        slot.expect("an inline frame transition holds the thread record"),
-        0,
-    )
-}
-
-/// Enter this invocation's frame for code slot `code_slot` and return its
-/// record base: zero when nothing was linked. A synchronous function pushes
-/// its record inline and a stateful poll links its task's persistent record
-/// inline; any other frame is linked by the runtime. An inline entry leaves
-/// the builder in a block it already sealed, so every block it seals joins
-/// `sealed_blocks`.
+/// Enter a linked frame and return the record base or zero on failure.
 pub(crate) fn emit_frame_record_push(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut std::collections::BTreeSet<Block>,
     sites: NativeFrameSites,
-    thread_record_slot: Option<StackSlot>,
-    code_slot: Value,
+    record: Option<Value>,
+    code: Value,
     kind: Option<FrameEntryKind>,
+    payload: Option<Value>,
 ) -> Value {
-    let mut placement =
-        NativeFramePlacement::new(builder, sites, FrameThread::Preloaded(thread_record_slot));
-    let base = frame::enter(&mut placement, code_slot, kind, |p| {
-        compiled_argument(p.frames.words.builder, 0)
-    });
-    sealed_blocks.extend(placement.frames.sealed);
-    base
+    let mut placement = NativeFramePlacement::new(builder, sites, record);
+    frame::enter(&mut placement, code, kind, |_| {
+        payload.expect("stateful frame payload")
+    })
 }
 
 /// Pop the frame `base` names, if this invocation entered one.
 pub(crate) fn emit_frame_record_pop(
     builder: &mut FunctionBuilder<'_>,
     sites: NativeFrameSites,
-    thread_record: FrameThread,
+    thread_record: Option<Value>,
     base: Value,
     kind: Option<FrameEntryKind>,
 ) {
@@ -236,30 +208,23 @@ pub(crate) fn emit_frame_record_pop(
     frame::leave(&mut placement, base, kind);
 }
 
-/// Legacy functions lend a preloaded stack slot. Walker functions read the
-/// attached execution context directly. A runtime-linked frame reads neither.
-pub(crate) enum FrameThread {
-    Preloaded(Option<StackSlot>),
-    PreloadedWord(Option<Value>),
-}
-
 struct NativeFramePlacement<'a, 'b> {
     frames: NativeFrameBuilder<'a, 'b>,
-    thread_record: FrameThread,
+    thread_record: Option<Value>,
 }
 
 impl<'a, 'b> NativeFramePlacement<'a, 'b> {
     fn new(
         builder: &'a mut FunctionBuilder<'b>,
         sites: NativeFrameSites,
-        thread_record: FrameThread,
+        thread_record: Option<Value>,
     ) -> Self {
         Self {
             frames: NativeFrameBuilder {
                 words: NativeWords { builder },
                 sites,
                 slow_blocks: Vec::new(),
-                sealed: Vec::new(),
+
                 tasks: None,
             },
             thread_record,
@@ -271,13 +236,8 @@ impl FramePlacement for NativeFramePlacement<'_, '_> {
     type Word = Value;
 
     fn thread(&mut self) -> Value {
-        let builder = &mut *self.frames.words.builder;
-        match self.thread_record {
-            FrameThread::Preloaded(slot) => load_thread_record(builder, slot),
-            FrameThread::PreloadedWord(record) => {
-                record.expect("inline frame links need the attached record")
-            }
-        }
+        self.thread_record
+            .expect("inline frame links need the attached record")
     }
     fn admission(&mut self, op: RefcountOperation) -> Value {
         match op {

@@ -689,49 +689,12 @@ def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
     assert "pub fn validate_simple_ir" not in lib_rs
 
 
-def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
-    native_backend_mod_path = (
-        ROOT / "runtime" / "molt-backend-native" / "src" / "native_backend" / "mod.rs"
-    )
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text(
-        encoding="utf-8"
-    )
-
-    assert native_backend_mod_path.exists()
-    # The god-file split extracted trampoline identity OUT of the lib.rs facade
-    # and into the native_backend module (struct TrampolineKey lives in mod.rs,
-    # not a standalone trampolines.rs).  Assert the real current home so the
-    # guard pins the actual structure rather than a renamed-away filename.
-    assert "struct TrampolineKey" not in lib_rs
-    assert "struct TrampolineKey" in native_backend_mod_path.read_text(encoding="utf-8")
-
-
-def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text(
-        encoding="utf-8"
-    )
-    function_compiler_rs = (
-        ROOT
-        / "runtime"
-        / "molt-backend-native"
-        / "src"
-        / "native_backend"
-        / "function_compiler.rs"
-    )
-
-    assert function_compiler_rs.exists()
-    assert "fn compile_func(" not in lib_rs
-
-
 def test_native_backend_codegen_failures_are_fail_closed() -> None:
     native_sources = [
-        ROOT / "runtime" / "molt-backend-native" / "src" / "lib.rs",
         ROOT
-        / "runtime"
-        / "molt-backend-native"
-        / "src"
-        / "native_backend"
-        / "function_compiler.rs",
+        / "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
+        ROOT / "runtime/molt-backend-native/src/native_backend/simple_backend/jit.rs",
+        ROOT / "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
     ]
     combined = "\n".join(path.read_text(encoding="utf-8") for path in native_sources)
 

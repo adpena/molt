@@ -90,6 +90,11 @@ pub struct TirFunction {
 }
 
 impl TirFunction {
+    /// Number of operations the backend walks, including one terminator per block.
+    pub fn operation_count(&self) -> usize {
+        self.blocks.values().map(|block| block.ops.len() + 1).sum()
+    }
+
     pub fn is_codegen_partition(&self) -> bool {
         matches!(
             self.attrs.get(CODEGEN_PARTITION_ATTR),

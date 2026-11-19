@@ -5,7 +5,7 @@ from typing import Never, get_args
 from molt.cli.build_request import BuildProfile, TypeHintPolicy, EmitMode
 from molt.cli.run_tier import RunTier
 
-from molt.backend_executable_names import CODEGEN_BACKENDS
+from molt.backend_executable_names import CODEGEN_BACKENDS, default_codegen_backend
 from molt.debug import DebugSubcommand
 from molt.target_python_policy import DEFAULT_TARGET_PYTHON_SHORT_VERSION
 from molt.cli import factgraph as _factgraph
@@ -38,6 +38,12 @@ _VALIDATE_SUITE_CHOICES = (
 )
 
 _CODEGEN_BACKEND_CHOICES = (*CODEGEN_BACKENDS, "auto")
+_CODEGEN_BACKEND_HELP = (
+    "Compilation backend. With auto, native release builds use "
+    f"{default_codegen_backend(wasm=False, release=True)}, native dev builds use "
+    f"{default_codegen_backend(wasm=False, release=False)}, and WebAssembly uses "
+    f"{default_codegen_backend(wasm=True, release=False)}."
+)
 
 
 def _add_build_presentation(command_parser: argparse.ArgumentParser) -> None:
@@ -271,7 +277,7 @@ def _add_build_parser(
         "--backend",
         choices=_CODEGEN_BACKEND_CHOICES,
         default="auto",
-        help="Compilation backend (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
+        help=_CODEGEN_BACKEND_HELP,
     )
     build_parser.add_argument(
         "--profile",
@@ -1298,7 +1304,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=_CODEGEN_BACKEND_CHOICES,
         default=None,
-        help="Compilation backend passed to `molt build` (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
+        help=_CODEGEN_BACKEND_HELP,
     )
     run_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
