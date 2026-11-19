@@ -1462,6 +1462,49 @@ fn split_nonisolated_local_entry_refuses_without_mutating_source_or_names() {
 }
 
 #[test]
+fn splitting_preserves_existing_document_callees_and_binds_new_chunk_rows() {
+    let provider = FunctionIR {
+        name: "before_owner".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        ops: vec![make_op(molt_ir::OpKind::RetVoid)],
+        ..FunctionIR::default()
+    };
+    let provider_id = molt_ir::FunctionId::from_index(0);
+    let mut owner = adversarial_named_large_function("caller");
+    owner.ops[3] = OpIR {
+        callee: Some(provider_id),
+        args: Some(vec![]),
+        ..OpIR::new(molt_ir::OpKind::CallInternal)
+    };
+    let mut ir = SimpleIR {
+        functions: vec![provider, owner],
+        profile: None,
+    };
+    crate::validate_simple_ir(&ir).unwrap();
+    let chunks =
+        super::super::megafunction_split::split_megafunctions_at_limit(&mut ir, 2, |_| true);
+    assert!(!chunks.is_empty());
+    crate::validate_simple_ir(&ir).unwrap();
+    let targets = |body: &FunctionIR| {
+        body.ops
+            .iter()
+            .filter(|op| op.kind == molt_ir::OpKind::CallInternal)
+            .map(|op| {
+                op.callee
+                    .expect("every outlined call has a document target")
+            })
+            .collect::<Vec<_>>()
+    };
+    let stub_targets: BTreeSet<_> = targets(&ir.functions[1])
+        .into_iter()
+        .map(|id| ir.functions[id.index()].name.as_str())
+        .collect();
+    assert_eq!(stub_targets, chunks.keys().map(String::as_str).collect());
+    let outlined_calls: Vec<_> = ir.functions[2..].iter().flat_map(targets).collect();
+    assert_eq!(outlined_calls, [provider_id]);
+}
+
+#[test]
 fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
     let mut ops = Vec::new();
     for i in 0..1401 {
