@@ -2747,10 +2747,11 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "sudo apt-get install -y lld" not in ci_text
     assert "timeout_seconds" in proof_plan_text
-    # Five jobs summarize hotspots: docs-gates, repository-tests,
-    # python-tooling-smoke, rust-build-unit-smoke, and the LLVM backend job.
-    assert ci_text.count("Summarize guarded command hotspots") == 5
-    assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 5
+    # Six jobs summarize hotspots: docs-gates, repository-tests,
+    # repository-dev-tests, python-tooling-smoke, rust-build-unit-smoke, and
+    # the LLVM backend job.
+    assert ci_text.count("Summarize guarded command hotspots") == 6
+    assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 6
 
 
 @pytest.mark.parametrize(
@@ -3334,7 +3335,7 @@ def test_every_proof_execution_exports_common_diagnostics_after_execution() -> N
             seen.add(name)
             if "${{ matrix.cell }}" in executions[0]["run"]:
                 assert "${{ matrix.cell }}" in name
-    assert len(seen) == 16
+    assert len(seen) == 17
 
 
 @pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
@@ -3481,6 +3482,7 @@ def test_ci_proof_families_are_admitted_independently() -> None:
         "browser-simd",
         "docs-gates",
         "repository-tests",
+        "repository-dev-tests",
         "formal-verification",
         "llvm-backend",
         "native-integration",

@@ -531,9 +531,7 @@
         "tests/test_gen_wasm_abi.py/**",
         "tests/test_gen_intrinsics.py/**",
         "tests/test_generator_manifest.py/**",
-        "tests/test_molt_dev.py/**",
         "tests/test_committed_gate_policy.py/**",
-        "tests/test_molt_dev_lanes.py/**",
         "tests/test_checkout_provisioning.py/**",
         "tests/test_resource_pressure.py/**",
         "tests/test_structural_audit.py/**",
@@ -733,6 +731,33 @@
         "main"
       ],
       "timeout_minutes": 40,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "admission_job": "repository-dev-tests",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
+      "description": "The landing tool's process-level pytest suites on their own runner.",
+      "executor": "github-job",
+      "inputs": [
+        "**",
+        "tests/test_molt_dev.py/**",
+        "tests/test_molt_dev_lanes.py/**"
+      ],
+      "job": "repository-dev-tests",
+      "job_reserve_seconds": 120,
+      "name": "repository_dev_tests",
+      "required": true,
+      "resource_class": "repository-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 30,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3537,9 +3562,7 @@
         "tests/test_gen_wasm_abi.py",
         "tests/test_gen_intrinsics.py",
         "tests/test_generator_manifest.py",
-        "tests/test_molt_dev.py",
         "tests/test_committed_gate_policy.py",
-        "tests/test_molt_dev_lanes.py",
         "tests/test_checkout_provisioning.py",
         "tests/test_resource_pressure.py",
         "tests/test_structural_audit.py",
@@ -3574,6 +3597,47 @@
         "tests/tools/test_rust_toolchain_contract.py",
         "tests/test_gen_cpython_abi_layout.py",
         "tests/tools/test_perf_release_integrity.py"
+      ],
+      "pytest_worker_memory_gb": 1.75,
+      "resource_class": "repository-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "rustfmt"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-dev-tool-tests/pytest-profile.json"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-repository-tests",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/repository-dev-tool-tests"
+      ],
+      "family": "repository_dev_tests",
+      "id": "repository.dev-tool-tests",
+      "pytest": [
+        "tests/test_molt_dev.py",
+        "tests/test_molt_dev_lanes.py"
       ],
       "pytest_worker_memory_gb": 1.75,
       "resource_class": "repository-tests",
@@ -9091,6 +9155,17 @@
         "required_job_seconds": 960,
         "resource_capacity_floor_seconds": {
           "python-static": 900
+        }
+      },
+      "repository_dev_tests": {
+        "budget_seconds": 1800,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 780,
+        "job_reserve_seconds": 120,
+        "projected_makespan_seconds": 900,
+        "required_job_seconds": 1020,
+        "resource_capacity_floor_seconds": {
+          "repository-tests": 900
         }
       },
       "repository_policy": {

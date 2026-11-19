@@ -103,6 +103,7 @@ jobs:
     outputs:
       repository_policy: ${{ steps.paths.outputs.repository_policy }}
       repository_tests: ${{ steps.paths.outputs.repository_tests }}
+      repository_dev_tests: ${{ steps.paths.outputs.repository_dev_tests }}
       wasm: ${{ steps.paths.outputs.wasm }}
       python_static: ${{ steps.paths.outputs.python_static }}
       python_unit: ${{ steps.paths.outputs.python_unit }}
@@ -187,6 +188,62 @@ jobs:
           path: |
             proof-receipts/repository_tests.json
             proof-receipts/evidence/repository-docs-tests
+          if-no-files-found: error
+
+      - name: Summarize guarded command hotspots
+        if: always()
+        run: python3 tools/profile_hotspots.py --limit 20
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
+
+  # The landing tool's process-level suites, on a runner of their own: beside
+  # the docs/generator suite they pushed docs-tests past its 900 s deadline
+  # (run 44547269649).
+  repository-dev-tests:
+    name: Repository Dev Tool Tests
+    needs: classify-changes
+    if: needs.classify-changes.outputs.repository_dev_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup repository test toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          node-version: pinned
+          node-cache-dependency-path: tools/browser_asset_graph/package-lock.json
+          rust-toolchain: pinned
+          rust-components: rustfmt, clippy
+          rust-targets: wasm32-wasip1
+          cache-cargo: "true"
+          actionlint: "true"
+          target-pythons: "true"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
+
+      - name: Execute repository dev tool test suites
+        run: python3 tools/proof_plan.py --run-family repository_dev_tests --receipt proof-receipts/repository_dev_tests.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-repository-dev-tests
+
+      - name: Upload repository dev tool test receipt
+        if: always() && (hashFiles('proof-receipts/repository_dev_tests.json') != '' || hashFiles('proof-receipts/evidence/repository-dev-tool-tests/*.json') != '')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proof-receipt-repository-dev-tests
+          path: |
+            proof-receipts/repository_dev_tests.json
+            proof-receipts/evidence/repository-dev-tool-tests
           if-no-files-found: error
 
       - name: Summarize guarded command hotspots
@@ -691,6 +748,7 @@ jobs:
     needs:
       - docs-gates
       - repository-tests
+      - repository-dev-tests
       - classify-changes
       - python-static
       - python-unit

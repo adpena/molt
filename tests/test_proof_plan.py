@@ -288,7 +288,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 14
+    assert len(PLAN.families) == 15
     assert len(PLAN.scheduled_families) == 9
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
@@ -1678,7 +1678,7 @@ def test_cargo_profile_authority_selects_its_complete_contract_tests(path: str) 
 
 def test_docs_only_change_skips_compiler_proofs() -> None:
     classes = _classes("docs/agent/INDEX.md")
-    repository = {"repository_policy", "repository_tests"}
+    repository = {"repository_policy", "repository_tests", "repository_dev_tests"}
     assert all(classes[name] for name in repository)
     assert not any(
         selected for name, selected in classes.items() if name not in repository
@@ -2241,6 +2241,7 @@ def test_selected_family_does_not_pull_unrelated_proof_families() -> None:
     assert [family.name for family in selection.selected] == [
         "repository_policy",
         "repository_tests",
+        "repository_dev_tests",
         "llvm",
     ]
     assert selection.reasons["llvm"] == (".github/workflows/perf-gate.yml",)
@@ -4623,6 +4624,7 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
     assert {family.name for family in selection.selected} == {
         "repository_policy",
         "repository_tests",
+        "repository_dev_tests",
         "python_static",
         "python_unit",
         "python_unit_collection",
@@ -6456,14 +6458,41 @@ def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     ]
 
 
-def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> None:
+_PROFILED_SUITES = (
+    # (command, job, family, receipt artifact, evidence directory)
+    (
+        "repository.docs-tests",
+        "repository-tests",
+        "repository_tests",
+        "proof-receipt-repository-tests",
+        "repository-docs-tests",
+    ),
+    (
+        "repository.dev-tool-tests",
+        "repository-dev-tests",
+        "repository_dev_tests",
+        "proof-receipt-repository-dev-tests",
+        "repository-dev-tool-tests",
+    ),
+)
+
+
+def test_profiled_suites_are_the_two_repository_pytest_jobs() -> None:
     profiled = [
-        command
+        command.id
         for command in PLAN.commands
         if any(argument.startswith("--molt-profile") for argument in command.argv)
     ]
-    assert [command.id for command in profiled] == ["repository.docs-tests"]
-    command = profiled[0]
+    assert profiled == [row[0] for row in _PROFILED_SUITES]
+
+
+@pytest.mark.parametrize(
+    ("command_id", "job_name", "family", "artifact", "evidence"), _PROFILED_SUITES
+)
+def test_docs_profile_is_command_owned_and_transported_with_proof_receipt(
+    command_id: str, job_name: str, family: str, artifact: str, evidence: str
+) -> None:
+    command = next(command for command in PLAN.commands if command.id == command_id)
     assert command.data["argv"] == [
         "uv",
         "run",
@@ -6475,42 +6504,39 @@ def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> N
         "auto",
         "-p",
         "tools.pytest_profile",
-        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json",
+        f"--molt-profile=proof-receipts/evidence/{evidence}/pytest-profile.json",
     ]
     # The directory owns controller and worker siblings for cleanup and hashing.
-    assert command.evidence_outputs == (
-        "proof-receipts/evidence/repository-docs-tests",
-    )
+    assert command.evidence_outputs == (f"proof-receipts/evidence/{evidence}",)
     assert command.data["timeout_seconds"] == 900
     assert command.data["pytest_worker_memory_gb"] == 1.75
     root = Path(__file__).resolve().parents[1]
     job = proof_plan._workflow_job_block(
-        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
-        "repository-tests",
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"), job_name
     )
     assert job is not None
     assert (
-        "python3 tools/proof_plan.py --run-family repository_tests "
-        "--receipt proof-receipts/repository_tests.json"
+        f"python3 tools/proof_plan.py --run-family {family} "
+        f"--receipt proof-receipts/{family}.json"
     ) in job
     # A diagnostics-only upload passes the broad path-presence validator but
     # neither real receipt receiver downloads it. Bind the actual upload step.
     uploads = [
         step
         for step in re.split(r"(?m)^      - name: ", job)
-        if "          name: proof-receipt-repository-tests\n" in step
+        if f"          name: {artifact}\n" in step
     ]
     assert len(uploads) == 1
     upload = uploads[0]
     assert "uses: actions/upload-artifact@" in upload
     assert (
         "          path: |\n"
-        "            proof-receipts/repository_tests.json\n"
-        "            proof-receipts/evidence/repository-docs-tests\n"
+        f"            proof-receipts/{family}.json\n"
+        f"            proof-receipts/evidence/{evidence}\n"
     ) in upload
     assert (
-        "if: always() && (hashFiles('proof-receipts/repository_tests.json') != '' "
-        "|| hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')"
+        f"if: always() && (hashFiles('proof-receipts/{family}.json') != '' "
+        f"|| hashFiles('proof-receipts/evidence/{evidence}/*.json') != '')"
     ) in upload
 
 
