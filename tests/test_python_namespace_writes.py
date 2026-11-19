@@ -24,7 +24,13 @@ def _summary(source: str, package: str | None = "pkg.sub") -> PythonNamespaceSum
 # Rows that are not writes of a module namespace by themselves: the graph joins
 # member stores with escaped module values (call_anatomy.md 4.5a).
 _ESCAPE_ROWS = frozenset(
-    {"member_store", "computed_member_store", "module_escape", "own_module_escape"}
+    {
+        "member_store",
+        "local_definition_store",
+        "computed_member_store",
+        "module_escape",
+        "own_module_escape",
+    }
 )
 
 
@@ -1544,6 +1550,51 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
         (
             "import importlib\nholder.m = importlib.import_module('w')\n",
             {("w", None, "module_escape"), (None, "m", "member_store")},
+        ),
+        # HF-926: a local that holds only function or class objects is no
+        # module (reprlib.recursive_repr, warnings.deprecated).
+        (
+            "def deco(f):\n    def wrapper():\n        return f()\n"
+            "    wrapper.__doc__ = f.__doc__\n"
+            "    setattr(wrapper, '__annotate__', None)\n    return wrapper\n",
+            {
+                (None, "__doc__", "local_definition_store"),
+                (None, "__annotate__", "local_definition_store"),
+            },
+        ),
+        (
+            "def f():\n    g = lambda: 0\n    g.x = 1\n"
+            "    class C:\n        pass\n    C.y = 2\n",
+            {
+                (None, "x", "local_definition_store"),
+                (None, "y", "local_definition_store"),
+            },
+        ),
+        # A parameter, a module global, a decorated or based definition, a
+        # second binding, a nonlocal rebinder or a spec attribute stays a
+        # possible module write.
+        ("def f(mod):\n    mod.x = 1\n", {(None, "x", "member_store")}),
+        ("def g():\n    pass\ng.x = 1\n", {(None, "x", "member_store")}),
+        (
+            "def f():\n    @deco\n    def w():\n        pass\n    w.x = 1\n",
+            {(None, "x", "member_store")},
+        ),
+        (
+            "def f():\n    class C(Base):\n        pass\n    C.x = 1\n",
+            {(None, "x", "member_store")},
+        ),
+        (
+            "def f(m):\n    def w():\n        pass\n    w = m\n    w.x = 1\n",
+            {(None, "x", "member_store")},
+        ),
+        (
+            "def f(m):\n    def w():\n        pass\n"
+            "    def h():\n        nonlocal w\n        w = m\n    h()\n    w.x = 1\n",
+            {(None, "x", "member_store")},
+        ),
+        (
+            "def f():\n    def w():\n        pass\n    w.__spec__ = None\n",
+            {(None, "__spec__", "member_store")},
         ),
     ],
 )

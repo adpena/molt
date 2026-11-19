@@ -285,6 +285,10 @@ class PythonGraphNamespaceWrites:
     # The first ``frame_locals`` row's site (a PEP 667 frame proxy use that
     # may write).
     frame_locals_writer: str | None = None
+    # Named attribute stores on a local proven to hold a function or class
+    # object (``local_definition_store`` rows): module writes only while a
+    # frame-locals writer could rebind that local (``_module_member_stores``).
+    local_definition_stores: Mapping[str, str] = field(default_factory=dict)
 
     def premise(
         self,
@@ -305,7 +309,15 @@ class PythonGraphNamespaceWrites:
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
-            _escape_writes(source, self.escaped, self.member_stores),
+            _escape_writes(
+                source,
+                self.escaped,
+                _module_member_stores(
+                    self.member_stores,
+                    self.local_definition_stores,
+                    _frame_locals_writer(self.frame_locals_writer, native_code),
+                ),
+            ),
             _instance_class_writer(
                 self.member_stores, self.computed_member_store, native_code
             ),
@@ -337,6 +349,21 @@ def _frame_locals_writer(site: str | None, native_code: bool) -> str | None:
     if site is not None:
         return site
     return "a native extension module" if native_code else None
+
+
+def _module_member_stores(
+    stores: Mapping[str, str],
+    local_definitions: Mapping[str, str],
+    frame_locals_writer: str | None,
+) -> Mapping[str, str]:
+    """The named stores that may write an escaped module's namespace.
+
+    A store on a local that holds only function or class objects writes no
+    module unless a frame-locals writer can rebind that local to one (HF-926).
+    """
+    if frame_locals_writer is None or not local_definitions:
+        return stores
+    return {**local_definitions, **stores}
 
 
 def _escape_writes(
@@ -454,6 +481,7 @@ class PythonGraphNamespaceIndex:
         self.reflected: set[Path] | None = set()
         self.code_rebinding = False
         self.member_stores: dict[str, str] = {}
+        self.local_definition_stores: dict[str, str] = {}
         self.computed_member_store: str | None = None
         self.frame_locals_writer: str | None = None
         self.escaped: set[Path] | None = set()
@@ -475,6 +503,12 @@ class PythonGraphNamespaceIndex:
             if name not in self.member_stores
         }
         self.member_stores.update(new_stores)
+        new_local_stores = {
+            name: site
+            for name, site in batch.local_definition_stores.items()
+            if name not in self.local_definition_stores
+        }
+        self.local_definition_stores.update(new_local_stores)
         # The instance class writer is one fact of every premise.
         escape_global = "__class__" in new_stores
         if batch.computed_member_store is not None and (
@@ -489,13 +523,20 @@ class PythonGraphNamespaceIndex:
         if self.escaped is not None:
             if batch.escaped is None:
                 self.escaped = None
-                escape_global = escape_global or bool(self.member_stores)
+                escape_global = (
+                    escape_global
+                    or bool(self.member_stores)
+                    or bool(self.local_definition_stores)
+                )
             else:
                 added_sources = batch.escaped - self.escaped
                 self.escaped.update(added_sources)
-                if self.member_stores:
+                if self.member_stores or self.local_definition_stores:
                     changed.update(added_sources)
-        if new_stores:
+        # A local-definition store reaches escaped modules only under a
+        # frame-locals writer, which a native extension may supply per
+        # premise; waking them is safe, as unchanged premises compare equal.
+        if new_stores or new_local_stores:
             if self.escaped is None:
                 escape_global = True
             else:
@@ -574,7 +615,15 @@ class PythonGraphNamespaceIndex:
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
-            _escape_writes(source, self.escaped, self.member_stores),
+            _escape_writes(
+                source,
+                self.escaped,
+                _module_member_stores(
+                    self.member_stores,
+                    self.local_definition_stores,
+                    _frame_locals_writer(self.frame_locals_writer, native_code),
+                ),
+            ),
             _instance_class_writer(
                 self.member_stores, self.computed_member_store, native_code
             ),
@@ -613,6 +662,7 @@ def graph_python_namespace_writes(
     code_rebinding = False
     members = NO_INVALID_MEMBERS
     member_stores: dict[str, str] = {}
+    local_definition_stores: dict[str, str] = {}
     computed_member_store: tuple[int, str] | None = None
     frame_locals: tuple[int, str] | None = None
     escaped: set[Path] | None = set()
@@ -684,6 +734,10 @@ def graph_python_namespace_writes(
         if write.construct == "member_store":
             assert write.name is not None
             member_stores.setdefault(write.name, f"{label}:{write.line}")
+            continue
+        if write.construct == "local_definition_store":
+            assert write.name is not None
+            local_definition_stores.setdefault(write.name, f"{label}:{write.line}")
             continue
         if write.construct in {"module_escape", "own_module_escape"}:
             if escaped is None:
@@ -790,4 +844,5 @@ def graph_python_namespace_writes(
             import_hook_writers,
         ),
         None if frame_locals is None else frame_locals[1],
+        MappingProxyType(local_definition_stores),
     )

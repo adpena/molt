@@ -653,3 +653,76 @@ def test_scan_view_yields_the_same_scan_as_the_whole_premise(
         return result._replace(source_values=values._replace(namespaces=namespaces))
 
     assert scan(view) == scan(premise)
+
+
+_ESCAPED_MODULE = "import sys\nkeep(sys.modules[__name__])\n"
+_DEFINITION_STORES = (
+    "def deco(f):\n"
+    "    def wrapper():\n"
+    "        return f()\n"
+    "    wrapper.__doc__ = f.__doc__\n"
+    "    setattr(wrapper, '__annotate__', None)\n"
+    "    return wrapper\n"
+)
+
+
+def _graph_premise(
+    tmp_path: Path, sources: dict[str, str], target: str
+) -> PythonNamespacePremise:
+    import ast
+
+    from molt.compiler_analysis.python_namespace_writes import (
+        python_namespace_summary,
+    )
+
+    paths = {name: tmp_path / f"{name}.py" for name in sources}
+    index = PythonGraphNamespaceIndex()
+    for name, source in sources.items():
+        writes = python_namespace_summary(ast.parse(source), package=None)
+        index.merge(
+            graph_python_namespace_writes(
+                writes.foreign_writes, paths.get, writer=(name, paths[name])
+            )
+        )
+    return index.premise(paths[target], frozenset())
+
+
+def test_member_stores_on_function_objects_leave_escaped_modules_closed(
+    tmp_path: Path,
+) -> None:
+    """HF-926 differential: a store on a local that holds only a function
+    object writes no module, while a store through a module alias or a
+    parameter that may receive a module still names its writer."""
+    closed = _graph_premise(
+        tmp_path, {"m": _ESCAPED_MODULE, "w": _DEFINITION_STORES}, "m"
+    )
+    assert closed.foreign_writes is not None
+    assert not {"__doc__", "__annotate__"} & set(closed.foreign_writes)
+
+    alias = _graph_premise(
+        tmp_path,
+        {
+            "m": _ESCAPED_MODULE + "def f():\n    a = sys.modules[__name__]\n"
+            "    a.x = 1\n",
+            "p": "def set_it(mod):\n    mod.y = 1\n",
+            "w": _DEFINITION_STORES,
+        },
+        "m",
+    )
+    assert alias.escape_writer("x") == "m:5"
+    assert alias.escape_writer("y") == "p:2"
+    assert alias.escape_writer("__doc__") is None
+
+    # A frame-locals writer can rebind the local to a module: the stores count.
+    rebinding = _graph_premise(
+        tmp_path,
+        {
+            "m": _ESCAPED_MODULE,
+            "w": _DEFINITION_STORES,
+            "r": "import sys\nsys._getframe(1).f_locals['wrapper'] = sys\n",
+        },
+        "m",
+    )
+    assert rebinding.frame_locals_writer is not None
+    assert rebinding.escape_writer("__doc__") == "w:4"
+    assert rebinding.escape_writer("__annotate__") == "w:5"
