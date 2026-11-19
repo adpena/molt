@@ -102,13 +102,43 @@ const DEBUG_STATS: i64 = 1;
 
 /// The collector defaults a CPython minor version starts its interpreter with:
 /// `gc.get_threshold()` is `(700, 10, 10)` on 3.12 and `(2000, 10, 10)` from
-/// 3.13 on, and from 3.14 on an empty dict is tracked from creation instead
-/// of on its first container insertion. The committed compiled target selects
-/// one policy for the runtime (`GcRuntimeState::adopt_target`).
+/// 3.13 on; from 3.14 on an empty dict is tracked from creation instead of on
+/// its first container insertion; from 3.15 on `gc.get_stats()` and the
+/// callback info report `candidates` and `duration` (`Modules/gcmodule.c`
+/// `gc_get_stats_impl`, `Python/gc.c` `invoke_gc_callback`). The committed
+/// compiled target selects one policy for the runtime
+/// (`GcRuntimeState::adopt_target`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GcTargetPolicy {
     thresholds: [i64; NUM_GENERATIONS],
-    tracks_empty_dicts: bool,
+    features: GcTargetFeatures,
+}
+
+/// The version-dependent collector behaviours of one target, packed into the
+/// one policy word `GcRuntimeState::target_features` holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GcTargetFeatures(u64);
+
+impl GcTargetFeatures {
+    /// An empty dict is tracked from creation (3.14+).
+    const TRACKS_EMPTY_DICTS: u64 = 1 << 0;
+    /// Statistics and callback info carry `candidates` and `duration` (3.15+).
+    const REPORTS_COLLECTION_COST: u64 = 1 << 1;
+
+    const fn for_minor(minor: i64) -> Self {
+        let mut bits = 0;
+        if minor >= 14 {
+            bits |= Self::TRACKS_EMPTY_DICTS;
+        }
+        if minor >= 15 {
+            bits |= Self::REPORTS_COLLECTION_COST;
+        }
+        Self(bits)
+    }
+
+    const fn has(self, feature: u64) -> bool {
+        self.0 & feature != 0
+    }
 }
 
 impl GcTargetPolicy {
@@ -119,7 +149,7 @@ impl GcTargetPolicy {
             } else {
                 [2000, 10, 10]
             },
-            tracks_empty_dicts: minor >= 14,
+            features: GcTargetFeatures::for_minor(minor),
         }
     }
 
@@ -222,19 +252,25 @@ impl GcWord {
     }
 }
 
+/// Running statistics of one generation, CPython's `gc_generation_stats`:
+/// `candidates` counts the objects each collection considered and traversed
+/// (`deduce_unreachable`'s count) and `duration_ns` the summed time from the
+/// snapshot to the end of the clear phase.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GenerationStats {
     pub(crate) collections: u64,
     pub(crate) collected: u64,
     pub(crate) uncollectable: u64,
-    pub(crate) scanned: u64,
+    pub(crate) candidates: u64,
+    pub(crate) duration_ns: u64,
 }
 
 struct GenerationStatsWords {
     collections: GcWord,
     collected: GcWord,
     uncollectable: GcWord,
-    scanned: GcWord,
+    candidates: GcWord,
+    duration_ns: GcWord,
 }
 
 #[derive(Default)]
@@ -249,36 +285,73 @@ impl GenerationStatsWords {
             collections: GcWord::new(0),
             collected: GcWord::new(0),
             uncollectable: GcWord::new(0),
-            scanned: GcWord::new(0),
+            candidates: GcWord::new(0),
+            duration_ns: GcWord::new(0),
         }
     }
 
+    fn words(&self) -> [&GcWord; 5] {
+        [
+            &self.collections,
+            &self.collected,
+            &self.uncollectable,
+            &self.candidates,
+            &self.duration_ns,
+        ]
+    }
+
     fn snapshot(&self) -> GenerationStats {
+        let [
+            collections,
+            collected,
+            uncollectable,
+            candidates,
+            duration_ns,
+        ] = self.words().map(|word| word.load(AtomicOrdering::Relaxed));
         GenerationStats {
-            collections: self.collections.load(AtomicOrdering::Relaxed),
-            collected: self.collected.load(AtomicOrdering::Relaxed),
-            uncollectable: self.uncollectable.load(AtomicOrdering::Relaxed),
-            scanned: self.scanned.load(AtomicOrdering::Relaxed),
+            collections,
+            collected,
+            uncollectable,
+            candidates,
+            duration_ns,
         }
     }
 
     fn reset(&self) {
-        self.collections.store(0, AtomicOrdering::Relaxed);
-        self.collected.store(0, AtomicOrdering::Relaxed);
-        self.uncollectable.store(0, AtomicOrdering::Relaxed);
-        self.scanned.store(0, AtomicOrdering::Relaxed);
+        for word in self.words() {
+            word.store(0, AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// CPython's `add_stats`: one more collection and its counts.
+    fn add(&self, collection: GenerationStats) {
+        let deltas = [
+            collection.collections,
+            collection.collected,
+            collection.uncollectable,
+            collection.candidates,
+            collection.duration_ns,
+        ];
+        for (word, delta) in self.words().into_iter().zip(deltas) {
+            word.try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+                value.checked_add(delta)
+            })
+            .unwrap_or_else(|_| std::process::abort());
+        }
     }
 
     #[cfg(test)]
     fn restore(&self, snapshot: GenerationStats) {
-        self.collections
-            .store(snapshot.collections, AtomicOrdering::Relaxed);
-        self.collected
-            .store(snapshot.collected, AtomicOrdering::Relaxed);
-        self.uncollectable
-            .store(snapshot.uncollectable, AtomicOrdering::Relaxed);
-        self.scanned
-            .store(snapshot.scanned, AtomicOrdering::Relaxed);
+        let values = [
+            snapshot.collections,
+            snapshot.collected,
+            snapshot.uncollectable,
+            snapshot.candidates,
+            snapshot.duration_ns,
+        ];
+        for (word, value) in self.words().into_iter().zip(values) {
+            word.store(value, AtomicOrdering::Relaxed);
+        }
     }
 }
 
@@ -289,7 +362,7 @@ pub(crate) struct GcRuntimeTestSnapshot {
     debug_flags: u64,
     thresholds: [u64; NUM_GENERATIONS],
     thresholds_explicit: u64,
-    tracks_empty_dicts: u64,
+    target_features: u64,
     counts: [u64; NUM_GENERATIONS],
     stats: [GenerationStats; NUM_GENERATIONS],
     long_lived_total: u64,
@@ -310,8 +383,8 @@ pub(crate) struct GcRuntimeState {
     /// Nonzero once `gc.set_threshold` (or the C API) chose the thresholds;
     /// committing the compiled target then keeps them.
     thresholds_explicit: GcWord,
-    /// Nonzero when the target tracks an empty dict from creation (3.14+).
-    tracks_empty_dicts: GcWord,
+    /// The target's `GcTargetFeatures` bits.
+    target_features: GcWord,
     counts: [GcWord; NUM_GENERATIONS],
     stats: [GenerationStatsWords; NUM_GENERATIONS],
     long_lived_total: GcWord,
@@ -349,7 +422,7 @@ impl GcRuntimeState {
                 GcWord::new(policy.thresholds[2] as u64),
             ],
             thresholds_explicit: GcWord::new(0),
-            tracks_empty_dicts: GcWord::new(u64::from(policy.tracks_empty_dicts)),
+            target_features: GcWord::new(policy.features.0),
             counts: [GcWord::new(0), GcWord::new(0), GcWord::new(0)],
             stats: [
                 GenerationStatsWords::new(),
@@ -435,10 +508,8 @@ impl GcRuntimeState {
     pub(crate) fn adopt_target(&self, minor: i64) {
         Self::assert_custody();
         let policy = GcTargetPolicy::for_minor(minor);
-        self.tracks_empty_dicts.store(
-            u64::from(policy.tracks_empty_dicts),
-            AtomicOrdering::Relaxed,
-        );
+        self.target_features
+            .store(policy.features.0, AtomicOrdering::Relaxed);
         if self.thresholds_explicit.load(AtomicOrdering::Relaxed) == 0 {
             self.store_thresholds(policy.thresholds);
         }
@@ -454,13 +525,11 @@ impl GcRuntimeState {
             self.thresholds[1].load(AtomicOrdering::Relaxed),
             self.thresholds[2].load(AtomicOrdering::Relaxed),
             self.thresholds_explicit.load(AtomicOrdering::Relaxed),
-            self.tracks_empty_dicts.load(AtomicOrdering::Relaxed),
+            self.target_features.load(AtomicOrdering::Relaxed),
         ];
         let policy = GcTargetPolicy::for_minor(minor);
-        self.tracks_empty_dicts.store(
-            u64::from(policy.tracks_empty_dicts),
-            AtomicOrdering::Relaxed,
-        );
+        self.target_features
+            .store(policy.features.0, AtomicOrdering::Relaxed);
         if prior[NUM_GENERATIONS] == 0 {
             for (word, threshold) in self.thresholds.iter().zip(policy.thresholds) {
                 word.store(threshold as u64, AtomicOrdering::Relaxed);
@@ -477,7 +546,7 @@ impl GcRuntimeState {
         }
         self.thresholds_explicit
             .store(prior[NUM_GENERATIONS], AtomicOrdering::Relaxed);
-        self.tracks_empty_dicts
+        self.target_features
             .store(prior[NUM_GENERATIONS + 1], AtomicOrdering::Relaxed);
     }
 
@@ -486,7 +555,20 @@ impl GcRuntimeState {
     /// collection untracks a dict whose values cannot form a cycle.
     #[inline(always)]
     pub(crate) fn tracks_empty_dicts(&self) -> bool {
-        self.tracks_empty_dicts.load(AtomicOrdering::Relaxed) != 0
+        self.target_features()
+            .has(GcTargetFeatures::TRACKS_EMPTY_DICTS)
+    }
+
+    /// Whether statistics and callback info report `candidates` and
+    /// `duration` (3.15+).
+    pub(crate) fn reports_collection_cost(&self) -> bool {
+        self.target_features()
+            .has(GcTargetFeatures::REPORTS_COLLECTION_COST)
+    }
+
+    #[inline(always)]
+    fn target_features(&self) -> GcTargetFeatures {
+        GcTargetFeatures(self.target_features.load(AtomicOrdering::Relaxed))
     }
 
     pub(crate) fn counts(&self) -> [i64; NUM_GENERATIONS] {
@@ -521,7 +603,7 @@ impl GcRuntimeState {
                 self.thresholds[index].load(AtomicOrdering::Relaxed)
             }),
             thresholds_explicit: self.thresholds_explicit.load(AtomicOrdering::Relaxed),
-            tracks_empty_dicts: self.tracks_empty_dicts.load(AtomicOrdering::Relaxed),
+            target_features: self.target_features.load(AtomicOrdering::Relaxed),
             counts: std::array::from_fn(|index| self.counts[index].load(AtomicOrdering::Relaxed)),
             stats: self.generation_stats(),
             long_lived_total: self.long_lived_total.load(AtomicOrdering::Relaxed),
@@ -540,8 +622,8 @@ impl GcRuntimeState {
             .store(snapshot.debug_flags, AtomicOrdering::Relaxed);
         self.thresholds_explicit
             .store(snapshot.thresholds_explicit, AtomicOrdering::Relaxed);
-        self.tracks_empty_dicts
-            .store(snapshot.tracks_empty_dicts, AtomicOrdering::Relaxed);
+        self.target_features
+            .store(snapshot.target_features, AtomicOrdering::Relaxed);
         for index in 0..NUM_GENERATIONS {
             self.thresholds[index].store(snapshot.thresholds[index], AtomicOrdering::Relaxed);
             self.counts[index].store(snapshot.counts[index], AtomicOrdering::Relaxed);
@@ -638,25 +720,12 @@ impl GcRuntimeState {
         }
     }
 
-    fn finish_collection(
-        &self,
-        generation: u8,
-        scanned: usize,
-        collected: usize,
-        survivors: usize,
-    ) {
+    /// Record one completed collection: `collection` holds its own counts
+    /// (one collection, its collected objects, candidates and duration).
+    fn finish_collection(&self, generation: u8, collection: GenerationStats, survivors: usize) {
         Self::assert_custody();
         let generation = generation as usize;
-        for (word, delta) in [
-            (&self.stats[generation].collections, 1u64),
-            (&self.stats[generation].collected, collected as u64),
-            (&self.stats[generation].scanned, scanned as u64),
-        ] {
-            word.try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
-                value.checked_add(delta)
-            })
-            .unwrap_or_else(|_| std::process::abort());
-        }
+        self.stats[generation].add(collection);
         if generation == NUM_GENERATIONS - 2 {
             self.long_lived_pending
                 .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
@@ -680,10 +749,8 @@ impl GcRuntimeState {
         self.debug_flags.store(0, AtomicOrdering::Relaxed);
         let policy = GcTargetPolicy::for_minor(minor);
         self.thresholds_explicit.store(0, AtomicOrdering::Relaxed);
-        self.tracks_empty_dicts.store(
-            u64::from(policy.tracks_empty_dicts),
-            AtomicOrdering::Relaxed,
-        );
+        self.target_features
+            .store(policy.features.0, AtomicOrdering::Relaxed);
         for (index, threshold) in policy.thresholds.into_iter().enumerate() {
             self.thresholds[index].store(threshold as u64, AtomicOrdering::Relaxed);
             self.counts[index].store(0, AtomicOrdering::Relaxed);
@@ -2116,8 +2183,8 @@ pub(crate) struct CollectStats {
     /// includes retained garbage and does not establish fixed-point progress.
     pub(crate) retired: usize,
     pub(crate) collected: usize,
-    #[cfg(test)]
-    pub(crate) scanned: usize,
+    /// This collection's own statistics, which the stop callbacks report.
+    pub(crate) collection: GenerationStats,
     #[cfg(test)]
     pub(crate) survivors: usize,
     pub(crate) status: GcCollectStatus,
@@ -2133,18 +2200,22 @@ pub(crate) enum GcCollectStatus {
 }
 
 impl CollectStats {
-    fn completed(collected: usize, scanned: usize, survivors: usize) -> Self {
+    fn completed(collection: GenerationStats, survivors: usize) -> Self {
         #[cfg(not(test))]
-        let _ = (scanned, survivors);
+        let _ = survivors;
         Self {
             retired: 0,
-            collected,
-            #[cfg(test)]
-            scanned,
+            collected: collection.collected as usize,
+            collection,
             #[cfg(test)]
             survivors,
             status: GcCollectStatus::Completed,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn candidates(&self) -> usize {
+        self.collection.candidates as usize
     }
 
     fn failure(py: &PyToken<'_>, status: GcCollectStatus) -> Self {
@@ -2161,8 +2232,7 @@ impl CollectStats {
         Self {
             retired: 0,
             collected: 0,
-            #[cfg(test)]
-            scanned: 0,
+            collection: GenerationStats::default(),
             #[cfg(test)]
             survivors: 0,
             status,
@@ -3409,35 +3479,89 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) -> 
     Some(resurrected)
 }
 
+/// CPython's `invoke_gc_callback` info dict for one phase: the start phase
+/// reports a zeroed collection, the stop phase the finished one.
 fn gc_callback_info(
     py: &PyToken<'_>,
     generation: u8,
-    collected: usize,
-    uncollectable: usize,
+    collection: &GenerationStats,
 ) -> Option<*mut u8> {
-    let keys: [&[u8]; 3] = [b"generation", b"collected", b"uncollectable"];
-    let values = [generation as usize, collected, uncollectable];
-    let mut pairs = [0u64; 6];
-    let mut owned_keys = [0u64; 3];
-    for (index, (key, value)) in keys.into_iter().zip(values).enumerate() {
+    let reports_cost = crate::runtime_state(py).gc.reports_collection_cost();
+    let generation = MoltObject::from_int(i64::from(generation)).bits();
+    let [collected, uncollectable, candidates] = [
+        collection.collected,
+        collection.uncollectable,
+        collection.candidates,
+    ]
+    .map(gc_count_bits);
+    let duration = MoltObject::from_float(duration_seconds(collection.duration_ns)).bits();
+    let entries: &[(&[u8], u64)] = &[
+        (b"generation", generation),
+        (b"collected", collected),
+        (b"uncollectable", uncollectable),
+        (b"candidates", candidates),
+        (b"duration", duration),
+    ];
+    let entries = if reports_cost { entries } else { &entries[..3] };
+    let info = gc_info_dict(py, entries);
+    (!info.is_null()).then_some(info)
+}
+
+/// One generation's `gc.get_stats()` dict (`gc_get_stats_impl`). Null when an
+/// allocation fails.
+pub(crate) fn gc_stats_dict(py: &PyToken<'_>, stats: GenerationStats) -> *mut u8 {
+    let reports_cost = crate::runtime_state(py).gc.reports_collection_cost();
+    let [collections, collected, uncollectable, candidates] = [
+        stats.collections,
+        stats.collected,
+        stats.uncollectable,
+        stats.candidates,
+    ]
+    .map(gc_count_bits);
+    let duration = MoltObject::from_float(duration_seconds(stats.duration_ns)).bits();
+    let entries: &[(&[u8], u64)] = &[
+        (b"collections", collections),
+        (b"collected", collected),
+        (b"uncollectable", uncollectable),
+        (b"candidates", candidates),
+        (b"duration", duration),
+    ];
+    gc_info_dict(py, if reports_cost { entries } else { &entries[..3] })
+}
+
+/// A collector count as an inline int; counts never reach the inline limit.
+fn gc_count_bits(count: u64) -> u64 {
+    let count = i64::try_from(count).unwrap_or_else(|_| std::process::abort());
+    MoltObject::from_int(count).bits()
+}
+
+/// CPython's `PyTime_AsSecondsDouble` of a nanosecond duration.
+fn duration_seconds(nanos: u64) -> f64 {
+    nanos as f64 / 1e9
+}
+
+/// A dict of `entries` in their order, the values being inline (non-owned)
+/// ints or floats. Null when an allocation fails.
+fn gc_info_dict(py: &PyToken<'_>, entries: &[(&[u8], u64)]) -> *mut u8 {
+    let mut pairs = [0u64; 12];
+    debug_assert!(entries.len() * 2 <= pairs.len());
+    for (index, &(key, value)) in entries.iter().enumerate() {
         let key_ptr = crate::alloc_string(py, key);
         if key_ptr.is_null() {
-            for bits in &owned_keys[..index] {
-                crate::dec_ref_bits(py, *bits);
+            for &bits in pairs[..index * 2].iter().step_by(2) {
+                crate::dec_ref_bits(py, bits);
             }
-            return None;
+            return std::ptr::null_mut();
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let value = i64::try_from(value).unwrap_or_else(|_| std::process::abort());
-        pairs[index * 2] = key_bits;
-        pairs[index * 2 + 1] = MoltObject::from_int(value).bits();
-        owned_keys[index] = key_bits;
+        pairs[index * 2] = MoltObject::from_ptr(key_ptr).bits();
+        pairs[index * 2 + 1] = value;
     }
-    let info = crate::alloc_dict_with_pairs(py, &pairs);
-    for bits in owned_keys {
+    let pairs = &pairs[..entries.len() * 2];
+    let info = crate::alloc_dict_with_pairs(py, pairs);
+    for &bits in pairs.iter().step_by(2) {
         crate::dec_ref_bits(py, bits);
     }
-    (!info.is_null()).then_some(info)
+    info
 }
 
 fn invoke_gc_callbacks(
@@ -3445,7 +3569,7 @@ fn invoke_gc_callbacks(
     scratch: &mut GcScratch,
     phase: &'static [u8],
     generation: u8,
-    collected: usize,
+    collection: &GenerationStats,
 ) -> Result<(), &'static str> {
     let callbacks_bits = crate::runtime_state(py).gc.existing_api_root_bits(py, true);
     if callbacks_bits == 0 {
@@ -3476,7 +3600,7 @@ fn invoke_gc_callbacks(
     }
 
     let phase_ptr = crate::alloc_string(py, phase);
-    let Some(info_ptr) = gc_callback_info(py, generation, collected, 0) else {
+    let Some(info_ptr) = gc_callback_info(py, generation, collection) else {
         for callback in scratch.api_targets.drain(..) {
             crate::dec_ref_bits(py, callback);
         }
@@ -3516,14 +3640,23 @@ fn invoke_gc_callbacks(
 fn completed_collection(
     py: &PyToken<'_>,
     generation: u8,
+    started: std::time::Instant,
     collected: usize,
-    scanned: usize,
+    candidates: usize,
     survivors: usize,
 ) -> CollectStats {
+    let duration_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let collection = GenerationStats {
+        collections: 1,
+        collected: collected as u64,
+        uncollectable: 0,
+        candidates: candidates as u64,
+        duration_ns,
+    };
     crate::runtime_state(py)
         .gc
-        .finish_collection(generation, scanned, collected, survivors);
-    CollectStats::completed(collected, scanned, survivors)
+        .finish_collection(generation, collection, survivors);
+    CollectStats::completed(collection, survivors)
 }
 
 // Retirement counts the first-unreachable candidates whose tracking lifetime
@@ -3610,9 +3743,17 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             .gc_last_failure
             .store(0, AtomicOrdering::Release);
         let mut scratch = GcScratch::acquire();
-        if let Err(message) = invoke_gc_callbacks(py, &mut scratch, b"start", generation, 0) {
+        if let Err(message) = invoke_gc_callbacks(
+            py,
+            &mut scratch,
+            b"start",
+            generation,
+            &GenerationStats::default(),
+        ) {
             return CollectStats::failure(py, GcCollectStatus::ResourceError(message));
         }
+        // CPython reads the clock after the start callbacks.
+        let started = std::time::Instant::now();
         let mut outcome = (|| {
             crate::runtime_state(py).gc.begin_collection(generation);
 
@@ -3633,7 +3774,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 eprintln!("molt gc: generation={generation} candidates={scanned}",);
             }
             if scanned == 0 {
-                return completed_collection(py, generation, 0, 0, 0);
+                return completed_collection(py, generation, started, 0, 0, 0);
             }
 
             if !scratch.try_prepare_candidates()
@@ -3691,7 +3832,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             }
             if scratch.first_unreachable.is_empty() {
                 promote_collected_generations(py, generation, target_generation);
-                return completed_collection(py, generation, 0, scanned, survivors);
+                return completed_collection(py, generation, started, 0, scanned, survivors);
             }
 
             // Reserve the current detach high-water before any callback. Finalizers
@@ -3741,7 +3882,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             };
             survivors += resurrected;
             if scratch.final_unreachable.is_empty() {
-                return completed_collection(py, generation, 0, scanned, survivors);
+                return completed_collection(py, generation, started, 0, scanned, survivors);
             }
 
             let collected = scratch.final_unreachable.len();
@@ -3836,7 +3977,9 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                         GcCollectStatus::ResourceError("gc.garbage append failed"),
                     );
                 }
-                return completed_collection(py, generation, collected, scanned, survivors);
+                return completed_collection(
+                    py, generation, started, collected, scanned, survivors,
+                );
             }
 
             let (required_edges, required_resources) =
@@ -3874,7 +4017,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             crate::runtime_state(py)
                 .gc_last_failure
                 .store(0, AtomicOrdering::Release);
-            completed_collection(py, generation, collected, scanned, survivors)
+            completed_collection(py, generation, started, collected, scanned, survivors)
         })();
         let completed = outcome.status == GcCollectStatus::Completed;
         let ended_before_release = if completed {
@@ -3893,7 +4036,7 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                 );
             }
         }
-        let _ = invoke_gc_callbacks(py, &mut scratch, b"stop", generation, outcome.collected);
+        let _ = invoke_gc_callbacks(py, &mut scratch, b"stop", generation, &outcome.collection);
         outcome
     }
 }
@@ -3910,7 +4053,7 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
 #[inline]
 pub(crate) unsafe fn collect_pending(py: &PyToken<'_>, state: &GcRuntimeState) -> CollectStats {
     let Some(generation) = state.take_scheduled_generation() else {
-        return CollectStats::completed(0, 0, 0);
+        return CollectStats::completed(GenerationStats::default(), 0);
     };
     unsafe { collect_scheduled_generation(py, state, generation) }
 }
@@ -4553,15 +4696,17 @@ mod tests {
             ));
             assert!(state.enabled());
             // `gc.get_threshold()` of each managed CPython interpreter.
-            for (minor, thresholds, tracks_empty_dicts) in [
-                (12, [700, 10, 10], false),
-                (13, [2000, 10, 10], false),
-                (14, [2000, 10, 10], true),
-                (15, [2000, 10, 10], true),
+            // `gc.get_stats()` keys: `candidates` and `duration` from 3.15.
+            for (minor, thresholds, tracks_empty_dicts, reports_cost) in [
+                (12, [700, 10, 10], false, false),
+                (13, [2000, 10, 10], false, false),
+                (14, [2000, 10, 10], true, false),
+                (15, [2000, 10, 10], true, true),
             ] {
                 state.adopt_target(minor);
                 assert_eq!(state.thresholds(), thresholds, "3.{minor}");
                 assert_eq!(state.tracks_empty_dicts(), tracks_empty_dicts, "3.{minor}");
+                assert_eq!(state.reports_collection_cost(), reports_cost, "3.{minor}");
             }
             // Thresholds a host chose before the target commit stay.
             state.set_thresholds([5, 6, 7]);
@@ -4582,9 +4727,16 @@ mod tests {
             state.on_allocation();
             assert_eq!(state.take_scheduled_generation(), Some(0));
             state.begin_collection(0);
-            state.finish_collection(0, 3, 0, 3);
+            let collection = GenerationStats {
+                collections: 1,
+                collected: 2,
+                uncollectable: 0,
+                candidates: 3,
+                duration_ns: 40,
+            };
+            state.finish_collection(0, collection, 1);
             assert_eq!(state.counts(), [0, 1, 0]);
-            assert_eq!(state.generation_stats()[0].collections, 1);
+            assert_eq!(state.generation_stats()[0], collection);
 
             state.set_enabled(false);
             for _ in 0..8 {
@@ -4619,7 +4771,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let promotion = unsafe { collect_generation(_py, 0) };
             assert_eq!(promotion.status, GcCollectStatus::Completed);
-            assert_eq!(promotion.scanned, 512);
+            assert_eq!(promotion.candidates(), 512);
             assert_eq!(promotion.survivors, 512);
 
             let young = (0..16)
@@ -4631,9 +4783,9 @@ mod tests {
                 .collect::<Vec<_>>();
             let young_only = unsafe { collect_generation(_py, 0) };
             assert_eq!(young_only.status, GcCollectStatus::Completed);
-            assert_eq!(young_only.scanned, 16);
+            assert_eq!(young_only.candidates(), 16);
             assert_eq!(young_only.survivors, 16);
-            assert_eq!(promotion.scanned / young_only.scanned, 32);
+            assert_eq!(promotion.candidates() / young_only.candidates(), 32);
 
             for bits in young.into_iter().chain(long_lived) {
                 dec_ref_bits(_py, bits);
@@ -4665,7 +4817,7 @@ mod tests {
 
             let outcome = unsafe { collect_pending(_py, state) };
             assert_eq!(outcome.status, GcCollectStatus::Completed);
-            assert_eq!(outcome.scanned, 3);
+            assert_eq!(outcome.candidates(), 3);
             assert_eq!(outcome.survivors, 3);
             assert_eq!(state.counts(), [0, 1, 0]);
             assert_eq!(
@@ -4689,7 +4841,7 @@ mod tests {
             const ROUNDS: usize = 31;
             let state = &crate::runtime_state(_py).gc;
             state.set_enabled(false);
-            let baseline = unsafe { collect_cycles(_py) }.scanned;
+            let baseline = unsafe { collect_cycles(_py) }.candidates();
             let roots = (0..LONG_LIVED)
                 .map(|_| {
                     let ptr = alloc_list(_py, &[]);
@@ -4697,7 +4849,7 @@ mod tests {
                     MoltObject::from_ptr(ptr).bits()
                 })
                 .collect::<Vec<_>>();
-            let full_scan = unsafe { collect_cycles(_py) }.scanned;
+            let full_scan = unsafe { collect_cycles(_py) }.candidates();
             assert!(
                 (baseline + LONG_LIVED).abs_diff(full_scan) <= baseline,
                 "long-lived population did not enter the full-generation snapshot: baseline={baseline} full={full_scan}"
@@ -4715,7 +4867,7 @@ mod tests {
                 let started = Instant::now();
                 let outcome = unsafe { collect_generation(_py, 0) };
                 young_ns.push(started.elapsed().as_nanos() as u64);
-                assert_eq!(outcome.scanned, YOUNG);
+                assert_eq!(outcome.candidates(), YOUNG);
                 for bits in young {
                     dec_ref_bits(_py, bits);
                 }
@@ -4725,7 +4877,7 @@ mod tests {
                 let started = Instant::now();
                 let outcome = unsafe { collect_cycles(_py) };
                 full_ns.push(started.elapsed().as_nanos() as u64);
-                assert_eq!(outcome.scanned, full_scan);
+                assert_eq!(outcome.candidates(), full_scan);
             }
             young_ns.sort_unstable();
             full_ns.sort_unstable();

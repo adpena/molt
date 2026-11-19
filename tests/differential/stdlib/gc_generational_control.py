@@ -17,14 +17,29 @@ try:
     )
     stats = gc.get_stats()
     print("stats_generations", len(stats))
-    print(
-        "stats_shape",
-        all(
-            sorted(generation) == ["collected", "collections", "uncollectable"]
-            and all(isinstance(value, int) for value in generation.values())
-            for generation in stats
-        ),
-    )
+    # 3.15 adds an int `candidates` and a float `duration` (seconds).
+    for generation in stats:
+        print(
+            "stats_shape",
+            [(key, type(value).__name__) for key, value in generation.items()],
+        )
+    # A young collection considers every young container: the 64 lists
+    # below, so its `candidates` grow by at least 64; its duration is a
+    # nonnegative float.
+    young = [[] for _ in range(64)]
+    before = gc.get_stats()[0]
+    gc.collect(0)
+    after = gc.get_stats()[0]
+    print("stats_collections", after["collections"] - before["collections"])
+    if "candidates" in after:
+        print(
+            "stats_cost",
+            after["candidates"] - before["candidates"] >= 64,
+            after["duration"] >= before["duration"] >= 0.0,
+        )
+    else:
+        print("stats_cost", "unreported")
+    del young
     for generation in (-1, 3):
         try:
             gc.collect(generation)
