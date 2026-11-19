@@ -512,7 +512,7 @@ fn heap_literals_load_one_cell_and_fill_it_cold() {
 }
 
 #[test]
-fn repeated_attribute_name_literals_use_owned_string_materialization() {
+fn repeated_attribute_names_share_one_immortal_literal_cell() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let func = TirFunction::new(
@@ -532,7 +532,7 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
     let mut results = Vec::new();
     for _ in 0..2 {
         let mut b = lowering.codegen();
-        results.push(crate::codegen_ssa::object::with_owned_name(
+        results.push(crate::codegen_ssa::object::with_name(
             &mut b,
             "same_name",
             |b, name| {
@@ -552,22 +552,29 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
         .verify()
         .expect("name literal module verifies");
     let ir = llvm_fn.print_to_string().to_string();
+    // Each evaluation site loads the one cell and fills it only when zero;
+    // nothing builds a new object or releases the immortal name.
+    let cell = molt_ir::code_slots::literal_cell_symbol(
+        molt_codegen_abi::literal_cell::LiteralKind::Str as u64,
+        b"same_name",
+    );
     assert_eq!(
-        ir.matches_execution("@molt_string_from_bytes(").count(),
+        ir.matches_execution(&format!("load i64, ptr @{cell}"))
+            .count(),
         2,
         "{ir}"
     );
     assert_eq!(
-        ir.matches_execution("@__molt_inline_release(").count(),
+        ir.matches_execution("@molt_literal_cell_fill(").count(),
         2,
         "{ir}"
     );
-    assert_eq!(ir.matches_execution("icmp eq i32").count(), 2, "{ir}");
-    assert!(!ir.contains_execution("@molt_bytes_from_bytes("), "{ir}");
+    assert!(!ir.contains_execution("@molt_string_from_bytes("), "{ir}");
+    assert!(!ir.contains_execution("@__molt_inline_release("), "{ir}");
 }
 
 #[test]
-fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
+fn synthesized_name_consumers_run_only_with_a_filled_name_cell() {
     fn block_text(block: BasicBlock<'_>) -> String {
         let mut text = String::new();
         let mut instruction = block.get_first_instruction();
@@ -657,25 +664,39 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
                 .find(|block| block.get_name().to_bytes() == entry_name.as_bytes())
                 .unwrap(),
         );
-        let success = block_text(
-            llvm_fn
-                .get_basic_blocks()
-                .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_success")
-                .unwrap(),
+        let block = |name: &[u8]| {
+            block_text(
+                llvm_fn
+                    .get_basic_blocks()
+                    .into_iter()
+                    .find(|block| block.get_name().to_bytes() == name)
+                    .unwrap_or_else(|| panic!("{:?} block: {ir}", String::from_utf8_lossy(name))),
+            )
+        };
+        let fill = block(b"name_fill");
+        let success = block(b"name_ready");
+        let merge = block(b"name_merge");
+        let cell = molt_ir::code_slots::literal_cell_symbol(
+            molt_codegen_abi::literal_cell::LiteralKind::Str as u64,
+            b"same_name",
         );
-        let merge = block_text(
-            llvm_fn
-                .get_basic_blocks()
-                .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_merge")
-                .unwrap(),
-        );
-        assert!(source.contains_execution("icmp eq i32 %sfb, 0"), "{ir}");
         assert!(
-            source.contains_execution(
-                "br i1 %owned_name_ok, label %owned_name_success, label %owned_name_merge"
-            ),
+            source.contains_execution(&format!("load i64, ptr @{cell}")),
+            "{ir}"
+        );
+        assert!(
+            source.contains_execution("label %name_fill, label %name_ready"),
+            "{ir}"
+        );
+        // Only the cold fill calls the runtime for the name; a failed fill
+        // goes straight to the merge, skipping the consumer.
+        assert_eq!(
+            fill.matches_execution("@molt_literal_cell_fill(").count(),
+            1,
+            "{ir}"
+        );
+        assert!(
+            fill.contains_execution("label %name_merge, label %name_ready"),
             "{ir}"
         );
         assert!(!source.contains_execution(&format!("@{runtime}(")), "{ir}");
@@ -688,21 +709,14 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             1,
             "{ir}"
         );
-        assert_eq!(
-            ir.matches_execution("@__molt_inline_release(i64 %str_bits, i64 %rc_admission)")
-                .count(),
-            1,
-            "{ir}"
-        );
         assert!(
-            success.find_execution(&format!("@{runtime}(")).unwrap()
-                < success.find_execution("@__molt_inline_release(").unwrap(),
-            "{ir}"
+            !success.contains_execution("@__molt_inline_release("),
+            "the immortal name is never released: {ir}"
         );
         assert!(!success.contains_execution("ret "), "{ir}");
         assert!(
             merge.contains_execution(&format!(
-                "[ {}, %{entry_name} ]",
+                "[ {}, %name_fill ]",
                 nanbox::QNAN | nanbox::TAG_NONE
             )),
             "{ir}"

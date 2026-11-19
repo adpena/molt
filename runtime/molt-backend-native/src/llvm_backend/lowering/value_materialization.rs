@@ -17,14 +17,26 @@ pub(super) type BorrowedOperands<'ctx> = custody::BorrowedOperands<
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
     /// exists, and every return (including suspension) closes only its own.
-    pub(super) fn initialize_owned_execution_frame(&mut self) {
+    pub(super) fn initialize_owned_execution_frame(
+        &mut self,
+        layout: crate::codegen_ssa::frame::FrameLayout,
+    ) {
+        use crate::codegen_ssa::frame::{FrameEntry, RecordPlacement};
         assert!(self.owned_frame_entered.is_none());
-        let mut codegen = self.codegen();
         self.owned_frame_entered = crate::codegen_ssa::frame::initialize_owned_execution_frame(
-            &mut codegen,
+            &mut self.codegen(),
             self.func.execution_context,
-            || self.frame_entry_kind(),
+            || layout.entry.kind(),
         );
+        self.frame_homes = match (layout.homes, layout.entry) {
+            (None, _) => None,
+            (Some(_), FrameEntry::Absent) => {
+                Some(self.build_entry_i64_alloca("borrowed_frame_homes"))
+            }
+            (Some(_), _) => self.owned_frame_entered.map(|frame| frame.slot),
+        };
+        let homes = self.frame_homes;
+        self.codegen().set_frame_homes(homes);
     }
 
     pub(super) fn program_slot_id(
@@ -37,15 +49,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             _ => panic!("admitted program-slot owner"),
         };
         self.load_program_slot(kind, owner)
-    }
-
-    /// The program slot of the class statement a layout op names (HF-220).
-    pub(super) fn class_definition_slot(&self, op: &TirOp) -> inkwell::values::IntValue<'ctx> {
-        let owner = match op.attrs.get("class_definition") {
-            Some(AttrValue::Str(owner)) => owner.as_str(),
-            _ => panic!("admitted class statement symbol"),
-        };
-        self.load_program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner)
     }
 
     fn load_program_slot(
@@ -129,25 +132,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let (mut cx, mut b) = self.walker();
         cx.positional_runtime_call(&mut b, op, callee, custody, label, call_name);
-    }
-
-    /// Return from this function with no value of its own: void, or None in
-    /// its linkage return carrier. The return of a body without a value, and
-    /// the early exit whose caller reads the pending exception instead.
-    pub(super) fn build_empty_return(&mut self) {
-        self.emit_return(None);
-    }
-
-    /// Transfer one source reference into a storage home, without retaining an
-    /// already-owned object. A raw scalar's materialization becomes the home's
-    /// owner. Calls must instead use operation-local call custody, since their
-    /// repeated positions and fallible preparation require shared identity and
-    /// atomic transfer. A failed mint yields None with MemoryError pending.
-    pub(super) fn adopted_storage_word(
-        &mut self,
-        operand: ValueId,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.materialize_dynbox_bits(operand)
     }
 
     // ── Representation authority ──
@@ -249,25 +233,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let (mut cx, mut b) = self.walker();
         lower(&mut cx, &mut b);
-    }
-
-    /// `IncRef`/`DecRef` (`FunctionCx::refcount_op`).
-    pub(super) fn emit_refcount(
-        &mut self,
-        op: &TirOp,
-        operation: molt_codegen_abi::inline_refcount::RefcountOperation,
-    ) {
-        let (mut cx, mut b) = self.walker();
-        cx.refcount_op(&mut b, op, operation);
-    }
-
-    /// Representation boxing of a lowered value (`Operands::boxed_word`). A
-    /// full-width integer boxed here may mint a heap owner that nobody
-    /// tracks, so this stays private to value materialization: borrowing
-    /// consumers go through custody and storing or returning consumers
-    /// through `owned_operand_word`.
-    fn materialize_dynbox_bits(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
-        self.operands().boxed_word(&mut self.codegen(), operand)
     }
 
     /// One static entry-block word for an operation's out-parameter or owner

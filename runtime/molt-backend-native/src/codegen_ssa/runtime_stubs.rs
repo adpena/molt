@@ -75,6 +75,9 @@ fn refcount(operation: RefcountOperation, word: u64) {
 extern "C" fn exception_pending(_: u64) -> u64 {
     runtime(RuntimeFn::ExceptionPending, &[])
 }
+extern "C" fn frame_home_load(_: u64, home: u64) -> u64 {
+    runtime(RuntimeFn::FrameHomeLoad, &[home])
+}
 extern "C" fn int_from_i64(_: u64, raw: u64) -> u64 {
     runtime(RuntimeFn::IntFromI64, &[raw])
 }
@@ -107,6 +110,18 @@ extern "C" fn bigint_from_bytes(_: u64, data: u64, len: u64) -> u64 {
 }
 extern "C" fn literal_cell_fill(_: u64, cell: u64, data: u64, kind: u64, len: u64) -> u64 {
     runtime(RuntimeFn::LiteralCellFill, &[cell, data, kind, len])
+}
+extern "C" fn exception_last(_: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionLast, &[])
+}
+extern "C" fn ellipsis(_: u64) -> u64 {
+    runtime(RuntimeFn::Ellipsis, &[])
+}
+extern "C" fn generator_send(_: u64, a: u64, b: u64) -> u64 {
+    runtime(RuntimeFn::GeneratorSend, &[a, b])
+}
+extern "C" fn type_of(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::TypeOf, &[a])
 }
 extern "C" fn two(function: RuntimeFn, a: u64, b: u64) -> u64 {
     runtime(function, &[a, b])
@@ -351,6 +366,13 @@ extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
 extern "C" fn object_new_bound(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::ObjectNewBound, &[a])
 }
+extern "C" fn module_get_attr(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::ModuleGetAttr, a, b)
+}
+// A closure store's miss; inline words never reach it.
+extern "C" fn closure_store(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::ClosureStore, &[a, b, c])
+}
 extern "C" fn set_new(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::SetNew, &[a])
 }
@@ -441,6 +463,11 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         .find(|function| function.linker_symbol() == name)?;
     Some(match function {
         RuntimeFn::ExceptionPending => exception_pending as *const u8,
+        RuntimeFn::ExceptionLast => exception_last as *const u8,
+        RuntimeFn::Ellipsis => ellipsis as *const u8,
+        RuntimeFn::GeneratorSend => generator_send as *const u8,
+        RuntimeFn::TypeOf => type_of as *const u8,
+        RuntimeFn::FrameHomeLoad => frame_home_load as *const u8,
         RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
         RuntimeFn::IntAsI64 => int_as_i64 as *const u8,
         RuntimeFn::IsTruthy => is_truthy as *const u8,
@@ -500,6 +527,8 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::IterNext => iter_next as *const u8,
         RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
         RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
+        RuntimeFn::ModuleGetAttr => module_get_attr as *const u8,
+        RuntimeFn::ClosureStore => closure_store as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,
         RuntimeFn::FrozensetNew => frozenset_new as *const u8,
         RuntimeFn::SetAdd => set_add as *const u8,

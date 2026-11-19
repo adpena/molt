@@ -368,6 +368,27 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             .atomic_load(types::I32, MemFlagsData::trusted(), address);
         self.ins().icmp_imm_s(IntCC::NotEqual, word, 0)
     }
+    fn recursion_charge(
+        &mut self,
+        charge: crate::codegen_ssa::RecursionCharge,
+        thread: Value,
+    ) -> Option<Value> {
+        use crate::codegen_ssa::RecursionCharge;
+        use molt_codegen_abi::thread_record::{
+            generate_recursion_admits, generate_recursion_count, generate_recursion_release,
+        };
+        match charge {
+            RecursionCharge::Admits => Some(generate_recursion_admits(&mut self.words, thread)),
+            RecursionCharge::Count => {
+                generate_recursion_count(&mut self.words, thread);
+                None
+            }
+            RecursionCharge::Release => {
+                generate_recursion_release(&mut self.words, thread);
+                None
+            }
+        }
+    }
     fn thread_record_word(&mut self) -> Value {
         self.imports.thread_record(self.words.builder)
     }
@@ -616,6 +637,24 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
+            (SiteBody::ClosureLoad, &[owner, offset, _]) => {
+                emit_closure_load(self.words.builder, &mut sealed, sites, owner, offset)
+            }
+            (SiteBody::ClosureStore, &[owner, offset, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ClosureStore);
+                emit_closure_store(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    owner,
+                    offset,
+                    value,
+                    |builder| {
+                        builder.ins().call(cold, &[owner, offset, value]);
+                    },
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
             (SiteBody::ListItemSet, &[list, index, value, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::SetitemMethod);
                 let none = self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);
@@ -741,6 +780,15 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn unreachable(&mut self) {
         self.ins().trap(UNREACHABLE_TRAP);
+    }
+}
+
+impl crate::codegen_ssa::frame::RecordPlacement for NativeCodegen<'_, '_> {
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.imports.frame_homes
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.imports.frame_homes = slot;
     }
 }
 
@@ -1005,6 +1053,10 @@ pub(crate) mod machine {
         pub(crate) hint: u8,
         pub(crate) raised: bool,
         pub(crate) work: u32,
+        pub(crate) frame_top: u64,
+        /// The thread's recursion depth and the runtime's recursion limit.
+        pub(crate) depth: u64,
+        pub(crate) limit: u64,
     }
 
     /// [`run_function`] in the thread state `state`.
@@ -1060,7 +1112,12 @@ pub(crate) mod machine {
         let code = module.get_finalized_function(id);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        record[molt_codegen_abi::THREAD_RECORD_FRAME_TOP_OFFSET as usize / 8] = state.frame_top;
         let work = Box::new(state.work);
+        let limit = Box::new(state.limit);
+        record[molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8] =
+            std::ptr::from_ref(&*limit) as u64;
+        record[molt_codegen_abi::THREAD_RECORD_RECURSION_DEPTH_OFFSET as usize / 8] = state.depth;
         record[molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize / 8] =
             std::ptr::from_ref(&*work) as u64;
         let mut bytes = record[0].to_ne_bytes();

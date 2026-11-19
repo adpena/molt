@@ -15,7 +15,7 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use super::builder::CodegenBuilder;
-use super::builder::IntComparison;
+use super::builder::{IntComparison, RecursionCharge, SiteBody};
 use super::control::{self, Edges};
 use super::custody::{CallTarget, RuntimeArg};
 use super::function::{FunctionCx, ResultCustody};
@@ -51,6 +51,37 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            // Module and import operations: positional borrowed runtime calls
+            // with canonical rows.
+            OpCode::ImportFrom | OpCode::ModuleGetAttr => {
+                self.module_call(b, op, RuntimeFn::ModuleGetAttr, 2)
+            }
+            OpCode::ModuleCacheGet => self.module_call(b, op, RuntimeFn::ModuleCacheGet, 1),
+            OpCode::ModuleCacheSet => self.module_call(b, op, RuntimeFn::ModuleCacheSet, 2),
+            OpCode::ModuleCacheDel => self.module_call(b, op, RuntimeFn::ModuleCacheDel, 1),
+            OpCode::ModuleImportFrom => self.module_call(b, op, RuntimeFn::ModuleImportFrom, 2),
+            OpCode::ModuleGetGlobal => self.module_call(b, op, RuntimeFn::ModuleGetGlobal, 2),
+            OpCode::ModuleGetName => self.module_call(b, op, RuntimeFn::ModuleGetName, 2),
+            OpCode::ModuleSetAttr => self.module_call(b, op, RuntimeFn::ModuleSetAttr, 3),
+            OpCode::ModuleDelGlobal => self.module_call(b, op, RuntimeFn::ModuleDelGlobal, 2),
+            OpCode::ModuleDelGlobalIfPresent => {
+                self.module_call(b, op, RuntimeFn::ModuleDelGlobalIfPresent, 2)
+            }
+            OpCode::ClosureLoad | OpCode::ClosureStore => self.closure_slot_op(b, op),
+            // A direct call's inline recursion charge.
+            OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
+                let thread = b.thread_record_word();
+                let charge = match op.opcode {
+                    OpCode::RecursionAdmits => RecursionCharge::Admits,
+                    OpCode::RecursionCount => RecursionCharge::Count,
+                    OpCode::RecursionRelease => RecursionCharge::Release,
+                    other => unreachable!("{other:?} is not a recursion charge op"),
+                };
+                if let Some(admitted) = b.recursion_charge(charge, thread) {
+                    let admitted = b.bit_value(admitted);
+                    self.bind(op.results[0], admitted, HeldCarrier::RawBool);
+                }
+            }
             OpCode::UnpackSequence => assert!(
                 self.unpack_sequence_op(b, op),
                 "verified UnpackSequence must lower through the canonical runtime ABI"
@@ -202,6 +233,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
+            // A preserved kind a walker family owns; any other copy is the
+            // backend's until its family moves.
+            OpCode::Copy => return self.preserved_op(b, op),
             OpCode::NativeSymbolAddr => self.native_symbol_addr_op(b, op),
             OpCode::CallNative => self.call_native_op(b, op),
             OpCode::WarnStderr => self.warn_stderr_op(b, op),
@@ -220,26 +254,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-            | OpCode::Copy
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
-            | OpCode::ImportFrom
             | OpCode::IsPending
-            | OpCode::ModuleCacheDel
-            | OpCode::ModuleCacheGet
-            | OpCode::ModuleCacheSet
-            | OpCode::ModuleDelGlobal
-            | OpCode::ModuleDelGlobalIfPresent
-            | OpCode::ModuleGetAttr
-            | OpCode::ModuleGetGlobal
-            | OpCode::ModuleGetName
-            | OpCode::ModuleImportFrom
-            | OpCode::ModuleSetAttr
-            | OpCode::RecursionAdmits
-            | OpCode::RecursionCount
-            | OpCode::RecursionRelease
             | OpCode::ScfFor
             | OpCode::ScfIf
             | OpCode::ScfWhile
@@ -338,6 +355,73 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 }
 
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// A module or import operation: a positional boxed runtime call of
+    /// `function` over the first `arity` operands, each borrowed through one
+    /// custody; the owned result is bound or released.
+    fn module_call(&mut self, b: &mut B, op: &TirOp, function: RuntimeFn, arity: usize) {
+        let callee = b.runtime_callee(function);
+        let args: Vec<RuntimeArg<B::Value>> = op.operands[..arity]
+            .iter()
+            .map(|&operand| RuntimeArg::Operand(operand))
+            .collect();
+        self.runtime_call(
+            b,
+            op,
+            CallTarget::Callee(callee),
+            &args,
+            ResultCustody::canonical(function, arity),
+            "module_call",
+            function.symbol(),
+        );
+    }
+
+    /// `ClosureLoad` and `ClosureStore`: the shared closure slot bodies
+    /// address the owner's payload directly, so the owner's first word is an
+    /// object address (a boxed pointer unboxed; a poll frame's raw `self`
+    /// unchanged), and the slot's byte offset is the op's `value`. A load is
+    /// returned retained; a store retains the borrowed value and answers
+    /// None.
+    fn closure_slot_op(&mut self, b: &mut B, op: &TirOp) {
+        let owner = self.operands().resolve(b, op.operands[0]);
+        let owner = super::scalar::word_of(b, owner);
+        let owner = b.and(owner, molt_codegen_abi::POINTER_MASK);
+        let offset = match op.attrs.get("value") {
+            Some(&AttrValue::Int(offset)) => offset as u64,
+            _ => 0,
+        };
+        let offset = b.constant(offset);
+        let admission = b.refcount_admission();
+        if op.opcode == OpCode::ClosureLoad {
+            let args = [
+                b.word_value(owner),
+                b.word_value(offset),
+                b.word_value(admission),
+            ];
+            let loaded = b.site(SiteBody::ClosureLoad, &args);
+            b.set_name(loaded, "closure_load");
+            self.bind_owned(b, op, loaded);
+        } else {
+            let words = [owner, offset].map(|word| RuntimeArg::Word(b.word_value(word)));
+            let admission = RuntimeArg::Word(b.word_value(admission));
+            self.runtime_call(
+                b,
+                op,
+                CallTarget::Site(SiteBody::ClosureStore),
+                &[
+                    words[0],
+                    words[1],
+                    RuntimeArg::Operand(op.operands[1]),
+                    admission,
+                ],
+                ResultCustody::Unowned,
+                "closure_store",
+                "closure_store",
+            );
+        }
+    }
+}
+
 /// What a backend lends the walk for one function.
 #[cfg_attr(
     not(test),
@@ -349,8 +433,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
-    /// Link shape of this function's trace entry. A runtime-linked entry has no shape.
-    pub(crate) frame_entry_kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     /// The function's physical parameters after the execution context, in
     /// its linkage row's order.
     pub(crate) entry: &'a [B::Value],
@@ -375,14 +457,13 @@ pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
 /// are walked in reverse postorder; each takes its parameters before any
 /// branch to it is built. An op the walker does not own refuses the
 /// function with a diagnostic naming its opcode, as does any other refusal.
-pub(crate) fn lower_function<B: CodegenBuilder>(
+pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     b: &mut B,
     input: FunctionInput<'_, B>,
 ) -> Result<(), Vec<String>> {
     let FunctionInput {
         func,
         plan,
-        frame_entry_kind,
         entry,
         linkage,
         functions,
@@ -401,6 +482,10 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
             .collect();
         return refuse(b, diagnostics);
     }
+    let layout = match super::frame::FrameLayout::for_function(func) {
+        Ok(layout) => layout,
+        Err(message) => return refuse(b, vec![message]),
+    };
     if !func.blocks.contains_key(&func.entry_block) {
         let message = format!(
             "{}: entry block {:?} is missing from TIR block map",
@@ -466,10 +551,32 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         entry_args.push(value);
     }
     let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
-        frame_entry_kind
+        layout.entry.kind()
     });
-    b.jump(blocks[&func.entry_block], &entry_args);
     let call_sites = Cell::new(0);
+    let homes = match (layout.homes, layout.entry) {
+        (None, _) => None,
+        (Some(_), super::frame::FrameEntry::Absent) => {
+            let slot = b.entry_slot("borrowed_frame_homes");
+            let mut cx = FunctionCx {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime,
+                linkage,
+                functions,
+                call_sites: &call_sites,
+            };
+            super::frame::lend_homes(b, slot, |b| {
+                returns::emit_return(&mut cx, b, own, None, frame.as_ref())
+            });
+            Some(slot)
+        }
+        (Some(_), _) => frame.as_ref().map(|owned| owned.slot),
+    };
+    b.set_frame_homes(homes);
+    b.jump(blocks[&func.entry_block], &entry_args);
     let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
     for &id in &rpo {
         b.switch_to_block(blocks[&id]);
@@ -490,7 +597,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
             call_sites: &call_sites,
         };
         for op in &block.ops {
-            if !cx.walker_owned_op(b, &at, op) {
+            if !cx.frame_home_op(b, op) && !cx.walker_owned_op(b, &at, op) {
                 cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
             }
         }
@@ -605,7 +712,6 @@ mod tests {
                 FunctionInput {
                     func,
                     plan: &plan,
-                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -742,7 +848,6 @@ mod tests {
                 FunctionInput {
                     func: &func,
                     plan: &plan,
-                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -760,6 +865,48 @@ mod tests {
     }
 
     const NONE: u64 = (0x7ff8 << 48) | (3 << 48);
+
+    #[test]
+    fn split_frame_publishes_location_and_returns_the_borrowed_binding() {
+        let mut func = TirFunction::new(
+            "chunk".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        func.execution_context = molt_ir::ir::ExecutionContextPolicy::Inherited;
+        let result = func.fresh_value();
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block
+            .ops
+            .push(op(OpCode::FrameSetLocation, &[], &[], Some(13)));
+        let mut load = op(OpCode::Copy, &[], &[result.0], Some(0));
+        load.origin = Some(molt_ir::OpKind::FrameHomeLoad);
+        block.ops.push(load);
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let mut record = [57u64, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT];
+        let run = walk_in(
+            &func,
+            &[],
+            ThreadState {
+                frame_top: record[1..].as_mut_ptr() as u64,
+                ..Default::default()
+            },
+        );
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert_eq!(
+            record,
+            [13, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT]
+        );
+        assert!(run.runtime_calls.is_empty());
+        let missing = walk(&func, &[]);
+        assert_eq!(missing.fact, Ok(()));
+        assert_eq!(missing.results, [Value::Word(NONE)]);
+        assert!(missing.runtime_calls.is_empty());
+    }
 
     /// The boxed bool `bit`.
     fn boxed_bool(bit: bool) -> u64 {
@@ -799,6 +946,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -818,6 +966,7 @@ mod tests {
                 hint: 0,
                 raised: false,
                 work,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -872,6 +1021,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[OBJECT], state);
             assert_eq!(run.fact, Ok(()));
@@ -1031,5 +1181,127 @@ mod tests {
             run.results,
             [Value::Word(object(RuntimeFn::ObjectNewBound, &[OBJECT]))]
         );
+    }
+
+    /// `f()` that applies the recursion charges `charges`, then answers
+    /// whether the limit admits one more frame.
+    fn charged(charges: &[OpCode]) -> TirFunction {
+        let mut func = TirFunction::new(
+            "walk_recursion".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let admitted = func.fresh_value();
+        func.value_types.insert(admitted, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for &charge in charges {
+            entry.ops.push(op(charge, &[], &[], None));
+        }
+        entry
+            .ops
+            .push(op(OpCode::RecursionAdmits, &[], &[admitted.0], None));
+        entry.terminator = Terminator::Return {
+            values: vec![admitted],
+        };
+        func
+    }
+
+    #[test]
+    fn the_recursion_charge_counts_against_the_runtimes_limit() {
+        let state = |depth| ThreadState {
+            depth,
+            limit: 100,
+            ..ThreadState::default()
+        };
+        // Below the limit admits; at it refuses.
+        for (depth, admits) in [(0, true), (99, true), (100, false)] {
+            let run = walk_in(&charged(&[]), &[], state(depth));
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(
+                run.results,
+                [Value::Word(boxed_bool(admits))],
+                "depth {depth}"
+            );
+        }
+        // A counted frame reaches the limit; a released one leaves it.
+        let run = walk_in(&charged(&[OpCode::RecursionCount]), &[], state(99));
+        assert_eq!(run.results, [Value::Word(boxed_bool(false))]);
+        let run = walk_in(&charged(&[OpCode::RecursionRelease]), &[], state(100));
+        assert_eq!(run.results, [Value::Word(boxed_bool(true))]);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_module_attribute_read_borrows_both_operands() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        const NAME: u64 = (0x7ff8 << 48) | (4 << 48) | 0x3000;
+        let mut func = TirFunction::new(
+            "walk_module_attr".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let attr = func.fresh_value();
+        func.value_types.insert(attr, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(op(OpCode::ModuleGetAttr, &[0, 1], &[attr.0], None));
+        entry.terminator = Terminator::Return { values: vec![attr] };
+        let run = walk(&func, &[OBJECT, NAME]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(
+            run.results,
+            [Value::Word(object(
+                RuntimeFn::ModuleGetAttr,
+                &[OBJECT, NAME]
+            ))]
+        );
+        assert!(run.refcounts.is_empty(), "both operands are borrowed");
+    }
+
+    #[test]
+    fn a_closure_slot_store_is_read_back_from_the_owners_payload() {
+        // A payload of four words; the owner is its boxed address.
+        let mut payload = vec![0u64; 4];
+        payload[1] = (0x7ff8 << 48) | (1 << 48) | 5;
+        let owner = (0x7ff8 << 48) | (4 << 48) | (payload.as_mut_ptr() as u64);
+        let stored = (0x7ff8 << 48) | (1 << 48) | 9;
+        // f(owner, value): read slot 1, store `value` in slot 2, read it back.
+        let mut func = TirFunction::new(
+            "walk_closure".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let first = func.fresh_value();
+        let stored_none = func.fresh_value();
+        let second = func.fresh_value();
+        for id in [first, stored_none, second] {
+            func.value_types.insert(id, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(op(OpCode::ClosureLoad, &[0], &[first.0], Some(8)));
+        entry.ops.push(op(
+            OpCode::ClosureStore,
+            &[0, 1],
+            &[stored_none.0],
+            Some(16),
+        ));
+        entry
+            .ops
+            .push(op(OpCode::ClosureLoad, &[0], &[second.0], Some(16)));
+        entry.terminator = Terminator::Return {
+            values: vec![second],
+        };
+        let run = walk(&func, &[owner, stored]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(stored)]);
+        assert_eq!(payload[2], stored, "the store reached the payload");
+        assert_eq!(payload[1], (0x7ff8 << 48) | (1 << 48) | 5);
+        assert!(run.runtime_calls.is_empty(), "inline words never miss");
     }
 }
