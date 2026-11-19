@@ -119,34 +119,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // operand. Ownership of the previous slot occupant is modeled by the
             // drop fact plane (DecRef / explicit consumed operands), not by LLVM
             // lowering.
-            OpCode::DeleteVar => {
-                if op.results.is_empty() {
-                    // Side-effect-only legacy shapes have no SSA value to bind.
-                } else if let Some(&missing) = op.operands.first() {
-                    let val = self.resolve(missing);
-                    let ty = self.repr_ty(missing);
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
-                    }
-                } else {
-                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                    let none_val: BasicValueEnum<'ctx> = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(none_bits, false)
-                        .into();
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, none_val);
-                        self.values.set_repr(
-                            result_id,
-                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                        );
-                    }
-                }
-            }
+            OpCode::DeleteVar => self.walker_op(|cx, b| cx.delete_var_op(b, op)),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
@@ -166,143 +139,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     return;
                 }
-                // TERMINAL FAIL-LOUD STATE (preserved-op passthrough class),
-                // tied to the `CopyLowering` single source of truth.
-                //
-                // Reaching here means this `OpCode::Copy` carries an
-                // `origin` that `lower_preserved_simpleir_op` did NOT
-                // handle — neither a dedicated arm nor the generic
-                // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
-                // claimed it. EVERY such op is a SimpleIR op the native/WASM
-                // lanes lower with dedicated semantics (a value-producing runtime
-                // call, an RC adjustment, a type guard, a generator throw, or a
-                // registry-owned identity fact). Passing operand 0 through by
-                // default -- the historical behavior -- silently miscompiled
-                // non-identity semantics: `abs(x)` returned `x`,
-                // `...`/`NotImplemented` became `None`, `raise ... from ...`'s
-                // `__cause__` link, `gen.throw`, special-attr loads, the
-                // `borrow`/`release` refcount ops, the `guard_tag` type check, and
-                // every fresh-value conversion (`int(x)`, `s[-5:]`, `dict.keys()`,
-                // ...) were all DROPPED or returned operand 0. The few preserved
-                // repr-identity ops whose operand-0 passthrough is correct are
-                // claimed explicitly in `lower_preserved_simpleir_op`; any
-                // preserved op that reaches this terminal state is therefore not a
-                // sound default passthrough. Fail the build loudly here.
-                //
-                // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
-                // forbids). The drop-insertion pass releases exactly the `Copy`s
-                // whose `origin` is a `CopyLowering::OwnedValue`
-                // (`alias_analysis::copy_kind_mints_owned_value`). If such a
-                // fresh-owned producer reached codegen as a silent operand-0
-                // passthrough, the result would (a) be the wrong value AND (b)
-                // alias operand 0 — which the drop pass then DOUBLE-FREES. The gate
-                // therefore consults that classifier on every fatal so the table
-                // and the backend cannot drift: a `OwnedValue` reaching here is the
-                // forbidden drift (a fresh-value op missing its explicit LLVM arm),
-                // and the diagnostic names it as such; any other `origin`
-                // gets the general terminal message with operand/result counts.
-                // Closing a kind = add an arm to `lower_preserved_simpleir_op` (or,
-                // if `molt_<kind>` is a real boxed runtime intrinsic, the generic
-                // fallback already covers it). See the `CopyLowering` docs and
-                // `tests::copy_lowering_classes_are_total_and_disjoint`.
-                if let Some(kind) = original_kind {
-                    if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(
-                        Some(kind),
-                    ) {
-                        // Not a `OwnedValue` (a transparent-alias / inert-marker
-                        // kind whose `molt_<kind>` intrinsic is also absent): the
-                        // partner's general terminal state. Still fail loud — an
-                        // unhandled `origin` is never a sound passthrough.
-                        self.record_fatal(format!(
-                            "unhandled preserved SimpleIR op `{kind}` (operands={}, \
-                             results={}) reached the LLVM `Copy` passthrough — \
-                             lowering it as a copy of operand 0 would silently \
-                             miscompile or drop its side effect; add a \
-                             `lower_preserved_simpleir_op` arm for it (or confirm \
-                             `molt_{kind}` is a boxed runtime intrinsic so the \
-                             generic fallback claims it)",
-                            op.operands.len(),
-                            op.results.len(),
-                        ));
-                    } else {
-                        // A `CopyLowering::OwnedValue` reached the passthrough: the
-                        // exact classifier?backend drift this gate exists to catch.
-                        self.record_fatal(format!(
-                            "fresh-value SimpleIR op `{kind}` (operands={}, \
-                             results={}) reached the LLVM `Copy` passthrough — \
-                             lowering it as a copy of operand 0 would silently \
-                             miscompile AND make the result alias operand 0 (a \
-                             drop-insertion double-free); it is in \
-                             `alias_analysis::copy_kind_mints_owned_value` so it \
-                             MUST have a `lower_preserved_simpleir_op` arm (the \
-                             classifier and the LLVM lowering have drifted)",
-                            op.operands.len(),
-                            op.results.len(),
-                        ));
-                    }
-                    return;
-                }
-
-                // `origin == None`: a genuine SSA value copy
-                // (`copy`/`copy_var`/`load_var`/`store_var`). Operand-0
-                // passthrough is the correct lowering.
-                if op.results.is_empty() {
-                    // No results — nothing to bind; skip.
-                } else if op.operands.is_empty() {
-                    // Unknown op with no operands — produce None for each result.
-                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                    let none_val: BasicValueEnum<'ctx> = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(none_bits, false)
-                        .into();
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, none_val);
-                        self.values.set_repr(
-                            result_id,
-                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                        );
-                    }
-                } else {
-                    // Standard copy: pass through first operand.
-                    let val = self.resolve(op.operands[0]);
-                    let ty = self.repr_ty(op.operands[0]);
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
-                    }
-                }
+                // A preserved op no arm claimed is refused; a genuine SSA copy
+                // passes operand 0 through (`FunctionCx::copy_op`).
+                self.walker_op(|cx, b| cx.copy_op(b, op));
             }
 
-            // -- Allocation --
-            OpCode::Alloc => {
-                let result_id = op.results[0];
-                let size = self.resolve(op.operands[0]);
-                let size_i64 = self.ensure_i64(size);
-                let alloc_fn = self.ensure_runtime_import(RuntimeFn::Alloc);
-                let unpublished = self
-                    .backend
-                    .builder
-                    .build_execution_call(alloc_fn, &[size_i64.into()], "alloc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let publish_fn = self.ensure_runtime_import(RuntimeFn::ObjectPublishInitialized);
-                let result = self
-                    .backend
-                    .builder
-                    .build_execution_call(publish_fn, &[unpublished.into()], "publish_initialized")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.values.set_value(result_id, result);
-                self.values.set_repr(
-                    result_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
+            OpCode::Alloc => self.walker_op(|cx, b| cx.alloc_op(b, op)),
 
             // -- Calls --
             OpCode::CallMethod => self.walker_op(|cx, b| cx.call_method_op(b, op)),
@@ -320,24 +162,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::CallBuiltin => self.walker_op(|cx, b| cx.call_builtin_op(b, op)),
 
             // -- OrdAt: fused ord(container[index]) --
-            OpCode::OrdAt => {
-                if op.operands.len() < 2 {
-                    return;
-                }
-                let ord_at_fn = self.ensure_runtime_import(RuntimeFn::OrdAt);
-                let args = [
-                    RuntimeArg::Operand(op.operands[0]),
-                    RuntimeArg::Operand(op.operands[1]),
-                ];
-                self.emit_borrowed_runtime_call(
-                    op,
-                    ord_at_fn,
-                    &args,
-                    ResultCustody::canonical(RuntimeFn::OrdAt, 2),
-                    "ord_at",
-                    "ord_at",
-                );
-            }
+            OpCode::OrdAt => self.walker_op(|cx, b| cx.ord_at_op(b, op)),
 
             // Raw boxed frame allocation is not implemented. In particular,
             // a naked i64 alloca cannot stand in for a tagged object payload.
@@ -395,32 +220,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::TaskWait => self.emit_task_wait(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
-            OpCode::Raise => {
-                // `molt_raise` borrows the exception object and returns the
-                // immortal None with that exception pending.
-                let raise_fn = self.ensure_runtime_import(RuntimeFn::Raise);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    raise_fn,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Unowned,
-                    "raise",
-                    "raise",
-                );
-            }
+            OpCode::Raise => self.walker_op(|cx, b| cx.raise_op(b, op)),
 
-            // -- WarnStderr: side-effecting diagnostic emit --
-            OpCode::WarnStderr => {
-                let warn_fn = self.ensure_runtime_import(RuntimeFn::WarnStderr);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    warn_fn,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::Void),
-                    "warn_stderr",
-                    "warn_stderr",
-                );
-            }
+            OpCode::WarnStderr => self.walker_op(|cx, b| cx.warn_stderr_op(b, op)),
 
             // -- ExceptionPending: read the runtime exception-pending flag as
             //    an exact i1 boolean (`molt_exception_pending() != 0`). Produced
@@ -470,21 +272,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    its `== 0` compare (baked literal vs live read).  Non-foldable:
             //    it observes mutable runtime state, so the read always survives.
             OpCode::FunctionDefaultsVersion => {
-                let func_id = *op
-                    .operands
-                    .first()
-                    .expect("FunctionDefaultsVersion requires a function operand");
-                let ver_fn = self.ensure_runtime_import(RuntimeFn::FunctionDefaultsVersion);
-                // Returns a NaN-boxed inline int; the consuming `== 0` compare
-                // routes through the boxed-int equality path.
-                self.emit_borrowed_runtime_call(
-                    op,
-                    ver_fn,
-                    &[RuntimeArg::Operand(func_id)],
-                    ResultCustody::canonical(RuntimeFn::FunctionDefaultsVersion, 1),
-                    "function_defaults_version",
-                    "func_defaults_version",
-                );
+                self.walker_op(|cx, b| cx.function_defaults_version_op(b, op))
             }
 
             // -- CheckException: transfer to its explicit exceptional successor --
