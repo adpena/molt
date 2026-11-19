@@ -295,9 +295,18 @@ def native_link_policy_flags(
             return ("/link", *flags)
         return tuple(f"-Wl,{flag}" for flag in flags)
     if target.object_format is NativeObjectFormat.MACHO:
+        from molt.cli.native_launch_abi_generated import (
+            PROGRAM_STACK_MACHO_MAIN_BYTES,
+        )
+
         # Symbol retention and dependency retention are separate obligations:
         # a whole-runtime image retains its code but needs no unused dylibs.
-        flags = ["-Wl,-dead_strip_dylibs"]
+        # The program runs on the main thread's own stack, sized here, so
+        # profilers can walk it (molt-runtime state/program_stack.rs).
+        flags = [
+            "-Wl,-dead_strip_dylibs",
+            f"-Wl,-stack_size,{PROGRAM_STACK_MACHO_MAIN_BYTES:#x}",
+        ]
         if dead_strip:
             flags.append("-Wl,-dead_strip")
         if capabilities.explicit_no_icf_flag:

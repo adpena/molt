@@ -28,18 +28,25 @@ def callback(phase, info):
     events.append(
         (
             phase,
-            sorted(info),
+            [(key, type(value).__name__) for key, value in info.items()],
             info["generation"],
             isinstance(info["collected"], int),
             info["uncollectable"],
+            # 3.15: the start phase reports a zeroed collection.
+            info.get("candidates", 0) > 0,
+            info.get("duration", 0.0) >= 0.0,
         )
     )
 
 
 gc.callbacks.append(callback)
+callback_young = [[] for _ in range(16)]
 gc.collect(1)
 gc.callbacks.remove(callback)
-print("callbacks", events[0][0], events[-1][0], events[-1][1], events[-1][2:])
+del callback_young
+print("callbacks", len(events))
+for event in events:
+    print("callback", event)
 
 before_freeze = gc.get_freeze_count()
 gc.freeze()

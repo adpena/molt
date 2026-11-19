@@ -692,6 +692,23 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .into_int_value()
     }
 
+    fn store_word(&mut self, address: Self::Value, offset: i32, word: IntValue<'ctx>) {
+        let context = self.words.context;
+        let builder = self.words.builder;
+        // SAFETY: the walker stores only inside the object it names.
+        let pointer = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    context.i8_type(),
+                    address.into_pointer_value(),
+                    &[context.i64_type().const_int(offset as u64, false)],
+                    "word_address",
+                )
+                .unwrap()
+        };
+        builder.build_store(pointer, word).unwrap();
+    }
+
     fn program_slot(
         &mut self,
         kind: molt_ir::code_slots::ProgramSlotKind,
@@ -736,6 +753,9 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             SiteBody::GlobalSlotRead { index } => self.backend.global_slot_read_helper(index),
             SiteBody::ModuleImportClosed => self.backend.module_import_closed_helper(),
             SiteBody::MethodSiteLoad => self.backend.method_site_load_helper(),
+            SiteBody::MethodSiteCall { arguments, cold } => {
+                self.backend.method_site_call_helper(arguments, cold)
+            }
             SiteBody::StaticCellStore { index } => {
                 // The store body returns nothing; its answer is None.
                 let helper = self.backend.static_cell_store_helper(index);
@@ -823,6 +843,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap();
     }
 
+    fn pop_frame(
+        &mut self,
+        base: Self::Word,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    ) {
+        crate::codegen_ssa::frame::leave(self, base, kind);
+    }
+    fn return_value(&mut self, value: Option<Self::Value>) {
+        self.words
+            .builder
+            .build_return(value.as_ref().map(|v| v as &dyn BasicValue<'ctx>))
+            .unwrap();
+    }
     fn unreachable(&mut self) {
         self.words.builder.build_unreachable().unwrap();
     }

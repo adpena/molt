@@ -350,7 +350,8 @@ struct FunctionLowering<'ctx, 'func> {
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
     /// The entry slot holding the base of the frame record this invocation
     /// entered, zero until it does.
-    owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
+    owned_frame_entered:
+        Option<crate::codegen_ssa::returns::OwnedFrame<inkwell::values::PointerValue<'ctx>>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     /// Per-function instruction-selection state (refcount sites).
@@ -784,6 +785,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             params: &self.block_params,
             state: &self.state,
         }
+    }
+
+    fn emit_return(&mut self, value: Option<ValueId>) {
+        use crate::codegen_ssa::returns::emit_return;
+        let abi = require_function_linkage_abi(self.func, self.backend);
+        let frame = self.owned_frame_entered;
+        let (mut cx, mut b) = self.walker();
+        emit_return(&mut cx, &mut b, &abi, value, frame.as_ref());
     }
 
     fn record_fatal(&self, message: impl Into<String>) {

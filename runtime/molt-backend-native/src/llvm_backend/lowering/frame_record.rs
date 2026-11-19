@@ -52,16 +52,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         code_slot: IntValue<'ctx>,
         kind: Option<FrameEntryKind>,
     ) -> IntValue<'ctx> {
-        frame::enter(self, code_slot, kind)
-    }
-
-    /// Retire the base before the caller returns or suspends.
-    pub(super) fn emit_frame_record_pop(
-        &mut self,
-        base: IntValue<'ctx>,
-        kind: Option<FrameEntryKind>,
-    ) {
-        frame::leave(self, base, kind);
+        frame::enter(&mut self.codegen(), code_slot, kind, |_| {
+            self.stateful_payload_address()
+        })
     }
 
     /// A stateful poll's task payload address: its one parameter, which
@@ -75,7 +68,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         );
         self.closure_owner_address(entry.args[0].id)
     }
+}
 
+impl<'ctx> LlvmBackend<'ctx> {
     fn ensure_frame_helper(&self, helper: FrameBody) -> FunctionValue<'ctx> {
         let name = match helper {
             FrameBody::Push { homes } => format!("__molt_frame_push_{homes}"),
@@ -88,7 +83,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             FrameBody::StatefulLink => "__molt_frame_link_stateful".to_string(),
             FrameBody::StatefulUnlink => "__molt_frame_unlink_stateful".to_string(),
         };
-        let context = self.backend.context;
+        let context = self.context;
         let i64_type = context.i64_type();
         let params = [i64_type.into(), i64_type.into(), i64_type.into()];
         let logical_signature = match helper {
@@ -98,10 +93,10 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             }
         };
         let signature = prepend_execution_context(logical_signature);
-        if let Some(function) = self.backend.module.get_compiled_function(&name) {
+        if let Some(function) = self.module.get_compiled_function(&name) {
             return require_llvm_function_type(&name, function, signature);
         }
-        let function = self.backend.module.add_compiled_function(
+        let function = self.module.add_compiled_function(
             &name,
             logical_signature,
             Some(inkwell::module::Linkage::Internal),
@@ -129,14 +124,10 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             function,
             entry,
             admission,
-            retain: self
-                .backend
-                .ensure_refcount_helper(RefcountOperation::Retain),
-            release: self
-                .backend
-                .ensure_refcount_helper(RefcountOperation::Release),
-            enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
-            exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
+            retain: self.ensure_refcount_helper(RefcountOperation::Retain),
+            release: self.ensure_refcount_helper(RefcountOperation::Release),
+            enter: self.runtime_import(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
             task_imports: None,
         };
@@ -151,23 +142,20 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     }
 }
 
-impl<'ctx> FramePlacement for FunctionLowering<'ctx, '_> {
+impl<'ctx> FramePlacement for LlvmCodegen<'_, 'ctx> {
     type Word = IntValue<'ctx>;
 
     fn thread(&mut self) -> Self::Word {
         self.thread_record_word()
     }
-    fn payload(&mut self) -> Self::Word {
-        self.stateful_payload_address()
-    }
     fn admission(&mut self, op: RefcountOperation) -> Self::Word {
-        self.ensure_refcount_site(op).admission
+        self.llvm_refcount_site(op).admission
     }
     fn zero(&mut self) -> Self::Word {
         self.backend.context.i64_type().const_zero()
     }
     fn enter_runtime(&mut self, code: Self::Word) -> Self::Word {
-        let callee = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
+        let callee = self.backend.runtime_import(RuntimeFn::FrameRecordEnter);
         self.backend
             .builder
             .build_execution_call(callee, &[code.into()], "frame_record_enter")
@@ -177,7 +165,7 @@ impl<'ctx> FramePlacement for FunctionLowering<'ctx, '_> {
             .into_int_value()
     }
     fn place(&mut self, body: FrameBody, args: [Self::Word; 3]) -> Option<Self::Word> {
-        let callee = self.ensure_frame_helper(body);
+        let callee = self.backend.ensure_frame_helper(body);
         let name = if callee.get_type().get_return_type().is_some() {
             "frame_base"
         } else {

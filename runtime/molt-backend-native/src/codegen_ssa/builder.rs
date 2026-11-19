@@ -130,6 +130,11 @@ pub(crate) enum SiteBody {
     /// A method site's load (`generate_method_site_load`), owned; words
     /// `[record, receiver, self_out]`; the miss is `molt_method_site_load`.
     MethodSiteLoad,
+    /// A method site's call with `arguments` arguments after `self`
+    /// (`generate_method_site_call`), adopting every word; words `[thread,
+    /// record, callable, self_or_null, args...]`; the miss is `cold`, the
+    /// runtime's fixed-arity loaded-method call.
+    MethodSiteCall { arguments: usize, cold: RuntimeFn },
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {
@@ -295,6 +300,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn static_cell_block(&mut self, module: &str) -> Self::Value;
     /// The word at byte `offset` from `address`, an `Address` value.
     fn load_word(&mut self, address: Self::Value, offset: i32) -> Self::Word;
+    /// Store `word` at byte `offset` from `address`, an `Address` value.
+    fn store_word(&mut self, address: Self::Value, offset: i32, word: Self::Word);
     /// The immutable word the program binds to `owner`'s program slot of
     /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
     /// program links.
@@ -346,4 +353,12 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     );
     /// End the current block on a path that never executes.
     fn unreachable(&mut self);
+    /// Retire the frame whose base was taken from the invocation's entry slot.
+    fn pop_frame(
+        &mut self,
+        base: Self::Word,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    );
+    /// Return a value already converted to the function's declared machine ABI.
+    fn return_value(&mut self, value: Option<Self::Value>);
 }

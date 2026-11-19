@@ -18,7 +18,8 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
     crate::with_gil_entry_nopanic!(py, {
         let classes = builtin_classes(py);
         let poll = crate::provenance::abi::expose_function_address(logical_type_poll as *const ());
-        let coroutine = crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
+        let coroutine =
+            crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
         let generator = crate::task_new_for_pending_invocation(
             py,
             poll,

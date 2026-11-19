@@ -433,6 +433,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.ins()
             .load(types::I64, MemFlagsData::trusted(), address, offset)
     }
+    fn store_word(&mut self, address: Value, offset: i32, word: Value) {
+        self.ins()
+            .store(MemFlagsData::trusted(), word, address, offset);
+    }
     fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
     }
@@ -548,6 +552,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let block = self.data_address(molt_ir::MODULE_READY_SYMBOL);
                 emit_module_import_closed(self.words.builder, block, id, sites.retain, cold)
             }
+            (SiteBody::MethodSiteCall { cold, .. }, &[thread, record, ref words @ .., _]) => {
+                let cold = self.runtime_callee(cold);
+                emit_method_site_call(self.words.builder, sites, thread, record, words, cold)
+            }
             (SiteBody::MethodSiteLoad, &[record, receiver, self_out, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::MethodSiteLoad);
                 emit_method_site_load(self.words.builder, sites, record, receiver, self_out, cold)
@@ -610,6 +618,18 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             self.words.builder.switch_to_block(block);
             self.jump(target, args);
         }
+    }
+    fn pop_frame(
+        &mut self,
+        base: Value,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    ) {
+        let sites = self.frame_sites();
+        let record = FrameThread::PreloadedWord(kind.map(|_| self.thread_record_word()));
+        emit_frame_record_pop(self.words.builder, sites, record, base, kind);
+    }
+    fn return_value(&mut self, value: Option<Value>) {
+        self.ins().return_(value.as_slice());
     }
     fn unreachable(&mut self) {
         self.ins().trap(UNREACHABLE_TRAP);
@@ -819,9 +839,9 @@ pub(crate) mod machine {
             unsafe { std::mem::transmute(code) };
         let input_words: Vec<u64> = inputs.iter().copied().map(input_word).collect();
         let mut result_words = vec![0u64; kinds.len()];
-        runtime_stubs::begin(fail_allocation);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        runtime_stubs::begin(fail_allocation, record.as_mut_ptr() as u64);
         // The exception hint is one byte at its ABI offset, on either byte order.
         let first = &mut record[0];
         let mut bytes = first.to_ne_bytes();
@@ -847,6 +867,7 @@ pub(crate) mod machine {
             runtime_calls: stubs.calls,
             refcounts: stubs.refcounts,
             released: stubs.model.released,
+            inserted: stubs.model.inserted,
         }
     }
 

@@ -239,6 +239,21 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     preserved origin is refused, as `alias_analysis::CopyLowering` requires), `Alloc`, `OrdAt`,
     `Raise`, `WarnStderr`, `FunctionDefaultsVersion`. `StackAlloc` (refused) and `Free` (no
     code) move with the dispatch.
+  - Moved, slice 16 (round 6): the callable family's runtime calls (`codegen_ssa::callable`):
+    `function_closure_bits`, `asyncgen_new`, `code_slot_set`, `code_slots_init`,
+    `callargs_new`, `line`. Function construction (`func_new`, `func_new_closure`,
+    `builtin_func`) waits for helper bodies through the builder (typed trampolines).
+  - Moved, slice 17 (round 6), on the switch lane's `thread_record_word` and
+    `pending::exception_pending_word`: the loaded-method call (the method site's call body is
+    `SiteBody::MethodSiteCall`), `DirectCall`'s thread-record handoff around the compiled
+    call, and the set and frozenset aggregate. The trait gained `store_word`. LLVM's copies
+    and the custody wrappers they used are deleted. The slice's own model tests (round 7):
+    `DirectCall` on both machines, where a compiled callee reads the invocation word on entry
+    and the outer word comes back; the set aggregate as Cranelift machine code, where each
+    entry is boxed only after the previous insertion, a repeated raw value is boxed once, and
+    a failed insertion or allocation releases the partial aggregate and every minted box and
+    boxes no later entry. A raising runtime stub now sets the thread record's exception hint,
+    as the runtime does.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

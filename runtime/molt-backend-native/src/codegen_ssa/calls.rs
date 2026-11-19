@@ -25,6 +25,17 @@ use molt_codegen_abi::word::WordComparison;
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::tir::ops::BuiltinCallTarget;
 
+/// The runtime's fixed-arity loaded-method calls, the cold path of a method
+/// site call with that many arguments. A call with more keeps the runtime
+/// call.
+const LOADED_METHOD_CALLS: [RuntimeFn; 5] = [
+    RuntimeFn::CallLoadedMethod0,
+    RuntimeFn::CallLoadedMethod1,
+    RuntimeFn::CallLoadedMethod2,
+    RuntimeFn::CallLoadedMethod3,
+    RuntimeFn::CallLoadedMethod4,
+];
+
 /// The boxed word of `None`.
 const NONE_WORD: u64 = molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE;
 
@@ -620,6 +631,108 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         }
     }
 
+    /// CPython's CALL after a method load: `[callable, self_or_null, args...]`,
+    /// a source call that adopts every operand. At a method site with at most
+    /// four arguments the shared site call body takes every word over;
+    /// otherwise `molt_call_loaded_method{N}` (or the spilled entry above four
+    /// arguments) does: it enters the selected function with `self` prepended,
+    /// or calls the attribute when `self_or_null` is the null sentinel. Failed
+    /// boxing skips the entry and releases the instruction's inputs.
+    pub(crate) fn call_loaded_method_op(&mut self, b: &mut B, op: &TirOp) {
+        let adopts_all = op.argument_custody().is_some_and(|custody| {
+            custody
+                .iter()
+                .all(|&position| position == ParameterCustody::Transferred)
+        });
+        if op.operands.len() < 2 || !adopts_all {
+            self.fatal(format!(
+                "malformed {op:?}: a loaded method call adopts its pair and every argument"
+            ));
+            return;
+        }
+        let lane = "call_loaded_method";
+        let view = self.operands();
+        let mut custody = view.begin_call(
+            b,
+            &op.operands,
+            &op.operands[1..],
+            Some(op.operands[0]),
+            lane,
+        );
+        let words: Vec<B::Word> = op
+            .operands
+            .iter()
+            .map(|&operand| view.operand(b, &mut custody, operand))
+            .collect();
+        let arguments = words.len() - 2;
+        let cold = LOADED_METHOD_CALLS.get(arguments).copied();
+        let result = match (op.method_site(), cold) {
+            (Some(site), Some(cold)) => {
+                view.surrender(b, &custody, &op.operands, &[]);
+                let Some(record) = self.method_site_record(b, site) else {
+                    self.fatal(format!("{op:?}: method site {site} has no record"));
+                    return;
+                };
+                let thread = b.thread_record_word();
+                let admission = b.refcount_admission();
+                let mut site_words = vec![thread, record];
+                site_words.extend_from_slice(&words);
+                site_words.push(admission);
+                let args: Vec<B::Value> =
+                    site_words.iter().map(|&word| b.word_value(word)).collect();
+                let result = b.site(SiteBody::MethodSiteCall { arguments, cold }, &args);
+                b.set_name(result, "method_site_call");
+                b.expect_word(result)
+            }
+            _ => {
+                let (function, call_words) = match cold {
+                    Some(function) => (function, words.clone()),
+                    None => {
+                        let (args, count) = spill_words(b, &words[2..], "call_loaded_method_args");
+                        (
+                            RuntimeFn::CallLoadedMethodSpilled,
+                            vec![words[0], words[1], args, count],
+                        )
+                    }
+                };
+                let callee = b.runtime_callee(function);
+                view.surrender(b, &custody, &op.operands, &[]);
+                let args: Vec<B::Value> =
+                    call_words.iter().map(|&word| b.word_value(word)).collect();
+                let result = b
+                    .call(callee, &args)
+                    .expect("a loaded-method call answers a word");
+                b.set_name(result, lane);
+                b.expect_word(result)
+            }
+        };
+        let result =
+            self.operands()
+                .finish(b, custody, result, "call_loaded_method_result", |_| {});
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+    }
+
+    /// `DirectCall` (HF-821 D4): hand the callable to the callee's frame entry
+    /// through the thread record's invocation word, call the compiled target
+    /// with the operands after the callable (`compiled_call`), and put the
+    /// outer handoff back.
+    pub(crate) fn guarded_direct_call_op(&mut self, b: &mut B, op: &TirOp) {
+        let Some((target, abi)) = self.linked_target(op) else {
+            self.fatal("DirectCall names no compiled target");
+            return;
+        };
+        let callee = self.operands().resolve(b, op.operands[0]);
+        let callee = scalar::word_of(b, callee);
+        let thread = b.thread_record_word();
+        let record = b.word_to_address(thread);
+        let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET;
+        let outer = b.load_word(record, offset);
+        b.store_word(record, offset, callee);
+        self.compiled_call(b, op, &target, &abi, &op.operands[1..], 1);
+        b.store_word(record, offset, outer);
+    }
+
     /// Bind None as `op`'s first result.
     fn bind_none(&mut self, b: &mut B, op: &TirOp) {
         if let Some(&result) = op.results.first() {
@@ -1150,7 +1263,13 @@ mod tests {
         LoadMethod,
         PushReceiver,
         CallBuiltin,
+        /// `DirectCall`, between a store of [`OUTER_INVOCATION`] into the thread
+        /// record's invocation word and a read of it, which follows the results.
+        DirectCall,
     }
+
+    /// The invocation word an enclosing call left in the thread record.
+    const OUTER_INVOCATION: u64 = 0x5eed_0000_0001;
 
     fn op(
         opcode: OpCode,
@@ -1202,6 +1321,7 @@ mod tests {
             let diagnostics = RefCell::new(Vec::new());
             let runtime = every_runtime_entry();
             let sites = Cell::new(0);
+            let mut invocation = None;
             let mut cx = FunctionCx::<B> {
                 func: &func,
                 plan: &plan,
@@ -1218,12 +1338,22 @@ mod tests {
                 Family::LoadMethod => cx.load_method_op(b, op),
                 Family::PushReceiver => cx.push_method_receiver_op(b, op),
                 Family::CallBuiltin => cx.call_builtin_op(b, op),
+                Family::DirectCall => {
+                    let thread = b.thread_record_word();
+                    let record = b.word_to_address(thread);
+                    let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET;
+                    let outer = b.constant(OUTER_INVOCATION);
+                    b.store_word(record, offset, outer);
+                    cx.guarded_direct_call_op(b, op);
+                    invocation = Some(b.load_word(record, offset));
+                }
             }
-            let results = op
+            let mut results: Vec<B::Value> = op
                 .results
                 .iter()
                 .filter_map(|&result| cx.values.value(result))
                 .collect();
+            results.extend(invocation.map(|word| b.word_value(word)));
             (diagnostics.borrow().clone(), results)
         });
         let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
@@ -1328,6 +1458,33 @@ mod tests {
             run.results,
             [Value::Word(inline(compiled_result(symbol, &[2, 3]) as i64))]
         );
+    }
+
+    #[test]
+    fn a_direct_call_hands_its_callable_to_the_callee_and_restores_the_outer_word() {
+        // %0 is the callable, %1 the argument. The callee's frame entry reads
+        // the invocation word on entry; the enclosing call's word comes back.
+        let symbol = "walker_compiled_handoff";
+        let program = linked(symbol, vec![TirType::DynBox], Some(TirType::DynBox));
+        let mut call = direct_call(symbol, 2, 2);
+        call.opcode = OpCode::DirectCall;
+        // Both machines: the interpreter and Cranelift machine code.
+        let run = lower_linked(
+            Family::DirectCall,
+            call,
+            &[FUNCTION_WORD, OBJECT],
+            program,
+            false,
+        );
+        assert!(run.fact.is_empty(), "{:?}", run.fact);
+        assert_eq!(
+            run.results,
+            [
+                Value::Word(compiled_result(symbol, &[OBJECT, FUNCTION_WORD])),
+                Value::Word(OUTER_INVOCATION),
+            ]
+        );
+        assert!(run.runtime_calls.is_empty());
     }
 
     #[test]

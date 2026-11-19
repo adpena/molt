@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from molt import native_target
 
-from molt.cli.native_launch_abi_generated import PROGRAM_STACK_RESERVE_BYTES_64
+from molt.cli.native_launch_abi_generated import (
+    PROGRAM_STACK_MACHO_MAIN_BYTES,
+    PROGRAM_STACK_RESERVE_BYTES_64,
+)
 from molt.native_target import resolve_native_target_spec
 from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 
@@ -1322,11 +1325,24 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         (
             "darwin",
             ("clang",),
-            ("-Wl,-dead_strip_dylibs", "-Wl,-dead_strip", "-Wl,-no_deduplicate"),
+            (
+                "-Wl,-dead_strip_dylibs",
+                f"-Wl,-stack_size,{PROGRAM_STACK_MACHO_MAIN_BYTES:#x}",
+                "-Wl,-dead_strip",
+                "-Wl,-no_deduplicate",
+            ),
         ),
         # zig's own linker runs no identical-code folding and rejects ld64's
         # and LLD's flags for disabling it.
-        ("darwin", ("zig", "cc"), ("-Wl,-dead_strip_dylibs", "-Wl,-dead_strip")),
+        (
+            "darwin",
+            ("zig", "cc"),
+            (
+                "-Wl,-dead_strip_dylibs",
+                f"-Wl,-stack_size,{PROGRAM_STACK_MACHO_MAIN_BYTES:#x}",
+                "-Wl,-dead_strip",
+            ),
+        ),
         ("linux", ("zig", "cc"), ("-Wl,--gc-sections",)),
     ],
 )

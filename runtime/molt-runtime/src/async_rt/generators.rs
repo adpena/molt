@@ -20,12 +20,11 @@ use crate::{
     ASYNCGEN_GEN_OFFSET, ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND,
     ASYNCGEN_OP_ATHROW, ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CONTROL_SIZE,
     GEN_NAME_OFFSET, GEN_QUALNAME_OFFSET, GEN_SEND_OFFSET, GEN_STATE_OFFSET, GEN_THROW_OFFSET,
-    GEN_YIELD_FROM_OFFSET,
-    HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_TASK_DONE, MoltHeader,
-    TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR,
-    TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception, alloc_object,
-    alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1, call_poll_fn,
-    clear_exception, current_task_ptr, dec_ref_bits, exception_class_bits,
+    GEN_YIELD_FROM_OFFSET, HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED,
+    HEADER_FLAG_TASK_DONE, MoltHeader, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
+    TYPE_ID_ASYNC_GENERATOR, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception,
+    alloc_object, alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1,
+    call_poll_fn, clear_exception, current_task_ptr, dec_ref_bits, exception_class_bits,
     exception_clear_reason_set, exception_pending, generator_raise_active, header_from_obj_ptr,
     inc_ref_bits, maybe_ptr_from_bits, molt_exception_clear_attached_body,
     molt_exception_last_pending_attached_body, molt_exception_set_last_attached_body,
@@ -597,8 +596,14 @@ pub(crate) fn molt_task_new_attached_body(
                 "task constructor names a function whose code is not its poll",
             );
         };
-        let result =
-            task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, context, function);
+        let result = task_new_with_context(
+            _py,
+            poll_fn_addr,
+            closure_size,
+            kind_bits,
+            context,
+            function,
+        );
         for bits in context {
             dec_ref_bits(_py, bits);
         }
@@ -2454,8 +2459,12 @@ mod asyncgen_lifetime_tests {
             let original = callback(py, original_finalizer as *const ());
             let replacement = callback(py, replacement_finalizer as *const ());
             molt_asyncgen_hooks_set_attached_body(py, none, original, missing_bits(py));
-            let inner =
-                task_new_for_pending_invocation(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+            let inner = task_new_for_pending_invocation(
+                py,
+                0,
+                GEN_CONTROL_SIZE as u64,
+                TASK_KIND_GENERATOR,
+            );
             assert!(!obj_from_bits(inner).is_none());
             let generator = molt_asyncgen_new_attached_body(py, inner);
             assert!(!obj_from_bits(generator).is_none());
@@ -2599,8 +2608,12 @@ mod suspension_reference_tests {
         }
 
         fn owner(self, py: &PyToken<'_>) -> u64 {
-            let inner =
-                task_new_for_pending_invocation(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+            let inner = task_new_for_pending_invocation(
+                py,
+                0,
+                GEN_CONTROL_SIZE as u64,
+                TASK_KIND_GENERATOR,
+            );
             match self {
                 Self::Send | Self::Throw => inner,
                 Self::Pending | Self::Running => {

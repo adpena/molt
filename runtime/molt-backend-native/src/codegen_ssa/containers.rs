@@ -7,7 +7,8 @@
 
 use molt_codegen_abi as nanbox;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
-use molt_ir::runtime_fn_generated::RuntimeFn;
+use molt_codegen_abi::word::WordComparison;
+use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 use super::builder::CodegenBuilder;
 use super::function::FunctionCx;
@@ -51,6 +52,91 @@ fn construct<B: CodegenBuilder>(
         .unwrap_or_else(|| panic!("{} returns a word", function.symbol()));
     b.set_name(value, name);
     b.expect_word(value)
+}
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// `BuildSet` and the preserved frozenset literal: incremental
+    /// construction owns the aggregate from allocation to commit, and the
+    /// mutator borrows every operand. All entries share one custody whose
+    /// operands are requested lazily, per entry, only after the previous
+    /// insertion succeeded: a later entry is never boxed before an earlier
+    /// entry's hashing and insertion ran, a value repeated across entries
+    /// keeps one identity, and a failed box, allocation or insertion releases
+    /// the partial aggregate and every minted box while the first exception
+    /// stays pending.
+    pub(crate) fn set_aggregate_op(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        new: RuntimeFn,
+        mutate: RuntimeFn,
+    ) {
+        let view = self.operands();
+        let mut custody = view.begin(b, &op.operands, "aggregate");
+        // Hash-aggregate constructors share one raw usize-capacity ABI.
+        let capacity = b.constant(op.operands.len() as u64);
+        let aggregate = b
+            .call_runtime(new, &[capacity])
+            .expect("an aggregate constructor answers a word");
+        let named = b.word_value(aggregate);
+        b.set_name(named, "aggregate");
+        let none = b.constant(NONE_WORD);
+        let created = b.compare(WordComparison::NotEqual, aggregate, none);
+        let named = b.bit_value(created);
+        b.set_name(named, "aggregate_created");
+        view.continue_if(b, &mut custody, created, "ready");
+        let insert = b.runtime_callee(mutate);
+        let mutation_return = mutate
+            .boxed_abi()
+            .filter(|abi| abi.arity() == 2)
+            .unwrap_or_else(|| {
+                panic!(
+                    "hash aggregate mutator {} has no boxed ABI",
+                    mutate.symbol()
+                )
+            })
+            .result;
+        let release = b.refcount_site(RefcountOperation::Release);
+        for &operand in &op.operands {
+            let word = view.operand(b, &mut custody, operand);
+            let args = [b.word_value(aggregate), b.word_value(word)];
+            // Keep the aggregate's own owner and retire the mutator's owned
+            // result independently.
+            let inserted = b
+                .call(insert, &args)
+                .expect("a hash aggregate mutator answers a word");
+            b.set_name(inserted, "aggregate_insert");
+            match mutation_return {
+                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
+                    let inserted = b.expect_word(inserted);
+                    b.refcount(release, inserted);
+                }
+                RuntimeBoxedReturn::BorrowedValue => {}
+                RuntimeBoxedReturn::Void => {
+                    panic!(
+                        "hash aggregate mutator {} cannot return void",
+                        mutate.symbol()
+                    )
+                }
+            }
+            // The mutator reports failure only through the exception state.
+            let thread = b.thread_record_word();
+            let pending = super::pending::exception_pending_word(b, thread);
+            let named = b.word_value(pending);
+            b.set_name(named, "aggregate_pending_word");
+            let zero = b.constant(0);
+            let clear = b.compare(WordComparison::Equal, pending, zero);
+            let named = b.bit_value(clear);
+            b.set_name(named, "aggregate_no_exception");
+            view.continue_if(b, &mut custody, clear, "inserted");
+        }
+        let result = view.finish(b, custody, aggregate, "aggregate_result", |b| {
+            let release = b.refcount_site(RefcountOperation::Release);
+            b.refcount(release, aggregate);
+        });
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+    }
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
@@ -247,7 +333,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::super::differential::{Run, both, every_runtime_entry, kernel, machine};
-    use super::super::scalar::tests::{HEAP_INT, Value, literal_word};
+    use super::super::scalar::tests::{HEAP_INT, UNHASHABLE, Value, literal_word};
     use super::super::value_table::ValueTable;
     use super::*;
     use crate::representation_plan::ProducerCarrierPlan;
@@ -451,6 +537,144 @@ mod tests {
             [RuntimeFn::IntFromI64],
             "no constructor call"
         );
+    }
+
+    /// `BuildSet` (or the frozenset literal) over `operands`, ids into
+    /// `inputs` held as their carriers, as Cranelift machine code: each
+    /// insertion's exception read rejoins through a block parameter, which
+    /// only a machine follows.
+    fn build_set(
+        inputs: &[(u64, HeldCarrier)],
+        operands: &[u32],
+        frozen: bool,
+        fail_allocation: bool,
+    ) -> Run<()> {
+        let op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildSet,
+            operands: operands.iter().map(|&id| ValueId(id)).collect(),
+            results: vec![ValueId(10)],
+            attrs: AttrDict::default(),
+            source_span: None,
+            origin: None,
+            runtime: None,
+            callee: None,
+        };
+        let carriers: Vec<HeldCarrier> = inputs.iter().map(|&(_, carrier)| carrier).collect();
+        let lower = kernel!(op: TirOp = op, carriers: Vec<HeldCarrier> = carriers, frozen: bool = frozen; |b, inputs| -> () {
+            let func = TirFunction::new(
+                "containers".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(16);
+            for (index, (&input, &carrier)) in inputs.iter().zip(carriers).enumerate() {
+                values.set_value(ValueId(index as u32), input);
+                values.set_repr(ValueId(index as u32), carrier);
+            }
+            let diagnostics = RefCell::new(Vec::new());
+            let runtime = every_runtime_entry();
+            let sites = Cell::new(0);
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &runtime,
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &sites,
+            };
+            let (new, add) = if *frozen {
+                (RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd)
+            } else {
+                (RuntimeFn::SetNew, RuntimeFn::SetAdd)
+            };
+            cx.set_aggregate_op(b, op, new, add);
+            assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
+            ((), vec![values.value(ValueId(10)).unwrap()])
+        });
+        let inputs: Vec<Value> = inputs.iter().map(|&(word, _)| Value::Word(word)).collect();
+        machine(&lower, &inputs, fail_allocation)
+    }
+
+    /// The model's hash aggregate of `capacity` entries.
+    fn aggregate(frozen: bool, capacity: u64) -> u64 {
+        let new = if frozen {
+            RuntimeFn::FrozensetNew
+        } else {
+            RuntimeFn::SetNew
+        };
+        literal_word(new, &capacity.to_le_bytes())
+    }
+
+    #[test]
+    fn a_set_boxes_each_entry_only_after_the_previous_insertion() {
+        // %1 is raw and repeated: one box, minted after %0's insertion,
+        // inserted twice and released once.
+        let inputs = [
+            (OBJECT, HeldCarrier::Boxed),
+            (1 << 50, HeldCarrier::RawI64),
+            (inline(2), HeldCarrier::Boxed),
+        ];
+        for frozen in [false, true] {
+            let (new, add) = if frozen {
+                (RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd)
+            } else {
+                (RuntimeFn::SetNew, RuntimeFn::SetAdd)
+            };
+            let run = build_set(&inputs, &[0, 1, 2, 1], frozen, false);
+            assert_eq!(run.results, [Value::Word(aggregate(frozen, 4))]);
+            assert_eq!(run.inserted, [OBJECT, HEAP_INT, inline(2), HEAP_INT]);
+            assert_eq!(
+                run.runtime_calls,
+                [new, add, RuntimeFn::IntFromI64, add, add, add],
+                "a clear exception hint needs no confirmation"
+            );
+            assert_eq!(run.refcounts, [(RefcountOperation::Release, HEAP_INT)]);
+        }
+    }
+
+    #[test]
+    fn a_failed_insertion_releases_the_partial_set_and_boxes_no_later_entry() {
+        let inputs = [
+            (1 << 50, HeldCarrier::RawI64),
+            (UNHASHABLE, HeldCarrier::Boxed),
+            (1 << 51, HeldCarrier::RawI64),
+        ];
+        let run = build_set(&inputs, &[0, 1, 2], false, false);
+        assert_eq!(run.results, [Value::Word(NONE_WORD)]);
+        assert_eq!(run.inserted, [HEAP_INT]);
+        assert_eq!(
+            run.runtime_calls,
+            [
+                RuntimeFn::SetNew,
+                RuntimeFn::IntFromI64,
+                RuntimeFn::SetAdd,
+                RuntimeFn::SetAdd,
+                RuntimeFn::ExceptionPending,
+            ],
+            "the set hint is confirmed once; %2 is never boxed or inserted"
+        );
+        assert_eq!(
+            run.refcounts,
+            [
+                (RefcountOperation::Release, aggregate(false, 3)),
+                (RefcountOperation::Release, HEAP_INT),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_set_allocation_boxes_and_inserts_nothing() {
+        let inputs = [(OBJECT, HeldCarrier::Boxed), (1 << 50, HeldCarrier::RawI64)];
+        let run = build_set(&inputs, &[0, 1], false, true);
+        assert_eq!(run.results, [Value::Word(NONE_WORD)]);
+        assert!(run.inserted.is_empty());
+        assert_eq!(run.runtime_calls, [RuntimeFn::SetNew]);
+        assert!(run.refcounts.is_empty());
     }
 
     #[test]

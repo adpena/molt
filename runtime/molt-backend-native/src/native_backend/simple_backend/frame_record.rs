@@ -215,8 +215,11 @@ pub(crate) fn emit_frame_record_push(
     code_slot: Value,
     kind: Option<FrameEntryKind>,
 ) -> Value {
-    let mut placement = NativeFramePlacement::new(builder, sites, thread_record_slot);
-    let base = frame::enter(&mut placement, code_slot, kind);
+    let mut placement =
+        NativeFramePlacement::new(builder, sites, FrameThread::Preloaded(thread_record_slot));
+    let base = frame::enter(&mut placement, code_slot, kind, |p| {
+        compiled_argument(p.frames.words.builder, 0)
+    });
     sealed_blocks.extend(placement.frames.sealed);
     base
 }
@@ -225,24 +228,31 @@ pub(crate) fn emit_frame_record_push(
 pub(crate) fn emit_frame_record_pop(
     builder: &mut FunctionBuilder<'_>,
     sites: NativeFrameSites,
-    thread_record_slot: Option<StackSlot>,
+    thread_record: FrameThread,
     base: Value,
     kind: Option<FrameEntryKind>,
 ) {
-    let mut placement = NativeFramePlacement::new(builder, sites, thread_record_slot);
+    let mut placement = NativeFramePlacement::new(builder, sites, thread_record);
     frame::leave(&mut placement, base, kind);
+}
+
+/// Legacy functions lend a preloaded stack slot. Walker functions read the
+/// attached execution context directly. A runtime-linked frame reads neither.
+pub(crate) enum FrameThread {
+    Preloaded(Option<StackSlot>),
+    PreloadedWord(Option<Value>),
 }
 
 struct NativeFramePlacement<'a, 'b> {
     frames: NativeFrameBuilder<'a, 'b>,
-    thread_record_slot: Option<StackSlot>,
+    thread_record: FrameThread,
 }
 
 impl<'a, 'b> NativeFramePlacement<'a, 'b> {
     fn new(
         builder: &'a mut FunctionBuilder<'b>,
         sites: NativeFrameSites,
-        thread_record_slot: Option<StackSlot>,
+        thread_record: FrameThread,
     ) -> Self {
         Self {
             frames: NativeFrameBuilder {
@@ -252,7 +262,7 @@ impl<'a, 'b> NativeFramePlacement<'a, 'b> {
                 sealed: Vec::new(),
                 tasks: None,
             },
-            thread_record_slot,
+            thread_record,
         }
     }
 }
@@ -261,10 +271,13 @@ impl FramePlacement for NativeFramePlacement<'_, '_> {
     type Word = Value;
 
     fn thread(&mut self) -> Value {
-        load_thread_record(self.frames.words.builder, self.thread_record_slot)
-    }
-    fn payload(&mut self) -> Value {
-        compiled_argument(self.frames.words.builder, 0)
+        let builder = &mut *self.frames.words.builder;
+        match self.thread_record {
+            FrameThread::Preloaded(slot) => load_thread_record(builder, slot),
+            FrameThread::PreloadedWord(record) => {
+                record.expect("inline frame links need the attached record")
+            }
+        }
     }
     fn admission(&mut self, op: RefcountOperation) -> Value {
         match op {

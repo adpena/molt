@@ -149,7 +149,7 @@ def get_count() -> tuple[int, int, int]:
     raise RuntimeError("gc get_count intrinsic returned invalid value")
 
 
-def get_stats() -> list[dict[str, int]]:
+def get_stats() -> list[dict[str, int | float]]:
     value = _MOLT_GC_GET_STATS()
     if not isinstance(value, list) or len(value) != 3:
         raise RuntimeError("gc get_stats intrinsic returned invalid value")

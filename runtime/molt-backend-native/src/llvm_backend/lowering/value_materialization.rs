@@ -32,28 +32,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         builder
             .build_store(slot, self.backend.context.i64_type().const_zero())
             .unwrap();
-        self.owned_frame_entered = Some(slot);
-    }
-
-    fn exit_owned_execution_frame(&mut self) {
-        let Some(slot) = self.owned_frame_entered else {
-            return;
-        };
-        let i64_ty = self.backend.context.i64_type();
-        let base = self
-            .backend
-            .builder
-            .build_load(i64_ty, slot, "frame_base")
-            .unwrap()
-            .into_int_value();
-        // Retire the custody before releasing homes can call Python again.
-        self.backend
-            .builder
-            .build_store(slot, i64_ty.const_zero())
-            .unwrap();
-        // The pop body tests the base itself: a failed entry pops nothing.
-        let kind = self.frame_entry_kind();
-        self.emit_frame_record_pop(base, kind);
+        self.owned_frame_entered = Some(crate::codegen_ssa::returns::OwnedFrame {
+            slot,
+            kind: self.frame_entry_kind(),
+        });
     }
 
     pub(super) fn program_slot_id(
@@ -106,18 +88,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.operands().begin(&mut self.codegen(), operands, label)
     }
 
-    /// Open call custody before any boxing can fail (`Operands::begin_call`).
-    pub(super) fn begin_call_operands(
-        &mut self,
-        operands: &[ValueId],
-        adopted: &[ValueId],
-        callable: Option<ValueId>,
-        label: &str,
-    ) -> BorrowedOperands<'ctx> {
-        self.operands()
-            .begin_call(&mut self.codegen(), operands, adopted, callable, label)
-    }
-
     /// The operand's boxed word, boxed at its first request.
     pub(super) fn borrowed_operand(
         &mut self,
@@ -126,39 +96,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         self.operands()
             .operand(&mut self.codegen(), custody, operand)
-    }
-
-    /// Continue past a consumer step only when `ok` holds; otherwise join the
-    /// custody's failure block.
-    pub(super) fn borrowed_operands_continue_if(
-        &mut self,
-        custody: &mut BorrowedOperands<'ctx>,
-        ok: inkwell::values::IntValue<'ctx>,
-        step: &str,
-    ) {
-        self.operands()
-            .continue_if(&mut self.codegen(), custody, ok, step);
-    }
-
-    /// Continue past a consumer step that reports failure only through the
-    /// exception state.
-    pub(super) fn borrowed_operands_continue_if_clear(
-        &mut self,
-        custody: &mut BorrowedOperands<'ctx>,
-        step: &str,
-    ) {
-        let pending = self.emit_exception_pending_word(&format!("{}_pending", custody.label()));
-        let clear = self
-            .backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                pending,
-                self.backend.context.i64_type().const_zero(),
-                &format!("{}_no_exception", custody.label()),
-            )
-            .unwrap();
-        self.borrowed_operands_continue_if(custody, clear, step);
     }
 
     /// Rejoin the committed path with the failure block and release the
@@ -209,30 +146,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// its linkage return carrier. The return of a body without a value, and
     /// the early exit whose caller reads the pending exception instead.
     pub(super) fn build_empty_return(&mut self) {
-        let linkage_abi = require_function_linkage_abi(self.func, self.backend);
-        match linkage_abi.return_type.clone() {
-            None => {
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(None).unwrap();
-            }
-            Some(return_type) => {
-                let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                let ret_val = self
-                    .backend
-                    .context
-                    .i64_type()
-                    .const_int(none_bits, false)
-                    .into();
-                let ret_val = self.coerce_value(
-                    ret_val,
-                    crate::codegen_ssa::HeldCarrier::Boxed,
-                    None,
-                    &return_type,
-                );
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(Some(&ret_val)).unwrap();
-            }
-        }
+        self.emit_return(None);
     }
 
     /// Transfer one source reference into a storage home, without retaining an
@@ -247,17 +161,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.materialize_dynbox_bits(operand)
     }
 
-    /// Commit one reference per adopted position (`Operands::surrender`).
-    pub(super) fn surrender_borrowed_owners(
-        &self,
-        custody: &BorrowedOperands<'ctx>,
-        operands: &[ValueId],
-        borrowed: &[ValueId],
-    ) {
-        self.operands()
-            .surrender(&mut self.codegen(), custody, operands, borrowed);
-    }
-
     /// `custody::release_call_inputs` at `builder`'s position, which may be
     /// another function (a call trampoline).
     pub(super) fn release_call_inputs(
@@ -269,19 +172,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut codegen = self.codegen();
         codegen.words.builder = builder;
         custody::release_call_inputs(&mut codegen, callable, owners);
-    }
-
-    /// Spill call argument words into this operation's static entry-block
-    /// array (`custody::spill_words`).
-    pub(super) fn spill_call_words(
-        &self,
-        words: &[inkwell::values::IntValue<'ctx>],
-        name: &str,
-    ) -> (
-        inkwell::values::IntValue<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-    ) {
-        custody::spill_words(&mut self.codegen(), words, name)
     }
 
     // ── Representation authority ──
@@ -460,41 +350,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_fatals(diagnostics);
     }
 
-    /// `value`, held as `source`, converted for a destination of type
-    /// `target` at the current position (a return, a direct call's raw
-    /// parameter).
-    pub(super) fn coerce_value(
-        &self,
-        value: BasicValueEnum<'ctx>,
-        source: crate::codegen_ssa::HeldCarrier,
-        source_id: Option<ValueId>,
-        target: &TirType,
-    ) -> BasicValueEnum<'ctx> {
-        let mut codegen = self.codegen();
-        crate::codegen_ssa::control::coerce(
-            &mut codegen,
-            &self.repr_facts,
-            value,
-            source,
-            source_id,
-            target,
-        )
-        .unwrap_or_else(|| {
-            self.record_fatal(format!(
-                "no conversion of a value held as {source:?} to {target:?}"
-            ));
-            codegen.placeholder(crate::codegen_ssa::control::carrier_kind(
-                crate::codegen_ssa::HeldCarrier::of(target),
-            ))
-        })
-    }
-
-    pub(super) fn held(&self, id: ValueId) -> crate::codegen_ssa::HeldCarrier {
-        self.values
-            .repr(id)
-            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed)
-    }
-
     pub(super) fn lower_terminator(&mut self, source_block: BlockId, term: &Terminator) {
         let mut diagnostics = Vec::new();
         let lowered = {
@@ -525,26 +380,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
-                let linkage_abi = require_function_linkage_abi(self.func, self.backend);
-                let Some(&value) = values.first() else {
-                    self.build_empty_return();
-                    return;
-                };
-                // A multi-value return returns its first value.
-                let return_type = linkage_abi.return_type.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "LLVM function `{}` returns a value through a native-void linkage ABI",
-                        self.func.name
-                    )
-                });
-                let ret_val = self.coerce_value(
-                    self.resolve(value),
-                    self.held(value),
-                    Some(value),
-                    return_type,
-                );
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(Some(&ret_val)).unwrap();
+                self.emit_return(values.first().copied());
             }
             Terminator::Branch { .. }
             | Terminator::CondBranch { .. }

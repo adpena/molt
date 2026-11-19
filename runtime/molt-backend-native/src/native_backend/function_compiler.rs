@@ -2380,7 +2380,13 @@ impl SimpleBackend {
 
         if let (Some(entered), Some(sites)) = (owned_frame_entered, frame_sites) {
             let base = builder.use_var(entered);
-            emit_frame_record_pop(&mut builder, sites, thread_record_slot, base, frame_kind);
+            emit_frame_record_pop(
+                &mut builder,
+                sites,
+                FrameThread::Preloaded(thread_record_slot),
+                base,
+                frame_kind,
+            );
         }
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
