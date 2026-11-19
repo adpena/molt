@@ -12,8 +12,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         match op.opcode {
-            OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
-            OpCode::CallNative => self.emit_call_native(op),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
