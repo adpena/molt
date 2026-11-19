@@ -349,8 +349,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
-    /// Link shape of this function's trace entry. A runtime-linked entry has no shape.
-    pub(crate) frame_entry_kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     /// The function's physical parameters after the execution context, in
     /// its linkage row's order.
     pub(crate) entry: &'a [B::Value],
@@ -375,14 +373,13 @@ pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
 /// are walked in reverse postorder; each takes its parameters before any
 /// branch to it is built. An op the walker does not own refuses the
 /// function with a diagnostic naming its opcode, as does any other refusal.
-pub(crate) fn lower_function<B: CodegenBuilder>(
+pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     b: &mut B,
     input: FunctionInput<'_, B>,
 ) -> Result<(), Vec<String>> {
     let FunctionInput {
         func,
         plan,
-        frame_entry_kind,
         entry,
         linkage,
         functions,
@@ -401,6 +398,10 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
             .collect();
         return refuse(b, diagnostics);
     }
+    let layout = match super::frame::FrameLayout::for_function(func) {
+        Ok(layout) => layout,
+        Err(message) => return refuse(b, vec![message]),
+    };
     if !func.blocks.contains_key(&func.entry_block) {
         let message = format!(
             "{}: entry block {:?} is missing from TIR block map",
@@ -466,10 +467,32 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         entry_args.push(value);
     }
     let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
-        frame_entry_kind
+        layout.entry.kind()
     });
-    b.jump(blocks[&func.entry_block], &entry_args);
     let call_sites = Cell::new(0);
+    let homes = match (layout.homes, layout.entry) {
+        (None, _) => None,
+        (Some(_), super::frame::FrameEntry::Absent) => {
+            let slot = b.entry_slot("borrowed_frame_homes");
+            let mut cx = FunctionCx {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime,
+                linkage,
+                functions,
+                call_sites: &call_sites,
+            };
+            super::frame::lend_homes(b, slot, |b| {
+                returns::emit_return(&mut cx, b, own, None, frame.as_ref())
+            });
+            Some(slot)
+        }
+        (Some(_), _) => frame.as_ref().map(|owned| owned.slot),
+    };
+    b.set_frame_homes(homes);
+    b.jump(blocks[&func.entry_block], &entry_args);
     let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
     for &id in &rpo {
         b.switch_to_block(blocks[&id]);
@@ -490,7 +513,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
             call_sites: &call_sites,
         };
         for op in &block.ops {
-            if !cx.walker_owned_op(b, &at, op) {
+            if !cx.frame_home_op(b, op) && !cx.walker_owned_op(b, &at, op) {
                 cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
             }
         }
@@ -605,7 +628,6 @@ mod tests {
                 FunctionInput {
                     func,
                     plan: &plan,
-                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -742,7 +764,6 @@ mod tests {
                 FunctionInput {
                     func: &func,
                     plan: &plan,
-                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -760,6 +781,48 @@ mod tests {
     }
 
     const NONE: u64 = (0x7ff8 << 48) | (3 << 48);
+
+    #[test]
+    fn split_frame_publishes_location_and_returns_the_borrowed_binding() {
+        let mut func = TirFunction::new(
+            "chunk".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        func.execution_context = molt_ir::ir::ExecutionContextPolicy::Inherited;
+        let result = func.fresh_value();
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block
+            .ops
+            .push(op(OpCode::FrameSetLocation, &[], &[], Some(13)));
+        let mut load = op(OpCode::Copy, &[], &[result.0], Some(0));
+        load.origin = Some(molt_ir::OpKind::FrameHomeLoad);
+        block.ops.push(load);
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let mut record = [57u64, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT];
+        let run = walk_in(
+            &func,
+            &[],
+            ThreadState {
+                frame_top: record[1..].as_mut_ptr() as u64,
+                ..Default::default()
+            },
+        );
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert_eq!(
+            record,
+            [13, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT]
+        );
+        assert!(run.runtime_calls.is_empty());
+        let missing = walk(&func, &[]);
+        assert_eq!(missing.fact, Ok(()));
+        assert_eq!(missing.results, [Value::Word(NONE)]);
+        assert!(missing.runtime_calls.is_empty());
+    }
 
     /// The boxed bool `bit`.
     fn boxed_bool(bit: bool) -> u64 {
@@ -799,6 +862,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..Default::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -818,6 +882,7 @@ mod tests {
                 hint: 0,
                 raised: false,
                 work,
+                ..Default::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -872,6 +937,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..Default::default()
             };
             let run = walk_in(&func, &[OBJECT], state);
             assert_eq!(run.fact, Ok(()));

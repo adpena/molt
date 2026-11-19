@@ -13,6 +13,7 @@ pub(crate) struct NativeFunctionImports {
     refcount_admission: Option<Value>,
     thread_record: Option<Value>,
     pending_work: Option<Value>,
+    pub(crate) frame_homes: Option<cranelift_codegen::ir::StackSlot>,
 }
 
 impl Default for NativeFunctionImports {
@@ -22,6 +23,7 @@ impl Default for NativeFunctionImports {
             refcount_admission: None,
             thread_record: None,
             pending_work: None,
+            frame_homes: None,
         }
     }
 }

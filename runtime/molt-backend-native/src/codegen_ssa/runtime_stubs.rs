@@ -75,6 +75,9 @@ fn refcount(operation: RefcountOperation, word: u64) {
 extern "C" fn exception_pending(_: u64) -> u64 {
     runtime(RuntimeFn::ExceptionPending, &[])
 }
+extern "C" fn frame_home_load(_: u64, home: u64) -> u64 {
+    runtime(RuntimeFn::FrameHomeLoad, &[home])
+}
 extern "C" fn int_from_i64(_: u64, raw: u64) -> u64 {
     runtime(RuntimeFn::IntFromI64, &[raw])
 }
@@ -441,6 +444,7 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         .find(|function| function.linker_symbol() == name)?;
     Some(match function {
         RuntimeFn::ExceptionPending => exception_pending as *const u8,
+        RuntimeFn::FrameHomeLoad => frame_home_load as *const u8,
         RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
         RuntimeFn::IntAsI64 => int_as_i64 as *const u8,
         RuntimeFn::IsTruthy => is_truthy as *const u8,

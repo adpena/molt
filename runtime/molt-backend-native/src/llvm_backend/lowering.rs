@@ -480,7 +480,9 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     backend
         .builder
         .position_at_end(llvm_fn.get_first_basic_block().expect("physical entry"));
-    lowering.initialize_owned_execution_frame();
+    let frame_layout = crate::codegen_ssa::frame::FrameLayout::for_function(func)
+        .map_err(|message| LlvmLoweringError::new(vec![message]))?;
+    lowering.initialize_owned_execution_frame(frame_layout);
     if let Some(trampoline_bb) = lowering.entry_trampoline_bb {
         lowering.enter_through_trampoline(trampoline_bb);
     }

@@ -142,6 +142,15 @@ impl<'ctx> LlvmBackend<'ctx> {
     }
 }
 
+impl<'ctx> frame::RecordPlacement for LlvmCodegen<'_, 'ctx> {
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.state.frame_homes.get()
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.state.frame_homes.set(slot);
+    }
+}
+
 impl<'ctx> FramePlacement for LlvmCodegen<'_, 'ctx> {
     type Word = IntValue<'ctx>;
 

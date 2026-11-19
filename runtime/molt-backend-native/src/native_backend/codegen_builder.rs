@@ -744,6 +744,15 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
 }
 
+impl crate::codegen_ssa::frame::RecordPlacement for NativeCodegen<'_, '_> {
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.imports.frame_homes
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.imports.frame_homes = slot;
+    }
+}
+
 impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
     fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
         load_stateful_frame_size(self.module, self.words.builder, symbol)
@@ -1005,6 +1014,7 @@ pub(crate) mod machine {
         pub(crate) hint: u8,
         pub(crate) raised: bool,
         pub(crate) work: u32,
+        pub(crate) frame_top: u64,
     }
 
     /// [`run_function`] in the thread state `state`.
@@ -1060,6 +1070,7 @@ pub(crate) mod machine {
         let code = module.get_finalized_function(id);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        record[molt_codegen_abi::THREAD_RECORD_FRAME_TOP_OFFSET as usize / 8] = state.frame_top;
         let work = Box::new(state.work);
         record[molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize / 8] =
             std::ptr::from_ref(&*work) as u64;

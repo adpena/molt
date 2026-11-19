@@ -29,6 +29,7 @@ pub(in crate::llvm_backend) type BlockParams<'ctx> =
 pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
     /// The invocation's thread record, loaded in the true entry.
     thread_record: Cell<Option<PointerValue<'ctx>>>,
+    pub(super) frame_homes: Cell<Option<PointerValue<'ctx>>>,
     /// The refcount admission word, read once in the entry.
     refcount_admission: Cell<Option<IntValue<'ctx>>>,
     /// Refcount sites emitted in this function
@@ -47,6 +48,7 @@ impl LlvmFunctionState<'_> {
     pub(in crate::llvm_backend) fn new(inline_fast_paths: bool) -> Self {
         Self {
             thread_record: Cell::new(None),
+            frame_homes: Cell::new(None),
             refcount_admission: Cell::new(None),
             refcount_sites: Cell::new(0),
             inline_fast_paths,

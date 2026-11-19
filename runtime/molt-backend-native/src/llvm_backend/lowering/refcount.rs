@@ -38,17 +38,6 @@ impl<'ctx> LlvmRefcountSite<'ctx> {
 /// 0.3 GB with calls).
 pub(super) const INLINE_REFCOUNT_SITES_PER_FUNCTION: usize = 512;
 
-impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// One refcount site at the current insertion point; see
-    /// `LlvmCodegen::llvm_refcount_site`.
-    pub(super) fn ensure_refcount_site(
-        &self,
-        operation: RefcountOperation,
-    ) -> LlvmRefcountSite<'ctx> {
-        self.codegen().llvm_refcount_site(operation)
-    }
-}
-
 impl<'ctx> LlvmBackend<'ctx> {
     pub(super) fn emit_refcount_admission(&self, builder: &Builder<'ctx>) -> IntValue<'ctx> {
         if nanbox::MOLT_REFCOUNT_ATOMIC {
