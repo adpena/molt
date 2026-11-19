@@ -27,6 +27,8 @@ pub(in crate::llvm_backend) type BlockParams<'ctx> =
 /// Per-function instruction-selection state: what one LLVM function reads
 /// once and reuses, and how many reference-count sites it holds.
 pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
+    /// The invocation's thread record, loaded in the true entry.
+    thread_record: Cell<Option<PointerValue<'ctx>>>,
     /// The refcount admission word, read once in the entry.
     refcount_admission: Cell<Option<IntValue<'ctx>>>,
     /// Refcount sites emitted in this function
@@ -41,6 +43,7 @@ pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
 impl LlvmFunctionState<'_> {
     pub(in crate::llvm_backend) fn new(inline_fast_paths: bool) -> Self {
         Self {
+            thread_record: Cell::new(None),
             refcount_admission: Cell::new(None),
             refcount_sites: Cell::new(0),
             inline_fast_paths,
@@ -60,6 +63,23 @@ pub(in crate::llvm_backend) struct LlvmCodegen<'a, 'ctx> {
     pub(in crate::llvm_backend) state: &'a LlvmFunctionState<'ctx>,
 }
 
+/// A fresh builder in the target function's true entry, even before body
+/// lowering positions the module's instruction builder.
+pub(super) fn entry_builder<'ctx>(
+    context: &'ctx inkwell::context::Context,
+    function: FunctionValue<'ctx>,
+) -> inkwell::builder::Builder<'ctx> {
+    let builder = context.create_builder();
+    let entry = function
+        .get_first_basic_block()
+        .expect("llvm function missing entry block");
+    match entry.get_first_instruction() {
+        Some(first) => builder.position_before(&first),
+        None => builder.position_at_end(entry),
+    }
+    builder
+}
+
 impl<'ctx> LlvmCodegen<'_, 'ctx> {
     /// The function the builder is positioned in.
     fn function(&self) -> FunctionValue<'ctx> {
@@ -73,18 +93,27 @@ impl<'ctx> LlvmCodegen<'_, 'ctx> {
     /// A builder positioned before the first instruction of the current
     /// function's entry block.
     pub(in crate::llvm_backend) fn entry_builder(&self) -> inkwell::builder::Builder<'ctx> {
-        let builder = self.words.context.create_builder();
-        let entry = self
-            .function()
-            .get_first_basic_block()
-            .expect("llvm function missing entry block");
-        match entry.get_first_instruction() {
-            Some(first) => builder.position_before(&first),
-            None => builder.position_at_end(entry),
-        }
-        builder
+        entry_builder(self.words.context, self.function())
     }
 
+    pub(super) fn thread_record(&self) -> PointerValue<'ctx> {
+        if let Some(record) = self.state.thread_record.get() {
+            return record;
+        }
+        let builder = self.entry_builder();
+        let context = self.words.context;
+        let token = self.function().get_first_param().unwrap().into_int_value();
+        let bits = super::refcount::thread_record_bits(&builder, context, token);
+        let record = builder
+            .build_int_to_ptr(
+                bits,
+                context.ptr_type(inkwell::AddressSpace::default()),
+                "thread_record_ptr",
+            )
+            .unwrap();
+        self.state.thread_record.set(Some(record));
+        record
+    }
     /// One refcount site of this function: the admission word, read once in
     /// the entry, and the inline transition, or its one out-of-line copy once
     /// the function holds `INLINE_REFCOUNT_SITES_PER_FUNCTION` sites.
@@ -487,6 +516,41 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap()
             .try_as_basic_value()
             .basic()
+    }
+
+    fn thread_record_word(&mut self) -> Self::Word {
+        let record = self.thread_record();
+        self.words
+            .builder
+            .build_ptr_to_int(record, self.words.context.i64_type(), "thread_record_word")
+            .unwrap()
+    }
+    fn load_byte(&mut self, address: IntValue<'ctx>, offset: i32) -> Self::Value {
+        let pointer = self.words.address(address, offset);
+        self.words
+            .builder
+            .build_load(self.words.context.i8_type(), pointer, "record_byte")
+            .unwrap()
+    }
+    fn call_cold(
+        &mut self,
+        callee: FunctionValue<'ctx>,
+        args: &[Self::Value],
+    ) -> Option<Self::Value> {
+        let args: Vec<_> = args.iter().copied().map(Into::into).collect();
+        let call = self
+            .words
+            .builder
+            .build_execution_call(callee, &args, "cold_call")
+            .unwrap();
+        call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.words.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        call.try_as_basic_value().basic()
     }
 
     fn create_block(&mut self, name: &str) -> BasicBlock<'ctx> {

@@ -209,6 +209,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Interpreter {
         pub(crate) runtime: RuntimeModel,
+        thread_record_slot: Option<usize>,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -290,6 +291,29 @@ pub(crate) mod tests {
         type Slot = usize;
         type Callee = ModelCallee;
         type RefcountSite = RefcountOperation;
+        fn thread_record_word(&mut self) -> u64 {
+            let slot = match self.thread_record_slot {
+                Some(slot) => slot,
+                None => {
+                    let words =
+                        (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET / 8 + 1) as u32;
+                    let slot = self.entry_slot_array(words, "thread_record");
+                    self.thread_record_slot = Some(slot);
+                    slot
+                }
+            };
+            SLOT_BASE + 8 * slot as u64
+        }
+        fn load_byte(&mut self, address: u64, offset: i32) -> Value {
+            let at = address
+                .checked_add_signed(i64::from(offset))
+                .expect("test address");
+            let byte = self.word(at).to_ne_bytes()[(at % 8) as usize];
+            Value::Narrow(u32::from(byte))
+        }
+        fn call_cold(&mut self, callee: Self::Callee, args: &[Value]) -> Option<Value> {
+            self.call(callee, args)
+        }
         fn create_block(&mut self, _name: &str) -> u32 {
             self.block()
         }
@@ -725,6 +749,7 @@ pub(crate) mod tests {
         /// `molt_int_from_i64` returns None and a byte-literal constructor a
         /// nonzero status, each with MemoryError pending.
         pub(crate) fail_allocation: bool,
+        pending_exception: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
         /// The positional words pushed onto the open CallArgs builder.
@@ -745,7 +770,10 @@ pub(crate) mod tests {
                     self.released.push(words.collect());
                     return None;
                 }
-                RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes if self.fail_allocation => 1,
+                RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes if self.fail_allocation => {
+                    self.pending_exception = true;
+                    1
+                }
                 // Writes the new object through the out-pointer; status 0.
                 RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes => {
                     let bytes = memory.bytes(args[0], args[1] as usize);
@@ -755,7 +783,11 @@ pub(crate) mod tests {
                 RuntimeFn::BigintFromBytes => {
                     literal_word(function, &memory.bytes(args[0], args[1] as usize))
                 }
-                RuntimeFn::IntFromI64 if self.fail_allocation => NONE_WORD,
+                RuntimeFn::ExceptionPending => u64::from(self.pending_exception),
+                RuntimeFn::IntFromI64 if self.fail_allocation => {
+                    self.pending_exception = true;
+                    NONE_WORD
+                }
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);
                     HEAP_INT
