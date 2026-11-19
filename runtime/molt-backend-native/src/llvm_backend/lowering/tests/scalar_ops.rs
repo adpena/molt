@@ -873,7 +873,10 @@ fn lower_unary_carrier_fixture(
             source_span: None,
         },
     );
-    let result_ty = lowering.repr_ty(result);
+    let result_ty = lowering.values.repr(result).map_or(
+        TirType::DynBox,
+        crate::codegen_ssa::HeldCarrier::machine_type,
+    );
     let bits = lowering.ensure_i64(lowering.values.value(result).unwrap());
     backend.builder.build_return(Some(&bits)).unwrap();
     assert!(lowering.diagnostics.borrow().is_empty());

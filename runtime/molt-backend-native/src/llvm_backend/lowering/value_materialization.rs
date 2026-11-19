@@ -64,19 +64,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         cx.runtime_call(&mut b, op, callee, args, custody, label, call_name);
     }
 
-    /// `emit_borrowed_runtime_call` over every operand of `op`, in order.
-    pub(super) fn emit_positional_runtime_call(
-        &mut self,
-        op: &TirOp,
-        callee: FunctionValue<'ctx>,
-        custody: ResultCustody,
-        label: &str,
-        call_name: &str,
-    ) {
-        let (mut cx, mut b) = self.walker();
-        cx.positional_runtime_call(&mut b, op, callee, custody, label, call_name);
-    }
-
     // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
@@ -229,17 +216,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Helpers ──
 
-    /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
-    /// it is held raw, `DynBox` when it is a boxed word. It names a
-    /// representation for lowering helpers, never a proven Python type; that
-    /// is `TirFunction::value_types`.
-    pub(super) fn repr_ty(&self, id: ValueId) -> TirType {
-        self.values.repr(id).map_or(
-            TirType::DynBox,
-            crate::codegen_ssa::HeldCarrier::machine_type,
-        )
-    }
-
     /// Resolve a ValueId to its LLVM value.
     ///
     /// If the value was never defined, record a fatal diagnostic. The fallback
@@ -261,16 +237,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// If it's already i64, return as-is. Otherwise, cast/extend.
     pub(super) fn ensure_i64(&self, val: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
         crate::codegen_ssa::scalar::word_of(&mut self.codegen(), val)
-    }
-
-    /// The walker's async-work poll (`FunctionCx::async_work_poll`).
-    pub(super) fn emit_async_work_poll(
-        &mut self,
-        payload: bool,
-        cold_location: Option<i64>,
-    ) -> BasicValueEnum<'ctx> {
-        let (mut cx, mut b) = self.walker();
-        cx.async_work_poll(&mut b, payload, cold_location).into()
     }
 
     /// The module's declaration of runtime entry `function` (HF-821): its

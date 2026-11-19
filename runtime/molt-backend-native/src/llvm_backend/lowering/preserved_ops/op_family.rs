@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn representative_kinds_route_to_their_owning_family() {
         assert_eq!(
-            llvm_preserved_op_family(OpKind::GuardType),
+            llvm_preserved_op_family(OpKind::CallAsync),
             Some(LlvmPreservedOpFamily::Direct),
         );
         assert_eq!(

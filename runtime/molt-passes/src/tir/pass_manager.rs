@@ -803,6 +803,11 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
                 }
             }
         }),
+        // Last: the guard-tag proof reads the final definitions, so each
+        // profile-only guard is marked once for every backend. `OpsOnly`.
+        pass("guard_profile_marking", OpsOnly, |f, _am, _tti| {
+            passes::guard_profile::run(f)
+        }),
     ];
     PassManager::new(passes, target_info)
 }
@@ -1134,7 +1139,8 @@ mod tests {
                 "frame_home_nothrow",
                 "check_exception_elim_post_drop",
                 "frame_home_placement",
-                "frame_location_placement"
+                "frame_location_placement",
+                "guard_profile_marking"
             ]
         );
 
@@ -1308,7 +1314,7 @@ mod tests {
         // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 8);
+        assert_eq!(dstats.len(), 9);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

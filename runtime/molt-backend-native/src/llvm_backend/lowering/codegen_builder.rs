@@ -42,6 +42,8 @@ pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
     /// The pending-work word's address the record lends, loaded once in the
     /// entry right after the record; only functions that poll read it.
     pending_work_ptr: Cell<Option<PointerValue<'ctx>>>,
+    /// The profile-enabled word, loaded once in the true entry.
+    profile_enabled: Cell<Option<IntValue<'ctx>>>,
 }
 
 impl LlvmFunctionState<'_> {
@@ -54,6 +56,7 @@ impl LlvmFunctionState<'_> {
             inline_fast_paths,
             byte_constants: Cell::new(0),
             pending_work_ptr: Cell::new(None),
+            profile_enabled: Cell::new(None),
         }
     }
 }
@@ -903,6 +906,33 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
     /// function's refcount sites, as each site body's retains do.
     fn refcount_admission(&mut self) -> IntValue<'ctx> {
         self.llvm_refcount_site(RefcountOperation::Retain).admission
+    }
+
+    /// One load in the true entry, before its first instruction, shared by
+    /// every guard of the function.
+    fn profile_enabled(&mut self) -> IntValue<'ctx> {
+        if let Some(flag) = self.state.profile_enabled.get() {
+            return flag;
+        }
+        let function = self
+            .words
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .expect("the profile flag is read inside a function");
+        let entry = function.get_first_basic_block().expect("LLVM entry");
+        let builder = self.words.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(first) => builder.position_before(&first),
+            None => builder.position_at_end(entry),
+        }
+        let flag = self.backend.load_thread_record_word(
+            &builder,
+            molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
+            "runtime_profile_enabled",
+        );
+        self.state.profile_enabled.set(Some(flag));
+        flag
     }
 
     /// One always-inlined internal body per site body (`site_helper`), so

@@ -597,6 +597,11 @@ pub const NATIVE_SYMBOL_ATTR: &str = "native_symbol";
 /// The ABI token of a `CallNative` (`crate::native_callable_abi`), which names
 /// the call's machine signature.
 pub const NATIVE_ABI_ATTR: &str = "native_abi";
+/// On a `GuardType` or `GuardTag` `Copy`: the function proves the guard's tag
+/// a valid builtin tag, so a mismatch only profiles. A backend emits the
+/// guard's runtime call behind the profile flag. Set once on final TIR by
+/// `guard_elision::mark_profile_only_guards`; never re-derived by a backend.
+pub const GUARD_PROFILE_ONLY_ATTR: &str = "guard_profile_only";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
