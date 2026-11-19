@@ -448,6 +448,32 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .get(self.words.context, &self.backend.module, function)
     }
 
+    /// The module's declaration of the compiled function, from the backend's
+    /// own copy of the row (`linked_compiled_function`).
+    fn function_callee(
+        &mut self,
+        symbol: &str,
+        abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+    ) -> FunctionValue<'ctx> {
+        debug_assert_eq!(
+            self.backend.function_linkage_abis.get(symbol),
+            Some(abi),
+            "`{symbol}` is declared by its program row"
+        );
+        crate::llvm_backend::lowering::linked_compiled_function(self.backend, symbol)
+    }
+
+    fn function_address(&mut self, callee: FunctionValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_ptr_to_int(
+                callee.as_global_value().as_pointer_value(),
+                self.words.context.i64_type(),
+                "target_code",
+            )
+            .unwrap()
+    }
+
     fn call(
         &mut self,
         callee: FunctionValue<'ctx>,

@@ -40,6 +40,15 @@ impl<'b> NativeCodegen<'_, 'b> {
         self.words.builder.ins()
     }
 
+    fn frame_sites(&mut self) -> NativeFrameSites {
+        NativeFrameSites {
+            retain: self.refcount_site(RefcountOperation::Retain),
+            release: self.refcount_site(RefcountOperation::Release),
+            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
+        }
+    }
+
     fn value_type(&self, value: Value) -> types::Type {
         self.words.builder.func.dfg.value_type(value)
     }
@@ -287,6 +296,35 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             function,
         )
     }
+    /// Imported by its attached execution symbol: the module merges the
+    /// declaration with the body's definition when the body is in it.
+    fn function_callee(
+        &mut self,
+        symbol: &str,
+        abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+    ) -> FuncRef {
+        let machine = |ty: &crate::tir::types::TirType| {
+            Self::machine_type(crate::codegen_ssa::control::carrier_kind(
+                crate::codegen_ssa::HeldCarrier::of(ty),
+            ))
+        };
+        let mut signature = self.module.make_signature();
+        for ty in &abi.param_types {
+            signature.params.push(AbiParam::new(machine(ty)));
+        }
+        if let Some(ty) = &abi.return_type {
+            signature.returns.push(AbiParam::new(machine(ty)));
+        }
+        let id =
+            declare_compiled_execution_function(self.module, symbol, Linkage::Import, &signature)
+                .unwrap_or_else(|error| panic!("declare compiled function `{symbol}`: {error}"));
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
+    }
+    fn function_address(&mut self, callee: FuncRef) -> Value {
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().func_addr(pointer, callee)
+    }
     /// An attached callee takes the logical arguments here; the function's
     /// finalization prepends the execution context (`complete_attached_calls`).
     fn call(&mut self, callee: FuncRef, args: &[Value]) -> Option<Value> {
@@ -400,12 +438,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     /// body needs no out-of-line copy. Its sites carry the admission, which
     /// is the trailing word.
     fn site(&mut self, body: SiteBody, args: &[Value]) -> Value {
-        let sites = NativeFrameSites {
-            retain: self.refcount_site(RefcountOperation::Retain),
-            release: self.refcount_site(RefcountOperation::Release),
-            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
-            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
-        };
+        let sites = self.frame_sites();
         let mut sealed = BTreeSet::new();
         match (body, args) {
             (SiteBody::FieldGet { offset }, &[object, _]) => {
@@ -563,6 +596,31 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn unreachable(&mut self) {
         self.ins().trap(UNREACHABLE_TRAP);
+    }
+}
+
+impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn place_task(
+        &mut self,
+        layout: molt_codegen_abi::task_site::TaskConstructorLayout,
+        poll: Value,
+        frame_bytes: Value,
+        operands: crate::codegen_ssa::task::TaskOperands<Value>,
+        _name: &str,
+    ) -> Value {
+        let frames = self.frame_sites();
+        let tasks = NativeTaskSites::with_imports(|entry| self.runtime_callee(entry));
+        emit_task_construction(
+            self.words.builder,
+            &mut BTreeSet::new(),
+            frames,
+            tasks,
+            layout,
+            poll,
+            frame_bytes,
+            operands.context,
+            molt_codegen_abi::task_site::TaskPayload::Words(&operands.words),
+        )
     }
 }
 

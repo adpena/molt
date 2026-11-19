@@ -67,7 +67,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let (mut cx, mut b) = self.walker();
                 cx.operator_op(&mut b, op);
             }
-            OpCode::CodeIs => self.emit_code_is(op),
+            OpCode::CodeIs => self.walker_op(|cx, b| cx.code_is_op(b, op)),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
@@ -112,7 +112,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- Call --
-            OpCode::Call => self.emit_call(op),
+            OpCode::Call => self.walker_op(|cx, b| cx.call_op(b, op)),
 
             // -- DeleteVar local-slot transition --
             // DeleteVar defines the local's new SSA value as the missing sentinel

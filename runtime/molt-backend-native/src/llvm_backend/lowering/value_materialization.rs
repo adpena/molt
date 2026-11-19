@@ -5,7 +5,6 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use inkwell::values::BasicValue;
 use molt_codegen_abi::task_site::TaskConstructorLayout;
-use std::collections::BTreeMap;
 
 /// A runtime-call argument on LLVM: the walker's, over LLVM values.
 pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
@@ -342,6 +341,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             values: &mut self.values,
             diagnostics: &self.diagnostics,
             runtime: &self.backend.runtime_callable_symbols,
+            linkage: &self.backend.function_linkage_abis,
+            functions: &self.backend.function_table,
             call_sites: &self.call_site_counter,
         };
         (cx, codegen)
@@ -520,36 +521,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 default,
                 default_args,
             } => {
-                // Generator/coroutine `_poll` dispatch. The runtime restores
-                // the saved resume state across the suspend boundary, so the
-                // dispatch reads it from the frame header (no SSA value):
-                // `molt_obj_get_state(self)`. State 0 (initial entry) takes
-                // the `default` edge; every saved resume state takes the
-                // matching suspend op's resume continuation, whose block
-                // parameters the edge's arguments fill.
-                let self_bits = self.poll_frame_address();
-                let get_state_fn = self.ensure_runtime_import(RuntimeFn::ObjGetState);
-                let state_val = self
-                    .backend
-                    .builder
-                    .build_execution_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
+                let frame = self.poll_frame_address();
                 let mut diagnostics = Vec::new();
-                {
-                    let mut codegen = self.codegen();
-                    self.edges().switch(
-                        &mut codegen,
-                        source_block,
-                        state_val,
-                        cases,
-                        (*default, default_args),
-                        "state-dispatch",
-                        &mut diagnostics,
-                    );
-                }
+                self.edges().dispatch_state(
+                    &mut self.codegen(),
+                    source_block,
+                    frame,
+                    cases,
+                    (*default, default_args),
+                    &mut diagnostics,
+                );
                 self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
@@ -936,57 +917,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         payload_operands: &[ValueId],
         call_name: &str,
     ) -> BasicValueEnum<'ctx> {
-        use molt_codegen_abi::task_site::PayloadCustody;
-        layout.validate_closure_size(
-            closure_size,
-            payload_operands.len(),
-            false,
-            crate::GENERATOR_CONTROL_BYTES,
-        );
-        // A value repeated in the payload keeps one identity (`SameAs` its first
-        // slot). A full-range raw int is boxed by the task once it exists, so a
-        // failed allocation mints nothing; any other scalar boxes by identity.
-        let mut first_slot: BTreeMap<ValueId, usize> = BTreeMap::new();
-        let mut payload: Vec<(inkwell::values::IntValue<'ctx>, PayloadCustody)> =
-            Vec::with_capacity(payload_operands.len());
-        for (slot, &operand) in payload_operands.iter().enumerate() {
-            if let Some(&first) = first_slot.get(&operand) {
-                payload.push((payload[first].0, PayloadCustody::SameAs(first)));
-                continue;
-            }
-            first_slot.insert(operand, slot);
-            let ty = self.repr_ty(operand);
-            if ty == TirType::I64 && !self.repr_facts.is_inline_safe_int(operand) {
-                let raw = self.ensure_i64(self.resolve(operand));
-                payload.push((raw, PayloadCustody::RawInt));
-                continue;
-            }
-            let word = self.materialize_dynbox_bits(operand);
-            let custody = if Self::tir_type_is_dynbox_like(&ty)
-                && !self.repr_facts.boxed_refcount_is_noop(operand)
-            {
-                PayloadCustody::Borrowed
-            } else {
-                PayloadCustody::Unowned
-            };
-            payload.push((word, custody));
-        }
-        let (source, context) = match function {
-            Some(function) => (
-                super::task_site::TaskContextSource::Function,
-                Some(self.materialize_dynbox_bits(function)),
-            ),
-            None => (super::task_site::TaskContextSource::NoFrame, None),
-        };
-        self.emit_task_construction(
-            layout,
-            poll_addr,
-            frame_bytes,
-            source,
-            context,
-            molt_codegen_abi::task_site::TaskPayload::Words(&payload),
-            call_name,
-        )
-        .into()
+        use crate::codegen_ssa::task::TaskPlacement;
+        let (cx, mut b) = self.walker();
+        let args = cx.task_operands(&mut b, layout, closure_size, function, payload_operands);
+        b.place_task(layout, poll_addr, frame_bytes, args, call_name)
+            .into()
     }
 }

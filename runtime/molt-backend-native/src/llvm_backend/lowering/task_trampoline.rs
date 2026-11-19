@@ -77,7 +77,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             arguments: trampoline.get_nth_param(2).unwrap().into_int_value(),
             count: arity,
         };
-        let result = self.call_task_site(
+        let result = self.backend.call_task_site(
             &builder,
             refcount_admission,
             layout,
@@ -85,8 +85,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .as_pointer_value()
                 .const_to_int(i64_ty),
             frame_size,
-            super::task_site::TaskContextSource::PendingInvocation,
-            Some(thread),
+            molt_codegen_abi::task_site::TaskFrameContext::PendingInvocation { thread },
             payload,
             "task_new",
         );

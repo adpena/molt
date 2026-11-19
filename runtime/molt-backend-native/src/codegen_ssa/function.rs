@@ -7,7 +7,9 @@
 //! parts of the backend's function state.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use molt_codegen_abi as nanbox;
@@ -60,14 +62,19 @@ impl ResultCustody {
 }
 
 /// One function being lowered: its TIR, carrier plan, lowered values and
-/// diagnostics, the runtime entries the selected runtime provides, and the
-/// count of inline-cache call sites numbered so far.
+/// diagnostics; the program facts it reads (the runtime entries the selected
+/// runtime provides, each compiled function's linkage row, the function
+/// table); and the count of inline-cache call sites numbered so far.
 pub(crate) struct FunctionCx<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
     pub(crate) values: &'a mut ValueTable<B::Value>,
     pub(crate) diagnostics: &'a RefCell<Vec<String>>,
     pub(crate) runtime: &'a RuntimeFnSet,
+    /// Each compiled function's frozen linkage row, by linker symbol.
+    pub(crate) linkage: &'a BTreeMap<String, NativeFunctionLinkageAbi>,
+    /// The linker symbol of each typed callee.
+    pub(crate) functions: &'a molt_ir::FunctionTable,
     pub(crate) call_sites: &'a Cell<usize>,
 }
 
@@ -340,6 +347,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &std::cell::Cell::new(0),
             };
             let args = [RuntimeArg::Operand(ValueId(1))];
@@ -385,6 +394,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &std::cell::Cell::new(0),
             };
             cx.refcount_op(b, &op(&[1], &[2]), RefcountOperation::Retain);
@@ -403,5 +414,91 @@ mod tests {
             "a raw int has no reference count"
         );
         assert_eq!(run.results, [Value::Word(7), Value::Word(NONE_WORD)]);
+    }
+
+    #[test]
+    fn only_the_exact_scheduler_sentinel_suspends() {
+        let poll = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = plan(); |b, inputs| -> Option<HeldCarrier> {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &std::cell::Cell::new(0),
+            };
+            let mut test = op(&[0], &[2]);
+            test.opcode = OpCode::IsPending;
+            cx.is_pending(b, &test);
+            assert!(diagnostics.borrow().is_empty());
+            (cx.values.repr(ValueId(2)), vec![cx.values.value(ValueId(2)).unwrap()])
+        });
+        for (object, pending) in [
+            (molt_codegen_abi::pending_bits() as u64, true),
+            (molt_codegen_abi::NAMESPACE_SLOT_UNBOUND, false),
+            (NONE_WORD, false),
+            (OBJECT, false),
+        ] {
+            let run = both(&poll, &[Value::Word(object), Value::Word(7)]);
+            assert_eq!(run.fact, Some(HeldCarrier::RawBool));
+            assert_eq!(run.results, [Value::Bit(pending)]);
+            assert!(run.runtime_calls.is_empty());
+            assert!(run.refcounts.is_empty());
+        }
+    }
+    #[test]
+    fn task_payload_defers_wide_integer_boxing_and_reuses_the_first_owner() {
+        use molt_codegen_abi::task_site::{
+            PayloadCustody, TaskConstructorLayout, TaskFrameContext,
+        };
+
+        let pack = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = ProducerCarrierPlan::default(); |b, inputs| -> Vec<PayloadCustody> {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &std::cell::Cell::new(0),
+            };
+            let ids = [ValueId(1), ValueId(0), ValueId(1), ValueId(0)];
+            let args = cx.task_operands(b, TaskConstructorLayout::future(), 32, Some(ValueId(0)), &ids);
+            let TaskFrameContext::Function(context) = args.context else {
+                panic!("alloc_task must carry its borrowed function");
+            };
+            let custody = args.words.iter().map(|(_, custody)| *custody).collect();
+            let mut result = vec![b.word_value(context)];
+            result.extend(args.words.into_iter().map(|(word, _)| b.word_value(word)));
+            assert!(diagnostics.borrow().is_empty());
+            (custody, result)
+        });
+        let wide = (1u64 << 60) + 1;
+        let run = both(&pack, &[Value::Word(OBJECT), Value::Word(wide)]);
+        assert_eq!(
+            run.fact,
+            [
+                PayloadCustody::RawInt,
+                PayloadCustody::Borrowed,
+                PayloadCustody::SameAs(0),
+                PayloadCustody::SameAs(1),
+            ]
+        );
+        assert_eq!(
+            run.results,
+            [OBJECT, wide, OBJECT, wide, OBJECT].map(Value::Word)
+        );
+        assert!(
+            run.runtime_calls.is_empty(),
+            "boxing before task allocation would leak on failure"
+        );
+        assert!(run.refcounts.is_empty());
     }
 }

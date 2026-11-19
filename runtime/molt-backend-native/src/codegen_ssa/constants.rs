@@ -191,6 +191,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &std::cell::Cell::new(0),
             };
             lower(&mut cx, b, op);

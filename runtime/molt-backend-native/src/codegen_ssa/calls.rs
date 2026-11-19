@@ -8,8 +8,9 @@ use molt_ir::runtime_fn_generated::{
     RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeCallForm, RuntimeFn, RuntimeReturnContract,
 };
 
-use super::builder::{CodegenBuilder, MachineKind, SiteBody};
-use super::custody::{CallTarget, Custody, RuntimeArg, spill_words};
+use super::builder::{CodegenBuilder, IntBinary, IntComparison, MachineKind, SiteBody};
+use super::control;
+use super::custody::{CallTarget, Custody, RuntimeArg, release_call_inputs, spill_words};
 use super::function::{FunctionCx, ResultCustody};
 use super::object::{raw_name_pointer, with_owned_name};
 use super::scalar;
@@ -21,6 +22,7 @@ use crate::tir::values::ValueId;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::method_site::{method_site_record_size, write_method_site_record_image};
 use molt_codegen_abi::word::WordComparison;
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::tir::ops::BuiltinCallTarget;
 
 /// The boxed word of `None`.
@@ -361,18 +363,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 
     /// `Call`: an ordinary source call, a builder-consuming call, a guarded
-    /// call, a call of a runtime entry by its role, or a dynamic call of
-    /// operand 0. `target` is the linker symbol the op names (its typed
-    /// callee or `_var`) and `linked` whether the program has that symbol's
-    /// compiled linkage row. Answers false, having emitted nothing, for a
-    /// direct call of linked compiled code, which the backend lowers.
-    pub(crate) fn call_op(
-        &mut self,
-        b: &mut B,
-        op: &TirOp,
-        target: Option<&str>,
-        linked: bool,
-    ) -> bool {
+    /// call, a direct call of linked compiled code, a call of a runtime entry
+    /// by its role, or a dynamic call of operand 0.
+    pub(crate) fn call_op(&mut self, b: &mut B, op: &TirOp) {
         let origin = op.origin;
         if matches!(origin, Some(OpKind::CallFunc | OpKind::CallFunction))
             && !op.operands.is_empty()
@@ -385,7 +378,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             };
             let result = b.word_value(result);
             self.bind_owned(b, op, result);
-            return true;
+            return;
         }
         if matches!(origin, Some(OpKind::CallBind | OpKind::CallIndirect)) && op.operands.len() >= 2
         {
@@ -412,7 +405,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             );
             let result = b.word_value(result);
             self.bind_owned(b, op, result);
-            return true;
+            return;
         }
         if origin == Some(OpKind::CallGuarded) && !op.operands.is_empty() {
             // A guarded call adopts as an instruction, whatever it resolves
@@ -424,9 +417,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             };
             let result = b.word_value(result);
             self.bind_owned(b, op, result);
-            return true;
+            return;
         }
-        let Some(target) = target else {
+        let Some(target) = self.call_target(op) else {
             if op.operands.is_empty() {
                 // No operands and no target: None.
                 self.bind_none(b, op);
@@ -435,10 +428,12 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 let result = b.word_value(result);
                 self.bind_owned(b, op, result);
             }
-            return true;
+            return;
         };
-        if linked {
-            return false;
+        if let Some(abi) = self.linkage.get(&target) {
+            let abi = abi.clone();
+            self.compiled_call(b, op, &target, &abi, &op.operands, 0);
+            return;
         }
         // Source functions use exact native linkage. Only the external or
         // runtime CALL role, or a first-class TIR `Call` whose own identity
@@ -447,7 +442,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         // signature.
         let runtime_role = match origin {
             Some(kind) => kind == OpKind::Call,
-            None => crate::tir::call_targets::runtime_call_symbol(op) == Some(target),
+            None => crate::tir::call_targets::runtime_call_symbol(op) == Some(target.as_str()),
         };
         // The runtime entry decoded at TIR ingest (HF-821 B1), admitted only
         // at its exact arity.
@@ -466,7 +461,163 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             ));
             self.bind_none(b, op);
         }
-        true
+    }
+
+    /// The linker symbol a call names: its typed callee's row (HF-847), else
+    /// the symbol an optional reference keeps (`s_value`, HF-821 B1), else
+    /// `_var`.
+    pub(crate) fn call_target(&self, op: &TirOp) -> Option<String> {
+        if let Some(callee) = op.callee {
+            return Some(self.functions.symbol(callee).to_owned());
+        }
+        ["s_value", "_var"]
+            .iter()
+            .find_map(|key| match op.attrs.get(*key) {
+                Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
+                _ => None,
+            })
+    }
+
+    /// `value`, held as `source`, converted for a destination of type
+    /// `target` (`control::coerce`); a refused conversion is a fatal
+    /// diagnostic and a placeholder.
+    pub(crate) fn coerce(
+        &self,
+        b: &mut B,
+        value: B::Value,
+        source: HeldCarrier,
+        source_id: Option<ValueId>,
+        target: &TirType,
+    ) -> B::Value {
+        control::coerce(b, self.plan, value, source, source_id, target).unwrap_or_else(|| {
+            self.fatal(format!(
+                "no conversion of a value held as {source:?} to {target:?}"
+            ));
+            b.placeholder(control::carrier_kind(HeldCarrier::of(target)))
+        })
+    }
+
+    /// `CodeIs` (HF-821 D4): the function word's code pointer, the first
+    /// word of the function object, equals the compiled target's address.
+    pub(crate) fn code_is_op(&mut self, b: &mut B, op: &TirOp) {
+        let Some((target, abi)) = self.linked_target(op) else {
+            self.fatal("CodeIs names no compiled target");
+            return;
+        };
+        let callee = b.function_callee(&target, &abi);
+        let operand = self.operands().resolve(b, op.operands[0]);
+        let word = scalar::word_of(b, operand);
+        let mask = b.constant(molt_codegen_abi::POINTER_MASK);
+        let address = b.int_binary(IntBinary::And, word, mask, false);
+        let object = b.word_to_address(address);
+        let code = b.load_word(object, 0);
+        let expected = b.function_address(callee);
+        let same = b.int_compare(IntComparison::Equal, code, expected);
+        let same = b.bit_value(same);
+        b.set_name(same, "code_is");
+        self.bind(op.results[0], same, HeldCarrier::RawBool);
+    }
+
+    /// The compiled target `op` names and its frozen linkage row, when the
+    /// program has one.
+    pub(crate) fn linked_target(&self, op: &TirOp) -> Option<(String, NativeFunctionLinkageAbi)> {
+        let target = self.call_target(op)?;
+        let abi = self.linkage.get(&target)?.clone();
+        Some((target, abi))
+    }
+
+    /// A direct call into compiled code `target` with `operands`, the op's
+    /// operands from `first_operand` on. Each argument is converted from its
+    /// held carrier to the callee's parameter type (`DynBox` is the boxed
+    /// ABI): a raw value passed raw into a boxed parameter would decode as a
+    /// garbage float. Compiled callees borrow their arguments and return an
+    /// owned result, so a scalar boxed for a boxed parameter is a temporary
+    /// of this call: the operation's custody mints it (skipping the call when
+    /// a box cannot be allocated) and releases it after the call returns. A
+    /// position the instruction adopted (`argument_custody`) belongs to the
+    /// entry once it runs.
+    pub(crate) fn compiled_call(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        target: &str,
+        abi: &NativeFunctionLinkageAbi,
+        operands: &[ValueId],
+        first_operand: usize,
+    ) {
+        let callee = b.function_callee(target, abi);
+        let return_type = abi.return_type.clone().unwrap_or(TirType::DynBox);
+        let view = self.operands();
+        let param_types: Vec<TirType> = (0..operands.len())
+            .map(|index| {
+                abi.param_types
+                    .get(index)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox)
+            })
+            .collect();
+        let boxed_param = |index: usize| HeldCarrier::of(&param_types[index]) == HeldCarrier::Boxed;
+        let boxed_source = |id: ValueId| view.held(id) == HeldCarrier::Boxed;
+        let boxes = |index: usize| boxed_param(index) && !boxed_source(operands[index]);
+        let adopted = |index: usize| {
+            op.operand_custody(index + first_operand) == ParameterCustody::Transferred
+        };
+        let pick = |keep: &dyn Fn(usize) -> bool| -> Vec<ValueId> {
+            (0..operands.len())
+                .filter(|&index| keep(index))
+                .map(|index| operands[index])
+                .collect()
+        };
+        let borrowed = pick(&boxes);
+        let adopted_inputs = pick(&adopted);
+        let mut custody = view.begin_call(b, &borrowed, &adopted_inputs, None, "direct_call");
+        let mut args = Vec::with_capacity(operands.len());
+        // Adopted object references a raw parameter does not keep: the raw
+        // entry extracted its value, so the reference ends after the call.
+        let mut extracted = Vec::new();
+        for (index, &id) in operands.iter().enumerate() {
+            let value = if boxes(index) {
+                let word = view.operand(b, &mut custody, id);
+                b.word_value(word)
+            } else {
+                let value = view.resolve(b, id);
+                if adopted(index) && boxed_source(id) && !boxed_param(index) {
+                    extracted.push(scalar::word_of(b, value));
+                }
+                self.coerce(b, value, view.held(id), Some(id), &param_types[index])
+            };
+            args.push(value);
+        }
+        // Boxes minted for adopted positions belong to the entry once it runs.
+        let adopted_boxes = pick(&|index| adopted(index) && boxes(index));
+        let borrowed_boxes = pick(&|index| !adopted(index) && boxes(index));
+        view.surrender(b, &custody, &adopted_boxes, &borrowed_boxes);
+        let returned = b.call(callee, &args);
+        if let Some(value) = returned {
+            b.set_name(value, "direct_call");
+        }
+        release_call_inputs(b, None, &extracted);
+        let none = b.constant(NONE_WORD);
+        if let Some(&result) = op.results.first() {
+            let raw = returned.unwrap_or_else(|| b.word_value(none));
+            let word = if return_type == TirType::DynBox {
+                b.expect_word(raw)
+            } else {
+                scalar::box_value(b, raw, &return_type)
+            };
+            let word = view.finish(b, custody, word, "direct_call_result", |_| {});
+            let word = b.word_value(word);
+            self.bind(result, word, HeldCarrier::Boxed);
+        } else if let Some(returned) = returned.filter(|_| !return_type.is_unboxed()) {
+            // A semantic object return is a boxed handle; a raw scalar has no
+            // owner and needs no boxing just to be discarded.
+            let word = b.expect_word(returned);
+            let word = view.finish(b, custody, word, "direct_call_result", |_| {});
+            let word = b.word_value(word);
+            self.bind_owned(b, op, word);
+        } else {
+            view.finish(b, custody, none, "direct_call_result", |_| {});
+        }
     }
 
     /// Bind None as `op`'s first result.
@@ -829,12 +980,13 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::super::differential::{Run, both, every_runtime_entry, kernel, machine};
-    use super::super::scalar::tests::{FUNCTION_WORD, Value, literal_word};
+    use super::super::scalar::tests::{FUNCTION_WORD, Value, compiled_result, literal_word};
     use super::super::value_table::ValueTable;
     use super::*;
     use crate::representation_plan::ProducerCarrierPlan;
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect};
+    use std::collections::BTreeMap;
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
 
@@ -878,6 +1030,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &runtime,
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &sites,
             };
             let args: Vec<ValueId> = (1..inputs.len() as u32).map(ValueId).collect();
@@ -991,10 +1145,7 @@ mod tests {
     /// What a test lowers.
     #[derive(Clone, Copy, Debug)]
     enum Family {
-        Call {
-            target: Option<&'static str>,
-            linked: bool,
-        },
+        Call,
         CallMethod,
         LoadMethod,
         PushReceiver,
@@ -1025,16 +1176,17 @@ mod tests {
         }
     }
 
-    /// Lower `op` by `family` over boxed inputs %0..; the fact is whether
-    /// the walker lowered it and its diagnostics, the results its bound
-    /// results.
-    fn lower(
+    /// Lower `op` by `family` over boxed inputs %0.. in a program whose
+    /// compiled functions are `linkage`; the fact is the diagnostics, the
+    /// results the op's bound results.
+    fn lower_linked(
         family: Family,
         op: TirOp,
         inputs: &[u64],
+        linkage: BTreeMap<String, NativeFunctionLinkageAbi>,
         machine_only: bool,
-    ) -> Run<(bool, Vec<String>)> {
-        let lowering = kernel!(family: Family = family, op: TirOp = op; |b, inputs| -> (bool, Vec<String>) {
+    ) -> Run<Vec<String>> {
+        let lowering = kernel!(family: Family = family, op: TirOp = op, linkage: BTreeMap<String, NativeFunctionLinkageAbi> = linkage; |b, inputs| -> Vec<String> {
             let func = TirFunction::new(
                 "calls".into(),
                 vec![],
@@ -1056,33 +1208,23 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &runtime,
+                linkage,
+                functions: &Default::default(),
                 call_sites: &sites,
             };
-            let lowered = match *family {
-                Family::Call { target, linked } => cx.call_op(b, op, target, linked),
-                Family::CallMethod => {
-                    cx.call_method_op(b, op);
-                    true
-                }
-                Family::LoadMethod => {
-                    cx.load_method_op(b, op);
-                    true
-                }
-                Family::PushReceiver => {
-                    cx.push_method_receiver_op(b, op);
-                    true
-                }
-                Family::CallBuiltin => {
-                    cx.call_builtin_op(b, op);
-                    true
-                }
-            };
+            match *family {
+                Family::Call => cx.call_op(b, op),
+                Family::CallMethod => cx.call_method_op(b, op),
+                Family::LoadMethod => cx.load_method_op(b, op),
+                Family::PushReceiver => cx.push_method_receiver_op(b, op),
+                Family::CallBuiltin => cx.call_builtin_op(b, op),
+            }
             let results = op
                 .results
                 .iter()
                 .filter_map(|&result| cx.values.value(result))
                 .collect();
-            ((lowered, diagnostics.borrow().clone()), results)
+            (diagnostics.borrow().clone(), results)
         });
         let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
         if machine_only {
@@ -1090,6 +1232,11 @@ mod tests {
         } else {
             both(&lowering, &inputs)
         }
+    }
+
+    /// [`lower_linked`] in a program with no compiled functions.
+    fn lower(family: Family, op: TirOp, inputs: &[u64], machine_only: bool) -> Run<Vec<String>> {
+        lower_linked(family, op, inputs, BTreeMap::new(), machine_only)
     }
 
     /// The boxed id of the first inline-cache site of `lane` in `calls`.
@@ -1106,12 +1253,8 @@ mod tests {
     #[test]
     fn a_builder_consuming_call_passes_its_site_callable_and_builder() {
         let call = op(OpCode::Call, Some(OpKind::CallBind), &[0, 1], &[2], None);
-        let family = Family::Call {
-            target: None,
-            linked: false,
-        };
-        let run = lower(family, call, &[OBJECT, OTHER], false);
-        assert_eq!(run.fact, (true, vec![]));
+        let run = lower(Family::Call, call, &[OBJECT, OTHER], false);
+        assert!(run.fact.is_empty());
         assert_eq!(
             run.results,
             [Value::Word(literal_word(
@@ -1122,27 +1265,78 @@ mod tests {
         assert_eq!(run.runtime_calls, [RuntimeFn::CallBindIc]);
     }
 
+    /// A direct call of `target` with operands %0.. and result %`result`.
+    fn direct_call(target: &str, operands: u32, result: u32) -> TirOp {
+        let mut call = op(
+            OpCode::Call,
+            None,
+            &(0..operands).collect::<Vec<_>>(),
+            &[result],
+            None,
+        );
+        call.attrs
+            .insert("_var".into(), AttrValue::Str(target.into()));
+        call
+    }
+
+    /// One compiled function `symbol` of `params` returning `result`.
+    fn linked(
+        symbol: &str,
+        params: Vec<TirType>,
+        result: Option<TirType>,
+    ) -> BTreeMap<String, NativeFunctionLinkageAbi> {
+        let abi = NativeFunctionLinkageAbi {
+            source_signature: crate::ir::ExternFunctionSignature {
+                arity: params.len(),
+                has_closure: false,
+                returns_value: result.is_some(),
+                execution_context: crate::ir::ExecutionContextPolicy::None,
+            },
+            parameter_custody: Vec::new(),
+            param_types: params,
+            return_type: result,
+        };
+        BTreeMap::from([(symbol.to_owned(), abi)])
+    }
+
     #[test]
-    fn a_direct_call_of_linked_code_is_left_to_the_backend_and_an_unlinked_one_refused() {
-        let call = || op(OpCode::Call, None, &[0], &[1], None);
-        let linked = Family::Call {
-            target: Some("f"),
-            linked: true,
-        };
-        let run = lower(linked, call(), &[OBJECT], false);
-        assert_eq!(run.fact, (false, vec![]));
-        assert!(run.results.is_empty() && run.runtime_calls.is_empty());
-        let unlinked = Family::Call {
-            target: Some("f"),
-            linked: false,
-        };
-        let run = lower(unlinked, call(), &[OBJECT], false);
-        let (lowered, diagnostics) = &run.fact;
-        assert!(lowered);
+    fn a_direct_call_passes_each_argument_in_its_parameter_carrier() {
+        // %0 stays boxed for a boxed parameter; %1 is decoded for a raw one.
+        let symbol = "walker_compiled_boxed";
+        let program = linked(
+            symbol,
+            vec![TirType::DynBox, TirType::I64],
+            Some(TirType::DynBox),
+        );
+        let call = direct_call(symbol, 2, 2);
+        let run = lower_linked(Family::Call, call, &[OBJECT, inline(5)], program, false);
+        assert!(run.fact.is_empty(), "{:?}", run.fact);
+        assert_eq!(
+            run.results,
+            [Value::Word(compiled_result(symbol, &[OBJECT, 5]))]
+        );
+    }
+
+    #[test]
+    fn a_raw_direct_call_result_is_boxed_for_its_boxed_result() {
+        let symbol = "walker_compiled_raw";
+        let program = linked(symbol, vec![TirType::I64, TirType::I64], Some(TirType::I64));
+        let call = direct_call(symbol, 2, 2);
+        let run = lower_linked(Family::Call, call, &[inline(2), inline(3)], program, false);
+        assert!(run.fact.is_empty(), "{:?}", run.fact);
+        assert_eq!(
+            run.results,
+            [Value::Word(inline(compiled_result(symbol, &[2, 3]) as i64))]
+        );
+    }
+
+    #[test]
+    fn a_direct_call_of_an_unlinked_target_is_refused() {
+        let run = lower(Family::Call, direct_call("f", 1, 1), &[OBJECT], false);
         assert!(
-            diagnostics.len() == 1
-                && diagnostics[0].contains("`f` has no exact native linkage ABI"),
-            "{diagnostics:?}"
+            run.fact.len() == 1 && run.fact[0].contains("`f` has no exact native linkage ABI"),
+            "{:?}",
+            run.fact
         );
         assert_eq!(run.results, [Value::Word(NONE_WORD)]);
         assert!(run.runtime_calls.is_empty());

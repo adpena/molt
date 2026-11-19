@@ -690,6 +690,8 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     let ir_path = tmp.path().join("failing_batch.json");
     let output_path = tmp.path().join("out.a");
     let debug_artifact_dir = tmp.path().join("debug-artifacts");
+    // The job itself must decode on replay. Its task declares zero payload
+    // bytes and supplies one word, so compilation fails inside the worker.
     std::fs::write(
         &ir_path,
         r#"{
@@ -709,7 +711,8 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
       "name": "helper",
       "params": [],
       "ops": [
-        {"kind": "call_internal"},
+        {"kind": "const_none", "out": "function"},
+        {"kind": "alloc_task", "s_value": "molt_async_sleep_poll", "task_kind": "future", "value": 0, "args": ["function", "function"], "out": "task"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -807,5 +810,31 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
             && replay_job_path == copied_job_path
             && replay_args.iter().any(|arg| arg.ends_with("replay.o")),
         "failure manifest must describe a replayable worker command: {manifest}"
+    );
+    let mut replay = Command::new(env!("CARGO_BIN_EXE_molt-backend"));
+    replay.args(&replay_args[1..]);
+    for (key, value) in manifest_json
+        .pointer("/replay/environment")
+        .and_then(serde_json::Value::as_object)
+        .expect("replay environment")
+    {
+        match value {
+            serde_json::Value::String(value) => {
+                replay.env(key, value);
+            }
+            serde_json::Value::Null => {
+                replay.env_remove(key);
+            }
+            _ => panic!("invalid replay environment value for {key}"),
+        }
+    }
+    let replay = replay.output().expect("run the preserved batch job");
+    let replay_stderr = String::from_utf8_lossy(&replay.stderr);
+    let layout_error = "future closure size too small";
+    assert!(
+        !replay.status.success()
+            && stderr.contains(layout_error)
+            && replay_stderr.contains(layout_error),
+        "the recorded job must reproduce the task layout failure: {replay_stderr}"
     );
 }
