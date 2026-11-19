@@ -17,6 +17,12 @@ enum BuiltinFunctionMetadata<'a> {
         has_vararg: bool,
         has_varkw: bool,
     },
+    /// Argument Clinic named binding: one name per ABI slot, empty for the
+    /// receiver and every positional-only parameter.
+    Clinic {
+        defaults: &'a [u64],
+        arg_names: &'a [&'a [u8]],
+    },
 }
 
 unsafe fn set_function_metadata_attr(
@@ -174,6 +180,47 @@ unsafe fn configure_builtin_function(
                         has_varkw,
                     )
             }
+            BuiltinFunctionMetadata::Clinic {
+                defaults,
+                arg_names,
+            } => {
+                let kwonly = alloc_tuple(_py, &[]);
+                if kwonly.is_null() {
+                    return false;
+                }
+                let kwonly = MoltObject::from_ptr(kwonly).bits();
+                let configured = (defaults.is_empty() || set_function_defaults(_py, ptr, defaults))
+                    && set_function_metadata_attr(
+                        _py,
+                        ptr,
+                        crate::NameId::DunderMoltPosonly,
+                        MoltObject::from_int(0).bits(),
+                    )
+                    && set_function_metadata_attr(
+                        _py,
+                        ptr,
+                        crate::NameId::DunderMoltKwonlyNames,
+                        kwonly,
+                    )
+                    && configure_builtin_signature(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        arg_names,
+                        false,
+                        false,
+                    )
+                    && set_function_metadata_attr(
+                        _py,
+                        ptr,
+                        crate::NameId::DunderMoltBindKind,
+                        MoltObject::from_int(
+                            crate::builtins::functions::BuiltinBindingPolicy::ClinicNamed as i64,
+                        )
+                        .bits(),
+                    );
+                dec_ref_bits(_py, kwonly);
+                configured && !exception_pending(_py)
+            }
             BuiltinFunctionMetadata::None => true,
             BuiltinFunctionMetadata::BindKind(bind_kind) => {
                 if !set_function_metadata_attr(
@@ -248,6 +295,40 @@ fn alloc_builtin_function_with_metadata(
     if exception_pending(py) {
         return 0;
     }
+    // A method descriptor whose declared signature names keyword-capable
+    // parameters binds them as CPython's Argument Clinic does.
+    let declared_defaults = match metadata {
+        BuiltinFunctionMetadata::None => Some(&[][..]),
+        BuiltinFunctionMetadata::Defaults(defaults) => Some(defaults),
+        _ => None,
+    };
+    let declared = match (spec.kind, spec.text_signature, declared_defaults) {
+        (
+            crate::builtins::functions::native_callable::NativeCallableKind::MethodDescriptor,
+            Some(text),
+            Some(defaults),
+        ) => match crate::builtins::inspect::declared_method_parameters(
+            py,
+            text,
+            arity as usize,
+            defaults,
+        ) {
+            Ok(declared) => declared,
+            Err(()) => return 0,
+        },
+        _ => None,
+    };
+    let declared_names: Vec<&[u8]> = declared
+        .as_ref()
+        .map(|declared| declared.names.iter().map(Vec::as_slice).collect())
+        .unwrap_or_default();
+    let metadata = match &declared {
+        Some(declared) => BuiltinFunctionMetadata::Clinic {
+            defaults: &declared.defaults,
+            arg_names: &declared_names,
+        },
+        None => metadata,
+    };
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, callable, arity);
     if ptr.is_null() {
         return 0;

@@ -329,41 +329,9 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_list_index_range(_py, args)
             }));
         }
-        if matches_builtin!(molt_string_split_max)
-            || matches_builtin!(molt_bytes_split_max)
-            || matches_builtin!(molt_bytearray_split_max)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_split(_py, args, "split")
-            }));
-        }
-        if matches_builtin!(molt_string_rsplit_max)
-            || matches_builtin!(molt_bytes_rsplit_max)
-            || matches_builtin!(molt_bytearray_rsplit_max)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_split(_py, args, "rsplit")
-            }));
-        }
-        if matches_builtin!(molt_bytes_hex)
-            || matches_builtin!(molt_bytearray_hex)
-            || matches_builtin!(molt_memoryview_hex)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_bytes_hex(_py, args)
-            }));
-        }
         if matches_builtin!(molt_string_format_method) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_string_format(_py, args, _storage)
-            }));
-        }
-        if matches_builtin!(molt_string_splitlines)
-            || matches_builtin!(molt_bytes_splitlines)
-            || matches_builtin!(molt_bytearray_splitlines)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_splitlines(_py, args)
             }));
         }
         if matches_builtin!(molt_set_union_multi) {
@@ -489,16 +457,6 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_set_single(_py, args, "issuperset", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
-        if matches_builtin!(molt_string_encode) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_text_codec(_py, args, "encode")
-            }));
-        }
-        if matches_builtin!(molt_bytes_decode) || matches_builtin!(molt_bytearray_decode) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_text_codec(_py, args, "decode")
-            }));
-        }
         if matches_builtin!(molt_memoryview_cast) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_memoryview_cast(_py, args)
@@ -615,6 +573,30 @@ pub(super) unsafe fn bind_positional_builtin_call(
 ) -> Option<Vec<u64>> {
     unsafe {
         if !args.kw_names.is_empty() {
+            // A native callable whose parameters are all positional-only
+            // refuses keywords as CPython's `_PyArg_NoKwnames` does, naming
+            // the declared `owner.name`.
+            if crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                _py,
+                object_class_bits(func_ptr),
+            )
+            .is_some()
+            {
+                let Ok(mut message) =
+                    crate::builtins::functions::native_callable::native_function_error_name(
+                        _py, func_ptr,
+                    )
+                else {
+                    return None;
+                };
+                message.extend_from_slice(b"() takes no keyword arguments");
+                crate::builtins::exceptions::raise_exception_bytes::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    &message,
+                );
+                return None;
+            }
             return raise_exception::<_>(
                 _py,
                 BuiltinExc::TypeError,
@@ -799,57 +781,6 @@ unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_
         }
         MoltObject::none().bits()
     }
-}
-
-unsafe fn bind_builtin_bytes_hex(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    if args.pos.len() > 3 {
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
-    }
-    let self_bits = args.pos[0];
-    let mut sep_bits = args.pos.get(1).copied();
-    let mut bytes_per_sep_bits = args.pos.get(2).copied();
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        match name_str.as_str() {
-            "sep" => {
-                if sep_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                sep_bits = Some(val_bits);
-            }
-            "bytes_per_sep" => {
-                if bytes_per_sep_bits.is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                bytes_per_sep_bits = Some(val_bits);
-            }
-            _ => {
-                let msg = format!("got an unexpected keyword '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        }
-    }
-    let sep_bits = sep_bits.unwrap_or_else(|| missing_bits(_py));
-    let bytes_per_sep_bits = bytes_per_sep_bits.unwrap_or_else(|| missing_bits(_py));
-    Some(vec![self_bits, sep_bits, bytes_per_sep_bits])
 }
 
 /// Bind a positional-only builtin method `(self, required..., optional=default...)`
@@ -1093,7 +1024,13 @@ unsafe fn bind_builtin_named<'guard>(
 ) -> Option<Vec<u64>> {
     use crate::builtins::native_arguments::{NativeKeywords, bind_named_slots};
     unsafe {
-        let name = string_obj_to_owned(obj_from_bits(function_name_bits(py, func_ptr)))?;
+        // Argument Clinic names the callable by `__name__` (`split()`, not
+        // `str.split()`).
+        let name = string_obj_to_owned(obj_from_bits(
+            crate::object::function_metadata::FunctionMetadataField::Name
+                .load(func_ptr)
+                .unwrap_or_else(|| function_name_bits(py, func_ptr)),
+        ))?;
         let mut tuple_ptrs = [std::ptr::null_mut(); 3];
         for (slot, field) in tuple_ptrs.iter_mut().zip([
             FunctionBindingField::ArgumentNames,
@@ -1154,10 +1091,28 @@ unsafe fn bind_builtin_named<'guard>(
                 "invalid fixed named builtin metadata",
             );
         }
+        // A method descriptor's receiver is its first ABI slot, admitted with
+        // the call; Argument Clinic counts and names only the parameters
+        // after it.
+        let receiver = usize::from(
+            crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                py,
+                object_class_bits(func_ptr),
+            ) == Some(
+                crate::builtins::functions::native_callable::NativeCallableKind::MethodDescriptor,
+            ),
+        );
+        if args.pos.len() < receiver || defaults.len() > names.len() - receiver {
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "named builtin method call has no receiver",
+            );
+        }
         let required = names.len() - defaults.len();
         let mut slots = Vec::new();
         let mut out = Vec::new();
-        if slots.try_reserve_exact(names.len()).is_err()
+        if slots.try_reserve_exact(names.len() - receiver).is_err()
             || out.try_reserve_exact(names.len()).is_err()
         {
             return raise_exception(
@@ -1166,16 +1121,17 @@ unsafe fn bind_builtin_named<'guard>(
                 "named builtin argument allocation failed",
             );
         }
-        slots.resize(names.len(), None);
+        slots.resize(names.len() - receiver, None);
         let bound = bind_named_slots(
             py,
             &name,
-            args.pos,
+            &args.pos[receiver..],
             NativeKeywords::vector(args.kw_names, args.kw_values),
-            &names,
-            required,
+            &names[receiver..],
+            required - receiver,
             slots,
         )?;
+        out.extend_from_slice(&args.pos[..receiver]);
         let (slots, owners) = bound.into_parts();
         if storage.owners.try_reserve(owners.len()).is_err() {
             return raise_exception(
@@ -1188,7 +1144,7 @@ unsafe fn bind_builtin_named<'guard>(
         for (index, value) in slots.into_iter().enumerate() {
             out.push(match value {
                 Some(bits) => bits,
-                None => defaults[index - required],
+                None => defaults[receiver + index - required],
             });
         }
         Some(out)
@@ -1378,129 +1334,6 @@ unsafe fn bind_builtin_list_index_range(
         out.push(missing);
     }
     Some(out)
-}
-
-unsafe fn bind_builtin_split(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    func_name: &str,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 2 {
-        let msg = format!(
-            "{func_name}() takes at most 2 arguments ({} given)",
-            positional
-        );
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let mut sep_bits: Option<u64> = None;
-    let mut maxsplit_bits: Option<u64> = None;
-    let mut saw_sep = false;
-    let mut saw_maxsplit = false;
-    if positional >= 1 {
-        sep_bits = Some(args.pos[1]);
-        saw_sep = true;
-    }
-    if positional >= 2 {
-        maxsplit_bits = Some(args.pos[2]);
-        saw_maxsplit = true;
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let target = match name_str.as_str() {
-            "sep" => (&mut sep_bits, &mut saw_sep),
-            "maxsplit" => (&mut maxsplit_bits, &mut saw_maxsplit),
-            _ => {
-                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        };
-        if target.0.is_some() {
-            let msg = format!(
-                "{}() got multiple values for argument '{}'",
-                func_name, name_str
-            );
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-        *target.0 = Some(val_bits);
-        *target.1 = true;
-    }
-    let sep_bits = sep_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let maxsplit_bits = maxsplit_bits.unwrap_or_else(|| MoltObject::from_int(-1).bits());
-    Some(vec![args.pos[0], sep_bits, maxsplit_bits])
-}
-
-unsafe fn bind_builtin_splitlines(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 1 {
-        let msg = format!(
-            "splitlines() takes at most 1 argument ({} given)",
-            positional
-        );
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let mut keepends_bits: Option<u64> = None;
-    let mut saw_keepends = false;
-    if positional == 1 {
-        keepends_bits = Some(args.pos[1]);
-        saw_keepends = true;
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        if name_str != "keepends" {
-            // CPython 3.13 changed str/bytes/bytearray.splitlines' invalid-kwarg
-            // TypeError to the generic "got an unexpected keyword argument" form;
-            // 3.12 used the specific "is an invalid keyword argument for
-            // splitlines()" form. Gate on the configured target version so output
-            // matches the emulated CPython across 3.12/3.13/3.14 on every arch/OS.
-            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
-                format!("splitlines() got an unexpected keyword argument '{name_str}'")
-            } else {
-                format!("'{name_str}' is an invalid keyword argument for splitlines()")
-            };
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-        if saw_keepends {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "splitlines() got multiple values for argument 'keepends'",
-            );
-        }
-        keepends_bits = Some(val_bits);
-        saw_keepends = true;
-    }
-    let keepends_bits = keepends_bits.unwrap_or_else(|| MoltObject::from_bool(false).bits());
-    Some(vec![args.pos[0], keepends_bits])
 }
 
 unsafe fn bind_builtin_set_multi<'guard>(
@@ -1789,66 +1622,6 @@ unsafe fn bind_builtin_file_reconfigure(
         line_buffering_bits,
         write_through_bits,
     ])
-}
-
-unsafe fn bind_builtin_text_codec(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    func_name: &str,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 2 {
-        let msg = format!("{func_name}() takes at most 2 arguments ({positional} given)");
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let missing = missing_bits(_py);
-    let mut encoding_bits = if positional >= 1 {
-        args.pos[1]
-    } else {
-        missing
-    };
-    let mut errors_bits = if positional >= 2 {
-        args.pos[2]
-    } else {
-        missing
-    };
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        match name_str.as_str() {
-            "encoding" => {
-                if encoding_bits != missing {
-                    let msg = format!("{func_name}() got multiple values for argument 'encoding'");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                encoding_bits = val_bits;
-            }
-            "errors" => {
-                if errors_bits != missing {
-                    let msg = format!("{func_name}() got multiple values for argument 'errors'");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                errors_bits = val_bits;
-            }
-            _ => {
-                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        }
-    }
-    Some(vec![args.pos[0], encoding_bits, errors_bits])
 }
 
 #[cfg(test)]
