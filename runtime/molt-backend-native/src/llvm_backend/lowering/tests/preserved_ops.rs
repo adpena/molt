@@ -95,10 +95,17 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
             "{ir}"
         );
         assert!(ir.contains_execution("@molt_call_builtin("), "{ir}");
+        // A synthesized name is an immortal literal cell and a dynamic name
+        // is borrowed: neither is released.
         assert_eq!(
             ir.matches_execution("@__molt_inline_release(").count(),
+            0,
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches_execution("@molt_literal_cell_fill(").count(),
             usize::from(named),
-            "only synthesized names are temporary owners; dynamic names remain borrowed: {ir}"
+            "{ir}"
         );
     }
 }

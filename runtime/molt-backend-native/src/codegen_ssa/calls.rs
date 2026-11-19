@@ -12,7 +12,7 @@ use super::builder::{CodegenBuilder, IntBinary, IntComparison, MachineKind, Site
 use super::control;
 use super::custody::{CallTarget, Custody, RuntimeArg, release_call_inputs, spill_words};
 use super::function::{FunctionCx, ResultCustody};
-use super::object::{raw_name_pointer, with_owned_name};
+use super::object::{raw_name_pointer, with_name};
 use super::scalar;
 use super::value_table::HeldCarrier;
 use crate::ir::ParameterCustody;
@@ -1034,7 +1034,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // Build arguments only after a synthesized name is admitted. The
             // dynamic-name lane borrows its existing SSA operand instead.
             let result = match call.target {
-                BuiltinCallTarget::Named(name) => with_owned_name(b, name, |b, name| {
+                BuiltinCallTarget::Named(name) => with_name(b, name, |b, name| {
                     self.builtin_with_name(b, RuntimeArg::Word(name), call.arguments)
                 }),
                 BuiltinCallTarget::Dynamic(&name) => {
@@ -1547,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_builtin_call_borrows_its_arguments_and_releases_the_name() {
+    fn a_named_builtin_call_borrows_its_arguments_and_its_immortal_name() {
         let call = op(OpCode::CallBuiltin, None, &[0], &[1], Some("len"));
         let run = lower(Family::CallBuiltin, call, &[OBJECT], true);
         let name = literal_word(RuntimeFn::StringFromBytes, b"len");
@@ -1560,12 +1560,12 @@ mod tests {
         assert_eq!(
             run.runtime_calls,
             [
-                RuntimeFn::StringFromBytes,
+                RuntimeFn::LiteralCellFill,
                 RuntimeFn::CallargsNew,
                 RuntimeFn::CallargsPushPos,
                 RuntimeFn::CallBuiltin
             ]
         );
-        assert_eq!(run.refcounts, [(RefcountOperation::Release, name)]);
+        assert!(run.refcounts.is_empty(), "{:?}", run.refcounts);
     }
 }

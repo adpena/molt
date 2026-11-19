@@ -902,6 +902,12 @@ pub(crate) mod tests {
                 RuntimeFn::BigintFromBytes => {
                     literal_word(function, &memory.bytes(args[0], args[1] as usize))
                 }
+                // A construction that fails leaves the cell zero and answers
+                // None with the exception pending.
+                RuntimeFn::LiteralCellFill if self.fail_allocation => {
+                    self.pending_exception = true;
+                    NONE_WORD
+                }
                 // Fills the literal's cell with the word its kind's
                 // constructor would build, and answers it.
                 RuntimeFn::LiteralCellFill => {
