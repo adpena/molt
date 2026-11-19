@@ -6,6 +6,25 @@ use molt_codegen_abi::frame_record::{
     generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
 };
 
+/// Each local invocation starts with no linked frame. Initialize custody in
+/// the physical entry, which executes once even when the TIR entry is a loop.
+pub(crate) fn initialize_owned_execution_frame<B: super::CodegenBuilder>(
+    b: &mut B,
+    policy: molt_ir::ir::ExecutionContextPolicy,
+    entry_kind: impl FnOnce() -> Option<FrameEntryKind>,
+) -> Option<super::returns::OwnedFrame<B::Slot>> {
+    if policy != molt_ir::ir::ExecutionContextPolicy::Local {
+        return None;
+    }
+    let slot = b.entry_slot("owned_frame_base");
+    let zero = b.constant(0);
+    b.store_slot(slot, zero);
+    Some(super::returns::OwnedFrame {
+        slot,
+        kind: entry_kind(),
+    })
+}
+
 /// An inline frame helper's three logical words. An entry returns the new
 /// base. An exit has no result. The third word is the RC admission except
 /// for StatefulLink, whose persistent homes need no RC operations.

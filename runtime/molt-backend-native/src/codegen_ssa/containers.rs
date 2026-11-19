@@ -13,7 +13,7 @@ use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 use super::builder::CodegenBuilder;
 use super::function::FunctionCx;
 use super::value_table::HeldCarrier;
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 
 /// The boxed word of `None`.
@@ -319,6 +319,60 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         match op.results.get(words as usize) {
             Some(&id) => self.bind(id, done_value, HeldCarrier::of(&TirType::DynBox)),
             None => b.refcount(release, done),
+        }
+        true
+    }
+}
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// `UnpackSequence` of `value` targets: the runtime writes each owned
+    /// word through an entry array this op owns and answers a status the
+    /// op releases. The sequence is borrowed; a sequence that could not be
+    /// boxed skips the runtime, so its targets publish None. False for a
+    /// malformed op the caller then refuses.
+    pub(crate) fn unpack_sequence_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+        let &[sequence] = op.operands.as_slice() else {
+            return false;
+        };
+        let Some(&AttrValue::Int(expected)) = op.attrs.get("value") else {
+            return false;
+        };
+        let Ok(expected) = usize::try_from(expected) else {
+            return false;
+        };
+        if expected != op.results.len() {
+            return false;
+        }
+        let array = b.entry_slot_array(expected.max(1) as u32, "unpack_out");
+        let pointer = b.slot_pointer(array);
+        let pointer = b.address_to_word(pointer);
+        let named = b.word_value(pointer);
+        b.set_name(named, "unpack_out_ptr");
+        let unpack = b.runtime_callee(RuntimeFn::UnpackSequence);
+        let view = self.operands();
+        let mut custody = view.begin(b, &op.operands, "unpack");
+        let sequence = view.operand(b, &mut custody, sequence);
+        let count = b.constant(expected as u64);
+        let args = [b.word_value(sequence), b.word_value(count), named];
+        let status = b
+            .call(unpack, &args)
+            .expect("molt_unpack_sequence answers a status word");
+        b.set_name(status, "unpack_sequence");
+        let status = b.expect_word(status);
+        let release = b.refcount_site(RefcountOperation::Release);
+        b.refcount(release, status);
+        let none = b.constant(NONE_WORD);
+        view.finish(b, custody, none, "unpack_status", |b| {
+            let none = b.constant(NONE_WORD);
+            for index in 0..expected as u32 {
+                b.store_slot_at(array, index, none);
+            }
+        });
+        for (index, &result) in op.results.iter().enumerate() {
+            let word = b.load_slot_at(array, index as u32);
+            let named = b.word_value(word);
+            b.set_name(named, "unpack_elem");
+            self.bind(result, named, HeldCarrier::of(&TirType::DynBox));
         }
         true
     }

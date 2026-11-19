@@ -1014,6 +1014,16 @@ pub(crate) mod tests {
                     key.extend(args[3].to_le_bytes());
                     literal_word(function, &key)
                 }
+                // Writes each target word through the out-pointer; answers a
+                // None status.
+                RuntimeFn::UnpackSequence => {
+                    for index in 0..args[1] {
+                        let mut key = args[0].to_le_bytes().to_vec();
+                        key.push(index as u8);
+                        memory.store(args[2] + 8 * index, literal_word(function, &key));
+                    }
+                    NONE_WORD
+                }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
                 // A hash aggregate of a raw capacity, or None with
@@ -1062,6 +1072,9 @@ pub(crate) mod tests {
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
                 | RuntimeFn::FunctionClosureBits
+                | RuntimeFn::IterChecked
+                | RuntimeFn::IterNext
+                | RuntimeFn::ObjectNewBound
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure
                 | RuntimeFn::FuncNewBuiltin

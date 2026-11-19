@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 // Only container operations with custom lowering belong here. Exact
@@ -25,7 +23,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         op: &TirOp,
         kind: OpKind,
     ) -> bool {
-        let i64_ty = self.backend.context.i64_type();
         match kind {
             OpKind::IterNextUnboxed => self.emit_iter_next_unboxed_results(op),
             OpKind::IterNextUnpack2 => self.emit_iter_next_unpack2_results(op),
@@ -78,91 +75,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             OpKind::UnpackSequence => {
-                if op.operands.len() != 1 {
-                    return false;
-                }
-                let seq_id = op.operands[0];
-                let Some(expected) = op.attrs.get("value").and_then(|v| match v {
-                    AttrValue::Int(v) => usize::try_from(*v).ok(),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                if expected != op.results.len() {
-                    return false;
-                }
-                let out_alloca =
-                    self.build_entry_i64_array_alloca(expected.max(1) as u64, "unpack_out");
-                let out_ptr_bits = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(out_alloca, i64_ty, "unpack_out_ptr")
-                    .unwrap();
-                let unpack_fn = self.ensure_runtime_import(RuntimeFn::UnpackSequence);
-                let mut custody = self.begin_borrowed_operands(&op.operands, "unpack");
-                let seq_bits = self.borrowed_operand(&mut custody, seq_id);
-                let unpack_result = self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        unpack_fn,
-                        &[
-                            seq_bits.into(),
-                            i64_ty.const_int(expected as u64, false).into(),
-                            out_ptr_bits.into(),
-                        ],
-                        "unpack_sequence",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let release = self.ensure_refcount_site(
-                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-                );
-                release.emit(&self.backend.builder, unpack_result);
-                // A sequence that could not be materialized skips the runtime,
-                // so its targets are published as None.
-                let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-                self.finish_borrowed_operands(custody, none, "unpack_status", |this| {
-                    for idx in 0..expected {
-                        let slot = unsafe {
-                            this.backend
-                                .builder
-                                .build_gep(
-                                    i64_ty,
-                                    out_alloca,
-                                    &[i64_ty.const_int(idx as u64, false)],
-                                    "unpack_abort_slot",
-                                )
-                                .unwrap()
-                        };
-                        this.backend.builder.build_store(slot, none).unwrap();
-                    }
-                });
-                for (idx, &result_id) in op.results.iter().enumerate() {
-                    let elem_ptr = unsafe {
-                        self.backend
-                            .builder
-                            .build_gep(
-                                i64_ty,
-                                out_alloca,
-                                &[i64_ty.const_int(idx as u64, false)],
-                                "unpack_elem_ptr",
-                            )
-                            .unwrap()
-                    };
-                    let elem = self
-                        .backend
-                        .builder
-                        .build_load(i64_ty, elem_ptr, "unpack_elem")
-                        .unwrap();
-                    self.values.set_value(result_id, elem);
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                    );
-                }
-                true
+                let mut lowered = false;
+                self.walker_op(|cx, b| lowered = cx.unpack_sequence_op(b, op));
+                lowered
             }
 
             _ => false,

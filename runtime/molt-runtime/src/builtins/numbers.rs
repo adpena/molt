@@ -845,7 +845,7 @@ pub(crate) fn index_off_t_from_obj(py: &PyToken<'_>, obj_bits: u64) -> Option<i6
 pub(crate) fn index_ssize_clamped_from_obj(
     py: &PyToken<'_>,
     bits: u64,
-    err: &str,
+    err: impl ErrorText,
 ) -> Option<isize> {
     if let Some(value) = index_i64_integral_bits(bits) {
         return Some(value.clamp(isize::MIN as i64, isize::MAX as i64) as isize);

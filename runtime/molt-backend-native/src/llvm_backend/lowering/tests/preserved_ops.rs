@@ -1706,7 +1706,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         "unpack status owner must remain independently retired: {ir}"
     );
     assert!(
-        ir.contains_execution("%unpack_elem = load i64, ptr %unpack_elem_ptr"),
+        ir.contains_execution("%unpack_elem = load i64, ptr %unpack_out_"),
         "{ir}"
     );
 }

@@ -18,21 +18,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
     /// exists, and every return (including suspension) closes only its own.
     pub(super) fn initialize_owned_execution_frame(&mut self) {
-        if self.func.execution_context != crate::ir::ExecutionContextPolicy::Local {
-            return;
-        }
         assert!(self.owned_frame_entered.is_none());
-        let builder = super::codegen_builder::entry_builder(self.backend.context, self.llvm_fn);
-        let slot = builder
-            .build_alloca(self.backend.context.i64_type(), "owned_frame_base")
-            .unwrap();
-        builder
-            .build_store(slot, self.backend.context.i64_type().const_zero())
-            .unwrap();
-        self.owned_frame_entered = Some(crate::codegen_ssa::returns::OwnedFrame {
-            slot,
-            kind: self.frame_entry_kind(),
-        });
+        let mut codegen = self.codegen();
+        self.owned_frame_entered = crate::codegen_ssa::frame::initialize_owned_execution_frame(
+            &mut codegen,
+            self.func.execution_context,
+            || self.frame_entry_kind(),
+        );
     }
 
     pub(super) fn program_slot_id(
@@ -283,17 +275,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// loop iteration.
     pub(super) fn build_entry_i64_alloca(&self, name: &str) -> inkwell::values::PointerValue<'ctx> {
         self.codegen().entry_slot(name)
-    }
-
-    /// A fixed word range for one operation (list, tuple, class-definition or
-    /// unpack transport), in the entry block as `build_entry_i64_alloca`.
-    pub(super) fn build_entry_i64_array_alloca(
-        &self,
-        len: u64,
-        name: &str,
-    ) -> inkwell::values::PointerValue<'ctx> {
-        let len = u32::try_from(len).expect("an operation's word range fits u32");
-        self.codegen().entry_slot_array(len, name)
     }
 
     // ── Terminators ──

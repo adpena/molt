@@ -339,6 +339,18 @@ extern "C" fn func_new_builtin(
     )
 }
 
+extern "C" fn iter(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::IterChecked, &[a])
+}
+extern "C" fn iter_next(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::IterNext, &[a])
+}
+extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::UnpackSequence, &[a, b, c])
+}
+extern "C" fn object_new_bound(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::ObjectNewBound, &[a])
+}
 extern "C" fn set_new(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::SetNew, &[a])
 }
@@ -484,6 +496,10 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::FuncNew => func_new as *const u8,
         RuntimeFn::FuncNewClosure => func_new_closure as *const u8,
         RuntimeFn::FuncNewBuiltin => func_new_builtin as *const u8,
+        RuntimeFn::IterChecked => iter as *const u8,
+        RuntimeFn::IterNext => iter_next as *const u8,
+        RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
+        RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,
         RuntimeFn::FrozensetNew => frozenset_new as *const u8,
         RuntimeFn::SetAdd => set_add as *const u8,
