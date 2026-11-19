@@ -282,7 +282,7 @@ dev = [
 ]
 demo = [
     "django>=6.1.1",
-    "gunicorn>=26.0.0",
+    "gunicorn>=27.0.0",
     "msgpack>=1.2.2",
     "uvicorn>=0.49.0",
 ]
