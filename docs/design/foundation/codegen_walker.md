@@ -293,6 +293,12 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     signature its ABI token names (`CodegenBuilder::native_callee`); on Cranelift it is a plain
     import, so finalization never prepends the execution context. LLVM's `native_calls.rs` is
     deleted.
+  - Moved (2026-11-19, integrator): the preserved direct family (`codegen_ssa::preserved`). The
+    walk's `Copy` arm calls `preserved_op`, which reads `origin` and tries each family table; a
+    kind no table owns stays with the backend's routing. `walker_preserved_kind_pattern!` lists
+    the walker's kinds so LLVM's exhaustive family match maps them to None. LLVM keeps CallAsync,
+    AllocClass, ExceptionLastPending, StatefulLocalsRegister and GuardType/GuardTag (W3 frame and
+    guard facts); the container and callable families are the walker lane's next slices.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

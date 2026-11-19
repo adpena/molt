@@ -410,3 +410,157 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The direct family on the interpreting builder and as Cranelift machine
+    //! code: a nullary entry binds its word unowned, a positional entry
+    //! borrows every operand at its arity and refuses another, a forwarding
+    //! kind aliases operand 0, and a kind no family owns is left to the
+    //! backend.
+
+    use std::cell::{Cell, RefCell};
+
+    use super::super::differential::{Run, both, every_runtime_entry, kernel};
+    use super::super::scalar::tests::{Value, literal_word};
+    use super::super::value_table::ValueTable;
+    use super::*;
+    use crate::representation_plan::ProducerCarrierPlan;
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, Dialect, OpCode};
+    use crate::tir::types::TirType;
+    use crate::tir::values::ValueId;
+
+    const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
+
+    fn inline(value: i64) -> u64 {
+        (0x7ff8 << 48) | (1 << 48) | ((value as u64) & ((1 << 47) - 1))
+    }
+
+    fn key(words: &[u64]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    fn preserved(kind: Option<OpKind>, operands: u32) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: (0..operands).map(ValueId).collect(),
+            results: vec![ValueId(operands)],
+            attrs: AttrDict::default(),
+            source_span: None,
+            origin: kind,
+            runtime: None,
+            callee: None,
+        }
+    }
+
+    /// Lower `op` over boxed inputs %0..: whether a family claimed it, and
+    /// its result's word and carrier when bound.
+    fn lower(op: TirOp, inputs: &[u64]) -> Run<(bool, Option<HeldCarrier>)> {
+        let lowering = kernel!(op: TirOp = op; |b, inputs| -> (bool, Option<HeldCarrier>) {
+            let func = TirFunction::new(
+                "preserved".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(8);
+            for (index, &input) in inputs.iter().enumerate() {
+                values.set_value(ValueId(index as u32), input);
+                values.set_repr(ValueId(index as u32), HeldCarrier::Boxed);
+            }
+            let diagnostics = RefCell::new(Vec::new());
+            let runtime = every_runtime_entry();
+            let sites = Cell::new(0);
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &runtime,
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &sites,
+            };
+            let claimed = cx.preserved_op(b, op);
+            assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
+            let result = op.results[0];
+            let carrier = values.repr(result);
+            ((claimed, carrier), values.value(result).into_iter().collect())
+        });
+        let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
+        both(&lowering, &inputs)
+    }
+
+    #[test]
+    fn a_nullary_entry_binds_its_word_unowned() {
+        for (kind, function) in [
+            (OpKind::ExceptionLast, RuntimeFn::ExceptionLast),
+            (OpKind::ConstEllipsis, RuntimeFn::Ellipsis),
+        ] {
+            let run = lower(preserved(Some(kind), 0), &[]);
+            assert_eq!(run.fact, (true, Some(HeldCarrier::Boxed)), "{kind}");
+            assert_eq!(run.results, [Value::Word(literal_word(function, &[]))]);
+            assert_eq!(run.runtime_calls, [function]);
+            assert!(run.refcounts.is_empty(), "{kind}: the frame owns nothing");
+        }
+    }
+
+    #[test]
+    fn a_positional_entry_borrows_its_operands_at_its_arity_only() {
+        let inputs = [OBJECT, inline(5)];
+        let run = lower(preserved(Some(OpKind::GenSend), 2), &inputs);
+        assert_eq!(run.fact, (true, Some(HeldCarrier::Boxed)));
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(
+                RuntimeFn::GeneratorSend,
+                &key(&inputs)
+            ))]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::GeneratorSend]);
+        assert!(
+            run.refcounts.is_empty(),
+            "borrowed operands: {:?}",
+            run.refcounts
+        );
+        let run = lower(preserved(Some(OpKind::TypeOf), 1), &[OBJECT]);
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(
+                RuntimeFn::TypeOf,
+                &key(&[OBJECT])
+            ))]
+        );
+        // `send` takes two operands: one is refused before any call.
+        let run = lower(preserved(Some(OpKind::GenSend), 1), &[OBJECT]);
+        assert_eq!(run.fact, (false, None));
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_forwarding_kind_aliases_operand_zero() {
+        for kind in [
+            OpKind::Cast,
+            OpKind::Widen,
+            OpKind::StoreVar,
+            OpKind::CopyVar,
+        ] {
+            let run = lower(preserved(Some(kind), 1), &[OBJECT]);
+            assert_eq!(run.fact, (true, Some(HeldCarrier::Boxed)), "{kind}");
+            assert_eq!(run.results, [Value::Word(OBJECT)], "{kind}");
+            assert!(run.runtime_calls.is_empty() && run.refcounts.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_kind_no_family_owns_and_a_plain_copy_are_the_backends() {
+        for op in [preserved(Some(OpKind::GuardType), 2), preserved(None, 1)] {
+            let run = lower(op.clone(), &[OBJECT, OBJECT][..op.operands.len()]);
+            assert_eq!(run.fact, (false, None), "{:?}", op.origin);
+            assert!(run.runtime_calls.is_empty());
+        }
+    }
+}
