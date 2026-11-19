@@ -233,6 +233,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
+            // A preserved kind a walker family owns; any other copy is the
+            // backend's until its family moves.
+            OpCode::Copy => return self.preserved_op(b, op),
             OpCode::NativeSymbolAddr => self.native_symbol_addr_op(b, op),
             OpCode::CallNative => self.call_native_op(b, op),
             OpCode::WarnStderr => self.warn_stderr_op(b, op),
@@ -251,7 +254,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::Copy
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
             | OpCode::IsPending

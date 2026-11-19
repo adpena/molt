@@ -1090,6 +1090,10 @@ pub(crate) mod tests {
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure
                 | RuntimeFn::FuncNewBuiltin
+                | RuntimeFn::ExceptionLast
+                | RuntimeFn::Ellipsis
+                | RuntimeFn::GeneratorSend
+                | RuntimeFn::TypeOf
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer
