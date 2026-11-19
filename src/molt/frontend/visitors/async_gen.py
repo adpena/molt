@@ -814,6 +814,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         frame_plan: StatefulFunctionFramePlan,
         parameter_names: Sequence[str],
         free_vars: Sequence[str],
+        *,
+        prepared_iterator_offset: int | None = None,
     ) -> StatefulLocalsLayout:
         """Freeze the finished poll body's typed public slots.
 
@@ -838,6 +840,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             parameter_names=parameter_names,
             cell_names=cell_names,
             free_vars=free_vars,
+            prepared_iterator_offset=prepared_iterator_offset,
         )
         self.funcs_map[frame_plan.poll_symbol]["stateful_locals_layout"] = layout
         return layout
@@ -853,7 +856,9 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             name_vals.append(name_val)
         names_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=name_vals, result=names_tuple))
-        parameter_count, offsets, cells, closure_offset = layout.wire_layout()
+        parameter_count, offsets, cells, closure_offset, iterator_offset = (
+            layout.wire_layout()
+        )
         count_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[parameter_count], result=count_val))
         offset_vals: list[MoltValue] = []
@@ -870,17 +875,13 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             cell_vals.append(cell_val)
         cells_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=cell_vals, result=cells_tuple))
-        if closure_offset is None:
-            closure_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=closure_val))
-        else:
-            closure_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[closure_offset], result=closure_val))
+        closure_val = self._emit_const_value(closure_offset)
+        iterator_val = self._emit_const_value(iterator_offset)
         layout_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(
             MoltOp(
                 kind="TUPLE_NEW",
-                args=[count_val, offsets_tuple, cells_tuple, closure_val],
+                args=[count_val, offsets_tuple, cells_tuple, closure_val, iterator_val],
                 result=layout_tuple,
             )
         )

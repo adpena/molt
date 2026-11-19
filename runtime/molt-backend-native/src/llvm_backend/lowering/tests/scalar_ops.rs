@@ -171,11 +171,12 @@ fn refcount_uses_lowered_carriers_without_boxing() {
         backend.builder.build_return(None).unwrap();
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
-        let expected = if FunctionLowering::tir_type_is_dynbox_like(&ty) {
-            3
-        } else {
-            0
-        };
+        let expected =
+            if crate::codegen_ssa::HeldCarrier::of(&ty) == crate::codegen_ssa::HeldCarrier::Boxed {
+                3
+            } else {
+                0
+            };
         assert_eq!(
             ir.matches_execution("call void @__molt_inline_").count(),
             expected,
@@ -225,7 +226,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         attrs: AttrDict::default(),
         source_span: None,
     };
-    lowering.emit_box(&op);
+    lowering.walker_op(|cx, b| cx.box_op(b, &op));
     op.opcode = OpCode::UnboxVal;
     op.operands = vec![ValueId(1)];
     op.results = vec![ValueId(2)];
@@ -233,7 +234,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         ValueId(2),
         crate::codegen_ssa::HeldCarrier::of(&TirType::Str),
     );
-    lowering.emit_unbox(&op);
+    lowering.walker_op(|cx, b| cx.unbox_op(b, &op));
     backend
         .builder
         .build_return(Some(&lowering.resolve(ValueId(2))))
@@ -356,17 +357,20 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
         .repr_facts
         .repr_by_value
         .insert(ValueId(1), molt_ir::repr::Repr::RawI64FullDeopt);
-    lowering.emit_unbox(&TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::UnboxVal,
-        operands: vec![ValueId(0)],
-        results: vec![ValueId(1)],
-        attrs: AttrDict::default(),
-        source_span: None,
-    });
+    lowering.lower_op(
+        BlockId(0),
+        &TirOp {
+            origin: None,
+            runtime: None,
+            callee: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnboxVal,
+            operands: vec![ValueId(0)],
+            results: vec![ValueId(1)],
+            attrs: AttrDict::default(),
+            source_span: None,
+        },
+    );
     let trampoline = crate::codegen_ssa::scalar::unbox_to_param_word(
         &mut lowering.codegen(),
         raw,

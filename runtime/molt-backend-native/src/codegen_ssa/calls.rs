@@ -1263,7 +1263,13 @@ mod tests {
         LoadMethod,
         PushReceiver,
         CallBuiltin,
+        /// `DirectCall`, between a store of [`OUTER_INVOCATION`] into the thread
+        /// record's invocation word and a read of it, which follows the results.
+        DirectCall,
     }
+
+    /// The invocation word an enclosing call left in the thread record.
+    const OUTER_INVOCATION: u64 = 0x5eed_0000_0001;
 
     fn op(
         opcode: OpCode,
@@ -1315,6 +1321,7 @@ mod tests {
             let diagnostics = RefCell::new(Vec::new());
             let runtime = every_runtime_entry();
             let sites = Cell::new(0);
+            let mut invocation = None;
             let mut cx = FunctionCx::<B> {
                 func: &func,
                 plan: &plan,
@@ -1331,12 +1338,22 @@ mod tests {
                 Family::LoadMethod => cx.load_method_op(b, op),
                 Family::PushReceiver => cx.push_method_receiver_op(b, op),
                 Family::CallBuiltin => cx.call_builtin_op(b, op),
+                Family::DirectCall => {
+                    let thread = b.thread_record_word();
+                    let record = b.word_to_address(thread);
+                    let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET;
+                    let outer = b.constant(OUTER_INVOCATION);
+                    b.store_word(record, offset, outer);
+                    cx.guarded_direct_call_op(b, op);
+                    invocation = Some(b.load_word(record, offset));
+                }
             }
-            let results = op
+            let mut results: Vec<B::Value> = op
                 .results
                 .iter()
                 .filter_map(|&result| cx.values.value(result))
                 .collect();
+            results.extend(invocation.map(|word| b.word_value(word)));
             (diagnostics.borrow().clone(), results)
         });
         let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
@@ -1441,6 +1458,33 @@ mod tests {
             run.results,
             [Value::Word(inline(compiled_result(symbol, &[2, 3]) as i64))]
         );
+    }
+
+    #[test]
+    fn a_direct_call_hands_its_callable_to_the_callee_and_restores_the_outer_word() {
+        // %0 is the callable, %1 the argument. The callee's frame entry reads
+        // the invocation word on entry; the enclosing call's word comes back.
+        let symbol = "walker_compiled_handoff";
+        let program = linked(symbol, vec![TirType::DynBox], Some(TirType::DynBox));
+        let mut call = direct_call(symbol, 2, 2);
+        call.opcode = OpCode::DirectCall;
+        // Both machines: the interpreter and Cranelift machine code.
+        let run = lower_linked(
+            Family::DirectCall,
+            call,
+            &[FUNCTION_WORD, OBJECT],
+            program,
+            false,
+        );
+        assert!(run.fact.is_empty(), "{:?}", run.fact);
+        assert_eq!(
+            run.results,
+            [
+                Value::Word(compiled_result(symbol, &[OBJECT, FUNCTION_WORD])),
+                Value::Word(OUTER_INVOCATION),
+            ]
+        );
+        assert!(run.runtime_calls.is_empty());
     }
 
     #[test]

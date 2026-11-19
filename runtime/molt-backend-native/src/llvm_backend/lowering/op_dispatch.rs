@@ -6,120 +6,17 @@ use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
+        // The walker's dispatch first (`FunctionCx::walker_owned_op`); the
+        // arms below are the families not yet moved into it.
+        if self.walker_owned(source_block, op) {
+            return;
+        }
         match op.opcode {
-            // -- Constants --
-            OpCode::ConstInt
-            | OpCode::ModuleSlot
-            | OpCode::ConstFloat
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstStr
-            | OpCode::ConstBigInt
-            | OpCode::ConstBytes => {
-                let (mut cx, mut b) = self.walker();
-                crate::codegen_ssa::constants::lower(&mut cx, &mut b, op);
-            }
-
-            // -- Operators: arithmetic, comparison, bitwise, unary, identity,
-            // membership, selection, truth and the late-TIR word primitives.
-            OpCode::Add
-            | OpCode::InplaceAdd
-            | OpCode::Sub
-            | OpCode::InplaceSub
-            | OpCode::Mul
-            | OpCode::InplaceMul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::Pow
-            | OpCode::CheckedAdd
-            | OpCode::CheckedMul
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::Not
-            | OpCode::BitNot
-            | OpCode::Eq
-            | OpCode::Ne
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Gt
-            | OpCode::Ge
-            | OpCode::Is
-            | OpCode::IsNot
-            | OpCode::In
-            | OpCode::NotIn
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::Shl
-            | OpCode::Shr
-            | OpCode::And
-            | OpCode::Or
-            | OpCode::Bool
-            | OpCode::IsInlineInt
-            | OpCode::UnboxInlineInt
-            | OpCode::IsFloatWord
-            | OpCode::UnboxFloatWord
-            | OpCode::IntToFloat
-            | OpCode::IsBoolWord
-            | OpCode::UnboxBoolWord
-            | OpCode::BoxInlineInt => {
-                let (mut cx, mut b) = self.walker();
-                cx.operator_op(&mut b, op);
-            }
-            OpCode::CodeIs => self.walker_op(|cx, b| cx.code_is_op(b, op)),
-            OpCode::DirectCall => self.walker_op(|cx, b| cx.guarded_direct_call_op(b, op)),
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
             }
-            OpCode::CallRuntime => {
-                let runtime = op
-                    .runtime
-                    .expect("verified: CallRuntime carries its runtime entry");
-                match runtime.boxed_abi() {
-                    Some(abi) => self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi)),
-                    None => self.walker_op(|cx, b| cx.raw_runtime_call(b, op, runtime)),
-                }
-            }
             OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
             OpCode::CallNative => self.emit_call_native(op),
-
-            // -- Box/Unbox --
-            OpCode::BoxVal => self.emit_box(op),
-            OpCode::UnboxVal => self.emit_unbox(op),
-
-            // -- Refcount --
-            OpCode::IncRef => self.emit_refcount(
-                op,
-                molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
-            ),
-            // Surviving Python lifetime boundaries share terminal release
-            // with inserted drops. Raw carriers have no runtime heap owner.
-            OpCode::DelBoundary | OpCode::DecRef => self.emit_refcount(
-                op,
-                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-            ),
-
-            // -- Memory / Attribute / Index --
-            OpCode::LoadAttr
-            | OpCode::StoreAttr
-            | OpCode::DelAttr
-            | OpCode::Index
-            | OpCode::StoreIndex
-            | OpCode::DelIndex => {
-                let (mut cx, mut b) = self.walker();
-                cx.object_op(&mut b, op);
-            }
-
-            // -- Call --
-            OpCode::Call => self.walker_op(|cx, b| cx.call_op(b, op)),
-
-            // -- DeleteVar local-slot transition --
-            // DeleteVar defines the local's new SSA value as the missing sentinel
-            // operand. Ownership of the previous slot occupant is modeled by the
-            // drop fact plane (DecRef / explicit consumed operands), not by LLVM
-            // lowering.
-            OpCode::DeleteVar => self.walker_op(|cx, b| cx.delete_var_op(b, op)),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
@@ -143,60 +40,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // passes operand 0 through (`FunctionCx::copy_op`).
                 self.walker_op(|cx, b| cx.copy_op(b, op));
             }
-
-            OpCode::Alloc => self.walker_op(|cx, b| cx.alloc_op(b, op)),
-
-            // -- Calls --
-            OpCode::CallMethod => self.walker_op(|cx, b| cx.call_method_op(b, op)),
-
-            OpCode::LoadMethod | OpCode::LoadSuperMethod => {
-                self.walker_op(|cx, b| cx.load_method_op(b, op))
-            }
-
-            OpCode::CallLoadedMethod => self.walker_op(|cx, b| cx.call_loaded_method_op(b, op)),
-
-            OpCode::CallargsPushMethodReceiver => {
-                self.walker_op(|cx, b| cx.push_method_receiver_op(b, op))
-            }
-
-            OpCode::CallBuiltin => self.walker_op(|cx, b| cx.call_builtin_op(b, op)),
-
-            // -- OrdAt: fused ord(container[index]) --
-            OpCode::OrdAt => self.walker_op(|cx, b| cx.ord_at_op(b, op)),
-
-            // Raw boxed frame allocation is not implemented. In particular,
-            // a naked i64 alloca cannot stand in for a tagged object payload.
-            OpCode::StackAlloc => {
-                panic!(
-                    "{}",
-                    crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED
-                );
-            }
-
-            // -- Free: stack-allocated slots are freed automatically — no-op --
-            OpCode::Free => {
-                // Stack memory is reclaimed by the function epilogue; nothing to emit.
-            }
-
-            // -- BuildList: [item0, item1, ...] --
-            // Borrow the fixed operand range for one constructor transaction.
-            OpCode::BuildList => self.walker_op(|cx, b| cx.container_op(b, op)),
-
-            // -- BuildDict: {k0: v0, k1: v1, ...} --
-            // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => self.walker_op(|cx, b| cx.container_op(b, op)),
-
-            // -- BuildTuple: (item0, item1, ...) --
-            OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
-
-            // -- BuildSet: {item0, item1, ...} --
-            OpCode::BuildSet => self.walker_op(|cx, b| {
-                cx.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd)
-            }),
-
-            // -- BuildSlice: slice(start, stop, step) --
-            // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- GetIter: iter(obj) --
             OpCode::GetIter => self.emit_get_iter(op),
@@ -222,62 +65,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::TaskWait => self.emit_task_wait(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
-            OpCode::Raise => self.walker_op(|cx, b| cx.raise_op(b, op)),
 
-            OpCode::WarnStderr => self.walker_op(|cx, b| cx.warn_stderr_op(b, op)),
-
-            // -- ExceptionPending: read the runtime exception-pending flag as
-            //    an exact i1 boolean (`molt_exception_pending() != 0`). Produced
-            //    by `loop_break_if_exception` and consumed as the condition of
-            //    the loop-exit CondBranch that breaks an iterator-consumer loop
-            //    on a mid-iteration raise.  Non-foldable: it observes mutable
-            //    runtime state, so the value (and the break) always survive.
-            OpCode::ExceptionPending => {
-                let raw = self.emit_exception_pending_word("exc_pending");
-                if let Some(&result_id) = op.results.first() {
-                    let pending = self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            raw,
-                            self.backend.context.i64_type().const_zero(),
-                            "exc_pending_bool",
-                        )
-                        .unwrap();
-                    self.values.set_value(result_id, pending.into());
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                    );
-                }
-            }
-
-            // -- AsyncWorkPending: test the thread's pending-work word. It
-            //    services nothing; a promoted module loop branches on it to
-            //    the unpromoted loop, whose poll runs the work.
-            OpCode::AsyncWorkPending => {
-                let pending = self.emit_async_work_pending();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.set_value(result_id, pending.into());
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                    );
-                }
-            }
-
-            // -- FunctionDefaultsVersion: read a function object's
-            //    __defaults__/__kwdefaults__ mutation version stamp as a boxed
-            //    inline int (`molt_function_defaults_version(func)`).  Produced
-            //    by the compile-time defaults-devirt deopt guard and consumed by
-            //    its `== 0` compare (baked literal vs live read).  Non-foldable:
-            //    it observes mutable runtime state, so the read always survives.
-            OpCode::FunctionDefaultsVersion => {
-                self.walker_op(|cx, b| cx.function_defaults_version_op(b, op))
-            }
-
-            // -- CheckException: transfer to its explicit exceptional successor --
+            // -- CheckException: the walker lowers a plain check's unwind edge;
+            //    this arm keeps the async-work poll and the origin edge, which
+            //    need the frame's homes (the switch lane's frame family).
             OpCode::CheckException => {
                 let Some(target_label) = op.attrs.get("value").and_then(|v| match v {
                     AttrValue::Int(v) => Some(*v),
@@ -385,9 +176,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.position_at_end(continue_bb);
             }
 
-            // -- ModuleImportClosed: a Fixed row's import by id --
-            OpCode::ModuleImportClosed => self.walker_op(|cx, b| cx.global_op(b, op)),
-
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
             OpCode::ImportFrom => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetAttr, 2),
@@ -427,12 +215,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ModuleGetGlobal => {
                 self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
             }
-            // -- Module global slot sites (call_anatomy.md 4.5) --
-            OpCode::GlobalSlotBase => self.walker_op(|cx, b| cx.global_op(b, op)),
-            OpCode::GlobalSlotGet => self.walker_op(|cx, b| cx.global_op(b, op)),
-            OpCode::StaticCellBase => self.walker_op(|cx, b| cx.global_op(b, op)),
-            OpCode::StaticCellLoad => self.walker_op(|cx, b| cx.global_op(b, op)),
-            OpCode::StaticCellSet => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]
@@ -475,10 +257,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
-            // Path-local region metadata does not mutate runtime state. The
-            // preserved exception_push/pop and stack operations own that state;
-            // explicit exception edges own transfer, independent of block order.
-            OpCode::TryStart | OpCode::TryEnd => {}
             OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
             OpCode::IterNextUnpack2 => self.emit_iter_next_unpack2(op),
             OpCode::UnpackSequence => {
@@ -501,7 +279,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "object_new_bound",
                 );
             }
-            OpCode::StateBlockStart | OpCode::StateBlockEnd => {}
+            _ => unreachable!("the walker lowers {:?}", op.opcode),
         }
     }
 

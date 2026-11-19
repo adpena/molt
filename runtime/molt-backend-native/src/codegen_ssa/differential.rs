@@ -41,6 +41,8 @@ pub(crate) struct Run<F> {
     pub(crate) refcounts: Vec<(RefcountOperation, u64)>,
     /// The words each `molt_call_inputs_release` read from its spill.
     pub(crate) released: Vec<Vec<u64>>,
+    /// The words the hash-aggregate mutators inserted, in order.
+    pub(crate) inserted: Vec<u64>,
 }
 
 /// A value's machine kind and bits: equal floats compare by their bits, so
@@ -77,6 +79,7 @@ pub(crate) fn interpret<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact>
             .filter(|&(_, word)| reaches_runtime(word))
             .collect(),
         released: b.runtime.released,
+        inserted: b.runtime.inserted,
     }
 }
 
@@ -119,6 +122,10 @@ pub(crate) fn both<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact> {
         assert_eq!(
             interpreted.released, compiled.released,
             "the machines released different call inputs on {inputs:?}"
+        );
+        assert_eq!(
+            interpreted.inserted, compiled.inserted,
+            "the machines inserted different keys on {inputs:?}"
         );
     }
     interpreted

@@ -137,6 +137,15 @@ pub(crate) enum SiteBody {
     MethodSiteCall { arguments: usize, cold: RuntimeFn },
 }
 
+/// A helper function's body, written once for every builder
+/// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
+/// body is generic over the builder the backend makes for it, never the
+/// caller's.
+pub(crate) trait HelperBody {
+    /// Build the body over the helper's word parameters and answer its word.
+    fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
+}
+
 pub(crate) trait CodegenBuilder: BranchBuilder {
     /// Any machine value the backend holds for a TIR value.
     type Value: Copy;
@@ -256,6 +265,11 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// The thread record lent by this invocation. Its entry-block value
     /// dominates every request, including a first request in a cold block.
     fn thread_record_word(&mut self) -> Self::Word;
+    /// Whether async work waits for a poll: the thread's pending-work word
+    /// (its address lent by the thread record, read once per invocation) is
+    /// nonzero. The read is a relaxed atomic load no pass merges with another
+    /// read or hoists out of a loop.
+    fn async_work_pending(&mut self) -> Self::Predicate;
     /// Load one unsigned thread-local byte at a fixed byte offset.
     fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
     /// A call in a cold block, with the usual execution-context ABI.
@@ -306,6 +320,13 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
     /// program links.
     fn program_slot(&mut self, kind: ProgramSlotKind, owner: &str) -> Self::Word;
+    /// The program's private helper function `name`: `params` word
+    /// parameters after the execution context, answering a word. The first
+    /// request defines it from `body`, which the backend runs over a builder
+    /// positioned in the helper's entry; a later request answers the same
+    /// function. The helper takes the execution context as a compiled
+    /// function does.
+    fn define_helper(&mut self, name: &str, params: usize, body: &impl HelperBody) -> Self::Callee;
 
     /// One reference-count site: the transition `operation` that each
     /// [`Self::refcount`] through it applies. The transition itself is the
@@ -353,4 +374,12 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     );
     /// End the current block on a path that never executes.
     fn unreachable(&mut self);
+    /// Retire the frame whose base was taken from the invocation's entry slot.
+    fn pop_frame(
+        &mut self,
+        base: Self::Word,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    );
+    /// Return a value already converted to the function's declared machine ABI.
+    fn return_value(&mut self, value: Option<Self::Value>);
 }

@@ -12,6 +12,7 @@ pub(crate) struct NativeFunctionImports {
     refs: Box<[cranelift_codegen::packed_option::PackedOption<FuncRef>]>,
     refcount_admission: Option<Value>,
     thread_record: Option<Value>,
+    pending_work: Option<Value>,
 }
 
 impl Default for NativeFunctionImports {
@@ -20,6 +21,7 @@ impl Default for NativeFunctionImports {
             refs: vec![Default::default(); RuntimeFn::COUNT].into_boxed_slice(),
             refcount_admission: None,
             thread_record: None,
+            pending_work: None,
         }
     }
 }
@@ -37,6 +39,27 @@ impl NativeFunctionImports {
         *self
             .thread_record
             .get_or_insert_with(|| super::thread_record::entry_thread_record(builder))
+    }
+
+    /// The pending-work word's address the thread record lends, loaded once
+    /// in the entry right after the record.
+    pub(crate) fn pending_work(&mut self, builder: &mut FunctionBuilder<'_>) -> Value {
+        use cranelift_codegen::cursor::Cursor;
+        if let Some(address) = self.pending_work {
+            return address;
+        }
+        let record = self.thread_record(builder);
+        let defined = builder.func.dfg.value_def(record).unwrap_inst();
+        let mut cursor = builder.cursor();
+        cursor.goto_after_inst(defined);
+        let address = cursor.ins().load(
+            types::I64,
+            MemFlagsData::trusted(),
+            record,
+            molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
+        );
+        self.pending_work = Some(address);
+        address
     }
 
     pub(crate) fn set_refcount_admission(&mut self, value: Value) {

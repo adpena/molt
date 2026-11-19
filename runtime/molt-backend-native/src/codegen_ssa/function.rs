@@ -501,4 +501,61 @@ mod tests {
         );
         assert!(run.refcounts.is_empty());
     }
+    #[test]
+    fn return_converts_to_the_frozen_abi_and_retires_the_owned_frame() {
+        use super::super::returns::{OwnedFrame, emit_return};
+        use super::super::scalar::tests::{Edge, Interpreter};
+        use crate::ir::{ExecutionContextPolicy, ExternFunctionSignature};
+        use molt_codegen_abi::frame_record::FrameEntryKind;
+        use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
+
+        let boxed_seven = Value::Word(molt_codegen_abi::QNAN_TAG_INT_I64 as u64 | 7);
+        for (returns_value, value, expected) in [
+            (true, Some(ValueId(1)), Edge::Return(Some(boxed_seven))),
+            (true, None, Edge::Return(Some(Value::Word(NONE_WORD)))),
+            (false, None, Edge::Return(None)),
+            (false, Some(ValueId(0)), Edge::Unreachable),
+        ] {
+            let mut b = Interpreter::default();
+            let slot = b.entry_slot("owned_frame");
+            b.store_slot(slot, 127);
+            let frame = OwnedFrame {
+                slot,
+                kind: Some(FrameEntryKind::Stateful),
+            };
+            let mut values = table(&INPUTS);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx {
+                func: &func(),
+                plan: &plan(),
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                call_sites: &std::cell::Cell::new(0),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+            };
+            let abi = NativeFunctionLinkageAbi {
+                source_signature: ExternFunctionSignature {
+                    arity: 0,
+                    has_closure: false,
+                    returns_value,
+                    execution_context: ExecutionContextPolicy::None,
+                },
+                parameter_custody: vec![],
+                param_types: vec![],
+                return_type: returns_value.then_some(TirType::DynBox),
+            };
+            emit_return(&mut cx, &mut b, &abi, value, Some(&frame));
+            assert_eq!(b.edges.as_slice(), std::slice::from_ref(&expected));
+            if expected == Edge::Unreachable {
+                assert!(diagnostics.borrow()[0].contains("native-void"));
+                assert!(b.popped_frames.is_empty());
+            } else {
+                assert!(diagnostics.borrow().is_empty());
+                assert_eq!(b.load_slot(slot), 0);
+                assert_eq!(b.popped_frames, [(127, frame.kind)]);
+            }
+        }
+    }
 }

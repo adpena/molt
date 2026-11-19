@@ -225,9 +225,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         assigned.update(target_names)
         self._prepare_mutable_control_flow_bindings(assigned)
         if iterator is not None:
-            # A generator expression acquired its outer iterator in the
-            # enclosing frame. Consume that value, never re-evaluate or apply
-            # source-expression optimizations to the original iterable here.
+            # The generator constructor already acquired the outer iterator.
+            # Consume it without revisiting the iterable's source expression.
             self._emit_iter_loop(node, iterator, loop_break_flag=break_name)
             if break_name is not None:
                 self._emit_loop_orelse(break_name, node.orelse)

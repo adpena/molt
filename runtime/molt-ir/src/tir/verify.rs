@@ -1236,7 +1236,9 @@ fn names_runtime_target(op: &TirOp, runtime: crate::runtime_fn_generated::Runtim
         _ => return false,
     };
     target == runtime.symbol()
-        && (super::call_targets::runtime_call_symbol(op).is_some()
+        && op.callee.is_none()
+        && ((op.opcode == OpCode::AllocTask && runtime.poll_key().is_some())
+            || super::call_targets::runtime_call_symbol(op).is_some()
             || matches!(
                 op.origin,
                 Some(crate::OpKind::BuiltinFunc | crate::OpKind::CallAsync)

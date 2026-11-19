@@ -204,6 +204,7 @@ class StatefulFunctionFramePlan:
         parameter_names: Sequence[str],
         cell_names: Sequence[str],
         free_vars: Sequence[str],
+        prepared_iterator_offset: int | None = None,
     ) -> StatefulLocalsLayout:
         """Project the finished typed frame onto its Python-visible bindings.
 
@@ -243,6 +244,7 @@ class StatefulFunctionFramePlan:
             slots=tuple(slots),
             free_vars=tuple(free_vars),
             closure_offset=self.async_closure_offset if free_vars else None,
+            prepared_iterator_offset=prepared_iterator_offset,
         )
 
 
@@ -288,13 +290,15 @@ class StatefulLocalsLayout:
     The runtime ABI (``stateful_locals_register``) carries two tuples:
     ``wire_names()`` lists slot bindings in slot order followed by co_freevars
     in closure-tuple order, and ``wire_layout()`` is
-    ``(parameter_count, slot_offsets, slot_cells, closure_offset)``. The
-    runtime validates exactly this schema; no other table describes it.
+    ``(parameter_count, slot_offsets, slot_cells, closure_offset,
+    prepared_iterator_offset)``. The last field names the 3.15 genexpr's
+    operand-stack reference for frame teardown.
     """
 
     slots: tuple[StatefulLocalSlot, ...]
     free_vars: tuple[str, ...]
     closure_offset: int | None
+    prepared_iterator_offset: int | None
 
     def __post_init__(self) -> None:
         names = [slot.name for slot in self.slots] + list(self.free_vars)
@@ -319,6 +323,13 @@ class StatefulLocalsLayout:
             or self.closure_offset in offsets
         ):
             raise ValueError("stateful closure slot must be aligned and distinct")
+        if self.prepared_iterator_offset is not None and (
+            self.parameter_count != 1
+            or self.prepared_iterator_offset != self.slots[0].offset + 8
+            or self.prepared_iterator_offset in offsets
+            or self.prepared_iterator_offset == self.closure_offset
+        ):
+            raise ValueError("prepared iterator must own the slot after the parameter")
 
     @property
     def parameter_count(self) -> int:
@@ -329,12 +340,13 @@ class StatefulLocalsLayout:
 
     def wire_layout(
         self,
-    ) -> tuple[int, tuple[int, ...], tuple[int, ...], int | None]:
+    ) -> tuple[int, tuple[int, ...], tuple[int, ...], int | None, int | None]:
         return (
             self.parameter_count,
             tuple(slot.offset for slot in self.slots),
             tuple(slot.cell for slot in self.slots),
             self.closure_offset,
+            self.prepared_iterator_offset,
         )
 
 
