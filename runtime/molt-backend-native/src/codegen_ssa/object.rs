@@ -3,17 +3,17 @@
 //!
 //! A proven field or list item access calls the backend's site helper, the
 //! shared `molt_codegen_abi` generator's body placed where the backend
-//! chooses; every other access is a borrowed runtime call. A synthesized
-//! attribute name is one temporary owner the access borrows.
+//! chooses; every other access is a borrowed runtime call. An attribute name
+//! is a borrowed immortal literal cell.
 
 use molt_codegen_abi as nanbox;
-use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::list_item::ItemContainers;
+use molt_codegen_abi::literal_cell::LiteralKind;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::builder::{CodegenBuilder, MachineKind, SiteBody};
-use super::constants::byte_literal;
+use super::builder::{CodegenBuilder, IntComparison, MachineKind, SiteBody};
+use super::constants::{fill_literal_cell, literal_cell};
 use super::custody::{CallTarget, RuntimeArg};
 use super::function::{FunctionCx, ResultCustody};
 use super::value_table::HeldCarrier;
@@ -24,72 +24,42 @@ use crate::tir::values::ValueId;
 /// The boxed word of `None`.
 const NONE_WORD: u64 = nanbox::QNAN | nanbox::TAG_NONE;
 
-/// A synthesized name between its construction and its release: the
-/// consumer runs in `success`; a failed construction skips to `merge`.
-/// Generic over the backend's word, block and value, as custody is, so a
-/// backend may run its own code between the two halves.
-pub(crate) struct OwnedName<Word, Block, Value> {
-    pub(crate) word: Word,
-    merge: Block,
-    result: Value,
-}
-
-/// The owned name a builder `B` keeps.
-pub(crate) type OwnedNameOf<B> = OwnedName<
-    <B as molt_codegen_abi::word::WordBuilder>::Word,
-    <B as CodegenBuilder>::Block,
-    <B as CodegenBuilder>::Value,
->;
-
-/// Construct `name` as one temporary str owner and continue in a block that
-/// runs only when construction succeeded. On failure the whole consumer is
-/// skipped and [`finish_owned_name`] yields None with the exception pending,
-/// so the enclosing operation's exception check keeps handler and cleanup
-/// flow.
-pub(crate) fn begin_owned_name<B: CodegenBuilder>(b: &mut B, name: &str) -> OwnedNameOf<B> {
-    let (word, status) = byte_literal(b, name.as_bytes(), &TirType::Str);
-    let success = b.create_block("owned_name_success");
-    let merge = b.create_block("owned_name_merge");
-    let result = b.append_block_param(merge, MachineKind::Word);
-    b.set_name(result, "owned_name_result");
-    let ok = b.is_zero(status);
-    let ok_value = b.bit_value(ok);
-    b.set_name(ok_value, "owned_name_ok");
-    let none = b.constant(NONE_WORD);
-    let none = b.word_value(none);
-    b.branch_if(ok, (success, &[]), (merge, &[none]));
-    b.switch_to_block(success);
-    OwnedName {
-        word,
-        merge,
-        result,
-    }
-}
-
-/// Release the name after its consumer produced `consumed`, and rejoin the
-/// failure path: the result is `consumed`, or None when the name failed.
-pub(crate) fn finish_owned_name<B: CodegenBuilder>(
-    b: &mut B,
-    name: OwnedNameOf<B>,
-    consumed: B::Word,
-) -> B::Word {
-    let release = b.refcount_site(RefcountOperation::Release);
-    b.refcount(release, name.word);
-    let consumed = b.word_value(consumed);
-    b.jump(name.merge, &[consumed]);
-    b.switch_to_block(name.merge);
-    b.expect_word(name.result)
-}
-
-/// `begin_owned_name`, `consume`, `finish_owned_name`.
-pub(crate) fn with_owned_name<B: CodegenBuilder>(
+/// Run `consume` with the attribute name `name` as a borrowed str word, and
+/// return what it produced. The name is a literal cell (call_anatomy.md 4.9):
+/// once filled, one load and one branch, with no runtime call and no
+/// reference count, since the object is immortal. A failed first fill skips
+/// `consume` and yields None with the exception pending, so the enclosing
+/// operation's exception check keeps handler and cleanup flow.
+pub(crate) fn with_name<B: CodegenBuilder>(
     b: &mut B,
     name: &str,
     consume: impl FnOnce(&mut B, B::Word) -> B::Word,
 ) -> B::Word {
-    let owned = begin_owned_name(b, name);
-    let consumed = consume(b, owned.word);
-    finish_owned_name(b, owned, consumed)
+    let cell = literal_cell(b, LiteralKind::Str, name.as_bytes());
+    let cached = b.load_word(cell, 0);
+    let cached = b.word_value(cached);
+    let empty = b.is_zero(cached);
+    let fill = b.create_block("name_fill");
+    let ready = b.create_block("name_ready");
+    let merge = b.create_block("name_merge");
+    let word = b.append_block_param(ready, MachineKind::Word);
+    b.set_name(word, "name");
+    let result = b.append_block_param(merge, MachineKind::Word);
+    b.set_name(result, "name_result");
+    b.branch_if(empty, (fill, &[]), (ready, &[cached]));
+    b.switch_to_block(fill);
+    let filled = fill_literal_cell(b, cell, LiteralKind::Str, name.as_bytes());
+    let none = b.constant(NONE_WORD);
+    let failed = b.int_compare(IntComparison::Equal, b.expect_word(filled), none);
+    let none = b.word_value(none);
+    b.branch_if(failed, (merge, &[none]), (ready, &[filled]));
+    b.switch_to_block(ready);
+    let word = b.expect_word(word);
+    let consumed = consume(b, word);
+    let consumed = b.word_value(consumed);
+    b.jump(merge, &[consumed]);
+    b.switch_to_block(merge);
+    b.expect_word(result)
 }
 
 /// The op's attribute name (`name`), or `<unknown>`.
@@ -259,7 +229,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         } else {
             let runtime = RuntimeFn::GetAttrName;
             let callee = b.runtime_callee(runtime);
-            with_owned_name(b, name, |b, name| {
+            with_name(b, name, |b, name| {
                 let args = [b.word_value(object), b.word_value(name)];
                 call_named(b, callee, &args, runtime.symbol())
             })
@@ -367,7 +337,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             call_named(b, callee, &args, runtime.symbol())
         } else {
             let callee = b.runtime_callee(RuntimeFn::SetAttrName);
-            with_owned_name(b, name, |b, name| {
+            with_name(b, name, |b, name| {
                 let args = [
                     b.word_value(object),
                     b.word_value(name),
@@ -408,7 +378,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let mut custody = operands.begin(b, &op.operands[..1], "del_attr");
         let object = operands.operand(b, &mut custody, op.operands[0]);
         let callee = b.runtime_callee(RuntimeFn::DelAttrName);
-        let word = with_owned_name(b, name, |b, name| {
+        let word = with_name(b, name, |b, name| {
             let args = [b.word_value(object), b.word_value(name)];
             call_named(b, callee, &args, "del_attr_name")
         });
@@ -649,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_access_borrows_one_temporary_name_and_releases_it() {
+    fn a_named_access_borrows_its_immortal_name_cell() {
         for (opcode, entry, operands) in [
             (OpCode::LoadAttr, RuntimeFn::GetAttrName, 1),
             (OpCode::DelAttr, RuntimeFn::DelAttrName, 1),
@@ -667,17 +637,15 @@ mod tests {
                 [Value::Word(literal_word(entry, &key(&args)))],
                 "{opcode:?}"
             );
-            assert_eq!(run.runtime_calls, [RuntimeFn::StringFromBytes, entry]);
-            assert_eq!(
-                run.refcounts,
-                [(RefcountOperation::Release, name_word("attr"))],
-                "{opcode:?}: the name is released once, after its consumer"
-            );
+            // The first evaluation fills the name's cell, cold; the name is
+            // immortal, so nothing is released after the access.
+            assert_eq!(run.runtime_calls, [RuntimeFn::LiteralCellFill, entry]);
+            assert!(run.refcounts.is_empty(), "{opcode:?}: {:?}", run.refcounts);
             // A name that cannot be built skips the access: None, the
             // exception pending, nothing released.
             let run = object_op(access, TirType::DynBox, &inputs, Some(true));
             assert_eq!(run.results, [Value::Word(NONE_WORD)], "{opcode:?}");
-            assert_eq!(run.runtime_calls, [RuntimeFn::StringFromBytes]);
+            assert_eq!(run.runtime_calls, [RuntimeFn::LiteralCellFill]);
             assert!(run.refcounts.is_empty());
         }
     }
