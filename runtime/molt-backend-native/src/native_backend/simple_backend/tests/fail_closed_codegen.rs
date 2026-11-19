@@ -67,12 +67,28 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
-    let defined = molt_ir::FunctionTable::from_rows([(
-        "caller",
-        molt_ir::function_table::FunctionRowKind::Body,
-    )]);
+    let provider = FunctionIR {
+        name: target.into(),
+        is_extern: true,
+        params: (0..arity).map(|i| format!("param{i}")).collect(),
+        return_abi: if returns_value {
+            molt_ir::FunctionReturnAbi::Value
+        } else {
+            molt_ir::FunctionReturnAbi::Void
+        },
+        ..FunctionIR::default()
+    };
+    let ir = SimpleIR {
+        functions: vec![caller, provider],
+        profile: None,
+    };
+    let defined = molt_ir::FunctionTable::of(&ir.functions);
+    let fixture = NativeFinalFunctions::from_codegen_fixtures(ir)
+        .into_local_functions()
+        .next()
+        .expect("caller body");
     backend.compile_func(
-        final_function_for_test(caller),
+        fixture,
         &BTreeMap::new(),
         &BTreeMap::new(),
         &defined,

@@ -54,42 +54,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(trampoline, "entry"));
-        let refcount_admission = self.backend.emit_refcount_admission(&builder);
-        let frame_size = builder
-            .build_load(
-                i64_ty,
-                self.backend.stateful_frame_size(name).as_pointer_value(),
-                "task_frame_size",
-            )
-            .unwrap()
-            .into_int_value();
-        // The caller published the function it calls as this thread's pending
-        // invocation; the task takes its frame context from it.
-        let thread = super::refcount::thread_record_bits(
-            &builder,
-            self.backend.context,
-            trampoline.get_first_param().unwrap().into_int_value(),
-        );
-        // The trampoline borrows its closure and argument array; the task
-        // reads them only once it exists.
-        let payload = molt_codegen_abi::task_site::TaskPayload::BorrowedArguments {
-            closure: has_closure.then(|| trampoline.get_nth_param(1).unwrap().into_int_value()),
-            arguments: trampoline.get_nth_param(2).unwrap().into_int_value(),
-            count: arity,
+        use crate::codegen_ssa::CodegenBuilder;
+        use crate::codegen_ssa::task::{TaskPlacement, emit_task_trampoline};
+        let params = Default::default();
+        let state = super::codegen_builder::LlvmFunctionState::new(true);
+        let mut b = LlvmCodegen {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &builder,
+            },
+            backend: self.backend,
+            params: &params,
+            state: &state,
         };
-        let result = self.backend.call_task_site(
-            &builder,
-            refcount_admission,
+        let poll_address = b.function_address(poll);
+        let frame_bytes = b.poll_frame_bytes(name);
+        let closure = has_closure.then(|| trampoline.get_nth_param(1).unwrap().into_int_value());
+        let arguments = trampoline.get_nth_param(2).unwrap().into_int_value();
+        emit_task_trampoline(
+            &mut b,
             layout,
-            poll.as_global_value()
-                .as_pointer_value()
-                .const_to_int(i64_ty),
-            frame_size,
-            molt_codegen_abi::task_site::TaskFrameContext::PendingInvocation { thread },
-            payload,
-            "task_new",
+            poll_address,
+            frame_bytes,
+            closure,
+            arguments,
+            arity,
         );
-        builder.build_return(Some(&result)).unwrap();
         (poll, trampoline)
     }
 }

@@ -99,57 +99,32 @@ impl SimpleBackend {
                     has_closure,
                     GENERATOR_CONTROL_BYTES,
                 );
-                use molt_codegen_abi::inline_refcount::RefcountOperation;
-                use molt_codegen_abi::task_site::{TaskFrameContext, TaskPayload};
-                let poll_addr =
-                    Self::task_poll_identity(module, &mut builder, func_name, Linkage::Import);
-                let size_val = crate::native_backend::load_stateful_frame_size(
+                let poll = molt_ir::code_slots::TaskPoll::from_targets(
+                    runtime_target.is_none().then_some((func_name, linkage)),
+                    runtime_target,
+                )
+                .expect("task trampoline requires a compiled poll or a manifest poll key");
+                let (poll_addr, size_val) =
+                    Self::task_poll_operands(module, &mut builder, poll, closure_size);
+                let mut imports = NativeFunctionImports::default();
+                imports.set_refcount_admission(admission);
+                let mut b = crate::native_backend::codegen_builder::NativeCodegen {
+                    words: NativeWords {
+                        builder: &mut builder,
+                    },
                     module,
-                    &mut builder,
-                    func_name,
-                );
-                // The trampoline borrows its closure and argument array; the
-                // task reads them only once it exists.
-                let payload = TaskPayload::BorrowedArguments {
-                    closure: has_closure.then_some(closure_bits),
-                    arguments: args_ptr,
-                    count: arity,
+                    import_ids,
+                    imports: &mut imports,
                 };
-                let mut import = |function| {
-                    let callee = Self::import_runtime_func_id_split(module, import_ids, function);
-                    module.declare_func_in_func(callee, builder.func)
-                };
-                let refcount_site = |slow, operation| NativeRefcountSite {
-                    slow,
-                    admission,
-                    operation,
-                };
-                let sites = NativeFrameSites {
-                    retain: refcount_site(import(RuntimeFn::IncRefObj), RefcountOperation::Retain),
-                    release: refcount_site(
-                        import(RuntimeFn::DecRefObj),
-                        RefcountOperation::Release,
-                    ),
-                    enter: import(RuntimeFn::FrameRecordEnter),
-                    exit: import(RuntimeFn::FrameRecordExit),
-                };
-                let tasks = NativeTaskSites::with_imports(import);
-                // The caller published the function it calls as this thread's
-                // pending invocation; the task takes its frame context from it.
-                let thread = thread_record_address(&mut builder, execution_context);
-                let mut sealed = BTreeSet::new();
-                let result = emit_task_construction(
-                    &mut builder,
-                    &mut sealed,
-                    sites,
-                    tasks,
+                crate::codegen_ssa::task::emit_task_trampoline(
+                    &mut b,
                     layout,
                     poll_addr,
                     size_val,
-                    TaskFrameContext::PendingInvocation { thread },
-                    payload,
+                    has_closure.then_some(closure_bits),
+                    args_ptr,
+                    arity,
                 );
-                builder.ins().return_(&[result]);
             }
             TrampolineBehavior::ForwardCallFrame => {
                 let mut target_sig = module.make_signature();
@@ -259,6 +234,7 @@ impl SimpleBackend {
         module: &mut dyn Module,
         import_ids: &mut RuntimeImportIds,
         func_name: &str,
+        runtime_target: Option<RuntimeFn>,
         spec: TrampolineSpec,
     ) -> cranelift_codegen::ir::Function {
         let mut trampoline_ids = BTreeMap::new();
@@ -268,7 +244,7 @@ impl SimpleBackend {
             &mut trampoline_ids,
             import_ids,
             func_name,
-            None,
+            runtime_target,
             Linkage::Import,
             spec,
             |ctx| clif = Some(ctx.func.clone()),

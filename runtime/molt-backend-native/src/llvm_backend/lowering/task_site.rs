@@ -278,12 +278,24 @@ impl<'ctx> LlvmBackend<'ctx> {
 }
 
 impl<'ctx> crate::codegen_ssa::task::TaskPlacement for LlvmCodegen<'_, 'ctx> {
+    fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
+        self.words
+            .builder
+            .build_load(
+                self.words.context.i64_type(),
+                self.backend.stateful_frame_size(symbol).as_pointer_value(),
+                "task_frame_size",
+            )
+            .unwrap()
+            .into_int_value()
+    }
     fn place_task(
         &mut self,
         layout: TaskConstructorLayout,
         poll: Self::Word,
         frame_bytes: Self::Word,
-        operands: crate::codegen_ssa::task::TaskOperands<Self::Word>,
+        context: TaskFrameContext<Self::Word>,
+        payload: TaskPayload<'_, Self::Word>,
         name: &str,
     ) -> Self::Word {
         let admission = self
@@ -295,8 +307,8 @@ impl<'ctx> crate::codegen_ssa::task::TaskPlacement for LlvmCodegen<'_, 'ctx> {
             layout,
             poll,
             frame_bytes,
-            operands.context,
-            TaskPayload::Words(&operands.words),
+            context,
+            payload,
             name,
         )
     }

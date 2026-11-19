@@ -47,8 +47,15 @@ pub fn gpu_runtime_fn_for_simple_kind(kind: crate::OpKind) -> Option<RuntimeFn> 
 /// (always a compiled function), has none. The result travels on the op's
 /// typed `runtime` field; no backend decodes a symbol.
 pub fn ingest_runtime_target(op: &crate::OpIR) -> Option<RuntimeFn> {
+    if op.callee.is_some() {
+        return None;
+    }
     if let Some(function) = gpu_runtime_fn_for_simple_kind(op.kind) {
         return Some(function);
+    }
+    if op.kind == crate::OpKind::AllocTask {
+        let runtime = RuntimeFn::from_symbol(op.s_value.as_deref()?)?;
+        return runtime.poll_key().map(|_| runtime);
     }
     let names_runtime = matches!(
         op.kind,
@@ -364,6 +371,17 @@ mod tests {
             s_value: symbol.map(Into::into),
             ..crate::OpIR::new(kind)
         }
+    }
+
+    #[test]
+    fn allocation_admits_only_runtime_polls_without_a_compiled_provider() {
+        let poll = RuntimeFn::AsyncSleepPoll;
+        let mut allocation = simple(crate::OpKind::AllocTask, Some(poll.symbol()));
+        assert_eq!(ingest_runtime_target(&allocation), Some(poll));
+        allocation.callee = Some(crate::FunctionId::from_index(0));
+        assert_eq!(ingest_runtime_target(&allocation), None);
+        let ordinary = simple(crate::OpKind::AllocTask, Some(RuntimeFn::Add.symbol()));
+        assert_eq!(ingest_runtime_target(&ordinary), None);
     }
 
     /// The ingest decode types exactly the ops whose role names a runtime

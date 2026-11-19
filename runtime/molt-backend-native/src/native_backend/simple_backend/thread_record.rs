@@ -73,15 +73,6 @@ pub(crate) fn emit_recursion_release(builder: &mut super::FunctionBuilder<'_>, t
     );
 }
 
-/// The thread record's address, as a word, from the execution context
-/// `context` (`generate_thread_record`).
-pub(crate) fn thread_record_address(builder: &mut FunctionBuilder<'_>, context: Value) -> Value {
-    generate_thread_record(&mut ClifThreadRecord {
-        builder: builder.cursor(),
-        context,
-    })
-}
-
 /// Insert the immutable record read before the entry's first instruction
 /// without moving the function builder off its current TIR block.
 pub(super) fn entry_thread_record(builder: &mut FunctionBuilder<'_>) -> Value {

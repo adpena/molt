@@ -2778,6 +2778,10 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     ] {
         admit_runtime_entry(&mut backend, symbol);
     }
+    backend.function_table = molt_ir::FunctionTable::from_rows([(
+        "fam_poll",
+        molt_ir::function_table::FunctionRowKind::Extern,
+    )]);
     for name in ["fam_target", "fam_poll"] {
         backend.function_linkage_abis.insert(
             name.into(),
@@ -2947,7 +2951,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
             },
         ),
         family_function("fam_task", true, |_, [first, _, none], results| {
-            vec![family_op(
+            let mut op = family_op(
                 OpCode::AllocTask,
                 None,
                 // The function (None: no frame), then one payload word twice.
@@ -2958,7 +2962,9 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
                     ("value", AttrValue::Int(task_size)),
                     ("task_kind", AttrValue::Str("generator".into())),
                 ],
-            )]
+            );
+            op.callee = Some(molt_ir::FunctionId::from_index(0));
+            vec![op]
         }),
         family_function("fam_direct_call", true, |_, [first, _, _], results| {
             vec![family_op(

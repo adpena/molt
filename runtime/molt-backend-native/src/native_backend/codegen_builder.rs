@@ -637,12 +637,16 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
 }
 
 impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
+        load_stateful_frame_size(self.module, self.words.builder, symbol)
+    }
     fn place_task(
         &mut self,
         layout: molt_codegen_abi::task_site::TaskConstructorLayout,
         poll: Value,
         frame_bytes: Value,
-        operands: crate::codegen_ssa::task::TaskOperands<Value>,
+        context: molt_codegen_abi::task_site::TaskFrameContext<Value>,
+        payload: molt_codegen_abi::task_site::TaskPayload<'_, Value>,
         _name: &str,
     ) -> Value {
         let frames = self.frame_sites();
@@ -655,8 +659,8 @@ impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
             layout,
             poll,
             frame_bytes,
-            operands.context,
-            molt_codegen_abi::task_site::TaskPayload::Words(&operands.words),
+            context,
+            payload,
         )
     }
 }
