@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::BTreeSet;
 
 use molt_backend::FunctionIR;
 use molt_ir::FunctionId;
