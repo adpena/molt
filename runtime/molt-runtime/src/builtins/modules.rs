@@ -2874,6 +2874,55 @@ pub(crate) fn molt_namespace_get_attached_body(
     })
 }
 
+/// `module.__dict__.get(name, missing)` without handing out the mapping.
+///
+/// A static-cell module keeps its layout names in cells attached to its
+/// dictionary, so a Python-level `dict.get` on `module.__dict__` would miss
+/// them; reaching the mapping by identity therefore keeps a module's whole
+/// namespace in the dictionary (the namespace-writes analysis). This read
+/// consults the cell, then the dictionary, exactly as a by-name global read
+/// does, with `dict.get` semantics: no module `__getattr__`, no builtins.
+/// A receiver that is not a module answers `missing`, as
+/// `getattr(receiver, "__dict__", {}).get(name, missing)` does for None.
+pub(crate) fn molt_module_namespace_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_bits: u64,
+    name_bits: u64,
+    missing_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let miss = || {
+            inc_ref_bits(py, missing_bits);
+            missing_bits
+        };
+        let Some(module) = obj_from_bits(module_bits)
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_MODULE)
+        else {
+            return miss();
+        };
+        let Some(dictionary) = obj_from_bits(unsafe { module_dict_bits(module) })
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT)
+        else {
+            return miss();
+        };
+        if let Some(value) =
+            crate::builtins::namespace_slots::static_cell_get(py, dictionary, name_bits)
+        {
+            return value;
+        }
+        match unsafe { dict_get_in_place(py, dictionary, name_bits) } {
+            Ok(Some(value)) => {
+                inc_ref_bits(py, value);
+                value
+            }
+            Ok(None) => miss(),
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
 /// DELETE_NAME translates any mapping-deletion failure into NameError. This
 /// intentionally differs from LOAD_NAME's KeyError-only fallback (CPython3.12+).
 pub(crate) fn molt_namespace_del_attached_body(

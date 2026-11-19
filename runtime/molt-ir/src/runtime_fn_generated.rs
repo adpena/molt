@@ -1796,6 +1796,7 @@ pub enum RuntimeFn {
     ModuleImportStar,
     ModuleInit,
     ModuleInitializationSpec,
+    ModuleNamespaceGet,
     ModuleNew,
     ModuleRegistryInstall,
     ModuleRepr,
@@ -4646,6 +4647,7 @@ impl RuntimeFn {
         Self::ModuleImportStar,
         Self::ModuleInit,
         Self::ModuleInitializationSpec,
+        Self::ModuleNamespaceGet,
         Self::ModuleNew,
         Self::ModuleRegistryInstall,
         Self::ModuleRepr,
@@ -5817,7 +5819,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2846;
+    pub const COUNT: usize = 2847;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -30280,6 +30282,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFFEBF2DFC9FE,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_module_namespace_get",
+        linker_symbol: "molt_module_namespace_get__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFF2D8747A979,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

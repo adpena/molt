@@ -1937,6 +1937,7 @@ pub enum RuntimeCallable {
     molt_module_import = 0xFFFFFF4F9DCDDC9F,
     molt_module_init = 0xFFFFFFE848382BB9,
     molt_module_initialization_spec = 0xFFFFFFEBF2DFC9FE,
+    molt_module_namespace_get = 0xFFFFFF2D8747A979,
     molt_module_new = 0xFFFFFFCC7209AD87,
     molt_module_repr = 0xFFFFFF3ECD2148F1,
     molt_module_setattr = 0xFFFFFF0E18E28FCF,
@@ -5113,6 +5114,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_module_import.key() == runtime_callable_key("molt_module_import"));
     assert!(RuntimeCallable::molt_module_init.key() == runtime_callable_key("molt_module_init"));
     assert!(RuntimeCallable::molt_module_initialization_spec.key() == runtime_callable_key("molt_module_initialization_spec"));
+    assert!(RuntimeCallable::molt_module_namespace_get.key() == runtime_callable_key("molt_module_namespace_get"));
     assert!(RuntimeCallable::molt_module_new.key() == runtime_callable_key("molt_module_new"));
     assert!(RuntimeCallable::molt_module_repr.key() == runtime_callable_key("molt_module_repr"));
     assert!(RuntimeCallable::molt_module_setattr.key() == runtime_callable_key("molt_module_setattr"));
