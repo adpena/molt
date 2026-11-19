@@ -36,6 +36,79 @@ struct SortItem {
     original_index: usize,
 }
 
+/// The one key type every sort key shares, when its `<` runs no Python code.
+/// CPython's `list.sort` makes the same pre-scan and then compares with
+/// `unsafe_long_compare`, `unsafe_float_compare` or `unsafe_latin_compare`
+/// (`Objects/listobject.c`); the comparisons and their results are those of
+/// the generic `<`, so the order and every observation are the same.
+enum SortKeys {
+    /// Inline ints: `<` of their values.
+    Int,
+    /// Floats: `<` of their values, false for a NaN as `float.__lt__` is.
+    Float,
+    /// Exact `str`: `<` of their code points, which is the byte order of
+    /// their UTF-8 storage (surrogates included).
+    Str,
+    Mixed,
+}
+
+fn homogeneous_sort_keys(py: &PyToken<'_>, items: &[SortItem]) -> SortKeys {
+    let Some(first) = items.first() else {
+        return SortKeys::Mixed;
+    };
+    let first = obj_from_bits(first.key_bits);
+    if first.is_int() {
+        return if items
+            .iter()
+            .all(|item| obj_from_bits(item.key_bits).is_int())
+        {
+            SortKeys::Int
+        } else {
+            SortKeys::Mixed
+        };
+    }
+    if first.is_float() {
+        return if items
+            .iter()
+            .all(|item| obj_from_bits(item.key_bits).is_float())
+        {
+            SortKeys::Float
+        } else {
+            SortKeys::Mixed
+        };
+    }
+    let str_class = builtin_classes(py).str;
+    let is_exact_str = |bits: u64| {
+        obj_from_bits(bits).as_ptr().is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_STRING && type_of_bits(py, bits) == str_class
+        })
+    };
+    if items.iter().all(|item| is_exact_str(item.key_bits)) {
+        SortKeys::Str
+    } else {
+        SortKeys::Mixed
+    }
+}
+
+/// The value of a key [`homogeneous_sort_keys`] proved an inline int.
+#[inline]
+fn int_key(bits: u64) -> i64 {
+    obj_from_bits(bits).as_int().expect("inline int sort key")
+}
+
+/// The value of a key [`homogeneous_sort_keys`] proved a float.
+#[inline]
+fn float_key(bits: u64) -> f64 {
+    obj_from_bits(bits).as_float().expect("float sort key")
+}
+
+/// The UTF-8 storage of a key [`homogeneous_sort_keys`] proved an exact `str`.
+#[inline]
+fn exact_str_bytes<'a>(bits: u64) -> &'a [u8] {
+    let ptr = obj_from_bits(bits).as_ptr().expect("exact str sort key");
+    unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) }
+}
+
 #[inline]
 pub(crate) unsafe fn promote_specialized_list_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
@@ -761,8 +834,17 @@ fn sort_storage(
             let runs = timsort::SortGeneration::for_minor(
                 crate::object::ops_sys::runtime_target_minor(_py),
             );
-            let sorted =
-                timsort::timsort(&mut items, runs, |left, right| {
+            let sorted = match homogeneous_sort_keys(_py, &items) {
+                SortKeys::Int => timsort::timsort(&mut items, runs, |left, right| {
+                    Ok(int_key(left.key_bits) < int_key(right.key_bits))
+                }),
+                SortKeys::Float => timsort::timsort(&mut items, runs, |left, right| {
+                    Ok(float_key(left.key_bits) < float_key(right.key_bits))
+                }),
+                SortKeys::Str => timsort::timsort(&mut items, runs, |left, right| {
+                    Ok(exact_str_bytes(left.key_bits) < exact_str_bytes(right.key_bits))
+                }),
+                SortKeys::Mixed => timsort::timsort(&mut items, runs, |left, right| {
                     match rich_compare_op_bool(
                         _py,
                         obj_from_bits(left.key_bits),
@@ -773,7 +855,8 @@ fn sort_storage(
                         CompareBoolOutcome::False => Ok(false),
                         CompareBoolOutcome::NotComparable | CompareBoolOutcome::Error => Err(()),
                     }
-                });
+                }),
+            };
             if matches!(sorted, Err(timsort::TimsortError::Memory)) {
                 // CPython selects merge-allocation failure before retiring
                 // keys or callback-added values.
