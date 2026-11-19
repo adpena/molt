@@ -8,6 +8,7 @@
 use molt_codegen_abi as nanbox;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::word::WordComparison;
+use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 use super::builder::CodegenBuilder;
@@ -325,6 +326,75 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// A preserved container op: a `Copy` whose origin names a container
+    /// protocol with its own lowering. Exact `molt_<kind>` boxed calls are
+    /// not here: the generated runtime ABI dispatch owns their boxing,
+    /// availability and result custody. Answers false for a kind this family
+    /// does not own, or for a malformed op the caller then refuses.
+    pub(crate) fn container_preserved_op(&mut self, b: &mut B, op: &TirOp, kind: OpKind) -> bool {
+        match kind {
+            OpKind::IterNextUnboxed => {
+                self.iterator_out_words(b, op, RuntimeFn::IterNextUnboxed, 1, "iter_next_unboxed")
+            }
+            OpKind::IterNextUnpack2 => {
+                self.iterator_out_words(b, op, RuntimeFn::IterNextUnpack2, 2, "iter_next_unpack2")
+            }
+            OpKind::Len => {
+                let &[container] = op.operands.as_slice() else {
+                    return false;
+                };
+                let function = len_entry(self.func.value_types.get(&container));
+                let abi = function
+                    .boxed_abi()
+                    .filter(|abi| abi.arity() == 1)
+                    .unwrap_or_else(|| {
+                        panic!("{} must have a generated boxed ABI", function.symbol())
+                    });
+                self.boxed_runtime_call(b, op, abi);
+                true
+            }
+            OpKind::ListNew => {
+                self.fixed_sequence(b, op, RuntimeFn::ListFromValues);
+                true
+            }
+            OpKind::TupleNew => {
+                self.fixed_sequence(b, op, RuntimeFn::TupleFromValues);
+                true
+            }
+            OpKind::DictNew => {
+                self.dict_literal(b, op);
+                true
+            }
+            OpKind::SetNew => {
+                self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd);
+                true
+            }
+            // Frozenset has no TIR opcode of its own; its raw-capacity
+            // constructor and in-place mutator share the set protocol.
+            OpKind::FrozensetNew => {
+                self.set_aggregate_op(b, op, RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd);
+                true
+            }
+            OpKind::UnpackSequence => self.unpack_sequence_op(b, op),
+            _ => false,
+        }
+    }
+}
+
+/// The `len` entry for a container of TIR type `ty`: an exact container
+/// type selects its specialized entry; a boxed word carries no type fact.
+fn len_entry(ty: Option<&TirType>) -> RuntimeFn {
+    match ty {
+        Some(TirType::List(_)) => RuntimeFn::LenList,
+        Some(TirType::Str) => RuntimeFn::LenStr,
+        Some(TirType::Dict(_, _)) => RuntimeFn::LenDict,
+        Some(TirType::Tuple(_)) => RuntimeFn::LenTuple,
+        Some(TirType::Set(_)) => RuntimeFn::LenSet,
+        _ => RuntimeFn::Len,
+    }
+}
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// `UnpackSequence` of `value` targets: the runtime writes each owned
     /// word through an entry array this op owns and answers a status the
     /// op releases. The sequence is borrowed; a sequence that could not be
@@ -591,6 +661,220 @@ mod tests {
             [RuntimeFn::IntFromI64],
             "no constructor call"
         );
+    }
+
+    /// The preserved container op `kind` (a `Copy` with that origin) over
+    /// boxed %0.. typed `operand_ty`, with results %10..; the fact is
+    /// whether the family claimed it. `value` is the op's `value` attribute.
+    fn preserved(
+        kind: OpKind,
+        inputs: &[u64],
+        results: usize,
+        operand_ty: TirType,
+        value: Option<i64>,
+        on_machine: bool,
+    ) -> Run<bool> {
+        let mut attrs = AttrDict::default();
+        if let Some(value) = value {
+            attrs.insert("value".into(), AttrValue::Int(value));
+        }
+        let op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: (0..inputs.len() as u32).map(ValueId).collect(),
+            results: (0..results as u32)
+                .map(|index| ValueId(10 + index))
+                .collect(),
+            attrs,
+            source_span: None,
+            origin: Some(kind),
+            runtime: None,
+            callee: None,
+        };
+        let lower = kernel!(op: TirOp = op, kind: OpKind = kind, operand_ty: TirType = operand_ty; |b, inputs| -> bool {
+            let mut func = TirFunction::new(
+                "preserved_containers".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(16);
+            for (index, &input) in inputs.iter().enumerate() {
+                let id = ValueId(index as u32);
+                func.value_types.insert(id, operand_ty.clone());
+                values.set_value(id, input);
+                values.set_repr(id, HeldCarrier::Boxed);
+            }
+            let diagnostics = RefCell::new(Vec::new());
+            let runtime = every_runtime_entry();
+            let sites = Cell::new(0);
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &runtime,
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &sites,
+            };
+            let claimed = cx.container_preserved_op(b, op, *kind);
+            assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
+            let results = if claimed {
+                op.results.iter().map(|&id| values.value(id).unwrap()).collect()
+            } else {
+                Vec::new()
+            };
+            (claimed, results)
+        });
+        let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
+        if on_machine {
+            machine(&lower, &inputs, false)
+        } else {
+            both(&lower, &inputs)
+        }
+    }
+
+    #[test]
+    fn a_preserved_literal_hands_its_constructor_exactly_its_words() {
+        let words = [OBJECT, inline(1), inline(2), inline(3)];
+        for (kind, constructor) in [
+            (OpKind::ListNew, RuntimeFn::ListFromValues),
+            (OpKind::TupleNew, RuntimeFn::TupleFromValues),
+        ] {
+            let run = preserved(kind, &words, 1, TirType::DynBox, None, false);
+            assert!(run.fact);
+            assert_eq!(
+                run.results,
+                [Value::Word(literal_word(constructor, &key(&words)))]
+            );
+            assert_eq!(run.runtime_calls, [constructor]);
+        }
+        let run = preserved(OpKind::DictNew, &words, 1, TirType::DynBox, None, false);
+        assert!(run.fact);
+        let mut expected = key(&[OBJECT, inline(2)]);
+        expected.extend(key(&[inline(1), inline(3)]));
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(
+                RuntimeFn::DictFromPairs,
+                &expected
+            ))]
+        );
+    }
+
+    #[test]
+    fn a_preserved_len_calls_the_entry_its_container_type_selects() {
+        for (ty, entry) in [
+            (TirType::List(Box::new(TirType::DynBox)), RuntimeFn::LenList),
+            (TirType::DynBox, RuntimeFn::Len),
+        ] {
+            let run = preserved(OpKind::Len, &[OBJECT], 1, ty, None, false);
+            assert!(run.fact);
+            assert_eq!(run.runtime_calls, [entry]);
+            assert_eq!(
+                run.results,
+                [Value::Word(literal_word(entry, &key(&[OBJECT])))]
+            );
+        }
+        // Not one container operand: refused before any code.
+        let run = preserved(
+            OpKind::Len,
+            &[OBJECT, OBJECT],
+            1,
+            TirType::DynBox,
+            None,
+            false,
+        );
+        assert!(!run.fact);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_preserved_iterator_and_unpack_bind_the_words_the_runtime_wrote() {
+        let not_done = (0x7ff8 << 48) | (2 << 48);
+        for (kind, function, words) in [
+            (OpKind::IterNextUnboxed, RuntimeFn::IterNextUnboxed, 1u8),
+            (OpKind::IterNextUnpack2, RuntimeFn::IterNextUnpack2, 2),
+        ] {
+            let run = preserved(
+                kind,
+                &[OBJECT],
+                words as usize + 1,
+                TirType::DynBox,
+                None,
+                false,
+            );
+            assert!(run.fact);
+            let mut expected: Vec<Value> = (0..words)
+                .map(|index| {
+                    let mut key = OBJECT.to_le_bytes().to_vec();
+                    key.push(index);
+                    Value::Word(literal_word(function, &key))
+                })
+                .collect();
+            expected.push(Value::Word(not_done));
+            assert_eq!(run.results, expected);
+        }
+        let run = preserved(
+            OpKind::UnpackSequence,
+            &[OBJECT],
+            2,
+            TirType::DynBox,
+            Some(2),
+            false,
+        );
+        assert!(run.fact);
+        let expected: Vec<Value> = (0..2u8)
+            .map(|index| {
+                let mut key = OBJECT.to_le_bytes().to_vec();
+                key.push(index);
+                Value::Word(literal_word(RuntimeFn::UnpackSequence, &key))
+            })
+            .collect();
+        assert_eq!(run.results, expected);
+        // A target count that disagrees with the results is refused.
+        let run = preserved(
+            OpKind::UnpackSequence,
+            &[OBJECT],
+            2,
+            TirType::DynBox,
+            Some(3),
+            false,
+        );
+        assert!(!run.fact);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_preserved_set_and_frozenset_insert_each_entry_into_their_own_aggregate() {
+        for (kind, new, add) in [
+            (OpKind::SetNew, RuntimeFn::SetNew, RuntimeFn::SetAdd),
+            (
+                OpKind::FrozensetNew,
+                RuntimeFn::FrozensetNew,
+                RuntimeFn::FrozensetAdd,
+            ),
+        ] {
+            let run = preserved(kind, &[OBJECT, inline(2)], 1, TirType::DynBox, None, true);
+            assert!(run.fact);
+            assert_eq!(
+                run.results,
+                [Value::Word(literal_word(new, &2u64.to_le_bytes()))]
+            );
+            assert_eq!(run.inserted, [OBJECT, inline(2)]);
+            assert_eq!(run.runtime_calls, [new, add, add]);
+        }
+    }
+
+    #[test]
+    fn a_kind_outside_the_container_family_is_left_to_its_owner() {
+        for kind in [OpKind::FuncNew, OpKind::ListAppend, OpKind::Floordiv] {
+            let run = preserved(kind, &[OBJECT], 1, TirType::DynBox, None, false);
+            assert!(!run.fact, "{kind}");
+            assert!(run.runtime_calls.is_empty());
+        }
     }
 
     /// `BuildSet` (or the frozenset literal) over `operands`, ids into

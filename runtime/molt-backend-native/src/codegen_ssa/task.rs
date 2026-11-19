@@ -96,9 +96,10 @@ pub(crate) trait TaskPlacement: CodegenBuilder {
     ) -> Self::Word;
 }
 
-/// The trampoline borrows the closure and argument array. The allocator
-/// takes its context from the current thread's pending Python invocation.
-pub(crate) fn emit_task_trampoline<B: TaskPlacement>(
+/// The body of a task trampoline: the new task word it answers. The
+/// trampoline borrows the closure and argument array. The allocator takes
+/// its context from the current thread's pending Python invocation.
+pub(crate) fn task_trampoline_word<B: TaskPlacement>(
     b: &mut B,
     layout: TaskConstructorLayout,
     poll: B::Word,
@@ -106,9 +107,9 @@ pub(crate) fn emit_task_trampoline<B: TaskPlacement>(
     closure: Option<B::Word>,
     arguments: B::Word,
     count: usize,
-) {
+) -> B::Word {
     let thread = b.thread_record_word();
-    let result = b.place_task(
+    b.place_task(
         layout,
         poll,
         frame_bytes,
@@ -119,8 +120,7 @@ pub(crate) fn emit_task_trampoline<B: TaskPlacement>(
             count,
         },
         "task_new",
-    );
-    b.return_value(Some(b.word_value(result)));
+    )
 }
 
 impl<B: TaskPlacement> FunctionCx<'_, B> {

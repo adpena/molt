@@ -1,22 +1,17 @@
 //! Exhaustive typed LLVM preserved-operation family routing.
 #[cfg(test)]
-use super::{callable_ops, container_ops, direct_ops};
+use super::{callable_ops, direct_ops};
 use molt_ir::OpKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub(super) enum LlvmPreservedOpFamily {
     Direct,
-    Container,
     Callable,
 }
 
 #[cfg(test)]
 const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[OpKind])] = &[
     (LlvmPreservedOpFamily::Direct, direct_ops::HANDLED_KINDS),
-    (
-        LlvmPreservedOpFamily::Container,
-        container_ops::HANDLED_KINDS,
-    ),
     (LlvmPreservedOpFamily::Callable, callable_ops::HANDLED_KINDS),
 ];
 
@@ -26,7 +21,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         // The walker lowers these before LLVM's routing sees a `Copy`.
         crate::codegen_ssa::preserved::walker_preserved_kind_pattern!() => None,
         super::direct_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Direct),
-        super::container_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Container),
         super::callable_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Callable),
         OpKind::Add
         | OpKind::Aiter
@@ -486,13 +480,17 @@ mod tests {
             Some(LlvmPreservedOpFamily::Direct),
         );
         assert_eq!(
-            llvm_preserved_op_family(OpKind::DictNew),
-            Some(LlvmPreservedOpFamily::Container),
-        );
-        assert_eq!(
-            llvm_preserved_op_family(OpKind::FuncNew),
+            llvm_preserved_op_family(OpKind::FrameHomeLoad),
             Some(LlvmPreservedOpFamily::Callable),
         );
+        // The walker's preserved tables own these; LLVM routes none of them.
+        for kind in [OpKind::DictNew, OpKind::FuncNew, OpKind::FrameLocals] {
+            assert!(matches!(
+                kind,
+                crate::codegen_ssa::preserved::walker_preserved_kind_pattern!()
+            ));
+            assert_eq!(llvm_preserved_op_family(kind), None, "{kind}");
+        }
     }
 
     #[test]
@@ -547,11 +545,14 @@ mod tests {
             OpKind::FrozensetNew,
             OpKind::UnpackSequence,
         ] {
-            assert_eq!(
-                llvm_preserved_op_family(kind),
-                Some(LlvmPreservedOpFamily::Container),
-                "custom container protocol `{kind}` must keep dedicated lowering",
+            assert!(
+                matches!(
+                    kind,
+                    crate::codegen_ssa::preserved::walker_preserved_kind_pattern!()
+                ),
+                "custom container protocol `{kind}` must keep the walker's dedicated lowering",
             );
+            assert_eq!(llvm_preserved_op_family(kind), None, "{kind}");
         }
     }
 

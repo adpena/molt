@@ -23,7 +23,7 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::CodegenBuilder;
@@ -85,14 +85,11 @@ fn require_function_linkage_abi<'a>(
 }
 
 #[cfg(feature = "llvm")]
-mod call_lowering;
 #[cfg(feature = "llvm")]
 mod codegen_builder;
 #[cfg(feature = "llvm")]
 pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
-#[cfg(feature = "llvm")]
-mod container_ops;
 #[cfg(feature = "llvm")]
 mod field_slot;
 #[cfg(feature = "llvm")]
@@ -101,7 +98,6 @@ mod global_slot;
 mod list_item;
 #[cfg(feature = "llvm")]
 mod method_site;
-#[cfg(feature = "llvm")]
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
@@ -116,8 +112,6 @@ mod runtime_helpers;
 mod state_machine_ops;
 #[cfg(feature = "llvm")]
 mod task_site;
-#[cfg(feature = "llvm")]
-mod task_trampoline;
 #[cfg(feature = "llvm")]
 mod value_materialization;
 #[cfg(feature = "llvm")]
@@ -331,8 +325,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// The phis that stand for each block's parameters; every emitted edge
     /// adds its incoming values when its branch is built.
     block_params: codegen_builder::BlockParams<'ctx>,
-    /// Counter for synthetic block names introduced during lowering.
-    synthetic_block_counter: usize,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: std::cell::Cell<usize>,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
@@ -414,7 +406,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         block_map: HashMap::default(),
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         block_params: RefCell::new(HashMap::default()),
-        synthetic_block_counter: 0,
         call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
@@ -742,30 +733,6 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// The linker symbol an op calls or references: its typed callee's row
-    /// (HF-847 slice 1), else the runtime or external symbol an optional
-    /// reference keeps (HF-821 B1).
-    fn callee_symbol(&self, op: &TirOp) -> Option<String> {
-        if let Some(callee) = op.callee {
-            return Some(self.backend.function_table.symbol(callee).to_owned());
-        }
-        match op.attrs.get("s_value") {
-            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
-            _ => None,
-        }
-    }
-
-    /// The block an exceptional successor label names, through the one shared
-    /// TIR resolver; None when the label is absent or ambiguous.
-    pub(super) fn exception_target(&self, label: i64) -> Option<BlockId> {
-        self.exception_targets
-            .get_or_init(|| {
-                crate::tir::dominators::exception_labels_to_blocks(&self.func.label_id_map)
-            })
-            .get(&label)
-            .copied()
-    }
-
     /// The word builder at the current insertion point, for the shared
     /// NaN-box generators.
     pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {

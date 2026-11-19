@@ -882,6 +882,8 @@ pub(crate) mod tests {
         pub(crate) released: Vec<Vec<u64>>,
         /// The words the hash-aggregate mutators inserted, in order.
         pub(crate) inserted: Vec<u64>,
+        /// The homes word each traceback origin capture read, in order.
+        pub(crate) origins: Vec<u64>,
         /// The positional words pushed onto the open CallArgs builder.
         callargs: Vec<u64>,
     }
@@ -940,6 +942,22 @@ pub(crate) mod tests {
                     word
                 }
                 RuntimeFn::ExceptionPending => u64::from(self.pending_exception),
+                // Services the work; an exception it raised stays pending.
+                RuntimeFn::AsyncWorkPollAndExceptionPending => u64::from(self.pending_exception),
+                // The pending exception itself, or None.
+                RuntimeFn::AsyncWorkPollAndExceptionLastPending
+                | RuntimeFn::ExceptionLastPending => {
+                    if self.pending_exception {
+                        literal_word(function, &[])
+                    } else {
+                        NONE_WORD
+                    }
+                }
+                // Captures the traceback entry of the frame whose homes it reads.
+                RuntimeFn::ExceptionFrameOrigin => {
+                    self.origins.push(args[0]);
+                    NONE_WORD
+                }
                 RuntimeFn::IntFromI64 if self.fail_allocation => {
                     self.pending_exception = true;
                     NONE_WORD
@@ -1037,6 +1055,8 @@ pub(crate) mod tests {
                 }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                // Replaces the frame's bindings; answers None.
+                RuntimeFn::FrameLocalsSet => NONE_WORD,
                 // A hash aggregate of a raw capacity, or None with
                 // MemoryError pending.
                 RuntimeFn::SetNew | RuntimeFn::FrozensetNew if self.fail_allocation => {
@@ -1085,6 +1105,9 @@ pub(crate) mod tests {
                 | RuntimeFn::FunctionClosureBits
                 | RuntimeFn::IterChecked
                 | RuntimeFn::IterNext
+                | RuntimeFn::Len
+                | RuntimeFn::LenList
+                | RuntimeFn::LocalsBuiltin
                 | RuntimeFn::ObjectNewBound
                 | RuntimeFn::ModuleGetAttr
                 | RuntimeFn::FuncNew

@@ -12,8 +12,6 @@ macro_rules! define_llvm_op_kinds {
 
 #[path = "preserved_ops/callable_ops.rs"]
 mod callable_ops;
-#[path = "preserved_ops/container_ops.rs"]
-mod container_ops;
 #[path = "preserved_ops/direct_ops.rs"]
 mod direct_ops;
 #[path = "preserved_ops/op_family.rs"]
@@ -25,7 +23,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         match op_family::llvm_preserved_op_family(kind) {
             Some(LlvmPreservedOpFamily::Direct) => self.lower_preserved_direct_op(op, kind),
-            Some(LlvmPreservedOpFamily::Container) => self.lower_preserved_container_op(op, kind),
             Some(LlvmPreservedOpFamily::Callable) => self.lower_preserved_callable_op(op, kind),
             None => {
                 // Generic preserved-op runtime-call fallback. Every other operator /

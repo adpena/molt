@@ -12,10 +12,8 @@ use molt_ir::OpKind;
 // Kinds the walker owns (`codegen_ssa::preserved`) never reach this module.
 define_llvm_op_kinds!(
     OpKind::CallAsync,
-    OpKind::AllocClass,
     OpKind::ExceptionLastPending,
     OpKind::ExceptionFinallyPendingObserver,
-    OpKind::StatefulLocalsRegister,
     OpKind::GuardType,
     OpKind::GuardTag,
 );
@@ -69,91 +67,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            OpKind::AllocClass => {
-                if op.operands.len() != 1 || op.results.len() > 1 {
-                    return false;
-                }
-                let Some(AttrValue::Int(size)) = op.attrs.get("value") else {
-                    return false;
-                };
-                let size = i64_ty.const_int(*size as u64, false);
-                let mut custody = self.begin_borrowed_operands(&op.operands, kind.as_str());
-                let class_bits = self.borrowed_operand(&mut custody, op.operands[0]);
-                let alloc = self.ensure_runtime_import(RuntimeFn::AllocClass);
-                let unpublished = self
-                    .backend
-                    .builder
-                    .build_execution_call(alloc, &[size.into(), class_bits.into()], "alloc_class")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                // Allocation returns an unpublished instance. Publish its
-                // initialized object edges before exposing or retiring it.
-                let publish = self.ensure_runtime_import(RuntimeFn::ObjectPublishInitialized);
-                let initialized = self
-                    .backend
-                    .builder
-                    .build_execution_call(publish, &[unpublished.into()], "class_initialized")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-                let result = self.finish_borrowed_operands(
-                    custody,
-                    initialized,
-                    "alloc_class_result",
-                    |_| {},
-                );
-                self.bind_owned_runtime_result(op, result.into());
-                true
-            }
-
-            // Every stateful family registers a raw function address and its
-            // two boxed layout tuples. This adapter owns that mixed ABI; the
-            // operation may not enter the positional boxed-call fallback.
-            OpKind::StatefulLocalsRegister => {
-                if op.operands.len() != 2 || op.results.len() > 1 {
-                    return false;
-                }
-                let Some(func_name) = self.callee_symbol(op) else {
-                    return false;
-                };
-                // A task poll entry registers without an arity claim; its
-                // linkage row names the one task parameter. A present claim
-                // must agree with that row.
-                let claimed_arity = op.attrs.get("value").and_then(|v| match v {
-                    AttrValue::Int(v) => usize::try_from(*v).ok(),
-                    _ => None,
-                });
-                let func = match claimed_arity {
-                    Some(arity) => self.ensure_function_symbol(&func_name, arity, false),
-                    None => self.ensure_linked_function_symbol(&func_name, false),
-                };
-                let func_addr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        func.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "stateful_locals_func_ptr",
-                    )
-                    .unwrap();
-                let reg_fn = self.ensure_runtime_import(RuntimeFn::StatefulLocalsRegister);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    reg_fn,
-                    &[
-                        RuntimeArg::Word(func_addr.into()),
-                        RuntimeArg::Operand(op.operands[0]),
-                        RuntimeArg::Operand(op.operands[1]),
-                    ],
-                    ResultCustody::SideEffect,
-                    kind.as_str(),
-                    kind.as_str(),
-                );
-                true
-            }
-
             // Runtime mismatch only profiles and preserves the source. A tag
             // rejected by to_i64 can raise.
             OpKind::GuardType | OpKind::GuardTag => {
