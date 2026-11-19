@@ -84,6 +84,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 /// The task allocation generator lives in an inlined helper on LLVM and in
 /// the current function on Cranelift. Its inputs have identical custody.
 pub(crate) trait TaskPlacement: CodegenBuilder {
+    /// A poll takes a single logical word after its attached execution context.
+    fn poll_parameter(&self) -> Option<Self::Value>;
     fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word;
     fn place_task(
         &mut self,

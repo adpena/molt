@@ -591,7 +591,7 @@ def _touch_files(repo_root: Path = REPO_ROOT) -> dict[str, Path]:
         "value_range": repo_root
         / "runtime/molt-passes/src/tir/passes/value_range/mod.rs",
         "function_compiler": repo_root
-        / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+        / "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
         "modules": repo_root / "runtime/molt-runtime/src/builtins/modules.rs",
         "gvn": repo_root / "runtime/molt-passes/src/tir/passes/gvn/mod.rs",
     }

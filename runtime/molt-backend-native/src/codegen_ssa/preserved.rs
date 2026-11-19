@@ -8,98 +8,13 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
+use super::builder::CodegenBuilder;
 use super::builder::IntComparison;
 use super::custody::{CallTarget, RuntimeArg};
-use super::frame::RecordPlacement;
 use super::function::{FunctionCx, ResultCustody};
 use super::object::{class_definition_slot, raw_name_pointer};
 use super::value_table::HeldCarrier;
 use crate::tir::ops::{AttrValue, TirOp};
-
-/// The preserved kinds the walker lowers before any backend routing sees
-/// them, as one pattern so a backend's exhaustive family match stays total.
-macro_rules! walker_preserved_kind_pattern {
-    () => {
-        molt_ir::OpKind::Abs
-            | molt_ir::OpKind::AllocClass
-            | molt_ir::OpKind::BindingAlias
-            | molt_ir::OpKind::Borrow
-            | molt_ir::OpKind::BuiltinType
-            | molt_ir::OpKind::Cast
-            | molt_ir::OpKind::ClassDef
-            | molt_ir::OpKind::ClassSetDefinition
-            | molt_ir::OpKind::ConstEllipsis
-            | molt_ir::OpKind::ConstNotImplemented
-            | molt_ir::OpKind::Contains
-            | molt_ir::OpKind::CopyVar
-            | molt_ir::OpKind::ExceptionActive
-            | molt_ir::OpKind::ExceptionClear
-            | molt_ir::OpKind::ExceptionCurrent
-            | molt_ir::OpKind::ExceptionFinallyPendingObserver
-            | molt_ir::OpKind::ExceptionLast
-            | molt_ir::OpKind::ExceptionLastPending
-            | molt_ir::OpKind::ExceptionMatchBuiltin
-            | molt_ir::OpKind::ExceptionNewBuiltin
-            | molt_ir::OpKind::ExceptionNewBuiltinEmpty
-            | molt_ir::OpKind::ExceptionNewBuiltinOne
-            | molt_ir::OpKind::ExceptionPop
-            | molt_ir::OpKind::ExceptionPush
-            | molt_ir::OpKind::ExceptionStackClear
-            | molt_ir::OpKind::ExceptionStackDepth
-            | molt_ir::OpKind::ExceptionStackEnter
-            | molt_ir::OpKind::Floordiv
-            | molt_ir::OpKind::GenClose
-            | molt_ir::OpKind::GenSend
-            | molt_ir::OpKind::GenThrow
-            | molt_ir::OpKind::GetAttrNameDefault
-            | molt_ir::OpKind::GetAttrSpecialObj
-            | molt_ir::OpKind::GuardLayout
-            | molt_ir::OpKind::GuardTag
-            | molt_ir::OpKind::GuardType
-            | molt_ir::OpKind::IdentityAlias
-            | molt_ir::OpKind::InplaceBitAnd
-            | molt_ir::OpKind::InplaceBitOr
-            | molt_ir::OpKind::InplaceBitXor
-            | molt_ir::OpKind::InplaceDiv
-            | molt_ir::OpKind::InplaceFloordiv
-            | molt_ir::OpKind::InplaceLshift
-            | molt_ir::OpKind::InplaceMod
-            | molt_ir::OpKind::InplacePow
-            | molt_ir::OpKind::InplaceRshift
-            | molt_ir::OpKind::Invert
-            | molt_ir::OpKind::Missing
-            | molt_ir::OpKind::ObjectNew
-            | molt_ir::OpKind::Release
-            | molt_ir::OpKind::StatefulLocalsRegister
-            | molt_ir::OpKind::StoreVar
-            | molt_ir::OpKind::StringFormat
-            | molt_ir::OpKind::TypeOf
-            | molt_ir::OpKind::Widen
-            // The container family (`containers.rs`).
-            | molt_ir::OpKind::IterNextUnboxed
-            | molt_ir::OpKind::IterNextUnpack2
-            | molt_ir::OpKind::Len
-            | molt_ir::OpKind::ListNew
-            | molt_ir::OpKind::DictNew
-            | molt_ir::OpKind::TupleNew
-            | molt_ir::OpKind::SetNew
-            | molt_ir::OpKind::FrozensetNew
-            | molt_ir::OpKind::UnpackSequence
-            // The callable family (`callable.rs`).
-            | molt_ir::OpKind::BuiltinFunc
-            | molt_ir::OpKind::FuncNew
-            | molt_ir::OpKind::FuncNewClosure
-            | molt_ir::OpKind::FunctionClosureBits
-            | molt_ir::OpKind::AsyncgenNew
-            | molt_ir::OpKind::CodeSlotSet
-            | molt_ir::OpKind::CodeSlotsInit
-            | molt_ir::OpKind::CallargsNew
-            | molt_ir::OpKind::FrameLocals
-            | molt_ir::OpKind::FrameLocalsSet
-            | molt_ir::OpKind::Line
-    };
-}
-pub(crate) use walker_preserved_kind_pattern;
 
 /// The runtime entry of a kind that calls it with no operand and binds its
 /// word, unowned, as a boxed result. The exception-stack reads and writes
@@ -156,17 +71,12 @@ fn int_value(op: &TirOp) -> Option<i64> {
     }
 }
 
-impl<B: RecordPlacement> FunctionCx<'_, B> {
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// Lower a preserved `Copy` when a walker family owns its kind, and
     /// answer whether it did. A malformed op (wrong arity, missing
     /// attribute) is refused, as is a kind no family owns yet.
     pub(crate) fn preserved_op(&mut self, b: &mut B, op: &TirOp) -> bool {
-        // The pattern is the one list of kinds the walker owns: a backend's
-        // routing maps the same pattern away, so the two never both lower a kind.
-        let Some(kind) = op
-            .origin
-            .filter(|&kind| matches!(kind, walker_preserved_kind_pattern!()))
-        else {
+        let Some(kind) = op.origin else {
             return false;
         };
         self.direct_preserved_op(b, op, kind)
@@ -234,7 +144,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             // services pending work first.
             OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
                 let word = if op.is_async_work_poll() {
-                    self.async_work_poll(b, true, None)
+                    self.async_work_poll(b, true, op.frame_location())
                 } else {
                     b.call_runtime(RuntimeFn::ExceptionLastPending, &[])
                         .expect("molt_exception_last_pending returns a word")
@@ -826,6 +736,115 @@ mod tests {
             let run = lower(op.clone(), &[OBJECT, OBJECT][..op.operands.len()]);
             assert_eq!(run.fact, (false, None), "{:?}", op.origin);
             assert!(run.runtime_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn fixed_boxed_container_calls_have_exact_arity() {
+        for (kind, arity) in [
+            (OpKind::ListFromRange, 3),
+            (OpKind::ListFillNew, 2),
+            (OpKind::ListAppend, 2),
+            (OpKind::ListExtend, 2),
+            (OpKind::TupleFromList, 1),
+            (OpKind::SetAdd, 2),
+            (OpKind::FrozensetAdd, 2),
+            (OpKind::DictSet, 3),
+            (OpKind::DictSetdefault, 3),
+            (OpKind::DictSetdefaultEmptyList, 2),
+            (OpKind::DictGet, 3),
+            (OpKind::DictUnpack, 2),
+            (OpKind::DictUpdate, 2),
+            (OpKind::DictUpdateMissing, 3),
+            (OpKind::DictUpdateKwstar, 2),
+            (OpKind::DictClear, 1),
+            (OpKind::DictCopy, 1),
+            (OpKind::DictPopitem, 1),
+            (OpKind::Slice, 3),
+            (OpKind::SliceNew, 3),
+            (OpKind::DictKeys, 1),
+            (OpKind::DictValues, 1),
+            (OpKind::DictItems, 1),
+            (OpKind::Enumerate, 3),
+            (OpKind::DictFromObj, 1),
+        ] {
+            assert!(
+                molt_ir::runtime_fn_generated::runtime_boxed_abi(&format!("molt_{kind}"), arity,)
+                    .is_some(),
+                "deleted handler `{kind}` must have an exact generated boxed ABI",
+            );
+        }
+    }
+
+    #[test]
+    fn vector_reductions_use_the_shared_owned_boxed_abi() {
+        use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+
+        for kind in [
+            OpKind::VecSum,
+            OpKind::VecProd,
+            OpKind::VecMin,
+            OpKind::VecMax,
+        ] {
+            let symbol = format!("molt_{kind}");
+            let abi = runtime_boxed_abi(&symbol, 3)
+                .unwrap_or_else(|| panic!("{kind} must have a three-object boxed ABI"));
+            assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
+            for arity in [0, 2, 4] {
+                assert!(
+                    runtime_boxed_abi(&symbol, arity).is_none(),
+                    "{kind} must reject arity {arity}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preserved_runtime_calls_have_exact_arity() {
+        for (kind, arity) in [
+            (OpKind::Aiter, 1),
+            (OpKind::ContextExit, 2),
+            (OpKind::ModuleNew, 1),
+            (OpKind::ModuleCacheGet, 1),
+            (OpKind::ModuleCacheSet, 2),
+            (OpKind::ModuleCacheDel, 1),
+            (OpKind::ModuleGetAttr, 2),
+            (OpKind::ModuleImportFrom, 2),
+            (OpKind::ModuleGetGlobal, 2),
+            (OpKind::ModuleSetAttr, 3),
+            (OpKind::ModuleDelGlobal, 2),
+            (OpKind::ModuleDelGlobalIfPresent, 2),
+            (OpKind::ExceptionClass, 1),
+            (OpKind::ExceptionNew, 2),
+            (OpKind::ExceptionStackSetDepth, 1),
+            (OpKind::ExceptionStackExit, 1),
+            (OpKind::ExceptionSetLast, 1),
+            (OpKind::ExceptionContextSet, 1),
+            (OpKind::StrFromObj, 1),
+            (OpKind::ReprFromObj, 1),
+            (OpKind::IntFromObj, 3),
+            (OpKind::FloatFromObj, 1),
+            (OpKind::AsciiFromObj, 1),
+            (OpKind::ComplexFromObj, 3),
+            (OpKind::IntFromStrOfObj, 3),
+            (OpKind::Ord, 1),
+            (OpKind::OrdAt, 2),
+            (OpKind::StringJoin, 2),
+            (OpKind::Isinstance, 2),
+            (OpKind::Issubclass, 2),
+            (OpKind::HasAttrName, 2),
+            (OpKind::IsCallable, 1),
+            (OpKind::CodeNew, 9),
+            (OpKind::CallargsPushPos, 2),
+            (OpKind::CallargsPushKw, 3),
+            (OpKind::CallargsExpandStar, 2),
+            (OpKind::CallargsExpandKwstar, 2),
+        ] {
+            assert!(
+                molt_ir::runtime_fn_generated::runtime_boxed_abi(&format!("molt_{kind}"), arity,)
+                    .is_some(),
+                "retired handler `{kind}` must have an exact generated boxed ABI",
+            );
         }
     }
 }

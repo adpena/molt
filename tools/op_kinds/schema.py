@@ -250,21 +250,6 @@ _REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
     "exact_sum_of_inline_payloads": "ExactSumOfInlinePayloads",
     "quotient_by_constant_divisor": "QuotientByConstantDivisor",
 }
-_REPR_PROJECTABLE_BOOL_RESULT_RULES = {
-    "comparison_operands": "ComparisonOperands",
-    "always": "Always",
-    "result1": "ResultOne",
-    "result2": "ResultTwo",
-    "all_operands_bool": "AllOperandsBool",
-    "index_raw_i64_index": "IndexRawI64Index",
-    "copy_source_bool": "CopySourceBool",
-}
-_REPR_PROJECTABLE_FLOAT_RESULT_RULES = {
-    "always": "Always",
-    "all_operands_projectable": "AllOperandsProjectable",
-    "first_operand_projectable": "FirstOperandProjectable",
-    "copy_source_float": "CopySourceFloat",
-}
 _COUNTED_LOOP_COMPARISON_ROLES = {
     "increasing_exclusive": "IncreasingExclusive",
     "increasing_inclusive": "IncreasingInclusive",
@@ -550,8 +535,6 @@ __all__ = (
     "_PURITY_VALUES",
     "_RANGE_DEVIRT_ROLES",
     "_REFCOUNT_BALANCE_ROLE_SETS",
-    "_REPR_PROJECTABLE_BOOL_RESULT_RULES",
-    "_REPR_PROJECTABLE_FLOAT_RESULT_RULES",
     "_REPR_RAW_I64_FULL_DEOPT_SEED_RULES",
     "_RESULT_ARITY_VALUES",
     "_RESULT_VALIDITY_VALUES",

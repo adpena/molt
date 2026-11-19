@@ -35,26 +35,6 @@ SPEC_OP_KIND_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-REQUIRED_BACKEND_KINDS = {
-    "call_indirect",
-    "invoke_ffi",
-    "guard_tag",
-    "inc_ref",
-    "dec_ref",
-    "borrow",
-    "release",
-    "box",
-    "unbox",
-    "cast",
-    "widen",
-    "call_bind",
-    "call_func",
-    "guard_type",
-    "guard_layout",
-    "identity_alias",
-    "binding_alias",
-}
-
 REQUIRED_DIFF_PROBES = (
     "tests/differential/basic/call_indirect_dynamic_callable.py",
     "tests/differential/basic/call_indirect_noncallable_deopt.py",
@@ -64,13 +44,6 @@ REQUIRED_DIFF_PROBES = (
     "tests/differential/basic/guard_tag_type_hint_fail.py",
     "tests/differential/basic/guard_dict_shape_mutation.py",
 )
-
-
-@dataclass(frozen=True)
-class SemanticAssertion:
-    scope: str
-    description: str
-    pattern: str
 
 
 @dataclass(frozen=True)
@@ -100,73 +73,6 @@ FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
         "CAST": "cast",
         "WIDEN": "widen",
     }
-)
-
-# Bridge until HF-485 moves these op-to-runtime facts into the generated
-# runtime-call contract and retires these source regexes. Stage 1 covers iter
-# and dict_set; neither has a regex here. Retire the remaining assertions with
-# their own complete call families, not with an unrelated two-op migration.
-# The invoke_ffi, call_bind/call_indirect, guard_tag and guard_layout import
-# assertions are retired: those calls now name typed `RuntimeFn` variants, whose
-# identity rustc proves (typed_runtime_imports.md).
-NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
-    SemanticAssertion(
-        scope="native",
-        description="call_func keeps dedicated native lane",
-        pattern=(r"OpKind::CallFunc\s*=>"),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="invoke_ffi uses dedicated invoke_ffi_ic bridge/deopt lane",
-        pattern=(
-            r'OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?RuntimeFn::InvokeFfiIc\b'
-        ),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="call_bind/call_indirect keep distinct call-site labels + dedicated imports",
-        pattern=(
-            r'OpKind::CallBind\s*\|\s*OpKind::CallIndirect\s*=>[\s\S]*?RuntimeFn::CallIndirectIc\b[\s\S]*?RuntimeFn::CallBindIc\b[\s\S]*?if op\.kind == OpKind::CallIndirect\s*\{\s*"call_indirect"\s*\}\s*else\s*\{\s*"call_bind"'
-        ),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="guard_tag uses molt_guard_type runtime guard",
-        pattern=(
-            r"OpKind::GuardType\s*\|\s*OpKind::GuardTag\s*=>[\s\S]*?RuntimeFn::GuardType\b"
-        ),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="guard_layout uses molt_guard_layout runtime guard",
-        pattern=(r"OpKind::GuardLayout\s*=>[\s\S]*?RuntimeFn::GuardLayout\b"),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="inc_ref/borrow use the generated retain site",
-        pattern=(
-            r"OpKind::IncRef\s*\|\s*OpKind::Borrow\s*=>"
-            r"(?:(?!OpKind::)[\s\S])*?carrier_refcount_is_noop"
-            r"(?:(?!OpKind::)[\s\S])*?emit_refcount\([^;]*local_inc_ref_obj\s*\)"
-        ),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="dec_ref/release use the generated release site and write None on out",
-        pattern=(
-            r"OpKind::DecRef\s*\|\s*OpKind::Release\s*=>"
-            r"(?:(?!OpKind::)[\s\S])*?carrier_refcount_is_noop"
-            r"(?:(?!OpKind::)[\s\S])*?emit_refcount\([^;]*local_dec_ref_obj\s*\)"
-            r"(?:(?!OpKind::)[\s\S])*?box_none\(\)"
-        ),
-    ),
-    SemanticAssertion(
-        scope="native",
-        description="box/unbox/cast/widen stay explicit conversion lanes",
-        pattern=(
-            r"OpKind::Box\s*\|\s*OpKind::Unbox\s*\|\s*OpKind::Cast\s*\|\s*OpKind::Widen\s*=>"
-        ),
-    ),
 )
 
 
@@ -272,19 +178,6 @@ def _parse_spec_ops(spec_text: str) -> list[str]:
     return _ordered_unique(ops)
 
 
-def _scan_backend_kinds(backend_text: str) -> set[str]:
-    kinds: set[str] = set()
-    for arm in re.finditer(
-        r"((?:(?:molt_ir::)?OpKind::[A-Za-z0-9_]+(?:\s*\|\s*)?)+)\s*=>",
-        backend_text,
-    ):
-        kinds.update(
-            _camel_to_upper_snake(variant).lower()
-            for variant in re.findall(r"OpKind::([A-Za-z0-9_]+)", arm.group(1))
-        )
-    return kinds
-
-
 def _candidate_kinds(spec_op: str) -> tuple[str, ...]:
     from molt.frontend.lowering.op_kinds_generated import (
         FRONTEND_LOWERING_KINDS_BY_WIRE,
@@ -352,21 +245,6 @@ def check_frontend_lowering_lanes(
             continue
         if emitted != [lane]:
             failures.append(f"[frontend] {kind} must lower to {lane}, got {emitted}")
-    return failures
-
-
-def check_semantic_assertions(
-    native_backend_text: str,
-) -> list[str]:
-    failures: list[str] = []
-    checks: list[tuple[str, SemanticAssertion]] = []
-    checks.extend(("native", assertion) for assertion in NATIVE_SEMANTIC_ASSERTIONS)
-    text_by_scope = {
-        "native": native_backend_text,
-    }
-    for scope, assertion in checks:
-        if re.search(assertion.pattern, text_by_scope[scope], flags=re.S) is None:
-            failures.append(f"[{assertion.scope}] {assertion.description}")
     return failures
 
 
@@ -498,26 +376,6 @@ def check_failure_queue_linkage(
     return sorted(required & queue_entries)
 
 
-def _read_production_source_tree(root: Path, suffix: str) -> str:
-    sources = sorted(
-        path
-        for path in root.rglob(f"*{suffix}")
-        if "tests" not in path.relative_to(root).parts
-    )
-    if not sources:
-        raise FileNotFoundError(f"no {suffix} production sources under {root}")
-    return "\n".join(path.read_text(encoding="utf-8") for path in sources)
-
-
-def _read_backend_texts() -> tuple[str, str]:
-    root = compiler_source_root()
-    spec_text = (root / _IR_SPEC).read_text(encoding="utf-8")
-    native_backend_text = _read_production_source_tree(
-        root / "runtime/molt-backend-native/src/native_backend", ".rs"
-    )
-    return spec_text, native_backend_text
-
-
 def _build_findings(
     verifier: str, messages: list[str], *, artifact: str | None = None
 ) -> list[VerificationFinding]:
@@ -538,11 +396,8 @@ def run_default_verify_checks(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
 
-    spec_text, native_backend_text = _read_backend_texts()
-    native_backend_kinds = _scan_backend_kinds(native_backend_text)
-    semantic_failures = check_frontend_lowering_lanes() + check_semantic_assertions(
-        native_backend_text=native_backend_text,
-    )
+    spec_text = (compiler_source_root() / _IR_SPEC).read_text(encoding="utf-8")
+    semantic_failures = check_frontend_lowering_lanes()
     missing_diff_probes = check_required_diff_probes()
 
     checks: list[dict[str, Any]] = []
@@ -550,10 +405,6 @@ def run_default_verify_checks(
 
     inventory_messages = check_ir_inventory(
         _parse_spec_ops(spec_text), FRONTEND_REGISTERED_KINDS
-    )
-    inventory_messages.extend(
-        f"native backend missing required lowered lane: {kind}"
-        for kind in sorted(REQUIRED_BACKEND_KINDS - native_backend_kinds)
     )
     checks.append(
         {

@@ -4103,15 +4103,6 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert '"guard_tag"' not in identity_body
     assert '"guard_type"' not in identity_body
 
-    indexed_facts = (
-        ROOT / "runtime/molt-tir/src/representation_plan/indexed_facts.rs"
-    ).read_text(encoding="utf-8")
-    container_body = _rust_fn_body(indexed_facts, "fn tir_container_identity(")
-    assert "no_heap_alias_source" in container_body
-    assert "opcode_alias_transparent_alias_role_table" not in container_body
-    assert "copy_kind_is_explicit_no_heap_move" not in container_body
-    assert "simpleir_op_shape" not in container_body
-
     typed_body = _rust_fn_body(alias_regions, "fn typed_slot_obj_offset(")
     assert "plain_typed_slot_load" in typed_body
     assert "plain_typed_slot_store" in typed_body

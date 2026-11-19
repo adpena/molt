@@ -203,12 +203,13 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
     )
     backend_wrappers = (ROOT / "src/molt/cli/backend_ir.py").read_text(encoding="utf-8")
     simple_ir = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
-    # WASM lowers through LLVM wasm32 and shares the native function compiler;
-    # the separate WASM backend and its call lowering are deleted.
-    native_calls = (
-        ROOT
-        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs"
+    shared_calls = (
+        ROOT / "runtime/molt-backend-native/src/codegen_ssa/native.rs"
     ).read_text(encoding="utf-8")
+    expansion = (
+        ROOT / "runtime/molt-passes/src/tir/passes/native_call_expansion.rs"
+    ).read_text(encoding="utf-8")
+    native_calls = shared_calls + expansion
     browser_embed = (ROOT / "wasm/browser_embed.js").read_text(encoding="utf-8")
 
     for frontend in frontend_sources:
@@ -220,8 +221,8 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
     assert "native_callable_uses_callargs" in backend_wrappers
     assert "emit_materialized_function_metadata" in backend_wrappers
     assert "parsed_abi.fixed_arity()" in simple_ir
-    assert "abi.uses_callargs()" in native_calls
-    assert "abi_contract.lowering()" in native_calls
+    assert "abi.uses_callargs()" in shared_calls
+    assert "abi.lowering()" in expansion
     assert "native_callable_abi_generated.js" in browser_embed
     for abi in _gen().load_schema().abis:
         assert abi.token not in browser_embed

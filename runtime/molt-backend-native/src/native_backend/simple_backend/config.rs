@@ -237,11 +237,8 @@ impl SimpleBackend {
     }
 
     pub(in crate::native_backend::simple_backend) fn with_code_owner(module: CodeOwner) -> Self {
-        let ctx = module.make_context();
         Self {
             module,
-            ctx,
-            trampoline_ids: BTreeMap::new(),
             import_ids: RuntimeImportIds::default(),
             skip_ir_passes: false,
             skip_shared_stdlib_partition: false,
@@ -252,12 +249,8 @@ impl SimpleBackend {
             module_registry: None,
             code_slots: None,
             module_context: None,
-            data_pool: BTreeMap::new(),
-            next_data_id: 0,
-            declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
-            function_entry_custody: BTreeMap::new(),
             #[cfg(feature = "llvm")]
             llvm_target: crate::CodegenTarget::Host,
         }

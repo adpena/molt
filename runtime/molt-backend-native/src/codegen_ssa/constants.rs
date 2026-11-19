@@ -73,7 +73,10 @@ fn literal<B: CodegenBuilder>(b: &mut B, kind: LiteralKind, bytes: &[u8]) -> B::
 /// Lower a constant op: `ConstInt`, `ConstFloat`, `ConstBool`, `ConstNone`,
 /// `ConstStr`, `ConstBytes`, `ConstBigInt` or `ModuleSlot`.
 pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op: &TirOp) {
-    let result = op.results[0];
+    let Some(&result) = op.results.first() else {
+        // A discarded literal has no evaluation-time work.
+        return;
+    };
     let (value, ty) = match op.opcode {
         OpCode::ConstInt => {
             let value = match op.attrs.get("value") {

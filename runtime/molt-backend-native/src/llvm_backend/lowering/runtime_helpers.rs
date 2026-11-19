@@ -1,14 +1,6 @@
 use super::*;
-use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// Lower a preserved op through its admitted boxed runtime ABI
-    /// (`FunctionCx::preserved_runtime_call`).
-    pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: OpKind) -> bool {
-        let (mut cx, mut b) = self.walker();
-        cx.preserved_runtime_call(&mut b, op, kind)
-    }
-
     /// Compiled polls receive the attached context and one raw frame address,
     /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {

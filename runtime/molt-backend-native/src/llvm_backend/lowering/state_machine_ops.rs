@@ -1,16 +1,6 @@
 use super::*;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn emit_alloc_task(&mut self, op: &TirOp) {
-        let (mut cx, mut b) = self.walker();
-        cx.alloc_task(&mut b, op);
-    }
-
-    pub(super) fn lower_preserved_call_async_op(&mut self, op: &TirOp) -> bool {
-        let (mut cx, mut b) = self.walker();
-        cx.call_async(&mut b, op)
-    }
-
     pub(super) fn emit_state_switch(&mut self) {
         // `state_switch` is now lowered as the first-class `StateDispatch`
         // terminator (see `lower_terminator`), never as a body op: the
@@ -25,52 +15,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
              state_switch must lower as the StateDispatch terminator",
             self.func.name
         );
-    }
-
-    /// `molt_closure_load` / `molt_closure_store` address the owner's payload
-    /// directly: their first word is an object address, not a boxed operand. A
-    /// boxed pointer is unboxed, and a poll frame's raw `self` is unchanged.
-    pub(super) fn closure_owner_address(&self, owner: ValueId) -> inkwell::values::IntValue<'ctx> {
-        let owner_bits = self.ensure_i64(self.resolve(owner));
-        self.unbox_ptr_bits(owner_bits)
-    }
-
-    pub(super) fn emit_frame_context_set(&mut self, op: &TirOp) {
-        let publish = self.ensure_runtime_import(RuntimeFn::FrameContextSet);
-        let args: Vec<RuntimeArg<'ctx>> = op.operands[..3]
-            .iter()
-            .map(|&operand| RuntimeArg::Operand(operand))
-            .collect();
-        // Its canonical borrowed None needs no retirement; exception transfer
-        // remains explicit in TIR.
-        self.emit_borrowed_runtime_call(
-            op,
-            publish,
-            &args,
-            ResultCustody::canonical(RuntimeFn::FrameContextSet, 3),
-            "frame_context_set",
-            "frame_context_set",
-        );
-    }
-
-    /// Save the state named by the transition through the poll frame
-    /// parameter. Saving neither suspends nor returns; a ready wait saves its
-    /// running state, which no StateDispatch case resumes.
-    pub(super) fn emit_state_set(&mut self, op: &TirOp) {
-        let frame = self.poll_frame_address();
-        let (cx, mut b) = self.walker();
-        cx.state_set(&mut b, op, frame);
-    }
-
-    pub(super) fn emit_is_pending(&mut self, op: &TirOp) {
-        let (mut cx, mut b) = self.walker();
-        cx.is_pending(&mut b, op);
-    }
-
-    pub(super) fn emit_task_wait(&mut self, op: &TirOp) {
-        let frame = self.poll_frame_address();
-        let (cx, mut b) = self.walker();
-        cx.task_wait(&mut b, op, frame);
     }
 
     pub(super) fn emit_yield(&mut self, op: &TirOp) {

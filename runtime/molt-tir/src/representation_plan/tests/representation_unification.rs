@@ -1,57 +1,14 @@
-//! Int-lane carrier unification gate (design:
-//! `docs/design/foundation/int_lane_unification.md` section 5).
-//!
-//! This is the build-time firewall against the loop-IV modulo P0 (a function
-//! loop `print(i % 7)` printing NaN-box bits as a raw i64) and its sibling bug
-//! class across the whole int op family. The defect was a *fragmented carrier
-//! authority*: the value-range proof said `i % 7 in [0, 7)` (raw-safe), but a
-//! native store wrote a possibly-boxed result through the RAW `def_var_named`
-//! store while the output name was a raw-i64 carrier (`is_raw_int_carrier_name`).
-//! Producer (value-range proof) and consumer (the name-keyed carrier registry)
-//! reached the carrier decision by different paths and could disagree.
-//!
-//! The cure is one authority: a value is a raw-i64 carrier EXACTLY when the
-//! value-range proof (`fits_inline_int47`) admits it, and every consumer READS
-//! that single fact. These tests pin the invariant at both views the backends
-//! consume:
-//!
-//!   * Part A - the NAME-KEYED native authority
-//!     (`ScalarRepresentationPlan::for_function_ir_for_target` ->
-//!     `is_raw_int_carrier_name`),
-//!     the exact predicate the native modulo store consulted. One bounded-loop
-//!     case per int op (mod / floordiv / add / mul / shift) asserts the op
-//!     result is admitted to the raw carrier when (and only when) its range is
-//!     proven inline-int47.
-//!
-//!   * Part B - the VALUE-KEYED proof/authority agreement
-//!     (`value_range_for` -> `fits_inline_int47` vs `repr_by_value_for` ->
-//!     `Repr::is_raw_i64_carrier`), the design's literal section-5 assertion
-//!     `is_raw_int_carrier_name(out) == fits_inline_int47(result)`. `repr_by_value`
-//!     is the single source the name-keyed map is projected from, so this is the
-//!     producer<->consumer agreement at the value level.
-//!
-//!   * Part C - the NEGATIVE CONTROL: a fragmenting edit (storing a boxed result
-//!     as a raw carrier, i.e. promoting a non-proven name to raw; or demoting a
-//!     proven name off the raw lane) must be REJECTED by the agreement predicate.
-//!     Proven with an overflowing-result loop (proof and authority agree the
-//!     result is NOT raw) plus an explicit predicate that rejects both
-//!     fragmentation directions.
+//! Each integer operator keeps a raw inline carrier only within the proven range.
+//! The same SSA plan drives the two native instruction selectors and WASM.
 
 use crate::repr::Repr;
-use crate::representation_plan::{ScalarRepresentationPlan, repr_by_value_for, value_range_for};
+use crate::representation_plan::{repr_by_value_for, value_range_for};
 use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
-use crate::{FunctionIR, OpIR};
 
-// ======================================================================
-// Shared op vocabulary spanning the int op family. Each entry names the
-// op as it appears at BOTH the SimpleIR transport surface (Part A) and the
-// canonical TIR opcode (Part B), so the two views are exercised against one
-// list and cannot silently cover different ops.
-// ======================================================================
 #[derive(Clone, Copy)]
 struct IntOp {
     /// SimpleIR `OpIR.kind` for the body op `r = i <op> const`.
@@ -113,161 +70,6 @@ fn int_ops() -> Vec<IntOp> {
         },
     ]
 }
-
-// ======================================================================
-// Part A - NAME-KEYED native authority (`is_raw_int_carrier_name`).
-//
-// Build the post-frontend SimpleIR for
-//
-//     def f(n):
-//         i = 0
-//         while i < n:
-//             r = i <op> <const>   # the op under test
-//             i = i + 1
-//
-// with a *constant* loop bound (so SCEV/value-range proves the IV range and,
-// transitively, the body op's result range). Then assert the name-keyed
-// carrier registry the native backend consumes admits the body result `r`.
-// This is the exact predicate the modulo P0 store mis-consulted.
-// ======================================================================
-
-fn op(kind: molt_ir::OpKind, out: Option<&str>, var: Option<&str>, args: &[&str]) -> OpIR {
-    OpIR {
-        kind,
-        out: out.map(str::to_string),
-        var: var.map(str::to_string),
-        args: (!args.is_empty()).then(|| args.iter().map(|a| a.to_string()).collect()),
-        ..OpIR::new(kind)
-    }
-}
-
-fn const_int(out: &str, value: i64) -> OpIR {
-    OpIR {
-        kind: molt_ir::OpKind::Const,
-        out: Some(out.to_string()),
-        value: Some(value),
-        ..OpIR::new(molt_ir::OpKind::Const)
-    }
-}
-
-/// SimpleIR for a constant-bounded counted loop whose body computes
-/// `r = i_cur <op> const`. Mirrors the proven `counted_store_load_loop`
-/// representation-plan fixture shape (store/load `i` across `loop_start`/
-/// `loop_end`, `lt` guard, `+ one` update) so the same value-range IV proof
-/// fires, then layers the op-under-test on top.
-fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
-    FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: format!("bounded_{}_loop", int_op.simple_kind),
-        params: vec![],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-        ops: vec![
-            const_int("init", 0),
-            const_int("one", 1),
-            const_int("stop", IV_STOP),
-            const_int("rhs", int_op.rhs_const),
-            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
-            op(molt_ir::OpKind::LoopStart, None, None, &[]),
-            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
-            op(
-                molt_ir::OpKind::Lt,
-                Some("keep_going"),
-                None,
-                &["i_cur", "stop"],
-            ),
-            op(
-                molt_ir::OpKind::LoopBreakIfFalse,
-                None,
-                None,
-                &["keep_going"],
-            ),
-            // The op under test: r = i_cur <op> rhs.
-            op(int_op.simple_kind, Some("r"), None, &["i_cur", "rhs"]),
-            op(
-                molt_ir::OpKind::Add,
-                Some("i_next"),
-                None,
-                &["i_cur", "one"],
-            ),
-            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
-            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
-            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
-        ],
-    }
-}
-
-#[test]
-fn name_keyed_authority_admits_bounded_int_op_results() {
-    for int_op in int_ops() {
-        let func = bounded_loop_body_op_ir(int_op);
-        let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-            &func,
-            &crate::tir::TargetInfo::native_release_fast(),
-        );
-
-        // The induction variable and its update must be raw-i64 carriers -
-        // otherwise the loop already fell off the raw lane and the body-op
-        // assertion below would be vacuous. (The IV range is value-range-proven
-        // for every op variant, independent of the body op.)
-        assert!(
-            plan.is_raw_int_carrier_name("i_cur"),
-            "{}: bounded IV load `i_cur` must be a raw-i64 carrier",
-            int_op.simple_kind
-        );
-        assert!(
-            plan.is_raw_int_carrier_name("i_next"),
-            "{}: bounded IV update `i_next` must be a raw-i64 carrier",
-            int_op.simple_kind
-        );
-
-        // THE GATE: the name-keyed native authority - the exact predicate the
-        // modulo store mis-consulted - must AGREE with the value-range proof
-        // for the body op result `r`. For every op in this bounded fixture, the
-        // value-range transfer admits `r` to the raw lane. A regression in the
-        // value-range -> name-keyed projection for a proven op (re-opening the
-        // modulo P0 class), OR a spurious raw promotion of a non-proven result
-        // (the boxed-stored-as-raw fragmentation), trips here.
-        assert_eq!(
-            plan.is_raw_int_carrier_name("r"),
-            int_op.expected_raw,
-            "{}: name-keyed carrier authority for `r = i_cur {} {}` must match \
-             the established native admission (expected raw={})",
-            int_op.simple_kind,
-            int_op.simple_kind,
-            int_op.rhs_const,
-            int_op.expected_raw,
-        );
-
-        // When admitted, it must be the inline-safe tier (RawI64Safe) - the
-        // bounded proof authorizes inline int boxing at escape points, not the
-        // full-deopt checked tier. When not admitted, neither raw predicate
-        // fires (the result is boxed MaybeBigInt, the sound default).
-        assert_eq!(
-            plan.is_inline_safe_int_name("r"),
-            int_op.expected_raw,
-            "{}: inline-safe (RawI64Safe) admission of `r` must match the \
-             native name-keyed authority",
-            int_op.simple_kind
-        );
-    }
-}
-
-// ======================================================================
-// Part B - VALUE-KEYED proof/authority agreement (design section 5 verbatim).
-//
-// `repr_by_value_for` is the single source the name-keyed `repr_by_name` is
-// projected from; `value_range_for` is the proof. Assert they AGREE on every
-// op result: a value is a raw-i64 carrier in the registry IFF the value-range
-// proof admits it inline-int47. This is the producer<->consumer agreement that
-// makes the modulo P0 (store-boxed / read-raw) unexpressible.
-// ======================================================================
 
 fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
@@ -401,7 +203,7 @@ fn value_range_proof_and_carrier_registry_agree_per_int_op() {
             .is_some_and(|r| r.is_raw_i64_carrier());
 
         // The design's literal section-5 assertion: the registry (the single source
-        // the name-keyed `repr_by_name` is projected from) AGREES with the
+        // the instruction selectors consume) AGREES with the
         // value-range proof. Equality in BOTH directions - a proven value is
         // raw, a non-proven value is never raw. This is the producer<->consumer
         // agreement that makes the modulo P0 (store-boxed / read-raw)

@@ -1014,6 +1014,68 @@ fn function_row<'a>(
     })
 }
 
+/// The operands at a compiled call site. Guarded binding and its admitted
+/// direct arm both carry the callable in the first operand.
+pub enum CompiledCallArguments {
+    /// Python source arguments. A closure receives its implicit environment.
+    Positional(usize),
+    /// Final, physical parameters, including any lexical environment.
+    Parameters(usize),
+    Guarded(usize),
+    Direct(usize),
+}
+
+impl FunctionIR {
+    pub fn validate_extern_call(
+        &self,
+        caller: &str,
+        arguments: CompiledCallArguments,
+        passes_execution_context: bool,
+    ) -> Result<(), String> {
+        let signature = self.extern_signature()?;
+        let target = self.name.as_str();
+        if signature.execution_context == ExecutionContextPolicy::Inherited
+            && !passes_execution_context
+        {
+            return Err(format!(
+                "extern call ABI mismatch: caller `{caller}` does not thread the inherited execution context required by declaration `{target}`"
+            ));
+        }
+        if signature.execution_context != ExecutionContextPolicy::Inherited
+            && passes_execution_context
+        {
+            return Err(format!(
+                "extern call ABI mismatch: caller `{caller}` threads an execution context to non-inherited declaration `{target}`"
+            ));
+        }
+
+        let caller_arity = match arguments {
+            CompiledCallArguments::Positional(n) => n + usize::from(signature.has_closure),
+            CompiledCallArguments::Parameters(n) => n,
+            CompiledCallArguments::Guarded(0) => {
+                return Err(format!(
+                    "extern call ABI mismatch: guarded caller `{caller}` has no callable operand for declaration `{target}`"
+                ));
+            }
+            // Python binding owns defaults, surplus arguments and closure extraction.
+            CompiledCallArguments::Guarded(_) => return Ok(()),
+            CompiledCallArguments::Direct(n) if n > 0 && !signature.has_closure => n - 1,
+            CompiledCallArguments::Direct(_) => {
+                return Err(format!(
+                    "extern call ABI mismatch: direct caller `{caller}` requires a callable operand and a closure-free declaration `{target}`"
+                ));
+            }
+        };
+        if caller_arity != signature.arity {
+            return Err(format!(
+                "extern call ABI mismatch: caller `{caller}` supplies {caller_arity} parameter(s) to declaration `{target}`, which requires {}",
+                signature.arity
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
     let mut function_names = BTreeSet::new();
     for function in &ir.functions {
@@ -1034,48 +1096,17 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
             if !declaration.is_extern {
                 continue;
             }
-            let signature = declaration.extern_signature()?;
-            let target = declaration.name.as_str();
-            if signature.execution_context == ExecutionContextPolicy::Inherited
-                && !op.passes_execution_context
-            {
-                return Err(format!(
-                    "extern call ABI mismatch: caller `{}` does not thread the inherited execution context required by declaration `{target}`",
-                    caller.name
-                ));
-            }
-            if signature.execution_context != ExecutionContextPolicy::Inherited
-                && op.passes_execution_context
-            {
-                return Err(format!(
-                    "extern call ABI mismatch: caller `{}` threads an execution context to non-inherited declaration `{target}`",
-                    caller.name
-                ));
-            }
-
-            let explicit_arg_count = op.args.as_ref().map_or(0, Vec::len);
-            if op.kind == crate::OpKind::CallGuarded {
-                if explicit_arg_count == 0 {
-                    return Err(format!(
-                        "extern call ABI mismatch: guarded caller `{}` has no callable operand for declaration `{target}`",
-                        caller.name
-                    ));
-                }
-                // Guarded operands are a live callable plus only the Python
-                // arguments actually supplied. Defaults, surplus-argument
-                // errors, and closure extraction belong to callable binding.
-                // Backends enter the speculative raw call only after proving
-                // its exact shape; an arity mismatch takes the binding path.
-                // Externalization must not change that invocation contract.
-                continue;
-            }
-            let caller_arity = explicit_arg_count + usize::from(signature.has_closure);
-            if caller_arity != signature.arity {
-                return Err(format!(
-                    "extern call ABI mismatch: caller `{}` supplies {caller_arity} parameter(s) to declaration `{target}`, which requires {}",
-                    caller.name, signature.arity
-                ));
-            }
+            let count = op.args.as_ref().map_or(0, Vec::len);
+            let arguments = if op.kind == crate::OpKind::CallGuarded {
+                CompiledCallArguments::Guarded(count)
+            } else {
+                CompiledCallArguments::Positional(count)
+            };
+            declaration.validate_extern_call(
+                &caller.name,
+                arguments,
+                op.passes_execution_context,
+            )?;
         }
     }
     Ok(())

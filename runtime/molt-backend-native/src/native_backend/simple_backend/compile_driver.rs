@@ -1,12 +1,9 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
 use molt_ir::backend_environment::BackendEnv;
-#[cfg(feature = "llvm")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
-type ExternFunctionSignatures = BTreeMap<String, crate::ir::ExternFunctionSignature>;
-
-fn collect_extern_function_signatures(functions: &[FunctionIR]) -> ExternFunctionSignatures {
+fn validate_extern_function_signatures(functions: &[FunctionIR]) {
     let mut signatures = BTreeMap::new();
     for function in functions.iter().filter(|function| function.is_extern) {
         let signature = function
@@ -21,11 +18,149 @@ fn collect_extern_function_signatures(functions: &[FunctionIR]) -> ExternFunctio
             );
         }
     }
-    signatures
 }
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    /// Declare every document row in order, before building recursive or forward calls.
+    pub(super) fn declare_final_functions(
+        &mut self,
+        functions: &NativeFinalFunctions,
+        table: &molt_ir::FunctionTable,
+    ) -> (
+        Vec<cranelift_module::FuncId>,
+        BTreeMap<String, NativeFunctionLinkageAbi>,
+    ) {
+        let mut rows = BTreeMap::new();
+        let ids = table
+            .ids()
+            .map(|id| {
+                let definition = table.defines(id);
+                let name = table.symbol(id);
+                let abi = functions.linkage(id, self.module_context.as_ref());
+                rows.insert(name.to_owned(), abi.clone());
+                let signature = super::super::codegen_builder::linkage_signature(&self.module, abi);
+                let linkage = if definition {
+                    Linkage::Export
+                } else {
+                    Linkage::Import
+                };
+                declare_compiled_execution_function(&mut self.module, name, linkage, &signature)
+                    .unwrap_or_else(|error| match *error {
+                        cranelift_module::ModuleError::IncompatibleSignature(
+                            _,
+                            prior,
+                            incoming,
+                        ) => panic!(
+                            "incompatible machine declaration for `{name}`: {prior} vs {incoming}"
+                        ),
+                        error => panic!("Cranelift declaration for {name}: {error}"),
+                    })
+            })
+            .collect();
+        (ids, rows)
+    }
+
+    /// Give the shared walker a physical entry owned by the object or JIT module.
+    /// Every logical argument follows the hidden execution context. A failed
+    /// definition is dropped before it can enter the machine-code queue.
+    pub(super) fn build_walker_definition(
+        &mut self,
+        id: cranelift_module::FuncId,
+        definition: &NativeFinalFunction,
+        table: &molt_ir::FunctionTable,
+        linkage: &BTreeMap<String, NativeFunctionLinkageAbi>,
+        runtime: &molt_ir::runtime_callable_symbols::RuntimeFnSet,
+    ) -> Result<(), Vec<String>> {
+        use super::super::codegen_builder::NativeCodegen;
+        let body = &definition.tir;
+        let trace_start = env_setting(BackendEnv::MOLT_TRACE_COMPILE_FUNC)
+            .as_deref()
+            .is_some_and(parse_truthy_env)
+            .then(std::time::Instant::now);
+        if trace_start.is_some() {
+            let ops = body.operation_count();
+            let params = body.param_types.len();
+            eprintln!(
+                "[molt-native-compile] start {} ops={ops} params={params}",
+                body.name
+            );
+            let _ = crate::debug_artifacts::append_debug_artifact(
+                "native/compile_trace.txt",
+                format!("start name={} ops={ops} params={params}\n", body.name),
+            );
+        }
+        if let Some(filter) = env_setting(BackendEnv::MOLT_DUMP_FINAL_FUNC_IR)
+            && body.name.contains(&filter)
+        {
+            let stem = super::deferred_codegen::debug_file_stem(&body.name);
+            let _ = crate::debug_artifacts::write_debug_artifact(
+                format!("native/final_ir/{stem}.txt"),
+                crate::tir::printer::print_function(body),
+            );
+        }
+        let mut function = Function::new();
+        function.signature = self
+            .module
+            .declarations()
+            .get_function_decl(id)
+            .signature
+            .clone();
+        let mut builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut function, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let (execution, logical) = builder
+            .block_params(entry)
+            .split_first()
+            .expect("attached definition");
+        let execution = *execution;
+        let parameters = logical.to_vec();
+        let mut imports = NativeFunctionImports::default();
+        crate::codegen_ssa::walk::lower_function(
+            &mut NativeCodegen {
+                words: NativeWords {
+                    builder: &mut builder,
+                },
+                module: &mut self.module,
+                import_ids: &mut self.import_ids,
+                imports: &mut imports,
+            },
+            crate::codegen_ssa::walk::FunctionInput {
+                func: body,
+                plan: &definition.carriers,
+                entry: &parameters,
+                linkage,
+                functions: table,
+                runtime,
+            },
+        )?;
+        inspect_native_cfg(&body.name, builder.func);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.target_config());
+        complete_attached_calls(&self.module, &mut function, execution);
+        if let Some(crate::tir::ops::AttrValue::Int(size)) = body
+            .attrs
+            .get(crate::tir::lower_from_simple::STATEFUL_FRAME_SIZE_ATTR)
+        {
+            define_stateful_frame_size(&mut self.module, &body.name, *size);
+        }
+        self.queue_compiled_definition(id, &body.name, function);
+        if let Some(start) = trace_start {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "[molt-native-compile] done {} after {elapsed:.2?}",
+                body.name
+            );
+            let _ = crate::debug_artifacts::append_debug_artifact(
+                "native/compile_trace.txt",
+                format!("done name={} elapsed={elapsed:.2?}\n", body.name),
+            );
+        }
+        Ok(())
+    }
+
     pub fn compile(self, ir: SimpleIR) -> CompileOutput {
         self.compile_checked(ir)
             .unwrap_or_else(|error| panic!("native SimpleIR admission failed: {error}"))
@@ -147,25 +282,14 @@ impl SimpleBackend {
                 },
             );
             // Source ABI metadata survives transport retirement unchanged.
-            let mut function_signatures: BTreeMap<_, _> = ir
+            let mut program_signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
+            let mut parameter_custody: Vec<_> = ir
                 .functions
                 .iter()
-                .map(|function| {
-                    (
-                        function.name.clone(),
-                        function.function_signature().unwrap_or_else(|error| {
-                            panic!("invalid LLVM linkage signature: {error}")
-                        }),
-                    )
-                })
-                .collect();
-            let mut parameter_custody: BTreeMap<_, _> = ir
-                .functions
-                .iter()
-                .map(|function| (function.name.clone(), function.parameter_custody.clone()))
+                .map(|function| function.parameter_custody.clone())
                 .collect();
             let mut llvm_cached_tir = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                crate::tir::pipeline_cache::TirPipelineInput::TirOnly(&ir.functions),
+                &ir.functions,
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: llvm_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
@@ -201,7 +325,6 @@ impl SimpleBackend {
             // A guarded call names a row of this document (a body, or the
             // extern row of a function another object defines): the row
             // supplies its signature, by id (HF-847 slice 1).
-            let program_signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
             let owned = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                 ir.functions,
                 &mut llvm_cached_tir,
@@ -221,74 +344,41 @@ impl SimpleBackend {
             // A specialized clone is another entry of its origin (design 78,
             // slice 3): the origin's signature and entry custody.
             for clone in &owned.clones {
-                let origin = owned.functions[clone.origin.index()].1.name.clone();
-                let symbol = owned.functions[clone.id.index()].1.name.clone();
-                let signature = function_signatures[&origin];
-                function_signatures.insert(symbol.clone(), signature);
-                let custody = parameter_custody[&origin].clone();
-                parameter_custody.insert(symbol, custody);
+                assert_eq!(
+                    clone.id.index(),
+                    program_signatures.len(),
+                    "specialized clone row"
+                );
+                program_signatures.push(program_signatures[clone.origin.index()]);
+                parameter_custody.push(parameter_custody[clone.origin.index()].clone());
             }
             let tir_funcs = owned.functions;
-            super::program_pipeline::dump_rewritten_tir_if_requested(&tir_funcs);
-            // Build LLVM representation facts from the exact post-module-phase
-            // TIR the LLVM backend is about to lower. The trusted-unbox gate is
-            // pure TIR/value-range authority, so fresh ValueIds introduced by
-            // inlining are classified from the merged body itself.
-            //
-            // The table remains keyed by NAME because the module phase reorders
-            // functions (externs first) and can grow caller bodies; consumers
-            // look up by the final function name, never by pre-inline position.
-            llvm.function_repr_facts = tir_funcs
+            assert_eq!(
+                tir_funcs.len(),
+                program_signatures.len(),
+                "final linkage rows"
+            );
+            super::program_pipeline::dump_rewritten_tir_if_requested(
+                tir_funcs.iter().map(|(_, body)| body),
+            );
+            // The module phase returns document order. Each body contributes its
+            // local ABI and carrier plan together, including specialized clones.
+            for (((external, body), signature), custody) in tir_funcs
                 .iter()
-                .filter(|(is_extern, _)| !*is_extern)
-                .map(|(_, tir_func)| {
-                    (
-                        tir_func.name.clone(),
-                        crate::representation_plan::ProducerCarrierPlan::build(tir_func),
-                    )
-                })
-                .collect();
-
-            // Freeze one exact linkage row per function. Local rows cover
-            // one-shot compilation and post-partition synthetic functions;
-            // whole-program module-context rows then override them so every
-            // provider definition and consumer declaration in separate batch
-            // objects uses byte-identical machine carriers.
-            llvm.function_linkage_abis = tir_funcs
-                .iter()
-                .filter(|(is_extern, _)| !*is_extern)
-                .map(|(_, tir_func)| {
-                    let source_signature =
-                        *function_signatures.get(&tir_func.name).unwrap_or_else(|| {
-                            panic!(
-                                "LLVM function `{}` lost its target-neutral linkage signature",
-                                tir_func.name
-                            )
-                        });
-                    let facts = &llvm.function_repr_facts[&tir_func.name];
-                    let param_types = facts.effective_param_types(tir_func);
-                    let return_type = source_signature
-                        .returns_value
-                        .then(|| facts.effective_return_type(tir_func));
-                    (
-                        tir_func.name.clone(),
-                        NativeFunctionLinkageAbi {
-                            source_signature,
-                            parameter_custody: parameter_custody
-                                .get(&tir_func.name)
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "LLVM function `{}` lost its entry custody",
-                                        tir_func.name
-                                    )
-                                }),
-                            param_types,
-                            return_type,
-                        },
-                    )
-                })
-                .collect();
+                .zip(program_signatures)
+                .zip(parameter_custody)
+            {
+                if *external {
+                    continue;
+                }
+                let facts = crate::representation_plan::ProducerCarrierPlan::build(body);
+                llvm.function_linkage_abis.insert(
+                    body.name.clone(),
+                    facts.linkage_abi(body, signature, custody),
+                );
+                llvm.function_repr_facts.insert(body.name.clone(), facts);
+            }
+            // Independently compiled callers and providers share the frozen row.
             if let Some(module_context) = self.module_context.as_ref() {
                 llvm.function_linkage_abis
                     .extend(module_context.function_linkage_abis.clone());
@@ -431,7 +521,9 @@ impl SimpleBackend {
 
             return CompileOutput { bytes };
         }
-        let (func_count, total_ops) = self.emit_cranelift_program(program, timing);
+        let (func_count, total_ops) = self
+            .emit_cranelift_program(program, timing)
+            .unwrap_or_else(|errors| panic!("Cranelift lowering failed:\n{}", errors.join("\n")));
 
         let emit_start = std::time::Instant::now();
         let SimpleBackend { module, .. } = self;
@@ -476,130 +568,50 @@ impl SimpleBackend {
         // Extern bodies are discarded by both native backends. Capture and
         // validate their complete target-neutral ABI first so no backend can
         // reconstruct a declaration from a caller after the authority is gone.
-        let extern_function_signatures = collect_extern_function_signatures(&final_ir.functions);
-        crate::ir::validate_extern_call_abis(final_ir)
-            .unwrap_or_else(|error| panic!("native {error}"));
+        validate_extern_function_signatures(&final_ir.functions);
+        match &final_functions {
+            Some(functions) => functions.validate_extern_calls(),
+            None => crate::ir::validate_extern_call_abis(final_ir),
+        }
+        .unwrap_or_else(|error| panic!("native {error}"));
         if let Some(module_context) = self.module_context.as_ref() {
             module_context
                 .validate_function_linkage_abis(&final_ir.functions)
                 .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
         }
-        // Capture each function's entry custody while its extern declaration
-        // is still present; `func_new` lowering reads it.
-        self.function_entry_custody =
-            merge_function_entry_custody(self.module_context.as_ref(), &final_ir.functions);
         NativeCodegenProgram {
             emit_resolver_here,
             app_callable_manifest: prepared.app_callable_manifest,
-            source_callables: prepared.source_callables,
             final_functions,
-            extern_function_signatures,
         }
     }
 
     /// Lower every final function into the code owner, then emit the program
     /// metadata (app resolver, module registry, program slots) and the
-    /// generated-object ABI anchor. Returns (functions, source ops).
+    /// generated-object ABI anchor. Returns (definitions, terminal operations including terminators).
     pub(in crate::native_backend::simple_backend) fn emit_cranelift_program(
         &mut self,
         program: NativeCodegenProgram,
         timing: bool,
-    ) -> (usize, usize) {
+    ) -> Result<(usize, usize), Vec<String>> {
         let NativeCodegenProgram {
             emit_resolver_here,
             app_callable_manifest,
-            source_callables,
             final_functions,
-            extern_function_signatures,
         } = program;
-        // Analyze the exact post-lifetime/post-partition bodies codegen emits.
-        // Shared batch context predates worker finalization and carries no leaf
-        // claims. External targets retain guards without a final-body proof.
         let final_functions = final_functions.expect("Cranelift requires final function custody");
-        let ir_analysis = analyze_native_backend_ir(&final_functions, source_callables);
-        let ir = final_functions.ir();
-        // Compile functions into one module. Backend codegen failures are hard
-        // failures: the compiler must not produce partial objects with
-        // runtime-aborting placeholders for functions it could not compile.
-        // Register the canonical extern declarations before removing their
-        // signature-only FunctionIR bodies. Call lowering must reuse these
-        // exact declarations; Cranelift rejects any later incompatible reuse.
-        for (name, signature) in &extern_function_signatures {
-            let mut cranelift_signature = self.module.make_signature();
-            cranelift_signature
-                .params
-                .extend((0..signature.arity).map(|_| AbiParam::new(types::I64)));
-            if signature.returns_value {
-                cranelift_signature.returns.push(AbiParam::new(types::I64));
-            }
-            declare_compiled_execution_function(&mut self.module, name, Linkage::Import, &cranelift_signature)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "Cranelift extern declaration mismatch for `{name}`: expected {} parameter(s), returns_value={}: {error}",
-                        signature.arity, signature.returns_value
-                    )
-                });
-            self.external_function_names.insert(name.clone());
-            if let Some(previous) = self
-                .declared_func_arities
-                .insert(name.clone(), signature.arity)
-                && previous != signature.arity
-            {
-                panic!(
-                    "Cranelift extern arity mismatch for `{name}`: {previous} vs {}",
-                    signature.arity
-                );
-            }
-        }
-        // Filter out extern functions  they have no ops to compile.
-        let func_count = ir
-            .functions
-            .iter()
-            .filter(|function| !function.is_extern)
-            .count();
-        let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
-        eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
+        let table = &molt_ir::FunctionTable::of(&final_functions.ir().functions);
+        let (declarations, linkage) = self.declare_final_functions(&final_functions, table);
+        let runtime =
+            crate::runtime_callable_symbols::RuntimeCallableSymbols::capture().runtime_fn_set();
+        let func_count = final_functions.bodies().count();
+        let total_ops: usize = final_functions
+            .bodies()
+            .map(crate::tir::TirFunction::operation_count)
+            .sum();
+        eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} terminal ops)");
         let codegen_start = std::time::Instant::now();
-        let mut local_function_arities: BTreeMap<String, usize> = extern_function_signatures
-            .iter()
-            .map(|(name, signature)| (name.clone(), signature.arity))
-            .collect();
-        local_function_arities.extend(
-            ir.functions
-                .iter()
-                .map(|func| (func.name.clone(), func.params.len())),
-        );
-        let module_context = self.module_context.clone();
-        let effective_function_arities =
-            merge_function_arities(module_context.as_ref(), local_function_arities);
-        // UNION the module context's whole-program metadata with this batch's
-        // LOCAL scan (design-20 finding #3C activation): a `module_context` that
-        // was built from a DIFFERENT function set (the stdlib cache) does not
-        // contain a closure/task defined only in this batch. Replacing the
-        // local scan dropped those, so a `call_guarded` to a user closure
-        // skipped env extraction  garbage closure  subscript TypeError. Mirror
-        // the union that `merge_function_arities`/`merge_function_has_ret`
-        // already do; the local scan is authoritative for this batch's own
-        // definitions, the module context adds cross-batch knowledge.
-        let effective_closure_functions = merge_closure_functions(
-            module_context.as_ref(),
-            ir_analysis.closure_functions.clone(),
-        );
-        let effective_task_kinds =
-            merge_task_kinds(module_context.as_ref(), ir_analysis.task_kinds.clone());
-        let effective_task_closure_sizes = merge_task_closure_sizes(
-            module_context.as_ref(),
-            ir_analysis.task_closure_sizes.clone(),
-        );
-        let mut local_function_has_ret: BTreeMap<String, bool> = extern_function_signatures
-            .iter()
-            .map(|(name, signature)| (name.clone(), signature.returns_value))
-            .collect();
-        local_function_has_ret.extend(compute_function_has_ret(&ir.functions));
-        let effective_function_has_ret =
-            merge_function_has_ret(module_context.as_ref(), local_function_has_ret);
         let mut compiled = 0u32;
-        let failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
         // Progress reporting: pick interval based on function count so the
         // user sees roughly 20 updates during a long build, but at least
@@ -608,20 +620,25 @@ impl SimpleBackend {
         let mut last_progress = std::time::Instant::now();
         let mut deferred_codegen_ops = 0usize;
 
-        for function in final_functions.into_local_functions() {
-            let func_name = function.function().name.clone();
-            let func_op_count = function.function().ops.len().max(1);
-            let func_start = std::time::Instant::now();
-            self.compile_func(
-                function,
-                &effective_task_kinds,
-                &effective_task_closure_sizes,
-                &ir_analysis.function_table,
-                &effective_closure_functions,
-                &ir_analysis.leaf_functions,
-                &effective_function_arities,
-                &effective_function_has_ret,
+        for (id, function) in final_functions.into_local_functions() {
+            let func_name = table.symbol(id).to_owned();
+            let func_op_count = function.tir.operation_count();
+            debug_assert_eq!(
+                self.module
+                    .declarations()
+                    .get_function_decl(declarations[id.index()])
+                    .name
+                    .as_deref(),
+                Some(compiled_execution_symbol(&func_name).as_str())
             );
+            let func_start = std::time::Instant::now();
+            self.build_walker_definition(
+                declarations[id.index()],
+                &function,
+                table,
+                &linkage,
+                &runtime,
+            )?;
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
                 eprintln!("MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}");
@@ -637,7 +654,7 @@ impl SimpleBackend {
                 if timing {
                     let flush_elapsed = flush_start.elapsed();
                     eprintln!(
-                        "MOLT_BACKEND_TIMING: bounded Cranelift flush ({deferred_count} functions, {deferred_codegen_ops} source ops) took {flush_elapsed:.2?}"
+                        "MOLT_BACKEND_TIMING: bounded Cranelift flush ({deferred_count} functions, {deferred_codegen_ops} terminal ops) took {flush_elapsed:.2?}"
                     );
                 }
                 deferred_codegen_ops = 0;
@@ -663,7 +680,6 @@ impl SimpleBackend {
                 eprintln!("MOLT_BACKEND_TIMING: slowest function: `{name}` ({dur:.2?})");
             }
         }
-        debug_assert_eq!(failed, 0, "native backend no longer soft-fails functions");
         //  Parallel Cranelift compilation
         // All functions were IR-built sequentially above (declarations
         // and Cranelift IR construction are not thread-safe), but actual
@@ -678,7 +694,7 @@ impl SimpleBackend {
                 if timing {
                     let flush_elapsed = flush_start.elapsed();
                     eprintln!(
-                        "MOLT_BACKEND_TIMING: final Cranelift flush ({deferred_count} functions, {deferred_ops} source ops) took {flush_elapsed:.2?}"
+                        "MOLT_BACKEND_TIMING: final Cranelift flush ({deferred_count} functions, {deferred_ops} terminal ops) took {flush_elapsed:.2?}"
                     );
                 }
             }
@@ -761,7 +777,7 @@ impl SimpleBackend {
         }
 
         emit_generated_object_abi_anchor(&mut self.module);
-        (func_count, total_ops)
+        Ok((func_count, total_ops))
     }
 }
 
@@ -770,9 +786,7 @@ impl SimpleBackend {
 pub(in crate::native_backend::simple_backend) struct NativeCodegenProgram {
     emit_resolver_here: bool,
     app_callable_manifest: crate::passes::AppCallableManifest,
-    source_callables: molt_tir::trampolines::CallableMetadata,
     final_functions: Option<NativeFinalFunctions>,
-    extern_function_signatures: ExternFunctionSignatures,
 }
 
 /// `MOLT_BACKEND_TIMING` admission, shared by every code owner.

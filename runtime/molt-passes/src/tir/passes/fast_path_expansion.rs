@@ -822,6 +822,211 @@ fn finish(
     }
 }
 
+/// Supply the lexical environment that a raw direct call leaves implicit.
+/// Each local construction defines a fresh SSA name for its capture. The
+/// caller's own environment is the initial definition on a recursive edge.
+/// SSA repair merges reaching definitions at joins without rebinding another
+/// use of the original capture. The physical call then has exactly one
+/// operand per declared parameter, including the borrowed environment.
+pub fn lower_static_call_arguments(
+    func: &mut TirFunction,
+    owner: molt_ir::FunctionId,
+    signatures: &[molt_ir::ir::ExternFunctionSignature],
+) -> bool {
+    use crate::tir::call_targets::direct_callee;
+    use crate::tir::ssa_update::{Variable, repair};
+    use std::collections::BTreeMap;
+
+    let mut environments = BTreeMap::new();
+    for op in func.blocks.values().flat_map(|block| &block.ops) {
+        let Some(target) = direct_callee(op) else {
+            continue;
+        };
+        let signature = &signatures[target.index()];
+        // First-class TIR may already spell its physical arguments. Source
+        // calls omit the lexical environment at the transport boundary.
+        if op.origin.is_none() && op.operands.len() == signature.arity {
+            continue;
+        }
+        assert_eq!(
+            op.operands.len() + usize::from(signature.has_closure),
+            signature.arity,
+            "static call argument ABI mismatch for function #{} in {}",
+            target.index(),
+            func.name
+        );
+        if signature.has_closure {
+            environments.entry(target).or_insert_with(|| Variable {
+                names: Vec::new(),
+                ty: TirType::DynBox,
+            });
+        }
+    }
+    if environments.is_empty() {
+        return false;
+    }
+
+    let mut definitions = Vec::new();
+    if environments.contains_key(&owner) {
+        let incoming = func.blocks[&func.entry_block].args[0].id;
+        definitions.push((func.entry_block, 0, owner, incoming, None));
+    }
+    for (&block, body) in &func.blocks {
+        for (index, op) in body.ops.iter().enumerate() {
+            if op.origin == Some(molt_ir::OpKind::FuncNewClosure)
+                && let Some(target) = op.callee
+                && environments.contains_key(&target)
+            {
+                definitions.push((block, index + 1, target, op.operands[0], op.source_span));
+            }
+        }
+    }
+    definitions.sort_by_key(|&(block, index, ..)| std::cmp::Reverse((block, index)));
+    for (block, index, target, capture, span) in definitions {
+        let name = fresh_typed(func, TirType::DynBox);
+        let alias = new_op(OpCode::Copy, vec![capture], vec![name], span);
+        func.blocks
+            .get_mut(&block)
+            .unwrap()
+            .ops
+            .insert(index, alias);
+        environments.get_mut(&target).unwrap().names.push(name);
+    }
+    for op in func.blocks.values_mut().flat_map(|block| &mut block.ops) {
+        if let Some(target) = direct_callee(op)
+            && !(op.origin.is_none() && op.operands.len() == signatures[target.index()].arity)
+            && let Some(variable) = environments.get(&target)
+        {
+            let seed = variable.names.first().unwrap_or_else(|| {
+                panic!(
+                    "{} has no lexical environment for function #{}",
+                    func.name,
+                    target.index()
+                )
+            });
+            let custody = op.argument_custody();
+            op.operands.insert(0, *seed);
+            if let Some(mut custody) = custody {
+                custody.insert(0, molt_ir::ParameterCustody::Borrowed);
+                op.set_argument_custody(&custody);
+            }
+        }
+    }
+    let variables: Vec<_> = environments.into_values().collect();
+    repair(func, &variables).unwrap_or_else(|cause| {
+        panic!(
+            "{}: no reaching closure environment on a static call edge: {cause:?}",
+            func.name
+        )
+    });
+    true
+}
+
+/// Charge ordinary compiled calls whose target can reenter Python. The callee's
+/// finalized body proves when admission can be omitted. An extern has no such
+/// proof. Guarded calls own admission in their guarded expansion.
+pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::FunctionSet) -> bool {
+    let mut sites: Vec<_> = func
+        .blocks
+        .iter()
+        .flat_map(|(&block, body)| {
+            body.ops.iter().enumerate().filter_map(move |(index, op)| {
+                crate::tir::call_targets::direct_callee(op)
+                    .filter(|&id| !leaves.contains(id))
+                    .map(|_| (block, index))
+            })
+        })
+        .collect();
+    // Split later sites first so indices in the original block stay valid.
+    sites.sort_unstable_by(|a, b| b.cmp(a));
+    let changed = !sites.is_empty();
+    for (block, index) in sites {
+        let Split {
+            op,
+            rest,
+            terminator,
+        } = split(func, block, index);
+        let span = op.source_span;
+        let admitted = fresh_typed(func, TirType::Bool);
+        let enter = func.fresh_block();
+        let refuse = func.fresh_block();
+        end_block(
+            func,
+            block,
+            vec![new_op(
+                OpCode::RecursionAdmits,
+                vec![],
+                vec![admitted],
+                span,
+            )],
+            cond_branch(admitted, enter, refuse),
+        );
+
+        let mut raise = runtime_call(
+            molt_ir::runtime_fn_generated::RuntimeFn::RaiseRecursionError,
+            vec![],
+            vec![],
+            span,
+        );
+        if let Some(source) = op.attrs.get("exception_source") {
+            raise
+                .attrs
+                .insert("exception_source".into(), source.clone());
+        }
+        let mut failure = vec![raise];
+        // A source handler may catch this refusal in the calling function.
+        // The refusal supplies None for an exceptional edge carrying the
+        // unproduced call result, and has fresh SSA definitions of its own.
+        if let Some(check) = rest
+            .first()
+            .filter(|check| check.opcode == OpCode::CheckException)
+        {
+            let mut check = check.clone();
+            if check
+                .operands
+                .iter()
+                .any(|value| op.results.contains(value))
+            {
+                let none = fresh_typed(func, TirType::None);
+                failure.push(new_op(OpCode::ConstNone, vec![], vec![none], span));
+                for value in &mut check.operands {
+                    if op.results.contains(value) {
+                        *value = none;
+                    }
+                }
+            }
+            for result in &mut check.results {
+                let ty = func
+                    .value_types
+                    .get(result)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                *result = fresh_typed(func, ty);
+            }
+            failure.push(check);
+        }
+        // No callee adopted its arguments. Lifetime finalization sees the
+        // refusal edge and releases every outstanding owner exactly once.
+        func.blocks.insert(
+            refuse,
+            new_block(refuse, failure, Terminator::Return { values: vec![] }),
+        );
+        let mut entered = Vec::with_capacity(rest.len() + 3);
+        entered.push(new_op(OpCode::RecursionCount, vec![], vec![], span));
+        entered.push(op);
+        entered.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
+        entered.extend(rest);
+        func.blocks
+            .insert(enter, new_block(enter, entered, terminator));
+        for cond in func.loop_cond_blocks.values_mut() {
+            if *cond == block {
+                *cond = enter;
+            }
+        }
+    }
+    changed
+}
+
 /// Every op an expansion creates states its own raise contract, from the one
 /// instance classifier, over the values it creates (whose types it knows):
 /// boxing a bool or float, a raw compare, an unbox after its tag test cannot
@@ -1371,9 +1576,8 @@ fn expand_guarded_call(
         ),
     );
 
-    let raised = fresh_typed(func, TirType::I64);
     let none = fresh_typed(func, TirType::None);
-    let mut raise = runtime_call(RuntimeFn::RaiseRecursionError, vec![], vec![raised], span);
+    let mut raise = runtime_call(RuntimeFn::RaiseRecursionError, vec![], vec![], span);
     if let Some(source) = op.attrs.get("exception_source") {
         raise
             .attrs

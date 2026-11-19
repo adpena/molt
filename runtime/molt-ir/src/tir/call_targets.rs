@@ -40,6 +40,21 @@ pub fn gpu_runtime_fn_for_simple_kind(kind: crate::OpKind) -> Option<RuntimeFn> 
         .find_map(|(source, function, _)| (*source == kind).then_some(*function))
 }
 
+/// Decode the frontend's exact builtin bound-method fact at its wire boundary.
+pub(super) fn bound_builtin_method(hint: &str, operands: usize) -> Option<RuntimeFn> {
+    let runtime = match hint {
+        "BoundMethod:list:append" => RuntimeFn::FastListAppend,
+        "BoundMethod:str:join" => RuntimeFn::FastStrJoin,
+        "BoundMethod:dict:get" => RuntimeFn::FastDictGet,
+        "BoundMethod:str:startswith" => RuntimeFn::FastStrStartswith,
+        "BoundMethod:str:upper" => RuntimeFn::FastStrUpper,
+        "BoundMethod:str:lower" => RuntimeFn::FastStrLower,
+        "BoundMethod:str:strip" => RuntimeFn::FastStrStrip,
+        _ => return None,
+    };
+    (runtime.params() == operands).then_some(runtime)
+}
+
 /// The runtime entry a SimpleIR operation executes, decoded once at TIR
 /// ingest (HF-821 B1). A GPU intrinsic names its fixed helper; a call whose
 /// generated role admits a runtime target (`call`), `builtin_func` and
@@ -49,6 +64,9 @@ pub fn gpu_runtime_fn_for_simple_kind(kind: crate::OpKind) -> Option<RuntimeFn> 
 pub fn ingest_runtime_target(op: &crate::OpIR) -> Option<RuntimeFn> {
     if op.callee.is_some() {
         return None;
+    }
+    if op.kind == crate::OpKind::CallMethod {
+        return bound_builtin_method(op.s_value.as_deref()?, op.args.as_deref()?.len());
     }
     if let Some(function) = gpu_runtime_fn_for_simple_kind(op.kind) {
         return Some(function);
@@ -95,6 +113,30 @@ pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {
     op.callee.filter(|_| has_direct_role(op))
 }
 
+fn is_guarded_call(op: &TirOp) -> bool {
+    op.opcode == OpCode::Call && op.origin == Some(crate::OpKind::CallGuarded)
+}
+
+/// The declaration and argument layout validated at a terminal call site.
+/// A guarded candidate still needs its callable even before admission proves
+/// that the compiled target will run.
+pub fn final_call_arguments(
+    op: &TirOp,
+) -> Option<(crate::FunctionId, crate::ir::CompiledCallArguments)> {
+    use crate::ir::CompiledCallArguments;
+    let callee = op.callee?;
+    let count = op.operands.len();
+    let arguments = if is_guarded_call(op) {
+        CompiledCallArguments::Guarded(count)
+    } else if op.opcode == OpCode::DirectCall {
+        CompiledCallArguments::Direct(count)
+    } else {
+        direct_callee(op)?;
+        CompiledCallArguments::Parameters(count)
+    };
+    Some((callee, arguments))
+}
+
 /// A call whose callee and argument binding the program proves: the compiled
 /// function it enters and the operands bound to that function's parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,11 +159,7 @@ pub fn static_call(op: &TirOp) -> Option<StaticCall<'_>> {
             arguments: &op.operands,
         });
     }
-    if op.opcode != OpCode::Call
-        || op.origin != Some(crate::OpKind::CallGuarded)
-        || !op.has_valid_shape()
-        || !op.proven_target()
-    {
+    if !is_guarded_call(op) || !op.has_valid_shape() || !op.proven_target() {
         return None;
     }
     Some(StaticCall {
@@ -390,6 +428,25 @@ mod tests {
     fn ingest_types_runtime_targets_by_role() {
         use crate::OpKind;
         let len = RuntimeFn::Len.symbol();
+        for (hint, arity, expected) in [
+            ("BoundMethod:list:append", 2, RuntimeFn::FastListAppend),
+            ("BoundMethod:dict:get", 3, RuntimeFn::FastDictGet),
+            ("BoundMethod:str:join", 2, RuntimeFn::FastStrJoin),
+            (
+                "BoundMethod:str:startswith",
+                2,
+                RuntimeFn::FastStrStartswith,
+            ),
+            ("BoundMethod:str:upper", 1, RuntimeFn::FastStrUpper),
+            ("BoundMethod:str:lower", 1, RuntimeFn::FastStrLower),
+            ("BoundMethod:str:strip", 1, RuntimeFn::FastStrStrip),
+        ] {
+            let mut method = simple(OpKind::CallMethod, Some(hint));
+            method.args = Some(vec!["arg".into(); arity]);
+            assert_eq!(ingest_runtime_target(&method), Some(expected));
+            method.args.as_mut().unwrap().push("extra".into());
+            assert_eq!(ingest_runtime_target(&method), None);
+        }
         assert_eq!(
             ingest_runtime_target(&simple(OpKind::Call, Some(len))),
             Some(RuntimeFn::Len)

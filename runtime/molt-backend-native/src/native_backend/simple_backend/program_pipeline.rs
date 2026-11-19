@@ -8,13 +8,21 @@ pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
     pub(in crate::native_backend::simple_backend) app_callable_manifest:
         crate::passes::AppCallableManifest,
-    pub(in crate::native_backend::simple_backend) source_callables:
-        molt_tir::trampolines::CallableMetadata,
     pub(in crate::native_backend::simple_backend) final_functions: Option<NativeFinalFunctions>,
 }
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    fn take_app_callable_manifest(&mut self, ir: &SimpleIR) -> crate::passes::AppCallableManifest {
+        if self.emit_app_callable_resolver {
+            self.app_callable_manifest.take().unwrap_or_else(|| {
+                crate::passes::compute_app_callable_manifest_checked(&ir.functions)
+            })
+        } else {
+            self.app_callable_manifest.take().unwrap_or_default()
+        }
+    }
+
     pub(in crate::native_backend::simple_backend) fn prepare_program_for_codegen(
         &mut self,
         ir: &mut SimpleIR,
@@ -26,7 +34,7 @@ impl SimpleBackend {
         // Import bedrock: module init bodies are reachable only through the
         // registry blob's MODULE_INIT_TABLE relocations (no call edges), so
         // the registry's init symbols are dead-function-elimination roots.
-        let module_registry_roots: std::collections::BTreeSet<String> = self
+        let mut module_registry_roots: std::collections::BTreeSet<String> = self
             .module_registry
             .as_ref()
             .map(|registry| registry.init_symbols.iter().cloned().collect())
@@ -47,15 +55,31 @@ impl SimpleBackend {
             }
             step = std::time::Instant::now();
         };
+        if let Some(manifest) = &self.app_callable_manifest {
+            module_registry_roots.extend(manifest.compiled_bodies.iter().cloned());
+        }
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         mark("dead-function elimination", ir.functions.len());
-        // Constructor task facts are immutable typed fields. Capture every
-        // surviving definition and merge the retained source facts after
-        // partitioning; physical symbol spelling carries no authority.
-        let source_callables =
-            molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
+        // Validate source constructor agreement before any partition can hide a conflict.
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
+        // Inlining may erase a descriptor's publisher or move a lookup into
+        // another body. Capture app resolver and embedded GPU identities on
+        // the reachable source graph, where their transport is authoritative.
+        let native_manifest = (!use_llvm).then(|| {
+            let manifest = self.take_app_callable_manifest(ir);
+            if self.emit_app_callable_resolver {
+                module_registry_roots.extend(manifest.compiled_bodies.iter().cloned());
+            } else {
+                for function in &ir.functions {
+                    molt_tir::passes::visit_gpu_descriptor_body_symbols(function, |symbol| {
+                        module_registry_roots.insert(symbol.to_owned());
+                    });
+                }
+            }
+            manifest
+        });
         // One lane target answers every target query below: the Cranelift TIR
         // cache. The TIR pipeline is the one optimizer.
         let lane_target_info = if use_llvm {
@@ -76,7 +100,7 @@ impl SimpleBackend {
         let native_tti = (!use_llvm).then(|| lane_target_info.clone());
         let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
             crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut ir.functions),
+                &ir.functions,
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: native_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
@@ -100,7 +124,7 @@ impl SimpleBackend {
                 ir,
                 cached,
                 target,
-                split_megafunctions,
+                molt_tir::passes::max_function_ops(),
             );
         }
         mark("partition before drops", ir.functions.len());
@@ -116,6 +140,7 @@ impl SimpleBackend {
             }
             .into_iter()
             .collect();
+            let signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
             let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                 &ir.functions,
                 native_cached_tir
@@ -131,7 +156,7 @@ impl SimpleBackend {
                     } else {
                         crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
                     },
-                    linkage: None,
+                    linkage: Some(&signatures),
                 },
             );
             mark("module pipeline", ir.functions.len());
@@ -153,25 +178,12 @@ impl SimpleBackend {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         mark("final functions", ir.functions.len());
-        let final_ir = final_functions
-            .as_ref()
-            .map_or(&*ir, NativeFinalFunctions::ir);
-        if !use_llvm {
-            dump_rewritten_ir_if_requested(&final_ir.functions);
+        if let Some(functions) = &final_functions {
+            dump_rewritten_tir_if_requested(functions.bodies());
         }
-
         let emit_resolver_here = self.emit_app_callable_resolver;
-        let app_callable_manifest = if emit_resolver_here {
-            self.app_callable_manifest.take().unwrap_or_else(|| {
-                // `_checked`: requires the staticlib symbol set (fail-closed)
-                // only when some `molt_`-prefixed callable candidate exists. An
-                // empty module has a necessarily empty manifest and must not
-                // demand a symbol file that is not staged for it.
-                crate::passes::compute_app_callable_manifest_checked(&final_ir.functions)
-            })
-        } else {
-            self.app_callable_manifest.take().unwrap_or_default()
-        };
+        let app_callable_manifest =
+            native_manifest.unwrap_or_else(|| self.take_app_callable_manifest(ir));
         if !self.skip_shared_stdlib_partition {
             if let Some(final_functions) = &mut final_functions {
                 final_functions.externalize_partition(self.skip_ir_passes, &module_registry_roots);
@@ -188,7 +200,6 @@ impl SimpleBackend {
         NativeProgramPipeline {
             emit_resolver_here,
             app_callable_manifest,
-            source_callables,
             final_functions,
         }
     }
@@ -263,36 +274,33 @@ fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
     }
 }
 
-fn dump_rewritten_ir_if_requested(functions: &[FunctionIR]) {
+pub(super) fn dump_rewritten_tir_if_requested<'a>(
+    mut bodies: impl Iterator<Item = &'a crate::tir::TirFunction>,
+) {
     let Ok(requested) = backend_env::var(BackendEnv::MOLT_DUMP_REWRITTEN_FUNC) else {
         return;
     };
-    if let Some(function) = functions.iter().find(|function| function.name == requested) {
-        dump_rewritten_ops(&function.ops);
+    if let Some(function) = bodies.find(|function| function.name == requested) {
+        let _ = std::fs::write("tmp/rewritten_func_ir.txt", rewritten_ir_text(function));
     }
 }
 
-#[cfg(feature = "llvm")]
-pub(super) fn dump_rewritten_tir_if_requested(functions: &[(bool, crate::tir::TirFunction)]) {
-    let Ok(requested) = backend_env::var(BackendEnv::MOLT_DUMP_REWRITTEN_FUNC) else {
-        return;
-    };
-    if let Some((_, function)) = functions
-        .iter()
-        .find(|(_, function)| function.name == requested)
+pub(super) fn rewritten_ir_text(function: &crate::tir::TirFunction) -> String {
+    use molt_ir::tir::op_kinds_generated::opcode_canonical_kind_table;
+    if function
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .any(|op| opcode_canonical_kind_table(op.opcode).is_none())
     {
-        // A requested diagnostic is the only LLVM consumer of this projection;
-        // normal machine emission keeps the final typed body as its sole owner.
-        dump_rewritten_ops(&crate::tir::lower_to_simple::lower_to_simple_ir(function));
+        return crate::tir::printer::print_function(function);
     }
-}
-
-fn dump_rewritten_ops(ops: &[OpIR]) {
+    let ops = crate::tir::lower_to_simple::lower_to_simple_ir(function);
     let mut dump = String::new();
     for (idx, op) in ops.iter().enumerate() {
         let _ = writeln!(dump, "{idx:04}: {:?}", op);
     }
-    let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
+    dump
 }
 
 pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {

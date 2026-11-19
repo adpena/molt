@@ -64,15 +64,9 @@ fn function_op_count(func: &TirFunction) -> usize {
 /// mapping) AND runs no competing automatic temp-refcount mechanism that would
 /// double-release the same values.
 ///
-/// * `Llvm`, `Wasm`, `NativeCranelift` — qualify. LLVM is value-keyed;
-///   WASM has a 1:1 name↔NaN-boxed-local mapping and no tracked-var auto-RC;
-///   native suppresses its automatic temp-RC substrate only on full-function
-///   `drop_inserted` functions; the narrower
-///   `exception_region_drops_inserted` fact protects pre-bail exception releases
-///   without disabling legacy native RC. The native loop-phi
-///   raw/heap representation blocker is pinned by
-///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
-///   plane is now the native RC authority as well.
+/// Cranelift and LLVM lower the final body's explicit SSA ownership
+/// operations. This also covers LLVM's wasm32 target. The carrier plan
+/// preserves a boxed phi when any reachable incoming may hold a heap value.
 ///
 /// Activation reads the target plan's claim rather than a backend list: the
 /// pass runs exactly where the plan claims deterministic Python lifetimes, the
@@ -712,16 +706,8 @@ fn verify_late_lowering_step(
 /// consume its `DecRef`/`IncRef` by SSA-value identity and run no competing
 /// automatic temp-RC mechanism (see [`target_uses_tir_drop_insertion`]):
 ///
-///   * LLVM  — `llvm_backend/lowering.rs` resolves operands by ValueId
-///     (`resolve(id)` → correctly-boxed bits) and has no tracked-var auto-RC.
-///   * WASM  — each SimpleIR name maps 1:1 to a uniformly NaN-boxed wasm local;
-///     no tracked-var auto-RC.
-///   * Native/Cranelift — `function_compiler.rs` carries a value-tracking
-///     automatic temp-RC substrate, suppressed only for full-function
-///     drop-inserted functions by the design-20 §4.1 `drop_inserted`-marker gate
-///     (the ~18 `!drop_inserted` sites in `function_compiler.rs`). The
-///     exception-only pre-bail marker deliberately does not feed those gates.
-///     Activation is the `target_uses_tir_drop_insertion` flip.
+/// Cranelift and LLVM both consume the explicit SSA ownership operations in
+/// the terminal body. LLVM also emits the wasm32 target through this path.
 ///
 /// Reusing a [`PassManager`] here (rather than calling the passes directly) keeps
 /// drop insertion under the SAME analysis-invalidation soundness contract,

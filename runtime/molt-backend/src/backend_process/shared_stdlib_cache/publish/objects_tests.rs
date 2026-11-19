@@ -91,24 +91,6 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     let original = job();
     let original_key = cache.input_key(&original).unwrap();
     let base_context = serde_json::to_value(&original.module_context).unwrap();
-    let changes = [
-        ("function_arities", serde_json::json!({"target": 2})),
-        ("function_has_ret", serde_json::json!({"target": false})),
-        ("closure_functions", serde_json::json!(["target"])),
-        ("task_kinds", serde_json::json!({"target": "Generator"})),
-        ("task_closure_sizes", serde_json::json!({"target": 48})),
-    ];
-    for (field, value) in changes {
-        let mut context = base_context.clone();
-        context[field] = value;
-        let changed =
-            roundtrip(&original).close_dependencies(&serde_json::from_value(context).unwrap());
-        assert_ne!(
-            original_key,
-            cache.input_key(&changed).unwrap(),
-            "missing context key input {field}"
-        );
-    }
     let provider = FunctionIR {
         name: "target".into(),
         params: vec!["arg".into()],
@@ -169,7 +151,7 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         );
     }
     let mut context = base_context;
-    context["function_arities"] = serde_json::json!({"unreferenced_guest": 19});
+    context["function_linkage_abis"] = serde_json::json!({"unreferenced_guest": abi});
     let unrelated =
         roundtrip(&original).close_dependencies(&serde_json::from_value(context).unwrap());
     assert_eq!(original_key, cache.input_key(&unrelated).unwrap());

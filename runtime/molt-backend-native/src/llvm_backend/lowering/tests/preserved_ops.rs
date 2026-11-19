@@ -145,13 +145,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         (OpKind::GuardType, 2, false, None, "molt_guard_type"),
         (OpKind::GuardType, 2, true, None, "molt_guard_type"),
         (
-            OpKind::StatefulLocalsRegister,
-            2,
-            false,
-            Some("gen_fn"),
-            "molt_stateful_locals_register",
-        ),
-        (
             OpKind::FunctionClosureBits,
             1,
             true,
@@ -162,11 +155,7 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
     ];
     for &(kind, nops, with_result, s_value, sym) in cases {
         let ctx = Context::create();
-        let mut backend = make_backend(&ctx);
-        backend.function_linkage_abis.insert(
-            "gen_fn".to_string(),
-            test_native_linkage_abi(vec![], Some(TirType::DynBox)),
-        );
+        let backend = make_backend(&ctx);
         let ir = lower_preserved_kind_ir(&backend, kind, nops, with_result, s_value)
             .unwrap_or_else(|e| {
                 panic!(
@@ -1042,7 +1031,7 @@ fn stateful_locals_registration_preserves_mixed_abi() {
     let kind = OpKind::StatefulLocalsRegister;
     // Real IR registers a task poll entry with no arity claim; the linkage row
     // alone names its one task parameter. A present claim is checked instead.
-    for claimed_arity in [None, Some(1)] {
+    for (claimed_arity, with_result) in [(None, false), (None, true), (Some(1), true)] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         backend.function_linkage_abis.insert(
@@ -1055,28 +1044,33 @@ fn stateful_locals_registration_preserves_mixed_abi() {
             TirType::DynBox,
             molt_ir::FunctionReturnAbi::Value,
         );
-        let result = func.fresh_value();
+        let result = with_result.then(|| func.fresh_value());
+        let poll = backend.function_table.push(&crate::ir::FunctionIR {
+            name: "poll_fn".into(),
+            is_extern: true,
+            ..Default::default()
+        });
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let names = entry.args[0].id;
         let offsets = entry.args[1].id;
         let origin = Some(kind);
-        let mut attrs = AttrDict::from_iter([("s_value".into(), AttrValue::Str("poll_fn".into()))]);
+        let mut attrs = AttrDict::default();
         if let Some(arity) = claimed_arity {
             attrs.insert("value".into(), AttrValue::Int(arity));
         }
         entry.ops.push(TirOp {
             origin,
             runtime: None,
-            callee: None,
+            callee: Some(poll),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![names, offsets],
-            results: vec![result],
+            results: result.into_iter().collect(),
             attrs,
             source_span: None,
         });
         entry.terminator = Terminator::Return {
-            values: vec![result],
+            values: result.into_iter().collect(),
         };
         let ir = try_lower_tir_to_llvm(&func, &backend)
             .expect("generator locals mixed ABI must lower")

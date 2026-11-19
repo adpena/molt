@@ -200,17 +200,22 @@ pub enum OutsideSymbols {
     Keep,
 }
 
+/// Resolve wire and descriptor symbols in the enclosing document's row order.
+pub fn function_ids_by_symbol(functions: &[FunctionIR]) -> HashMap<&str, FunctionId> {
+    functions
+        .iter()
+        .enumerate()
+        .map(|(index, f)| (f.name.as_str(), FunctionId::from_index(index)))
+        .collect()
+}
+
 /// [`resolve_function_references`] with an explicit policy for symbols
 /// outside `functions`.
 pub fn resolve_function_references_in(
     functions: &mut [FunctionIR],
     outside: OutsideSymbols,
 ) -> Result<(), String> {
-    let by_symbol: HashMap<&str, FunctionId> = functions
-        .iter()
-        .enumerate()
-        .map(|(index, f)| (f.name.as_str(), FunctionId::from_index(index)))
-        .collect();
+    let by_symbol = function_ids_by_symbol(functions);
     let mut resolved: Vec<(usize, usize, FunctionId)> = Vec::new();
     for (function_index, function) in functions.iter().enumerate() {
         for (op_index, op) in function.ops.iter().enumerate() {
@@ -223,6 +228,15 @@ pub fn resolve_function_references_in(
                 continue;
             }
             let Some(symbol) = op.s_value.as_deref().filter(|s| !s.is_empty()) else {
+                // A wire direct call always names its target. An optional
+                // function ID means the target may be a runtime import.
+                if role == crate::FunctionReferenceRole::Required || op.kind == crate::OpKind::Call
+                {
+                    return Err(format!(
+                        "{} op#{op_index}: {} missing static target symbol",
+                        function.name, op.kind
+                    ));
+                }
                 continue;
             };
             match by_symbol.get(symbol) {
@@ -257,15 +271,21 @@ pub fn resolve_function_references_in(
 pub fn remap_function_ids(functions: &mut [FunctionIR], map: &[Option<FunctionId>]) {
     for function in functions.iter_mut() {
         for op in &mut function.ops {
-            if let Some(old) = op.callee {
-                op.callee = Some(map.get(old.index()).copied().flatten().unwrap_or_else(|| {
-                    panic!(
-                        "{}: callee FunctionId {} has no row after the transformation",
-                        function.name, old.0
-                    )
-                }));
-            }
+            remap_callee(&mut op.callee, map, &function.name);
         }
+    }
+}
+
+/// Apply a document row transformation to one reference in either transport
+/// or terminal TIR. An omitted target is a producer error in both forms.
+pub fn remap_callee(callee: &mut Option<FunctionId>, map: &[Option<FunctionId>], owner: &str) {
+    if let Some(old) = *callee {
+        *callee = Some(map.get(old.index()).copied().flatten().unwrap_or_else(|| {
+            panic!(
+                "{owner}: callee FunctionId {} has no row after the transformation",
+                old.0
+            )
+        }));
     }
 }
 

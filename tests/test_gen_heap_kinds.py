@@ -18,9 +18,9 @@ def _gen():
 
 def _rust_function(source: str, name: str) -> str:
     """Select one top-level function, not a region ending at its old neighbor."""
-    signature = f"fn {name}("
-    assert source.count(signature) == 1, f"expected one owning function {name}"
-    body = source.split(signature, 1)[1]
+    signatures = list(re.finditer(rf"\bfn {re.escape(name)}(?=[(<])", source))
+    assert len(signatures) == 1, f"expected one owning function {name}"
+    body = source[signatures[0].end() :]
     assert "\n}" in body, f"missing top-level closing brace for {name}"
     return body.split("\n}", 1)[0]
 
@@ -571,11 +571,15 @@ def test_terminal_dealloc_has_one_detach_authority_and_no_release_switch() -> No
     source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
         encoding="utf-8"
     )
-    terminal = source.split("let (terminal_edge_count, terminal_resource_count) =", 1)[
-        1
-    ].split("release_ptr(ptr);", 1)[0]
-    assert "terminal_detach_capacity(py, ptr)" in terminal
-    assert "detach_terminal_owned_edges(py, ptr" in terminal
+    terminal = source.split("let class_edge = match retirement {", 1)[1].split(
+        "release_ptr(ptr);", 1
+    )[0]
+    assert terminal.count("detach_terminal_owned_edges(py, ptr") == 1
+    assert "TerminalRetirement::ReleaseInPlace =>" in terminal
+    assert "heap_lifecycle::release_owned_in_place(py, ptr)" in terminal
+    assert terminal.index(
+        "if retirement == heap_lifecycle::TerminalRetirement::Detach"
+    ) < terminal.index("detach_terminal_owned_edges")
     assert terminal.index("detach_terminal_owned_edges") < terminal.index(
         "terminal_edges.release_all(py)"
     )
@@ -790,13 +794,9 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
         encoding="utf-8"
     )
     arena = (ROOT / "runtime/molt-runtime/src/arena.rs").read_text(encoding="utf-8")
-    cranelift = (
-        ROOT
-        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/memory.rs"
-    ).read_text(encoding="utf-8")
-    llvm = (
-        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs"
-    ).read_text(encoding="utf-8")
+    walker = (ROOT / "runtime/molt-backend-native/src/codegen_ssa/direct.rs").read_text(
+        encoding="utf-8"
+    )
     wasm_manifest = (ROOT / "runtime/runtime_abi.toml").read_text(encoding="utf-8")
 
     assert builders.count("alloc_object_zeroed_unpublished_with_aux(") >= 2
@@ -833,8 +833,12 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "gc_publish_initialized" not in scoped_allocator
     assert "gc_mark_unpublished" not in scoped_allocator
     assert "gc_mark_unpublished" not in arena
-    assert cranelift.count("RuntimeFn::ObjectPublishInitialized") >= 2
-    assert "ensure_runtime_import(RuntimeFn::ObjectPublishInitialized)" in llvm
+    allocation = walker.split(" fn alloc_op(", 1)[1].split("\n    }", 1)[0]
+    assert (
+        allocation.index("RuntimeFn::Alloc,")
+        < allocation.index("RuntimeFn::ObjectPublishInitialized")
+        < allocation.index("self.bind(")
+    )
     assert 'runtime_name = "molt_object_publish_initialized"' in wasm_manifest
 
 

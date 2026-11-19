@@ -1818,3 +1818,144 @@ fn a_raw_int_meets_a_boxed_block_argument_on_its_own_edge() {
     // A second run finds nothing left to box.
     assert_eq!(super::box_raw_edge_args(&mut func), 0);
 }
+
+#[test]
+fn a_static_call_only_enters_or_adopts_arguments_on_the_admitted_path() {
+    for origin in [molt_ir::OpKind::Call, molt_ir::OpKind::CallInternal] {
+        let (mut func, result) = guarded_call(true);
+        let entry = func.entry_block;
+        let target = molt_ir::FunctionId(9);
+        let call = &mut func.blocks.get_mut(&entry).unwrap().ops[0];
+        call.origin = Some(origin);
+        call.callee = Some(target);
+        let mut leaf = molt_ir::FunctionSet::default();
+        leaf.insert(target);
+        assert!(!super::charge_static_calls(&mut func, &leaf));
+        assert!(super::charge_static_calls(&mut func, &Default::default()));
+        assert_valid(&func);
+        let Terminator::CondBranch {
+            cond,
+            then_block,
+            else_block,
+            ..
+        } = &func.blocks[&entry].terminator
+        else {
+            panic!("a non-leaf static call must test the limit");
+        };
+        let check = &func.blocks[&entry].ops;
+        assert_eq!(check.len(), 1);
+        assert_eq!(
+            (check[0].opcode, check[0].results.as_slice()),
+            (OpCode::RecursionAdmits, std::slice::from_ref(cond))
+        );
+        let entered = &func.blocks[then_block];
+        assert_eq!(
+            entered.ops.iter().map(|op| op.opcode).collect::<Vec<_>>(),
+            [
+                OpCode::RecursionCount,
+                OpCode::Call,
+                OpCode::RecursionRelease
+            ]
+        );
+        assert_eq!(entered.ops[1].callee, Some(target));
+        assert_eq!(
+            entered.ops[1].argument_custody().unwrap(),
+            [crate::ir::ParameterCustody::Transferred; 2]
+        );
+        assert!(
+            matches!(&entered.terminator, Terminator::Return { values } if values == &[result])
+        );
+        let refused = &func.blocks[else_block];
+        assert_eq!(refused.ops.len(), 1);
+        assert_eq!(refused.ops[0].runtime, Some(RuntimeFn::RaiseRecursionError));
+        assert!(refused.ops[0].results.is_empty());
+        assert!(matches!(&refused.terminator, Terminator::Return { values } if values.is_empty()));
+    }
+}
+
+#[test]
+fn direct_closure_call_takes_the_capture_on_its_reaching_edge() {
+    use crate::tir::blocks::TirBlock;
+    use molt_ir::ParameterCustody::{Borrowed, Transferred};
+    let mut f = TirFunction::new(
+        "outer".into(),
+        vec![TirType::Bool, TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = f.entry_block;
+    let left = f.fresh_block();
+    let right = f.fresh_block();
+    let join = f.fresh_block();
+    let target = molt_ir::FunctionId(0);
+    f.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    for (branch, capture) in [(left, ValueId(1)), (right, ValueId(2))] {
+        let callable = super::fresh_typed(&mut f, TirType::DynBox);
+        let mut constructor = TirOp::new(OpCode::Copy, vec![capture], vec![callable]);
+        constructor.origin = Some(molt_ir::OpKind::FuncNewClosure);
+        constructor.callee = Some(target);
+        f.blocks.insert(
+            branch,
+            TirBlock {
+                id: branch,
+                args: vec![],
+                ops: vec![constructor],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+    }
+    let result = super::fresh_typed(&mut f, TirType::DynBox);
+    // The user argument always reads parameter 1, even when the environment
+    // comes from parameter 2 on the other arm.
+    let mut call = TirOp::new(OpCode::Call, vec![ValueId(1)], vec![result]);
+    call.callee = Some(target);
+    call.set_argument_custody(&[Transferred]);
+    f.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![call],
+            terminator: Terminator::Return {
+                values: vec![result],
+            },
+        },
+    );
+    let signature = crate::ir::ExternFunctionSignature {
+        arity: 2,
+        has_closure: true,
+        returns_value: true,
+        execution_context: Default::default(),
+    };
+    assert!(super::lower_static_call_arguments(
+        &mut f,
+        molt_ir::FunctionId(1),
+        &[signature]
+    ));
+    assert_valid(&f);
+    let merged = f.blocks[&join].args[0].id;
+    assert_eq!(f.blocks[&join].ops[0].operands, [merged, ValueId(1)]);
+    assert_eq!(
+        f.blocks[&join].ops[0].argument_custody().unwrap(),
+        [Borrowed, Transferred]
+    );
+    for (branch, capture) in [(left, ValueId(1)), (right, ValueId(2))] {
+        let body = &f.blocks[&branch];
+        let Terminator::Branch { target, args } = &body.terminator else {
+            panic!("expected join edge")
+        };
+        assert_eq!(*target, join);
+        let definition = body.ops.iter().find(|op| op.results == *args).unwrap();
+        assert_eq!((definition.opcode, definition.origin), (OpCode::Copy, None));
+        assert_eq!(definition.operands, [capture]);
+    }
+}

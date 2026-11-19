@@ -28,18 +28,9 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         "compiler_fingerprint": "test", "target_triple": null,
     })
     .to_string();
-    // The main application object emits the per-app callable resolver, which
-    // requires the linked runtime staticlib's `molt_*` callable-symbol set
-    // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
-    // exposes this before native codegen; replicate that precondition through
-    // the daemon's env-passthrough so this test exercises the real resolver
-    // path instead of hitting the fail-closed guard. These IR functions take
-    // no callable addresses (no candidate ops), so the resolved manifest is
-    // empty regardless; the file just satisfies the required-symbol-set
-    // contract with the symbols this object actually references.
     let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
-    std::fs::write(&runtime_symbols, "molt_init_sys\nmolt_main\n")
-        .expect("write runtime callable symbol set");
+    let runtime_digest =
+        calling_program::write_symbols(&runtime_symbols, &["molt_init_sys", "molt_main"]);
     let mut request_json = serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "config_digest": "daemon-test",
@@ -50,7 +41,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "MOLT_STDLIB_CACHE_MANIFEST": manifest,
             "MOLT_STDLIB_MODULES": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
-            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": runtime_digest,
         },
         "jobs": [{
             "id": "job0",
@@ -421,8 +412,8 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
     })
     .to_string();
     let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
-    std::fs::write(&runtime_symbols, "molt_init_sys\nmolt_main\n")
-        .expect("write runtime callable symbol set");
+    let runtime_digest =
+        calling_program::write_symbols(&runtime_symbols, &["molt_init_sys", "molt_main"]);
     let request = |index: usize| {
         serde_json::json!({
             "version": BACKEND_DAEMON_PROTOCOL_VERSION,
@@ -435,7 +426,7 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
                 "MOLT_STDLIB_CACHE_MANIFEST": manifest,
                 "MOLT_STDLIB_MODULES": "[\"sys\"]",
                 "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
-                "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
+                "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": runtime_digest,
             },
             "jobs": [{
                 "id": format!("job{index}"),

@@ -3,7 +3,6 @@ use crate::SimpleIR;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::{FunctionId, FunctionSet, FunctionTable};
 
-use molt_ir::deterministic_hash::HashMap;
 use std::collections::{BTreeSet, VecDeque};
 
 /// Exact executable symbol references carried by a function: the linker
@@ -72,6 +71,29 @@ pub fn reachable_functions(
     functions: &[crate::FunctionIR],
     extra_roots: &BTreeSet<String>,
 ) -> FunctionSet {
+    let mut symbols = None;
+    reachable_with_callees(functions, extra_roots, |id, visit| {
+        let function = &functions[id.index()];
+        for target in function.ops.iter().filter_map(|op| op.callee) {
+            visit(target);
+        }
+        super::app_callable_manifest::visit_gpu_descriptor_body_symbols(function, |symbol| {
+            let by_symbol = symbols
+                .get_or_insert_with(|| molt_ir::function_table::function_ids_by_symbol(functions));
+            if let Some(&id) = by_symbol.get(symbol) {
+                visit(id);
+            }
+        });
+    })
+}
+
+/// A native terminal module supplies its final SSA call edges. Named registry
+/// and descriptor roots have already been captured before source retirement.
+pub fn reachable_with_callees(
+    functions: &[crate::FunctionIR],
+    extra_roots: &BTreeSet<String>,
+    mut callees: impl FnMut(FunctionId, &mut dyn FnMut(FunctionId)),
+) -> FunctionSet {
     let mut reachable = FunctionSet::with_capacity(functions.len());
     if backend_env::var(BackendEnv::MOLT_DISABLE_DEAD_FUNC_ELIM).is_ok() {
         for index in 0..functions.len() {
@@ -82,14 +104,6 @@ pub fn reachable_functions(
     if functions.is_empty() {
         return reachable;
     }
-    // GPU descriptors embed body symbols in a constant string; only they need
-    // the symbol index.
-    let by_symbol: HashMap<&str, FunctionId> = functions
-        .iter()
-        .enumerate()
-        .map(|(index, function)| (&*function.name, FunctionId::from_index(index)))
-        .collect();
-
     // Roots: (1) the first function (entry), (2) protected runtime entry
     // points and registry roots, by their linker symbols.
     let mut queue: VecDeque<FunctionId> = VecDeque::new();
@@ -109,18 +123,9 @@ pub fn reachable_functions(
         }
     }
     while let Some(current) = queue.pop_front() {
-        let function = &functions[current.index()];
-        let mut targets: Vec<FunctionId> = function.ops.iter().filter_map(|op| op.callee).collect();
-        super::app_callable_manifest::visit_gpu_descriptor_body_symbols(function, |symbol| {
-            if let Some(&id) = by_symbol.get(symbol) {
-                targets.push(id);
-            }
+        callees(current, &mut |target| {
+            seed(target, &mut reachable, &mut queue)
         });
-        for target in targets {
-            if reachable.insert(target) {
-                queue.push_back(target);
-            }
-        }
     }
     reachable
 }

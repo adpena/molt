@@ -90,7 +90,6 @@ fn partition_functions_for_batches_respects_count_budget() {
 #[test]
 fn native_application_archive_publication_failure_cleans_batches() {
     let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
-    unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1") };
     let temp_root = std::env::temp_dir();
     let prefix = format!("molt_batch_{}_", std::process::id());
     let batch_dirs = || {
@@ -102,6 +101,10 @@ fn native_application_archive_publication_failure_cleans_batches() {
     };
     let before = batch_dirs();
     let directory = native_artifact_test_directory("publication-failure");
+    let _scope = calling_program_scope(
+        &directory,
+        serde_json::json!({"MOLT_BACKEND_BATCH_SIZE": "1"}),
+    );
     let output = directory.join("blocked.a");
     std::fs::create_dir(&output).expect("create blocking directory");
     let error = compile_native_application_artifact_to_path(
@@ -129,11 +132,11 @@ fn native_application_archive_publication_failure_cleans_batches() {
 #[test]
 fn native_archive_honors_batch_budget_while_object_is_one_relocatable() {
     let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
-    unsafe {
-        std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "64");
-        std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "1");
-    }
     let directory = native_artifact_test_directory("output-kinds");
+    let _scope = calling_program_scope(
+        &directory,
+        serde_json::json!({"MOLT_BACKEND_BATCH_SIZE": "64", "MOLT_BACKEND_BATCH_OP_BUDGET": "1"}),
+    );
     for kind in [NativeArtifactKind::Object, NativeArtifactKind::Archive] {
         let output = directory.join(if kind == NativeArtifactKind::Object {
             "output.o"

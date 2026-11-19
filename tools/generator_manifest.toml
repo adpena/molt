@@ -679,7 +679,6 @@ outputs = [
   "runtime/molt-stdlib-text/src/attached_exports_generated/unicodedata_mod.rs",
   "runtime/molt-codegen-abi/src/attached_context_generated.rs",
   "runtime/molt-codegen-abi/src/runtime_callables_generated.rs",
-  "runtime/molt-backend-native/src/exception_observer_abi.rs",
   "runtime/molt-wasm-facts/src/execution_manifest_generated.rs",
   "runtime/molt-ir/src/python_builtin_callables_generated.rs",
   "runtime/molt-ir/src/runtime_callable_abi_generated.rs",
