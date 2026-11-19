@@ -795,10 +795,13 @@ def checkout_state_environment_roots(
         # An explicit WASI SDK selection is a toolchain root like a
         # provisioned one: its readers stamp its use (toolchain_state_use), so
         # its control files belong to this environment's declared state.
-        from .llvm_toolchain import selected_wasi_sdk_prefix
+        from .default_paths import explicit_wasi_sdk_prefix
 
-        sdk = selected_wasi_sdk_prefix(source_root, environ=environment, cwd=working)
-        if (toolchain_root := _toolchain_owner_root(sdk)) is not None:
+        sdk = explicit_wasi_sdk_prefix(environment, cwd=working)
+        if (
+            sdk is not None
+            and (toolchain_root := _toolchain_owner_root(sdk)) is not None
+        ):
             roots.setdefault(sdk, CheckoutOwner(toolchain_root, "toolchains"))
     import sys
 

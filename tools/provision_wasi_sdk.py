@@ -46,11 +46,11 @@ from molt.portable_paths import (  # noqa: E402
 from molt.tool_releases import DOWNLOADS_DIRNAME  # noqa: E402
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
+from molt.default_paths import SDK_DIRNAME  # noqa: E402
 from molt.wasi_sdk_identity import (  # noqa: E402
     INSTALL_RECEIPT_FILENAME,
     MAX_TREE_BYTES,
     MAX_TREE_ENTRIES,
-    SDK_DIRNAME,
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,
 )

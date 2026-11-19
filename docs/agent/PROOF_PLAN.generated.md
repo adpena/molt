@@ -15,7 +15,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Metric | Before report 001 | Current |
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
-| CI selection families | 5 | 13 |
+| CI selection families | 5 | 14 |
 | Hashed executable authority inputs | 1 | 413 |
 | Local path rules | 35 | 84 |
 | Unique local commands | 73 | 82 |
@@ -38,6 +38,7 @@ Installed Python custody uses 12 bounded hash workers over deterministic coarse 
 | `python-static` | 1 |
 | `python-tests` | 2 |
 | `repository-policy` | 4 |
+| `repository-tests` | 1 |
 | `scheduled-suite` | 4 |
 | `wasm-runtime` | 2 |
 
@@ -45,7 +46,8 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 240 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2520 s | 120 s | 960 s | `repository-policy` | none | `docs-gates` needs none | 35 |
+| `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 209 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 57 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -82,6 +84,7 @@ Scheduled workflows and farm runs consume the same typed command DAG and receipt
 | Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |
 |---|---|---|---|---|---|---|---|
 | `linux-x86_64-py312-repository-policy` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `repository` | `host` | `policy` |
+| `linux-x86_64-py312-repository-tests` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `repository` | `host` | `test` |
 | `linux-x86_64-py312-wasm-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `dev-fast` |
 | `linux-x86_64-py312-wasm-release` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `wasm-release` |
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
@@ -247,8 +250,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
 | `repository.perf-methodology` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 60 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 6 |
-| `repository.tooling-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
+| `repository.docs-tests` | `repository_tests` | `linux-x86_64-py312-repository-tests` | `explicit` | 900 s | `repository-tests` | 0 |
+| `repository.tooling-tests` | `repository_tests` | `linux-x86_64-py312-repository-tests` | `explicit` | 900 s | `repository-tests` | 0 |
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.build.native-backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
