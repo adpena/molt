@@ -1,8 +1,10 @@
 //! The walker's callable family (design: `docs/design/foundation/codegen_walker.md`,
 //! W2): the callable ops that are runtime calls, and function construction
-//! (`builtin_func`, `func_new`, `func_new_closure`) with the callable
-//! trampoline as a helper body, written once for every native backend.
+//! (`builtin_func`, `func_new`, `func_new_closure`) with the callable and
+//! task trampolines as helper bodies, written once for every native backend.
+//! `callable_preserved_op` is the family's table for preserved `Copy` ops.
 
+use molt_codegen_abi::task_site::TaskConstructorLayout;
 use molt_ir::OpKind;
 use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
@@ -11,16 +13,18 @@ use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 use super::builder::{CodegenBuilder, HelperBody, MachineKind};
 use super::custody::{CallTarget, RuntimeArg, release_call_inputs};
 use super::function::{FunctionCx, ResultCustody};
+use super::task::{TaskPlacement, task_trampoline_word};
 use super::value_table::HeldCarrier;
 use super::{control, scalar};
 use crate::ir::ParameterCustody;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::types::TirType;
+use molt_tir::trampolines::TrampolineTaskKind;
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// A preserved callable op that is a runtime call: `function_closure_bits`,
-    /// `asyncgen_new`, `code_slot_set`, `code_slots_init`, `callargs_new` and
-    /// the `line` marker. Answers false for any other kind, or for a
+    /// `asyncgen_new`, `code_slot_set`, `code_slots_init`, `callargs_new`,
+    /// `locals()` and its setter, and the `line` marker. Answers false for any other kind, or for a
     /// malformed op the caller then refuses.
     pub(crate) fn callable_runtime_op(&mut self, b: &mut B, op: &TirOp, kind: OpKind) -> bool {
         let unary = |op: &TirOp| op.operands.len() == 1 && op.results.len() <= 1;
@@ -90,10 +94,52 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 b.set_name(builder, "callargs_new");
                 self.bind_owned(b, op, builder);
             }
+            // `locals()`: the runtime is the one authority over the executing
+            // frame's bindings.
+            OpKind::FrameLocals if op.operands.is_empty() => self.borrowed_call(
+                b,
+                op,
+                RuntimeFn::LocalsBuiltin,
+                &[],
+                ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                "frame_locals",
+            ),
+            OpKind::FrameLocalsSet if op.operands.len() == 1 => self.borrowed_call(
+                b,
+                op,
+                RuntimeFn::FrameLocalsSet,
+                &[RuntimeArg::Operand(op.operands[0])],
+                ResultCustody::SideEffect,
+                "frame_locals_set",
+            ),
+            OpKind::FrameLocals | OpKind::FrameLocalsSet => return false,
+            // A statement marker: it emits no code. Tracebacks read the
+            // location `frame_set_location` publishes before each raising op.
             OpKind::Line => {}
             _ => return false,
         }
         true
+    }
+
+    /// A preserved callable op: a `Copy` whose origin names a callable
+    /// protocol with its own lowering. Answers false for a kind this family
+    /// does not own (the frame family's homes, entry and exit), or for a
+    /// malformed op the caller then refuses.
+    pub(crate) fn callable_preserved_op(&mut self, b: &mut B, op: &TirOp, kind: OpKind) -> bool {
+        match kind {
+            OpKind::FunctionClosureBits
+            | OpKind::AsyncgenNew
+            | OpKind::CodeSlotSet
+            | OpKind::CodeSlotsInit
+            | OpKind::CallargsNew
+            | OpKind::FrameLocals
+            | OpKind::FrameLocalsSet
+            | OpKind::Line => self.callable_runtime_op(b, op, kind),
+            OpKind::BuiltinFunc | OpKind::FuncNew | OpKind::FuncNewClosure => {
+                self.function_construction_op(b, op, kind)
+            }
+            _ => false,
+        }
     }
 
     /// One borrowed runtime call of `function` over `args`, bound by
@@ -161,7 +207,7 @@ impl Trampoline<'_> {
 }
 
 impl HelperBody for Trampoline<'_> {
-    fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word {
+    fn build<H: TaskPlacement>(&self, h: &mut H, params: &[H::Word]) -> H::Word {
         let &[closure, argv, _argc] = params else {
             panic!("a callable trampoline takes (closure, argv, argc)")
         };
@@ -227,6 +273,101 @@ pub(crate) fn plain_trampoline<B: CodegenBuilder>(
     )
 }
 
+/// The entry the runtime calls a task constructor through: `(closure, argv,
+/// argc)` after the execution context, like any callable trampoline. It
+/// allocates the task its typed metadata selects, with the poll's frame
+/// size, and retains each argument into it (`task::task_trampoline_word`).
+/// Python constructor arguments and the poll's one raw frame parameter are
+/// different ABIs; the shared task kind and layout own that distinction.
+struct TaskTrampoline<'a> {
+    /// The poll: a compiled function of one frame parameter.
+    symbol: &'a str,
+    abi: &'a NativeFunctionLinkageAbi,
+    kind: TrampolineTaskKind,
+    layout: TaskConstructorLayout,
+    closure_size: i64,
+    arity: usize,
+    has_closure: bool,
+}
+
+impl<'a> TaskTrampoline<'a> {
+    /// The task trampoline `op` constructs through, from its typed task
+    /// metadata; `None` for a plain callable. Partial metadata, an unknown
+    /// kind or a closure size its layout refuses is a compiler error.
+    fn of(
+        op: &TirOp,
+        symbol: &'a str,
+        abi: &'a NativeFunctionLinkageAbi,
+        arity: usize,
+        has_closure: bool,
+    ) -> Option<Self> {
+        if !op.attrs.contains_key("task_kind") && !op.attrs.contains_key("task_closure_size") {
+            return None;
+        }
+        let (kind, closure_size) =
+            match (op.attrs.get("task_kind"), op.attrs.get("task_closure_size")) {
+                (Some(AttrValue::Str(kind)), Some(AttrValue::Int(size))) => (
+                    TrampolineTaskKind::from_constructor_kind(kind).unwrap_or_else(|| {
+                        panic!("unknown callable task_kind `{kind}` for {symbol}")
+                    }),
+                    *size,
+                ),
+                _ => panic!(
+                    "{symbol} requires complete callable task_kind and task_closure_size metadata"
+                ),
+            };
+        let layout = crate::trampoline_task_layout(kind);
+        layout.validate_closure_size(
+            closure_size,
+            arity,
+            has_closure,
+            crate::GENERATOR_CONTROL_BYTES,
+        );
+        Some(Self {
+            symbol,
+            abi,
+            kind,
+            layout,
+            closure_size,
+            arity,
+            has_closure,
+        })
+    }
+
+    /// The helper's name: one per poll, arity, closure shape, task kind and
+    /// closure size.
+    fn name(&self) -> String {
+        format!(
+            "{}__molt_task_trampoline_{}_{}{}_{}",
+            self.symbol,
+            self.arity,
+            usize::from(self.has_closure),
+            self.kind.trampoline_kind().symbol_suffix(),
+            self.closure_size,
+        )
+    }
+}
+
+impl HelperBody for TaskTrampoline<'_> {
+    fn build<H: TaskPlacement>(&self, h: &mut H, params: &[H::Word]) -> H::Word {
+        let &[closure, arguments, _argc] = params else {
+            panic!("a task trampoline takes (closure, argv, argc)")
+        };
+        let poll = h.function_callee(self.symbol, self.abi);
+        let poll = h.function_address(poll);
+        let frame_bytes = h.poll_frame_bytes(self.symbol);
+        task_trampoline_word(
+            h,
+            self.layout,
+            poll,
+            frame_bytes,
+            self.has_closure.then_some(closure),
+            arguments,
+            self.arity,
+        )
+    }
+}
+
 /// The integer attribute `value` (a construction's Python arity), or 0.
 fn arity_attr(op: &TirOp) -> usize {
     match op.attrs.get("value") {
@@ -239,21 +380,14 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// Function construction: `builtin_func` (a runtime callable),
     /// `func_new` and `func_new_closure` (a compiled function). Each passes
     /// the target's code address, its trampoline's and the arity to the
-    /// runtime constructor. A task constructor's target and task trampoline
-    /// come from the backend as `task_entry` (the switch lane owns the task
-    /// trampoline); every other trampoline is a walker helper body. Answers
-    /// false for a malformed op the caller then refuses.
-    pub(crate) fn function_construction_op(
-        &mut self,
-        b: &mut B,
-        op: &TirOp,
-        kind: OpKind,
-        task_entry: Option<(B::Callee, B::Callee)>,
-    ) -> bool {
+    /// runtime constructor. Every trampoline, a task constructor's too, is a
+    /// walker helper body. Answers false for a malformed op the caller then
+    /// refuses.
+    pub(crate) fn function_construction_op(&mut self, b: &mut B, op: &TirOp, kind: OpKind) -> bool {
         match kind {
             OpKind::BuiltinFunc => self.builtin_function(b, op),
             OpKind::FuncNew | OpKind::FuncNewClosure => {
-                self.compiled_function(b, op, kind == OpKind::FuncNewClosure, task_entry)
+                self.compiled_function(b, op, kind == OpKind::FuncNewClosure)
             }
             _ => false,
         }
@@ -334,13 +468,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// `func_new` and `func_new_closure`: the closure object is borrowed
     /// (the function retains it); code addresses, the arity and the entry
     /// custody are raw ABI words.
-    fn compiled_function(
-        &mut self,
-        b: &mut B,
-        op: &TirOp,
-        has_closure: bool,
-        task_entry: Option<(B::Callee, B::Callee)>,
-    ) -> bool {
+    fn compiled_function(&mut self, b: &mut B, op: &TirOp, has_closure: bool) -> bool {
         let symbol = match op.callee {
             Some(callee) => self.functions.symbol(callee).to_owned(),
             None => match op.attrs.get("s_value") {
@@ -354,17 +482,28 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             (true, None) => return false,
             (false, _) => None,
         };
-        let (target, trampoline, custody) = match task_entry {
+        let Some(abi) = self.linkage.get(&symbol) else {
+            self.fatal(format!(
+                "function symbol `{symbol}` has no exact native linkage ABI; refusing to invent one"
+            ));
+            return true;
+        };
+        let task = TaskTrampoline::of(op, &symbol, abi, arity, has_closure);
+        let (target, trampoline, custody) = match task {
             // A task constructor's arguments enter through its task
             // trampoline, which retains each into the new task: it borrows.
-            Some((poll, trampoline)) => (poll, trampoline, 0),
+            // Its target is the poll, whose one parameter is the task's frame.
+            Some(task) => {
+                assert_eq!(
+                    abi.param_types.len(),
+                    1,
+                    "task poll `{symbol}` takes its frame alone"
+                );
+                let poll = b.function_callee(&symbol, abi);
+                let trampoline = b.define_helper(&task.name(), 3, &task);
+                (poll, trampoline, 0)
+            }
             None => {
-                let Some(abi) = self.linkage.get(&symbol) else {
-                    self.fatal(format!(
-                        "function symbol `{symbol}` has no exact native linkage ABI; refusing to invent one"
-                    ));
-                    return true;
-                };
                 assert_eq!(
                     arity + usize::from(has_closure),
                     abi.param_types.len(),
@@ -524,6 +663,84 @@ mod tests {
         assert!(run.runtime_calls.is_empty());
         let run = lower(OpKind::FuncNew);
         assert_eq!(run.fact, (false, None));
+        // The frame family's homes, entry and exit are not this family's.
+        for kind in [
+            OpKind::FrameHomeLoad,
+            OpKind::TraceEnterSlot,
+            OpKind::ListNew,
+        ] {
+            assert_eq!(lower(kind).fact, (false, None), "{kind}");
+        }
+    }
+
+    /// The preserved op `kind` through the family's table, over `operands`
+    /// boxed %0.. and with result %9 when `result`.
+    fn preserved(kind: OpKind, operands: usize, result: bool) -> Run<bool> {
+        let op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: (0..operands as u32).map(ValueId).collect(),
+            results: if result { vec![ValueId(9)] } else { vec![] },
+            attrs: AttrDict::default(),
+            source_span: None,
+            origin: Some(kind),
+            runtime: None,
+            callee: None,
+        };
+        let lowering = kernel!(kind: OpKind = kind, op: TirOp = op; |b, inputs| -> bool {
+            let func = TirFunction::new(
+                "callable".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(10);
+            for (index, &input) in inputs.iter().enumerate() {
+                values.set_value(ValueId(index as u32), input);
+                values.set_repr(ValueId(index as u32), HeldCarrier::Boxed);
+            }
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &Cell::new(0),
+            };
+            let lowered = cx.callable_preserved_op(b, op, *kind);
+            assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
+            let results = cx.values.value(ValueId(9)).into_iter().collect();
+            (lowered, results)
+        });
+        let inputs: Vec<Value> = (0..operands).map(|_| Value::Word(OBJECT)).collect();
+        both(&lowering, &inputs)
+    }
+
+    #[test]
+    fn locals_reads_and_replaces_the_frame_bindings_through_the_runtime() {
+        let run = preserved(OpKind::FrameLocals, 0, true);
+        assert!(run.fact);
+        assert_eq!(run.runtime_calls, [RuntimeFn::LocalsBuiltin]);
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(RuntimeFn::LocalsBuiltin, &[]))]
+        );
+        // The owned mapping binds as is: no retain.
+        assert!(run.refcounts.is_empty());
+        let run = preserved(OpKind::FrameLocalsSet, 1, false);
+        assert!(run.fact);
+        assert_eq!(run.runtime_calls, [RuntimeFn::FrameLocalsSet]);
+        assert!(run.results.is_empty());
+        // A malformed op is refused before any code.
+        for (kind, operands) in [(OpKind::FrameLocals, 1), (OpKind::FrameLocalsSet, 0)] {
+            let run = preserved(kind, operands, false);
+            assert!(!run.fact, "{kind}");
+            assert!(run.runtime_calls.is_empty());
+        }
     }
 
     /// A function construction of `kind` (`s_value` = `symbol`, `value` =
@@ -578,7 +795,7 @@ mod tests {
                 functions: &Default::default(),
                 call_sites: &Cell::new(0),
             };
-            let lowered = cx.function_construction_op(b, op, *kind, None);
+            let lowered = cx.callable_preserved_op(b, op, *kind);
             let results = cx.values.value(ValueId(9)).into_iter().collect();
             ((lowered, diagnostics.borrow().clone()), results)
         });

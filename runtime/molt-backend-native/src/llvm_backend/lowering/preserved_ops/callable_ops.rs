@@ -1,6 +1,5 @@
 use super::*;
 use molt_ir::OpKind;
-use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
 // steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
@@ -50,43 +49,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
-        if matches!(
-            kind,
-            OpKind::FunctionClosureBits
-                | OpKind::AsyncgenNew
-                | OpKind::CodeSlotSet
-                | OpKind::CodeSlotsInit
-                | OpKind::CallargsNew
-                | OpKind::Line
-        ) {
-            let mut lowered = false;
-            self.walker_op(|cx, b| lowered = cx.callable_runtime_op(b, op, kind));
-            return lowered;
-        }
         match kind {
-            OpKind::BuiltinFunc | OpKind::FuncNew | OpKind::FuncNewClosure => {
-                // A task constructor's target and task trampoline are the
-                // switch lane's (`ensure_callable_target`); the walker builds
-                // everything else.
-                let task_entry = if op.attrs.contains_key("task_kind")
-                    || op.attrs.contains_key("task_closure_size")
-                {
-                    let Some(symbol) = self.callee_symbol(op) else {
-                        return false;
-                    };
-                    let arity = match op.attrs.get("value") {
-                        Some(AttrValue::Int(value)) => usize::try_from(*value).unwrap_or(0),
-                        _ => 0,
-                    };
-                    let has_closure = kind == OpKind::FuncNewClosure;
-                    Some(self.ensure_callable_target(op, &symbol, arity, has_closure))
-                } else {
-                    None
-                };
+            OpKind::BuiltinFunc
+            | OpKind::FuncNew
+            | OpKind::FuncNewClosure
+            | OpKind::FunctionClosureBits
+            | OpKind::AsyncgenNew
+            | OpKind::CodeSlotSet
+            | OpKind::CodeSlotsInit
+            | OpKind::CallargsNew
+            | OpKind::FrameLocals
+            | OpKind::FrameLocalsSet
+            | OpKind::Line => {
                 let mut lowered = false;
-                self.walker_op(|cx, b| {
-                    lowered = cx.function_construction_op(b, op, kind, task_entry);
-                });
+                self.walker_op(|cx, b| lowered = cx.callable_preserved_op(b, op, kind));
                 lowered
             }
             OpKind::TraceEnterSlot => {
@@ -112,35 +88,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             | OpKind::FrameSetLocation => {
                 let (mut cx, mut b) = self.walker();
                 cx.frame_home_op(&mut b, op)
-            }
-            OpKind::FrameLocals => {
-                // `locals()`: the runtime's one authority over the executing
-                // frame.
-                let locals_fn = self.ensure_runtime_import(RuntimeFn::LocalsBuiltin);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    locals_fn,
-                    &[],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind.as_str(),
-                    "frame_locals",
-                );
-                true
-            }
-            OpKind::FrameLocalsSet => {
-                let Some(&dict_id) = op.operands.first() else {
-                    return false;
-                };
-                let frame_locals_fn = self.ensure_runtime_import(RuntimeFn::FrameLocalsSet);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    frame_locals_fn,
-                    &[RuntimeArg::Operand(dict_id)],
-                    ResultCustody::SideEffect,
-                    kind.as_str(),
-                    "frame_locals_set",
-                );
-                true
             }
             // A statement marker: it emits no code. Tracebacks read the
             // location that `frame_set_location` publishes before each

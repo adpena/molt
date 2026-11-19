@@ -93,8 +93,6 @@ pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
 mod constant_ops;
 #[cfg(feature = "llvm")]
-mod container_ops;
-#[cfg(feature = "llvm")]
 mod field_slot;
 #[cfg(feature = "llvm")]
 mod frame_record;
@@ -102,7 +100,6 @@ mod global_slot;
 mod list_item;
 #[cfg(feature = "llvm")]
 mod method_site;
-#[cfg(feature = "llvm")]
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
@@ -117,8 +114,6 @@ mod runtime_helpers;
 mod state_machine_ops;
 #[cfg(feature = "llvm")]
 mod task_site;
-#[cfg(feature = "llvm")]
-mod task_trampoline;
 #[cfg(feature = "llvm")]
 mod value_materialization;
 #[cfg(feature = "llvm")]

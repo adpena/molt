@@ -143,38 +143,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         cx.positional_runtime_call(&mut b, op, callee, custody, label, call_name);
     }
 
-    /// Transfer one source reference into a storage home, without retaining an
-    /// already-owned object. A raw scalar's materialization becomes the home's
-    /// owner. Calls must instead use operation-local call custody, since their
-    /// repeated positions and fallible preparation require shared identity and
-    /// atomic transfer. A failed mint yields None with MemoryError pending.
-    pub(super) fn adopted_storage_word(
-        &mut self,
-        operand: ValueId,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.materialize_dynbox_bits(operand)
-    }
-
     // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
     pub(super) fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
         self.repr_facts.effective_value_type(id, declared)
-    }
-
-    /// Resolve the specialized `len` runtime function from the operand's
-    /// refined TIR type. Container specialization is derived directly from TIR
-    /// types, not from SimpleIR-name lookup.
-    pub(super) fn container_len_fn(&self, operand_id: ValueId) -> RuntimeFn {
-        // The container's exact type is a TIR fact; a boxed word carries none.
-        match self.func.value_types.get(&operand_id) {
-            Some(TirType::List(_)) => RuntimeFn::LenList,
-            Some(TirType::Str) => RuntimeFn::LenStr,
-            Some(TirType::Dict(_, _)) => RuntimeFn::LenDict,
-            Some(TirType::Tuple(_)) => RuntimeFn::LenTuple,
-            Some(TirType::Set(_)) => RuntimeFn::LenSet,
-            _ => RuntimeFn::Len,
-        }
     }
 
     // ── Box / Unbox ──
@@ -264,15 +237,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let (mut cx, mut b) = self.walker();
         cx.refcount_op(&mut b, op, operation);
-    }
-
-    /// Representation boxing of a lowered value (`Operands::boxed_word`). A
-    /// full-width integer boxed here may mint a heap owner that nobody
-    /// tracks, so this stays private to value materialization: borrowing
-    /// consumers go through custody and storing or returning consumers
-    /// through `owned_operand_word`.
-    fn materialize_dynbox_bits(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
-        self.operands().boxed_word(&mut self.codegen(), operand)
     }
 
     /// One static entry-block word for an operation's out-parameter or owner

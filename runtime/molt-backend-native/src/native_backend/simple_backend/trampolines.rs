@@ -116,7 +116,7 @@ impl SimpleBackend {
                     import_ids,
                     imports: &mut imports,
                 };
-                crate::codegen_ssa::task::emit_task_trampoline(
+                let task = crate::codegen_ssa::task::task_trampoline_word(
                     &mut b,
                     layout,
                     poll_addr,
@@ -125,6 +125,7 @@ impl SimpleBackend {
                     args_ptr,
                     arity,
                 );
+                crate::codegen_ssa::CodegenBuilder::return_value(&mut b, Some(task));
             }
             TrampolineBehavior::ForwardCallFrame => {
                 let mut target_sig = module.make_signature();

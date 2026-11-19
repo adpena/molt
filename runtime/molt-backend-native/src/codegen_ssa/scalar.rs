@@ -1037,6 +1037,8 @@ pub(crate) mod tests {
                 }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                // Replaces the frame's bindings; answers None.
+                RuntimeFn::FrameLocalsSet => NONE_WORD,
                 // A hash aggregate of a raw capacity, or None with
                 // MemoryError pending.
                 RuntimeFn::SetNew | RuntimeFn::FrozensetNew if self.fail_allocation => {
@@ -1085,6 +1087,9 @@ pub(crate) mod tests {
                 | RuntimeFn::FunctionClosureBits
                 | RuntimeFn::IterChecked
                 | RuntimeFn::IterNext
+                | RuntimeFn::Len
+                | RuntimeFn::LenList
+                | RuntimeFn::LocalsBuiltin
                 | RuntimeFn::ObjectNewBound
                 | RuntimeFn::ModuleGetAttr
                 | RuntimeFn::FuncNew
