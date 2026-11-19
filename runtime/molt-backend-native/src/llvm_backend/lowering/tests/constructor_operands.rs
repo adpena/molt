@@ -456,7 +456,6 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
     assert_entry_only_allocas(llvm_fn, &ir);
     let entry_ir = block_ir(llvm_fn.get_first_basic_block().unwrap());
     for slot in [
-        "%str_out = alloca i64",
         "%iter_next_unboxed_words = alloca i64, i64 1",
         "%sequence_owner = alloca i64",
         "%slice_owner = alloca i64",

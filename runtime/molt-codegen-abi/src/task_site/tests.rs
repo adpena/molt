@@ -65,7 +65,10 @@ fn a_compiled_generator_names_its_function_and_fills_its_slots() {
     assert_eq!(
         m.events,
         vec![
-            Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]),
+            Event::Call(
+                "task_new",
+                vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]
+            ),
             Event::Retain(0xA0),
         ]
     );
@@ -94,7 +97,12 @@ fn a_failed_allocation_returns_none_and_takes_no_payload() {
             m.events,
             vec![Event::Call(
                 "task_new",
-                vec![POLL, FRAME_BYTES, layout.runtime_kind().bits() as u64, FUNCTION]
+                vec![
+                    POLL,
+                    FRAME_BYTES,
+                    layout.runtime_kind().bits() as u64,
+                    FUNCTION
+                ]
             )]
         );
         assert!(m.bytes.is_empty(), "nothing is written");
@@ -114,7 +122,10 @@ fn a_coroutine_registers_the_current_cancel_token() {
     assert_eq!(
         m.events,
         vec![
-            Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_COROUTINE as u64, FUNCTION]),
+            Event::Call(
+                "task_new",
+                vec![POLL, FRAME_BYTES, TASK_KIND_COROUTINE as u64, FUNCTION]
+            ),
             Event::Call("cancel_token_get_current", vec![]),
             Event::Call("task_register_execution", vec![TASK, MODEL_CANCEL_TOKEN]),
         ]
@@ -134,7 +145,10 @@ fn an_async_generator_wraps_the_task_and_releases_its_own_reference() {
     assert_eq!(
         m.events,
         vec![
-            Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]),
+            Event::Call(
+                "task_new",
+                vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]
+            ),
             Event::Retain(0xA0),
             Event::Call("asyncgen_new", vec![TASK]),
             Event::Release(TASK),
@@ -146,7 +160,11 @@ fn an_async_generator_wraps_the_task_and_releases_its_own_reference() {
 fn a_trampoline_passes_the_invocation_its_caller_published() {
     const THREAD: u64 = 0x4000;
     let mut m = machine(TASK);
-    m.store_word(THREAD, crate::THREAD_RECORD_PENDING_INVOCATION_OFFSET, FUNCTION);
+    m.store_word(
+        THREAD,
+        crate::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+        FUNCTION,
+    );
     let result = construct(
         &mut m,
         TaskConstructorLayout::generator(),
@@ -156,7 +174,10 @@ fn a_trampoline_passes_the_invocation_its_caller_published() {
     assert_eq!(result, TASK);
     assert_eq!(
         m.events[0],
-        Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION])
+        Event::Call(
+            "task_new",
+            vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]
+        )
     );
 }
 
@@ -173,7 +194,10 @@ fn an_async_call_has_no_frame_and_fills_from_the_task_start() {
     assert_eq!(
         m.events,
         vec![
-            Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_FUTURE as u64, NONE]),
+            Event::Call(
+                "task_new",
+                vec![POLL, FRAME_BYTES, TASK_KIND_FUTURE as u64, NONE]
+            ),
             Event::Retain(0xA0),
         ]
     );
@@ -188,7 +212,11 @@ fn a_trampoline_reads_its_arguments_only_once_the_task_exists() {
     const CLOSURE: u64 = 0xC1;
     for (result, reads) in [(TASK, true), (NONE, false)] {
         let mut m = machine(result);
-        m.store_word(THREAD, crate::THREAD_RECORD_PENDING_INVOCATION_OFFSET, FUNCTION);
+        m.store_word(
+            THREAD,
+            crate::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+            FUNCTION,
+        );
         if reads {
             m.store_word(ARGUMENTS, 0, 0xA0);
             m.store_word(ARGUMENTS, 8, 0xA1);
@@ -212,7 +240,11 @@ fn a_trampoline_reads_its_arguments_only_once_the_task_exists() {
         if reads {
             assert_eq!(
                 m.events[1..],
-                [Event::Retain(CLOSURE), Event::Retain(0xA0), Event::Retain(0xA1)]
+                [
+                    Event::Retain(CLOSURE),
+                    Event::Retain(0xA0),
+                    Event::Retain(0xA1)
+                ]
             );
             assert_eq!(m.read_bytes(TASK_ADDRESS, CONTROL, 8), CLOSURE);
             assert_eq!(m.read_bytes(TASK_ADDRESS, CONTROL + 8, 8), 0xA0);
@@ -230,7 +262,12 @@ fn raw_ints_box_once_the_task_exists_and_repeats_share_one_identity() {
     let small = 7u64;
     let large = 1u64 << 60;
     let mut m = machine(TASK);
-    let payload = [(small, RawInt), (large, RawInt), (0, SameAs(1)), (0xA3, Unowned)];
+    let payload = [
+        (small, RawInt),
+        (large, RawInt),
+        (0, SameAs(1)),
+        (0xA3, Unowned),
+    ];
     let result = generate_task_construction(
         &mut m,
         TaskConstructorLayout::generator(),
@@ -245,7 +282,10 @@ fn raw_ints_box_once_the_task_exists_and_repeats_share_one_identity() {
     assert_eq!(
         m.events,
         vec![
-            Event::Call("task_new", vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]),
+            Event::Call(
+                "task_new",
+                vec![POLL, FRAME_BYTES, TASK_KIND_GENERATOR as u64, FUNCTION]
+            ),
             Event::Call("int_from_i64", vec![large]),
             Event::Retain(MODEL_BIG_INT),
         ]

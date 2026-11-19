@@ -199,6 +199,20 @@ pub fn static_cell_block_symbol(module: &str) -> String {
     )
 }
 
+/// The writable data symbol of a literal's cell (call_anatomy.md 4.9): one
+/// word per (kind, payload), private to the object that evaluates it and zero
+/// until the literal's first evaluation fills it. `kind` is the cell's
+/// `molt_codegen_abi::literal_cell::LiteralKind` word; the payload names the
+/// cell by digest, so an object holds one cell per distinct literal.
+pub fn literal_cell_symbol(kind: u64, payload: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(payload);
+    format!(
+        "__molt_literal_{kind}_{}",
+        crate::content_digest::bytes_to_lower_hex(&digest[..16])
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

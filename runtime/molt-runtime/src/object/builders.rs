@@ -1327,6 +1327,127 @@ fn canonical_singleton(
     }
 }
 
+/// The first evaluation of a compiled str, bytes or big-integer literal
+/// (call_anatomy.md 4.9, HF-856): build the literal's object once, publish it
+/// into the literal's cell and make it immortal, so every later evaluation is
+/// one load in compiled code. An identifier-like or one-character str already
+/// is the runtime's interned immortal singleton and is published as it is. Two
+/// threads may race to fill one cell: only the object the cell publishes is
+/// made immortal, and the loser releases its own.
+///
+/// # Safety
+/// `cell` is the literal's writable, 8-byte-aligned cell; `data` points to
+/// `len_bits` bytes of the literal's payload.
+pub(crate) unsafe fn molt_literal_cell_fill_attached_body(
+    _py: &PyToken<'_>,
+    cell: *mut u64,
+    data: *const u8,
+    kind_bits: u64,
+    len_bits: u64,
+) -> u64 {
+    use molt_codegen_abi::literal_cell::LiteralKind;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    unsafe {
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            // SAFETY: the compiled cell is a live, aligned word for the program's lifetime.
+            let cell = &*cell.cast::<AtomicU64>();
+            let cached = cell.load(Ordering::Acquire);
+            if cached != 0 {
+                return cached;
+            }
+            let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
+            else {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "literal byte length is too large",
+                );
+            };
+            let bytes: &[u8] = if len == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(data, len)
+            };
+            let bits = match LiteralKind::from_bits(kind_bits) {
+                Some(LiteralKind::Str) => {
+                    let ptr = alloc_string(_py, bytes);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(ptr).bits()
+                }
+                Some(LiteralKind::Bytes) => {
+                    let ptr = alloc_bytes(_py, bytes);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(ptr).bits()
+                }
+                Some(LiteralKind::BigInt) => {
+                    if bytes.is_empty() {
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::ValueError,
+                            "integer literal requires nonempty signed bytes",
+                        );
+                    }
+                    // The compiler admits minimal signed big-endian bytes.
+                    let parsed = crate::builtins::numbers::bigint_from_bytes(bytes, false, true);
+                    match crate::builtins::numbers::bigint_to_inline(&parsed) {
+                        Some(value) => MoltObject::from_int(value).bits(),
+                        None => crate::builtins::numbers::bigint_bits(_py, parsed),
+                    }
+                }
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::SystemError,
+                        "literal cell names no literal kind",
+                    );
+                }
+            };
+            if obj_from_bits(bits).is_none() {
+                // The constructor failed; its exception is pending.
+                return bits;
+            }
+            publish_literal(_py, cell, bits)
+        })
+    }
+}
+
+/// Publish a literal's freshly built object into its cell (the
+/// `canonical_singleton` protocol over an object word).
+fn publish_literal(py: &PyToken<'_>, cell: &std::sync::atomic::AtomicU64, bits: u64) -> u64 {
+    use std::sync::atomic::Ordering;
+    let Some(ptr) = MoltObject::from_bits(bits).as_ptr() else {
+        // An inline integer is its own word; any racer stores the same one.
+        cell.store(bits, Ordering::Release);
+        return bits;
+    };
+    // SAFETY: `ptr` is the live object the constructor just returned.
+    if unsafe { (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_IMMORTAL) } {
+        // An interned singleton: every racer publishes the same object.
+        let _ = cell.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire);
+        return cell.load(Ordering::Acquire);
+    }
+    let mut candidate = PtrDropGuard::new(py, ptr);
+    let _init = runtime_state(py)
+        .canonical_objects
+        .singleton_init
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = cell.load(Ordering::Acquire);
+    if current != 0 {
+        // A racer published first; the guard releases this copy.
+        return current;
+    }
+    // SAFETY: the object is fully built and unpublished.
+    unsafe { prepare_canonical_object(ptr, false) };
+    cell.store(bits, Ordering::Release);
+    candidate.release();
+    bits
+}
+
 #[cfg(test)]
 pub(crate) fn canonical_cache_locks_available_for_test(py: &PyToken<'_>) -> bool {
     let cache = &runtime_state(py).canonical_objects;

@@ -2217,6 +2217,26 @@ recorded first (never measured) and the same gate applied; startup instructions 
 and WASM size recorded; differential tests for interned identity (`is` between identifier
 literals, `sys.intern(literal) is literal`) and per-module distinctness.
 
+**As built, stage A (2026-11-18).** The walker (`codegen_ssa::constants`: LLVM now, Cranelift after
+the W3 switch) loads a str, bytes or big-int literal from its cell: one private, writable, 8-byte data
+word per (kind, payload) in each object (`site_record`, symbol `molt_ir::code_slots::
+literal_cell_symbol`, named by a SHA-256 digest of the payload). A zero cell takes one cold
+`molt_literal_cell_fill`, which builds the object, publishes it with the canonical-singleton
+protocol (CAS-free recheck under the singleton lock; only the published object is made immortal; a
+racer's copy is released) and answers it; identifier-like and one-character strings are already the
+interned immortal singletons. Two decisions differ from the design above: there are no dense ids or
+per-runtime-state table, because a numbering shifts whenever a module gains a literal and would
+change every function's TIR cache key, and an immortal object may be shared by isolates (PEP 683's
+reason for immortality); and equal non-identifier literals share one object per object file rather
+than one per module, which CPython leaves implementation-defined (it warns on `is` with a literal).
+No new opcode: `ConstStr`, `ConstBytes` and `ConstBigInt` are the loads. The runtime's 32-slot
+`const_data_cache.rs` stays until the W3 switch deletes Cranelift's prologue materialization, its
+last per-evaluation consumer. LLVM release, instructions per iteration, interleaved against
+bb4fc5942b, outputs identical: str_build 4,629 -> 4,325 (-6.6%, below Cranelift's 4,559); a function
+returning eight str literals 3,850 -> 1,806 (-53%; its eight-int control 1,463.5 -> 1,464.9). The
+eight literals still cost 23% over eight ints: the refcount traffic on immortal results, which a
+representation fact (`BoxedImmortal` for the loads) removes next.
+
 **Stage B.** Static immortal literal objects at build time are HF-673's first slice (one static-data
 emitter for all build-time objects). Go only if stage A's remaining cost (cell test, first-use
 allocations, startup) is measurable; the table, its init hook and the cold call (for kinds without

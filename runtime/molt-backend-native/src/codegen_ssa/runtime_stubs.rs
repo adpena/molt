@@ -90,6 +90,9 @@ extern "C" fn bytes_from_bytes(_: u64, data: u64, len: u64, out: u64) -> u32 {
 extern "C" fn bigint_from_bytes(_: u64, data: u64, len: u64) -> u64 {
     runtime(RuntimeFn::BigintFromBytes, &[data, len])
 }
+extern "C" fn literal_cell_fill(_: u64, cell: u64, data: u64, kind: u64, len: u64) -> u64 {
+    runtime(RuntimeFn::LiteralCellFill, &[cell, data, kind, len])
+}
 extern "C" fn two(function: RuntimeFn, a: u64, b: u64) -> u64 {
     runtime(function, &[a, b])
 }
@@ -285,6 +288,7 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::StringFromBytes => string_from_bytes as *const u8,
         RuntimeFn::BytesFromBytes => bytes_from_bytes as *const u8,
         RuntimeFn::BigintFromBytes => bigint_from_bytes as *const u8,
+        RuntimeFn::LiteralCellFill => literal_cell_fill as *const u8,
         RuntimeFn::GetAttrName => get_attr_name as *const u8,
         RuntimeFn::DelAttrName => del_attr_name as *const u8,
         RuntimeFn::SetAttrName => set_attr_name as *const u8,
