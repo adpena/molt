@@ -341,6 +341,14 @@ class UnionSecond(metaclass=EqualityMetaclass):
 identity_union = UnionFirst | UnionSecond
 print("union-type-identity", len(identity_union.__args__))
 print("union-reuses-left", (identity_union | UnionFirst) is identity_union)
+print(
+    "union-identity",
+    (identity_union | identity_union) is identity_union,
+    (identity_union | UnionSecond).__args__ == identity_union.__args__,
+    (UnionFirst | UnionFirst) is UnionFirst,
+    (int | int) is int,
+    (UnionFirst | identity_union).__args__,
+)
 
 import copyreg
 
