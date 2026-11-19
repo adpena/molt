@@ -827,9 +827,9 @@ pub(crate) mod machine {
             unsafe { std::mem::transmute(code) };
         let input_words: Vec<u64> = inputs.iter().copied().map(input_word).collect();
         let mut result_words = vec![0u64; kinds.len()];
-        runtime_stubs::begin(fail_allocation);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        runtime_stubs::begin(fail_allocation, record.as_mut_ptr() as u64);
         // The exception hint is one byte at its ABI offset, on either byte order.
         let first = &mut record[0];
         let mut bytes = first.to_ne_bytes();
@@ -855,6 +855,7 @@ pub(crate) mod machine {
             runtime_calls: stubs.calls,
             refcounts: stubs.refcounts,
             released: stubs.model.released,
+            inserted: stubs.model.inserted,
         }
     }
 
