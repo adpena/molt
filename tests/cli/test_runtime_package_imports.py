@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import runpy
+from typing import NoReturn
 
 import pytest
 import _intrinsics
@@ -14,7 +15,7 @@ def test_active_runtime_package_never_hides_missing_intrinsics(monkeypatch, pack
     monkeypatch.setattr(_intrinsics, "runtime_active", lambda: True)
     failure = RuntimeError("missing required runtime intrinsic")
 
-    def missing_intrinsic(name, namespace=None):
+    def missing_intrinsic(name: str, namespace: object = None) -> NoReturn:
         raise failure
 
     monkeypatch.setattr(_intrinsics, "require_intrinsic", missing_intrinsic)
@@ -28,7 +29,7 @@ def test_active_runtime_package_never_hides_missing_intrinsics(monkeypatch, pack
 def test_cpython_package_does_not_probe_runtime_intrinsics(monkeypatch, package):
     monkeypatch.setattr(_intrinsics, "runtime_active", lambda: False)
 
-    def unexpected_probe(name, namespace=None):
+    def unexpected_probe(name: str, namespace: object = None) -> NoReturn:
         raise AssertionError(f"CPython attempted runtime intrinsic {name}")
 
     monkeypatch.setattr(_intrinsics, "require_intrinsic", unexpected_probe)
