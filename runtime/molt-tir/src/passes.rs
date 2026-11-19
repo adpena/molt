@@ -11,7 +11,6 @@ mod guard_elision;
 mod megafunction_split;
 mod profile_order;
 mod rc_coalescing;
-mod runtime_exit;
 mod runtime_roots;
 
 #[cfg(test)]
@@ -32,7 +31,6 @@ pub use self::megafunction_split::{
 };
 pub use self::profile_order::apply_profile_order;
 pub use self::rc_coalescing::{build_const_int_map, compute_rc_coalesce_skips};
-pub use self::runtime_exit::inject_runtime_exit;
 
 #[cfg(test)]
 use self::megafunction_split::{

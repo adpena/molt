@@ -1423,7 +1423,7 @@ fn unreachable_none_vestige_does_not_poison_checked_loop_phi() {
     let repr = repr_by_value_for(&func, Some(&vr));
     assert!(
         is_full_deopt(&repr, sum),
-        "the CheckedAdd wrapping sum is the unconditional full-range seed"
+        "the checked sum of proven integer operands can carry a full-range i64"
     );
     assert!(
         is_full_deopt(&repr, acc),
@@ -1549,10 +1549,12 @@ fn reachable_heap_incoming_poisons_raw_loop_phi() {
 
     let vr = value_range_for(&func);
     let repr = repr_by_value_for(&func, Some(&vr));
-    assert!(
-        is_full_deopt(&repr, sum),
-        "CheckedAdd's wrapping sum remains a valid raw carrier"
+    assert_eq!(
+        repr.get(&sum),
+        Some(&Repr::MaybeBigInt),
+        "the checked sum inherits its mixed operand's boxed carrier"
     );
+    assert_eq!(repr.get(&overflow), Some(&Repr::Bool));
     assert!(
         !is_raw_carrier(&repr, heap_value),
         "the heap incoming itself must not be raw"

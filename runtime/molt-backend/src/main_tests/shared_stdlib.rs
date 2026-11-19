@@ -539,7 +539,6 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
         profile: None,
     };
 
-    molt_backend::inject_runtime_exit(&mut ir);
     ir.resolve_function_references().unwrap();
     molt_backend::eliminate_dead_functions(&mut ir);
     let retained: std::collections::BTreeSet<_> =
@@ -992,7 +991,6 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
     let maybe_stdlib = crate::backend_process::shared_stdlib_archive_path_from_env()
         .expect("shared stdlib request admission");
     if maybe_stdlib.is_none() {
-        molt_backend::inject_runtime_exit(&mut ir);
         ir.resolve_function_references().unwrap();
         molt_backend::eliminate_dead_functions(&mut ir);
     }
