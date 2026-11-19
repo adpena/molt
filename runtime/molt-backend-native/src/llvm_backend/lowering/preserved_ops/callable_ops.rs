@@ -408,42 +408,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
+        if matches!(
+            kind,
+            OpKind::FunctionClosureBits
+                | OpKind::AsyncgenNew
+                | OpKind::CodeSlotSet
+                | OpKind::CodeSlotsInit
+                | OpKind::CallargsNew
+                | OpKind::Line
+        ) {
+            let mut lowered = false;
+            self.walker_op(|cx, b| lowered = cx.callable_runtime_op(b, op, kind));
+            return lowered;
+        }
         let i64_ty = self.backend.context.i64_type();
         match kind {
-            OpKind::FunctionClosureBits => {
-                if op.operands.len() != 1 || op.results.len() > 1 {
-                    return false;
-                }
-                let closure_fn = self.ensure_runtime_import(RuntimeFn::FunctionClosureBits);
-                // The function owns this edge. Only a retained SSA result gains
-                // an owner; a discarded borrowed edge must never be decreffed.
-                self.emit_borrowed_runtime_call(
-                    op,
-                    closure_fn,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue),
-                    kind.as_str(),
-                    "function_closure_bits",
-                );
-                true
-            }
-            OpKind::AsyncgenNew => {
-                if op.operands.len() != 1 || op.results.len() > 1 {
-                    return false;
-                }
-                // Dedicated task-wrapper ABI; a machine i64 declaration does
-                // not authorize generic boxed-call admission for this symbol.
-                let wrap = self.ensure_runtime_import(RuntimeFn::AsyncgenNew);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    wrap,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind.as_str(),
-                    "asyncgen_new",
-                );
-                true
-            }
             OpKind::BuiltinFunc => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
@@ -617,46 +596,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     kind.as_str(),
                     "func_new_closure",
                 );
-                true
-            }
-            OpKind::CodeSlotSet => {
-                let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
-                let slot_set_fn = self.ensure_runtime_import(RuntimeFn::CodeSlotSet);
-                // The slot ID is a raw ABI word; the code object and globals
-                // are borrowed. Only the exception state reports failure.
-                self.emit_borrowed_runtime_call(
-                    op,
-                    slot_set_fn,
-                    &[
-                        RuntimeArg::Word(code_id.into()),
-                        RuntimeArg::Operand(op.operands[0]),
-                        RuntimeArg::Operand(op.operands[1]),
-                    ],
-                    ResultCustody::SideEffect,
-                    kind.as_str(),
-                    "code_slot_set",
-                );
-                true
-            }
-            OpKind::CodeSlotsInit => {
-                let count = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .expect("admitted code_slots_init count");
-                let init_fn = self.ensure_runtime_import(RuntimeFn::CodeSlotsInit);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        init_fn,
-                        &[i64_ty.const_int(count as u64, true).into()],
-                        "code_slots_init",
-                    )
-                    .unwrap();
                 true
             }
             OpKind::TraceEnterSlot => {
@@ -924,29 +863,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // A statement marker: it emits no code. Tracebacks read the
             // location that `frame_set_location` publishes before each
             // raising op.
-            OpKind::Line => true,
-            OpKind::CallargsNew => {
-                // The source call form picks the builder: a CALL_FUNCTION_EX
-                // call site's arguments are its own tuple and mapping.
-                let constructor = op
-                    .call_argument_form()
-                    .expect("validated callargs_new call form")
-                    .runtime_constructor();
-                let new_fn = self.ensure_runtime_import(constructor);
-                let result = self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        new_fn,
-                        &[i64_ty.const_zero().into(), i64_ty.const_zero().into()],
-                        "callargs_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.bind_owned_runtime_result(op, result);
-                true
-            }
             _ => unreachable!("preserved callable kind predicate accepted unknown kind {kind}"),
         }
     }

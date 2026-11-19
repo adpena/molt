@@ -865,6 +865,7 @@ pub(crate) mod tests {
                 | RuntimeFn::Alloc
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
+                | RuntimeFn::FunctionClosureBits
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer
