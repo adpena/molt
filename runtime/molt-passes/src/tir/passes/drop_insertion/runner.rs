@@ -732,10 +732,10 @@ fn run_planned(
         // For a value with no uses, the LAST program point at which it is live is
         // immediately AFTER its defining op, so that is where its drop belongs.
         // We apply the SAME guards as the §1 last-use path (droppable / not
-        // branch-transferred / not live-out / not terminator-consumed) plus the
-        // conditionally-owned-iterator exclusion (§2.8): the value result of an
-        // `IterNextUnboxed` is a non-owned `None` sentinel on the exhaustion path
-        // and must never be dropped unconditionally. A result that IS used was
+        // branch-transferred / not live-out / not terminator-consumed). An
+        // iterator value result (§2.8) needs no exception: it is the owned item,
+        // or the immortal None on every path that yields none, so a dead one is
+        // released like any other dead owned result. A result that IS used was
         // already handled by §1 (its root is in `last_use`); checking `last_use`
         // membership in ROOT space avoids any double-drop.
         for (idx, op) in block.ops.iter().enumerate() {
@@ -758,11 +758,11 @@ fn run_planned(
                 if !drop_eligibility.is_droppable(r) {
                     continue;
                 }
-                // Conditionally-valid iterator value result: never drop it (it is
-                // stale garbage on the iterator-exhaustion path).
-                if drop_eligibility.is_conditionally_valid_result_root(result) {
-                    continue;
-                }
+                // A conditionally-valid iterator value result (§2.8) is dropped like
+                // any dead owned result: on every path that yields no item the
+                // runtime writes the immortal None there (molt_iter_next_unboxed,
+                // molt_iter_next_unpack2), whose release is a no-op, and on the
+                // yielding path it is the owned item, which a discard must release.
                 // Transferred via branch arg (root space) → successor owns it.
                 if branch_arg_roots.contains(&r) {
                     continue;
