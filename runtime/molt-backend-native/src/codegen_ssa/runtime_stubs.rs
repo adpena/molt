@@ -75,6 +75,18 @@ fn refcount(operation: RefcountOperation, word: u64) {
 extern "C" fn exception_pending(_: u64) -> u64 {
     runtime(RuntimeFn::ExceptionPending, &[])
 }
+extern "C" fn async_work_poll_and_exception_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::AsyncWorkPollAndExceptionPending, &[])
+}
+extern "C" fn exception_frame_origin(_: u64, homes: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionFrameOrigin, &[homes])
+}
+extern "C" fn async_work_poll_and_exception_last_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::AsyncWorkPollAndExceptionLastPending, &[])
+}
+extern "C" fn exception_last_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionLastPending, &[])
+}
 extern "C" fn frame_home_load(_: u64, home: u64) -> u64 {
     runtime(RuntimeFn::FrameHomeLoad, &[home])
 }
@@ -463,6 +475,14 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         .find(|function| function.linker_symbol() == name)?;
     Some(match function {
         RuntimeFn::ExceptionPending => exception_pending as *const u8,
+        RuntimeFn::AsyncWorkPollAndExceptionPending => {
+            async_work_poll_and_exception_pending as *const u8
+        }
+        RuntimeFn::ExceptionFrameOrigin => exception_frame_origin as *const u8,
+        RuntimeFn::AsyncWorkPollAndExceptionLastPending => {
+            async_work_poll_and_exception_last_pending as *const u8
+        }
+        RuntimeFn::ExceptionLastPending => exception_last_pending as *const u8,
         RuntimeFn::FrameHomeLoad => frame_home_load as *const u8,
         RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
         RuntimeFn::IntAsI64 => int_as_i64 as *const u8,

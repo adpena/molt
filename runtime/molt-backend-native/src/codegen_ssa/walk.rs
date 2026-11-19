@@ -15,9 +15,10 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use super::builder::CodegenBuilder;
-use super::builder::{IntComparison, RecursionCharge, SiteBody};
+use super::builder::{IntComparison, MachineKind, RecursionCharge, SiteBody};
 use super::control::{self, Edges};
 use super::custody::{CallTarget, RuntimeArg};
+use super::frame::RecordPlacement;
 use super::function::{FunctionCx, ResultCustody};
 use super::value_table::{HeldCarrier, ValueTable};
 use super::{constants, pending, returns};
@@ -37,7 +38,7 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) exception_targets: &'a HashMap<i64, BlockId>,
 }
 
-impl<B: CodegenBuilder> FunctionCx<'_, B> {
+impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower `op`, at `at`, when the walker owns its opcode, and answer
     /// whether it did. An opcode it does not own yet is left to the backend.
     pub(crate) fn walker_owned_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
@@ -287,28 +288,28 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.bind(result, pending, HeldCarrier::RawBool);
         }
     }
+}
 
+impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// `CheckException`: when an exception is pending, take the op's
-    /// explicit exceptional successor with its operands as arguments. The
-    /// walker owns the unwind edge of an exception check; an async-work
-    /// poll (which services work and so may publish the frame's location)
-    /// and an origin edge (which captures the frame's traceback entry) need
-    /// the frame's homes, which the switch lane's frame family owns, so the
-    /// backend keeps them for now and this answers false before it emits.
+    /// explicit exceptional successor with its operands as arguments. An
+    /// async-work poll services pending work first and answers its own
+    /// pending word. An unwind edge branches straight to the successor; an
+    /// origin edge first publishes the site's location and captures the
+    /// frame's traceback entry (`molt_exception_frame_origin`), which reads
+    /// the frame's homes, or none when the function has none.
     fn check_exception_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
         use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
         let Some(&AttrValue::Int(label)) = op.attrs.get("value") else {
             self.fatal("check_exception requires an explicit exceptional successor label");
             return true;
         };
-        let edge = op
-            .exception_edge_kind()
-            .expect("verified exceptional edge kind");
-        if op.is_async_work_poll() || edge == ExceptionEdgeKind::Origin {
-            return false;
-        }
-        let thread = b.thread_record_word();
-        let pending = pending::exception_pending_word(b, thread);
+        let pending = if op.is_async_work_poll() {
+            self.async_work_poll(b, false, op.frame_location())
+        } else {
+            let thread = b.thread_record_word();
+            pending::exception_pending_word(b, thread)
+        };
         let named = b.word_value(pending);
         b.set_name(named, "check_exc_word");
         if let Some(&result) = op.results.first() {
@@ -326,30 +327,128 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             ));
             return true;
         };
+        let edge = op
+            .exception_edge_kind()
+            .expect("verified exceptional edge kind");
         let continued = b.create_block("check_exc_cont");
         let zero = b.constant(0);
         let raised = b.int_compare(IntComparison::NotEqual, pending, zero);
-        let edges = Edges {
-            func: self.func,
-            plan: self.plan,
-            values: self.values,
-            blocks: at.blocks,
-        };
+        let named = b.bit_value(raised);
+        b.set_name(named, "check_exc_pending");
         let mut diagnostics = Vec::new();
-        let passed = edges.arguments(
-            b,
-            at.source,
-            "check-exception-unwind-edge",
-            target,
-            &op.operands,
-            &mut diagnostics,
-        );
-        b.branch_if(raised, (target_block, &passed), (continued, &[]));
+        match edge {
+            ExceptionEdgeKind::Unwind => {
+                let passed = self.edges(at).arguments(
+                    b,
+                    at.source,
+                    "check-exception-unwind-edge",
+                    target,
+                    &op.operands,
+                    &mut diagnostics,
+                );
+                b.branch_if(raised, (target_block, &passed), (continued, &[]));
+            }
+            ExceptionEdgeKind::Origin => {
+                let origin = b.create_block("check_exc_origin");
+                b.branch_if(raised, (origin, &[]), (continued, &[]));
+                b.switch_to_block(origin);
+                let homes = b.frame_homes();
+                // The site's own location; the normal path stores nothing.
+                if let Some(location) = op.frame_location() {
+                    let homes = homes.expect("location publication requires a frame");
+                    super::frame::store_location(b, homes, location);
+                }
+                let homes = match homes {
+                    Some(slot) => b.load_slot(slot),
+                    None => b.constant(0),
+                };
+                let capture = b.runtime_callee(RuntimeFn::ExceptionFrameOrigin);
+                let homes = b.word_value(homes);
+                b.call(capture, &[homes]);
+                let passed = self.edges(at).arguments(
+                    b,
+                    at.source,
+                    "check-exception-origin-edge",
+                    target,
+                    &op.operands,
+                    &mut diagnostics,
+                );
+                b.jump(target_block, &passed);
+            }
+        }
         for diagnostic in diagnostics {
             self.fatal(diagnostic);
         }
         b.switch_to_block(continued);
         true
+    }
+
+    /// The edges of the function being walked, at `at`.
+    fn edges<'e>(&'e self, at: &'e Position<'_, B>) -> Edges<'e, B> {
+        Edges {
+            func: self.func,
+            plan: self.plan,
+            values: self.values,
+            blocks: at.blocks,
+        }
+    }
+
+    /// Service pending async work, then answer the pending-exception word: a
+    /// cold call when the thread's work word is set (it publishes the
+    /// frame's `location` first, since serviced work is Python code that can
+    /// read this frame), else the thread record's exception byte. With
+    /// `payload` the answer is the pending exception itself, or None.
+    pub(crate) fn async_work_poll(
+        &mut self,
+        b: &mut B,
+        payload: bool,
+        location: Option<i64>,
+    ) -> B::Word {
+        let has_work = b.async_work_pending();
+        let thread = b.thread_record_word();
+        let cold = b.create_block("async_poll_cold");
+        let fast = b.create_block("async_poll_fast");
+        let done = b.create_block("async_poll_done");
+        let answer = b.append_block_param(done, MachineKind::Word);
+        b.branch_if(has_work, (cold, &[]), (fast, &[]));
+        b.switch_to_block(cold);
+        if let Some(location) = location {
+            let homes = b
+                .frame_homes()
+                .expect("location publication requires a frame");
+            super::frame::store_location(b, homes, location);
+        }
+        let service = b.runtime_callee(if payload {
+            RuntimeFn::AsyncWorkPollAndExceptionLastPending
+        } else {
+            RuntimeFn::AsyncWorkPollAndExceptionPending
+        });
+        let serviced = b
+            .call_cold(service, &[])
+            .expect("the async-work service answers a word");
+        b.jump(done, &[serviced]);
+        b.switch_to_block(fast);
+        let byte = b.load_byte(
+            thread,
+            molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
+        );
+        let byte = b.zero_extend(byte);
+        if payload {
+            let capture = b.create_block("async_poll_capture_exception");
+            let zero = b.constant(0);
+            let raised = b.int_compare(IntComparison::NotEqual, byte, zero);
+            let none = b.constant(molt_codegen_abi::QNAN_TAG_NONE_I64 as u64);
+            b.branch_if(raised, (capture, &[]), (done, &[b.word_value(none)]));
+            b.switch_to_block(capture);
+            let observed = b
+                .call_runtime(RuntimeFn::ExceptionLastPending, &[])
+                .expect("the pending-exception reader answers a word");
+            b.jump(done, &[b.word_value(observed)]);
+        } else {
+            b.jump(done, &[b.word_value(byte)]);
+        }
+        b.switch_to_block(done);
+        b.expect_word(answer)
     }
 }
 
@@ -1028,18 +1127,151 @@ mod tests {
     }
 
     #[test]
-    fn an_async_poll_or_origin_check_is_left_to_the_backend() {
+    fn an_origin_check_captures_the_traceback_entry_only_when_it_unwinds() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
         use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
         let mut func = checked();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops[0].set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        // A function with no frame homes hands the capture none.
         let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert!(run.origins.is_empty());
+        let raised = ThreadState {
+            hint: 1,
+            raised: true,
+            ..ThreadState::default()
+        };
+        let run = walk_in(&func, &[OBJECT], raised);
+        assert_eq!(run.results, [Value::Word(NONE)]);
+        assert_eq!(run.origins, [0]);
         assert_eq!(
-            run.fact,
-            Err(vec![
-                "walk_check: the walker does not lower CheckException yet".into()
-            ])
+            run.runtime_calls,
+            [RuntimeFn::ExceptionPending, RuntimeFn::ExceptionFrameOrigin]
         );
+    }
+
+    #[test]
+    fn an_origin_check_publishes_its_location_into_the_lent_frame_first() {
+        use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+        let mut func = checked();
+        func.execution_context = molt_ir::ir::ExecutionContextPolicy::Inherited;
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops[0].set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        entry.ops[0].set_frame_location(13);
+        for (hint, raised, answer, location) in [(0, false, OBJECT, 57), (1, true, NONE, 13)] {
+            let mut record = [57u64, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT];
+            let homes = record[1..].as_mut_ptr() as u64;
+            let state = ThreadState {
+                hint,
+                raised,
+                frame_top: homes,
+                ..ThreadState::default()
+            };
+            let run = walk_in(&func, &[OBJECT], state);
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(run.results, [Value::Word(answer)], "raised {raised}");
+            assert_eq!(record[0], location, "raised {raised}");
+            let origins: &[u64] = if raised { &[homes] } else { &[] };
+            assert_eq!(run.origins, origins);
+        }
+    }
+
+    #[test]
+    fn a_payload_poll_answers_the_pending_exception_or_none() {
+        use crate::codegen_ssa::scalar::tests::literal_word;
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let func = TirFunction::new(
+            "payload_poll".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        // (work, hint, raised): the answer and the runtime calls.
+        for (work, hint, raised, answer, calls) in [
+            (0, 0, false, NONE, vec![]),
+            (
+                0,
+                1,
+                true,
+                literal_word(RuntimeFn::ExceptionLastPending, &[]),
+                vec![RuntimeFn::ExceptionLastPending],
+            ),
+            (
+                1,
+                0,
+                true,
+                literal_word(RuntimeFn::AsyncWorkPollAndExceptionLastPending, &[]),
+                vec![RuntimeFn::AsyncWorkPollAndExceptionLastPending],
+            ),
+        ] {
+            let state = ThreadState {
+                hint,
+                raised,
+                work,
+                ..ThreadState::default()
+            };
+            let run = run_function_in(&[], state, |b, _| {
+                let plan = ProducerCarrierPlan::default();
+                let mut values = ValueTable::with_capacity(1);
+                let diagnostics = RefCell::new(Vec::new());
+                let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+                let mut cx = FunctionCx {
+                    func: &func,
+                    plan: &plan,
+                    values: &mut values,
+                    diagnostics: &diagnostics,
+                    runtime: &runtime,
+                    linkage: &Default::default(),
+                    functions: &Default::default(),
+                    call_sites: &Cell::new(0),
+                };
+                let answer = cx.async_work_poll(b, true, None);
+                let answer = b.word_value(answer);
+                b.return_value(Some(answer));
+            });
+            let case = format!("work {work} hint {hint}");
+            assert_eq!(run.results, [Value::Word(answer)], "{case}");
+            assert_eq!(run.runtime_calls, calls, "{case}");
+        }
+    }
+
+    #[test]
+    fn an_async_poll_services_pending_work_before_it_reads_the_exception_byte() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = checked();
+        func.execution_context = molt_ir::ir::ExecutionContextPolicy::Inherited;
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        assert!(entry.ops[0].mark_async_work_poll());
+        entry.ops[0].set_frame_location(21);
+        // (work, hint, raised): the answer, the service calls, the location.
+        for (work, hint, raised, answer, serviced, location) in [
+            (0, 0, false, OBJECT, false, 57),
+            (0, 1, true, NONE, false, 57),
+            (1, 0, false, OBJECT, true, 21),
+            (1, 0, true, NONE, true, 21),
+        ] {
+            let mut record = [57u64, molt_codegen_abi::FRAME_HOME_PLAIN as u64, OBJECT];
+            let state = ThreadState {
+                hint,
+                raised,
+                work,
+                frame_top: record[1..].as_mut_ptr() as u64,
+                ..ThreadState::default()
+            };
+            let run = walk_in(&func, &[OBJECT], state);
+            let case = format!("work {work} hint {hint} raised {raised}");
+            assert_eq!(run.fact, Ok(()), "{case}");
+            assert_eq!(run.results, [Value::Word(answer)], "{case}");
+            let calls: &[RuntimeFn] = if serviced {
+                &[RuntimeFn::AsyncWorkPollAndExceptionPending]
+            } else {
+                &[]
+            };
+            assert_eq!(run.runtime_calls, calls, "{case}");
+            assert_eq!(record[0], location, "{case}");
+        }
     }
 
     /// The model's object for `function` over the words `args`.

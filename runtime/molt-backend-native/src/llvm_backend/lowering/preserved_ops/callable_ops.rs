@@ -41,13 +41,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         });
     }
 
-    pub(in crate::llvm_backend::lowering) fn store_frame_location(&mut self, location: i64) {
-        let homes = self
-            .frame_homes
-            .expect("location publication requires a frame");
-        crate::codegen_ssa::frame::store_location(&mut self.codegen(), homes, location);
-    }
-
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         match kind {
             OpKind::BuiltinFunc

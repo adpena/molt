@@ -327,8 +327,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// The phis that stand for each block's parameters; every emitted edge
     /// adds its incoming values when its branch is built.
     block_params: codegen_builder::BlockParams<'ctx>,
-    /// Counter for synthetic block names introduced during lowering.
-    synthetic_block_counter: usize,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: std::cell::Cell<usize>,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
@@ -410,7 +408,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         block_map: HashMap::default(),
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         block_params: RefCell::new(HashMap::default()),
-        synthetic_block_counter: 0,
         call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
@@ -749,17 +746,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
             _ => None,
         }
-    }
-
-    /// The block an exceptional successor label names, through the one shared
-    /// TIR resolver; None when the label is absent or ambiguous.
-    pub(super) fn exception_target(&self, label: i64) -> Option<BlockId> {
-        self.exception_targets
-            .get_or_init(|| {
-                crate::tir::dominators::exception_labels_to_blocks(&self.func.label_id_map)
-            })
-            .get(&label)
-            .copied()
     }
 
     /// The word builder at the current insertion point, for the shared

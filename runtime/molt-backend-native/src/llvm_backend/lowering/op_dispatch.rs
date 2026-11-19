@@ -1,7 +1,5 @@
 use super::*;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-#[cfg(feature = "llvm")]
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -48,116 +46,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::TaskWait => self.emit_task_wait(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
-
-            // -- CheckException: the walker lowers a plain check's unwind edge;
-            //    this arm keeps the async-work poll and the origin edge, which
-            //    need the frame's homes (the switch lane's frame family).
-            OpCode::CheckException => {
-                let Some(target_label) = op.attrs.get("value").and_then(|v| match v {
-                    AttrValue::Int(v) => Some(*v),
-                    _ => None,
-                }) else {
-                    self.record_fatal(
-                        "check_exception requires an explicit exceptional successor label",
-                    );
-                    return;
-                };
-                let result = if op.is_async_work_poll() {
-                    self.emit_async_work_poll(false, op.frame_location())
-                } else {
-                    self.emit_exception_pending_word("check_exc").into()
-                };
-                if let Some(&result_id) = op.results.first() {
-                    self.values.set_value(result_id, result);
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                    );
-                }
-                let Some(target_block_id) = self.exception_target(target_label) else {
-                    self.record_fatal(format!(
-                        "check_exception target label {} has no unique block in the label map",
-                        target_label
-                    ));
-                    return;
-                };
-                let Some(&target_bb) = self.block_map.get(&target_block_id) else {
-                    self.record_fatal(format!(
-                        "check_exception target block {:?} is not present in LLVM block map",
-                        target_block_id
-                    ));
-                    return;
-                };
-                let continue_bb = self.backend.context.append_basic_block(
-                    self.llvm_fn,
-                    &format!("check_exc_cont{}", self.synthetic_block_counter),
-                );
-                self.synthetic_block_counter += 1;
-                let pending = self.ensure_i64(result);
-                let has_exception = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        pending,
-                        self.backend.context.i64_type().const_zero(),
-                        "check_exc_pending",
-                    )
-                    .unwrap();
-                let edge = op
-                    .exception_edge_kind()
-                    .expect("verified exceptional edge kind");
-                match edge {
-                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
-                        let origin = self.backend.context.append_basic_block(
-                            self.llvm_fn,
-                            &format!("check_exc_origin{}", self.synthetic_block_counter),
-                        );
-                        self.synthetic_block_counter += 1;
-                        self.backend
-                            .builder
-                            .build_conditional_branch(has_exception, origin, continue_bb)
-                            .unwrap();
-                        self.backend.builder.position_at_end(origin);
-                        if let Some(location) = op.frame_location() {
-                            // The site's own LocationId; the normal path stores nothing.
-                            self.store_frame_location(location);
-                        }
-                        let homes = if let Some(slot) = self.frame_homes {
-                            self.backend
-                                .builder
-                                .build_load(self.backend.context.i64_type(), slot, "origin_homes")
-                                .unwrap()
-                                .into_int_value()
-                        } else {
-                            self.backend.context.i64_type().const_zero()
-                        };
-                        let service = self.ensure_runtime_import(RuntimeFn::ExceptionFrameOrigin);
-                        self.backend
-                            .builder
-                            .build_execution_call(service, &[homes.into()], "origin_capture")
-                            .unwrap();
-                        self.jump_with_args(
-                            source_block,
-                            "check-exception-origin-edge",
-                            target_block_id,
-                            &op.operands,
-                        );
-                    }
-                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {
-                        self.branch_with_args_if(
-                            has_exception,
-                            source_block,
-                            "check-exception-unwind-edge",
-                            target_bb,
-                            target_block_id,
-                            &op.operands,
-                            continue_bb,
-                        );
-                    }
-                }
-                self.backend.builder.position_at_end(continue_bb);
-            }
 
             // -- SCF dialect ops --
             // These must reach LLVM as real CFG, loop, and phi structure. The
