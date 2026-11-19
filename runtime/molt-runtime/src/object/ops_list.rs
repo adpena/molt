@@ -756,13 +756,11 @@ fn sort_storage(
             if reverse {
                 items.reverse();
             }
-            // Run detection changed in CPython 3.13, and with it the
+            // Run detection (3.13) and the minrun schedule (3.15) decide the
             // comparisons a sort makes.
-            let runs = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
-                timsort::RunDetection::WeaklyDescending
-            } else {
-                timsort::RunDetection::StrictlyDescending
-            };
+            let runs = timsort::SortGeneration::for_minor(
+                crate::object::ops_sys::runtime_target_minor(_py),
+            );
             let sorted =
                 timsort::timsort(&mut items, runs, |left, right| {
                     match rich_compare_op_bool(

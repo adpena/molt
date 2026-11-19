@@ -7,7 +7,7 @@
 
 use crate::abi_types::{Py_ssize_t, PyListObject, PyObject};
 use crate::api::{errors, memory, refcount, typeobj};
-use molt_lang_obj_model::timsort::{RunDetection, TimsortError, timsort};
+use molt_lang_obj_model::timsort::{SortGeneration, TimsortError, timsort};
 use std::ptr;
 
 /// Release an already-detached buffer, preserving CPython's reverse item order.
@@ -468,11 +468,9 @@ pub(super) unsafe fn sort(
         (*list).ob_item = ptr::null_mut();
         (*list).ob_base.ob_size = 0;
         (*list).allocated = -1;
-        let runs = if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 13) {
-            RunDetection::WeaklyDescending
-        } else {
-            RunDetection::StrictlyDescending
-        };
+        let runs = SortGeneration::for_target(|major, minor| {
+            (crate::hooks::hooks_or_stubs().target_python_at_least)(major, minor)
+        });
         let compare = |left: *mut PyObject, right: *mut PyObject| {
             let less = typeobj::PyObject_RichCompareBool(left, right, 0);
             if less < 0 { Err(()) } else { Ok(less != 0) }
