@@ -612,7 +612,14 @@ def _failures_on_base(
         }
         try:
             result = _COMMANDS.run(
-                [sys.executable, "-m", "pytest", "-q", *present, f"--junitxml={report}"],
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    *present,
+                    f"--junitxml={report}",
+                ],
                 cwd=tree,
                 env=base_env,
                 timeout=RERUN_TIMEOUT_S,
