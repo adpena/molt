@@ -7,9 +7,21 @@
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+
+use molt_ir::deterministic_hash::HashMap;
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
+use molt_ir::runtime_callable_symbols::RuntimeFnSet;
+
 use super::builder::CodegenBuilder;
-use super::constants;
+use super::control::{self, Edges};
 use super::function::FunctionCx;
+use super::value_table::{HeldCarrier, ValueTable};
+use super::{constants, returns};
+use crate::representation_plan::ProducerCarrierPlan;
+use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
@@ -182,5 +194,378 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::YieldFrom => return false,
         }
         true
+    }
+}
+
+/// What a backend lends the walk for one function.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the W3 switch lane's Cranelift dispatch is its first production caller"
+    )
+)]
+pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
+    pub(crate) func: &'a TirFunction,
+    pub(crate) plan: &'a ProducerCarrierPlan,
+    /// The function's physical parameters after the execution context, in
+    /// its linkage row's order.
+    pub(crate) entry: &'a [B::Value],
+    /// Each compiled function's frozen linkage row, by linker symbol; the
+    /// function's own row declares its parameters and result.
+    pub(crate) linkage: &'a BTreeMap<String, NativeFunctionLinkageAbi>,
+    pub(crate) functions: &'a molt_ir::FunctionTable,
+    pub(crate) runtime: &'a RuntimeFnSet,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the W3 switch lane's Cranelift dispatch is its first production caller"
+    )
+)]
+/// Lower `input.func` through `b`, which stands in the function's empty
+/// physical entry block. The physical entry converts each parameter from
+/// its linkage carrier to the TIR entry's carrier and jumps to the TIR
+/// entry, so the TIR entry may have predecessors on every backend. Blocks
+/// are walked in reverse postorder; each takes its parameters before any
+/// branch to it is built. An op the walker does not own refuses the
+/// function with a diagnostic naming its opcode, as does any other refusal.
+pub(crate) fn lower_function<B: CodegenBuilder>(
+    b: &mut B,
+    input: FunctionInput<'_, B>,
+) -> Result<(), Vec<String>> {
+    let FunctionInput {
+        func,
+        plan,
+        entry,
+        linkage,
+        functions,
+        runtime,
+    } = input;
+    crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| format!("{}: {error}", func.name))
+            .collect::<Vec<_>>()
+    })?;
+    if !func.blocks.contains_key(&func.entry_block) {
+        return Err(vec![format!(
+            "{}: entry block {:?} is missing from TIR block map",
+            func.name, func.entry_block
+        )]);
+    }
+    let Some(own) = linkage.get(&func.name) else {
+        return Err(vec![format!(
+            "{}: the function has no exact native linkage ABI",
+            func.name
+        )]);
+    };
+    // The TIR entry first, then every other block by id.
+    let mut ids: Vec<BlockId> = func.blocks.keys().copied().collect();
+    ids.sort_by_key(|id| (*id != func.entry_block, id.0));
+    let blocks: HashMap<BlockId, B::Block> = ids
+        .iter()
+        .map(|&id| (id, b.create_block(&format!("bb{}", id.0))))
+        .collect();
+    let rpo = crate::tir::dominators::executable_reverse_postorder(func);
+    let mut values = ValueTable::with_capacity(func.next_value);
+    for &id in &rpo {
+        for arg in &func.blocks[&id].args {
+            let held = HeldCarrier::of(&plan.effective_value_type(arg.id, &arg.ty));
+            let value = b.append_block_param(blocks[&id], control::carrier_kind(held));
+            values.set_value(arg.id, value);
+            values.set_repr(arg.id, held);
+        }
+    }
+    let diagnostics = RefCell::new(Vec::new());
+    let fatal = |message: String| {
+        diagnostics
+            .borrow_mut()
+            .push(format!("{}: {message}", func.name))
+    };
+    // The physical entry: each parameter in the TIR entry's carrier.
+    let entry_block = &func.blocks[&func.entry_block];
+    let mut entry_args = Vec::with_capacity(entry_block.args.len());
+    for (index, arg) in entry_block.args.iter().enumerate() {
+        let effective = plan.effective_value_type(arg.id, &arg.ty);
+        let kind = control::carrier_kind(HeldCarrier::of(&effective));
+        let value = match (entry.get(index), own.param_types.get(index)) {
+            (Some(&param), Some(ty)) => {
+                control::coerce(b, plan, param, HeldCarrier::of(ty), None, &effective)
+                    .unwrap_or_else(|| {
+                        fatal(format!(
+                            "entry parameter {index} of linkage type {ty:?} cannot hold %{} as {effective:?}",
+                            arg.id.0
+                        ));
+                        b.placeholder(kind)
+                    })
+            }
+            _ => {
+                fatal(format!(
+                    "entry block argument %{} at index {index} has no corresponding function parameter",
+                    arg.id.0
+                ));
+                b.placeholder(kind)
+            }
+        };
+        entry_args.push(value);
+    }
+    b.jump(blocks[&func.entry_block], &entry_args);
+    let call_sites = Cell::new(0);
+    for &id in &rpo {
+        b.switch_to_block(blocks[&id]);
+        let block = &func.blocks[&id];
+        let mut cx = FunctionCx {
+            func,
+            plan,
+            values: &mut values,
+            diagnostics: &diagnostics,
+            runtime,
+            linkage,
+            functions,
+            call_sites: &call_sites,
+        };
+        for op in &block.ops {
+            if !cx.walker_owned_op(b, op) {
+                cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
+            }
+        }
+        let mut edge_diagnostics = Vec::new();
+        let edges = Edges {
+            func,
+            plan,
+            values: cx.values,
+            blocks: &blocks,
+        };
+        if edges.terminator(b, id, &block.terminator, &mut edge_diagnostics) {
+            diagnostics.borrow_mut().extend(edge_diagnostics);
+            continue;
+        }
+        match &block.terminator {
+            Terminator::Return { values: returned } => {
+                // A function that enters a frame record never reaches here:
+                // its entry op is a family the walker does not own yet.
+                returns::emit_return(&mut cx, b, own, returned.first().copied(), None);
+            }
+            Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => match entry.first() {
+                Some(&frame) => {
+                    let frame = b.expect_word(frame);
+                    edges.dispatch_state(
+                        b,
+                        id,
+                        frame,
+                        cases,
+                        (*default, default_args),
+                        &mut edge_diagnostics,
+                    );
+                }
+                None => {
+                    cx.fatal("a state dispatch needs the poll's frame parameter");
+                    b.unreachable();
+                }
+            },
+            other => unreachable!("Edges lowers {other:?}"),
+        }
+        diagnostics.borrow_mut().extend(edge_diagnostics);
+    }
+    // A block the walk never reaches still ends in a terminator.
+    for id in &ids {
+        if !rpo.contains(id) {
+            b.switch_to_block(blocks[id]);
+            b.unreachable();
+        }
+    }
+    let diagnostics = diagnostics.into_inner();
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
+#[cfg(all(test, feature = "native-backend"))]
+mod tests {
+    //! Whole functions through the walk, compiled as Cranelift machine code
+    //! and called. The oracle is each function's Python meaning.
+
+    use super::*;
+    use crate::codegen_ssa::scalar::tests::Value;
+    use crate::native_backend::codegen_builder::machine::run_function;
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect};
+    use crate::tir::types::TirType;
+    use crate::tir::values::{TirValue, ValueId};
+
+    const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
+
+    /// `name`'s own linkage row: boxed parameters and a boxed result.
+    fn row(name: &str, params: usize) -> BTreeMap<String, NativeFunctionLinkageAbi> {
+        let abi = NativeFunctionLinkageAbi {
+            source_signature: crate::ir::ExternFunctionSignature {
+                arity: params,
+                has_closure: false,
+                returns_value: true,
+                execution_context: crate::ir::ExecutionContextPolicy::None,
+            },
+            parameter_custody: Vec::new(),
+            param_types: vec![TirType::DynBox; params],
+            return_type: Some(TirType::DynBox),
+        };
+        BTreeMap::from([(name.to_owned(), abi)])
+    }
+
+    /// Walk `func` and call it on `args`; the fact is the walk's verdict.
+    fn walk(
+        func: &TirFunction,
+        args: &[u64],
+    ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
+        let linkage = row(&func.name, args.len());
+        let plan = ProducerCarrierPlan::default();
+        let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+        let functions = molt_ir::FunctionTable::default();
+        run_function(args, |b, params| {
+            lower_function(
+                b,
+                FunctionInput {
+                    func,
+                    plan: &plan,
+                    entry: params,
+                    linkage: &linkage,
+                    functions: &functions,
+                    runtime: &runtime,
+                },
+            )
+        })
+    }
+
+    fn op(opcode: OpCode, operands: &[u32], results: &[u32], value: Option<i64>) -> TirOp {
+        let mut attrs = AttrDict::default();
+        if let Some(value) = value {
+            attrs.insert("value".into(), AttrValue::Int(value));
+        }
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: operands.iter().map(|&id| ValueId(id)).collect(),
+            results: results.iter().map(|&id| ValueId(id)).collect(),
+            attrs,
+            source_span: None,
+            origin: None,
+            runtime: None,
+            callee: None,
+        }
+    }
+
+    #[test]
+    fn a_parameter_crosses_a_block_parameter_to_the_return() {
+        let mut func = TirFunction::new(
+            "walk_identity".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let next = func.fresh_block();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: next,
+            args: vec![ValueId(0)],
+        };
+        let arg = func.fresh_value();
+        func.value_types.insert(arg, TirType::DynBox);
+        func.blocks.insert(
+            next,
+            TirBlock {
+                id: next,
+                args: vec![TirValue {
+                    id: arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![arg] },
+            },
+        );
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn an_unproven_raw_constant_is_boxed_by_the_runtime_for_the_boxed_return() {
+        let mut func = TirFunction::new(
+            "walk_constant".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let seven = func.fresh_value();
+        func.value_types.insert(seven, TirType::I64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(op(OpCode::ConstInt, &[], &[seven.0], Some(7)));
+        entry.terminator = Terminator::Return {
+            values: vec![seven],
+        };
+        let run = walk(&func, &[]);
+        assert_eq!(run.fact, Ok(()));
+        // No plan fact proves 7 inline-safe, so the runtime boxes it.
+        assert_eq!(
+            run.results,
+            [Value::Word(crate::codegen_ssa::scalar::tests::HEAP_INT)]
+        );
+        assert_eq!(
+            run.runtime_calls,
+            [molt_ir::runtime_fn_generated::RuntimeFn::IntFromI64]
+        );
+    }
+
+    #[test]
+    fn an_op_the_walker_does_not_own_refuses_the_function_by_name() {
+        let mut func = TirFunction::new(
+            "walk_refused".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let iterator = func.fresh_value();
+        func.value_types.insert(iterator, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(op(OpCode::GetIter, &[0], &[iterator.0], None));
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let linkage = row(&func.name, 1);
+        let plan = ProducerCarrierPlan::default();
+        let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+        let functions = molt_ir::FunctionTable::default();
+        // A refused function is never called; it must still verify.
+        let run = run_function(&[OBJECT], |b, params| {
+            lower_function(
+                b,
+                FunctionInput {
+                    func: &func,
+                    plan: &plan,
+                    entry: params,
+                    linkage: &linkage,
+                    functions: &functions,
+                    runtime: &runtime,
+                },
+            )
+        });
+        let Err(diagnostics) = run.fact else {
+            panic!("the walk refuses GetIter")
+        };
+        assert_eq!(
+            diagnostics,
+            ["walk_refused: the walker does not lower GetIter yet"]
+        );
     }
 }
