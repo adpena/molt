@@ -83,6 +83,20 @@ impl RaiseFacts {
         op_may_raise(&self.value_types, &self.const_ints, op)
     }
 
+    /// Whether only this function's exact scalar types prove the op cannot
+    /// raise: without them it may. The caller records the proof on the op, so
+    /// a later reader (the exception-region verifier, frame observers) reads
+    /// the fact instead of re-deriving it from types a later pass may weaken
+    /// (bench_procedural_gen: GVN's unrelated copy left `chance > 0.95` typed
+    /// only as DynBox, and the verifier rejected the check this pass had
+    /// removed).
+    pub(crate) fn exact_types_disprove_raise(&self, op: &TirOp) -> bool {
+        !op.has_nothrow_proof()
+            && !op.is_async_work_poll()
+            && op_may_throw_with_types(op, &HashMap::default())
+            && !op_may_raise(&self.value_types, &self.const_ints, op)
+    }
+
     /// Whether the op's own facts say it may raise but its operand values
     /// disprove every raise (a nonzero constant divisor, a constant machine
     /// shift count). The caller records the proof on the op, so every reader
