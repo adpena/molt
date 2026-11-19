@@ -143,6 +143,10 @@ for method, argument in (("decompress", -1), ("decompress", None),
             decoder.flush(argument)
     except Exception as exc:
         print("invalid-size", method, argument, type(exc).__name__, str(exc))
+try:
+    zlib.decompress(zlib.compress(b"x"), bufsize=-1)
+except Exception as exc:
+    print("invalid-size", "zlib.decompress", -1, type(exc).__name__, str(exc))
 
 
 class StreamInput:

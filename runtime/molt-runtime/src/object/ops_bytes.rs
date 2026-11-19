@@ -2000,6 +2000,13 @@ pub(crate) fn bytearray_init_from_arguments(
                 break;
             }
             let Some(value) = bytes_item_to_u8(py, item, BytesCtorKind::Bytearray) else {
+                // 3.14+ empties the presized storage when an exact int is out
+                // of range; 3.12 and 3.13 keep the presized length.
+                if crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+                    unsafe {
+                        bytearray_mutate(py, ptr, 0, crate::object::molt_vec::MoltVec::clear);
+                    }
+                }
                 return MoltObject::none().bits();
             };
             unsafe {

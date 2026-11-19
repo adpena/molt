@@ -688,7 +688,8 @@ fn release_taken(py: &PyToken<'_>, taken: Vec<TakenBinding>, policy: FramePolicy
 /// genexpr is cleared with its operand stack. Control and scratch slots and
 /// the closure stay with the task object that owns them.
 ///
-/// `started` says whether the body ever ran.
+/// `started` says whether the frame was ever entered: the body ran, or a
+/// throw raised at its first instruction.
 ///
 /// # Safety
 /// `ptr` must be a live generator or native coroutine task under the GIL,

@@ -3948,7 +3948,10 @@ unsafe fn unicode_error_reinit(
     let kind = unicode_error_kind_for_class(class_bits)
         .ok_or("Unicode typed layout requires a concrete UnicodeError root")?;
     let none = exception_field_missing_bits();
+    // 3.12 and 3.13 clear the string fields before parsing; from 3.14 a
+    // rejected argument tuple leaves every field as it was.
     let cleared = match kind {
+        _ if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) => &[][..],
         exception_payload::UnicodeErrorKind::Translate => &[
             (ExceptionTypedField::UnicodeObject, none),
             (ExceptionTypedField::UnicodeReason, none),
@@ -6403,73 +6406,77 @@ mod tests {
     }
 
     #[test]
-    fn typed_exception_unicode_bad_arity_commits_cpython_312_partial_state() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
+    fn typed_exception_unicode_bad_arity_state_follows_target() {
+        // 3.12 and 3.13 clear encoding, object and reason before parsing and
+        // keep start and end; from 3.14 a rejected tuple keeps every field.
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let encoding_ptr = crate::alloc_string(_py, b"utf-8");
-            let object_ptr = crate::alloc_string(_py, b"x");
-            let reason_ptr = crate::alloc_string(_py, b"old");
-            let encoding = MoltObject::from_ptr(encoding_ptr).bits();
-            let object = MoltObject::from_ptr(object_ptr).bits();
-            let reason = MoltObject::from_ptr(reason_ptr).bits();
-            let initial_ptr = crate::alloc_tuple(
-                _py,
-                &[
-                    encoding,
-                    object,
-                    MoltObject::from_int(0).bits(),
-                    MoltObject::from_int(1).bits(),
-                    reason,
-                ],
-            );
-            let initial = MoltObject::from_ptr(initial_ptr).bits();
-            let class_bits =
-                super::exception_class_bits(_py, crate::BuiltinExc::UnicodeEncodeError);
-            let exc_ptr = super::alloc_exception_from_class_bits(_py, class_bits, initial);
-            assert!(!exc_ptr.is_null());
+            for minor in 12..=15 {
+                transaction.with_target_python_minor(_py, minor, || {
+                    let encoding = MoltObject::from_ptr(crate::alloc_string(_py, b"utf-8")).bits();
+                    let object = MoltObject::from_ptr(crate::alloc_string(_py, b"x")).bits();
+                    let reason = MoltObject::from_ptr(crate::alloc_string(_py, b"old")).bits();
+                    let initial_ptr = crate::alloc_tuple(
+                        _py,
+                        &[
+                            encoding,
+                            object,
+                            MoltObject::from_int(0).bits(),
+                            MoltObject::from_int(1).bits(),
+                            reason,
+                        ],
+                    );
+                    let initial = MoltObject::from_ptr(initial_ptr).bits();
+                    let class_bits =
+                        super::exception_class_bits(_py, crate::BuiltinExc::UnicodeEncodeError);
+                    let exc_ptr = super::alloc_exception_from_class_bits(_py, class_bits, initial);
+                    assert!(!exc_ptr.is_null());
 
-            let bad_ptr = crate::alloc_string(_py, b"bad");
-            let bad = MoltObject::from_ptr(bad_ptr).bits();
-            let bad_args_ptr = crate::alloc_tuple(_py, &[bad]);
-            let bad_args = MoltObject::from_ptr(bad_args_ptr).bits();
-            assert!(
-                unsafe { super::exception_reinitialize_from_args(_py, exc_ptr, bad_args) }.is_err()
-            );
-            assert!(exception_pending(_py));
-            assert_eq!(unsafe { super::exception_args_bits(exc_ptr) }, bad_args);
-            for field in [
-                molt_obj_model::ExceptionTypedField::UnicodeEncoding,
-                molt_obj_model::ExceptionTypedField::UnicodeObject,
-                molt_obj_model::ExceptionTypedField::UnicodeReason,
-            ] {
-                assert_eq!(
-                    unsafe { super::exception_typed_field_raw_bits(exc_ptr, field) },
-                    Some(super::exception_field_missing_bits())
-                );
-            }
-            assert_eq!(
-                unsafe {
-                    super::exception_typed_field_raw_bits(
-                        exc_ptr,
-                        molt_obj_model::ExceptionTypedField::UnicodeStart,
-                    )
-                },
-                Some(0)
-            );
-            assert_eq!(
-                unsafe {
-                    super::exception_typed_field_raw_bits(
-                        exc_ptr,
-                        molt_obj_model::ExceptionTypedField::UnicodeEnd,
-                    )
-                },
-                Some(1)
-            );
-            clear_exception(_py);
+                    let bad = MoltObject::from_ptr(crate::alloc_string(_py, b"bad")).bits();
+                    let bad_args = MoltObject::from_ptr(crate::alloc_tuple(_py, &[bad])).bits();
+                    assert!(
+                        unsafe { super::exception_reinitialize_from_args(_py, exc_ptr, bad_args) }
+                            .is_err()
+                    );
+                    assert!(exception_pending(_py));
+                    assert_eq!(unsafe { super::exception_args_bits(exc_ptr) }, bad_args);
+                    let cleared = minor < 14;
+                    for (field, original) in [
+                        (
+                            molt_obj_model::ExceptionTypedField::UnicodeEncoding,
+                            encoding,
+                        ),
+                        (molt_obj_model::ExceptionTypedField::UnicodeObject, object),
+                        (molt_obj_model::ExceptionTypedField::UnicodeReason, reason),
+                    ] {
+                        let expected = if cleared {
+                            super::exception_field_missing_bits()
+                        } else {
+                            original
+                        };
+                        assert_eq!(
+                            unsafe { super::exception_typed_field_raw_bits(exc_ptr, field) },
+                            Some(expected),
+                            "3.{minor}"
+                        );
+                    }
+                    for (field, original) in [
+                        (molt_obj_model::ExceptionTypedField::UnicodeStart, 0),
+                        (molt_obj_model::ExceptionTypedField::UnicodeEnd, 1),
+                    ] {
+                        assert_eq!(
+                            unsafe { super::exception_typed_field_raw_bits(exc_ptr, field) },
+                            Some(original),
+                            "3.{minor}"
+                        );
+                    }
+                    clear_exception(_py);
 
-            dec_ref_bits(_py, MoltObject::from_ptr(exc_ptr).bits());
-            for bits in [bad_args, bad, initial, reason, object, encoding] {
-                dec_ref_bits(_py, bits);
+                    dec_ref_bits(_py, MoltObject::from_ptr(exc_ptr).bits());
+                    for bits in [bad_args, bad, initial, reason, object, encoding] {
+                        dec_ref_bits(_py, bits);
+                    }
+                });
             }
         });
     }

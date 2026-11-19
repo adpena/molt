@@ -632,6 +632,20 @@ fn pickle_dump_items_from_iterator(
     Ok(())
 }
 
+/// `__reduce__` returned neither a str nor a tuple (`_pickle.c` save); 3.14
+/// names the value's type.
+fn pickle_reduce_shape_error(_py: &crate::PyToken<'_>, reduce_bits: u64) -> u64 {
+    let message = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+        format!(
+            "__reduce__ must return a string or tuple, not {}",
+            type_name(_py, obj_from_bits(reduce_bits))
+        )
+    } else {
+        "__reduce__ must return a string or tuple".to_string()
+    };
+    PickleError::Pickling.raise(_py, &message)
+}
+
 fn pickle_dump_reduce_value(
     _py: &crate::PyToken<'_>,
     state: &mut PickleDumpState,
@@ -639,7 +653,7 @@ fn pickle_dump_reduce_value(
     obj_bits: Option<u64>,
 ) -> Result<(), u64> {
     let Some(ptr) = obj_from_bits(reduce_bits).as_ptr() else {
-        return Err(PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple"));
+        return Err(pickle_reduce_shape_error(_py, reduce_bits));
     };
     let reduce_type = unsafe { object_type_id(ptr) };
     if reduce_type == TYPE_ID_STRING {
@@ -698,7 +712,7 @@ fn pickle_dump_reduce_value(
         return Ok(());
     }
     if reduce_type != TYPE_ID_TUPLE {
-        return Err(PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple"));
+        return Err(pickle_reduce_shape_error(_py, reduce_bits));
     }
     let Some(fields) = (unsafe {
         crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
@@ -711,26 +725,30 @@ fn pickle_dump_reduce_value(
             "tuple returned by __reduce__ must contain 2 through 6 elements",
         ));
     }
+    // 3.14 names every item and the rejected value's type (`_pickle.c` save_reduce).
+    let named = crate::object::ops_sys::runtime_target_at_least(_py, 3, 14);
+    let item_error = |position: &str, requirement: &str, value: u64| -> u64 {
+        let message = if named {
+            format!(
+                "{position} item of the tuple returned by __reduce__ must be {requirement}, not {}",
+                type_name(_py, obj_from_bits(value))
+            )
+        } else {
+            format!("{position} item of the tuple returned by __reduce__ must be {requirement}")
+        };
+        PickleError::Pickling.raise(_py, &message)
+    };
     let callable_bits = fields[0];
     let callable_check = molt_is_callable_attached_body(_py, callable_bits);
     if !is_truthy(_py, obj_from_bits(callable_check)) {
-        return Err(PickleError::Pickling.raise(
-            _py,
-            "first item of the tuple returned by __reduce__ must be callable",
-        ));
+        return Err(item_error("first", "callable", callable_bits));
     }
     let args_bits = fields[1];
-    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(PickleError::Pickling.raise(
-            _py,
-            "second item of the tuple returned by __reduce__ must be a tuple",
-        ));
-    };
-    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(PickleError::Pickling.raise(
-            _py,
-            "second item of the tuple returned by __reduce__ must be a tuple",
-        ));
+    if obj_from_bits(args_bits)
+        .as_ptr()
+        .is_none_or(|args_ptr| unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE)
+    {
+        return Err(item_error("second", "a tuple", args_bits));
     }
     for (index, position) in [(3, "fourth"), (4, "fifth")] {
         if let Some(&iterator) = fields.get(index)
@@ -740,8 +758,9 @@ fn pickle_dump_reduce_value(
                 .map_err(|_| MoltObject::none().bits())?;
             if !valid {
                 let value_type = type_name(_py, obj_from_bits(iterator));
+                let word = if named { "item" } else { "element" };
                 let msg = format!(
-                    "{position} element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+                    "{position} {word} of the tuple returned by __reduce__ must be an iterator, not {value_type}"
                 );
                 return Err(PickleError::Pickling.raise(_py, &msg));
             }
@@ -751,9 +770,15 @@ fn pickle_dump_reduce_value(
         let setter_check = molt_is_callable_attached_body(_py, fields[5]);
         if !is_truthy(_py, obj_from_bits(setter_check)) {
             let value_type = type_name(_py, obj_from_bits(fields[5]));
-            let msg = format!(
-                "sixth element of the tuple returned by __reduce__ must be a function, not {value_type}"
-            );
+            let msg = if named {
+                format!(
+                    "sixth item of the tuple returned by __reduce__ must be callable, not {value_type}"
+                )
+            } else {
+                format!(
+                    "sixth element of the tuple returned by __reduce__ must be a function, not {value_type}"
+                )
+            };
             return Err(PickleError::Pickling.raise(_py, &msg));
         }
     }

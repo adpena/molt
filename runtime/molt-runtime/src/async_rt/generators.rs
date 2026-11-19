@@ -889,14 +889,19 @@ pub(crate) unsafe fn generator_throw_step(
         if execution.from == FrameState::Created {
             // Raise at the created activation's first instruction: one real
             // target frame, entered and left without running the body, under
-            // this call's execution custody.
+            // this call's execution custody. The traceback captures that
+            // frame before the terminal transition, so the frame object takes
+            // the bindings over (CPython's take_ownership) and the exception
+            // keeps the arguments alive.
             let frame = crate::builtins::frames::ActivationFrameScope::enter(py, ptr);
-            generator_complete(py, ptr, false);
+            if frame.is_ok() {
+                crate::molt_exception_trace_prepend_attached_body(py, pending);
+            }
+            generator_complete(py, ptr, frame.is_ok());
             let Ok(_frame) = frame else {
                 dec_ref_bits(py, pending);
                 return Err(());
             };
-            crate::molt_exception_trace_prepend_attached_body(py, pending);
             molt_raise_attached_body(py, pending);
             dec_ref_bits(py, pending);
             return Err(());
