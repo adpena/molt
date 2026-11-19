@@ -12,12 +12,14 @@ pub(crate) mod control;
 pub(crate) mod custody;
 #[cfg(test)]
 pub(crate) mod differential;
+pub(crate) mod direct;
 pub(crate) mod frame;
 pub(crate) mod function;
 pub(crate) mod globals;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
+pub(crate) mod pending;
 #[cfg(test)]
 pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;

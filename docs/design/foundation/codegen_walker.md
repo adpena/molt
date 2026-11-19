@@ -234,6 +234,11 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     LLVM its module declaration, Cranelift an import of the attached execution symbol with one
     parameter per row carrier) and `function_address`. `DirectCall` keeps only its
     thread-record handoff in LLVM around the walker's call.
+  - Moved, slice 15 (round 6): the direct ops (`codegen_ssa::direct`): `DeleteVar`, the `Copy`
+    no preserved-op lowering claimed (an SSA copy passes operand 0 through in its carrier; a
+    preserved origin is refused, as `alias_analysis::CopyLowering` requires), `Alloc`, `OrdAt`,
+    `Raise`, `WarnStderr`, `FunctionDefaultsVersion`. `StackAlloc` (refused) and `Free` (no
+    code) move with the dispatch.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

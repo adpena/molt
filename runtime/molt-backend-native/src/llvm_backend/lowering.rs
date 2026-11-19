@@ -359,10 +359,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
     /// an ambiguous label instead of picking one in hash order.
     exception_targets: std::cell::OnceCell<molt_ir::deterministic_hash::HashMap<i64, BlockId>>,
-    /// This invocation's thread record, read once from the execution context
-    /// in the entry block (`thread_record`). Every compiled function takes
-    /// the context, so every function reads execution state through it.
-    thread_record: Option<inkwell::values::PointerValue<'ctx>>,
     /// The runtime's pending-work word the record lends, read once after the
     /// record (`pending_work_ptr`); only functions that poll read it.
     pending_work_ptr: Option<inkwell::values::PointerValue<'ctx>>,
@@ -434,7 +430,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
         ),
         exception_targets: std::cell::OnceCell::new(),
-        thread_record: None,
         pending_work_ptr: None,
     };
 

@@ -461,7 +461,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             // Invariant J1: the continuation tests the record's pending byte
             // inline; only a set byte reaches the runtime reader.
             assert!(
-                ready_ir.contains_execution("load i8, ptr %exc_pending_byte_ptr"),
+                ready_ir.contains_execution("load i8, ptr %record_word"),
                 "{ir}"
             );
             assert!(
@@ -508,11 +508,27 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 ready_ir.contains_execution(&format!("ret i64 %{call_name}")),
                 "boxed result must survive unchanged: {ir}"
             );
+            // Nothing but the return can consume the allocated task. The caller
+            // still reads its own thread record when checking for an exception.
+            let allocation = blocks
+                .iter()
+                .flat_map(|block| block.get_instructions())
+                .find(|inst| {
+                    inst.get_name()
+                        .is_some_and(|name| name.to_bytes() == call_name.as_bytes())
+                })
+                .expect("the task allocation result");
+            let use_ = allocation.get_first_use().expect("the result is returned");
             assert!(
-                !ready_ir.contains_execution("inttoptr")
-                    && ready_ir.matches_execution("store i64").count() == 1,
+                use_.get_next_use().is_none(),
+                "the task has a second user: {ir}"
+            );
+            assert_eq!(
+                use_.get_user().into_instruction_value().get_opcode(),
+                inkwell::values::InstructionOpcode::Return,
                 "{ir}"
             );
+            assert_eq!(ready_ir.matches_execution("store i64").count(), 1, "{ir}");
             assert!(
                 !ready_ir.contains_execution("@__molt_inline_retain(")
                     && !ready_ir.contains_execution("@molt_task_register_execution("),

@@ -248,6 +248,14 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         Some(self.expect_word(result))
     }
 
+    /// The thread record lent by this invocation. Its entry-block value
+    /// dominates every request, including a first request in a cold block.
+    fn thread_record_word(&mut self) -> Self::Word;
+    /// Load one unsigned thread-local byte at a fixed byte offset.
+    fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
+    /// A call in a cold block, with the usual execution-context ABI.
+    fn call_cold(&mut self, callee: Self::Callee, args: &[Self::Value]) -> Option<Self::Value>;
+
     /// A new block of the function being built, after every existing one.
     /// `name` is a debug name; a backend may ignore it.
     fn create_block(&mut self, name: &str) -> Self::Block;

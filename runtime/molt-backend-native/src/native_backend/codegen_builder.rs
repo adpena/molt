@@ -332,6 +332,23 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.words.builder.inst_results(call).first().copied()
     }
 
+    fn thread_record_word(&mut self) -> Value {
+        self.imports.thread_record(self.words.builder)
+    }
+    fn load_byte(&mut self, address: Value, offset: i32) -> Value {
+        self.ins()
+            .load(types::I8, MemFlagsData::trusted(), address, offset)
+    }
+    fn call_cold(&mut self, callee: FuncRef, args: &[Value]) -> Option<Value> {
+        let block = self
+            .words
+            .builder
+            .current_block()
+            .expect("cold call has a block");
+        self.words.builder.set_cold_block(block);
+        self.call(callee, args)
+    }
+
     fn create_block(&mut self, _name: &str) -> Block {
         self.words.builder.create_block()
     }
@@ -702,13 +719,25 @@ pub(crate) mod machine {
         inputs: &[Value],
         fail_allocation: bool,
     ) -> Run<K::Fact> {
-        run_with(inputs, fail_allocation, |b, args| kernel.build(b, args))
+        run_with(inputs, fail_allocation, 0, |b, args| kernel.build(b, args))
+    }
+
+    pub(crate) fn run_with_pending_byte<K: Kernel>(
+        kernel: &K,
+        inputs: &[Value],
+        fail_allocation: bool,
+        pending: u8,
+    ) -> Run<K::Fact> {
+        run_with(inputs, fail_allocation, pending, |b, args| {
+            kernel.build(b, args)
+        })
     }
 
     /// [`run`] over a body that builds with `NativeCodegen` itself.
     fn run_with<F>(
         inputs: &[Value],
         fail_allocation: bool,
+        pending: u8,
         body: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> (F, Vec<Value_>),
     ) -> Run<F> {
         let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
@@ -791,7 +820,20 @@ pub(crate) mod machine {
         let input_words: Vec<u64> = inputs.iter().copied().map(input_word).collect();
         let mut result_words = vec![0u64; kinds.len()];
         runtime_stubs::begin(fail_allocation);
-        kernel_code(0, input_words.as_ptr(), result_words.as_mut_ptr());
+        let mut record =
+            [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        // The exception hint is one byte at its ABI offset, on either byte order.
+        let first = &mut record[0];
+        let mut bytes = first.to_ne_bytes();
+        bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = pending;
+        *first = u64::from_ne_bytes(bytes);
+        let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
+        attached.bind_thread_record(record.as_mut_ptr() as u64);
+        kernel_code(
+            std::ptr::from_ref(&attached) as u64,
+            input_words.as_ptr(),
+            result_words.as_mut_ptr(),
+        );
         let stubs = runtime_stubs::finish();
         // SAFETY: the kernel has returned; nothing refers to its code.
         unsafe { module.free_memory() };
@@ -834,7 +876,7 @@ pub(crate) mod machine {
         ] {
             for (left, right) in cases {
                 let inputs = [Value::Word(left as u64), Value::Word(right as u64)];
-                let run = run_with(&inputs, false, |b, args| {
+                let run = run_with(&inputs, false, 0, |b, args| {
                     let (value, overflow) = b.int_checked_portable(op, args[0], args[1]);
                     ((), vec![value, overflow])
                 });

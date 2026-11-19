@@ -57,6 +57,9 @@ fn refcount(operation: RefcountOperation, word: u64) {
 
 // Each runtime entry is attached: its first parameter is the execution
 // context, which the stubs ignore.
+extern "C" fn exception_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionPending, &[])
+}
 extern "C" fn int_from_i64(_: u64, raw: u64) -> u64 {
     runtime(RuntimeFn::IntFromI64, &[raw])
 }
@@ -113,6 +116,15 @@ extern "C" fn call_builtin(_: u64, a: u64, b: u64) -> u64 {
 }
 extern "C" fn load_super_method(_: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
     runtime(RuntimeFn::LoadSuperMethod, &[a, b, c, d, e, f])
+}
+extern "C" fn alloc(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::Alloc, &[a])
+}
+extern "C" fn object_publish_initialized(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::ObjectPublishInitialized, &[a])
+}
+extern "C" fn ord_at(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::OrdAt, a, b)
 }
 extern "C" fn call_func_fast0(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::CallFuncFast0, &[a])
@@ -262,6 +274,7 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         .copied()
         .find(|function| function.linker_symbol() == name)?;
     Some(match function {
+        RuntimeFn::ExceptionPending => exception_pending as *const u8,
         RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
         RuntimeFn::IntAsI64 => int_as_i64 as *const u8,
         RuntimeFn::IsTruthy => is_truthy as *const u8,
@@ -278,6 +291,9 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::CallargsNew => callargs_new as *const u8,
         RuntimeFn::CallargsPushPos => callargs_push_pos as *const u8,
         RuntimeFn::CallBind => call_bind as *const u8,
+        RuntimeFn::Alloc => alloc as *const u8,
+        RuntimeFn::ObjectPublishInitialized => object_publish_initialized as *const u8,
+        RuntimeFn::OrdAt => ord_at as *const u8,
         RuntimeFn::CallBindIc => call_bind_ic as *const u8,
         RuntimeFn::CallBuiltin => call_builtin as *const u8,
         RuntimeFn::LoadSuperMethod => load_super_method as *const u8,

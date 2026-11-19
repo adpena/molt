@@ -731,7 +731,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         let confirm = named("exception_pending_confirm");
         let join = named("exception_pending_join");
         assert!(
-            merge.contains_execution("load i8, ptr %check_exc_byte_ptr"),
+            merge.contains_execution("load i8, ptr %record_word"),
             "{ir}"
         );
         assert!(!merge.contains_execution("@molt_exception_pending"), "{ir}");
