@@ -388,7 +388,7 @@ fn byte_search(
             crate::builtins::numbers::index_ssize_clamped_from_obj(
                 py,
                 bits,
-                "slice indices must be integers or None or have an __index__ method",
+                crate::object::ops_sys::EvalSliceIndexError(py),
             )
         }
     };

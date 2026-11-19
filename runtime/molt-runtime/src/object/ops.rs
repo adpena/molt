@@ -219,7 +219,7 @@ pub(crate) fn slice_bounds_from_args(
     has_end: bool,
     len: i64,
 ) -> (i64, i64, i64) {
-    let msg = "slice indices must be integers or None or have an __index__ method";
+    let msg = || crate::object::ops_sys::EvalSliceIndexError(_py);
     let start_obj = if has_start {
         Some(obj_from_bits(start_bits))
     } else {
@@ -234,7 +234,7 @@ pub(crate) fn slice_bounds_from_args(
         if obj.is_none() {
             0
         } else {
-            index_i64_from_obj(_py, start_bits, msg)
+            index_i64_from_obj(_py, start_bits, msg())
         }
     } else {
         0
@@ -243,7 +243,7 @@ pub(crate) fn slice_bounds_from_args(
         if obj.is_none() {
             len
         } else {
-            index_i64_from_obj(_py, end_bits, msg)
+            index_i64_from_obj(_py, end_bits, msg())
         }
     } else {
         len
