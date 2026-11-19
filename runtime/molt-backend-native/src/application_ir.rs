@@ -11,7 +11,9 @@ use molt_ir::ir_schema::FunctionOpShapeDiagnostic;
 use std::collections::BTreeSet;
 
 /// Admit a native application, then prepare its IR before `SimpleBackend`
-/// compiles it.
+/// compiles it. The entry returns to its launch owner. The native launcher
+/// reads the pending exception and exit status, then finalizes the runtime.
+/// An embedded or JIT invocation returns control to its host.
 ///
 /// Admission validates the program's code slots and module slots against the
 /// whole lowered program, before anything is pruned, so a program that names
@@ -35,7 +37,6 @@ pub fn prepare_native_application_ir(
         .unwrap_or_else(|error| panic!("native application decode failed: {error}"));
     code_slots.validate_functions(&ir.functions)?;
     molt_ir::ir::validate_module_slots(module_registry, &ir.functions)?;
-    crate::passes::inject_runtime_exit(ir);
     if !stdlib_split {
         let module_registry_roots: BTreeSet<String> = module_registry
             .map(|registry| registry.init_symbols.iter().cloned().collect())
