@@ -91,7 +91,6 @@ mod codegen_builder;
 #[cfg(feature = "llvm")]
 pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
-mod constant_ops;
 #[cfg(feature = "llvm")]
 mod container_ops;
 #[cfg(feature = "llvm")]
