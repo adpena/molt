@@ -45,6 +45,7 @@ from molt.compiler_analysis.python_source_keys import (
     python_node_source_key,
 )
 from molt.compiler_analysis.python_import_redirects import (
+    IMPORT_SPEC_ATTRIBUTES,
     PythonImportKeyBound,
     decode_python_import_key_bound,
     python_import_key,
@@ -93,6 +94,13 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # reference. ``module`` is None. It writes a module only through a module
     # value that escaped (``module_escape``); the graph joins the two.
     "member_store",
+    # The same on a receiver proven to hold a function or class object: a
+    # function-local name whose every binding anywhere in the module is an
+    # undecorated ``def``, a ``lambda`` assignment or a plain class statement
+    # of that function (``wrapper.__doc__ = ...``). It is no module, so the
+    # graph joins it with escaped module values only while a frame-locals
+    # writer (``frame_locals``) could rebind that local. ``module`` is None.
+    "local_definition_store",
     # The same with a computed name (``setattr(x, name, value)``,
     # ``x.__setattr__(name, value)``) on a receiver that is not a module
     # reference. ``module`` and ``name`` are None. It may write any
@@ -267,7 +275,9 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         raise ValueError("invalid namespace reflection")
     if construct == "code" and (module is not None or name is not None):
         raise ValueError("invalid code reflection")
-    if construct == "member_store" and (module is not None or name is None):
+    if construct in {"member_store", "local_definition_store"} and (
+        module is not None or name is None
+    ):
         raise ValueError("invalid member store")
     if construct == "computed_member_store" and (
         module is not None or name is not None
@@ -948,6 +958,27 @@ class _MappingFlow:
         return frozenset(keys)
 
 
+# Stores that stay possible module writes whatever their receiver: import
+# spec and loader-state attributes (D2b) and ``__class__``, which the
+# instance-class fact reads.
+_CONSERVATIVE_MEMBER_NAMES: Final = IMPORT_SPEC_ATTRIBUTES | {"_initializing"}
+
+
+def _statement_function(
+    node: ast.AST, parents: dict[ast.AST, ast.AST]
+) -> ast.AST | None:
+    """The function whose body runs ``node``, or None at module or class
+    level or inside a lambda."""
+    child, current = node, parents.get(node)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current if child in current.body else None
+        if isinstance(current, (ast.Lambda, ast.ClassDef, ast.Module)):
+            return None
+        child, current = current, parents.get(current)
+    return None
+
+
 class _NamespaceWriteCollector:
     """One traversal finds candidate sites; classification runs once imports are known."""
 
@@ -970,6 +1001,8 @@ class _NamespaceWriteCollector:
         self.own_namespace_line = 0
         self.mapping_flow: _MappingFlow | None = None
         self.parents: dict[ast.AST, ast.AST] | None = None
+        # (function, name) -> whether the name holds only local definitions.
+        self.local_definitions: dict[tuple[ast.AST, str], bool] = {}
         self.globals_rebound: bool | None = None
         self.writes: dict[
             tuple[
@@ -1278,12 +1311,115 @@ class _NamespaceWriteCollector:
                 module, name, construct, line, site.source_owner, source_site, key_bound
             )
 
-    def _member_store(self, name: str | None, site: _Site) -> None:
+    def _member_store(
+        self, name: str | None, site: _Site, receiver: ast.AST | None = None
+    ) -> None:
         """An attribute write on a receiver that is not a module reference."""
         if name is None:
             self._record(None, None, "computed_member_store", site)
+        elif (
+            receiver is not None
+            and name not in _CONSERVATIVE_MEMBER_NAMES
+            and self._local_definition(receiver)
+        ):
+            self._record(None, name, "local_definition_store", site)
         else:
             self._record(None, name, "member_store", site)
+
+    def _local_definition(self, receiver: ast.AST) -> bool:
+        """Whether ``receiver`` is a function-local name proven to hold a
+        function or class object, never a module.
+
+        Every binding of the name anywhere in the module must be an
+        undecorated ``def``, a single-target ``name = lambda`` or a class
+        statement with no bases, keywords or decorators, made in the same
+        function; the name is no parameter, ``global`` or ``nonlocal`` there.
+        A parameter, a module global, an import or any other binding keeps the
+        store a possible module write (HF-926).
+        """
+        if not isinstance(receiver, ast.Name):
+            return False
+        parents = self._tree_parents()
+        function: ast.AST | None = None
+        child: ast.AST = receiver
+        current = parents.get(receiver)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Defaults, decorators and annotations run in the outer scope.
+                if child in current.body:
+                    function = current
+                break
+            if isinstance(current, (ast.Lambda, ast.ClassDef, ast.Module)):
+                break
+            child, current = current, parents.get(current)
+        if function is None:
+            return False
+        key = (function, receiver.id)
+        known = self.local_definitions.get(key)
+        if known is None:
+            known = self._binds_only_definitions(function, receiver.id, parents)
+            self.local_definitions[key] = known
+        return known
+
+    def _binds_only_definitions(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        name: str,
+        parents: dict[ast.AST, ast.AST],
+    ) -> bool:
+        """Whether every binding of ``name`` inside ``function``, nested
+        scopes included, is a definition made by ``function`` itself."""
+        definitions = 0
+        for node in ast.walk(function):
+            if node is function:
+                continue
+            if isinstance(node, ast.arg) and node.arg == name:
+                return False
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+                return False
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name != name:
+                    continue
+                plain = not node.decorator_list and (
+                    not isinstance(node, ast.ClassDef)
+                    or not (node.bases or node.keywords)
+                )
+                if not plain or _statement_function(node, parents) is not function:
+                    return False
+                definitions += 1
+                continue
+            if isinstance(node, ast.Name) and isinstance(
+                node.ctx, (ast.Store, ast.Del)
+            ):
+                if node.id != name:
+                    continue
+                assign = parents.get(node)
+                if (
+                    isinstance(node.ctx, ast.Store)
+                    and isinstance(assign, ast.Assign)
+                    and assign.targets == [node]
+                    and isinstance(assign.value, ast.Lambda)
+                    and _statement_function(assign, parents) is function
+                ):
+                    definitions += 1
+                    continue
+                return False
+            if name in _NamespaceWriteCollector._other_bindings(node):
+                return False
+        return definitions > 0
+
+    @staticmethod
+    def _other_bindings(node: ast.AST) -> list[str]:
+        """Names bound by an import, an except clause or a match pattern."""
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return [python_import_binding(alias) for alias in node.names]
+        if isinstance(node, ast.ExceptHandler) and node.name:
+            return [node.name]
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            return [node.name]
+        if isinstance(node, ast.MatchMapping) and node.rest:
+            return [node.rest]
+        return []
 
     def _reflects_own_namespace(self, node: ast.AST) -> None:
         line = getattr(node, "lineno", 0) or 1
@@ -1697,7 +1833,7 @@ class _NamespaceWriteCollector:
                 name = None if node.attr in {"__class__", "__dict__"} else node.attr
                 self._record(module, name, "attribute", site)
             else:
-                self._record(None, node.attr, "member_store", site)
+                self._member_store(node.attr, site, node.value)
             return
         if (
             node.attr == "import_module"
@@ -1761,7 +1897,7 @@ class _NamespaceWriteCollector:
             if is_module:
                 self._record(module, name, "setattr", site)
             else:
-                self._member_store(name, site)
+                self._member_store(name, site, node.args[0])
         elif func == "vars" and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:

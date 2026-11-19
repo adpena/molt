@@ -155,7 +155,10 @@ from molt.frontend import ClassId, MoltValue, SimpleTIRGenerator
 from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.source_root import compiler_source_root
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    python_namespace_name_universe,
+)
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -14247,7 +14250,14 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
             module_name=module_name,
             is_package=bool(record.is_package),
             import_scan_mode=record.mode,
-            namespace_premise=record.namespace_premise,
+            # Discovery scans read the premise's scan view (HF-926).
+            namespace_premise=(
+                None
+                if record.namespace_premise is None
+                else record.namespace_premise.scan_view(
+                    python_namespace_name_universe(source)
+                )
+            ),
         )
 
     assert collect_calls == first_collect_calls
