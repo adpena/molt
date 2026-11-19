@@ -684,7 +684,7 @@ pub(crate) fn initialize_runtime_resources() -> Option<crate::resource::Resource
 
     // The program stack is part of the startup footprint the backstop is
     // measured from (state::program_stack::reserve_main_stack).
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     crate::state::program_stack::reserve_main_stack();
     match resource_limits_from_env() {
         Ok(Some(limits)) => {

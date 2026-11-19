@@ -38,3 +38,5 @@ NATIVE_LAUNCH_C_DECLARATIONS = "extern void molt_register_compiled_sources(const
 # pointer width; the Windows native link reserves it for the main thread.
 PROGRAM_STACK_RESERVE_BYTES_64 = 1073741824
 PROGRAM_STACK_RESERVE_BYTES_32 = 67108864
+# The Mach-O main thread's own stack (`-stack_size`); macOS runs the program on it.
+PROGRAM_STACK_MACHO_MAIN_BYTES = 536870912

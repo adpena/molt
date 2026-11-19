@@ -930,11 +930,14 @@ prologue check, CPython 3.14's soft and hard limits: `RecursionError` between th
 the hard one). The guest stack grows by reservation, not by switching
 (2026-11-15, molt-runtime `state/program_stack.rs`): every thread that runs compiled code runs on
 1 GiB of reserved address space (`runtime/native_launch_abi.toml` `[program_stack]`), committed
-only as the stack reaches it. The Unix main thread switches to it once at the entry
+only as the stack reaches it. The Linux and BSD main thread switches to it once at the entry
 (`molt_run_program_entry`, one mapping entered with `psm::on_stack`, staying the OS main thread;
 runtime init maps it before the Linux `RLIMIT_DATA` memory backstop, which charges a writable mapping
 in full when it is made, and threads under that backstop request the C library's stack); Windows reserves it in the
 PE header (`/STACK`, `--stack`), because a switched stack there is a fiber whose size is committed;
+the macOS main thread runs on its own stack, sized in the Mach-O header (`-stack_size`, 512 MiB, which
+ld allows at most on arm64, about three million frames), because on a switched stack `sample` and
+Instruments cannot walk the frames and attribute every sample to `_dyld_start` (2026-11-18);
 runtime-started threads request it unless `threading.stack_size()` was set. That has no hot split,
 no per-call switch and no fast-path cost. Measured: before, native Molt died with SIGSEGV between
 10,000 and 50,000 frames; now `down(1_000_000)` returns as on CPython 3.14 (0.39 s, 252 MB peak RSS),
