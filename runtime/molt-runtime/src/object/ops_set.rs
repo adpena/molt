@@ -1226,6 +1226,10 @@ unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoin
             .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         while let Some(item) = iter.next()? {
             let item = SetOwned::adopt(py, item);
+            // CPython's set_contains_key names the set-element context (3.14+).
+            if !ensure_hashable(py, item.bits, HashContext::SetElement) {
+                return Err(molt_runtime_core::ErrorIndicatorSet);
+            }
             let found = unsafe { set_find_entry(py, set, item.bits) };
             drop(item);
             let found = found.map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
