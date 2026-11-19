@@ -31793,14 +31793,8 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::Add => &[],
         OpCode::Sub => &[],
         OpCode::Mul => &[],
-        OpCode::CheckedAdd => &[
-            Some(OperandIndependentResultType::I64),
-            Some(OperandIndependentResultType::Bool),
-        ],
-        OpCode::CheckedMul => &[
-            Some(OperandIndependentResultType::I64),
-            Some(OperandIndependentResultType::Bool),
-        ],
+        OpCode::CheckedAdd => &[None, Some(OperandIndependentResultType::Bool)],
+        OpCode::CheckedMul => &[None, Some(OperandIndependentResultType::Bool)],
         OpCode::InplaceAdd => &[],
         OpCode::InplaceSub => &[],
         OpCode::InplaceMul => &[],

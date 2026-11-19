@@ -61,10 +61,10 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| proven.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            let result_types = if let Some(facts) =
-                crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
+            let result_types = if op.results.len() == 1
+                && let Some(facts) = crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
             {
-                vec![facts.result_type; op.results.len()]
+                vec![facts.result_type]
             } else {
                 infer_result_types_with_attrs(
                     op.opcode,

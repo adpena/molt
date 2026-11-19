@@ -107,6 +107,17 @@ pub(super) fn infer_result_types_with_attrs(
     (0..result_count)
         .map(|index| {
             opcode_operand_independent_result_tir_type(opcode, index).or_else(|| {
+                // Checked arithmetic keeps the corresponding Python payload
+                // type. Only its overflow flag is independent of the operands.
+                if index == 0 && matches!(opcode, OpCode::CheckedAdd | OpCode::CheckedMul) {
+                    let arithmetic = if opcode == OpCode::CheckedAdd {
+                        OpCode::Add
+                    } else {
+                        OpCode::Mul
+                    };
+                    return crate::tir::op_semantics::op_instance_facts(arithmetic, operand_types)
+                        .and_then(|facts| facts.result_type);
+                }
                 if opcode == OpCode::IterNextUnboxed && index == 0 {
                     match operand_types {
                         [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),

@@ -1448,8 +1448,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     expected = {name: [ty] for name, ty in expected.items()}
     expected.update(
         {
-            "CheckedAdd": ["i64", "bool"],
-            "CheckedMul": ["i64", "bool"],
+            "CheckedAdd": ["operand", "bool"],
+            "CheckedMul": ["operand", "bool"],
             # A native callable's address is a machine word.
             "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
