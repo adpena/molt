@@ -657,6 +657,9 @@ def _main() -> None:
 
                 payload = capture_current_python_environment(
                     root,
+                    excluded_relative_paths=(
+                        _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+                    ),
                     admitted_site_bootstrap_paths=bootstrap,
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,
