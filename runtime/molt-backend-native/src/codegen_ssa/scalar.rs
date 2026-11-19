@@ -299,6 +299,10 @@ pub(crate) mod tests {
         type Slot = usize;
         type Callee = ModelCallee;
         type RefcountSite = RefcountOperation;
+        fn async_work_pending(&mut self) -> bool {
+            // The model has no async work.
+            false
+        }
         fn thread_record_word(&mut self) -> u64 {
             let slot = match self.thread_record_slot {
                 Some(slot) => slot,

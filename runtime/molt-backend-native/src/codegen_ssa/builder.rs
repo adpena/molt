@@ -265,6 +265,11 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// The thread record lent by this invocation. Its entry-block value
     /// dominates every request, including a first request in a cold block.
     fn thread_record_word(&mut self) -> Self::Word;
+    /// Whether async work waits for a poll: the thread's pending-work word
+    /// (its address lent by the thread record, read once per invocation) is
+    /// nonzero. The read is a relaxed atomic load no pass merges with another
+    /// read or hoists out of a loop.
+    fn async_work_pending(&mut self) -> Self::Predicate;
     /// Load one unsigned thread-local byte at a fixed byte offset.
     fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
     /// A call in a cold block, with the usual execution-context ABI.

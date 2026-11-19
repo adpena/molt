@@ -470,3 +470,9 @@ pub(crate) fn begin(fail_allocation: bool, thread_record: u64) {
 pub(crate) fn finish() -> Stubs {
     STUBS.take()
 }
+
+/// Hold a current exception from the start of the run when `raised`, as a
+/// runtime that raised before the code ran does.
+pub(crate) fn raise_when(raised: bool) {
+    STUBS.with_borrow_mut(|stubs| stubs.model.pending_exception = raised);
+}

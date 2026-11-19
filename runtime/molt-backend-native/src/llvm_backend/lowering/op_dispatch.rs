@@ -8,9 +8,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
         // The walker's dispatch first (`FunctionCx::walker_owned_op`); the
         // arms below are the families not yet moved into it.
-        let mut owned = false;
-        self.walker_op(|cx, b| owned = cx.walker_owned_op(b, op));
-        if owned {
+        if self.walker_owned(source_block, op) {
             return;
         }
         match op.opcode {
@@ -68,48 +66,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
 
-            // -- ExceptionPending: read the runtime exception-pending flag as
-            //    an exact i1 boolean (`molt_exception_pending() != 0`). Produced
-            //    by `loop_break_if_exception` and consumed as the condition of
-            //    the loop-exit CondBranch that breaks an iterator-consumer loop
-            //    on a mid-iteration raise.  Non-foldable: it observes mutable
-            //    runtime state, so the value (and the break) always survive.
-            OpCode::ExceptionPending => {
-                let raw = self.emit_exception_pending_word("exc_pending");
-                if let Some(&result_id) = op.results.first() {
-                    let pending = self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            raw,
-                            self.backend.context.i64_type().const_zero(),
-                            "exc_pending_bool",
-                        )
-                        .unwrap();
-                    self.values.set_value(result_id, pending.into());
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                    );
-                }
-            }
-
-            // -- AsyncWorkPending: test the thread's pending-work word. It
-            //    services nothing; a promoted module loop branches on it to
-            //    the unpromoted loop, whose poll runs the work.
-            OpCode::AsyncWorkPending => {
-                let pending = self.emit_async_work_pending();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.set_value(result_id, pending.into());
-                    self.values.set_repr(
-                        result_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                    );
-                }
-            }
-
-            // -- CheckException: transfer to its explicit exceptional successor --
+            // -- CheckException: the walker lowers a plain check's unwind edge;
+            //    this arm keeps the async-work poll and the origin edge, which
+            //    need the frame's homes (the switch lane's frame family).
             OpCode::CheckException => {
                 let Some(target_label) = op.attrs.get("value").and_then(|v| match v {
                     AttrValue::Int(v) => Some(*v),

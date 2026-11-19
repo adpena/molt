@@ -15,20 +15,41 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use super::builder::CodegenBuilder;
+use super::builder::IntComparison;
 use super::control::{self, Edges};
 use super::function::FunctionCx;
 use super::value_table::{HeldCarrier, ValueTable};
-use super::{constants, returns};
+use super::{constants, pending, returns};
 use crate::representation_plan::ProducerCarrierPlan;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
+
+/// Where in the walk an op lowers: its block and the function's blocks,
+/// for the ops that end their block with an edge.
+pub(crate) struct Position<'a, B: CodegenBuilder> {
+    pub(crate) source: BlockId,
+    pub(crate) blocks: &'a HashMap<BlockId, B::Block>,
+    /// Each exceptional successor label's block, from the one shared
+    /// resolver (`exception_labels_to_blocks`), which refuses an ambiguous
+    /// label instead of picking one in hash order.
+    pub(crate) exception_targets: &'a HashMap<i64, BlockId>,
+}
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
-    /// Lower `op` when the walker owns its opcode, and answer whether it
-    /// did. An opcode it does not own yet is left to the backend.
-    pub(crate) fn walker_owned_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+    /// Lower `op`, at `at`, when the walker owns its opcode, and answer
+    /// whether it did. An opcode it does not own yet is left to the backend.
+    pub(crate) fn walker_owned_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
         match op.opcode {
+            OpCode::ExceptionPending => self.exception_pending_op(b, op),
+            OpCode::AsyncWorkPending => {
+                let pending = b.async_work_pending();
+                if let Some(&result) = op.results.first() {
+                    let pending = b.bit_value(pending);
+                    self.bind(result, pending, HeldCarrier::RawBool);
+                }
+            }
+            OpCode::CheckException => return self.check_exception_op(b, at, op),
             OpCode::ConstInt
             | OpCode::ModuleSlot
             | OpCode::ConstFloat
@@ -149,13 +170,10 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::AsyncWorkPending
             | OpCode::CallNative
-            | OpCode::CheckException
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
             | OpCode::Copy
-            | OpCode::ExceptionPending
             | OpCode::ForIter
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
@@ -193,6 +211,88 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::Yield
             | OpCode::YieldFrom => return false,
         }
+        true
+    }
+}
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// `ExceptionPending`: whether an exception is pending, as an exact
+    /// raw bool. It observes mutable runtime state, so it never folds.
+    fn exception_pending_op(&mut self, b: &mut B, op: &TirOp) {
+        let thread = b.thread_record_word();
+        let word = pending::exception_pending_word(b, thread);
+        let named = b.word_value(word);
+        b.set_name(named, "exc_pending_word");
+        if let Some(&result) = op.results.first() {
+            let zero = b.constant(0);
+            let pending = b.int_compare(IntComparison::NotEqual, word, zero);
+            let pending = b.bit_value(pending);
+            b.set_name(pending, "exc_pending_bool");
+            self.bind(result, pending, HeldCarrier::RawBool);
+        }
+    }
+
+    /// `CheckException`: when an exception is pending, take the op's
+    /// explicit exceptional successor with its operands as arguments. The
+    /// walker owns the unwind edge of an exception check; an async-work
+    /// poll (which services work and so may publish the frame's location)
+    /// and an origin edge (which captures the frame's traceback entry) need
+    /// the frame's homes, which the switch lane's frame family owns, so the
+    /// backend keeps them for now and this answers false before it emits.
+    fn check_exception_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
+        use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+        let Some(&AttrValue::Int(label)) = op.attrs.get("value") else {
+            self.fatal("check_exception requires an explicit exceptional successor label");
+            return true;
+        };
+        let edge = op
+            .exception_edge_kind()
+            .expect("verified exceptional edge kind");
+        if op.is_async_work_poll() || edge == ExceptionEdgeKind::Origin {
+            return false;
+        }
+        let thread = b.thread_record_word();
+        let pending = pending::exception_pending_word(b, thread);
+        let named = b.word_value(pending);
+        b.set_name(named, "check_exc_word");
+        if let Some(&result) = op.results.first() {
+            self.bind(result, named, HeldCarrier::Boxed);
+        }
+        let Some(&target) = at.exception_targets.get(&label) else {
+            self.fatal(format!(
+                "check_exception target label {label} has no unique block in the label map"
+            ));
+            return true;
+        };
+        let Some(&target_block) = at.blocks.get(&target) else {
+            self.fatal(format!(
+                "check_exception target block {target:?} is not present in the block map"
+            ));
+            return true;
+        };
+        let continued = b.create_block("check_exc_cont");
+        let zero = b.constant(0);
+        let raised = b.int_compare(IntComparison::NotEqual, pending, zero);
+        let edges = Edges {
+            func: self.func,
+            plan: self.plan,
+            values: self.values,
+            blocks: at.blocks,
+        };
+        let mut diagnostics = Vec::new();
+        let passed = edges.arguments(
+            b,
+            at.source,
+            "check-exception-unwind-edge",
+            target,
+            &op.operands,
+            &mut diagnostics,
+        );
+        b.branch_if(raised, (target_block, &passed), (continued, &[]));
+        for diagnostic in diagnostics {
+            self.fatal(diagnostic);
+        }
+        b.switch_to_block(continued);
         true
     }
 }
@@ -314,9 +414,15 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
     }
     b.jump(blocks[&func.entry_block], &entry_args);
     let call_sites = Cell::new(0);
+    let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
     for &id in &rpo {
         b.switch_to_block(blocks[&id]);
         let block = &func.blocks[&id];
+        let at = Position {
+            source: id,
+            blocks: &blocks,
+            exception_targets: &exception_targets,
+        };
         let mut cx = FunctionCx {
             func,
             plan,
@@ -328,7 +434,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
             call_sites: &call_sites,
         };
         for op in &block.ops {
-            if !cx.walker_owned_op(b, op) {
+            if !cx.walker_owned_op(b, &at, op) {
                 cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
             }
         }
@@ -396,7 +502,9 @@ mod tests {
 
     use super::*;
     use crate::codegen_ssa::scalar::tests::Value;
-    use crate::native_backend::codegen_builder::machine::run_function;
+    use crate::native_backend::codegen_builder::machine::{
+        ThreadState, run_function, run_function_in,
+    };
     use crate::tir::blocks::TirBlock;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect};
     use crate::tir::types::TirType;
@@ -425,11 +533,19 @@ mod tests {
         func: &TirFunction,
         args: &[u64],
     ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
+        walk_in(func, args, ThreadState::default())
+    }
+
+    fn walk_in(
+        func: &TirFunction,
+        args: &[u64],
+        state: ThreadState,
+    ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
         let linkage = row(&func.name, args.len());
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
-        run_function(args, |b, params| {
+        run_function_in(args, state, |b, params| {
             lower_function(
                 b,
                 FunctionInput {
@@ -566,6 +682,141 @@ mod tests {
         assert_eq!(
             diagnostics,
             ["walk_refused: the walker does not lower GetIter yet"]
+        );
+    }
+
+    const NONE: u64 = (0x7ff8 << 48) | (3 << 48);
+
+    /// The boxed bool `bit`.
+    fn boxed_bool(bit: bool) -> u64 {
+        (0x7ff8 << 48) | (2 << 48) | u64::from(bit)
+    }
+
+    /// `f()` that returns the raw bool `opcode` answers, boxed.
+    fn probe(name: &str, opcode: OpCode) -> TirFunction {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let answer = func.fresh_value();
+        func.value_types.insert(answer, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(opcode, &[], &[answer.0], None));
+        entry.terminator = Terminator::Return {
+            values: vec![answer],
+        };
+        func
+    }
+
+    #[test]
+    fn exception_pending_confirms_a_set_hint_against_the_current_exception() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let func = probe("walk_exception_pending", OpCode::ExceptionPending);
+        // A clear hint answers without the runtime; a stale hint confirms
+        // clear; a current exception confirms set.
+        for (hint, raised, pending, confirms) in [
+            (0, false, false, 0),
+            (0xff, false, false, 1),
+            (1, true, true, 1),
+        ] {
+            let state = ThreadState {
+                hint,
+                raised,
+                work: 0,
+            };
+            let run = walk_in(&func, &[], state);
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(run.results, [Value::Word(boxed_bool(pending))]);
+            assert_eq!(
+                run.runtime_calls,
+                vec![RuntimeFn::ExceptionPending; confirms]
+            );
+        }
+    }
+
+    #[test]
+    fn async_work_pending_reads_the_threads_pending_work_word() {
+        let func = probe("walk_async_work", OpCode::AsyncWorkPending);
+        for (work, pending) in [(0, false), (1, true), (0x8000_0000, true)] {
+            let state = ThreadState {
+                hint: 0,
+                raised: false,
+                work,
+            };
+            let run = walk_in(&func, &[], state);
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(run.results, [Value::Word(boxed_bool(pending))]);
+            assert!(run.runtime_calls.is_empty());
+        }
+    }
+
+    /// `f(x)`: an exception check whose unwind successor (label 7) takes `x`
+    /// and returns None; the normal path returns `x`.
+    fn checked() -> TirFunction {
+        use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+        let mut func = TirFunction::new(
+            "walk_check".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let handler = func.fresh_block();
+        let caught = func.fresh_value();
+        let none = func.fresh_value();
+        func.value_types.insert(caught, TirType::DynBox);
+        func.value_types.insert(none, TirType::None);
+        let mut check = op(OpCode::CheckException, &[0], &[], Some(7));
+        check.set_exception_edge_kind(ExceptionEdgeKind::Unwind);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(check);
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: caught,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::ConstNone, &[], &[none.0], None)],
+                terminator: Terminator::Return { values: vec![none] },
+            },
+        );
+        func.label_id_map.insert(handler.0, 7);
+        func
+    }
+
+    #[test]
+    fn an_exception_check_unwinds_only_on_a_confirmed_exception() {
+        let func = checked();
+        for (hint, raised, answer) in [(0, false, OBJECT), (0xff, false, OBJECT), (1, true, NONE)] {
+            let state = ThreadState {
+                hint,
+                raised,
+                work: 0,
+            };
+            let run = walk_in(&func, &[OBJECT], state);
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(run.results, [Value::Word(answer)], "hint {hint:#x}");
+        }
+    }
+
+    #[test]
+    fn an_async_poll_or_origin_check_is_left_to_the_backend() {
+        use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+        let mut func = checked();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops[0].set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(
+            run.fact,
+            Err(vec![
+                "walk_check: the walker does not lower CheckException yet".into()
+            ])
         );
     }
 }

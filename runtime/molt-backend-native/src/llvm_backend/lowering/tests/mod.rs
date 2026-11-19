@@ -294,7 +294,6 @@ fn make_dummy_lowering<'ctx, 'func>(
         repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
-        pending_work_ptr: None,
         frame_homes: None,
         state: super::codegen_builder::LlvmFunctionState::new(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),

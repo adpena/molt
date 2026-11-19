@@ -332,6 +332,15 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.words.builder.inst_results(call).first().copied()
     }
 
+    /// Cranelift's atomic_load is sequentially consistent (its only atomic
+    /// load); a plain load would let GVN or LICM reuse it across a request.
+    fn async_work_pending(&mut self) -> Value {
+        let address = self.imports.pending_work(self.words.builder);
+        let word = self
+            .ins()
+            .atomic_load(types::I32, MemFlagsData::trusted(), address);
+        self.ins().icmp_imm_s(IntCC::NotEqual, word, 0)
+    }
     fn thread_record_word(&mut self) -> Value {
         self.imports.thread_record(self.words.builder)
     }
@@ -954,6 +963,25 @@ pub(crate) mod machine {
         args: &[u64],
         build: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> F,
     ) -> Run<F> {
+        run_function_in(args, ThreadState::default(), build)
+    }
+
+    /// The thread state a run lends its code: the record's exception hint,
+    /// whether the runtime holds a current exception (a set hint without
+    /// one is stale), and the pending-work word.
+    #[derive(Clone, Copy, Default)]
+    pub(crate) struct ThreadState {
+        pub(crate) hint: u8,
+        pub(crate) raised: bool,
+        pub(crate) work: u32,
+    }
+
+    /// [`run_function`] in the thread state `state`.
+    pub(crate) fn run_function_in<F>(
+        args: &[u64],
+        state: ThreadState,
+        build: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> F,
+    ) -> Run<F> {
         let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
         jit.symbol_lookup_fn(Box::new(lookup));
         let mut module = JITModule::new(jit);
@@ -1001,7 +1029,14 @@ pub(crate) mod machine {
         let code = module.get_finalized_function(id);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        let work = Box::new(state.work);
+        record[molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize / 8] =
+            std::ptr::from_ref(&*work) as u64;
+        let mut bytes = record[0].to_ne_bytes();
+        bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = state.hint;
+        record[0] = u64::from_ne_bytes(bytes);
         runtime_stubs::begin(false, record.as_mut_ptr() as u64);
+        runtime_stubs::raise_when(state.raised);
         let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
         attached.bind_thread_record(record.as_mut_ptr() as u64);
         let context = std::ptr::from_ref(&attached) as u64;
