@@ -950,6 +950,92 @@ pub(crate) mod machine {
     /// A Cranelift SSA value (the walker tests name their model value `Value`).
     type Value_ = cranelift_codegen::ir::Value;
 
+    /// Compile a whole function, `(context, words...) -> word` with one word
+    /// parameter per `args`, whose body `build` emits from the entry block
+    /// through its own returns, and call it once on `args`. The result is
+    /// the function's answer.
+    pub(crate) fn run_function<F>(
+        args: &[u64],
+        build: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> F,
+    ) -> Run<F> {
+        let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
+        jit.symbol_lookup_fn(Box::new(lookup));
+        let mut module = JITModule::new(jit);
+        let mut signature = module.make_signature();
+        for _ in 0..=args.len() {
+            signature.params.push(AbiParam::new(types::I64));
+        }
+        signature.returns.push(AbiParam::new(types::I64));
+        let id = module
+            .declare_function("walker_function", Linkage::Local, &signature)
+            .unwrap();
+        let mut context = module.make_context();
+        context.func.signature = signature;
+        let mut builder_context = FunctionBuilderContext::new();
+        let mut import_ids = RuntimeImportIds::default();
+        let mut imports = NativeFunctionImports::default();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let execution = builder.block_params(entry)[0];
+        let params = builder.block_params(entry)[1..].to_vec();
+        let admission = builder
+            .ins()
+            .iconst(types::I64, CompiledRefcountAdmission::Runtime as i64);
+        imports.set_refcount_admission(admission);
+        let fact = build(
+            &mut NativeCodegen {
+                words: NativeWords {
+                    builder: &mut builder,
+                },
+                module: &mut module,
+                import_ids: &mut import_ids,
+                imports: &mut imports,
+            },
+            &params,
+        );
+        builder.seal_all_blocks();
+        builder.finalize(module.target_config());
+        complete_attached_calls(&module, &mut context.func, execution);
+        module
+            .define_function(id, &mut context)
+            .unwrap_or_else(|error| panic!("the function compiles: {error:?}"));
+        module.finalize_definitions().unwrap();
+        let code = module.get_finalized_function(id);
+        let mut record =
+            [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        runtime_stubs::begin(false, record.as_mut_ptr() as u64);
+        let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
+        attached.bind_thread_record(record.as_mut_ptr() as u64);
+        let context = std::ptr::from_ref(&attached) as u64;
+        // SAFETY: `code` is the function defined above, in the host
+        // convention, with one word parameter per argument after the context.
+        let answer = unsafe {
+            match *args {
+                [] => std::mem::transmute::<*const u8, extern "C" fn(u64) -> u64>(code)(context),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64) -> u64>(code)(
+                    context, a,
+                ),
+                [a, b] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64, u64) -> u64>(
+                    code,
+                )(context, a, b),
+                _ => panic!("run_function takes at most two arguments"),
+            }
+        };
+        let stubs = runtime_stubs::finish();
+        // SAFETY: the function has returned; nothing refers to its code.
+        unsafe { module.free_memory() };
+        Run {
+            fact,
+            results: vec![Value::Word(answer)],
+            runtime_calls: stubs.calls,
+            refcounts: stubs.refcounts,
+            released: stubs.model.released,
+            inserted: stubs.model.inserted,
+        }
+    }
+
     #[test]
     fn checked_arithmetic_without_overflow_flags_matches_rust() {
         // RISC-V 64 selects this sequence; run it on the host too.

@@ -268,6 +268,24 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     extracted values, and boxes the result. A task constructor's poll and task trampoline stay
     with the switch lane (`ensure_callable_target`); the backend passes them as `task_entry`.
     Trampoline tests run on Cranelift machine code only, entered as the runtime enters them.
+  - Moved, slice 19 (round 7): the op dispatch table (`FunctionCx::walker_owned_op`,
+    `codegen_ssa::walk`). One exhaustive match maps each opcode the walker owns to its lowering
+    and names the families the backends still lower themselves (iterators, `CheckException`,
+    module runtime calls, closures, frame homes and locations, `NativeSymbolAddr` and
+    `CallNative`, the state and task ops, `ObjectNewBound`, `UnpackSequence`, the preserved
+    `Copy` families); those answer false. LLVM's `lower_op` asks it first and keeps only the
+    named families.
+  - Built, slice 20 (round 7): the walk (`walk::lower_function`), fallible, over one builder for
+    the whole function. The physical entry converts each parameter from the function's own
+    linkage row to the TIR entry's carrier and jumps to the TIR entry, so the TIR entry may have
+    predecessors on every backend; blocks are created entry first, walked in executable reverse
+    postorder, and take their parameters before any branch; ops go through `walker_owned_op`,
+    and an op it does not own refuses the function with a diagnostic naming the opcode;
+    terminators go through `Edges`, `returns::emit_return` and `dispatch_state` (the poll's
+    frame is entry parameter 0). The frame entry is not in the walk yet: a function that enters
+    a frame record is refused by its entry op. The switch lane's Cranelift dispatch is its
+    first production caller; LLVM keeps its own skeleton until its remaining families move.
+    Tests compile whole functions as Cranelift machine code and call them.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
