@@ -368,13 +368,26 @@ fn intrinsic_result_slots_preserve_exact_status_without_payload_or_purity_infere
             }
             assert_eq!(proven.get(&ValueId(3)), Some(&TirType::Bool));
             assert_eq!(proven.get(&ValueId(7)), Some(&TirType::Bool));
+            assert!(!exact.contains_key(&ValueId(2)));
+            assert!(!proven.contains_key(&ValueId(2)));
             if opcode == OpCode::IterNextUnboxed {
-                assert!(!exact.contains_key(&ValueId(2)));
-                assert!(!proven.contains_key(&ValueId(2)));
                 let effects = crate::tir::op_kinds_generated::opcode_effects_table(opcode);
                 assert!(!effects.nothrow && !effects.consistent && !effects.effect_free);
             } else {
-                assert_eq!(exact.get(&ValueId(2)), Some(&TirType::I64));
+                for (operand, expected) in
+                    [(TirType::I64, TirType::I64), (TirType::F64, TirType::F64)]
+                {
+                    assert_eq!(
+                        infer_result_types_with_attrs(
+                            opcode,
+                            None,
+                            &[operand.clone(), operand],
+                            None,
+                            2
+                        ),
+                        vec![Some(expected), Some(TirType::Bool)]
+                    );
+                }
             }
         }
         let effects =

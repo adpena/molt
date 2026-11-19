@@ -43,6 +43,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         pending_exception_possible = false;
                     } else if raise.op_may_raise(&op) {
                         pending_exception_possible = true;
+                    } else if raise.exact_types_disprove_raise(&op) {
+                        op.mark_nothrow_proof();
+                        stats.facts_changed += 1;
                     }
                     new_ops.push(op);
                 }
