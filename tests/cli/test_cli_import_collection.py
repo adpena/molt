@@ -25889,6 +25889,22 @@ def test_build_cli_keeps_deploy_stdlib_profile_auto_intent(
     ]
 
 
+def _fix_wrapper_compiler_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix the compiler identity the wrapper's cache key binds.
+
+    These tests check the build contract a wrapper reads back, not the host's
+    backend toolchain: since 8a59c7ce36 a default (release) build selects LLVM,
+    whose admission needs the managed LLVM toolchain the unit runner lacks.
+    The cache-input tests fix the same two fingerprints.
+    """
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_fingerprint", lambda **_kwargs: "runtime-a"
+    )
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tool-a"
+    )
+
+
 def test_build_scopes_pipeline_env_updates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -25967,6 +25983,7 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -26024,6 +26041,7 @@ def test_run_script_uses_build_json_output_for_binary_path(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -26086,6 +26104,7 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -26139,6 +26158,7 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -26916,6 +26936,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -27017,6 +27038,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -27153,6 +27175,7 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
@@ -28669,6 +28692,7 @@ def test_compare_uses_build_profile_flag_for_nested_build(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_commands,
         "resolve_python_selector",
