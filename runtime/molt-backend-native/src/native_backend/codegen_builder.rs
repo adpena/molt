@@ -441,6 +441,78 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
     }
 
+    /// A second codegen context and function builder, defined into the
+    /// module as a local attached function, then referenced from the caller.
+    fn define_helper(
+        &mut self,
+        name: &str,
+        params: usize,
+        body: &impl crate::codegen_ssa::HelperBody,
+    ) -> FuncRef {
+        let symbol = compiled_execution_symbol(name);
+        let id = match self.module.get_name(&symbol) {
+            Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+            Some(cranelift_module::FuncOrDataId::Data(_)) => {
+                panic!("helper {name} names program data")
+            }
+            None => {
+                let mut logical = self.module.make_signature();
+                for _ in 0..params {
+                    logical.params.push(AbiParam::new(types::I64));
+                }
+                logical.returns.push(AbiParam::new(types::I64));
+                let id = declare_compiled_execution_function(
+                    self.module,
+                    name,
+                    Linkage::Local,
+                    &logical,
+                )
+                .unwrap_or_else(|error| panic!("declare helper {name}: {error}"));
+                let mut context = self.module.make_context();
+                context.func.signature = self
+                    .module
+                    .declarations()
+                    .get_function_decl(id)
+                    .signature
+                    .clone();
+                let mut builder_context = FunctionBuilderContext::new();
+                let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+                let execution = builder.block_params(entry)[0];
+                let words = builder.block_params(entry)[1..].to_vec();
+                let mut imports = NativeFunctionImports::default();
+                imports.set_refcount_admission(thread_record_word(
+                    &mut builder,
+                    execution,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+                ));
+                {
+                    let mut helper = NativeCodegen {
+                        words: NativeWords {
+                            builder: &mut builder,
+                        },
+                        module: &mut *self.module,
+                        import_ids: &mut *self.import_ids,
+                        imports: &mut imports,
+                    };
+                    let result = body.build(&mut helper, &words);
+                    helper.words.builder.ins().return_(&[result]);
+                }
+                builder.seal_all_blocks();
+                builder.finalize(self.module.target_config());
+                complete_attached_calls(&*self.module, &mut context.func, execution);
+                self.module
+                    .define_function(id, &mut context)
+                    .unwrap_or_else(|error| panic!("define helper {name}: {error:?}"));
+                id
+            }
+        };
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
+    }
+
     fn refcount_site(&mut self, operation: RefcountOperation) -> NativeRefcountSite {
         let slow = self.runtime_callee(match operation {
             RefcountOperation::Retain => RuntimeFn::IncRefObj,
@@ -843,9 +915,9 @@ pub(crate) mod machine {
             unsafe { std::mem::transmute(code) };
         let input_words: Vec<u64> = inputs.iter().copied().map(input_word).collect();
         let mut result_words = vec![0u64; kinds.len()];
-        runtime_stubs::begin(fail_allocation);
         let mut record =
             [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        runtime_stubs::begin(fail_allocation, record.as_mut_ptr() as u64);
         // The exception hint is one byte at its ABI offset, on either byte order.
         let first = &mut record[0];
         let mut bytes = first.to_ne_bytes();
@@ -871,6 +943,7 @@ pub(crate) mod machine {
             runtime_calls: stubs.calls,
             refcounts: stubs.refcounts,
             released: stubs.model.released,
+            inserted: stubs.model.inserted,
         }
     }
 

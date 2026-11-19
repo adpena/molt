@@ -30,7 +30,7 @@ pub(crate) mod task;
 pub(crate) mod value_table;
 
 pub(crate) use builder::{
-    CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind, SiteBody,
+    CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, HelperBody, IntBinary,
+    IntComparison, MachineKind, SiteBody,
 };
 pub(crate) use value_table::{HeldCarrier, ValueTable};

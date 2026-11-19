@@ -247,7 +247,27 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     `pending::exception_pending_word`: the loaded-method call (the method site's call body is
     `SiteBody::MethodSiteCall`), `DirectCall`'s thread-record handoff around the compiled
     call, and the set and frozenset aggregate. The trait gained `store_word`. LLVM's copies
-    and the custody wrappers they used are deleted.
+    and the custody wrappers they used are deleted. The slice's own model tests (round 7):
+    `DirectCall` on both machines, where a compiled callee reads the invocation word on entry
+    and the outer word comes back; the set aggregate as Cranelift machine code, where each
+    entry is boxed only after the previous insertion, a repeated raw value is boxed once, and
+    a failed insertion or allocation releases the partial aggregate and every minted box and
+    boxes no later entry. A raising runtime stub now sets the thread record's exception hint,
+    as the runtime does.
+  - Moved, slice 18 (round 7): function construction (`FunctionCx::function_construction_op`:
+    `builtin_func`, `func_new`, `func_new_closure`). The trait gained `HelperBody`, a body
+    generic over the builder, and `define_helper`, which defines a private helper function once
+    by name (LLVM a fresh builder and function state over an internal function; Cranelift a
+    second codegen context defined into the module as a local attached function). A helper body
+    is generic over the builder the backend makes for it because a helper is another function:
+    the caller's builder holds borrows of the caller's function. This replaces the earlier plan of
+    an associated helper-builder type with a higher-ranked closure; the generic trait method is
+    simpler and needs no lifetime-generic associated type. The callable trampoline (plain and
+    builtin) is one helper body: it decodes each boxed argument into its parameter's
+    representation, calls the target, ends the references an adopting entry kept only as
+    extracted values, and boxes the result. A task constructor's poll and task trampoline stay
+    with the switch lane (`ensure_callable_target`); the backend passes them as `task_entry`.
+    Trampoline tests run on Cranelift machine code only, entered as the runtime enters them.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

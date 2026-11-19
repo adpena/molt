@@ -171,11 +171,12 @@ fn refcount_uses_lowered_carriers_without_boxing() {
         backend.builder.build_return(None).unwrap();
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
-        let expected = if FunctionLowering::tir_type_is_dynbox_like(&ty) {
-            3
-        } else {
-            0
-        };
+        let expected =
+            if crate::codegen_ssa::HeldCarrier::of(&ty) == crate::codegen_ssa::HeldCarrier::Boxed {
+                3
+            } else {
+                0
+            };
         assert_eq!(
             ir.matches_execution("call void @__molt_inline_").count(),
             expected,

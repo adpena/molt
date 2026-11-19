@@ -155,6 +155,9 @@ pub(crate) mod tests {
     pub(crate) const FUNCTION_WORD: u64 = QUIET_NAN | (4 << 48) | 0x4000;
     /// A stand-in heap BigInt word: a pointer tag and an address.
     pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
+    /// The one object the model's hash-aggregate mutators cannot hash: an
+    /// insertion of it raises.
+    pub(crate) const UNHASHABLE: u64 = QUIET_NAN | (4 << 48) | 0x6000;
     /// Where the stand-in entry storage lives.
     const SLOT_BASE: u64 = 0x10_0000;
     /// Where the stand-in byte constants live, 1 MiB apart.
@@ -181,7 +184,9 @@ pub(crate) mod tests {
 
     /// What the model's compiled function `symbol` answers for `args`: a
     /// hash of both, as a raw integer when the symbol ends in `_raw`, else
-    /// as an inline int word.
+    /// as an inline int word. A symbol ending in `_handoff` also reads the
+    /// thread record's pending-invocation word on entry, as a frame entry
+    /// does, and passes it here as its last argument.
     pub(crate) fn compiled_result(symbol: &str, args: &[u64]) -> u64 {
         let mut bytes = symbol.as_bytes().to_vec();
         for arg in args {
@@ -301,6 +306,9 @@ pub(crate) mod tests {
                     let words =
                         (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET / 8 + 1) as u32;
                     let slot = self.entry_slot_array(words, "thread_record");
+                    // A fresh record, as the machine run lends: no exception
+                    // hint, no pending invocation.
+                    self.slots[slot..].fill(0);
                     self.thread_record_slot = Some(slot);
                     slot
                 }
@@ -361,6 +369,16 @@ pub(crate) mod tests {
         }
         fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> u64 {
             program_slot_word(&molt_ir::code_slots::program_slot_symbol(kind, owner))
+        }
+        fn define_helper(
+            &mut self,
+            name: &str,
+            _params: usize,
+            _body: &impl crate::codegen_ssa::HelperBody,
+        ) -> ModelCallee {
+            // The interpreter executes as it builds, so it cannot hold a
+            // function body to run later; helper tests run on a machine.
+            panic!("the model cannot define helper {name}")
         }
         fn refcount_site(&mut self, operation: RefcountOperation) -> RefcountOperation {
             operation
@@ -443,6 +461,12 @@ pub(crate) mod tests {
                 ModelCallee::Runtime(function) => function,
                 ModelCallee::Compiled(index) => {
                     let (symbol, result) = self.compiled[index].clone();
+                    let mut args = args;
+                    if symbol.ends_with("_handoff") {
+                        let record = self.thread_record_word();
+                        let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET;
+                        args.push(self.word(record + offset as u64));
+                    }
                     let word = compiled_result(&symbol, &args);
                     return result.map(|kind| match kind {
                         MachineKind::Bit => Value::Bit(word & 1 == 1),
@@ -696,7 +720,14 @@ pub(crate) mod tests {
         fn run_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
             self.runtime_calls.push(function);
             let mut runtime = std::mem::take(&mut self.runtime);
+            let raised_before = runtime.pending_exception;
             let result = runtime.run(function, args, self);
+            if runtime.pending_exception
+                && !raised_before
+                && let Some(slot) = self.thread_record_slot
+            {
+                set_exception_hint(&mut self.slots[slot]);
+            }
             self.runtime = runtime;
             result
         }
@@ -714,6 +745,15 @@ pub(crate) mod tests {
         fn store(&mut self, address: u64, word: u64) {
             self.slots[((address - SLOT_BASE) / 8) as usize] = word;
         }
+    }
+
+    /// Set the exception hint in the thread record's first word, as a
+    /// raising runtime entry does. The hint is one byte at its ABI offset,
+    /// on either byte order.
+    pub(crate) fn set_exception_hint(first: &mut u64) {
+        let mut bytes = first.to_ne_bytes();
+        bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = 1;
+        *first = u64::from_ne_bytes(bytes);
     }
 
     /// The memory a runtime entry reads its pointer arguments through.
@@ -775,9 +815,13 @@ pub(crate) mod tests {
         /// `molt_int_from_i64` returns None and a byte-literal constructor a
         /// nonzero status, each with MemoryError pending.
         pub(crate) fail_allocation: bool,
-        pending_exception: bool,
+        /// Whether an entry raised; a raising entry also sets the thread
+        /// record's exception hint where the machine has one.
+        pub(crate) pending_exception: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
+        /// The words the hash-aggregate mutators inserted, in order.
+        pub(crate) inserted: Vec<u64>,
         /// The positional words pushed onto the open CallArgs builder.
         callargs: Vec<u64>,
     }
@@ -897,6 +941,25 @@ pub(crate) mod tests {
                 }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                // A hash aggregate of a raw capacity, or None with
+                // MemoryError pending.
+                RuntimeFn::SetNew | RuntimeFn::FrozensetNew if self.fail_allocation => {
+                    self.pending_exception = true;
+                    NONE_WORD
+                }
+                RuntimeFn::SetNew | RuntimeFn::FrozensetNew => {
+                    literal_word(function, &args[0].to_le_bytes())
+                }
+                // Inserts the key and answers None; an unhashable key raises
+                // and is not inserted.
+                RuntimeFn::SetAdd | RuntimeFn::FrozensetAdd => {
+                    if args[1] == UNHASHABLE {
+                        self.pending_exception = true;
+                    } else {
+                        self.inserted.push(args[1]);
+                    }
+                    NONE_WORD
+                }
                 // An attribute or item entry answers an object determined
                 // by its arguments, a named one by the name's bytes.
                 RuntimeFn::GetAttrName
@@ -924,6 +987,9 @@ pub(crate) mod tests {
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
                 | RuntimeFn::FunctionClosureBits
+                | RuntimeFn::FuncNew
+                | RuntimeFn::FuncNewClosure
+                | RuntimeFn::FuncNewBuiltin
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer

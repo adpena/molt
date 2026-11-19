@@ -222,7 +222,7 @@ fn runtime_builtin_callable_uses_manifest_without_compiled_linkage() {
             );
             let trampoline = backend
                 .module
-                .get_compiled_function(&format!("{symbol}__molt_llvm_trampoline_{arity}"))
+                .get_compiled_function(&format!("{symbol}__molt_callable_trampoline_{arity}"))
                 .unwrap()
                 .print_to_string()
                 .to_string();
@@ -291,7 +291,7 @@ fn runtime_builtin_call_frame_uses_provider_as_trampoline() {
     assert!(
         backend
             .module
-            .get_compiled_function(&format!("{symbol}__molt_llvm_trampoline_3"))
+            .get_compiled_function(&format!("{symbol}__molt_callable_trampoline_3"))
             .is_none(),
         "call frame must not be unpacked as Python positional arguments"
     );

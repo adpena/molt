@@ -4,8 +4,11 @@ use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_tir::trampolines::TrampolineTaskKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// Python constructor arguments and the poll's one raw frame parameter
-    /// are different ABIs. The shared task kind/layout owns that distinction.
+    /// A task constructor's callable entry: its poll and the task trampoline
+    /// its typed task metadata selects. Python constructor arguments and the
+    /// poll's one raw frame parameter are different ABIs. The shared task
+    /// kind/layout owns that distinction. A plain callable's entry is the
+    /// walker's (`FunctionCx::function_construction_op`).
     pub(super) fn ensure_callable_target(
         &self,
         op: &TirOp,
@@ -13,23 +16,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> (FunctionValue<'ctx>, FunctionValue<'ctx>) {
-        let metadata = match (op.attrs.get("task_kind"), op.attrs.get("task_closure_size")) {
-            (None, None) => None,
-            (Some(AttrValue::Str(kind)), Some(AttrValue::Int(size))) => Some((
-                TrampolineTaskKind::from_constructor_kind(kind)
-                    .unwrap_or_else(|| panic!("unknown callable task_kind `{kind}` for {name}")),
-                *size,
-            )),
-            _ => {
-                panic!("{name} requires complete callable task_kind and task_closure_size metadata")
-            }
-        };
-        let Some((kind, closure_size)) = metadata else {
-            return (
-                self.ensure_function_symbol(name, arity, has_closure),
-                self.ensure_plain_trampoline(name, has_closure),
-            );
-        };
+        let (kind, closure_size) =
+            match (op.attrs.get("task_kind"), op.attrs.get("task_closure_size")) {
+                (Some(AttrValue::Str(kind)), Some(AttrValue::Int(size))) => (
+                    TrampolineTaskKind::from_constructor_kind(kind).unwrap_or_else(|| {
+                        panic!("unknown callable task_kind `{kind}` for {name}")
+                    }),
+                    *size,
+                ),
+                _ => panic!(
+                    "{name} requires complete callable task_kind and task_closure_size metadata"
+                ),
+            };
         let layout = crate::trampoline_task_layout(kind);
         layout.validate_closure_size(
             closure_size,

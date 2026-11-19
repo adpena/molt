@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::scalar::tests::{Memory, RuntimeModel, compiled_result, program_slot_word};
+use super::scalar::tests::{
+    Memory, RuntimeModel, compiled_result, program_slot_word, set_exception_hint,
+};
 
 /// What the stubs saw while the kernel ran on this thread.
 #[derive(Default)]
@@ -17,6 +19,9 @@ pub(crate) struct Stubs {
     pub(crate) model: RuntimeModel,
     pub(crate) calls: Vec<RuntimeFn>,
     pub(crate) refcounts: Vec<(RefcountOperation, u64)>,
+    /// The thread record the kernel was lent, whose exception hint a
+    /// raising entry sets.
+    thread_record: Option<u64>,
 }
 
 thread_local! {
@@ -44,10 +49,20 @@ impl Memory for ProcessMemory {
 fn runtime(function: RuntimeFn, args: &[u64]) -> u64 {
     STUBS.with_borrow_mut(|stubs| {
         stubs.calls.push(function);
-        stubs
+        let raised_before = stubs.model.pending_exception;
+        let result = stubs
             .model
             .run(function, args, &mut ProcessMemory)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        if stubs.model.pending_exception
+            && !raised_before
+            && let Some(record) = stubs.thread_record
+        {
+            // SAFETY: the record is the kernel's lent thread record, alive
+            // and aligned for the whole run.
+            set_exception_hint(unsafe { &mut *(record as *mut u64) });
+        }
+        result
     })
 }
 
@@ -248,6 +263,92 @@ extern "C" fn global_slot_base(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::GlobalSlotBase, &[a])
 }
 
+/// The model's identity for code address `code`: the program-slot word of
+/// the stub symbol it resolves to, so a constructor handed the wrong target
+/// answers a different object.
+fn code_identity(code: u64) -> u64 {
+    let compiled = [
+        "walker_compiled_boxed",
+        "walker_compiled_raw",
+        "walker_compiled_handoff",
+    ]
+    .map(molt_ir::runtime_callable_abi_generated::compiled_execution_symbol);
+    let runtime = RuntimeFn::ALL
+        .iter()
+        .map(|function| function.linker_symbol().to_owned());
+    compiled
+        .into_iter()
+        .chain(runtime)
+        .find(|symbol| lookup(symbol).is_some_and(|address| address as u64 == code))
+        .map(|symbol| program_slot_word(&symbol))
+        .unwrap_or_else(|| panic!("code address {code:#x} is no stub"))
+}
+
+/// Enter a new function object's trampoline as the runtime does, with
+/// `closure` and the inline ints 2, 3, ... as its `arity` arguments, and
+/// answer its word. The kernel's attached context is lent through.
+fn enter_trampoline(context: u64, trampoline: u64, closure: u64, arity: u64) -> u64 {
+    let argv: Vec<u64> = (0..arity)
+        .map(|index| (0x7ff8 << 48) | (1 << 48) | (2 + index))
+        .collect();
+    // SAFETY: the constructor was handed a callable trampoline, whose
+    // signature is `(context, closure, argv, argc) -> word`.
+    let trampoline: extern "C" fn(u64, u64, u64, u64) -> u64 =
+        unsafe { std::mem::transmute(trampoline as *const u8) };
+    trampoline(context, closure, argv.as_ptr() as u64, arity)
+}
+
+// The function constructors enter the trampoline first, then answer an
+// object keyed by the target's identity, the trampoline's answer and the
+// raw words.
+extern "C" fn func_new(context: u64, code: u64, trampoline: u64, arity: u64, custody: u64) -> u64 {
+    let entered = enter_trampoline(context, trampoline, 0, arity);
+    runtime(
+        RuntimeFn::FuncNew,
+        &[code_identity(code), entered, arity, custody],
+    )
+}
+extern "C" fn func_new_closure(
+    context: u64,
+    code: u64,
+    trampoline: u64,
+    arity: u64,
+    closure: u64,
+    custody: u64,
+) -> u64 {
+    let entered = enter_trampoline(context, trampoline, closure, arity);
+    runtime(
+        RuntimeFn::FuncNewClosure,
+        &[code_identity(code), entered, arity, closure, custody],
+    )
+}
+extern "C" fn func_new_builtin(
+    context: u64,
+    key: u64,
+    code: u64,
+    trampoline: u64,
+    arity: u64,
+) -> u64 {
+    let entered = enter_trampoline(context, trampoline, 0, arity);
+    runtime(
+        RuntimeFn::FuncNewBuiltin,
+        &[key, code_identity(code), entered, arity],
+    )
+}
+
+extern "C" fn set_new(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::SetNew, &[a])
+}
+extern "C" fn frozenset_new(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::FrozensetNew, &[a])
+}
+extern "C" fn set_add(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::SetAdd, a, b)
+}
+extern "C" fn frozenset_add(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::FrozensetAdd, a, b)
+}
+
 // The model's compiled functions (`scalar::tests::compiled_result`); each is
 // attached, so its first parameter is the execution context.
 extern "C" fn compiled_boxed(_: u64, a: u64, b: u64) -> u64 {
@@ -256,11 +357,24 @@ extern "C" fn compiled_boxed(_: u64, a: u64, b: u64) -> u64 {
 extern "C" fn compiled_raw(_: u64, a: u64, b: u64) -> u64 {
     compiled_result("walker_compiled_raw", &[a, b])
 }
+/// A frame entry's read of the pending-invocation word, through the attached
+/// execution context it was called with.
+extern "C" fn compiled_handoff(context: u64, a: u64) -> u64 {
+    // SAFETY: the kernel passes its attached execution context, which lends
+    // a live thread record.
+    let record = unsafe { &*(context as *const molt_codegen_abi::AttachedExecutionContextStorage) }
+        .thread_record();
+    let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET as u64;
+    // SAFETY: the record holds an aligned word at the invocation offset.
+    let invocation = unsafe { *((record + offset) as *const u64) };
+    compiled_result("walker_compiled_handoff", &[a, invocation])
+}
 
 pub(crate) fn lookup(name: &str) -> Option<*const u8> {
     for (symbol, code) in [
         ("walker_compiled_boxed", compiled_boxed as *const u8),
         ("walker_compiled_raw", compiled_raw as *const u8),
+        ("walker_compiled_handoff", compiled_handoff as *const u8),
     ] {
         if name == molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(symbol) {
             return Some(code);
@@ -329,17 +443,26 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::IterNextUnboxed => iter_next_unboxed as *const u8,
         RuntimeFn::IterNextUnpack2 => iter_next_unpack2 as *const u8,
         RuntimeFn::GlobalSlotBase => global_slot_base as *const u8,
+        RuntimeFn::FuncNew => func_new as *const u8,
+        RuntimeFn::FuncNewClosure => func_new_closure as *const u8,
+        RuntimeFn::FuncNewBuiltin => func_new_builtin as *const u8,
+        RuntimeFn::SetNew => set_new as *const u8,
+        RuntimeFn::FrozensetNew => frozenset_new as *const u8,
+        RuntimeFn::SetAdd => set_add as *const u8,
+        RuntimeFn::FrozensetAdd => frozenset_add as *const u8,
         RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
         RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
         _ => return None,
     })
 }
 
-/// Reset the stubs for one kernel run on this thread.
-pub(crate) fn begin(fail_allocation: bool) {
+/// Reset the stubs for one kernel run on this thread, lent the thread record
+/// at `thread_record`.
+pub(crate) fn begin(fail_allocation: bool, thread_record: u64) {
     STUBS.with_borrow_mut(|stubs| {
         *stubs = Stubs::default();
         stubs.model.fail_allocation = fail_allocation;
+        stubs.thread_record = Some(thread_record);
     });
 }
 
