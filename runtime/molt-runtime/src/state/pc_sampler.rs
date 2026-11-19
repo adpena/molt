@@ -6,8 +6,9 @@
 //! pointer chain (arm64 macOS keeps frame pointers by ABI). No other process
 //! inspects this one, so no operating-system permission is involved. At exit
 //! the runtime writes the samples and the main image's load address to the
-//! file named by `MOLT_RUNTIME_PC_SAMPLER_FILE`; `atos -l <load> -o <binary>`
-//! symbolizes them offline.
+//! file named by `MOLT_RUNTIME_PC_SAMPLER_FILE`, each address named in-process
+//! by `dladdr` (system libraries included); `atos -l <load> -o <binary>` adds
+//! file and line for the main image.
 //!
 //! The handler is async-signal-safe: it reads registers from the signal
 //! context, walks frame records whose addresses lie inside the sampled
@@ -16,7 +17,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// CPU microseconds between samples.
-const INTERVAL_US: i64 = 200;
+const INTERVAL_US: i64 = 100;
 /// Return addresses recorded above the interrupted pc.
 const CALLERS: usize = 7;
 /// Words per sample: the pc, then the callers (zero past the chain's end).
@@ -102,8 +103,9 @@ pub(crate) fn start() {
     }
 }
 
-/// Stop sampling and write `load <hex>`, `taken <n>`, then one line of hex
-/// words per sample to `MOLT_RUNTIME_PC_SAMPLER_FILE`.
+/// Stop sampling and write `load <hex>`, `taken <n>`, one line of hex words
+/// per sample, then `sym <hex> <image> <symbol>` for every sampled address
+/// to `MOLT_RUNTIME_PC_SAMPLER_FILE`.
 pub(crate) fn write_report() {
     use std::io::Write;
     let Some(path) = std::env::var_os("MOLT_RUNTIME_PC_SAMPLER_FILE") else {
@@ -122,13 +124,34 @@ pub(crate) fn write_report() {
     let _ = writeln!(file, "load {:#x}", image_load_address());
     let taken = NEXT.load(Ordering::Relaxed);
     let _ = writeln!(file, "taken {taken}");
+    let mut unique = std::collections::BTreeSet::new();
     for slot in 0..taken.min(CAPACITY) {
-        let words: Vec<String> = (0..STRIDE)
+        let words: Vec<u64> = (0..STRIDE)
             .map(|i| WORDS[slot * STRIDE + i].load(Ordering::Relaxed))
             .take_while(|&w| w != 0)
-            .map(|w| format!("{w:#x}"))
             .collect();
-        let _ = writeln!(file, "{}", words.join(" "));
+        unique.extend(words.iter().copied());
+        let line: Vec<String> = words.iter().map(|w| format!("{w:#x}")).collect();
+        let _ = writeln!(file, "{}", line.join(" "));
+    }
+    // Name every address in-process (`dladdr`), so system-library frames
+    // resolve too; `atos` covers only the main image. This runs at exit,
+    // outside the signal handler.
+    for address in unique {
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        if unsafe { libc::dladdr(address as *const libc::c_void, &mut info) } == 0 {
+            continue;
+        }
+        let name = |text: *const libc::c_char| {
+            if text.is_null() {
+                String::from("?")
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned()
+            }
+        };
+        let image = name(info.dli_fname);
+        let image = image.rsplit('/').next().unwrap_or("?").to_owned();
+        let _ = writeln!(file, "sym {address:#x} {image} {}", name(info.dli_sname));
     }
 }
 
