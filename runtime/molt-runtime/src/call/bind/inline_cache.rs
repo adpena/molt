@@ -1527,6 +1527,8 @@ pub(crate) fn molt_invoke_ffi_ic_attached_body(
             );
             if !bridge_allowed {
                 profile_hit_unchecked(&INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT);
+                // The compiled call transferred its builder even when the capability is denied.
+                let _builder = PtrDropGuard::preserving(_py, ptr_from_bits(builder_bits));
                 return raise_exception::<_>(
                     _py,
                     BuiltinExc::PermissionError,

@@ -2,6 +2,39 @@ use super::*;
 use crate::TYPE_ID_OBJECT;
 use crate::call::bind::test_support::*;
 
+#[test]
+fn denied_ffi_bridge_releases_its_transferred_argument_builder() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
+        let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(py, 0, 0);
+        let pointer = obj_from_bits(builder).as_ptr().expect("argument builder");
+        inc_ref_bits(py, builder);
+        let refs = || unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+        let before = refs();
+        let none = MoltObject::none().bits();
+        let result = molt_invoke_ffi_ic_attached_body(
+            py,
+            none,
+            none,
+            builder,
+            MoltObject::from_int(1).bits(),
+        );
+        assert!(obj_from_bits(result).is_none());
+        let error = crate::exception_last_bits_noinc(py).expect("pending capability error");
+        assert!(crate::builtins::exceptions::exception_matches_kind(
+            py,
+            error,
+            BuiltinExc::PermissionError
+        ));
+        assert_eq!(
+            refs() + 1,
+            before,
+            "the denied call consumes its builder reference"
+        );
+        crate::molt_exception_clear_attached_body(py);
+        dec_ref_bits(py, builder);
+    });
+}
+
 static IC_INIT_ARGUMENTS: std::sync::Mutex<Vec<(u64, u64, Vec<u64>)>> =
     std::sync::Mutex::new(Vec::new());
 
