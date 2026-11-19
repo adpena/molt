@@ -587,16 +587,24 @@ class ClosedWorldBinder:
                 continue
             stripped = {k: v for k, v in op.items() if k != MODULE_ATTRIBUTE_FIELD}
             name = op.get("s_value")
-            if (
-                isinstance(name, str)
-                and self._foreign_reason(user, op, module, name, defs, own_modules)
-                is None
-            ):
+            foreign = (
+                self._foreign_reason(user, op, module, name, defs, own_modules)
+                if isinstance(name, str)
+                else "the attribute name is not a constant"
+            )
+            if foreign is None:
                 stripped[FOREIGN_GLOBAL_FIELD] = module
             replaced[id(op)] = stripped
             intrinsic = PUBLIC_DIRECT_CALL_BINDINGS.get(f"{module}.{name}")
             call = callers.get(op.get("out"))
             if intrinsic is None or call is None:
+                # A refused read stays a by-name runtime lookup; say why. An
+                # intrinsic call site names its refusal below instead.
+                if foreign is not None:
+                    self.diagnostics.append(
+                        f"{user}:{op.get('source_line')} {module}.{name}: "
+                        f"by-name read: {foreign}"
+                    )
                 continue
             reason = self._site_reason(
                 user, op, call, module, name, intrinsic, uses, defs, own_modules

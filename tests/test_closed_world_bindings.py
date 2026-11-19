@@ -435,27 +435,42 @@ def test_a_proven_foreign_read_records_the_module_it_reads() -> None:
 
 
 @pytest.mark.parametrize(
-    "facts",
+    ("facts", "reason"),
     [
         # F1: math's deferred code rebinds helper.
-        {
-            "math": ModuleNamespaceFacts(frozenset({"helper"}), _premise()),
-            "user": ModuleNamespaceFacts(frozenset(), _premise()),
-        },
+        (
+            {
+                "math": ModuleNamespaceFacts(frozenset({"helper"}), _premise()),
+                "user": ModuleNamespaceFacts(frozenset(), _premise()),
+            },
+            "math.helper may be rebound",
+        ),
         # F1: another module writes math.helper.
-        {
-            "math": ModuleNamespaceFacts(frozenset(), _premise(("helper",))),
-            "user": ModuleNamespaceFacts(frozenset(), _premise()),
-        },
+        (
+            {
+                "math": ModuleNamespaceFacts(frozenset(), _premise(("helper",))),
+                "user": ModuleNamespaceFacts(frozenset(), _premise()),
+            },
+            "math.helper may be rebound",
+        ),
         # F3: user rebinds its `math` global.
-        {
-            "math": ModuleNamespaceFacts(frozenset(), _premise()),
-            "user": ModuleNamespaceFacts(frozenset({"math"}), _premise()),
-        },
+        (
+            {
+                "math": ModuleNamespaceFacts(frozenset(), _premise()),
+                "user": ModuleNamespaceFacts(frozenset({"math"}), _premise()),
+            },
+            "user.math may be rebound",
+        ),
     ],
 )
-def test_an_unproven_foreign_read_records_nothing(
-    facts: dict[str, ModuleNamespaceFacts],
+def test_an_unproven_foreign_read_records_nothing_and_names_its_reason(
+    facts: dict[str, ModuleNamespaceFacts], reason: str
 ) -> None:
-    functions, _diagnostics = _run(user=_user_reading("helper"), facts=facts)
+    # The read stays a by-name runtime lookup: the build diagnostic must say
+    # which obligation failed, as every refused closed-world fact does.
+    functions, diagnostics = _run(user=_user_reading("helper"), facts=facts)
     assert _foreign_record(functions) is None
+    (line,) = diagnostics
+    assert line.startswith("user:"), line
+    assert " math.helper: by-name read: " in line, line
+    assert reason in line, line
