@@ -226,7 +226,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         attrs: AttrDict::default(),
         source_span: None,
     };
-    lowering.emit_box(&op);
+    lowering.walker_op(|cx, b| cx.box_op(b, &op));
     op.opcode = OpCode::UnboxVal;
     op.operands = vec![ValueId(1)];
     op.results = vec![ValueId(2)];
@@ -234,7 +234,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         ValueId(2),
         crate::codegen_ssa::HeldCarrier::of(&TirType::Str),
     );
-    lowering.emit_unbox(&op);
+    lowering.walker_op(|cx, b| cx.unbox_op(b, &op));
     backend
         .builder
         .build_return(Some(&lowering.resolve(ValueId(2))))
@@ -357,7 +357,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
         .repr_facts
         .repr_by_value
         .insert(ValueId(1), molt_ir::repr::Repr::RawI64FullDeopt);
-    lowering.emit_unbox(&TirOp {
+    lowering.lower_op(BlockId(0), &TirOp {
         origin: None,
         runtime: None,
         callee: None,

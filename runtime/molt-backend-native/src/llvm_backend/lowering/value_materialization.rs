@@ -265,16 +265,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.codegen().entry_slot_array(len, name)
     }
 
-    pub(super) fn emit_box(&mut self, op: &TirOp) {
-        let (mut cx, mut b) = self.walker();
-        cx.box_op(&mut b, op);
-    }
-
-    pub(super) fn emit_unbox(&mut self, op: &TirOp) {
-        let (mut cx, mut b) = self.walker();
-        cx.unbox_op(&mut b, op);
-    }
-
     // ── Terminators ──
 
     /// The walker's view of this function's control flow.
