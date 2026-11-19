@@ -252,7 +252,7 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
   `use molt_tir::{...}` / `use molt_backend_core::{...}`** — this is the main mechanical cost of
   move #5 (NOT a blocker, but the reason move #5 is riskier than the within-crate move #1).
 - **`molt_backend` public API surface** (what `main.rs` and `wasm.rs` consume): `tir::*`,
-  `eliminate_dead_*`, `inject_runtime_exit`, `compute_intrinsic_manifest_checked`,
+  `eliminate_dead_*`, `compute_intrinsic_manifest_checked`,
   `fold_constants`, the backend entrypoints (`wasm`, `rust`, `luau`, `llvm_backend`,
   `SimpleBackend`). These re-exports in `lib.rs:44-65` define the contract a thin orchestrator
   must preserve.

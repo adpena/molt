@@ -369,14 +369,20 @@ fn missing(py: &PyToken<'_>) -> u64 {
                 1,
             ),
         ];
+        // CPython's tp_name "Token.MISSING": module "Token", name "MISSING".
         let cls = class(
             py,
             &state.context_missing_class,
-            "Token.MISSING",
+            "MISSING",
             layout::<()>(ObjectShapeId::Plain, false),
             &methods,
             &[],
-            |_, _| true,
+            |_, dict| {
+                let module = text(py, "Token");
+                let ok = put(py, dict, "__module__", module);
+                dec_ref_bits(py, module);
+                ok
+            },
         );
         alloc(py, cls, ()).unwrap_or(0)
     })
@@ -414,7 +420,7 @@ fn iterator_class(py: &PyToken<'_>, mode: u64) -> u64 {
     class(
         py,
         slot,
-        &format!("{name}_iterator"),
+        name,
         layout::<ContextIterator>(ObjectShapeId::ContextIterator, false),
         &methods,
         &[],
@@ -578,7 +584,23 @@ pub(crate) fn molt_contextvars_new_attached_body(
         new_context(py).unwrap_or_else(none)
     })
 }
-fn unconstructible(py: &PyToken<'_>, declaring: u64, receiver: u64, label: &str) -> u64 {
+/// How CPython refuses to construct a `_contextvars` helper type.
+#[derive(Clone, Copy)]
+enum Refusal {
+    /// `Token`'s own `tp_new`.
+    Token,
+    /// No `tp_new`: `Py_TPFLAGS_DISALLOW_INSTANTIATION` from 3.13, and
+    /// `object.__new__`'s safety check before it.
+    Disallowed,
+}
+
+fn unconstructible(
+    py: &PyToken<'_>,
+    declaring: u64,
+    receiver: u64,
+    label: &str,
+    refusal: Refusal,
+) -> u64 {
     if declaring == 0
         || crate::builtins::type_ops::native_constructor_receiver(
             py,
@@ -590,11 +612,21 @@ fn unconstructible(py: &PyToken<'_>, declaring: u64, receiver: u64, label: &str)
     {
         return none();
     }
-    raise_exception::<u64>(
-        py,
-        BuiltinExc::RuntimeError,
-        "Instances of this type cannot be created",
-    )
+    match refusal {
+        Refusal::Token => raise_exception::<u64>(
+            py,
+            BuiltinExc::RuntimeError,
+            "Tokens can only be created by ContextVars",
+        ),
+        Refusal::Disallowed => {
+            let message = if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+                format!("cannot create '{label}' instances")
+            } else {
+                format!("object.__new__({label}) is not safe, use {label}.__new__()")
+            };
+            raise_exception::<u64>(py, BuiltinExc::TypeError, &message)
+        }
+    }
 }
 
 pub(crate) fn molt_contextvars_token_new_attached_body(
@@ -604,7 +636,7 @@ pub(crate) fn molt_contextvars_token_new_attached_body(
     _kwargs: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        unconstructible(py, token_class(py), class, "Token")
+        unconstructible(py, token_class(py), class, "Token", Refusal::Token)
     })
 }
 
@@ -620,7 +652,7 @@ pub(crate) fn molt_contextvars_missing_new_attached_body(
             .types
             .context_missing_class
             .load(std::sync::atomic::Ordering::Acquire);
-        unconstructible(py, declaring, class, "Token.MISSING")
+        unconstructible(py, declaring, class, "Token.MISSING", Refusal::Disallowed)
     })
 }
 
@@ -631,7 +663,13 @@ pub(crate) fn molt_contextvars_keys_new_attached_body(
     _kwargs: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        unconstructible(py, iterator_class(py, 0), class, "keys")
+        unconstructible(
+            py,
+            iterator_class(py, 0),
+            class,
+            "keys",
+            Refusal::Disallowed,
+        )
     })
 }
 
@@ -642,7 +680,13 @@ pub(crate) fn molt_contextvars_values_new_attached_body(
     _kwargs: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        unconstructible(py, iterator_class(py, 1), class, "values")
+        unconstructible(
+            py,
+            iterator_class(py, 1),
+            class,
+            "values",
+            Refusal::Disallowed,
+        )
     })
 }
 
@@ -653,7 +697,13 @@ pub(crate) fn molt_contextvars_items_new_attached_body(
     _kwargs: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        unconstructible(py, iterator_class(py, 2), class, "items")
+        unconstructible(
+            py,
+            iterator_class(py, 2),
+            class,
+            "items",
+            Refusal::Disallowed,
+        )
     })
 }
 

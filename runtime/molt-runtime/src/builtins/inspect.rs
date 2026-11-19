@@ -483,6 +483,9 @@ struct TextParamSpec {
     name: String,
     kind: TextParamKind,
     default: Option<TextDefaultValue>,
+    /// The signature declares a default, representable or not
+    /// (`sep=<unrepresentable>`).
+    declares_default: bool,
 }
 
 #[derive(Default)]
@@ -681,10 +684,10 @@ fn parse_text_signature(text: &str) -> Option<ParsedTextSignature> {
             continue;
         }
 
-        let (name, default) = if let Some((head, tail)) = token.split_once('=') {
-            (head.trim(), parse_text_default(tail))
+        let (name, default, declares_default) = if let Some((head, tail)) = token.split_once('=') {
+            (head.trim(), parse_text_default(tail), true)
         } else {
-            (token.trim(), None)
+            (token.trim(), None, false)
         };
         if name.is_empty() {
             return None;
@@ -715,9 +718,102 @@ fn parse_text_signature(text: &str) -> Option<ParsedTextSignature> {
             name: name.to_string(),
             kind,
             default,
+            declares_default,
         });
     }
     Some(parsed)
+}
+
+/// The Argument Clinic parameters of a native method descriptor, read from
+/// its declared `__text_signature__`: one name per ABI slot, the `$self`
+/// receiver and every positional-only parameter empty (CPython's
+/// `_PyArg_Parser` keyword list), and one default per trailing parameter
+/// that declares one. Owned defaults are released on drop.
+pub(crate) struct DeclaredMethodParameters<'a, 'py> {
+    py: &'a crate::PyToken<'py>,
+    pub(crate) names: Vec<Vec<u8>>,
+    pub(crate) defaults: Vec<u64>,
+    owned: Vec<u64>,
+}
+
+impl Drop for DeclaredMethodParameters<'_, '_> {
+    fn drop(&mut self) {
+        dec_owned_bits(self.py, &self.owned);
+    }
+}
+
+/// The named binding a method descriptor's text signature declares, when the
+/// signature has a `$self` receiver, `arity` ABI slots, at least one
+/// parameter a caller may pass by keyword, and no keyword-only, `*args` or
+/// `**kwargs` parameter. A default comes from `declared` (the constructor's
+/// trailing defaults, which may hold the missing sentinel the body expects),
+/// else from the signature, else the missing sentinel for a default the
+/// signature cannot spell (`sep=<unrepresentable>`). `Ok(None)`: the
+/// signature declares no such binding. `Err`: an allocation failed and an
+/// exception is pending.
+pub(crate) fn declared_method_parameters<'a, 'py>(
+    py: &'a crate::PyToken<'py>,
+    text: &str,
+    arity: usize,
+    declared: &[u64],
+) -> Result<Option<DeclaredMethodParameters<'a, 'py>>, ()> {
+    let Some(parsed) = parse_text_signature(text) else {
+        return Ok(None);
+    };
+    if !parsed.implicit_receiver
+        || parsed.vararg.is_some()
+        || parsed.varkw.is_some()
+        || parsed.params.len() != arity
+        || parsed.posonly_cut >= arity
+        || declared.len() >= arity
+        || parsed
+            .params
+            .iter()
+            .any(|param| param.kind != TextParamKind::PositionalOrKeyword)
+    {
+        return Ok(None);
+    }
+    let declared_start = arity - declared.len();
+    let signature_start = parsed
+        .params
+        .iter()
+        .rposition(|param| !param.declares_default)
+        .map_or(0, |index| index + 1);
+    if signature_start == 0 {
+        // The receiver never has a default.
+        return Ok(None);
+    }
+    let mut binding = DeclaredMethodParameters {
+        py,
+        names: Vec::with_capacity(arity),
+        defaults: Vec::new(),
+        owned: Vec::new(),
+    };
+    for (index, param) in parsed.params.iter().enumerate() {
+        binding
+            .names
+            .push(if index == 0 || index < parsed.posonly_cut {
+                Vec::new()
+            } else {
+                param.name.as_bytes().to_vec()
+            });
+    }
+    for (index, param) in parsed
+        .params
+        .iter()
+        .enumerate()
+        .skip(signature_start.min(declared_start))
+    {
+        let bits = if index >= declared_start {
+            declared[index - declared_start]
+        } else if let Some(default) = &param.default {
+            default_value_bits(py, default, &mut binding.owned).ok_or(())?
+        } else {
+            crate::missing_bits(py)
+        };
+        binding.defaults.push(bits);
+    }
+    Ok(Some(binding))
 }
 
 fn alloc_owned_string_bits(
@@ -1558,6 +1654,67 @@ mod text_signature_tests {
         for malformed in ["($)", "(x, $self)", "($self, $other)", "(*, $self)"] {
             assert!(parse_text_signature(malformed).is_none(), "{malformed}");
         }
+    }
+
+    #[test]
+    fn declared_method_parameters_follow_the_clinic_signature() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let missing = crate::missing_bits(py);
+            let none = MoltObject::none().bits();
+            let minus_one = MoltObject::from_int(-1).bits();
+            let names = |binding: &DeclaredMethodParameters<'_, '_>| -> Vec<String> {
+                binding
+                    .names
+                    .iter()
+                    .map(|name| String::from_utf8(name.clone()).unwrap())
+                    .collect()
+            };
+            // The constructor's trailing default wins; the signature fills
+            // the rest; an unspellable default is the missing sentinel.
+            let split = declared_method_parameters(
+                py,
+                "($self, /, sep=None, maxsplit=-1)",
+                3,
+                &[minus_one],
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(names(&split), ["", "sep", "maxsplit"]);
+            assert_eq!(split.defaults, [none, minus_one]);
+            let translate =
+                declared_method_parameters(py, "($self, table, /, delete=b'')", 3, &[missing])
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(names(&translate), ["", "", "delete"]);
+            assert_eq!(translate.defaults, [missing]);
+            let hex = declared_method_parameters(
+                py,
+                "($self, /, sep=<unrepresentable>, bytes_per_sep=1)",
+                3,
+                &[],
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(names(&hex), ["", "sep", "bytes_per_sep"]);
+            assert_eq!(hex.defaults, [missing, MoltObject::from_int(1).bits()]);
+            // No keyword-capable parameter, a keyword-only or variadic one, a
+            // module function or an ABI that differs from the signature.
+            for (text, arity) in [
+                ("($self, table, /)", 2),
+                ("($self, /, length=1, byteorder='big', *, signed=False)", 4),
+                ("($self, /, *args, **kwargs)", 1),
+                ("($module, /, sep=None)", 1),
+                ("($self, /, format, shape=<unrepresentable>)", 4),
+            ] {
+                assert!(
+                    declared_method_parameters(py, text, arity, &[])
+                        .unwrap()
+                        .is_none(),
+                    "{text}"
+                );
+            }
+        });
     }
 }
 

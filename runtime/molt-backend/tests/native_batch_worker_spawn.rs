@@ -190,14 +190,22 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
             && stderr.contains("2 functions, 2 batches"),
         "expected production worker path to materialize and compile two batches; stderr:\n{stderr}"
     );
-    assert!(
-        output_path
-            .metadata()
-            .expect("native batch output object")
-            .len()
-            > 0,
-        "native batch worker path must write a non-empty object"
-    );
+    use object::{Object, ObjectSymbol, read::archive::ArchiveFile};
+    let bytes = std::fs::read(&output_path).expect("read native application archive");
+    let archive = ArchiveFile::parse(bytes.as_slice()).expect("native application archive");
+    assert_eq!(archive.members().count(), 2);
+    for member in archive.members() {
+        let data = member.unwrap().data(bytes.as_slice()).unwrap();
+        let object = object::File::parse(data).expect("native application object");
+        assert!(
+            !object.symbols().any(|symbol| symbol.is_undefined()
+                && matches!(
+                    symbol.name(),
+                    Ok("molt_runtime_exit" | "_molt_runtime_exit")
+                )),
+            "the application must return to the launcher that owns process exit"
+        );
+    }
 
     // Explicit invalid custody must fail before publication instead of silently
     // allocating in the process's unrelated platform temp directory.

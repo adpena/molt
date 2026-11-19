@@ -236,3 +236,12 @@ owned_default.variable = owned_variable
 del owned_name, owned_default, owned_variable
 gc.collect()
 print("variable-cycle-collected", name_ref() is None, default_ref() is None)
+
+# The helper types CPython never instantiates from Python: their names and refusals.
+missing_type = type(contextvars.Token.MISSING)
+print("missing-type", missing_type.__name__, missing_type.__qualname__, missing_type.__module__)
+for cls in [contextvars.Token, missing_type, type(empty.keys()), type(empty.values())]:
+    try:
+        cls.__new__(cls)
+    except Exception as exc:
+        print("refusal", cls.__name__, type(exc).__name__, exc)
