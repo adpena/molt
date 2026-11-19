@@ -311,7 +311,10 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     AllocClass, ExceptionLastPending, StatefulLocalsRegister and GuardType/GuardTag (W3 frame and
     guard facts); the container and callable families are the walker lane's next slices.
     AllocClass and StatefulLocalsRegister moved next (2026-11-19); CallAsync stays with W3's task
-    family (it needs `TaskPlacement`).
+    family (it needs `TaskPlacement`). The guard pair and ExceptionLastPending moved last
+    (2026-11-19): a late-TIR pass (`guard_profile_marking`) marks each profile-only guard with
+    `GUARD_PROFILE_ONLY_ATTR`, so no backend re-derives the fact; the walker calls the runtime
+    behind `CodegenBuilder::profile_enabled` when marked.
   - Moved, slices 26-28 (2026-11-19, lane codegen-walker): the preserved container and callable
     families, and the rest of `CheckException`. `container_preserved_op` (iterator out-words,
     `len` with its typed entry, list/tuple/dict literals, set and frozenset aggregates,
