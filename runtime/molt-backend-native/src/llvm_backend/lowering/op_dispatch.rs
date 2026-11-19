@@ -15,8 +15,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
             }
-            OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
-            OpCode::CallNative => self.emit_call_native(op),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were

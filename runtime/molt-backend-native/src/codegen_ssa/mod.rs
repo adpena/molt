@@ -17,6 +17,7 @@ pub(crate) mod direct;
 pub(crate) mod frame;
 pub(crate) mod function;
 pub(crate) mod globals;
+pub(crate) mod native;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
