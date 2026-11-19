@@ -137,6 +137,15 @@ pub(crate) enum SiteBody {
     MethodSiteCall { arguments: usize, cold: RuntimeFn },
 }
 
+/// A helper function's body, written once for every builder
+/// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
+/// body is generic over the builder the backend makes for it, never the
+/// caller's.
+pub(crate) trait HelperBody {
+    /// Build the body over the helper's word parameters and answer its word.
+    fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
+}
+
 pub(crate) trait CodegenBuilder: BranchBuilder {
     /// Any machine value the backend holds for a TIR value.
     type Value: Copy;
@@ -306,6 +315,13 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
     /// program links.
     fn program_slot(&mut self, kind: ProgramSlotKind, owner: &str) -> Self::Word;
+    /// The program's private helper function `name`: `params` word
+    /// parameters after the execution context, answering a word. The first
+    /// request defines it from `body`, which the backend runs over a builder
+    /// positioned in the helper's entry; a later request answers the same
+    /// function. The helper takes the execution context as a compiled
+    /// function does.
+    fn define_helper(&mut self, name: &str, params: usize, body: &impl HelperBody) -> Self::Callee;
 
     /// One reference-count site: the transition `operation` that each
     /// [`Self::refcount`] through it applies. The transition itself is the

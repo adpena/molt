@@ -365,45 +365,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.backend.builder.position_at_end(done_bb);
         Some(view)
     }
-
-    /// The runtime entry custody of the function object `op` (a `func_new` or
-    /// `func_new_closure`) creates for `name`. A task constructor's arguments
-    /// enter through its task trampoline, which retains each into the new
-    /// task, so it borrows. Otherwise the word comes from the parameter
-    /// declaration in the target's linkage row; a target without one, or one
-    /// the runtime cannot encode in one bit, is a compiler error: guessing
-    /// "borrowed" would let a transferring body release its caller's
-    /// references.
-    fn function_entry_custody_word(
-        &self,
-        op: &TirOp,
-        name: &str,
-        has_closure: bool,
-        arity: usize,
-    ) -> u64 {
-        if op.attrs.contains_key("task_kind") {
-            return 0;
-        }
-        let linkage_abi = self
-            .backend
-            .function_linkage_abis
-            .get(name)
-            .unwrap_or_else(|| panic!("func_new target `{name}` has no exact native linkage ABI"));
-        let transferred: Vec<bool> = linkage_abi
-            .parameter_custody
-            .iter()
-            .map(|custody| matches!(custody, crate::ir::ParameterCustody::Transferred))
-            .collect();
-        molt_codegen_abi::EntryCustodyDeclaration::declare(
-            linkage_abi.source_signature.has_closure,
-            linkage_abi.source_signature.arity,
-            &transferred,
-        )
-        .encode(has_closure, arity)
-        .unwrap_or_else(|error| {
-            panic!("func_new target `{name}` has no runtime entry custody: {error:?}")
-        })
-    }
 }
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -423,180 +384,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         let i64_ty = self.backend.context.i64_type();
         match kind {
-            OpKind::BuiltinFunc => {
-                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let arity = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let Some((key, func, trampoline)) =
-                    self.ensure_builtin_callable(func_name, op.runtime, arity)
-                else {
-                    return true;
-                };
-                let fn_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        func.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "builtin_func_ptr",
-                    )
-                    .unwrap();
-                let tramp_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        trampoline.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "builtin_trampoline_ptr",
-                    )
-                    .unwrap();
-                let arity_bits = i64_ty.const_int(arity as u64, false);
-                let (new_fn, mut args) = if let Some(&name_id) = op.operands.first() {
-                    (
-                        self.ensure_runtime_import(RuntimeFn::FuncNewBuiltinNamed),
-                        vec![RuntimeArg::Operand(name_id)],
-                    )
+            OpKind::BuiltinFunc | OpKind::FuncNew | OpKind::FuncNewClosure => {
+                // A task constructor's target and task trampoline are the
+                // switch lane's (`ensure_callable_target`); the walker builds
+                // everything else.
+                let task_entry = if op.attrs.contains_key("task_kind")
+                    || op.attrs.contains_key("task_closure_size")
+                {
+                    let Some(symbol) = self.callee_symbol(op) else {
+                        return false;
+                    };
+                    let arity = match op.attrs.get("value") {
+                        Some(AttrValue::Int(value)) => usize::try_from(*value).unwrap_or(0),
+                        _ => 0,
+                    };
+                    let has_closure = kind == OpKind::FuncNewClosure;
+                    Some(self.ensure_callable_target(op, &symbol, arity, has_closure))
                 } else {
-                    (
-                        self.ensure_runtime_import(RuntimeFn::FuncNewBuiltin),
-                        Vec::new(),
-                    )
+                    None
                 };
-                // The catalog key is the identity; `fn_ptr` is only the target.
-                args.extend([
-                    RuntimeArg::Word(i64_ty.const_int(key, false).into()),
-                    RuntimeArg::Word(fn_ptr.into()),
-                    RuntimeArg::Word(tramp_ptr.into()),
-                    RuntimeArg::Word(arity_bits.into()),
-                ]);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    new_fn,
-                    &args,
-                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind.as_str(),
-                    "builtin_func_new",
-                );
-                true
-            }
-            OpKind::FuncNew => {
-                let Some(func_name) = self.callee_symbol(op) else {
-                    return false;
-                };
-                let func_name = func_name.as_str();
-                let arity = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let (func, trampoline) = self.ensure_callable_target(op, func_name, arity, false);
-                let fn_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        func.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "func_ptr",
-                    )
-                    .unwrap();
-                let tramp_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        trampoline.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "func_trampoline_ptr",
-                    )
-                    .unwrap();
-                let custody = self.function_entry_custody_word(op, func_name, false, arity);
-                let new_fn = self.ensure_runtime_import(RuntimeFn::FuncNew);
-                let result = self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        new_fn,
-                        &[
-                            fn_ptr.into(),
-                            tramp_ptr.into(),
-                            i64_ty.const_int(arity as u64, false).into(),
-                            i64_ty.const_int(custody, false).into(),
-                        ],
-                        "func_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.bind_owned_runtime_result(op, result);
-                true
-            }
-            OpKind::FuncNewClosure => {
-                let Some(func_name) = self.callee_symbol(op) else {
-                    return false;
-                };
-                let func_name = func_name.as_str();
-                let arity = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let Some(&closure_id) = op.operands.first() else {
-                    return false;
-                };
-                let (func, trampoline) = self.ensure_callable_target(op, func_name, arity, true);
-                let fn_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        func.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "closure_func_ptr",
-                    )
-                    .unwrap();
-                let tramp_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        trampoline.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "closure_trampoline_ptr",
-                    )
-                    .unwrap();
-                let custody = self.function_entry_custody_word(op, func_name, true, arity);
-                let new_fn = self.ensure_runtime_import(RuntimeFn::FuncNewClosure);
-                // Code addresses, the arity and the entry custody are raw ABI
-                // words; the function retains the borrowed closure object.
-                self.emit_borrowed_runtime_call(
-                    op,
-                    new_fn,
-                    &[
-                        RuntimeArg::Word(fn_ptr.into()),
-                        RuntimeArg::Word(tramp_ptr.into()),
-                        RuntimeArg::Word(i64_ty.const_int(arity as u64, false).into()),
-                        RuntimeArg::Operand(closure_id),
-                        RuntimeArg::Word(i64_ty.const_int(custody, false).into()),
-                    ],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind.as_str(),
-                    "func_new_closure",
-                );
-                true
+                let mut lowered = false;
+                self.walker_op(|cx, b| {
+                    lowered = cx.function_construction_op(b, op, kind, task_entry);
+                });
+                lowered
             }
             OpKind::TraceEnterSlot => {
                 let entered = self

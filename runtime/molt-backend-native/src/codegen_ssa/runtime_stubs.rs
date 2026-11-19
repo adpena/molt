@@ -263,6 +263,79 @@ extern "C" fn global_slot_base(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::GlobalSlotBase, &[a])
 }
 
+/// The model's identity for code address `code`: the program-slot word of
+/// the stub symbol it resolves to, so a constructor handed the wrong target
+/// answers a different object.
+fn code_identity(code: u64) -> u64 {
+    let compiled = [
+        "walker_compiled_boxed",
+        "walker_compiled_raw",
+        "walker_compiled_handoff",
+    ]
+    .map(molt_ir::runtime_callable_abi_generated::compiled_execution_symbol);
+    let runtime = RuntimeFn::ALL
+        .iter()
+        .map(|function| function.linker_symbol().to_owned());
+    compiled
+        .into_iter()
+        .chain(runtime)
+        .find(|symbol| lookup(symbol).is_some_and(|address| address as u64 == code))
+        .map(|symbol| program_slot_word(&symbol))
+        .unwrap_or_else(|| panic!("code address {code:#x} is no stub"))
+}
+
+/// Enter a new function object's trampoline as the runtime does, with
+/// `closure` and the inline ints 2, 3, ... as its `arity` arguments, and
+/// answer its word. The kernel's attached context is lent through.
+fn enter_trampoline(context: u64, trampoline: u64, closure: u64, arity: u64) -> u64 {
+    let argv: Vec<u64> = (0..arity)
+        .map(|index| (0x7ff8 << 48) | (1 << 48) | (2 + index))
+        .collect();
+    // SAFETY: the constructor was handed a callable trampoline, whose
+    // signature is `(context, closure, argv, argc) -> word`.
+    let trampoline: extern "C" fn(u64, u64, u64, u64) -> u64 =
+        unsafe { std::mem::transmute(trampoline as *const u8) };
+    trampoline(context, closure, argv.as_ptr() as u64, arity)
+}
+
+// The function constructors enter the trampoline first, then answer an
+// object keyed by the target's identity, the trampoline's answer and the
+// raw words.
+extern "C" fn func_new(context: u64, code: u64, trampoline: u64, arity: u64, custody: u64) -> u64 {
+    let entered = enter_trampoline(context, trampoline, 0, arity);
+    runtime(
+        RuntimeFn::FuncNew,
+        &[code_identity(code), entered, arity, custody],
+    )
+}
+extern "C" fn func_new_closure(
+    context: u64,
+    code: u64,
+    trampoline: u64,
+    arity: u64,
+    closure: u64,
+    custody: u64,
+) -> u64 {
+    let entered = enter_trampoline(context, trampoline, closure, arity);
+    runtime(
+        RuntimeFn::FuncNewClosure,
+        &[code_identity(code), entered, arity, closure, custody],
+    )
+}
+extern "C" fn func_new_builtin(
+    context: u64,
+    key: u64,
+    code: u64,
+    trampoline: u64,
+    arity: u64,
+) -> u64 {
+    let entered = enter_trampoline(context, trampoline, 0, arity);
+    runtime(
+        RuntimeFn::FuncNewBuiltin,
+        &[key, code_identity(code), entered, arity],
+    )
+}
+
 extern "C" fn set_new(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::SetNew, &[a])
 }
@@ -370,6 +443,9 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::IterNextUnboxed => iter_next_unboxed as *const u8,
         RuntimeFn::IterNextUnpack2 => iter_next_unpack2 as *const u8,
         RuntimeFn::GlobalSlotBase => global_slot_base as *const u8,
+        RuntimeFn::FuncNew => func_new as *const u8,
+        RuntimeFn::FuncNewClosure => func_new_closure as *const u8,
+        RuntimeFn::FuncNewBuiltin => func_new_builtin as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,
         RuntimeFn::FrozensetNew => frozenset_new as *const u8,
         RuntimeFn::SetAdd => set_add as *const u8,

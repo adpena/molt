@@ -709,6 +709,46 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         builder.build_store(pointer, word).unwrap();
     }
 
+    /// An internal function of its own, with a fresh builder and function
+    /// state; the module's function order is the order of first requests.
+    fn define_helper(
+        &mut self,
+        name: &str,
+        params: usize,
+        body: &impl crate::codegen_ssa::HelperBody,
+    ) -> FunctionValue<'ctx> {
+        use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+        if let Some(function) = self.backend.module.get_compiled_function(name) {
+            return function;
+        }
+        let context = self.words.context;
+        let i64_type = context.i64_type();
+        let function = self.backend.module.add_compiled_function(
+            name,
+            i64_type.fn_type(&vec![i64_type.into(); params], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let builder = context.create_builder();
+        builder.position_at_end(context.append_basic_block(function, "entry"));
+        let state = LlvmFunctionState::new(true);
+        let mut helper = LlvmCodegen {
+            words: LlvmWords {
+                context,
+                builder: &builder,
+            },
+            backend: self.backend,
+            params: self.params,
+            state: &state,
+        };
+        // Parameter 0 is the execution context.
+        let words: Vec<IntValue<'ctx>> = (1..=params as u32)
+            .map(|index| function.get_nth_param(index).unwrap().into_int_value())
+            .collect();
+        let result = body.build(&mut helper, &words);
+        builder.build_return(Some(&result)).unwrap();
+        function
+    }
+
     fn program_slot(
         &mut self,
         kind: molt_ir::code_slots::ProgramSlotKind,
