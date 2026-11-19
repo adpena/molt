@@ -141,6 +141,7 @@ pub(crate) struct StatefulLocalSlot {
 pub(crate) struct StatefulLocalsLayout {
     pub(crate) slots: Vec<StatefulLocalSlot>,
     pub(crate) closure_offset: Option<usize>,
+    pub(crate) prepared_iterator_offset: Option<usize>,
     pub(crate) free_var_names: Vec<u64>,
     /// Each binding's code slot (`code_layout::code_slots` order), in
     /// `slots` order then `free_var_names` order, for the code object it was

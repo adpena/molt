@@ -177,7 +177,6 @@ def _disable_synchronization_control(module: types.ModuleType) -> None:
         owner: object,
         cache_name: str,
         evaluator_name: str,
-        key: str,
         fallback: object,
     ) -> object:
         evaluator = getattr(owner, evaluator_name)
@@ -186,7 +185,7 @@ def _disable_synchronization_control(module: types.ModuleType) -> None:
             return fallback
         value = getattr(owner, cache_name)
         if value is module._LAZY_TYPE_VALUE_UNSET:
-            value = module._evaluate_lazy_type_value(evaluator, key)
+            value = module._evaluate_lazy_type_value(evaluator)
             setattr(owner, cache_name, value)
         return value
 
@@ -198,8 +197,8 @@ def _disable_synchronization_control(module: types.ModuleType) -> None:
 def _profile(
     module: types.ModuleType, *, count: int, warm_reads: int, repeats: int
 ) -> dict[str, object]:
-    def evaluator(_format: int) -> dict[str, object]:
-        return {"__value__": int, "__bound__": int}
+    def evaluator(_format: int = 1) -> object:
+        return int
 
     def regular_typevars() -> object:
         return [module.TypeVar("T") for _ in range(count)]

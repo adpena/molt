@@ -637,6 +637,18 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
+        elif op.kind == FrontendKinds.ALLOC_TASK:
+            poll, frame_size, task_kind, *operands = op.args
+            ctx.json_ops.append(
+                {
+                    "kind": "alloc_task",
+                    "s_value": poll,
+                    "value": frame_size,
+                    "task_kind": task_kind,
+                    "args": [operand.name for operand in operands],
+                    "out": op.result.name,
+                }
+            )
         elif op.kind == FrontendKinds.STORE_CLOSURE:
             self_ptr, offset, val = op.args
             ctx.json_ops.append(

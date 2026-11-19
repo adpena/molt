@@ -2,6 +2,7 @@
 # MOLT_META: min_py=3.12
 
 import asyncio
+import sys
 
 
 class Base:
@@ -77,6 +78,28 @@ class Subject(Base):
 
         return [super().value() async for item in values()]
 
+    async def asynchronous_generator(self):
+        events = []
+
+        async def values():
+            yield 1
+            yield 2
+
+        class Values:
+            def __aiter__(self):
+                events.append(sys._getframe(1).f_code.co_name)
+                return values()
+
+        source = Values()
+        stream = (super().value() async for item in source)
+        parameter = stream.ag_frame.f_locals[".0"]
+        result = (parameter is source, type(parameter).__name__, tuple(events))
+        try:
+            await anext(stream)
+        except TypeError as error:
+            return result, str(error), events
+        return result, "missed", events
+
 
 def show(label, function):
     try:
@@ -102,3 +125,4 @@ show("variadic-only", subject.variadic_only)
 show("keyword-only", lambda: Subject.keyword_only(self=subject))
 show("local-class", subject.no_cell)
 show("async-comprehension", lambda: asyncio.run(subject.asynchronous()))
+show("async-generator", lambda: asyncio.run(subject.asynchronous_generator()))
