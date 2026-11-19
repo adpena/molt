@@ -391,14 +391,27 @@ pub(crate) mod tests {
                 | SiteBody::ModuleImportClosed => {
                     panic!("the model has no module globals for {body:?}")
                 }
-                SiteBody::MethodSiteLoad => panic!("the model has no method sites"),
+                SiteBody::MethodSiteLoad | SiteBody::MethodSiteCall { .. } => {
+                    panic!("the model has no method sites")
+                }
             })
         }
         fn static_cell_block(&mut self, module: &str) -> Value {
             panic!("the model has no static cells for {module}")
         }
         fn load_word(&mut self, address: Value, offset: i32) -> u64 {
-            panic!("the model has no memory at {address:?}+{offset}")
+            let address = word_of(self, address);
+            let at = address
+                .checked_add_signed(i64::from(offset))
+                .expect("test address");
+            self.word(at)
+        }
+        fn store_word(&mut self, address: Value, offset: i32, word: u64) {
+            let address = word_of(self, address);
+            let at = address
+                .checked_add_signed(i64::from(offset))
+                .expect("test address");
+            Memory::store(self, at, word);
         }
         fn runtime_callee(&mut self, function: RuntimeFn) -> ModelCallee {
             ModelCallee::Runtime(function)
@@ -897,6 +910,7 @@ pub(crate) mod tests {
                 | RuntimeFn::Alloc
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
+                | RuntimeFn::FunctionClosureBits
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer

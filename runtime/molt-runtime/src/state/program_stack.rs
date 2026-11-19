@@ -11,12 +11,16 @@
 //! as the stack reaches them, so a shallow program pays nothing and a deep one
 //! pays for the depth it uses, as a growable stack would, with no check or
 //! switch on the call path:
-//! * the main thread switches to the reservation once, at the program entry
-//!   (`molt_run_program_entry`), and stays the OS main thread (Unix: one
-//!   mapping with a guard page, entered with `psm::on_stack`);
+//! * on Linux and the BSDs the main thread switches to the reservation once, at
+//!   the program entry (`molt_run_program_entry`), and stays the OS main thread
+//!   (one mapping with a guard page, entered with `psm::on_stack`);
 //! * Windows reserves the main thread's stack in the PE header instead (the
 //!   native link's `/STACK` reservation): a switched stack there is a fiber,
 //!   whose size Windows commits rather than reserves;
+//! * macOS sizes the main thread's own stack in the Mach-O header (the native
+//!   link's `-stack_size`, which ld caps at 512 MiB on arm64): on a switched
+//!   stack `sample` and Instruments cannot walk the frames and attribute every
+//!   sample to `_dyld_start`, and 512 MiB holds about three million frames;
 //! * threads the runtime starts request the same reservation
 //!   ([`thread_stack_bytes`]), unless the program set `threading.stack_size()`.
 //!
@@ -79,22 +83,23 @@ pub unsafe extern "C" fn molt_run_program_entry(entry: u64, context: u64) {
     // SAFETY: `code` is the compiled entry, an `extern "C" fn(u64)`.
     let entry: unsafe extern "C" fn(u64) =
         unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn(u64)>(code) };
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     {
         let stack = reserve_main_stack();
         // SAFETY: `stack` is a live, writable mapping owned for the process
         // lifetime; the entry runs to completion on it and returns.
         unsafe { psm::on_stack(stack.base as *mut u8, stack.size, || entry(context)) };
     }
-    #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+    #[cfg(not(all(unix, not(target_os = "macos"), not(target_arch = "wasm32"))))]
     {
-        // SAFETY: as above; the main thread's stack already is the reservation.
+        // SAFETY: as above; the main thread's stack already is the reservation
+        // (the Windows PE header, the Mach-O header).
         unsafe { entry(context) }
     }
 }
 
 /// The main thread's program stack: one mapping for the process lifetime.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy)]
 pub(crate) struct MainStack {
     /// Lowest usable address (above the guard page).
@@ -102,7 +107,7 @@ pub(crate) struct MainStack {
     size: usize,
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 static MAIN_STACK: std::sync::OnceLock<MainStack> = std::sync::OnceLock::new();
 
 /// Map the main thread's program stack once. Runtime init calls this before it
@@ -116,7 +121,7 @@ static MAIN_STACK: std::sync::OnceLock<MainStack> = std::sync::OnceLock::new();
 /// quarter of it, so a process under `ulimit -v` keeps room for its heap). A
 /// mapping that fails under that bound is a broken environment: the process
 /// stops with the reason rather than run on a stack it did not ask for.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 pub(crate) fn reserve_main_stack() -> MainStack {
     *MAIN_STACK.get_or_init(|| {
         // SAFETY: sysconf/getrlimit/mmap/mprotect with valid arguments; the

@@ -7,7 +7,8 @@
 
 use molt_codegen_abi as nanbox;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
-use molt_ir::runtime_fn_generated::RuntimeFn;
+use molt_codegen_abi::word::WordComparison;
+use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 use super::builder::CodegenBuilder;
 use super::function::FunctionCx;
@@ -51,6 +52,91 @@ fn construct<B: CodegenBuilder>(
         .unwrap_or_else(|| panic!("{} returns a word", function.symbol()));
     b.set_name(value, name);
     b.expect_word(value)
+}
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// `BuildSet` and the preserved frozenset literal: incremental
+    /// construction owns the aggregate from allocation to commit, and the
+    /// mutator borrows every operand. All entries share one custody whose
+    /// operands are requested lazily, per entry, only after the previous
+    /// insertion succeeded: a later entry is never boxed before an earlier
+    /// entry's hashing and insertion ran, a value repeated across entries
+    /// keeps one identity, and a failed box, allocation or insertion releases
+    /// the partial aggregate and every minted box while the first exception
+    /// stays pending.
+    pub(crate) fn set_aggregate_op(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        new: RuntimeFn,
+        mutate: RuntimeFn,
+    ) {
+        let view = self.operands();
+        let mut custody = view.begin(b, &op.operands, "aggregate");
+        // Hash-aggregate constructors share one raw usize-capacity ABI.
+        let capacity = b.constant(op.operands.len() as u64);
+        let aggregate = b
+            .call_runtime(new, &[capacity])
+            .expect("an aggregate constructor answers a word");
+        let named = b.word_value(aggregate);
+        b.set_name(named, "aggregate");
+        let none = b.constant(NONE_WORD);
+        let created = b.compare(WordComparison::NotEqual, aggregate, none);
+        let named = b.bit_value(created);
+        b.set_name(named, "aggregate_created");
+        view.continue_if(b, &mut custody, created, "ready");
+        let insert = b.runtime_callee(mutate);
+        let mutation_return = mutate
+            .boxed_abi()
+            .filter(|abi| abi.arity() == 2)
+            .unwrap_or_else(|| {
+                panic!(
+                    "hash aggregate mutator {} has no boxed ABI",
+                    mutate.symbol()
+                )
+            })
+            .result;
+        let release = b.refcount_site(RefcountOperation::Release);
+        for &operand in &op.operands {
+            let word = view.operand(b, &mut custody, operand);
+            let args = [b.word_value(aggregate), b.word_value(word)];
+            // Keep the aggregate's own owner and retire the mutator's owned
+            // result independently.
+            let inserted = b
+                .call(insert, &args)
+                .expect("a hash aggregate mutator answers a word");
+            b.set_name(inserted, "aggregate_insert");
+            match mutation_return {
+                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
+                    let inserted = b.expect_word(inserted);
+                    b.refcount(release, inserted);
+                }
+                RuntimeBoxedReturn::BorrowedValue => {}
+                RuntimeBoxedReturn::Void => {
+                    panic!(
+                        "hash aggregate mutator {} cannot return void",
+                        mutate.symbol()
+                    )
+                }
+            }
+            // The mutator reports failure only through the exception state.
+            let thread = b.thread_record_word();
+            let pending = super::pending::exception_pending_word(b, thread);
+            let named = b.word_value(pending);
+            b.set_name(named, "aggregate_pending_word");
+            let zero = b.constant(0);
+            let clear = b.compare(WordComparison::Equal, pending, zero);
+            let named = b.bit_value(clear);
+            b.set_name(named, "aggregate_no_exception");
+            view.continue_if(b, &mut custody, clear, "inserted");
+        }
+        let result = view.finish(b, custody, aggregate, "aggregate_result", |b| {
+            let release = b.refcount_site(RefcountOperation::Release);
+            b.refcount(release, aggregate);
+        });
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+    }
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {

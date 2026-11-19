@@ -602,3 +602,173 @@ fn a_reader_on_an_arm_writes_a_carried_binding_under_the_flag() {
             .all(|op| !op.attrs.contains_key(CARRIED_READER_ATTR))
     );
 }
+
+/// A strip-mined counted loop (`poll_strip_mining`): the body has no poll;
+/// the exit test runs against a chunk limit, and a boundary block re-tests the
+/// real bound, polls once and re-enters the header with its own binding. The
+/// body still writes no home: the poll's service writes the header's binding,
+/// which reaches the boundary through the header.
+///
+/// ```text
+/// bb0: home[0] = %1; br bb1(%1, %1)
+/// bb1(%2 i, %20 limit): %3 = %2 < %20; cond_br %3, bb2, bb5
+/// bb2: %5 = %2 + 1; home[0] = %5 -> %6; br bb1(%6, %20)
+/// bb5: %7 = %2 < %21; cond_br %7, bb6, bb4      (%21: the real bound)
+/// bb6: poll; br bb7(%21)
+/// bb7(%22 next): br bb1(%2, %22)
+/// ```
+/// `for_style`: the body binds the counter before it steps it (a `for` loop
+/// binds `i`, then passes `i + 1`), so the binding is no header parameter and
+/// the header must carry it.
+fn strip_mined_loop(for_style: bool) -> TirFunction {
+    let mut func = loop_function(ValueId(1), vec![], ValueId(1));
+    let (i, limit, cond, one, sum, view) = (
+        ValueId(2),
+        ValueId(20),
+        ValueId(3),
+        ValueId(4),
+        ValueId(5),
+        ValueId(6),
+    );
+    let (bound, real, next) = (ValueId(21), ValueId(7), ValueId(22));
+    for (value, ty) in [
+        (limit, TirType::I64),
+        (cond, TirType::Bool),
+        (one, TirType::I64),
+        (sum, TirType::I64),
+        (view, TirType::I64),
+        (bound, TirType::I64),
+        (real, TirType::Bool),
+        (next, TirType::I64),
+    ] {
+        func.value_types.insert(value, ty);
+    }
+    let entry = func.blocks.get_mut(&BlockId(0)).unwrap();
+    entry.ops.push(const_int(1000, bound));
+    entry.terminator = Terminator::Branch {
+        target: BlockId(1),
+        args: vec![ValueId(1), ValueId(1)],
+    };
+    func.blocks.insert(
+        BlockId(1),
+        block(
+            1,
+            vec![(i, TirType::I64), (limit, TirType::I64)],
+            vec![op(OpCode::Lt, vec![i, limit], vec![cond])],
+            Terminator::CondBranch {
+                cond,
+                then_block: BlockId(2),
+                then_args: vec![],
+                else_block: BlockId(5),
+                else_args: vec![],
+            },
+        ),
+    );
+    func.blocks.insert(
+        BlockId(2),
+        block(
+            2,
+            vec![],
+            if for_style {
+                vec![store(i, Some(view), 0), const_int(1, one), {
+                    let mut add = op(OpCode::Add, vec![view, one], vec![sum]);
+                    add.mark_inline_int_proof();
+                    add
+                }]
+            } else {
+                vec![
+                    const_int(1, one),
+                    {
+                        let mut add = op(OpCode::Add, vec![i, one], vec![sum]);
+                        add.mark_inline_int_proof();
+                        add
+                    },
+                    store(sum, Some(view), 0),
+                ]
+            },
+            Terminator::Branch {
+                target: BlockId(1),
+                args: vec![if for_style { sum } else { view }, limit],
+            },
+        ),
+    );
+    func.blocks.insert(
+        BlockId(5),
+        block(
+            5,
+            vec![],
+            vec![op(OpCode::Lt, vec![i, bound], vec![real])],
+            Terminator::CondBranch {
+                cond: real,
+                then_block: BlockId(6),
+                then_args: vec![],
+                else_block: BlockId(4),
+                else_args: vec![],
+            },
+        ),
+    );
+    func.blocks.insert(
+        BlockId(6),
+        block(
+            6,
+            vec![],
+            vec![poll()],
+            Terminator::Branch {
+                target: BlockId(7),
+                args: vec![bound],
+            },
+        ),
+    );
+    func.blocks.insert(
+        BlockId(7),
+        block(
+            7,
+            vec![(next, TirType::I64)],
+            vec![],
+            Terminator::Branch {
+                target: BlockId(1),
+                args: vec![i, next],
+            },
+        ),
+    );
+    func
+}
+
+#[test]
+fn a_strip_mined_loop_writes_its_home_at_the_boundary_poll() {
+    for for_style in [false, true] {
+        let mut func = strip_mined_loop(for_style);
+        let i = ValueId(2);
+        place(&mut func);
+        assert!(
+            home_writes_in(&func, BlockId(2)).is_empty(),
+            "the poll-free body writes no home: {:?}",
+            func.blocks[&BlockId(2)].ops
+        );
+        // The poll's service (the boundary's split) writes the header's
+        // binding: the parameter itself, or the parameter the header gains to
+        // carry it.
+        let writes: Vec<_> = func
+            .blocks
+            .keys()
+            .copied()
+            .filter(|bid| *bid != BlockId(0) && *bid != BlockId(2))
+            .filter(|bid| {
+                home_writes_in(&func, *bid)
+                    .iter()
+                    .any(|(slot, _)| *slot == 0)
+            })
+            .collect();
+        assert!(
+            !writes.is_empty(),
+            "for_style={for_style}: the boundary's poll writes the binding"
+        );
+        if !for_style {
+            assert!(
+                writes
+                    .iter()
+                    .any(|bid| home_writes_in(&func, *bid).contains(&(0, i)))
+            );
+        }
+    }
+}

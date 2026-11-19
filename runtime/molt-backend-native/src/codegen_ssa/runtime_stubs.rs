@@ -126,6 +126,9 @@ extern "C" fn object_publish_initialized(_: u64, a: u64) -> u64 {
 extern "C" fn ord_at(_: u64, a: u64, b: u64) -> u64 {
     two(RuntimeFn::OrdAt, a, b)
 }
+extern "C" fn function_closure_bits(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::FunctionClosureBits, &[a])
+}
 extern "C" fn call_func_fast0(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::CallFuncFast0, &[a])
 }
@@ -291,6 +294,7 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::CallargsNew => callargs_new as *const u8,
         RuntimeFn::CallargsPushPos => callargs_push_pos as *const u8,
         RuntimeFn::CallBind => call_bind as *const u8,
+        RuntimeFn::FunctionClosureBits => function_closure_bits as *const u8,
         RuntimeFn::Alloc => alloc as *const u8,
         RuntimeFn::ObjectPublishInitialized => object_publish_initialized as *const u8,
         RuntimeFn::OrdAt => ord_at as *const u8,

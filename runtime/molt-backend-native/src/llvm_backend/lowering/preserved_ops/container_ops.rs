@@ -61,7 +61,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             OpKind::SetNew => {
-                self.emit_build_set(op);
+                self.walker_op(|cx, b| {
+                    cx.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd)
+                });
                 true
             }
 
@@ -69,7 +71,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // Frozenset has no dedicated TIR opcode, but its raw-capacity
                 // constructor and in-place construction mutator share the same
                 // failure/ownership protocol as dict and set literals.
-                self.emit_build_frozenset(op);
+                self.walker_op(|cx, b| {
+                    cx.set_aggregate_op(b, op, RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd)
+                });
                 true
             }
 

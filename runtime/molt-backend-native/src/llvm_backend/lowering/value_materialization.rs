@@ -106,18 +106,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.operands().begin(&mut self.codegen(), operands, label)
     }
 
-    /// Open call custody before any boxing can fail (`Operands::begin_call`).
-    pub(super) fn begin_call_operands(
-        &mut self,
-        operands: &[ValueId],
-        adopted: &[ValueId],
-        callable: Option<ValueId>,
-        label: &str,
-    ) -> BorrowedOperands<'ctx> {
-        self.operands()
-            .begin_call(&mut self.codegen(), operands, adopted, callable, label)
-    }
-
     /// The operand's boxed word, boxed at its first request.
     pub(super) fn borrowed_operand(
         &mut self,
@@ -126,39 +114,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         self.operands()
             .operand(&mut self.codegen(), custody, operand)
-    }
-
-    /// Continue past a consumer step only when `ok` holds; otherwise join the
-    /// custody's failure block.
-    pub(super) fn borrowed_operands_continue_if(
-        &mut self,
-        custody: &mut BorrowedOperands<'ctx>,
-        ok: inkwell::values::IntValue<'ctx>,
-        step: &str,
-    ) {
-        self.operands()
-            .continue_if(&mut self.codegen(), custody, ok, step);
-    }
-
-    /// Continue past a consumer step that reports failure only through the
-    /// exception state.
-    pub(super) fn borrowed_operands_continue_if_clear(
-        &mut self,
-        custody: &mut BorrowedOperands<'ctx>,
-        step: &str,
-    ) {
-        let pending = self.emit_exception_pending_word(&format!("{}_pending", custody.label()));
-        let clear = self
-            .backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                pending,
-                self.backend.context.i64_type().const_zero(),
-                &format!("{}_no_exception", custody.label()),
-            )
-            .unwrap();
-        self.borrowed_operands_continue_if(custody, clear, step);
     }
 
     /// Rejoin the committed path with the failure block and release the
@@ -247,17 +202,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.materialize_dynbox_bits(operand)
     }
 
-    /// Commit one reference per adopted position (`Operands::surrender`).
-    pub(super) fn surrender_borrowed_owners(
-        &self,
-        custody: &BorrowedOperands<'ctx>,
-        operands: &[ValueId],
-        borrowed: &[ValueId],
-    ) {
-        self.operands()
-            .surrender(&mut self.codegen(), custody, operands, borrowed);
-    }
-
     /// `custody::release_call_inputs` at `builder`'s position, which may be
     /// another function (a call trampoline).
     pub(super) fn release_call_inputs(
@@ -269,19 +213,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut codegen = self.codegen();
         codegen.words.builder = builder;
         custody::release_call_inputs(&mut codegen, callable, owners);
-    }
-
-    /// Spill call argument words into this operation's static entry-block
-    /// array (`custody::spill_words`).
-    pub(super) fn spill_call_words(
-        &self,
-        words: &[inkwell::values::IntValue<'ctx>],
-        name: &str,
-    ) -> (
-        inkwell::values::IntValue<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-    ) {
-        custody::spill_words(&mut self.codegen(), words, name)
     }
 
     // ── Representation authority ──

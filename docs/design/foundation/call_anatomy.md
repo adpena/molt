@@ -930,11 +930,14 @@ prologue check, CPython 3.14's soft and hard limits: `RecursionError` between th
 the hard one). The guest stack grows by reservation, not by switching
 (2026-11-15, molt-runtime `state/program_stack.rs`): every thread that runs compiled code runs on
 1 GiB of reserved address space (`runtime/native_launch_abi.toml` `[program_stack]`), committed
-only as the stack reaches it. The Unix main thread switches to it once at the entry
+only as the stack reaches it. The Linux and BSD main thread switches to it once at the entry
 (`molt_run_program_entry`, one mapping entered with `psm::on_stack`, staying the OS main thread;
 runtime init maps it before the Linux `RLIMIT_DATA` memory backstop, which charges a writable mapping
 in full when it is made, and threads under that backstop request the C library's stack); Windows reserves it in the
 PE header (`/STACK`, `--stack`), because a switched stack there is a fiber whose size is committed;
+the macOS main thread runs on its own stack, sized in the Mach-O header (`-stack_size`, 512 MiB, which
+ld allows at most on arm64, about three million frames), because on a switched stack `sample` and
+Instruments cannot walk the frames and attribute every sample to `_dyld_start` (2026-11-18);
 runtime-started threads request it unless `threading.stack_size()` was set. That has no hot split,
 no per-call switch and no fast-path cost. Measured: before, native Molt died with SIGSEGV between
 10,000 and 50,000 frames; now `down(1_000_000)` returns as on CPython 3.14 (0.39 s, 252 MB peak RSS),
@@ -2121,9 +2124,39 @@ Python code (CPython `CHECK_EVAL_BREAKER`; HotSpot safepoint polls). Producers s
 signal handlers, the GC scheduler on allocation thresholds, the async queue, and other threads'
 stop-the-world requests. The cold path services the work and clears the word.
 
-**Invariant J4.** Every loop backedge and every return from a call that may run Python code is
-followed by a poll before the next backedge; signal latency stays bounded. Check: a CFG verifier
-rule in the TIR verify-each pass.
+**Invariant J4.** Every return from a call that may run Python code is followed by a poll before
+the next backedge, and every loop polls at least once per `CHUNK` (1024) iterations; signal latency
+stays bounded. A loop whose body runs no Python code may poll once per chunk instead of on each
+backedge (below). Check: `async_work_poll::polled_latches` names the backedges that need a poll
+of their own.
+
+**A counted loop polls once per chunk (2026-11-18).** HotSpot's loop strip mining, specialised to
+Molt's counted loops (`poll_strip_mining`, first pass of the drop phase, backends that consume final
+TIR). For an innermost loop whose exit test is `x < stop`, with `x` an inline int rising by a
+constant of at least one (SCEV) and a body with one poll at its latch and no call, the loop carries
+a chunk limit as a header argument and tests `x < limit`: the same compare, so the hot iteration
+loses the poll's load, word test and branch. When the test fails a boundary block re-tests
+`x < stop`, polls once and refills `limit = min(stop, x + 1024)` (only for `x` below the
+inline-window top minus 1024, so the sum stays an inline int). Entry passes `limit = x`, so an empty
+loop exits without a poll and any other polls once on entry, as its first backedge did. The
+boundary re-enters the header with its own arguments, so only pure ops may sit between header and
+test. Drop insertion and frame-home placement run after it and treat the boundary as the loop's
+poll site. The limit is loop-invariant on the hot backedge; the inline-safe representation lane is
+a greatest fixpoint so that such a phi stays a raw int. A pass refusal names its rule
+(`poll_strip_mining::Refusal`, traced under `MOLT_TIR_TRACE_FUNC`). Cranelift gets it with the
+walker switch (W3): its SimpleIR projection rebuilds a structured loop from one exit test.
+
+The boundary polls before the body binds the iteration's values, so frame-home placement must name
+each home's binding at the header. Two placement defects blocked that: the header's first meet
+named a binding by its entry value, the refill join then carried that stale value, and the
+absorbing `Unknown` kept every home eager in the loop (now optimistic phi matching: an arrival that
+passes header parameter `p` through and still holds the header's previous state is consistent with
+`p`); and a carried binding could not be written on a poll's cold path, nor carried when an inside
+arrival came back current (now both). A `for` loop's binding lags its counter (it binds `i`, then
+passes `i + 1`), so placement carries the lagged value and a body-ran flag through the hot loop,
+which costs more than the poll (int_arith 11.0 -> 12.0 per iteration); the pass refuses that shape
+(`LaggedBinding`). Slice A2 rematerializes the lagged binding as `counter - step` at the poll, with
+an entry refill so the boundary is reached only after the body has run.
 
 **An inlined call is no call (2026-11-18).** The placement pass marks the check after each call on
 a body's first entry. When the inliner splices the callee, its body keeps the polls of its own calls

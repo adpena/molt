@@ -40,6 +40,7 @@ pub mod module_slot_promotion;
 pub mod native_call_expansion;
 pub mod ownership_lattice_min;
 pub mod pair_unpack;
+pub mod poll_strip_mining;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
