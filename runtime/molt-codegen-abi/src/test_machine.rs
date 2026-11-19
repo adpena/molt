@@ -179,12 +179,15 @@ pub(crate) const MODEL_ASYNCGEN: u64 = 0x7ffc_0000_0000_a5a5;
 
 impl crate::task_site::TaskSiteBuilder for Machine {
     fn task_new(&mut self, poll: u64, frame_bytes: u64, kind: u64, function: u64) -> u64 {
-        self.events
-            .push(Event::Call("task_new", vec![poll, frame_bytes, kind, function]));
+        self.events.push(Event::Call(
+            "task_new",
+            vec![poll, frame_bytes, kind, function],
+        ));
         self.task_new_result
     }
     fn cancel_token_get_current(&mut self) -> u64 {
-        self.events.push(Event::Call("cancel_token_get_current", vec![]));
+        self.events
+            .push(Event::Call("cancel_token_get_current", vec![]));
         MODEL_CANCEL_TOKEN
     }
     fn task_register_execution(&mut self, task: u64, token: u64) {
@@ -192,7 +195,8 @@ impl crate::task_site::TaskSiteBuilder for Machine {
             .push(Event::Call("task_register_execution", vec![task, token]));
     }
     fn asyncgen_new(&mut self, generator: u64) -> u64 {
-        self.events.push(Event::Call("asyncgen_new", vec![generator]));
+        self.events
+            .push(Event::Call("asyncgen_new", vec![generator]));
         MODEL_ASYNCGEN
     }
     fn int_from_i64(&mut self, raw: u64) -> u64 {

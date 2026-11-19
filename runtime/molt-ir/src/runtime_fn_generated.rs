@@ -1640,6 +1640,7 @@ pub enum RuntimeFn {
     ListReverse,
     ListReverseSlice,
     ListSort,
+    LiteralCellFill,
     LoadIntrinsicRuntime,
     LoadSuperMethod,
     LocalDrop,
@@ -4489,6 +4490,7 @@ impl RuntimeFn {
         Self::ListReverse,
         Self::ListReverseSlice,
         Self::ListSort,
+        Self::LiteralCellFill,
         Self::LoadIntrinsicRuntime,
         Self::LoadSuperMethod,
         Self::LocalDrop,
@@ -5815,7 +5817,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2845;
+    pub const COUNT: usize = 2846;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -27992,6 +27994,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: None,
         result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_literal_cell_fill",
+        linker_symbol: "molt_literal_cell_fill__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 4,
+        param_types: PARAMS_AAWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::BorrowedObject,
         form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
