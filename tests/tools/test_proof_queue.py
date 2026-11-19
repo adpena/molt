@@ -4998,6 +4998,9 @@ def test_supervisor_build_environment_uses_admitted_windows_store_temp(
     assert build_env == {
         **execution_env,
         "CARGO_TARGET_DIR": str(target.resolve(strict=True)),
+        # e96962e98a: Cargo's build-dir placement binds the same store.
+        "MOLT_CARGO_BUILD_DIR_BASE": str(target.resolve(strict=True)),
+        "CARGO_BUILD_BUILD_DIR": str(target.parent / "build"),
         "MOLT_PROOF_SCRATCH_ROOT": str(target.parent / "scratch"),
         **{name: str(target.parent / "tmp") for name in ("TMPDIR", "TMP", "TEMP")},
     }

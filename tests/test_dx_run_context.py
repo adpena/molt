@@ -1100,8 +1100,15 @@ def test_dx_project_scratch_stays_out_of_an_in_checkout_artifact_root() -> None:
     assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
 
 
-def test_dx_project_dx_env_uses_same_key_authority(short_cargo_cache: Path) -> None:
-    project_root = short_cargo_cache.parent / "repo"
+def test_dx_project_dx_env_uses_same_key_authority(
+    short_cargo_cache: Path, tmp_path: Path
+) -> None:
+    # POSIX needs a short root for the sccache socket. Windows has no such
+    # socket and keeps that fixture inside the checkout, where a nested
+    # project's custody root is promoted past the checkout (custody_layout);
+    # its pytest root lies outside every checkout.
+    parent = short_cargo_cache.parent if os.name == "posix" else tmp_path
+    project_root = parent / "repo"
     project_root.mkdir()
     (project_root / "pyproject.toml").write_text(
         "[tool.molt.dx]\nprefer_external_artifacts = false\n",
@@ -1112,7 +1119,11 @@ def test_dx_project_dx_env_uses_same_key_authority(short_cargo_cache: Path) -> N
 
     assert tuple(key for key in DX_ENV_KEYS if key in env)
     assert env["MOLT_EXT_ROOT"] == str(project_root.resolve())
-    assert env["SCCACHE_DIR"] == str(project_root.resolve() / ".sccache")
+    if os.name == "nt":
+        # sccache is off by default on Windows (dx._install_dx_defaults).
+        assert "SCCACHE_DIR" not in env
+    else:
+        assert env["SCCACHE_DIR"] == str(project_root.resolve() / ".sccache")
     assert env["PYTHONPATH"] == str(project_root.resolve() / "src")
 
 
@@ -2817,7 +2828,15 @@ def test_matching_legacy_binding_upgrades_through_canonical_selection(
     saved = json.loads(record.read_text(encoding="utf-8"))
     assert set(saved) == {"schema", "root", "identity"}
     assert saved["schema"] == "molt.artifact-root-binding.v2"
-    assert int(saved["identity"]["file_id"], 16) == metadata.st_ino
+    # POSIX records the inode as hex; Windows records FILE_ID_INFO's 16 FileId
+    # bytes, which CPython reads as a little-endian st_ino.
+    file_id = saved["identity"]["file_id"]
+    recorded = (
+        int.from_bytes(bytes.fromhex(file_id), "little")
+        if os.name == "nt"
+        else int(file_id, 16)
+    )
+    assert recorded == metadata.st_ino
 
 
 def test_renumbered_legacy_binding_refuses_with_explicit_bind_remedy(
@@ -3166,7 +3185,7 @@ def test_linux_volatile_identity_expires_with_the_kernel_boot(
         "read_text",
         lambda path, **kw: (
             boot
-            if str(path) == "/proc/sys/kernel/random/boot_id"
+            if path.as_posix() == "/proc/sys/kernel/random/boot_id"
             else original(path, **kw)
         ),
     )
