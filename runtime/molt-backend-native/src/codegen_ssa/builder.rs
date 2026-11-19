@@ -141,6 +141,14 @@ pub(crate) enum SiteBody {
 /// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
 /// body is generic over the builder the backend makes for it, never the
 /// caller's.
+/// One step of the inline recursion charge of a direct call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecursionCharge {
+    Admits,
+    Count,
+    Release,
+}
+
 pub(crate) trait HelperBody {
     /// Build the body over the helper's word parameters and answer its word.
     fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
@@ -270,6 +278,16 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// nonzero. The read is a relaxed atomic load no pass merges with another
     /// read or hoists out of a loop.
     fn async_work_pending(&mut self) -> Self::Predicate;
+    /// Apply one step of a direct call's inline recursion charge to this
+    /// invocation's `thread` record (the shared
+    /// `molt_codegen_abi::thread_record` generators): whether the limit
+    /// admits one more frame, or count or release one. Only `Admits`
+    /// answers.
+    fn recursion_charge(
+        &mut self,
+        charge: RecursionCharge,
+        thread: Self::Word,
+    ) -> Option<Self::Predicate>;
     /// Load one unsigned thread-local byte at a fixed byte offset.
     fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
     /// A call in a cold block, with the usual execution-context ABI.

@@ -15,7 +15,7 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use super::builder::CodegenBuilder;
-use super::builder::IntComparison;
+use super::builder::{IntComparison, RecursionCharge};
 use super::control::{self, Edges};
 use super::custody::{CallTarget, RuntimeArg};
 use super::function::{FunctionCx, ResultCustody};
@@ -51,6 +51,19 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            // A direct call's inline recursion charge.
+            OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
+                let thread = b.thread_record_word();
+                let charge = match op.opcode {
+                    OpCode::RecursionAdmits => RecursionCharge::Admits,
+                    OpCode::RecursionCount => RecursionCharge::Count,
+                    _ => RecursionCharge::Release,
+                };
+                if let Some(admitted) = b.recursion_charge(charge, thread) {
+                    let admitted = b.bit_value(admitted);
+                    self.bind(op.results[0], admitted, HeldCarrier::RawBool);
+                }
+            }
             OpCode::UnpackSequence => assert!(
                 self.unpack_sequence_op(b, op),
                 "verified UnpackSequence must lower through the canonical runtime ABI"
@@ -237,9 +250,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::ModuleImportFrom
             | OpCode::ModuleSetAttr
             | OpCode::NativeSymbolAddr
-            | OpCode::RecursionAdmits
-            | OpCode::RecursionCount
-            | OpCode::RecursionRelease
             | OpCode::ScfFor
             | OpCode::ScfIf
             | OpCode::ScfWhile
@@ -775,6 +785,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -794,6 +805,7 @@ mod tests {
                 hint: 0,
                 raised: false,
                 work,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[], state);
             assert_eq!(run.fact, Ok(()));
@@ -848,6 +860,7 @@ mod tests {
                 hint,
                 raised,
                 work: 0,
+                ..ThreadState::default()
             };
             let run = walk_in(&func, &[OBJECT], state);
             assert_eq!(run.fact, Ok(()));
@@ -1007,5 +1020,54 @@ mod tests {
             run.results,
             [Value::Word(object(RuntimeFn::ObjectNewBound, &[OBJECT]))]
         );
+    }
+
+    /// `f()` that applies the recursion charges `charges`, then answers
+    /// whether the limit admits one more frame.
+    fn charged(charges: &[OpCode]) -> TirFunction {
+        let mut func = TirFunction::new(
+            "walk_recursion".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let admitted = func.fresh_value();
+        func.value_types.insert(admitted, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for &charge in charges {
+            entry.ops.push(op(charge, &[], &[], None));
+        }
+        entry
+            .ops
+            .push(op(OpCode::RecursionAdmits, &[], &[admitted.0], None));
+        entry.terminator = Terminator::Return {
+            values: vec![admitted],
+        };
+        func
+    }
+
+    #[test]
+    fn the_recursion_charge_counts_against_the_runtimes_limit() {
+        let state = |depth| ThreadState {
+            depth,
+            limit: 100,
+            ..ThreadState::default()
+        };
+        // Below the limit admits; at it refuses.
+        for (depth, admits) in [(0, true), (99, true), (100, false)] {
+            let run = walk_in(&charged(&[]), &[], state(depth));
+            assert_eq!(run.fact, Ok(()));
+            assert_eq!(
+                run.results,
+                [Value::Word(boxed_bool(admits))],
+                "depth {depth}"
+            );
+        }
+        // A counted frame reaches the limit; a released one leaves it.
+        let run = walk_in(&charged(&[OpCode::RecursionCount]), &[], state(99));
+        assert_eq!(run.results, [Value::Word(boxed_bool(false))]);
+        let run = walk_in(&charged(&[OpCode::RecursionRelease]), &[], state(100));
+        assert_eq!(run.results, [Value::Word(boxed_bool(true))]);
+        assert!(run.runtime_calls.is_empty());
     }
 }

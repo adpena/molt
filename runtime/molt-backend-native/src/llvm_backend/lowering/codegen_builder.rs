@@ -590,6 +590,28 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap()
     }
 
+    fn recursion_charge(
+        &mut self,
+        charge: crate::codegen_ssa::RecursionCharge,
+        thread: IntValue<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        use crate::codegen_ssa::RecursionCharge;
+        use molt_codegen_abi::thread_record::{
+            generate_recursion_admits, generate_recursion_count, generate_recursion_release,
+        };
+        match charge {
+            RecursionCharge::Admits => Some(generate_recursion_admits(&mut self.words, thread)),
+            RecursionCharge::Count => {
+                generate_recursion_count(&mut self.words, thread);
+                None
+            }
+            RecursionCharge::Release => {
+                generate_recursion_release(&mut self.words, thread);
+                None
+            }
+        }
+    }
+
     fn thread_record_word(&mut self) -> Self::Word {
         let record = self.thread_record();
         self.words

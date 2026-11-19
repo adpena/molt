@@ -299,6 +299,14 @@ pub(crate) mod tests {
         type Slot = usize;
         type Callee = ModelCallee;
         type RefcountSite = RefcountOperation;
+        fn recursion_charge(
+            &mut self,
+            charge: crate::codegen_ssa::RecursionCharge,
+            _thread: u64,
+        ) -> Option<bool> {
+            // The model lends no recursion budget; a machine test runs it.
+            panic!("the model has no recursion budget for {charge:?}")
+        }
         fn async_work_pending(&mut self) -> bool {
             // The model has no async work.
             false
