@@ -16,16 +16,6 @@ use molt_codegen_abi::method_site::{
     MethodSiteBuilder, generate_method_site_call, generate_method_site_load,
 };
 
-/// The runtime's fixed-arity loaded-method calls, the cold path of a site
-/// call with that many arguments. A call with more keeps the runtime call.
-const COLD_CALLS: [RuntimeFn; 5] = [
-    RuntimeFn::CallLoadedMethod0,
-    RuntimeFn::CallLoadedMethod1,
-    RuntimeFn::CallLoadedMethod2,
-    RuntimeFn::CallLoadedMethod3,
-    RuntimeFn::CallLoadedMethod4,
-];
-
 impl<'ctx> MethodSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     fn call_entry(
         &mut self,
@@ -74,55 +64,17 @@ impl<'ctx> MethodSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 }
 
-impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// Whether a site call with `nargs` arguments after `self` has a cold
-    /// fixed-arity runtime entry, and so a site body.
-    pub(super) fn method_site_call_admits(nargs: usize) -> bool {
-        nargs < COLD_CALLS.len()
-    }
-
-    /// `CallLoadedMethod` at method site `site` with `words` = [callable,
-    /// self_or_null, args...], all adopted: the shared call body, whose miss
-    /// is the runtime's loaded-method call. None when the call has no cold
-    /// fixed-arity entry.
-    pub(super) fn emit_method_site_call(
-        &mut self,
-        site: u32,
-        words: &[IntValue<'ctx>],
-    ) -> Option<IntValue<'ctx>> {
-        let nargs = words.len().checked_sub(2)?;
-        let cold = *COLD_CALLS.get(nargs)?;
-        let mut record = None;
-        self.walker_op(|cx, b| record = cx.method_site_record(b, site));
-        let record = record?;
-        let thread = self.thread_record_word();
-        let admission = self
-            .ensure_refcount_site(RefcountOperation::Retain)
-            .admission;
-        let helper = self.ensure_method_site_call_helper(nargs, cold);
-        let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            vec![thread.into(), record.into()];
-        args.extend(
-            words
-                .iter()
-                .map(|&word| inkwell::values::BasicMetadataValueEnum::from(word)),
-        );
-        args.push(admission.into());
-        Some(
-            self.backend
-                .builder
-                .build_execution_call(helper, &args, "method_site_call")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_int_value(),
-        )
-    }
-
-    fn ensure_method_site_call_helper(&self, nargs: usize, cold: RuntimeFn) -> FunctionValue<'ctx> {
-        let cold = self.ensure_runtime_import(cold);
-        // thread, record, callable, self, args..., admission
-        self.backend.site_helper(
+impl<'ctx> LlvmBackend<'ctx> {
+    /// The method site call body with `nargs` arguments
+    /// (`SiteBody::MethodSiteCall`): words `[thread, record, callable, self,
+    /// args..., admission]`, whose miss is `cold`.
+    pub(super) fn method_site_call_helper(
+        &self,
+        nargs: usize,
+        cold: RuntimeFn,
+    ) -> FunctionValue<'ctx> {
+        let cold = self.runtime_import(cold);
+        self.site_helper(
             &format!("__molt_method_site_call_{nargs}"),
             4 + nargs + 1,
             |b, words| {

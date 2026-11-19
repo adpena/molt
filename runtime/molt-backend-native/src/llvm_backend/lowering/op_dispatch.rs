@@ -68,7 +68,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 cx.operator_op(&mut b, op);
             }
             OpCode::CodeIs => self.walker_op(|cx, b| cx.code_is_op(b, op)),
-            OpCode::DirectCall => self.emit_guarded_direct_call(op),
+            OpCode::DirectCall => self.walker_op(|cx, b| cx.guarded_direct_call_op(b, op)),
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
             }
@@ -153,7 +153,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.walker_op(|cx, b| cx.load_method_op(b, op))
             }
 
-            OpCode::CallLoadedMethod => self.emit_call_loaded_method(op),
+            OpCode::CallLoadedMethod => self.walker_op(|cx, b| cx.call_loaded_method_op(b, op)),
 
             OpCode::CallargsPushMethodReceiver => {
                 self.walker_op(|cx, b| cx.push_method_receiver_op(b, op))
@@ -190,7 +190,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildSet: {item0, item1, ...} --
-            OpCode::BuildSet => self.emit_build_set(op),
+            OpCode::BuildSet => self.walker_op(|cx, b| {
+                cx.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd)
+            }),
 
             // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
