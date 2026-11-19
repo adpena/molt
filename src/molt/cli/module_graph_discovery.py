@@ -44,6 +44,7 @@ from molt.compiler_analysis.python_namespace_graph import (
     PythonGraphNamespaceIndex,
     UNKNOWN_GRAPH_NAMESPACE_WRITES,
     graph_python_namespace_writes,
+    python_namespace_name_universe,
 )
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
@@ -148,6 +149,8 @@ class _ModuleGraphDiscovery:
         self.target_sys_platform = resolver_cache.target_sys_platform
         self.graph: dict[str, Path] = {}
         self.scan_sources: dict[str, _ModuleSourceScanAuthority] = {}
+        # Each scanned source's name universe: its premise view keys receipts.
+        self.scan_universes: dict[str, frozenset[str] | None] = {}
         self.contexts: dict[str, _SourceDiscoveryContext] = {}
         self.context_epochs: dict[str, int] = {}
         self.source_generations: dict[
@@ -578,6 +581,7 @@ def _discover_module_graph_from_paths(
         runtime_import_custody,
     )
     graph, scan_sources = state.graph, state.scan_sources
+    scan_universes = state.scan_universes
     queue, queued_scans = state.queue, state.queued_scans
     scan_revisions = state.scan_revisions
     source_generations, scanned_bodies = state.source_generations, state.scanned_bodies
@@ -711,19 +715,26 @@ def _discover_module_graph_from_paths(
             native_code=native_code,
         )
 
+    def scan_view(
+        module: str, premise: PythonNamespacePremise | None
+    ) -> PythonNamespacePremise | None:
+        """The premise a module's scans read: its receipt and revision key."""
+        if premise is None:
+            return None
+        return premise.scan_view(scan_universes.get(module))
+
     def refresh_namespace_premises(affected):
         for module in sorted(set(affected) & set(scan_sources)):
             prior = scan_sources[module]
             premise = namespace_premise(
                 prior.source_path, prior.package_paths, state.contexts[module], module
             )
-            if (
-                prior.namespace_premise.scan_identity()
-                if prior.namespace_premise is not None
-                else None
-            ) == premise:
+            if prior.namespace_premise == premise:
                 continue
+            # Lowering reads the whole latest premise; a scan reads its view.
             scan_sources[module] = replace(prior, namespace_premise=premise)
+            if scan_view(module, prior.namespace_premise) == scan_view(module, premise):
+                continue
             revised.add(module)
             if _SourceScanJob(module, None) in scan_receipts:
                 queue_scan(module)
@@ -1022,7 +1033,7 @@ def _discover_module_graph_from_paths(
                 continue
             authority = scan_sources[module_name]
             receipt = (
-                authority.namespace_premise,
+                scan_view(module_name, authority.namespace_premise),
                 authority.body_selection.roots,
                 authority.mode,
                 state.context_epochs[module_name],
@@ -1052,7 +1063,14 @@ def _discover_module_graph_from_paths(
                 namespace_premise=authority.namespace_premise,
                 native_support_function_roots=authority.body_selection.roots,
             )
-            scan_receipts[job] = receipt
+            if loaded.snapshot is not None:
+                scan_universes[module_name] = python_namespace_name_universe(
+                    loaded.snapshot.text
+                )
+            scan_receipts[job] = (
+                scan_view(module_name, authority.namespace_premise),
+                *receipt[1:],
+            )
             if job.source is not None:
                 scanned_bodies.setdefault(module_name, set()).add(
                     (job.source, job.arguments)
@@ -1164,7 +1182,7 @@ def _discover_module_graph_from_paths(
             )
             authority = scan_sources[module_name]
         receipt = (
-            authority.namespace_premise,
+            scan_view(module_name, authority.namespace_premise),
             authority.body_selection.roots,
             authority.mode,
             state.context_epochs[module_name],
@@ -1240,7 +1258,14 @@ def _discover_module_graph_from_paths(
                 scan_sources[module_name], uses_runtime_import_protocol=True
             )
             continue
-        scan_receipts[_SourceScanJob(module_name, None)] = receipt
+        if loaded.snapshot is not None:
+            scan_universes[module_name] = python_namespace_name_universe(
+                loaded.snapshot.text
+            )
+        scan_receipts[_SourceScanJob(module_name, None)] = (
+            scan_view(module_name, authority.namespace_premise),
+            *receipt[1:],
+        )
         scan_sources[module_name] = replace(
             scan_sources[module_name],
             requires_runtime_package_anchor=authority.requires_runtime_package_anchor
@@ -1445,11 +1470,13 @@ def _load_module_import_scan(
             source is None
             and tree is None
             and (
-                precomputed_scan.authority.namespace_premise.scan_identity()
+                precomputed_scan.authority.namespace_premise.scan_view()
                 if precomputed_scan.authority.namespace_premise is not None
                 else None
             )
-            == namespace_premise
+            == (
+                namespace_premise.scan_view() if namespace_premise is not None else None
+            )
         ):
             snapshot = source_snapshot or _module_source.PythonSourceSnapshot.capture(
                 path
@@ -1507,6 +1534,11 @@ def _load_module_import_scan(
 
     if snapshot is not None and source is not None and retain_source:
         resolution_cache.source_cache[resolution_cache.resolved_path(path)] = snapshot
+    if namespace_premise is not None:
+        # The scan, its persisted record and its key read only this view.
+        namespace_premise = namespace_premise.scan_view(
+            python_namespace_name_universe(source)
+        )
 
     def complete(requests: _ImportScanRequests) -> _CompleteImportScan:
         if runtime_import_custody is not None:

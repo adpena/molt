@@ -534,6 +534,11 @@ def _namespace_premise_cache_identity(
         "instance_class_writer": premise.instance_class_writer,
         "frame_locals_writer": premise.frame_locals_writer,
         "exact_receivers": [list(row) for row in premise.exact_receivers],
+        "foreign_universe": (
+            None
+            if premise.foreign_universe is None
+            else sorted(premise.foreign_universe)
+        ),
     }
 
 
@@ -556,11 +561,20 @@ def _decode_namespace_premise_cache_identity(
             "instance_class_writer",
             "frame_locals_writer",
             "exact_receivers",
+            "foreign_universe",
         },
     )
     foreign = item["foreign_writes"]
     if foreign is not None:
         foreign = _source_cache_sorted_strings(foreign)
+    raw_universe = item["foreign_universe"]
+    universe = (
+        None
+        if raw_universe is None
+        else frozenset(_source_cache_sorted_strings(raw_universe))
+    )
+    if universe is not None and (foreign is None or not universe.issuperset(foreign)):
+        raise ValueError("invalid namespace premise name universe")
     members, entry_members = item["member_writes"], item["entry_member_writes"]
     for mask in (members, entry_members):
         if type(mask) is not int or mask < 0 or mask & ~ALL_INVALID_MEMBERS:
@@ -623,6 +637,7 @@ def _decode_namespace_premise_cache_identity(
         class_writer,
         frame_writer,
         exact_receivers,
+        universe,
     )
 
 
@@ -897,7 +912,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 49
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 50
 
 
 def _import_scan_cache_key(

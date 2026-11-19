@@ -585,7 +585,8 @@ entry binds its first parameter to an instance one class statement of the module
 no attribute selected it through anything but an instance, and no unseen code activates it. The
 fact joins each module's namespace premise once discovery closes the graph
 (`PythonNamespacePremise.exact_receivers`). No scan reads it, so it never revises a scan or a
-scan's cache key (`scan_identity`); the lowering cache key carries it. A first version refreshed
+scan's cache key (`scan_view`, which also drops the other lowering-only facts and, by
+HF-926, the foreign names the source cannot spell); the lowering cache key carries it. A first version refreshed
 the premise on every change, and the rescans made a stdlib discovery test run past its 10-minute
 limit. The frontend compiles such a method's
 first parameter as exactly its class (`_closed_world_receiver`) when the method is a plain
