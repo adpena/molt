@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
+from dataclasses import replace
 from molt.compiler_analysis.python_lexical_scope import (
     function_annotation_expressions,
     type_parameter_expressions,
@@ -625,6 +626,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         self.type_parameter_bindings = merged
         try:
             for param, value in zip(type_params, values):
+                evaluator_name = python_definition_name(param)
                 bound_expr = getattr(param, "bound", None)
                 default_expr = getattr(param, "default_value", None)
                 if default_expr is not None and self.target_python < (3, 13):
@@ -640,19 +642,19 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 if isinstance(bound_expr, ast.Tuple):
                     constraints_evaluator = self._emit_lazy_type_value_evaluator(
                         bound_expr,
-                        key="__constraints__",
+                        name=evaluator_name,
                         module_override=module_override,
                     )
                 elif isinstance(bound_expr, ast.expr):
                     bound_evaluator = self._emit_lazy_type_value_evaluator(
                         bound_expr,
-                        key="__bound__",
+                        name=evaluator_name,
                         module_override=module_override,
                     )
                 if isinstance(default_expr, ast.expr):
                     default_evaluator = self._emit_lazy_type_value_evaluator(
                         default_expr,
-                        key="__default__",
+                        name=evaluator_name,
                         module_override=module_override,
                     )
                 evaluators: list[MoltValue] = []
@@ -683,14 +685,15 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         self,
         expression: ast.expr,
         *,
-        key: str,
+        name: str,
         module_override: str | None = None,
     ) -> MoltValue:
         return self._emit_annotate_function_obj(
-            items=[(key, expression, 0)],
+            items=[(name, expression, 0)],
             exec_map_name=None,
             stringize=False,
             module_override=module_override,
+            value_evaluator_name=name,
         )
 
     def _emit_type_alias_value(
@@ -704,6 +707,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 Diagnostic.TYPE_FORM, "Unsupported type alias target"
             )
         alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
+        name = python_source_field(node.name, "id")
         type_param_values, type_param_map = self._emit_type_params_values(
             node,
             module_override=module_override,
@@ -715,7 +719,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         try:
             evaluator = self._emit_lazy_type_value_evaluator(
                 node.value,
-                key="__value__",
+                name=name,
                 module_override=module_override,
             )
         finally:
@@ -724,7 +728,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(
                 kind="CONST_STR",
-                args=[python_source_field(node.name, "id")],
+                args=[name],
                 result=name_value,
             )
         )
@@ -764,6 +768,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         module_override: str | None = None,
         class_scope: _ClassNsScope | None = None,
         exec_map: MoltValue | None = None,
+        value_evaluator_name: str | None = None,
     ) -> MoltValue:
         if exec_map is not None and exec_map_name is not None:
             raise FrontendRejection(
@@ -771,6 +776,10 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 "Annotation execution storage must have one transport owner",
             )
         func_symbol = self._function_symbol("__annotate__")
+        evaluator_name = value_evaluator_name or "__annotate__"
+        has_format_argument = self.target_python >= (3, 14)
+        format_slot = ".format"
+        public_format_name = "format" if value_evaluator_name is None else format_slot
         if class_scope is None and self._class_ns_stack:
             class_scope = self._class_ns_stack[-1]
         namespace_cell: MoltValue | None = None
@@ -823,8 +832,8 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         evaluator_body = tuple(expr for _name, expr, _exec_id in items)
         cell_plan = self._scope_cell_storage_plan(
             evaluator_body,
-            ("format",),
-            {"format"},
+            (format_slot,),
+            {format_slot},
             global_decls=set(),
             nonlocal_decls=set(),
             private_storage=True,
@@ -843,10 +852,9 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             )
         else:
             self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 1], result=func_val))
-        # The evaluator's code slots: `format`, then the PEP 709 locals of the
-        # comprehensions its annotations contain, then cells and free variables.
+        # The format slot precedes the PEP 709 locals, cells and free variables.
         evaluator_varnames = self._collect_callable_name_layout(
-            posonly_params=["format"],
+            posonly_params=[format_slot],
             pos_or_kw_params=[],
             kwonly_params=[],
             vararg=None,
@@ -858,29 +866,48 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         code_slots = self._emit_function_metadata(
             func_val,
             code_symbol=func_symbol,
-            name="__annotate__",
-            qualname=self._annotate_qualname(),
+            name=evaluator_name,
+            qualname=(
+                self._qualname_for_def(evaluator_name)
+                if value_evaluator_name is not None
+                else self._annotate_qualname()
+            ),
             trace_lineno=None,
             # PEP 649/749 makes the evaluator format an actual Python argument.
             # Earlier lazy type evaluators have no Python argument: `format`
             # is only Molt's transport and their code declares no parameter,
             # so zero-argument `super()` in them finds no argument zero.
-            posonly_params=["format"] if self.target_python >= (3, 14) else [],
+            posonly_params=[public_format_name] if has_format_argument else [],
             pos_or_kw_params=[],
             kwonly_params=[],
             vararg=None,
             varkw=None,
-            defaults=self._emit_function_default_values([], [], []),
+            defaults=self._emit_function_default_values(
+                [ast.Constant(value=1)]
+                if value_evaluator_name is not None and has_format_argument
+                else [],
+                [],
+                [],
+            ),
             docstring=None,
             module_override=module_override,
-            varnames=list(evaluator_varnames),
+            varnames=[public_format_name, *evaluator_varnames[1:]],
             freevars=free_vars_list,
             cellvars=cell_plan.cellvars,
+        )
+        # CPython renames the ordinary evaluator's first slot for reflection.
+        # Lower the frame with the hidden identity so a source comprehension
+        # binding named format gets its own home, even with two public names.
+        assert code_slots is not None
+        code_slots = replace(
+            code_slots,
+            parameters=(format_slot,) if has_format_argument else (),
+            varnames=tuple(evaluator_varnames),
         )
 
         with self._function_state_scope():
             params, parameter_bindings = self._function_transport_params(
-                ["format"],
+                [format_slot],
                 has_closure=has_closure,
             )
             self.start_function(
@@ -891,8 +918,8 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 # Earlier lazy type evaluators have no source positional arguments,
                 # even though Molt uses format as an internal transport parameter.
                 python_first_arg=(
-                    MoltValue(parameter_bindings["format"], type_hint="Any")
-                    if self.target_python >= (3, 14)
+                    MoltValue(parameter_bindings[format_slot], type_hint="Any")
+                    if has_format_argument
                     else None
                 ),
                 code_slots=code_slots,
@@ -930,18 +957,20 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             self.scope_assigned = set()
             self.del_targets = set()
             self.unbound_check_names = set()
-            self.locals["format"] = self._parameter_value("format", type_hint="Any")
+            self.locals[format_slot] = self._parameter_value(
+                format_slot, type_hint="Any"
+            )
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            self._emit_frame_home_prologue(["format"])
+            self._emit_frame_home_prologue([format_slot])
             # Source annotations may independently capture or resolve "format".
             # Only the explicit parameter owns the evaluator's argument zero, its
             # first code slot, and the format guard below reads that binding
             # directly rather than through the class-annotation mapping.
-            format_cell = self.boxed_locals.get("format")
+            format_cell = self.boxed_locals.get(format_slot)
             format_val = (
-                self.locals["format"]
+                self.locals[format_slot]
                 if format_cell is None
                 else self._emit_cell_get(format_cell, type_hint="Any")
             )
@@ -973,6 +1002,15 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="MISSING", args=[], result=missing_val))
 
             def emit_annotation_body(use_stringize: bool) -> None:
+                if value_evaluator_name is not None:
+                    ((_, expression, _),) = items
+                    value = self._emit_annotation_value(
+                        expression, stringize=use_stringize
+                    )
+                    self._emit_normal_return_terminator(
+                        self._capture_expression_reference(value)
+                    )
+                    return
                 res_dict = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_NEW", args=[], result=res_dict))
                 for name, expr, exec_id in items:

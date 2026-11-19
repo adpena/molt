@@ -2271,6 +2271,7 @@ def test_stateful_locals_register_publishes_one_typed_layout_for_every_kind() ->
         tuple(slot.offset for slot in layout.slots),
         tuple(slot.cell for slot in layout.slots),
         plan.async_closure_offset,
+        None,
     )
 
     symbol, layout = by_parameters(("x", "k"))
@@ -2309,7 +2310,7 @@ def test_stateful_locals_layout_is_the_constructor_payload_projection() -> None:
         free_vars=[],
     )
     assert layout.wire_names() == ("x", "local")
-    assert layout.wire_layout() == (1, (base, base + 8), (-1, 0), None)
+    assert layout.wire_layout() == (1, (base, base + 8), (-1, 0), None, None)
     with pytest.raises(ValueError, match="constructor payload"):
         plan.public_locals_layout(
             public_slots=[("x", base + 8)],
@@ -2383,6 +2384,7 @@ def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> 
         assert gen.is_async()
 
 
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 15)])
 @pytest.mark.parametrize(
     "source",
     [
@@ -2393,8 +2395,9 @@ def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> 
 )
 def test_generator_expression_uses_shared_callable_and_code_authority(
     source: str,
+    target_python: tuple[int, int],
 ) -> None:
-    gen = SimpleTIRGenerator(module_name="genexpr_scope")
+    gen = SimpleTIRGenerator(module_name="genexpr_scope", target_python=target_python)
     gen.visit(ast.parse(source))
     plans = [
         func["stateful_frame_plan"]
@@ -2403,10 +2406,14 @@ def test_generator_expression_uses_shared_callable_and_code_authority(
     ]
     assert plans
     ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
-    assert not any(
-        op.kind in {"ALLOC_TASK", "ASYNCGEN_NEW", "FN_PTR_CODE_SET"} for op in ops
-    )
+    assert not any(op.kind in {"ASYNCGEN_NEW", "FN_PTR_CODE_SET"} for op in ops)
     ir = gen.to_json()
+    (constructor,) = (
+        op
+        for func in ir["functions"]
+        for op in func["ops"]
+        if op.get("kind") == "alloc_task"
+    )
     for plan in plans:
         assert plan.param_count == 1
         (definition,) = (
@@ -2433,6 +2440,16 @@ def test_generator_expression_uses_shared_callable_and_code_authority(
             "s_value": plan.poll_symbol,
             "value": FRAME_ENTRY_STATEFUL,
         }
+        if plan.poll_symbol == constructor["s_value"]:
+            assert constructor["task_kind"] == definition.metadata["task_kind"]
+            assert len(constructor["args"]) == (
+                2 + int(plan.has_closure) + int(target_python >= (3, 15))
+            )
+            layout = gen.funcs_map[plan.poll_symbol]["stateful_locals_layout"]
+            assert [slot.name for slot in layout.slots if slot.parameter] == [".0"]
+            assert layout.prepared_iterator_offset == (
+                plan.async_locals_base + 8 if target_python >= (3, 15) else None
+            )
 
 
 @pytest.mark.parametrize(
@@ -5006,7 +5023,7 @@ def test_admitted_sum_of_items_not_proven_exact_ints_is_not_a_running_total(
 def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame() -> (
     None
 ):
-    gen = SimpleTIRGenerator()
+    gen = SimpleTIRGenerator(target_python=(3, 15))
     gen.visit(
         ast.parse("def f(data, start):\n    return sum((v for v in data), start)\n")
     )
@@ -5051,18 +5068,24 @@ def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame()
     assert code_slot["s_value"] == poll["name"]
     assert "value" not in code_slot
     assert poll["name"] in ir["code_slots"]
-    generator_call = _positional_call(func_ops, {definition["out"]}, 1)
-    iterator = producers[generator_call["args"][1]]
+    (generator_alloc,) = (op for op in func_ops if op.get("kind") == "alloc_task")
+    function, outer_iterable, prepared_iterator = generator_alloc["args"]
+    assert function == definition["out"]
+    iterator = producers[prepared_iterator]
     assert iterator["kind"] == "iter"
-    assert iterator["args"][0] in _local_reads(func_ops, "data")
+    assert iterator["args"] == [outer_iterable]
+    assert outer_iterable in _local_reads(func_ops, "data")
     sum_targets = _module_attr_accesses(func_ops, "module_get_global", "sum")
     sum_call = _positional_call(func_ops, sum_targets, 2)
-    assert sum_call["args"][1] == generator_call["out"]
+    assert sum_call["args"][1] == generator_alloc["out"]
     assert sum_call["args"][2] in _local_reads(func_ops, "start")
-    assert func_ops.index(generator_call) < func_ops.index(sum_call)
+    assert (
+        func_ops.index(iterator)
+        < func_ops.index(generator_alloc)
+        < func_ops.index(sum_call)
+    )
     assert not any(
-        op.get("kind") in {"alloc_task", "loop_start", "add"}
-        or op["kind"].startswith("callargs_")
+        op.get("kind") in {"loop_start", "add"} or op["kind"].startswith("callargs_")
         for op in func_ops
     )
 
@@ -5163,7 +5186,9 @@ def test_reducer_generator_expr_preserves_unproven_callable_and_generator(
     assert fact.exact_builtin_name() is None
     assert not fact.callee_elision_safe
 
-    ir = compile_to_tir(source)
+    gen = SimpleTIRGenerator(target_python=(3, 15))
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
     function = next(func for func in ir["functions"] if func["name"] == "py.__main__.f")
     ops = function["ops"]
     targets = (
@@ -5172,23 +5197,26 @@ def test_reducer_generator_expr_preserves_unproven_callable_and_generator(
         else _module_attr_accesses(ops, "module_get_global", name)
     )
     call = _positional_call(ops, targets, 1, parameters=function["params"])
-    (definition,) = (op for op in ops if op.get("task_kind") == "generator")
-    assert definition["kind"] == "func_new"
+    (definition,) = (op for op in ops if op.get("kind") == "func_new")
+    assert definition["task_kind"] == "generator"
     assert any(func["name"] == definition["s_value"] for func in ir["functions"])
-    generator_call = _positional_call(ops, {definition["out"]}, 1)
+    (generator_alloc,) = (op for op in ops if op.get("kind") == "alloc_task")
+    callable_obj, outer_iterable, prepared_iterator = generator_alloc["args"]
+    assert callable_obj == definition["out"]
     producers = {op["out"]: op for op in ops if "out" in op}
-    iterator = producers[generator_call["args"][1]]
+    iterator = producers[prepared_iterator]
     assert iterator["kind"] == "iter"
-    assert iterator["args"][0] in _local_reads(ops, "data")
-    assert call["args"][1] == generator_call["out"]
-    assert ops.index(iterator) < ops.index(generator_call) < ops.index(call)
+    assert iterator["args"] == [outer_iterable]
+    assert outer_iterable in _local_reads(ops, "data")
+    assert call["args"][1] == generator_alloc["out"]
+    assert ops.index(iterator) < ops.index(generator_alloc) < ops.index(call)
     if binding != "parameter":
         # Capture the callable before eager outer-iterator acquisition, which
         # can invoke Python and replace the module's reducer binding.
         assert ops.index(producers[call["args"][0]]) < ops.index(iterator)
     result_prefix = "__molt_sum_acc_" if name == "sum" else f"__molt_{name}_result_"
     assert not any(
-        op.get("kind") in {"alloc_task", "loop_start"}
+        op.get("kind") == "loop_start"
         or op.get("var", "").startswith(result_prefix)
         or (
             op.get("kind") == "builtin_func"
