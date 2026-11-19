@@ -370,6 +370,16 @@ pub(crate) mod tests {
         fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> u64 {
             program_slot_word(&molt_ir::code_slots::program_slot_symbol(kind, owner))
         }
+        fn define_helper(
+            &mut self,
+            name: &str,
+            _params: usize,
+            _body: &impl crate::codegen_ssa::HelperBody,
+        ) -> ModelCallee {
+            // The interpreter executes as it builds, so it cannot hold a
+            // function body to run later; helper tests run on a machine.
+            panic!("the model cannot define helper {name}")
+        }
         fn refcount_site(&mut self, operation: RefcountOperation) -> RefcountOperation {
             operation
         }
@@ -977,6 +987,9 @@ pub(crate) mod tests {
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
                 | RuntimeFn::FunctionClosureBits
+                | RuntimeFn::FuncNew
+                | RuntimeFn::FuncNewClosure
+                | RuntimeFn::FuncNewBuiltin
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer

@@ -285,7 +285,13 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
     // The ordinary lowering builder has no insertion point. The trampoline
     // must allocate and store its argument transport in its own function.
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_raw", false);
+    let abi = backend.function_linkage_abis["helper_raw"].clone();
+    let trampoline = crate::codegen_ssa::callable::plain_trampoline(
+        &mut lowering.codegen(),
+        "helper_raw",
+        &abi,
+        false,
+    );
     backend
         .module
         .verify()
@@ -333,7 +339,13 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         Some(inkwell::module::Linkage::External),
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_bool", false);
+    let abi = backend.function_linkage_abis["helper_bool"].clone();
+    let trampoline = crate::codegen_ssa::callable::plain_trampoline(
+        &mut lowering.codegen(),
+        "helper_bool",
+        &abi,
+        false,
+    );
 
     assert_eq!(
         trampoline.get_type().get_return_type(),
@@ -375,7 +387,13 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         Some(inkwell::module::Linkage::External),
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_f64", false);
+    let abi = backend.function_linkage_abis["helper_f64"].clone();
+    let trampoline = crate::codegen_ssa::callable::plain_trampoline(
+        &mut lowering.codegen(),
+        "helper_f64",
+        &abi,
+        false,
+    );
 
     assert_eq!(
         trampoline.get_type().get_return_type(),

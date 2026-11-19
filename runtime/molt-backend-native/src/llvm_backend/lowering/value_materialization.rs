@@ -161,19 +161,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.materialize_dynbox_bits(operand)
     }
 
-    /// `custody::release_call_inputs` at `builder`'s position, which may be
-    /// another function (a call trampoline).
-    pub(super) fn release_call_inputs(
-        &self,
-        builder: &inkwell::builder::Builder<'ctx>,
-        callable: Option<inkwell::values::IntValue<'ctx>>,
-        owners: &[inkwell::values::IntValue<'ctx>],
-    ) {
-        let mut codegen = self.codegen();
-        codegen.words.builder = builder;
-        custody::release_call_inputs(&mut codegen, callable, owners);
-    }
-
     // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
@@ -387,13 +374,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             | Terminator::Switch { .. }
             | Terminator::Unreachable => unreachable!("the walker lowers {term:?}"),
         }
-    }
-
-    pub(super) fn tir_type_is_dynbox_like(ty: &TirType) -> bool {
-        !matches!(
-            ty,
-            TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never
-        )
     }
 
     // ── Helpers ──
