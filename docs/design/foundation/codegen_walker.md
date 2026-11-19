@@ -331,6 +331,10 @@ from the current thread's pending invocation. `TaskPoll` keeps each compiled ent
 with its provider's frame-size relocation. A runtime poll key carries its fixed layout size
 and requires no provider data symbol.
 
+LLVM and the whole-function walker initialize local frame custody in the physical function
+entry. A branch back to the TIR entry preserves the current frame base. Each return consumes
+only the base this invocation acquired. An inherited frame has no local custody slot.
+
 1. **One body and one function identity.** Each definition owns its terminal `TirFunction` through emission. Each declaration uses its frozen `NativeFunctionLinkageAbi` and has no executable body. Use the document's `FunctionId` and the existing table/remapping operations for filtering, clones, externalization and partitioning. Recover link names only at object/JIT symbol boundaries. Preserve the roots introduced by module registry data and callable manifests. A body and each reference to it must survive or remap together.
 2. **One machine signature.** Caller and provider agree on parameter order, hidden execution context, ownership, and raw, boxed or void return. Use the frozen pre-partition linkage row for both declarations. Convert edge operands before branching with the shared coercion. Walker inputs carry `ValueId`, `BlockId`, `HeldCarrier` and TIR types. A missing definition, return mismatch or illegal opcode ends compilation before an object is finalized or a JIT address is published.
 3. **One frame transition per edge.** Synchronous entry uses the existing frame shape and ordered homes. Stateful entry links the persistent activation record on resume and unlinks it on suspension or return. A runtime-linked frame follows its own ABI. Initialize the entry slot to zero and clear it before pop can release homes and re-enter Python. A failed entry has zero base. Preserve handle lifetimes, the exit path for an empty/exceptional return, and the caller's returned owner.
