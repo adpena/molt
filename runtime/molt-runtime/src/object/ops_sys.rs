@@ -34,16 +34,33 @@ pub(crate) enum SliceError {
     Value,
 }
 
+/// The TypeError of CPython's `_PyEval_SliceIndex` (`Python/ceval.c`), which
+/// sequence subscription (`PySlice_Unpack`) and the `start`/`end` arguments
+/// of the string and bytes search methods share. 3.15 dropped "or None" from
+/// it; `slice.indices` (`Objects/sliceobject.c`) keeps the older text. The
+/// target is read only when a conversion fails.
+pub(crate) struct EvalSliceIndexError<'a, 'py>(pub(crate) &'a PyToken<'py>);
+
+impl crate::builtins::numbers::ErrorText for EvalSliceIndexError<'_, '_> {
+    fn with_text<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(if runtime_target_at_least(self.0, 3, 15) {
+            "slice indices must be integers or have an __index__ method"
+        } else {
+            "slice indices must be integers or None or have an __index__ method"
+        })
+    }
+}
+
 pub(crate) fn slice_error(_py: &PyToken<'_>, err: SliceError) -> u64 {
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
     match err {
-        SliceError::Type => raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "slice indices must be integers or None or have an __index__ method",
-        ),
+        SliceError::Type => {
+            use crate::builtins::numbers::ErrorText;
+            EvalSliceIndexError(_py)
+                .with_text(|text| raise_exception::<_>(_py, BuiltinExc::TypeError, text))
+        }
         SliceError::Value => {
             raise_exception::<_>(_py, BuiltinExc::ValueError, "slice step cannot be zero")
         }
@@ -79,13 +96,9 @@ fn decode_slice_index(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<SliceI
     if let Some(index) = obj.as_int() {
         return Ok(Some(SliceIndex::Small(index)));
     }
-    index_bigint_from_obj(
-        py,
-        obj.bits(),
-        "slice indices must be integers or None or have an __index__ method",
-    )
-    .map(|index| Some(SliceIndex::Big(index)))
-    .ok_or(SliceError::Type)
+    index_bigint_from_obj(py, obj.bits(), EvalSliceIndexError(py))
+        .map(|index| Some(SliceIndex::Big(index)))
+        .ok_or(SliceError::Type)
 }
 
 /// CPython's `PySlice_AdjustIndices` bound: a negative index counts from the
@@ -130,8 +143,7 @@ pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<is
     if obj.is_none() {
         return Ok(1);
     }
-    let msg = "slice indices must be integers or None or have an __index__ method";
-    let Some(step) = index_bigint_from_obj(_py, obj.bits(), msg) else {
+    let Some(step) = index_bigint_from_obj(_py, obj.bits(), EvalSliceIndexError(_py)) else {
         return Err(SliceError::Type);
     };
     if step.is_zero() {
@@ -3155,6 +3167,11 @@ pub(crate) fn molt_int_to_bytes_attached_body(
                 "Python int too large to convert to C ssize_t",
             );
         }
+        // 3.15's Clinic converter rejects a negative length itself, before
+        // byteorder and signed (`Objects/clinic/longobject.c.h` `int_to_bytes`).
+        if length < 0 && runtime_target_at_least(_py, 3, 15) {
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "length cannot be negative");
+        }
         let Some(byteorder) = int_bytes_byteorder(_py, byteorder_bits, "to_bytes") else {
             return MoltObject::none().bits();
         };
@@ -3263,6 +3280,22 @@ pub(crate) fn molt_int_from_bytes_attached_body(
             {
                 Ok(buffer) => buffer,
                 Err(error) => return error.raise(_py, "invalid bytearray storage"),
+            };
+            bigint_from_bytes(buffer.as_slice(), is_little, signed)
+        } else if runtime_target_at_least(_py, 3, 15)
+            && match crate::object::buffer_exports::supports_buffer(_py, bytes_bits) {
+                Ok(supported) => supported,
+                Err(error) => return error.raise(_py, "invalid integer byte buffer"),
+            }
+        {
+            // 3.15 reads every other buffer exporter through a simple
+            // (C-contiguous) buffer before `__bytes__` (`Objects/longobject.c`
+            // `int_from_bytes_impl`): a strided view raises BufferError, and a
+            // bytes subclass's own `__bytes__` does not run.
+            let buffer = match crate::object::buffer_exports::ScopedBuffer::simple(_py, bytes_bits)
+            {
+                Ok(buffer) => buffer,
+                Err(error) => return error.raise(_py, "invalid integer byte buffer"),
             };
             bigint_from_bytes(buffer.as_slice(), is_little, signed)
         } else {
