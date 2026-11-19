@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from molt.process_environment import NameRule, ProcessEnvironment
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
@@ -578,7 +579,7 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
     } <= set(plan["authority_inputs"])
 
 
-@pytest.mark.parametrize("minor", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("minor", SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
 @pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
 @pytest.mark.parametrize(
     "profile", ["release-fast", "release-output", "release-size", "dev-fast"]
@@ -642,7 +643,7 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
     assert selected.short == minor
 
 
-@pytest.mark.parametrize("minor", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("minor", SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
 def test_hot_profile_controller_forwards_the_selected_minor(monkeypatch, minor):
     from tools import perf_scoreboard_profile as profiling
 
@@ -667,7 +668,8 @@ def test_hot_profile_controller_forwards_the_selected_minor(monkeypatch, minor):
     assert cells[0]["target_python"] == minor
 
 
-@pytest.mark.parametrize("minor", ["", "3.11", "3.15", "4.12"])
+# Unbound, below and above the supported range, and another major.
+@pytest.mark.parametrize("minor", ["", "3.11", "3.16", "4.12"])
 def test_profiling_refuses_an_unbound_or_unsupported_minor(minor):
     from tools import perf_scoreboard_profile as profiling
 
