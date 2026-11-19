@@ -5523,3 +5523,25 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
                 "protected-path": "path",
             }[rule]
             test_scratch_live_custody_keeps_an_old_root(tmp_path, protection)
+
+
+def test_an_explicit_wasi_sdk_use_writes_only_admitted_control_files(
+    tmp_path: Path,
+) -> None:
+    """CI selects its WASI SDK by WASI_SDK_PATH under the runner's temp
+    directory, outside the artifact root. Reading it stamps its use; every
+    file that use writes must be a control file the environment declares,
+    which the storage-write authority admits (run 44486207951 refused
+    .../molt-toolchains/target/.disk_guard/checkout-state-locks)."""
+    from molt.checkout_state import checkout_state_control_files, toolchain_state_use
+
+    toolchains = tmp_path / "runner-temp/molt-toolchains"
+    prefix = toolchains / "toolchains/wasi-sdk-34.0-x86_64-linux-d34e38d01e428fe3"
+    (prefix / "sdk").mkdir(parents=True)
+    environment = {"WASI_SDK_PATH": str(prefix / "sdk")}
+    with toolchain_state_use((prefix,), create=True):
+        pass
+    written = {path for path in (toolchains / "target").rglob("*") if path.is_file()}
+    assert written
+    admitted = set(checkout_state_control_files(ROOT, environment))
+    assert written <= admitted, sorted(map(str, written - admitted))
