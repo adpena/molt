@@ -286,17 +286,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.codegen().entry_slot(name)
     }
 
-    /// A fixed word range for one operation (list, tuple, class-definition or
-    /// unpack transport), in the entry block as `build_entry_i64_alloca`.
-    pub(super) fn build_entry_i64_array_alloca(
-        &self,
-        len: u64,
-        name: &str,
-    ) -> inkwell::values::PointerValue<'ctx> {
-        let len = u32::try_from(len).expect("an operation's word range fits u32");
-        self.codegen().entry_slot_array(len, name)
-    }
-
     // ── Terminators ──
 
     /// The walker's view of this function's control flow.

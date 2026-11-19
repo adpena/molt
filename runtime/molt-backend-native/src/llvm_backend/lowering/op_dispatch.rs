@@ -248,26 +248,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
-            OpCode::UnpackSequence => {
-                assert!(
-                    self.lower_preserved_container_op(op, OpKind::UnpackSequence),
-                    "verified UnpackSequence must lower through the canonical runtime ABI"
-                );
-            }
-            OpCode::ObjectNewBound => {
-                let Some(&class_id) = op.operands.first() else {
-                    panic!("{:?} requires class operand", op.opcode);
-                };
-                let new_fn = self.ensure_runtime_import(RuntimeFn::ObjectNewBound);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    new_fn,
-                    &[RuntimeArg::Operand(class_id)],
-                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
-                    "object_new_bound",
-                    "object_new_bound",
-                );
-            }
             _ => unreachable!("the walker lowers {:?}", op.opcode),
         }
     }

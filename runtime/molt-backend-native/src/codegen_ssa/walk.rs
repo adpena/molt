@@ -17,7 +17,8 @@ use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 use super::builder::CodegenBuilder;
 use super::builder::IntComparison;
 use super::control::{self, Edges};
-use super::function::FunctionCx;
+use super::custody::{CallTarget, RuntimeArg};
+use super::function::{FunctionCx, ResultCustody};
 use super::value_table::{HeldCarrier, ValueTable};
 use super::{constants, pending, returns};
 use crate::representation_plan::ProducerCarrierPlan;
@@ -50,6 +51,25 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            OpCode::UnpackSequence => assert!(
+                self.unpack_sequence_op(b, op),
+                "verified UnpackSequence must lower through the canonical runtime ABI"
+            ),
+            OpCode::ObjectNewBound => {
+                let Some(&class) = op.operands.first() else {
+                    panic!("{:?} requires class operand", op.opcode);
+                };
+                let callee = b.runtime_callee(RuntimeFn::ObjectNewBound);
+                self.runtime_call(
+                    b,
+                    op,
+                    CallTarget::Callee(callee),
+                    &[RuntimeArg::Operand(class)],
+                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
+                    "object_new_bound",
+                    "object_new_bound",
+                );
+            }
             OpCode::GetIter => {
                 let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
                     .expect("typed runtime-call contract");
@@ -217,7 +237,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::ModuleImportFrom
             | OpCode::ModuleSetAttr
             | OpCode::NativeSymbolAddr
-            | OpCode::ObjectNewBound
             | OpCode::RecursionAdmits
             | OpCode::RecursionCount
             | OpCode::RecursionRelease
@@ -230,7 +249,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::StateTransition
             | OpCode::StateYield
             | OpCode::TaskWait
-            | OpCode::UnpackSequence
             | OpCode::Yield
             | OpCode::YieldFrom => return false,
         }
@@ -367,23 +385,32 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         functions,
         runtime,
     } = input;
-    crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
-        errors
+    // A refusal before the walk still leaves a well-formed function: its
+    // physical entry ends on a path that never executes.
+    let refuse = |b: &mut B, diagnostics: Vec<String>| {
+        b.unreachable();
+        Err(diagnostics)
+    };
+    if let Err(errors) = crate::tir::verify::verify_operation_shapes(func) {
+        let diagnostics = errors
             .into_iter()
             .map(|error| format!("{}: {error}", func.name))
-            .collect::<Vec<_>>()
-    })?;
+            .collect();
+        return refuse(b, diagnostics);
+    }
     if !func.blocks.contains_key(&func.entry_block) {
-        return Err(vec![format!(
+        let message = format!(
             "{}: entry block {:?} is missing from TIR block map",
             func.name, func.entry_block
-        )]);
+        );
+        return refuse(b, vec![message]);
     }
     let Some(own) = linkage.get(&func.name) else {
-        return Err(vec![format!(
+        let message = format!(
             "{}: the function has no exact native linkage ABI",
             func.name
-        )]);
+        );
+        return refuse(b, vec![message]);
     };
     // The TIR entry first, then every other block by id.
     let mut ids: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -916,6 +943,69 @@ mod tests {
             [Value::Word(
                 crate::codegen_ssa::scalar::tests::literal_word(RuntimeFn::IterNextUnpack2, &key)
             )]
+        );
+    }
+
+    #[test]
+    fn an_unpacked_sequence_binds_each_target_the_runtime_wrote() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_unpack_sequence".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let targets: Vec<ValueId> = (0..3).map(|_| func.fresh_value()).collect();
+        for &target in &targets {
+            func.value_types.insert(target, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(
+            OpCode::UnpackSequence,
+            &[0],
+            &targets.iter().map(|id| id.0).collect::<Vec<_>>(),
+            Some(3),
+        ));
+        entry.terminator = Terminator::Return {
+            values: vec![targets[2]],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        let mut key = OBJECT.to_le_bytes().to_vec();
+        key.push(2);
+        assert_eq!(
+            run.results,
+            [Value::Word(
+                crate::codegen_ssa::scalar::tests::literal_word(RuntimeFn::UnpackSequence, &key)
+            )]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::UnpackSequence]);
+    }
+
+    #[test]
+    fn a_bound_object_is_allocated_from_its_class() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_object_new".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let object_id = func.fresh_value();
+        func.value_types.insert(object_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let mut new = op(OpCode::ObjectNewBound, &[0], &[object_id.0], None);
+        new.attrs
+            .insert("class_definition".into(), AttrValue::Str("Point".into()));
+        entry.ops.push(new);
+        entry.terminator = Terminator::Return {
+            values: vec![object_id],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(
+            run.results,
+            [Value::Word(object(RuntimeFn::ObjectNewBound, &[OBJECT]))]
         );
     }
 }
