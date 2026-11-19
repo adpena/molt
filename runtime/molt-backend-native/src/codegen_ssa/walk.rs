@@ -349,6 +349,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
+    /// Link shape of this function's trace entry. A runtime-linked entry has no shape.
+    pub(crate) frame_entry_kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     /// The function's physical parameters after the execution context, in
     /// its linkage row's order.
     pub(crate) entry: &'a [B::Value],
@@ -380,6 +382,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
     let FunctionInput {
         func,
         plan,
+        frame_entry_kind,
         entry,
         linkage,
         functions,
@@ -462,6 +465,9 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         };
         entry_args.push(value);
     }
+    let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
+        frame_entry_kind
+    });
     b.jump(blocks[&func.entry_block], &entry_args);
     let call_sites = Cell::new(0);
     let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
@@ -501,9 +507,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         }
         match &block.terminator {
             Terminator::Return { values: returned } => {
-                // A function that enters a frame record never reaches here:
-                // its entry op is a family the walker does not own yet.
-                returns::emit_return(&mut cx, b, own, returned.first().copied(), None);
+                returns::emit_return(&mut cx, b, own, returned.first().copied(), frame.as_ref());
             }
             Terminator::StateDispatch {
                 cases,
@@ -562,20 +566,20 @@ mod tests {
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
 
-    /// `name`'s own linkage row: boxed parameters and a boxed result.
-    fn row(name: &str, params: usize) -> BTreeMap<String, NativeFunctionLinkageAbi> {
+    /// The test function's own linkage row: boxed parameters and a boxed result.
+    fn row(func: &TirFunction) -> BTreeMap<String, NativeFunctionLinkageAbi> {
         let abi = NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
-                arity: params,
+                arity: func.param_types.len(),
                 has_closure: false,
                 returns_value: true,
-                execution_context: crate::ir::ExecutionContextPolicy::None,
+                execution_context: func.execution_context,
             },
             parameter_custody: Vec::new(),
-            param_types: vec![TirType::DynBox; params],
+            param_types: vec![TirType::DynBox; func.param_types.len()],
             return_type: Some(TirType::DynBox),
         };
-        BTreeMap::from([(name.to_owned(), abi)])
+        BTreeMap::from([(func.name.clone(), abi)])
     }
 
     /// Walk `func` and call it on `args`; the fact is the walk's verdict.
@@ -591,7 +595,7 @@ mod tests {
         args: &[u64],
         state: ThreadState,
     ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
-        let linkage = row(&func.name, args.len());
+        let linkage = row(func);
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
@@ -601,6 +605,7 @@ mod tests {
                 FunctionInput {
                     func,
                     plan: &plan,
+                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -662,6 +667,24 @@ mod tests {
     }
 
     #[test]
+    fn a_local_return_before_frame_entry_skips_runtime_cleanup() {
+        let mut func = TirFunction::new(
+            "early_return".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        func.execution_context = crate::ir::ExecutionContextPolicy::Local;
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
     fn an_unproven_raw_constant_is_boxed_by_the_runtime_for_the_boxed_return() {
         let mut func = TirFunction::new(
             "walk_constant".into(),
@@ -708,7 +731,7 @@ mod tests {
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0)],
         };
-        let linkage = row(&func.name, 1);
+        let linkage = row(&func);
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
@@ -719,6 +742,7 @@ mod tests {
                 FunctionInput {
                     func: &func,
                     plan: &plan,
+                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,

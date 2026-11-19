@@ -477,11 +477,13 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     // 3b. Every walked block takes its arguments as block parameters before
     //     any branch to it is built; each edge then passes its own.
     lowering.declare_block_params(&rpo);
+    backend
+        .builder
+        .position_at_end(llvm_fn.get_first_basic_block().expect("physical entry"));
+    lowering.initialize_owned_execution_frame();
     if let Some(trampoline_bb) = lowering.entry_trampoline_bb {
         lowering.enter_through_trampoline(trampoline_bb);
     }
-
-    lowering.initialize_owned_execution_frame();
 
     // 4. Lower each block.
     for block_id in &rpo {
