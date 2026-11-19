@@ -117,6 +117,15 @@ extern "C" fn call_builtin(_: u64, a: u64, b: u64) -> u64 {
 extern "C" fn load_super_method(_: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
     runtime(RuntimeFn::LoadSuperMethod, &[a, b, c, d, e, f])
 }
+extern "C" fn alloc(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::Alloc, &[a])
+}
+extern "C" fn object_publish_initialized(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::ObjectPublishInitialized, &[a])
+}
+extern "C" fn ord_at(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::OrdAt, a, b)
+}
 extern "C" fn call_func_fast0(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::CallFuncFast0, &[a])
 }
@@ -282,6 +291,9 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::CallargsNew => callargs_new as *const u8,
         RuntimeFn::CallargsPushPos => callargs_push_pos as *const u8,
         RuntimeFn::CallBind => call_bind as *const u8,
+        RuntimeFn::Alloc => alloc as *const u8,
+        RuntimeFn::ObjectPublishInitialized => object_publish_initialized as *const u8,
+        RuntimeFn::OrdAt => ord_at as *const u8,
         RuntimeFn::CallBindIc => call_bind_ic as *const u8,
         RuntimeFn::CallBuiltin => call_builtin as *const u8,
         RuntimeFn::LoadSuperMethod => load_super_method as *const u8,
