@@ -736,6 +736,16 @@ where
     }
 }
 
+/// Whether `body` holds an operation SimpleIR cannot express: one the late
+/// lowering stage, or a final-TIR target's mid pipeline, introduced.
+fn has_final_tir_operations(body: &TirFunction) -> bool {
+    use molt_ir::tir::op_kinds_generated::opcode_canonical_kind_table;
+    body.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .any(|op| opcode_canonical_kind_table(op.opcode).is_none())
+}
+
 /// Partition optimized bodies before the terminal ownership phase.
 ///
 /// Only newly generated stubs/chunks lose their old function analysis. Every
@@ -761,6 +771,18 @@ pub fn partition_cached_functions_before_drops(
         function.ops = Vec::new();
         let body = &cached_tir.optimized_tir_by_name[&function.name];
         if body.operation_count() > max_ops {
+            // A final-TIR target's mid pipeline may already emit operations
+            // with no SimpleIR form (checked_int_loops' inline-int entry
+            // guard). The splitter cannot see such a body; it stays whole,
+            // as a refused split does, and the build records why.
+            if has_final_tir_operations(body) {
+                trace_tir_function_stage(
+                    &function.name,
+                    "split_refused_final_tir_operations",
+                    body.operation_count(),
+                );
+                continue;
+            }
             let projection = super::lower_to_simple::lower_to_simple_ir(body);
             if projection.len() > max_ops {
                 function.ops = projection;
@@ -1362,6 +1384,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn over_limit_body_with_final_tir_operations_stays_whole() {
+        // checked_int_loops on a final-TIR target guards a loop with
+        // IsInlineInt, which has no SimpleIR form; projecting it for the
+        // splitter panicked (the W3 switch made native a final-TIR target).
+        let target = TargetInfo::native_release_fast();
+        let function = FunctionIR {
+            name: "guarded_megafunction".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            params: vec!["input".into()],
+            ops: vec![
+                OpIR {
+                    kind: molt_ir::OpKind::ListNew,
+                    args: Some(vec!["input".into()]),
+                    out: Some("kept".into()),
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
+                },
+                OpIR {
+                    kind: molt_ir::OpKind::ListNew,
+                    args: Some(vec!["kept".into()]),
+                    out: Some("outer".into()),
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
+                },
+                OpIR {
+                    kind: molt_ir::OpKind::Ret,
+                    args: Some(vec!["outer".into()]),
+                    ..OpIR::new(molt_ir::OpKind::Ret)
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        let mut ir = crate::SimpleIR {
+            functions: vec![function],
+            profile: None,
+        };
+        let mut body =
+            super::super::lower_from_simple::lower_to_tir_for_target(&ir.functions[0], &target);
+        let entry = body.entry_block;
+        let input = body.blocks[&entry].args[0].id;
+        let guard = body.fresh_value();
+        body.blocks.get_mut(&entry).unwrap().ops.insert(
+            0,
+            super::super::ops::TirOp::new(
+                super::super::ops::OpCode::IsInlineInt,
+                vec![input],
+                vec![guard],
+            ),
+        );
+        assert!(has_final_tir_operations(&body));
+        let before = body.operation_count();
+        let mut cache = CachedTirCustody::new();
+        cache.insert("guarded_megafunction".into(), body);
+        let sources = partition_cached_functions_before_drops(&mut ir, &mut cache, &target, 1);
+        assert!(
+            sources.is_empty(),
+            "a body SimpleIR cannot express is not split"
+        );
+        assert!(ir.functions[0].ops.is_empty());
+        assert_eq!(
+            cache.optimized_tir_by_name["guarded_megafunction"].operation_count(),
+            before
+        );
     }
 
     #[test]
