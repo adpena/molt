@@ -288,7 +288,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 13
+    assert len(PLAN.families) == 14
     assert len(PLAN.scheduled_families) == 9
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
@@ -303,6 +303,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
         "python-static": 1,
         "python-tests": 2,
         "repository-policy": 4,
+        "repository-tests": 1,
         "scheduled-suite": 4,
         "wasm-runtime": 2,
     }
@@ -1627,7 +1628,7 @@ def test_actual_python_custody_and_source_unicode_controls_keep_real_owners():
     )
     assert "tests/tools/test_gen_token_metadata.py" in generator.argv
     assert "tests/test_runtime_build_python.py" in generator.argv
-    assert generator.family == "repository_policy"
+    assert generator.family == "repository_tests"
 
 
 def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
@@ -1677,9 +1678,10 @@ def test_cargo_profile_authority_selects_its_complete_contract_tests(path: str) 
 
 def test_docs_only_change_skips_compiler_proofs() -> None:
     classes = _classes("docs/agent/INDEX.md")
-    assert classes["repository_policy"] is True
+    repository = {"repository_policy", "repository_tests"}
+    assert all(classes[name] for name in repository)
     assert not any(
-        selected for name, selected in classes.items() if name != "repository_policy"
+        selected for name, selected in classes.items() if name not in repository
     )
 
 
@@ -2017,8 +2019,12 @@ def test_host_tool_identity_changes_select_measurement_consumers(changed) -> Non
     ci_check = next(c for c in PLAN.commands if c.id == "repository.perf-methodology")
     assert ci_check.argv[-2:] == ("tools/perf_methodology.py", "--check")
     assert set(ci_check.data["tiers"]) == {"pre-push", "pr", "main"}
+    # The tests run on their own runner (repository_tests); the check stays a
+    # policy command, so neither waits on the other.
     ci_tests = next(c for c in PLAN.commands if c.id == "repository.docs-tests")
-    assert ci_check.id in ci_tests.dependencies
+    assert (
+        ci_tests.family == "repository_tests" and ci_check.family == "repository_policy"
+    )
 
 
 def test_docs_architecture_local_gate_uses_project_python() -> None:
@@ -2234,6 +2240,7 @@ def test_selected_family_does_not_pull_unrelated_proof_families() -> None:
     selection = PLAN.select([".github/workflows/perf-gate.yml"])
     assert [family.name for family in selection.selected] == [
         "repository_policy",
+        "repository_tests",
         "llvm",
     ]
     assert selection.reasons["llvm"] == (".github/workflows/perf-gate.yml",)
@@ -3650,7 +3657,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "instruction_signal",
         "python_unit",
         "python_unit_collection",
-        "repository_policy",
+        "repository_tests",
         "rust",
         "rust_security",
         "runtime_candidate_costs",
@@ -4615,6 +4622,7 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
     assert calls == [("1" * 40, "2" * 40)]
     assert {family.name for family in selection.selected} == {
         "repository_policy",
+        "repository_tests",
         "python_static",
         "python_unit",
         "python_unit_collection",
@@ -6478,30 +6486,30 @@ def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> N
     root = Path(__file__).resolve().parents[1]
     job = proof_plan._workflow_job_block(
         (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
-        "docs-gates",
+        "repository-tests",
     )
     assert job is not None
     assert (
-        "python3 tools/proof_plan.py --run-family repository_policy "
-        "--receipt proof-receipts/repository_policy.json"
+        "python3 tools/proof_plan.py --run-family repository_tests "
+        "--receipt proof-receipts/repository_tests.json"
     ) in job
     # A diagnostics-only upload passes the broad path-presence validator but
     # neither real receipt receiver downloads it. Bind the actual upload step.
     uploads = [
         step
         for step in re.split(r"(?m)^      - name: ", job)
-        if "          name: proof-receipt-repository-policy\n" in step
+        if "          name: proof-receipt-repository-tests\n" in step
     ]
     assert len(uploads) == 1
     upload = uploads[0]
     assert "uses: actions/upload-artifact@" in upload
     assert (
         "          path: |\n"
-        "            proof-receipts/repository_policy.json\n"
+        "            proof-receipts/repository_tests.json\n"
         "            proof-receipts/evidence/repository-docs-tests\n"
     ) in upload
     assert (
-        "if: always() && (hashFiles('proof-receipts/repository_policy.json') != '' "
+        "if: always() && (hashFiles('proof-receipts/repository_tests.json') != '' "
         "|| hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')"
     ) in upload
 
