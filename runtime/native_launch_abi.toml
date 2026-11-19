@@ -30,12 +30,17 @@ image_marker = "#molt.jit-image.v4"
 
 # The stack compiled Python runs on (molt-runtime state/program_stack.rs):
 # address space reserved per thread that runs compiled code, committed only as
-# reached. The runtime switches the Unix main thread to it at the entry and
-# requests it for every thread it starts; the Windows native link reserves it
-# for the main thread in the PE header (`/STACK`, `--stack`).
+# reached. The runtime switches the Linux and BSD main thread to it at the
+# entry and requests it for every thread it starts; the Windows native link
+# reserves it for the main thread in the PE header (`/STACK`, `--stack`). The
+# Mach-O link sizes the main thread's own stack instead (`-stack_size`, which ld
+# caps at 512 MiB on arm64), so the program runs on the stack the OS registered
+# for the main thread and profilers can walk it: on a switched stack macOS
+# `sample` and Instruments attribute every sample to `_dyld_start`.
 [program_stack]
 reserve_bytes_64 = 1073741824
 reserve_bytes_32 = 67108864
+macho_main_bytes = 536870912
 
 # Called in this order, after the launch environment is installed and before
 # the program's entry (`molt_main`).

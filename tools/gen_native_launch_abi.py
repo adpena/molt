@@ -111,12 +111,13 @@ class ProgramStack:
 
     reserve_bytes_64: int
     reserve_bytes_32: int
+    macho_main_bytes: int
 
 
 def load_program_stack(path: Path = SOURCE) -> ProgramStack:
     with path.open("rb") as handle:
         table = tomllib.load(handle).get("program_stack")
-    keys = ("reserve_bytes_64", "reserve_bytes_32")
+    keys = ("reserve_bytes_64", "reserve_bytes_32", "macho_main_bytes")
     if not isinstance(table, dict) or set(table) != set(keys):
         raise ValueError(f"{path}: [program_stack] needs exactly {', '.join(keys)}")
     for key in keys:
@@ -129,6 +130,10 @@ def load_program_stack(path: Path = SOURCE) -> ProgramStack:
     if table["reserve_bytes_32"] > 1 << 30:
         raise ValueError(
             f"{path}: a 32-bit reservation above 1 GiB exhausts the address space"
+        )
+    if table["macho_main_bytes"] > 512 << 20:
+        raise ValueError(
+            f"{path}: ld refuses a Mach-O main-thread stack above 512 MiB on arm64"
         )
     return ProgramStack(**{key: table[key] for key in keys})
 
@@ -224,6 +229,8 @@ NATIVE_LAUNCH_C_DECLARATIONS = {declarations!r}
 # pointer width; the Windows native link reserves it for the main thread.
 PROGRAM_STACK_RESERVE_BYTES_64 = {stack.reserve_bytes_64}
 PROGRAM_STACK_RESERVE_BYTES_32 = {stack.reserve_bytes_32}
+# The Mach-O main thread's own stack (`-stack_size`); macOS runs the program on it.
+PROGRAM_STACK_MACHO_MAIN_BYTES = {stack.macho_main_bytes}
 '''
 
 

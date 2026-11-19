@@ -294,8 +294,6 @@ webpki-roots = { version = "1.0", optional = true }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"], optional = true }
 os_pipe = "1.2"
 libloading = { version = "0.9", optional = true }
-# The program stack (state::program_stack): one switch at the entry.
-psm = "0.1.32"
 
 [dev-dependencies]
 molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support" }
@@ -303,6 +301,11 @@ molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["runtime-test-support", "l7-attestation-core"] }
 cc = "1"
 trybuild = { version = "1", features = ["diff"] }
+
+# The program stack (state::program_stack): one switch at the entry on Linux and
+# the BSDs; Windows and macOS size the main thread's stack in the image header.
+[target.'cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))'.dependencies]
+psm = "0.1.32"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
