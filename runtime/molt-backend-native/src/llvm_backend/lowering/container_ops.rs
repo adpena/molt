@@ -3,166 +3,6 @@ use super::*;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn emit_build_list(&mut self, op: &TirOp) {
-        self.emit_fixed_sequence(op, RuntimeFn::ListFromValues);
-    }
-
-    pub(super) fn emit_build_tuple(&mut self, op: &TirOp) {
-        self.emit_fixed_sequence(op, RuntimeFn::TupleFromValues);
-    }
-
-    pub(super) fn emit_build_dict(&mut self, op: &TirOp) {
-        assert_eq!(
-            op.operands.len() % 2,
-            0,
-            "dict literal needs complete pairs"
-        );
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "dictionary", |this, words, name| {
-                let (keys, count) =
-                    this.store_borrowed_word_range(words.iter().step_by(2).copied(), "dict_keys");
-                let (values, _) = this.store_borrowed_word_range(
-                    words.iter().skip(1).step_by(2).copied(),
-                    "dict_values",
-                );
-                let ptr_ty = this
-                    .backend
-                    .context
-                    .ptr_type(inkwell::AddressSpace::default());
-                let keys = this
-                    .backend
-                    .builder
-                    .build_int_to_ptr(keys, ptr_ty, "dict_keys_ptr")
-                    .unwrap();
-                let values = this
-                    .backend
-                    .builder
-                    .build_int_to_ptr(values, ptr_ty, "dict_values_ptr")
-                    .unwrap();
-                let constructor = this.ensure_runtime_import(RuntimeFn::DictFromPairs);
-                this.backend
-                    .builder
-                    .build_execution_call(
-                        constructor,
-                        &[keys.into(), values.into(), count.into()],
-                        name,
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value()
-            });
-        self.bind_owned_runtime_result(op, result);
-    }
-
-    /// Fixed-arity lists and tuples: one constructor transaction over one
-    /// borrowed word range. The runtime copies and retains every word and
-    /// returns None only with an exception pending.
-    fn emit_fixed_sequence(&mut self, op: &TirOp, constructor_symbol: RuntimeFn) {
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "sequence", |this, words, name| {
-                let (address, count) =
-                    this.store_borrowed_word_range(words.iter().copied(), "sequence_values");
-                let constructor = this.ensure_runtime_import(constructor_symbol);
-                this.build_constructor_call(constructor, &[address, count], name)
-            });
-        self.bind_owned_runtime_result(op, result);
-    }
-
-    /// `class_def(name, *bases, *namespace_pairs)`: the bases and the namespace
-    /// pairs are two borrowed ranges of one constructor transaction.
-    pub(super) fn emit_class_definition(
-        &mut self,
-        op: &TirOp,
-        nbases: usize,
-        nattrs: usize,
-        layout_size: i64,
-        layout_version: i64,
-        flags: i64,
-    ) {
-        let i64_ty = self.backend.context.i64_type();
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "class", |this, words, name| {
-                let (bases, base_count) = this
-                    .store_borrowed_word_range(words[1..1 + nbases].iter().copied(), "class_bases");
-                let (attrs, _) = this
-                    .store_borrowed_word_range(words[1 + nbases..].iter().copied(), "class_attrs");
-                let constructor = this.ensure_runtime_import(RuntimeFn::GuardedClassDef);
-                this.build_constructor_call(
-                    constructor,
-                    &[
-                        words[0],
-                        bases,
-                        base_count,
-                        attrs,
-                        i64_ty.const_int(nattrs as u64, false),
-                        i64_ty.const_int(layout_size as u64, true),
-                        i64_ty.const_int(layout_version as u64, true),
-                        i64_ty.const_int(flags as u64, true),
-                    ],
-                    name,
-                )
-            });
-        self.bind_owned_runtime_result(op, result);
-    }
-
-    /// Store one borrowed word range in a static entry-block slot owned by this
-    /// operation and return its address and word count. Every execution reuses
-    /// the slot, so construction in a loop never grows the stack. An empty range
-    /// transports a null address.
-    fn store_borrowed_word_range(
-        &self,
-        words: impl ExactSizeIterator<Item = inkwell::values::IntValue<'ctx>>,
-        name: &str,
-    ) -> (
-        inkwell::values::IntValue<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-    ) {
-        let i64_ty = self.backend.context.i64_type();
-        let count = i64_ty.const_int(words.len() as u64, false);
-        if words.len() == 0 {
-            return (i64_ty.const_zero(), count);
-        }
-        let range = self.build_entry_i64_array_alloca(words.len() as u64, name);
-        for (index, word) in words.enumerate() {
-            let slot = unsafe {
-                self.backend
-                    .builder
-                    .build_gep(
-                        i64_ty,
-                        range,
-                        &[i64_ty.const_int(index as u64, false)],
-                        &format!("{name}_slot"),
-                    )
-                    .unwrap()
-            };
-            self.backend.builder.build_store(slot, word).unwrap();
-        }
-        let address = self
-            .backend
-            .builder
-            .build_ptr_to_int(range, i64_ty, &format!("{name}_ptr"))
-            .unwrap();
-        (address, count)
-    }
-
-    fn build_constructor_call(
-        &self,
-        constructor: FunctionValue<'ctx>,
-        args: &[inkwell::values::IntValue<'ctx>],
-        name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            args.iter().map(|&arg| arg.into()).collect();
-        self.backend
-            .builder
-            .build_execution_call(constructor, &args, name)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value()
-    }
-
     pub(super) fn emit_build_set(&mut self, op: &TirOp) {
         self.emit_owned_set_aggregate(op, RuntimeFn::SetNew, RuntimeFn::SetAdd);
     }
@@ -264,42 +104,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.bind_owned_runtime_result(op, result.into());
     }
 
-    /// `slice(start, stop, step)`: the present bounds are direct operands of one
-    /// constructor transaction; an omitted bound is boxed None, which needs no
-    /// materialization, owner or range.
-    pub(super) fn emit_build_slice(&mut self, op: &TirOp) {
-        let i64_ty = self.backend.context.i64_type();
-        if op.operands.len() > 3 {
-            self.record_fatal(format!(
-                "BuildSlice takes at most start, stop and step, got {} operands",
-                op.operands.len()
-            ));
-            let undef: BasicValueEnum<'ctx> = i64_ty.get_undef().into();
-            for &result in &op.results {
-                self.values.set_value(result, undef);
-                self.values.set_repr(
-                    result,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
-            return;
-        }
-        let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "slice", |this, words, name| {
-                let bound = |index: usize| words.get(index).copied().unwrap_or(none);
-                let constructor = this.ensure_runtime_import(RuntimeFn::SliceNew);
-                this.build_constructor_call(constructor, &[bound(0), bound(1), bound(2)], name)
-            });
-        self.bind_owned_runtime_result(op, result);
-    }
-
     pub(super) fn emit_get_iter(&mut self, op: &TirOp) {
-        self.emit_contract_runtime_call(
-            op,
-            molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
-                .expect("typed runtime-call contract"),
-        );
+        let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
+            .expect("typed runtime-call contract");
+        self.walker_op(|cx, b| cx.contract_runtime_call(b, op, call));
     }
 
     pub(super) fn emit_iter_next(&mut self, op: &TirOp) {
@@ -307,7 +115,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .boxed_abi()
             .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
-        self.emit_boxed_runtime_call(op, abi);
+        self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
     }
 
     pub(super) fn emit_for_iter(&mut self, op: &TirOp) {
@@ -329,115 +137,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .boxed_abi()
             .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
-        self.emit_boxed_runtime_call(op, abi);
-    }
-
-    /// Call an iterator entry that writes `words` owned words to an entry
-    /// alloca as its last action and returns the done flag
-    /// (`molt_iter_next_unboxed`: one word; `molt_iter_next_unpack2`: two).
-    /// Binds `op`'s results to the words, then the flag; a missing result is
-    /// released. Returns false when the op is not one iterator operand.
-    fn emit_iterator_out_word_call(
-        &mut self,
-        op: &TirOp,
-        function: RuntimeFn,
-        words: u64,
-        name: &str,
-    ) -> bool {
-        let Some(&iter_id) = op.operands.first() else {
-            return false;
-        };
-        if op.operands.len() != 1 {
-            return false;
-        }
-        let i64_ty = self.backend.context.i64_type();
-        let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-        let words_ptr = self.build_entry_i64_array_alloca(words, &format!("{name}_words"));
-        // The iterator is borrowed by the runtime; a box minted for a raw
-        // carrier is released after the call, and a failed box skips it.
-        let mut custody = self.begin_borrowed_operands(&op.operands, name);
-        let iter_bits = self.borrowed_operand(&mut custody, iter_id);
-        let words_ptr_bits = self
-            .backend
-            .builder
-            .build_ptr_to_int(words_ptr, i64_ty, &format!("{name}_words_ptr"))
-            .unwrap();
-        let entry = self.ensure_runtime_import(function);
-        let call_name = if custody.can_fail() {
-            format!("{name}_call")
-        } else {
-            name.to_string()
-        };
-        let done_bits = self
-            .backend
-            .builder
-            .build_execution_call(
-                entry,
-                &[iter_bits.into(), words_ptr_bits.into()],
-                &call_name,
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-        let word_ptr = |this: &Self, index: u64| unsafe {
-            this.backend
-                .builder
-                .build_gep(
-                    i64_ty,
-                    words_ptr,
-                    &[i64_ty.const_int(index, false)],
-                    &format!("{name}_word"),
-                )
-                .unwrap()
-        };
-        // An iterator that could not be boxed was never advanced: its words
-        // publish None, never a previous iteration's words.
-        let done_bits = self.finish_borrowed_operands(custody, done_bits, name, |this| {
-            for index in 0..words {
-                let slot = word_ptr(this, index);
-                this.backend.builder.build_store(slot, none).unwrap();
-            }
-        });
-        let release = self
-            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
-        for index in 0..words {
-            let slot = word_ptr(self, index);
-            let bits = self
-                .backend
-                .builder
-                .build_load(i64_ty, slot, &format!("{name}_word_load"))
-                .unwrap();
-            match op.results.get(index as usize) {
-                Some(&value_id) => {
-                    self.values.set_value(value_id, bits);
-                    self.values.set_repr(
-                        value_id,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                    );
-                }
-                None => release.emit(&self.backend.builder, bits),
-            }
-        }
-        match op.results.get(words as usize) {
-            Some(&done_id) => {
-                self.values.set_value(done_id, done_bits.into());
-                self.values.set_repr(
-                    done_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
-            None => release.emit(&self.backend.builder, done_bits.into()),
-        }
-        true
+        self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
     }
 
     pub(super) fn emit_iter_next_unboxed_results(&mut self, op: &TirOp) -> bool {
-        self.emit_iterator_out_word_call(op, RuntimeFn::IterNextUnboxed, 1, "iter_next_unboxed")
+        let (mut cx, mut b) = self.walker();
+        cx.iterator_out_words(
+            &mut b,
+            op,
+            RuntimeFn::IterNextUnboxed,
+            1,
+            "iter_next_unboxed",
+        )
     }
 
     pub(super) fn emit_iter_next_unpack2_results(&mut self, op: &TirOp) -> bool {
-        self.emit_iterator_out_word_call(op, RuntimeFn::IterNextUnpack2, 2, "iter_next_unpack2")
+        let (mut cx, mut b) = self.walker();
+        cx.iterator_out_words(
+            &mut b,
+            op,
+            RuntimeFn::IterNextUnpack2,
+            2,
+            "iter_next_unpack2",
+        )
     }
 
     pub(super) fn emit_iter_next_unpack2(&mut self, op: &TirOp) {

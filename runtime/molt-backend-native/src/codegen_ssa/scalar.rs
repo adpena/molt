@@ -151,6 +151,8 @@ pub(crate) mod tests {
     const INT_TAG: u64 = 1 << 48;
     const BOOL_TAG: u64 = 2 << 48;
     pub(crate) const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
+    /// The one word the model's `molt_is_function_obj` calls a function.
+    pub(crate) const FUNCTION_WORD: u64 = QUIET_NAN | (4 << 48) | 0x4000;
     /// A stand-in heap BigInt word: a pointer tag and an address.
     pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
     /// Where the stand-in entry storage lives.
@@ -169,6 +171,30 @@ pub(crate) mod tests {
         Address(u64),
     }
 
+    /// A callee of the model: a runtime entry, or the compiled function the
+    /// interpreter declared at this index.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) enum ModelCallee {
+        Runtime(RuntimeFn),
+        Compiled(usize),
+    }
+
+    /// What the model's compiled function `symbol` answers for `args`: a
+    /// hash of both, as a raw integer when the symbol ends in `_raw`, else
+    /// as an inline int word.
+    pub(crate) fn compiled_result(symbol: &str, args: &[u64]) -> u64 {
+        let mut bytes = symbol.as_bytes().to_vec();
+        for arg in args {
+            bytes.extend(arg.to_le_bytes());
+        }
+        let hash = fnv(&bytes) & 0xffff;
+        if symbol.ends_with("_raw") {
+            hash
+        } else {
+            QUIET_NAN | INT_TAG | hash
+        }
+    }
+
     /// The edge a block ends with: each target and the values it passes.
     #[derive(Clone, Debug, PartialEq)]
     pub(in crate::codegen_ssa) enum Edge {
@@ -183,6 +209,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Interpreter {
         pub(crate) runtime: RuntimeModel,
+        thread_record_slot: Option<usize>,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -195,6 +222,8 @@ pub(crate) mod tests {
         pub(in crate::codegen_ssa) refcounts: Vec<(RefcountOperation, u64)>,
         /// The byte constants built so far, by number.
         bytes: Vec<Vec<u8>>,
+        /// The compiled functions called so far: each symbol and result kind.
+        compiled: Vec<(String, Option<MachineKind>)>,
     }
 
     impl Interpreter {
@@ -260,8 +289,31 @@ pub(crate) mod tests {
         type Value = Value;
         type Block = u32;
         type Slot = usize;
-        type Callee = RuntimeFn;
+        type Callee = ModelCallee;
         type RefcountSite = RefcountOperation;
+        fn thread_record_word(&mut self) -> u64 {
+            let slot = match self.thread_record_slot {
+                Some(slot) => slot,
+                None => {
+                    let words =
+                        (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET / 8 + 1) as u32;
+                    let slot = self.entry_slot_array(words, "thread_record");
+                    self.thread_record_slot = Some(slot);
+                    slot
+                }
+            };
+            SLOT_BASE + 8 * slot as u64
+        }
+        fn load_byte(&mut self, address: u64, offset: i32) -> Value {
+            let at = address
+                .checked_add_signed(i64::from(offset))
+                .expect("test address");
+            let byte = self.word(at).to_ne_bytes()[(at % 8) as usize];
+            Value::Narrow(u32::from(byte))
+        }
+        fn call_cold(&mut self, callee: Self::Callee, args: &[Value]) -> Option<Value> {
+            self.call(callee, args)
+        }
         fn create_block(&mut self, _name: &str) -> u32 {
             self.block()
         }
@@ -288,6 +340,9 @@ pub(crate) mod tests {
         fn store_slot_at(&mut self, slot: usize, index: u32, word: u64) {
             self.slots[slot + index as usize] = word;
         }
+        fn load_slot_at(&mut self, slot: usize, index: u32) -> u64 {
+            self.slots[slot + index as usize]
+        }
         fn slot_pointer(&mut self, slot: usize) -> Value {
             Value::Address(SLOT_BASE + 8 * slot as u64)
         }
@@ -298,6 +353,9 @@ pub(crate) mod tests {
             self.bytes.push(bytes.to_vec());
             Value::Address(BYTES_BASE + ((self.bytes.len() as u64 - 1) << 20))
         }
+        fn site_record(&mut self, _symbol: &str, image: &[u8]) -> Value {
+            self.bytes_constant(image, "", "")
+        }
         fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> u64 {
             program_slot_word(&molt_ir::code_slots::program_slot_symbol(kind, owner))
         }
@@ -307,11 +365,76 @@ pub(crate) mod tests {
         fn refcount(&mut self, site: RefcountOperation, word: u64) {
             self.refcounts.push((site, word));
         }
-        fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
-            function
+        fn refcount_admission(&mut self) -> u64 {
+            molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::Runtime as u64
         }
-        fn call(&mut self, function: RuntimeFn, args: &[Value]) -> Option<Value> {
+        /// The site bodies' arms for a receiver that is not an object
+        /// pointer, the arms the model can run: a field read answers None, a
+        /// field store does nothing, and an item access takes its miss.
+        fn site(&mut self, body: crate::codegen_ssa::SiteBody, args: &[Value]) -> Value {
+            use crate::codegen_ssa::SiteBody;
+            let words: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            assert!(
+                words[0] & (QUIET_NAN | (7 << 48)) != QUIET_NAN | (4 << 48),
+                "the model has no objects for {body:?}"
+            );
+            Value::Word(match body {
+                SiteBody::FieldGet { .. } | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::ItemGet { cold, .. } => self
+                    .run_runtime(cold, &words[..2])
+                    .expect("an item read's miss answers a word"),
+                SiteBody::ListItemSet => self
+                    .run_runtime(RuntimeFn::SetitemMethod, &words[..3])
+                    .expect("an item store's miss answers a word"),
+                SiteBody::GlobalSlotRead { .. }
+                | SiteBody::StaticCellStore { .. }
+                | SiteBody::ModuleImportClosed => {
+                    panic!("the model has no module globals for {body:?}")
+                }
+                SiteBody::MethodSiteLoad => panic!("the model has no method sites"),
+            })
+        }
+        fn static_cell_block(&mut self, module: &str) -> Value {
+            panic!("the model has no static cells for {module}")
+        }
+        fn load_word(&mut self, address: Value, offset: i32) -> u64 {
+            panic!("the model has no memory at {address:?}+{offset}")
+        }
+        fn runtime_callee(&mut self, function: RuntimeFn) -> ModelCallee {
+            ModelCallee::Runtime(function)
+        }
+        fn function_callee(
+            &mut self,
+            symbol: &str,
+            abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+        ) -> ModelCallee {
+            let result = abi
+                .return_type
+                .as_ref()
+                .map(|ty| crate::codegen_ssa::control::carrier_kind(HeldCarrier::of(ty)));
+            self.compiled.push((symbol.to_owned(), result));
+            ModelCallee::Compiled(self.compiled.len() - 1)
+        }
+        fn function_address(&mut self, callee: ModelCallee) -> u64 {
+            match callee {
+                ModelCallee::Compiled(index) => fnv(self.compiled[index].0.as_bytes()),
+                ModelCallee::Runtime(function) => panic!("{function:?} is no compiled function"),
+            }
+        }
+        fn call(&mut self, callee: ModelCallee, args: &[Value]) -> Option<Value> {
             let args: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            let function = match callee {
+                ModelCallee::Runtime(function) => function,
+                ModelCallee::Compiled(index) => {
+                    let (symbol, result) = self.compiled[index].clone();
+                    let word = compiled_result(&symbol, &args);
+                    return result.map(|kind| match kind {
+                        MachineKind::Bit => Value::Bit(word & 1 == 1),
+                        MachineKind::Float => Value::Float(f64::from_bits(word)),
+                        _ => Value::Word(word),
+                    });
+                }
+            };
             let result = self.run_runtime(function, &args)?;
             Some(match function.result_type() {
                 Some(molt_ir::runtime_fn_generated::RuntimeMachineType::I32) => {
@@ -417,6 +540,9 @@ pub(crate) mod tests {
                 other => panic!("{other:?} is not an address"),
             }
         }
+        fn word_to_address(&mut self, word: u64) -> Value {
+            Value::Address(word)
+        }
         fn float_constant(&mut self, value: f64) -> Value {
             Value::Float(value)
         }
@@ -449,6 +575,9 @@ pub(crate) mod tests {
                 IntBinary::Or => l | r,
                 IntBinary::Xor => l ^ r,
                 IntBinary::ShiftLeft => l << u32::try_from(r).expect("the walker proved the count"),
+                IntBinary::ShiftRightLogical => {
+                    ((l as u64) >> u32::try_from(r).expect("the walker proved the count")) as i64
+                }
                 IntBinary::ShiftRightArithmetic => {
                     l >> u32::try_from(r).expect("the walker proved the count")
                 }
@@ -467,6 +596,14 @@ pub(crate) mod tests {
                 CheckedBinary::Mul => l.overflowing_mul(r),
             };
             (value as u64, overflow)
+        }
+        fn is_zero(&mut self, value: Value) -> bool {
+            match value {
+                Value::Bit(bit) => !bit,
+                Value::Narrow(narrow) => narrow == 0,
+                Value::Word(word) => word == 0,
+                other => panic!("{other:?} is not an integer"),
+            }
         }
         fn int_to_float(&mut self, word: u64) -> Value {
             Value::Float(word as i64 as f64)
@@ -575,6 +712,24 @@ pub(crate) mod tests {
         QUIET_NAN | (4 << 48) | ((fnv(&key) & 0xffff_fff0) << 3) | 0x8
     }
 
+    /// The position of the `(pointer, length)` name a runtime entry takes.
+    fn name_argument(function: RuntimeFn) -> Option<usize> {
+        match function {
+            RuntimeFn::GetAttrObjectIc | RuntimeFn::SetAttrObjectIc => Some(1),
+            RuntimeFn::GuardedFieldGet => Some(4),
+            RuntimeFn::GuardedFieldSet => Some(5),
+            RuntimeFn::LoadSuperMethod => Some(3),
+            _ => None,
+        }
+    }
+
+    /// `count` words at `address`, as bytes; a null address reads none.
+    fn read_words(memory: &dyn Memory, address: u64, count: u64) -> Vec<u8> {
+        (0..count)
+            .flat_map(|index| memory.word(address + 8 * index).to_le_bytes())
+            .collect()
+    }
+
     fn fnv(bytes: &[u8]) -> u64 {
         bytes
             .iter()
@@ -590,11 +745,15 @@ pub(crate) mod tests {
     pub(crate) struct RuntimeModel {
         /// The raw integer the stand-in heap BigInt holds.
         heap_int: Option<i64>,
-        /// When set, `molt_int_from_i64` fails as an allocation failure does:
-        /// it returns None with MemoryError pending.
-        pub(crate) fail_mint: bool,
+        /// When set, every constructor fails as an allocation failure does:
+        /// `molt_int_from_i64` returns None and a byte-literal constructor a
+        /// nonzero status, each with MemoryError pending.
+        pub(crate) fail_allocation: bool,
+        pending_exception: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
+        /// The positional words pushed onto the open CallArgs builder.
+        callargs: Vec<u64>,
     }
 
     impl RuntimeModel {
@@ -611,6 +770,10 @@ pub(crate) mod tests {
                     self.released.push(words.collect());
                     return None;
                 }
+                RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes if self.fail_allocation => {
+                    self.pending_exception = true;
+                    1
+                }
                 // Writes the new object through the out-pointer; status 0.
                 RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes => {
                     let bytes = memory.bytes(args[0], args[1] as usize);
@@ -620,7 +783,11 @@ pub(crate) mod tests {
                 RuntimeFn::BigintFromBytes => {
                     literal_word(function, &memory.bytes(args[0], args[1] as usize))
                 }
-                RuntimeFn::IntFromI64 if self.fail_mint => NONE_WORD,
+                RuntimeFn::ExceptionPending => u64::from(self.pending_exception),
+                RuntimeFn::IntFromI64 if self.fail_allocation => {
+                    self.pending_exception = true;
+                    NONE_WORD
+                }
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);
                     HEAP_INT
@@ -634,9 +801,126 @@ pub(crate) mod tests {
                         (((args[0] << 17) as i64) >> 17) as u64
                     }
                 }
-                RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
+                // None, False and inline 0 are falsy; the model's objects are
+                // truthy.
+                RuntimeFn::IsTruthy => u64::from(
+                    ![NONE_WORD, QUIET_NAN | BOOL_TAG, QUIET_NAN | INT_TAG].contains(&args[0]),
+                ),
+                RuntimeFn::IsFunctionObj => {
+                    QUIET_NAN | BOOL_TAG | u64::from(args[0] == FUNCTION_WORD)
+                }
+                RuntimeFn::CallargsNew => {
+                    self.callargs.clear();
+                    literal_word(function, &args[0].to_le_bytes())
+                }
+                RuntimeFn::CallargsPushPos => {
+                    self.callargs.push(args[1]);
+                    NONE_WORD
+                }
+                RuntimeFn::CallBind => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
+                    literal_word(function, &key)
+                }
+                // Every word, then the pushed arguments.
+                RuntimeFn::CallBindIc | RuntimeFn::CallBuiltin => {
+                    let mut key: Vec<u8> =
+                        args.iter().flat_map(|word| word.to_le_bytes()).collect();
+                    key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
+                    literal_word(function, &key)
+                }
+                RuntimeFn::ListFromValues | RuntimeFn::TupleFromValues => {
+                    literal_word(function, &read_words(memory, args[0], args[1]))
+                }
+                RuntimeFn::DictFromPairs => {
+                    let mut key = read_words(memory, args[0], args[2]);
+                    key.extend(read_words(memory, args[1], args[2]));
+                    literal_word(function, &key)
+                }
+                // The namespace range holds one name and one value per attribute.
+                RuntimeFn::GuardedClassDef => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(read_words(memory, args[1], args[2]));
+                    key.extend(read_words(memory, args[3], 2 * args[4]));
+                    for &word in &args[5..] {
+                        key.extend(word.to_le_bytes());
+                    }
+                    literal_word(function, &key)
+                }
+                // Writes one (or two) owned words, then answers not-done (False).
+                RuntimeFn::IterNextUnboxed | RuntimeFn::IterNextUnpack2 => {
+                    let count = if function == RuntimeFn::IterNextUnboxed {
+                        1
+                    } else {
+                        2
+                    };
+                    for index in 0..count {
+                        let mut key = args[0].to_le_bytes().to_vec();
+                        key.push(index as u8);
+                        memory.store(args[1] + 8 * index, literal_word(function, &key));
+                    }
+                    QUIET_NAN | BOOL_TAG
+                }
+                RuntimeFn::CallFuncOwned => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    for index in 0..args[2] {
+                        key.extend(memory.word(args[1] + 8 * index).to_le_bytes());
+                    }
+                    key.extend(args[3].to_le_bytes());
+                    literal_word(function, &key)
+                }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                // An attribute or item entry answers an object determined
+                // by its arguments, a named one by the name's bytes.
+                RuntimeFn::GetAttrName
+                | RuntimeFn::SetAttrName
+                | RuntimeFn::DelAttrName
+                | RuntimeFn::GetAttrObjectIc
+                | RuntimeFn::SetAttrObjectIc
+                | RuntimeFn::GuardedFieldGet
+                | RuntimeFn::GuardedFieldSet
+                | RuntimeFn::GetitemMethod
+                | RuntimeFn::GetitemUnchecked
+                | RuntimeFn::SetitemMethod
+                | RuntimeFn::DelitemMethod
+                | RuntimeFn::Contains
+                | RuntimeFn::SliceNew
+                | RuntimeFn::GlobalSlotBase
+                | RuntimeFn::CallFuncFast0
+                | RuntimeFn::CallFuncFast1
+                | RuntimeFn::CallFuncFast2
+                | RuntimeFn::CallFuncFast3
+                | RuntimeFn::Add
+                | RuntimeFn::Eq
+                | RuntimeFn::Not
+                | RuntimeFn::Alloc
+                | RuntimeFn::ObjectPublishInitialized
+                | RuntimeFn::OrdAt
+                | RuntimeFn::LoadSuperMethod => {
+                    if function == RuntimeFn::LoadSuperMethod {
+                        // Writes the first argument as `self`; its out-pointer
+                        // is no part of the answer.
+                        memory.store(args[5], args[2]);
+                    }
+                    let args = if function == RuntimeFn::LoadSuperMethod {
+                        &args[..5]
+                    } else {
+                        args
+                    };
+                    let mut key = Vec::new();
+                    let name = name_argument(function);
+                    for (index, &word) in args.iter().enumerate() {
+                        match name {
+                            Some(at) if index == at => {
+                                key.extend(memory.bytes(word, args[at + 1] as usize));
+                            }
+                            Some(at) if index == at + 1 => {}
+                            _ => key.extend(word.to_le_bytes()),
+                        }
+                    }
+                    literal_word(function, &key)
+                }
                 other => panic!("the walker never calls {other:?}"),
             })
         }

@@ -1916,6 +1916,83 @@ def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatc
     assert registered == [main.resolve()]
 
 
+@pytest.mark.parametrize("outcome", ["timeout", "refusal"])
+def test_cleanup_moves_the_checkout_aside_before_removing_it(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    outcome: str,
+) -> None:
+    """A removal the bound kills leaves no half-deleted checkout behind.
+
+    `git worktree remove` of a tree with large ignored build output outlived
+    its 120 s bound; the kill left the checkout half-deleted at its path, and
+    cleanup then refused it as dirty (2026-11-18). The checkout now moves aside
+    first: a timeout leaves only the retired copy, never moved back; a refusal,
+    which git makes before deleting anything, restores the checkout.
+    """
+    from tools import molt_dev_common
+
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_bound")
+    real = molt_dev_retire._run_fast_captured_command
+
+    def bounded(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if command[3:5] == ["worktree", "remove"]:
+            code = molt_dev_common.COMMAND_TIMEOUT_EXIT if outcome == "timeout" else 1
+            return subprocess.CompletedProcess(command, code, "", f"{outcome}\n")
+        return real(command, **kwargs)
+
+    monkeypatch.setattr(molt_dev_retire, "_run_fast_captured_command", bounded)
+    rc = molt_dev_retire.cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == EXIT_FAIL
+    retired = [
+        path
+        for path in wt.parent.iterdir()
+        if path.name.startswith(".wt_bound.retired-")
+    ]
+    if outcome == "timeout":
+        assert not wt.exists(), "a timed-out removal never moves a partial copy back"
+        assert len(retired) == 1 and (retired[0] / "README.md").exists()
+        captured = capsys.readouterr()
+        assert str(retired[0]) in captured.out + captured.err
+    else:
+        assert (wt / "README.md").exists(), "a refused removal restores the checkout"
+        assert retired == []
+
+
+def test_cleanup_finishes_a_retired_copy_where_it_is(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rerunning cleanup on a retired copy removes it in place.
+
+    The timed-out removal names the retired copy for the rerun; moving that
+    copy again only renamed it (`..wt.retired-1.retired-2`) and never
+    finished it (2026-11-18).
+    """
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_again")
+    retired = molt_dev_retire._retired_copy(wt)
+    _git(main, "worktree", "move", str(wt), str(retired))
+    rc = molt_dev_retire.cleanup_worktree(
+        drv.Git(retired),
+        retired,
+        "origin/main",
+        drv.DEFAULT_IGNORE_GLOBS,
+        force_sha=None,
+    )
+    assert rc == EXIT_OK
+    assert not retired.exists()
+    assert [path for path in wt.parent.iterdir() if path.name.startswith(".")] == []
+
+
 def test_cleanup_retires_the_checkout_daemons_before_removing_it(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):

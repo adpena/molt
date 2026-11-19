@@ -2,7 +2,6 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_codegen_abi::task_site::TaskConstructorLayout;
-use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {
@@ -169,42 +168,44 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The closure slot read (`molt_codegen_abi::closure_slot`), always
     /// inlined: `(context, owner, offset, admission) -> owned word`.
     fn ensure_closure_load_helper(&self) -> FunctionValue<'ctx> {
-        self.site_helper("__molt_closure_load", 3, |b, words| {
-            let &[owner, offset] = words else {
-                unreachable!("the closure load helper's parameters")
-            };
-            molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
-        })
+        self.backend
+            .site_helper("__molt_closure_load", 3, |b, words| {
+                let &[owner, offset] = words else {
+                    unreachable!("the closure load helper's parameters")
+                };
+                molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
+            })
     }
 
     /// The closure slot store, whose miss calls `molt_closure_store(owner,
     /// offset, value)`: `(context, owner, offset, value, admission) -> None`.
     fn ensure_closure_store_helper(&self) -> FunctionValue<'ctx> {
         let cold_fn = self.ensure_runtime_import(RuntimeFn::ClosureStore);
-        self.site_helper("__molt_closure_store", 4, |b, words| {
-            let &[owner, offset, value] = words else {
-                unreachable!("the closure store helper's parameters")
-            };
-            molt_codegen_abi::closure_slot::generate_closure_store(
-                b,
-                owner,
-                offset,
-                value,
-                molt_codegen_abi::list_item::ListLocking::BUILD,
-                |b| {
-                    b.words
-                        .builder
-                        .build_execution_call(
-                            cold_fn,
-                            &[owner.into(), offset.into(), value.into()],
-                            "closure_store_miss",
-                        )
-                        .unwrap();
-                },
-            );
-            use molt_codegen_abi::word::WordBuilder;
-            b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
-        })
+        self.backend
+            .site_helper("__molt_closure_store", 4, |b, words| {
+                let &[owner, offset, value] = words else {
+                    unreachable!("the closure store helper's parameters")
+                };
+                molt_codegen_abi::closure_slot::generate_closure_store(
+                    b,
+                    owner,
+                    offset,
+                    value,
+                    molt_codegen_abi::list_item::ListLocking::BUILD,
+                    |b| {
+                        b.words
+                            .builder
+                            .build_execution_call(
+                                cold_fn,
+                                &[owner.into(), offset.into(), value.into()],
+                                "closure_store_miss",
+                            )
+                            .unwrap();
+                    },
+                );
+                use molt_codegen_abi::word::WordBuilder;
+                b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            })
     }
 
     fn closure_slot_offset(op: &TirOp) -> u64 {
@@ -287,102 +288,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// parameter. Saving neither suspends nor returns; a ready wait saves its
     /// running state, which no StateDispatch case resumes.
     pub(super) fn emit_state_set(&mut self, op: &TirOp) {
-        let Some(AttrValue::Int(state)) = op.attrs.get("value") else {
-            panic!("state_set in '{}' requires its state", self.func.name);
-        };
-        let state = *state;
-        let self_bits = self.poll_frame_address();
-        let state_bits = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(state as u64, true);
-        let set_state_fn = self.ensure_runtime_import(RuntimeFn::ObjSetState);
-        self.backend
-            .builder
-            .build_execution_call(set_state_fn, &[self_bits.into(), state_bits.into()], "")
-            .unwrap();
+        let frame = self.poll_frame_address();
+        let (cx, mut b) = self.walker();
+        cx.state_set(&mut b, op, frame);
     }
 
-    /// The scheduler sentinel is one exact word: compare it, with no
-    /// truthiness, callback or owner.
     pub(super) fn emit_is_pending(&mut self, op: &TirOp) {
-        let &[poll] = op.operands.as_slice() else {
-            panic!("is_pending in '{}' expects one poll result", self.func.name);
-        };
-        let word = self.activation_object_word(poll, OpKind::IsPending);
-        let pending = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(molt_codegen_abi::pending_bits() as u64, true);
-        let is_pending = self
-            .backend
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, word, pending, "is_pending")
-            .unwrap();
-        if let Some(&result_id) = op.results.first() {
-            self.values.set_value(result_id, is_pending.into());
-            self.values.set_repr(
-                result_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-            );
-        }
+        let (mut cx, mut b) = self.walker();
+        cx.is_pending(&mut b, op);
     }
 
-    /// Register this activation to wake when the future completes. Nothing is
-    /// retained or returned: explicit TIR still owns the future.
     pub(super) fn emit_task_wait(&mut self, op: &TirOp) {
-        let &[future] = op.operands.as_slice() else {
-            panic!("task_wait in '{}' expects one future", self.func.name);
-        };
-        let future_bits = self.activation_object_word(future, OpKind::TaskWait);
-        self.emit_sleep_register(future_bits);
-    }
-
-    /// Poll results and awaited futures are objects. A raw scalar carrier could
-    /// alias the sentinel's bits and would need a box that nothing owns.
-    fn activation_object_word(
-        &self,
-        operand: ValueId,
-        kind: OpKind,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let ty = self.repr_ty(operand);
-        assert!(
-            Self::tir_type_is_dynbox_like(&ty),
-            "{kind} in '{}' requires an object carrier, found {ty:?}",
-            self.func.name
-        );
-        self.ensure_i64(self.resolve(operand))
-    }
-
-    /// `molt_sleep_register` takes object addresses, not boxed words: the poll
-    /// frame parameter and the future's unboxed pointer.
-    fn emit_sleep_register(&self, future_bits: inkwell::values::IntValue<'ctx>) {
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let sleep_fn = self.ensure_runtime_import(RuntimeFn::SleepRegister);
-        let frame_ptr = self
-            .backend
-            .builder
-            .build_int_to_ptr(self.poll_frame_address(), ptr_ty, "task_wait_frame")
-            .unwrap();
-        let future_address = self.unbox_ptr_bits(future_bits);
-        let future_ptr = self
-            .backend
-            .builder
-            .build_int_to_ptr(future_address, ptr_ty, "task_wait_future")
-            .unwrap();
-        self.backend
-            .builder
-            .build_execution_call(
-                sleep_fn,
-                &[frame_ptr.into(), future_ptr.into()],
-                "task_wait",
-            )
-            .unwrap();
+        let frame = self.poll_frame_address();
+        let (cx, mut b) = self.walker();
+        cx.task_wait(&mut b, op, frame);
     }
 
     pub(super) fn emit_yield(&mut self, op: &TirOp) {

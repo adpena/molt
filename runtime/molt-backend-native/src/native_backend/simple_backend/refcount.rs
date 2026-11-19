@@ -11,6 +11,7 @@ pub(crate) struct NativeFunctionImports {
     /// This body's reference to each runtime entry, by dense `RuntimeFn` index.
     refs: Box<[cranelift_codegen::packed_option::PackedOption<FuncRef>]>,
     refcount_admission: Option<Value>,
+    thread_record: Option<Value>,
 }
 
 impl Default for NativeFunctionImports {
@@ -18,6 +19,7 @@ impl Default for NativeFunctionImports {
         Self {
             refs: vec![Default::default(); RuntimeFn::COUNT].into_boxed_slice(),
             refcount_admission: None,
+            thread_record: None,
         }
     }
 }
@@ -29,6 +31,12 @@ impl NativeFunctionImports {
 
     pub(crate) fn insert(&mut self, function: RuntimeFn, value: FuncRef) {
         self.refs[function.index()] = value.into();
+    }
+
+    pub(crate) fn thread_record(&mut self, builder: &mut FunctionBuilder<'_>) -> Value {
+        *self
+            .thread_record
+            .get_or_insert_with(|| super::thread_record::entry_thread_record(builder))
     }
 
     pub(crate) fn set_refcount_admission(&mut self, value: Value) {

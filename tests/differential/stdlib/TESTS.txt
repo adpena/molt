@@ -1103,6 +1103,7 @@ tests/differential/stdlib/functools_wraps_basic.py
 tests/differential/stdlib/future_module.py
 tests/differential/stdlib/gc_collect.py
 tests/differential/stdlib/gc_cycle_collector.py
+tests/differential/stdlib/gc_default_pacing.py
 tests/differential/stdlib/gc_generation_membership.py
 tests/differential/stdlib/gc_generational_control.py
 tests/differential/stdlib/gc_inline_poll_pressure.py

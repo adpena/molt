@@ -181,17 +181,10 @@ pub(super) fn copy_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
 /// True if a `Copy` with `origin = kind` is SOUND to lower as a plain
 /// no-incref bit-passthrough of operand 0 (or as an inert marker) — i.e. it is
 /// neither [`CopyLowering::OwnedValue`] nor [`CopyLowering::OwnedAlias`]. The
-/// LLVM backend's `Copy` arm gates its passthrough on this: an owned result that
-/// was not explicitly lowered would return operand 0 without the required retain,
-/// making ownership silently disagree with runtime refcounts.
-///
-/// Gated to the `llvm` feature (plus `test`): the only non-test caller is the
-/// LLVM `Copy` arm's fatal gate (`llvm_backend::lowering`), so under a non-LLVM
-/// profile (e.g. `--features native-backend`) this predicate would otherwise be
-/// dead code and fail the `-D warnings` clippy gate. The drop pass and the
-/// always-compiled alias/memory-region axes consume `classify_copy_kind` /
-/// `copy_kind_is_explicit_no_heap_move` directly, not this LLVM-specific view.
-#[cfg(any(feature = "llvm", test))]
+/// codegen walker's `Copy` (`codegen_ssa::direct`, every native backend) names
+/// this class when it refuses a preserved copy no lowering claimed: an owned
+/// result that was not explicitly lowered would return operand 0 without the
+/// required retain, making ownership silently disagree with runtime refcounts.
 pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<molt_ir::OpKind>) -> bool {
     !matches!(
         classify_copy_kind(kind),

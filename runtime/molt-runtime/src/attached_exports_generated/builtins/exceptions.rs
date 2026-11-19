@@ -43,6 +43,13 @@ pub unsafe extern "C" fn molt_spliced_frame_origin(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_spliced_frame_origin_attached_body(_py, exc_bits, count_bits)
 }
+#[unsafe(export_name = "molt_exception_chain_context__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_exception_chain_context(__context: u64, exc_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_exception_chain_context_attached_body(_py, exc_bits)
+}
 #[unsafe(export_name = "molt_exception_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_exception_new(__context: u64, kind_bits: u64, args_bits: u64) -> u64 {

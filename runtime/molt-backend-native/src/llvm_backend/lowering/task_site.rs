@@ -25,24 +25,6 @@ pub(super) struct LlvmTaskImports<'ctx> {
     int_from_i64: FunctionValue<'ctx>,
 }
 
-/// Where a task helper takes its frame context, without the word itself.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TaskContextSource {
-    Function,
-    PendingInvocation,
-    NoFrame,
-}
-
-impl TaskContextSource {
-    fn tag(self) -> &'static str {
-        match self {
-            Self::Function => "fn",
-            Self::PendingInvocation => "pending",
-            Self::NoFrame => "noframe",
-        }
-    }
-}
-
 fn custody_tag(custody: PayloadCustody) -> String {
     match custody {
         PayloadCustody::Borrowed => "b".into(),
@@ -180,14 +162,14 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 }
 
-impl<'ctx> FunctionLowering<'ctx, '_> {
+impl<'ctx> LlvmBackend<'ctx> {
     fn task_imports(&self) -> LlvmTaskImports<'ctx> {
         LlvmTaskImports {
-            task_new: self.ensure_runtime_import(RuntimeFn::TaskNew),
-            cancel_token_get_current: self.ensure_runtime_import(RuntimeFn::CancelTokenGetCurrent),
-            task_register_execution: self.ensure_runtime_import(RuntimeFn::TaskRegisterExecution),
-            asyncgen_new: self.ensure_runtime_import(RuntimeFn::AsyncgenNew),
-            int_from_i64: self.ensure_runtime_import(RuntimeFn::IntFromI64),
+            task_new: self.runtime_import(RuntimeFn::TaskNew),
+            cancel_token_get_current: self.runtime_import(RuntimeFn::CancelTokenGetCurrent),
+            task_register_execution: self.runtime_import(RuntimeFn::TaskRegisterExecution),
+            asyncgen_new: self.runtime_import(RuntimeFn::AsyncgenNew),
+            int_from_i64: self.runtime_import(RuntimeFn::IntFromI64),
         }
     }
 
@@ -199,28 +181,26 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     fn task_site_helper(
         &self,
         layout: TaskConstructorLayout,
-        source: TaskContextSource,
+        source: TaskFrameContext<()>,
         shape: PayloadShape,
     ) -> FunctionValue<'ctx> {
         let name = format!(
             "__molt_task_site_{}_{}_{}",
             layout.diagnostic_name().replace(' ', "_"),
-            source.tag(),
+            match source {
+                TaskFrameContext::Function(()) => "fn",
+                TaskFrameContext::PendingInvocation { .. } => "pending",
+                TaskFrameContext::NoFrame => "noframe",
+            },
             shape.tag(),
         );
-        let context_words = usize::from(source != TaskContextSource::NoFrame);
+        let context_words = usize::from(source != TaskFrameContext::NoFrame);
         let params = 2 + context_words + shape.words() + 1;
         let imports = self.task_imports();
         self.site_helper(&name, params, move |b, words| {
             b.task_imports = Some(imports);
             let (poll, frame_bytes) = (words[0], words[1]);
-            let context = match source {
-                TaskContextSource::Function => TaskFrameContext::Function(words[2]),
-                TaskContextSource::PendingInvocation => {
-                    TaskFrameContext::PendingInvocation { thread: words[2] }
-                }
-                TaskContextSource::NoFrame => TaskFrameContext::NoFrame,
-            };
+            let context = source.map(|()| words[2]);
             let payload_words = &words[2 + context_words..];
             let held: Vec<(IntValue<'ctx>, PayloadCustody)>;
             let payload = match &shape {
@@ -252,35 +232,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         })
     }
 
-    /// Construct a task from this function's body: `context` is the
-    /// frame-context word for `Function` and `PendingInvocation` sources.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn emit_task_construction(
-        &mut self,
-        layout: TaskConstructorLayout,
-        poll: IntValue<'ctx>,
-        frame_bytes: IntValue<'ctx>,
-        source: TaskContextSource,
-        context: Option<IntValue<'ctx>>,
-        payload: TaskPayload<'_, IntValue<'ctx>>,
-        name: &str,
-    ) -> IntValue<'ctx> {
-        let admission = self
-            .ensure_refcount_site(RefcountOperation::Release)
-            .admission;
-        self.call_task_site(
-            &self.backend.builder,
-            admission,
-            layout,
-            poll,
-            frame_bytes,
-            source,
-            context,
-            payload,
-            name,
-        )
-    }
-
     /// Call the task helper at `builder`'s position, in whichever function it
     /// builds (this function's body or a task trampoline).
     #[allow(clippy::too_many_arguments)]
@@ -291,22 +242,14 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         layout: TaskConstructorLayout,
         poll: IntValue<'ctx>,
         frame_bytes: IntValue<'ctx>,
-        source: TaskContextSource,
-        context: Option<IntValue<'ctx>>,
+        context: TaskFrameContext<IntValue<'ctx>>,
         payload: TaskPayload<'_, IntValue<'ctx>>,
         name: &str,
     ) -> IntValue<'ctx> {
-        assert_eq!(
-            context.is_some(),
-            source != TaskContextSource::NoFrame,
-            "a task context source has its word exactly when it names one"
-        );
-        let helper = self.task_site_helper(layout, source, PayloadShape::of(&payload));
         let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             vec![poll.into(), frame_bytes.into()];
-        if let Some(context) = context {
-            arguments.push(context.into());
-        }
+        let source = context.map(|word| arguments.push(word.into()));
+        let helper = self.task_site_helper(layout, source, PayloadShape::of(&payload));
         match payload {
             TaskPayload::Words(words) => {
                 for &(word, _) in words {
@@ -331,5 +274,30 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value()
+    }
+}
+
+impl<'ctx> crate::codegen_ssa::task::TaskPlacement for LlvmCodegen<'_, 'ctx> {
+    fn place_task(
+        &mut self,
+        layout: TaskConstructorLayout,
+        poll: Self::Word,
+        frame_bytes: Self::Word,
+        operands: crate::codegen_ssa::task::TaskOperands<Self::Word>,
+        name: &str,
+    ) -> Self::Word {
+        let admission = self
+            .llvm_refcount_site(RefcountOperation::Release)
+            .admission;
+        self.backend.call_task_site(
+            self.words.builder,
+            admission,
+            layout,
+            poll,
+            frame_bytes,
+            operands.context,
+            TaskPayload::Words(&operands.words),
+            name,
+        )
     }
 }

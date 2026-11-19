@@ -23,7 +23,7 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn};
+use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::CodegenBuilder;
@@ -107,8 +107,6 @@ mod native_calls;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
-mod object_ops;
-#[cfg(feature = "llvm")]
 mod op_dispatch;
 #[cfg(feature = "llvm")]
 mod preserved_ops;
@@ -126,7 +124,7 @@ mod task_trampoline;
 mod value_materialization;
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::function::ResultCustody;
-use value_materialization::{BorrowedOperands, RuntimeArg};
+use value_materialization::RuntimeArg;
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,7 +336,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
     /// Deterministic per-function call-site numbering for IC lanes.
-    call_site_counter: usize,
+    call_site_counter: std::cell::Cell<usize>,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
     /// verification, optimization, or emission.
     diagnostics: RefCell<Vec<String>>,
@@ -361,10 +359,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
     /// an ambiguous label instead of picking one in hash order.
     exception_targets: std::cell::OnceCell<molt_ir::deterministic_hash::HashMap<i64, BlockId>>,
-    /// This invocation's thread record, read once from the execution context
-    /// in the entry block (`thread_record`). Every compiled function takes
-    /// the context, so every function reads execution state through it.
-    thread_record: Option<inkwell::values::PointerValue<'ctx>>,
     /// The runtime's pending-work word the record lends, read once after the
     /// record (`pending_work_ptr`); only functions that poll read it.
     pending_work_ptr: Option<inkwell::values::PointerValue<'ctx>>,
@@ -425,7 +419,7 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         block_params: RefCell::new(HashMap::default()),
         synthetic_block_counter: 0,
-        call_site_counter: 0,
+        call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
         frame_homes: None,
@@ -436,7 +430,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
         ),
         exception_targets: std::cell::OnceCell::new(),
-        thread_record: None,
         pending_work_ptr: None,
     };
 

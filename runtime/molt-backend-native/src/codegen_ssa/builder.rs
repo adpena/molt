@@ -8,8 +8,10 @@
 //! migrated family needs.
 
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::list_item::ItemContainers;
 use molt_codegen_abi::word::BranchBuilder;
 use molt_ir::code_slots::ProgramSlotKind;
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 /// The machine shape of a backend value.
@@ -66,6 +68,8 @@ pub(crate) enum IntBinary {
     Xor,
     ShiftLeft,
     ShiftRightArithmetic,
+    /// The shift that fills with zeros.
+    ShiftRightLogical,
     /// The quotient truncated toward zero.
     SignedQuotient,
     /// The remainder with the dividend's sign.
@@ -89,6 +93,43 @@ pub(crate) enum FloatBinary {
     Divide,
     /// The remainder with the dividend's sign (C `fmod`).
     Remainder,
+}
+
+/// A site body: one access the `molt_codegen_abi` generators write, whose
+/// miss calls a runtime entry. Its words are listed per variant; the refcount
+/// admission follows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SiteBody {
+    /// `object.<field at offset>`, owned (`generate_field_slot_get`); words
+    /// `[object]`; the miss is `molt_object_field_get_ptr`.
+    FieldGet { offset: i32 },
+    /// `object.<field at offset> = value`, answering None
+    /// (`generate_field_slot_set`); words `[object, value]`; the miss is
+    /// `molt_object_field_set_ptr`.
+    FieldSet { offset: i32 },
+    /// `sequence[index]`, owned, over the `containers` a proof admits
+    /// (`generate_list_item_get`); words `[sequence, index]`; the miss is
+    /// `cold`.
+    ItemGet {
+        containers: ItemContainers,
+        cold: RuntimeFn,
+    },
+    /// `list[index] = value` (`generate_list_item_set`); words `[list,
+    /// index, value]`; the miss is `molt_setitem_method`.
+    ListItemSet,
+    /// A module global's slot `index`, owned (`generate_global_slot_read`);
+    /// words `[base, module, name]`; the miss is `molt_module_get_global`.
+    GlobalSlotRead { index: u32 },
+    /// Store into a module's static cell `index`, answering None
+    /// (`generate_static_cell_store`); words `[base, value]`.
+    StaticCellStore { index: u32 },
+    /// A closed import of the module `id` names, owned
+    /// (`generate_module_import_closed`); words `[id]`; the miss is
+    /// `molt_module_ensure`.
+    ModuleImportClosed,
+    /// A method site's load (`generate_method_site_load`), owned; words
+    /// `[record, receiver, self_out]`; the miss is `molt_method_site_load`.
+    MethodSiteLoad,
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {
@@ -123,6 +164,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn bits_to_float(&mut self, word: Self::Word) -> Self::Value;
     /// An `Address` value as a word.
     fn address_to_word(&mut self, value: Self::Value) -> Self::Word;
+    /// The address whose bits are `word`, as a `MachineKind::Address` value.
+    fn word_to_address(&mut self, word: Self::Word) -> Self::Value;
 
     /// `no_signed_wrap` is a hint that the walker proved the signed result
     /// exact; a backend with no use for it ignores it.
@@ -146,6 +189,9 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         left: Self::Word,
         right: Self::Word,
     ) -> (Self::Word, Self::Predicate);
+    /// Whether an integer value of any width (a word, a narrow int or a
+    /// bit) is zero, compared in its own width.
+    fn is_zero(&mut self, value: Self::Value) -> Self::Predicate;
     /// The float nearest a signed integer.
     fn int_to_float(&mut self, word: Self::Word) -> Self::Value;
     /// `yes` when `condition` holds, else `no`; both are of one kind.
@@ -183,6 +229,13 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// The callee that is runtime entry `function`, by its typed identity;
     /// the generated record supplies symbol, signature and context.
     fn runtime_callee(&mut self, function: RuntimeFn) -> Self::Callee;
+    /// The compiled function `symbol` as a callee, declared by its frozen
+    /// linkage row `abi`: one machine parameter per row parameter, each in
+    /// its carrier's machine kind, and the row's result. The execution
+    /// context is the backend's, as for a runtime entry.
+    fn function_callee(&mut self, symbol: &str, abi: &NativeFunctionLinkageAbi) -> Self::Callee;
+    /// The code address of a compiled function's callee, as a word.
+    fn function_address(&mut self, callee: Self::Callee) -> Self::Word;
     /// Call `callee` with one machine value per parameter. The result is
     /// `None` when the callee returns nothing; otherwise it has the kind of
     /// the callee's result (a 32-bit runtime status is `NarrowInt`).
@@ -194,6 +247,14 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         let result = self.call(callee, &args)?;
         Some(self.expect_word(result))
     }
+
+    /// The thread record lent by this invocation. Its entry-block value
+    /// dominates every request, including a first request in a cold block.
+    fn thread_record_word(&mut self) -> Self::Word;
+    /// Load one unsigned thread-local byte at a fixed byte offset.
+    fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
+    /// A call in a cold block, with the usual execution-context ABI.
+    fn call_cold(&mut self, callee: Self::Callee, args: &[Self::Value]) -> Option<Self::Value>;
 
     /// A new block of the function being built, after every existing one.
     /// `name` is a debug name; a backend may ignore it.
@@ -213,6 +274,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn store_slot(&mut self, slot: Self::Slot, word: Self::Word);
     /// Store `word` into word `index` of an entry array.
     fn store_slot_at(&mut self, slot: Self::Slot, index: u32, word: Self::Word);
+    /// Load word `index` of an entry array.
+    fn load_slot_at(&mut self, slot: Self::Slot, index: u32) -> Self::Word;
     /// The address of an entry slot, as a `MachineKind::Address` value.
     fn slot_pointer(&mut self, slot: Self::Slot) -> Self::Value;
 
@@ -222,6 +285,16 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// data, as a `MachineKind::Address` value. `prefix` and `suffix` name
     /// it where the backend names data; a backend may ignore them.
     fn bytes_constant(&mut self, bytes: &[u8], prefix: &str, suffix: &str) -> Self::Value;
+    /// The address of the program's private, writable, 8-byte-aligned data
+    /// object `symbol`, as a `MachineKind::Address` value: a site's record,
+    /// which the site's code updates. The first request creates it with
+    /// `image`; a later one answers the same object.
+    fn site_record(&mut self, symbol: &str, image: &[u8]) -> Self::Value;
+    /// The address of `module`'s static cell block (one word per layout
+    /// name), resolved when the program links.
+    fn static_cell_block(&mut self, module: &str) -> Self::Value;
+    /// The word at byte `offset` from `address`, an `Address` value.
+    fn load_word(&mut self, address: Self::Value, offset: i32) -> Self::Word;
     /// The immutable word the program binds to `owner`'s program slot of
     /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
     /// program links.
@@ -235,6 +308,14 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn refcount_site(&mut self, operation: RefcountOperation) -> Self::RefcountSite;
     /// Apply `site`'s transition to the boxed word `word`.
     fn refcount(&mut self, site: Self::RefcountSite, word: Self::Word);
+    /// The invocation's refcount admission word, which a site body passes to
+    /// its retains and releases.
+    fn refcount_admission(&mut self) -> Self::Word;
+
+    /// Run the shared generator's `body` on `args` (its words, the refcount
+    /// admission last) and answer its word. A backend chooses only where the
+    /// body lives: inline, or one out-of-line copy per body.
+    fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value;
 
     /// A value of machine kind `kind` that stands where the lowering has
     /// already refused the function: it keeps the function well formed for

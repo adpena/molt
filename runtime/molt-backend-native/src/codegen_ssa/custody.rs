@@ -23,7 +23,7 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::word::{WordBuilder, WordComparison};
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::builder::{CodegenBuilder, MachineKind};
+use super::builder::{CodegenBuilder, MachineKind, SiteBody};
 use super::scalar;
 use super::value_table::{HeldCarrier, ValueTable};
 use crate::representation_plan::ProducerCarrierPlan;
@@ -31,6 +31,14 @@ use crate::tir::values::ValueId;
 
 /// The boxed word of `None`.
 const NONE_WORD: u64 = nanbox::QNAN | nanbox::TAG_NONE;
+
+/// What a borrowed call enters: a callee, or a site body the backend places
+/// (`CodegenBuilder::site`).
+#[derive(Clone, Copy)]
+pub(crate) enum CallTarget<C> {
+    Callee(C),
+    Site(SiteBody),
+}
 
 /// A runtime-call argument: a borrowed operand of the lowered operation, or a
 /// machine word the runtime ABI fixes (an immediate, address or length).
@@ -204,6 +212,32 @@ impl<B: CodegenBuilder> Operands<'_, B> {
         custody
     }
 
+    /// Eager custody for a consumer that needs every operand word up front
+    /// (a fixed constructor): operands are requested in order, and
+    /// `construct` receives one word per position and the name its value
+    /// carries. The result is the constructed word, or None with the first
+    /// exception pending when an operand could not be boxed.
+    pub(crate) fn with_words(
+        &self,
+        b: &mut B,
+        operands: &[ValueId],
+        label: &str,
+        construct: impl FnOnce(&mut B, &[B::Word], &str) -> B::Word,
+    ) -> B::Word {
+        let mut custody = self.begin(b, operands, label);
+        let words: Vec<B::Word> = operands
+            .iter()
+            .map(|&operand| self.operand(b, &mut custody, operand))
+            .collect();
+        let name = if custody.can_fail() {
+            format!("{label}_constructed")
+        } else {
+            format!("{label}_result")
+        };
+        let constructed = construct(b, &words, &name);
+        self.finish(b, custody, constructed, &format!("{label}_result"), |_| {})
+    }
+
     /// The operand's boxed word, boxed at its first request.
     pub(crate) fn operand(&self, b: &mut B, custody: &mut Custody<B>, operand: ValueId) -> B::Word {
         let position = custody.requests;
@@ -326,7 +360,7 @@ impl<B: CodegenBuilder> Operands<'_, B> {
     pub(crate) fn call(
         &self,
         b: &mut B,
-        callee: B::Callee,
+        target: CallTarget<B::Callee>,
         args: &[RuntimeArg<B::Value>],
         retain_result: bool,
         label: &str,
@@ -350,7 +384,11 @@ impl<B: CodegenBuilder> Operands<'_, B> {
                 RuntimeArg::Word(value) => value,
             });
         }
-        let value = match b.call(callee, &call_args) {
+        let result = match target {
+            CallTarget::Callee(callee) => b.call(callee, &call_args),
+            CallTarget::Site(body) => Some(b.site(body, &call_args)),
+        };
+        let value = match result {
             Some(named) => {
                 let word = b.expect_word(named);
                 b.set_name(named, call_name);
@@ -461,7 +499,7 @@ mod tests {
     //! released exactly once, after the consumer; an adopted input is
     //! released only on the failure path.
 
-    use super::super::scalar::tests::{Edge, HEAP_INT, Interpreter, Value};
+    use super::super::scalar::tests::{Edge, HEAP_INT, Interpreter, ModelCallee, Value};
     use super::*;
     use molt_ir::repr::Repr;
 
@@ -625,7 +663,7 @@ mod tests {
         let mut b = Interpreter::default();
         let result = operands.call(
             &mut b,
-            RuntimeFn::IsTruthy,
+            CallTarget::Callee(ModelCallee::Runtime(RuntimeFn::IsTruthy)),
             &[RuntimeArg::Operand(ValueId(1))],
             true,
             "t",
@@ -800,6 +838,7 @@ mod tests {
                 diagnostics: &diagnostics,
             };
             let callee = b.runtime_callee(RuntimeFn::IntFromI64);
+            let callee = CallTarget::Callee(callee);
             let result = view.call(b, callee, &[RuntimeArg::Operand(ValueId(1))], true, "t", "c");
             ((), vec![b.word_value(result)])
         });

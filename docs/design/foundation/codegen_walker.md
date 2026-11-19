@@ -190,8 +190,57 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     status keeps its kind on every builder. Cranelift's program-slot load moved beside its
     runtime imports for both its paths. The model tests read pointer arguments through one
     memory model on both machines.
+  - Moved, slice 8 (2026-11-18, round 5): objects (`codegen_ssa::object`): `LoadAttr`,
+    `StoreAttr`, `DelAttr` (named, dynamic-name, inline-cache, guarded-field and proven-field
+    forms), `Index`, `StoreIndex`, `DelIndex`, and the synthesized-name owner
+    (`begin_owned_name`/`finish_owned_name`, which LLVM's call family still uses). A proven
+    field or list item access is a `SiteBody` the backend places through `site`: LLVM keeps one
+    always-inlined helper per body (its blocks may not split the caller's block), Cranelift
+    inlines the same `molt_codegen_abi` generator in the caller. A borrowed call enters a
+    `CallTarget` (callee or site body). The trait also gained `refcount_admission` and
+    `is_zero` (a zero test in the value's own width, so LLVM's IR keeps `icmp eq i32`). LLVM's
+    `object_ops.rs` is deleted; its field and list helpers and `site_helper` moved to
+    `LlvmBackend`. The model tests run the site bodies' non-object arms as Cranelift machine
+    code and the named accesses' failure path.
+  - Moved, slice 9 (round 5): operators (`codegen_ssa::operators`): arithmetic with the checked
+    ops and in-place entries, comparison, bitwise, unary, identity, membership, `and`/`or`
+    selection, `Bool` and the late stage's word primitives. LLVM's `numeric_ops.rs` lowering
+    is deleted; its preserved numeric arms call the walker.
+  - Moved, slice 10 (round 5): runtime calls (`codegen_ssa::calls`): classified boxed and raw
+    runtime calls with their availability admission, preserved-op runtime routing, CallArgs
+    and the dynamic call protocol. `FunctionCx` carries the selected runtime's entry set and
+    the inline-cache call-site counter.
+  - Moved, slice 11 (round 5): containers (`codegen_ssa::containers`): list, tuple, dict and
+    slice literals, the guarded class definition, and the iterator entries that write through
+    an entry array; custody's eager form (`with_words`). The set and frozenset aggregate stays
+    in LLVM until the pending-exception read moves (it checks for a pending exception after
+    each insertion).
+  - Moved, slice 12 (round 5): module globals (`codegen_ssa::globals`): static cells, global
+    slots and closed imports; the slot read, cell store and closed import are site bodies.
+  - Moved, slice 13 (round 6): the call family's runtime routes (`codegen_ssa::calls`): `Call`
+    (source, builder-consuming, guarded and runtime-role calls, the dynamic call, the refusal
+    of an unlinked direct target), `CallMethod`, `LoadMethod`/`LoadSuperMethod`,
+    `CallargsPushMethodReceiver` and `CallBuiltin` (print, range, named and dynamic builtins).
+    A method site's load is a site body (`SiteBody::MethodSiteLoad`) against a record the
+    builder creates once (`site_record`: LLVM an internal writable global, Cranelift local
+    writable data). LLVM's `with_owned_name`, `with_callargs` and dynamic-call wrappers are
+    deleted. The direct call of linked compiled code, `CodeIs`, `DirectCall` and the
+    loaded-method call stay in LLVM: the next slice moves the first two; the other two pass
+    the thread record, which the walker builder cannot read yet.
+  - Moved, slice 14 (round 6): the direct call of linked compiled code and `CodeIs`
+    (`FunctionCx::compiled_call`, `code_is_op`). `FunctionCx` carries two more program facts,
+    each compiled function's linkage row and the function table, so the walker resolves a
+    call's target itself. The trait gained `function_callee` (declared from the linkage row:
+    LLVM its module declaration, Cranelift an import of the attached execution symbol with one
+    parameter per row carrier) and `function_address`. `DirectCall` keeps only its
+    thread-record handoff in LLVM around the walker's call.
+  - Moved, slice 15 (round 6): the direct ops (`codegen_ssa::direct`): `DeleteVar`, the `Copy`
+    no preserved-op lowering claimed (an SSA copy passes operand 0 through in its carrier; a
+    preserved origin is refused, as `alias_analysis::CopyLowering` requires), `Alloc`, `OrdAt`,
+    `Raise`, `WarnStderr`, `FunctionDefaultsVersion`. `StackAlloc` (refused) and `Free` (no
+    code) move with the dispatch.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
-  Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
+  Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
   molt_diff basic and stdlib slices on native with no new failure (each one dispositioned);
   instructions retired and wall time on bench_fib, bench_calls, bench_sum, nbody, spectral_norm,
@@ -216,6 +265,90 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   verifier also checks every kernel. Production Cranelift lowering does not use the builder yet.
 - **After W3**: every new fast path is one late-TIR expansion that both native backends get;
   WASM gets it through LLVM wasm32 (the worker lane). Stages 4, 6 and 7 are written once.
+
+### W3 implementation contract
+
+The final-body boundary is `NativeFinalFunctions::from_final_tir`. Today it projects a terminal body into a `FunctionIR` and a name-indexed representation plan, then drops the body. Both native code owners already reach this boundary. Extract the frame, state and task families independently, with LLVM as their production caller, before switching that boundary.
+
+1. **One body and one function identity.** Each definition owns its terminal `TirFunction` through emission. Each declaration uses its frozen `NativeFunctionLinkageAbi` and has no executable body. Use the document's `FunctionId` and the existing table/remapping operations for filtering, clones, externalization and partitioning. Recover link names only at object/JIT symbol boundaries. Preserve the roots introduced by module registry data and callable manifests. A body and each reference to it must survive or remap together.
+2. **One machine signature.** Caller and provider agree on parameter order, hidden execution context, ownership, and raw, boxed or void return. Use the frozen pre-partition linkage row for both declarations. Convert edge operands before branching with the shared coercion. Walker inputs carry `ValueId`, `BlockId`, `HeldCarrier` and TIR types. A missing definition, return mismatch or illegal opcode ends compilation before an object is finalized or a JIT address is published.
+3. **One frame transition per edge.** Synchronous entry uses the existing frame shape and ordered homes. Stateful entry links the persistent activation record on resume and unlinks it on suspension or return. A runtime-linked frame follows its own ABI. Initialize the entry slot to zero and clear it before pop can release homes and re-enter Python. A failed entry has zero base. Preserve handle lifetimes, the exit path for an empty/exceptional return, and the caller's returned owner.
+4. **One task layout and resume dispatch.** Resolve a runtime poll key or declared compiled entry and frame-size relocation once from typed identity. Preserve the source task kind, completion mode, captured function/context and payload custody through `TaskConstructorLayout` and the existing task generator. Read the saved state from the activation. State zero uses the default edge, and each resumed edge supplies its own block arguments. Pending-sentinel comparison, exception confirmation and the async-work poll are distinct operations.
+5. **One confirmed pending read.** For the semantic operation currently named `emit_exception_pending_word`, zero bypasses the runtime. A nonzero byte requires confirmation from `RuntimeFn::ExceptionPending`; a stale byte can confirm clear. Preserve poll operations that also service async work or fetch an exception payload according to their own contracts.
+6. **One production dispatch.** The shared walk covers the admitted final TIR for both native builders. AOT and JIT differ in module allocation, relocation, publication and lifetime. Both invoke the same Cranelift body emitter. Retire each backend-private optimization only after its benefit has been attributed and preserved or disproved on matching inputs. Use exhaustive Rust matches and the actual feature builds to check structural coverage.
+
+For the switch, adopt terminal TIR into the existing final-function owner. Use dense document IDs tied to the final function table. Preserve independently compiled object declarations, imported callables, closure/environment metadata, program slots, module registry relocations and JIT runtime resolution. Thread frozen linkage through module finalization, which currently passes `linkage: None` on the native path. Drop source op arrays as soon as ingest and partition metadata no longer need them. Avoid retaining two stdlib-sized programs. Count emitted terminal operations for diagnostics that describe machine emission. Keep source counts explicitly identified where a public diagnostic measures source operations.
+
+`lower_to_simple_ir_with_names` currently feeds native `ScalarRepresentationPlan::project_final_tir`. Delete that consumer with the switch. `pipeline_cache.rs` also projects bodies for warm and cold SimpleIR requests and partitioning; use the existing TIR-only route and preserve bounded splitting and remapping before terminal drops. The requested rewritten-IR dump in `program_pipeline.rs` and round-trip tests in the pass crates are independent projection consumers. Retain projection where those consumers still request it. The shipped LLVM wasm32 route alone does not establish a WASM machine-code dependency on SimpleIR.
+
+Before deleting the emitter, migrate `simple_backend/tests.rs` and its `tir_analysis` fixtures to
+the same final-function boundary as production. Check `tools/proof_plan.toml`'s explicit op-kind,
+native-callable ABI and pending-call source paths, the paths in `tools/structural_audit.py`,
+`tools/dx_build_timer.py`, `tools/proof_queue_pkg/diagnostic_runtime_rules.py`, the environment
+registry owners, and the tests for callable ABI, heap kinds, debug verification and pending calls.
+Regenerate the plan and environment projections when their authorities change. The interpreter
+in `codegen_ssa/scalar.rs`, the Cranelift machine differential, cross-object linkage tests and
+`molt-jit/tests` exercise different consumers of the new boundary.
+
+#### Reviewed Rust boundaries
+
+These signatures describe the accepted ownership boundaries. `B` implements the existing `CodegenBuilder`. The function table retains the declaration ABI for each row. An execution-frame handle is absent when the function owns no frame, and its zero-initialized slot can hold a failed-entry base.
+
+~~~rust
+/// I1, I2. Store the definition in the same row as its frozen ABI. The row
+/// index is the document FunctionId. Declarations have no machine body.
+enum FinalRow {
+    Declaration(NativeFunctionLinkageAbi),
+    Definition { abi: NativeFunctionLinkageAbi, body: TirFunction },
+}
+
+/// I3. The slot holds the currently owned base. None for kind denotes an
+/// ABI-linked frame, as in the existing frame-record API.
+struct OwnedFrame<S> { slot: S, kind: Option<FrameEntryKind> }
+
+/// I2, I3. Requires the current function's frozen ABI and held carriers.
+/// Ensures the result is coerced before retiring the frame and returning.
+/// Raises a fatal lowering diagnostic if a value would cross a void ABI.
+fn emit_return<B: CodegenBuilder>(
+    cx: &mut FunctionCx<'_, B>, b: &mut B, abi: &NativeFunctionLinkageAbi,
+    value: Option<ValueId>, frame: Option<&OwnedFrame<B::Slot>>,
+) { todo!() }
+
+/// I4. Resolve the typed poll through the current document or runtime
+/// manifest. The compiled variant covers a local definition and an import.
+/// Only the linkage adapter materializes a symbol/relocation.
+enum PollTarget { Runtime(RuntimeFn), Compiled(FunctionId) }
+
+/// I5. Requires the current activation's thread record. Ensures a word of
+/// zero or one and confirms every nonzero byte through the runtime reader.
+/// Runtime confirmation can clear stale task state.
+fn exception_pending_word<B: CodegenBuilder>(b: &mut B, thread: B::Word) -> B::Word {
+    todo!()
+}
+
+impl SimpleBackend {
+    /// I1, I2, I6. Requires complete rows and frozen module declarations.
+    /// Ensures verified definitions and metadata precede publication by the
+    /// code owner. Raises the existing backend diagnostic on failure.
+    fn emit_cranelift_program(
+        &mut self, program: NativeCodegenProgram, timing: bool,
+    ) -> (usize, usize) { todo!() }
+}
+~~~
+
+The shared walk and top-level dispatch signatures belong to slot-06. Backend-only strings are restricted to diagnostic text, debug names and symbols at linkage. Machine values keep the builder's associated types. Serialized field names and CLI choices remain boundary syntax. The typed TIR op or canonical ABI layout must carry their decoded meanings to the walker.
+
+#### Qualification
+
+| Obligation | Independent oracle and failure it detects |
+|---|---|
+| Frame and return | Run existing ABI generator tests and walker machine kernels. Observe nested entry/pop, allocation failure, re-entry during home release, empty and typed returns. Compare Python-visible tracebacks, locals, return values and cleanup with the managed CPython oracle. |
+| Tasks and exceptions | Exercise first entry, resume with different edge arguments, send/throw/close, yield-from, cancellation and live locals across suspension. Use a stale nonzero pending byte as well as a real exception and a clear byte. Verify both return value and runtime confirmation count. Use two jobs for async and GC. |
+| Linkage and custody | Build producer and caller in separate objects with raw, boxed and void returns and a compiled poll whose spills enlarge its frame. Exercise the JIT loader and owner lifetime. Invalid declarations must fail before publication. Test warm and cold TIR cache inputs, split bodies, clones and extern rows. |
+| Family extraction | Compare the 38 release binaries' LLVM text against the same base on the same workload. Where the brief's time exception applies, use interleaved retired instructions and equal output. Exercise model and actual Cranelift kernels and the declared Rust feature cells. |
+| Production switch | Run dev/Cranelift basic and stdlib differentials against main, disposition each difference, and run JIT tests. Measure cold and warm user build latency, peak process-tree memory and executable output. Interleave the eight W3 benchmarks against main for instructions and elapsed time. Investigate any regression over 2% in shared lowering before landing. |
+
+The eight workloads are bench_fib, bench_calls, bench_sum, nbody, spectral_norm, fannkuch, mandelbrot and bench_method_defaults. Build base and head at equal-length paths and execute each from the same path. Before deleting Cranelift lowering, obtain the integrator's comparative corpus and investigate each Cranelift advantage, including raise_catch and str_build. Match source/disassembly, a sampled per-module profile and interleaved counts before assigning cause. Record counter and runtime calls per iteration for changed hot paths. Update HF-889 on each implementation landing. These proofs remain outstanding.
 
 ## Contracts and checks
 
@@ -256,3 +389,8 @@ The cost is one large Cranelift change; its proof is the differential suite, not
    must honour, and which are backend-private?
 4. W3's size: is there a cut of W3 that keeps the no-dual-path rule (for example, the JIT moves
    first, alone, since it is a separate binary), or is W3 one change?
+   Answered 2026-11-18. AOT (`simple_backend/compile_driver.rs`) and JIT
+   (`simple_backend/jit.rs`) both call `emit_cranelift_program`. A JIT-first change still
+   needs the entire walker and would leave a second Cranelift configuration in production.
+   Extract families in independently verified LLVM slices. Switch both code owners together
+   and delete their shared SimpleIR emitter in that same change.

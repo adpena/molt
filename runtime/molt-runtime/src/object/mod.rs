@@ -3142,13 +3142,19 @@ pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bo
         if class_header_declares_finalizer(class_ptr) {
             return true;
         }
-        crate::class_mro_pinned(_py, class_ptr).is_some_and(|mro| {
-            mro.iter().copied().skip(1).any(|bits| {
-                obj_from_bits(bits)
-                    .as_ptr()
-                    .is_some_and(|base| class_header_declares_finalizer(base))
+        // The walk reads class header flags and runs no code, so it borrows
+        // the MRO under the GIL instead of pinning it.
+        let mro = obj_from_bits(layout::class_mro_bits(class_ptr)).as_ptr();
+        mro.and_then(|mro| {
+            seq_access::with_immutable_tuple_slice(mro, |mro| {
+                mro.iter().skip(1).any(|&bits| {
+                    obj_from_bits(bits)
+                        .as_ptr()
+                        .is_some_and(|base| class_header_declares_finalizer(base))
+                })
             })
         })
+        .unwrap_or(false)
     }
 }
 
@@ -4736,33 +4742,18 @@ unsafe fn dec_ref_ptr_terminal_body(
         } else {
             None
         };
-        // A committed-dead tee block cannot be revived or mutated. Transfer
-        // its successor to the caller's local owner before ordinary detach,
-        // then finish every normal edge/resource/free transaction here. The
-        // caller iterates that successor, bounding stack use even when every
-        // link has an ABI view. GC and value finalizers see the suffix rooted
-        // by this retained physical owner throughout retirement.
-        let next_tee_link = if type_id == TYPE_ID_OBJECT
-            && object_shape_id(ptr) == ObjectShapeId::ItertoolsTeeBlock
-        {
-            let block = ptr.cast::<molt_runtime_core::itertools_tee::TeeBlock>();
-            let next = std::mem::replace(&mut (*block).next_bits, 0);
-            (next != 0).then_some(next)
-        } else {
-            None
-        };
         // An object with no side owner whose payload detaches nothing, or
-        // only a fixed inline set of edges (an exact list's or tuple's items,
-        // a call-argument builder, a bound method), retires without the edge
-        // sink, its census or the detach walk: the edges are released in
-        // place and the backing store is freed below. A
-        // plain instance keeps one edge, its class, released after the free
-        // as CPython's subtype_dealloc drops the type. Every other object
-        // takes the full transaction.
+        // only a fixed set of edges (a container's items or rows, a plain
+        // instance's fields and dictionary, an exception's slots, a
+        // call-argument builder, a bound method), retires without the edge
+        // sink or the detach walk: the edges are released in place and the
+        // backing store is freed below. Its class, if any, is released after
+        // the free, as CPython's subtype_dealloc drops the type. Every other
+        // object takes the full transaction.
         let retirement = if module_registry_edge.is_some() || retired_runtime_view.is_some() {
             heap_lifecycle::TerminalRetirement::Detach
         } else {
-            heap_lifecycle::terminal_retirement(py, ptr, terminal_flags, header_aux.kind)
+            heap_lifecycle::terminal_retirement(ptr, terminal_flags, header_aux.kind)
         };
         let class_edge = match retirement {
             heap_lifecycle::TerminalRetirement::ClassEdgeOnly => object_detach_class_edge(ptr),
@@ -4772,21 +4763,22 @@ unsafe fn dec_ref_ptr_terminal_body(
             }
             heap_lifecycle::TerminalRetirement::Detach => 0,
         };
+        let mut next_tee_link = None;
         if retirement == heap_lifecycle::TerminalRetirement::Detach {
-            let (terminal_edge_count, terminal_resource_count) =
-                heap_lifecycle::terminal_detach_capacity(py, ptr);
-            let terminal_resource_count = terminal_resource_count
-                .checked_add(usize::from(
-                    (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
-                ))
-                .unwrap_or_else(|| std::process::abort());
-            let terminal_edge_count = terminal_edge_count
-                .checked_add(usize::from(module_registry_edge.is_some()))
-                .unwrap_or_else(|| std::process::abort());
-            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
-                terminal_edge_count,
-                terminal_resource_count,
-            );
+            // A committed-dead tee block (a class shape, so it always
+            // detaches) cannot be revived or mutated. Transfer its successor
+            // to the caller's local owner before ordinary detach, then finish
+            // every normal edge/resource/free transaction here. The caller
+            // iterates that successor, bounding stack use even when every link
+            // has an ABI view. GC and value finalizers see the suffix rooted
+            // by this retained physical owner throughout retirement.
+            if type_id == TYPE_ID_OBJECT && object_shape_id(ptr) == ObjectShapeId::ItertoolsTeeBlock
+            {
+                let block = ptr.cast::<molt_runtime_core::itertools_tee::TeeBlock>();
+                let next = std::mem::replace(&mut (*block).next_bits, 0);
+                next_tee_link = (next != 0).then_some(next);
+            }
+            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal();
             heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
             if let Some(bits) = module_registry_edge {
                 terminal_edges.detach_if_heap(bits);

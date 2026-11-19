@@ -20,157 +20,65 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 crate::codegen_ssa::constants::lower(&mut cx, &mut b, op);
             }
 
-            // -- Arithmetic (type-specialized) --
-            OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, OpKind::Add),
-            OpCode::CheckedAdd | OpCode::CheckedMul => self.emit_checked_arith(op),
-            OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, OpKind::Sub),
-            OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, OpKind::Mul),
-            OpCode::Div => self.emit_binary_arith(op, OpKind::Div),
-            OpCode::FloorDiv => self.emit_binary_arith(op, OpKind::Floordiv),
-            OpCode::Mod => self.emit_binary_arith(op, OpKind::Mod),
-            OpCode::Pow => self.emit_binary_arith(op, OpKind::Pow),
-
-            // -- Unary --
-            OpCode::Neg => self.emit_unary(op, OpKind::Neg),
-            OpCode::Pos => self.emit_unary(op, OpKind::Pos),
-            OpCode::Not => self.emit_unary(op, OpKind::Not),
-
-            // -- Comparison (type-specialized) --
-            OpCode::Eq => self.emit_comparison(op, OpKind::Eq),
-            OpCode::Ne => self.emit_comparison(op, OpKind::Ne),
-            OpCode::Lt => self.emit_comparison(op, OpKind::Lt),
-            OpCode::Le => self.emit_comparison(op, OpKind::Le),
-            OpCode::Gt => self.emit_comparison(op, OpKind::Gt),
-            OpCode::Ge => self.emit_comparison(op, OpKind::Ge),
-            OpCode::Is | OpCode::IsNot => self.emit_identity(op),
-            OpCode::In | OpCode::NotIn => self.emit_containment(op),
-
-            // -- Bitwise --
-            OpCode::BitAnd => self.emit_bitwise(op, OpKind::BitAnd),
-            OpCode::BitOr => self.emit_bitwise(op, OpKind::BitOr),
-            OpCode::BitXor => self.emit_bitwise(op, OpKind::BitXor),
-            OpCode::BitNot => self.emit_unary(op, OpKind::Invert),
-            OpCode::Shl => self.emit_bitwise(op, OpKind::Lshift),
-            OpCode::Shr => self.emit_bitwise(op, OpKind::Rshift),
-
-            // -- Boolean --
-            OpCode::And | OpCode::Or => self.emit_boolean_selection(op),
-            OpCode::Bool => {
-                let result_id = op.results[0];
-                let bool_val = self.truth_bit(op.operands[0]);
-                self.values.set_value(result_id, bool_val.into());
-                self.values.set_repr(
-                    result_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
+            // -- Operators: arithmetic, comparison, bitwise, unary, identity,
+            // membership, selection, truth and the late-TIR word primitives.
+            OpCode::Add
+            | OpCode::InplaceAdd
+            | OpCode::Sub
+            | OpCode::InplaceSub
+            | OpCode::Mul
+            | OpCode::InplaceMul
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::CheckedAdd
+            | OpCode::CheckedMul
+            | OpCode::Neg
+            | OpCode::Pos
+            | OpCode::Not
+            | OpCode::BitNot
+            | OpCode::Eq
+            | OpCode::Ne
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::Gt
+            | OpCode::Ge
+            | OpCode::Is
+            | OpCode::IsNot
+            | OpCode::In
+            | OpCode::NotIn
+            | OpCode::BitAnd
+            | OpCode::BitOr
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Bool
+            | OpCode::IsInlineInt
+            | OpCode::UnboxInlineInt
+            | OpCode::IsFloatWord
+            | OpCode::UnboxFloatWord
+            | OpCode::IntToFloat
+            | OpCode::IsBoolWord
+            | OpCode::UnboxBoolWord
+            | OpCode::BoxInlineInt => {
+                let (mut cx, mut b) = self.walker();
+                cx.operator_op(&mut b, op);
             }
-
-            // -- Late-TIR representation primitives and the cold runtime edge
-            // (HF-821): bit-level meaning from the shared word generators.
-            OpCode::IsInlineInt => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_int = nanbox::boxed_word::generate_has_tag(
-                    &mut self.words(),
-                    word,
-                    nanbox::boxed_word::BoxTag::Int,
-                );
-                self.values.set_value(op.results[0], is_int.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxInlineInt => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
-                self.values.set_value(op.results[0], raw.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::I64),
-                );
-            }
-            OpCode::IsFloatWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_float = nanbox::boxed_word::generate_is_float(&mut self.words(), word);
-                self.values.set_value(op.results[0], is_float.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxFloatWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = self
-                    .backend
-                    .builder
-                    .build_bit_cast(word, self.backend.context.f64_type(), "unbox_float")
-                    .unwrap();
-                self.values.set_value(op.results[0], raw);
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
-                );
-            }
-            OpCode::IntToFloat => {
-                let payload = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(
-                        payload,
-                        self.backend.context.f64_type(),
-                        "int_to_float",
-                    )
-                    .unwrap();
-                self.values.set_value(op.results[0], raw.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
-                );
-            }
-            OpCode::IsBoolWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_bool = nanbox::boxed_word::generate_has_tag(
-                    &mut self.words(),
-                    word,
-                    nanbox::boxed_word::BoxTag::Bool,
-                );
-                self.values.set_value(op.results[0], is_bool.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxBoolWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
-                self.values.set_value(op.results[0], truth.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::CodeIs => self.emit_code_is(op),
+            OpCode::CodeIs => self.walker_op(|cx, b| cx.code_is_op(b, op)),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
-            }
-            OpCode::BoxInlineInt => {
-                let value = self.ensure_i64(self.resolve(op.operands[0]));
-                let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
-                self.values.set_value(op.results[0], word.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
             }
             OpCode::CallRuntime => {
                 let runtime = op
                     .runtime
                     .expect("verified: CallRuntime carries its runtime entry");
                 match runtime.boxed_abi() {
-                    Some(abi) => self.emit_boxed_runtime_call(op, abi),
-                    None => self.emit_raw_runtime_call(op, runtime),
+                    Some(abi) => self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi)),
+                    None => self.walker_op(|cx, b| cx.raw_runtime_call(b, op, runtime)),
                 }
             }
             OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
@@ -193,49 +101,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ),
 
             // -- Memory / Attribute / Index --
-            OpCode::LoadAttr => self.emit_load_attr(op),
-            OpCode::StoreAttr => self.emit_store_attr(op),
-            OpCode::DelAttr => self.emit_del_attr(op),
-            OpCode::Index => self.emit_index(op),
-            OpCode::StoreIndex => self.emit_store_index(op),
-            OpCode::DelIndex => self.emit_del_index(op),
+            OpCode::LoadAttr
+            | OpCode::StoreAttr
+            | OpCode::DelAttr
+            | OpCode::Index
+            | OpCode::StoreIndex
+            | OpCode::DelIndex => {
+                let (mut cx, mut b) = self.walker();
+                cx.object_op(&mut b, op);
+            }
 
             // -- Call --
-            OpCode::Call => self.emit_call(op),
+            OpCode::Call => self.walker_op(|cx, b| cx.call_op(b, op)),
 
             // -- DeleteVar local-slot transition --
             // DeleteVar defines the local's new SSA value as the missing sentinel
             // operand. Ownership of the previous slot occupant is modeled by the
             // drop fact plane (DecRef / explicit consumed operands), not by LLVM
             // lowering.
-            OpCode::DeleteVar => {
-                if op.results.is_empty() {
-                    // Side-effect-only legacy shapes have no SSA value to bind.
-                } else if let Some(&missing) = op.operands.first() {
-                    let val = self.resolve(missing);
-                    let ty = self.repr_ty(missing);
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
-                    }
-                } else {
-                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                    let none_val: BasicValueEnum<'ctx> = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(none_bits, false)
-                        .into();
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, none_val);
-                        self.values.set_repr(
-                            result_id,
-                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                        );
-                    }
-                }
-            }
+            OpCode::DeleteVar => self.walker_op(|cx, b| cx.delete_var_op(b, op)),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
@@ -255,174 +139,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     return;
                 }
-                // TERMINAL FAIL-LOUD STATE (preserved-op passthrough class),
-                // tied to the `CopyLowering` single source of truth.
-                //
-                // Reaching here means this `OpCode::Copy` carries an
-                // `origin` that `lower_preserved_simpleir_op` did NOT
-                // handle — neither a dedicated arm nor the generic
-                // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
-                // claimed it. EVERY such op is a SimpleIR op the native/WASM
-                // lanes lower with dedicated semantics (a value-producing runtime
-                // call, an RC adjustment, a type guard, a generator throw, or a
-                // registry-owned identity fact). Passing operand 0 through by
-                // default -- the historical behavior -- silently miscompiled
-                // non-identity semantics: `abs(x)` returned `x`,
-                // `...`/`NotImplemented` became `None`, `raise ... from ...`'s
-                // `__cause__` link, `gen.throw`, special-attr loads, the
-                // `borrow`/`release` refcount ops, the `guard_tag` type check, and
-                // every fresh-value conversion (`int(x)`, `s[-5:]`, `dict.keys()`,
-                // ...) were all DROPPED or returned operand 0. The few preserved
-                // repr-identity ops whose operand-0 passthrough is correct are
-                // claimed explicitly in `lower_preserved_simpleir_op`; any
-                // preserved op that reaches this terminal state is therefore not a
-                // sound default passthrough. Fail the build loudly here.
-                //
-                // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
-                // forbids). The drop-insertion pass releases exactly the `Copy`s
-                // whose `origin` is a `CopyLowering::OwnedValue`
-                // (`alias_analysis::copy_kind_mints_owned_value`). If such a
-                // fresh-owned producer reached codegen as a silent operand-0
-                // passthrough, the result would (a) be the wrong value AND (b)
-                // alias operand 0 — which the drop pass then DOUBLE-FREES. The gate
-                // therefore consults that classifier on every fatal so the table
-                // and the backend cannot drift: a `OwnedValue` reaching here is the
-                // forbidden drift (a fresh-value op missing its explicit LLVM arm),
-                // and the diagnostic names it as such; any other `origin`
-                // gets the general terminal message with operand/result counts.
-                // Closing a kind = add an arm to `lower_preserved_simpleir_op` (or,
-                // if `molt_<kind>` is a real boxed runtime intrinsic, the generic
-                // fallback already covers it). See the `CopyLowering` docs and
-                // `tests::copy_lowering_classes_are_total_and_disjoint`.
-                if let Some(kind) = original_kind {
-                    if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(
-                        Some(kind),
-                    ) {
-                        // Not a `OwnedValue` (a transparent-alias / inert-marker
-                        // kind whose `molt_<kind>` intrinsic is also absent): the
-                        // partner's general terminal state. Still fail loud — an
-                        // unhandled `origin` is never a sound passthrough.
-                        self.record_fatal(format!(
-                            "unhandled preserved SimpleIR op `{kind}` (operands={}, \
-                             results={}) reached the LLVM `Copy` passthrough — \
-                             lowering it as a copy of operand 0 would silently \
-                             miscompile or drop its side effect; add a \
-                             `lower_preserved_simpleir_op` arm for it (or confirm \
-                             `molt_{kind}` is a boxed runtime intrinsic so the \
-                             generic fallback claims it)",
-                            op.operands.len(),
-                            op.results.len(),
-                        ));
-                    } else {
-                        // A `CopyLowering::OwnedValue` reached the passthrough: the
-                        // exact classifier?backend drift this gate exists to catch.
-                        self.record_fatal(format!(
-                            "fresh-value SimpleIR op `{kind}` (operands={}, \
-                             results={}) reached the LLVM `Copy` passthrough — \
-                             lowering it as a copy of operand 0 would silently \
-                             miscompile AND make the result alias operand 0 (a \
-                             drop-insertion double-free); it is in \
-                             `alias_analysis::copy_kind_mints_owned_value` so it \
-                             MUST have a `lower_preserved_simpleir_op` arm (the \
-                             classifier and the LLVM lowering have drifted)",
-                            op.operands.len(),
-                            op.results.len(),
-                        ));
-                    }
-                    return;
-                }
-
-                // `origin == None`: a genuine SSA value copy
-                // (`copy`/`copy_var`/`load_var`/`store_var`). Operand-0
-                // passthrough is the correct lowering.
-                if op.results.is_empty() {
-                    // No results — nothing to bind; skip.
-                } else if op.operands.is_empty() {
-                    // Unknown op with no operands — produce None for each result.
-                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                    let none_val: BasicValueEnum<'ctx> = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(none_bits, false)
-                        .into();
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, none_val);
-                        self.values.set_repr(
-                            result_id,
-                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                        );
-                    }
-                } else {
-                    // Standard copy: pass through first operand.
-                    let val = self.resolve(op.operands[0]);
-                    let ty = self.repr_ty(op.operands[0]);
-                    for &result_id in &op.results {
-                        self.values.set_value(result_id, val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
-                    }
-                }
+                // A preserved op no arm claimed is refused; a genuine SSA copy
+                // passes operand 0 through (`FunctionCx::copy_op`).
+                self.walker_op(|cx, b| cx.copy_op(b, op));
             }
 
-            // -- Allocation --
-            OpCode::Alloc => {
-                let result_id = op.results[0];
-                let size = self.resolve(op.operands[0]);
-                let size_i64 = self.ensure_i64(size);
-                let alloc_fn = self.ensure_runtime_import(RuntimeFn::Alloc);
-                let unpublished = self
-                    .backend
-                    .builder
-                    .build_execution_call(alloc_fn, &[size_i64.into()], "alloc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let publish_fn = self.ensure_runtime_import(RuntimeFn::ObjectPublishInitialized);
-                let result = self
-                    .backend
-                    .builder
-                    .build_execution_call(publish_fn, &[unpublished.into()], "publish_initialized")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.values.set_value(result_id, result);
-                self.values.set_repr(
-                    result_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
+            OpCode::Alloc => self.walker_op(|cx, b| cx.alloc_op(b, op)),
 
             // -- Calls --
-            OpCode::CallMethod => self.emit_call_method(op),
+            OpCode::CallMethod => self.walker_op(|cx, b| cx.call_method_op(b, op)),
 
-            OpCode::LoadMethod | OpCode::LoadSuperMethod => self.emit_load_method(op),
+            OpCode::LoadMethod | OpCode::LoadSuperMethod => {
+                self.walker_op(|cx, b| cx.load_method_op(b, op))
+            }
 
             OpCode::CallLoadedMethod => self.emit_call_loaded_method(op),
 
-            OpCode::CallargsPushMethodReceiver => self.emit_callargs_push_method_receiver(op),
+            OpCode::CallargsPushMethodReceiver => {
+                self.walker_op(|cx, b| cx.push_method_receiver_op(b, op))
+            }
 
-            OpCode::CallBuiltin => self.emit_call_builtin(op),
+            OpCode::CallBuiltin => self.walker_op(|cx, b| cx.call_builtin_op(b, op)),
 
             // -- OrdAt: fused ord(container[index]) --
-            OpCode::OrdAt => {
-                if op.operands.len() < 2 {
-                    return;
-                }
-                let ord_at_fn = self.ensure_runtime_import(RuntimeFn::OrdAt);
-                let args = [
-                    RuntimeArg::Operand(op.operands[0]),
-                    RuntimeArg::Operand(op.operands[1]),
-                ];
-                self.emit_borrowed_runtime_call(
-                    op,
-                    ord_at_fn,
-                    &args,
-                    ResultCustody::canonical(RuntimeFn::OrdAt, 2),
-                    "ord_at",
-                    "ord_at",
-                );
-            }
+            OpCode::OrdAt => self.walker_op(|cx, b| cx.ord_at_op(b, op)),
 
             // Raw boxed frame allocation is not implemented. In particular,
             // a naked i64 alloca cannot stand in for a tagged object payload.
@@ -440,21 +180,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- BuildList: [item0, item1, ...] --
             // Borrow the fixed operand range for one constructor transaction.
-            OpCode::BuildList => self.emit_build_list(op),
+            OpCode::BuildList => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildDict: {k0: v0, k1: v1, ...} --
             // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => self.emit_build_dict(op),
+            OpCode::BuildDict => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildTuple: (item0, item1, ...) --
-            OpCode::BuildTuple => self.emit_build_tuple(op),
+            OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildSet: {item0, item1, ...} --
             OpCode::BuildSet => self.emit_build_set(op),
 
             // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => self.emit_build_slice(op),
+            OpCode::BuildSlice => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- GetIter: iter(obj) --
             OpCode::GetIter => self.emit_get_iter(op),
@@ -480,32 +220,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::TaskWait => self.emit_task_wait(op),
             OpCode::Yield => self.emit_yield(op),
             OpCode::YieldFrom => self.emit_yield_from(op),
-            OpCode::Raise => {
-                // `molt_raise` borrows the exception object and returns the
-                // immortal None with that exception pending.
-                let raise_fn = self.ensure_runtime_import(RuntimeFn::Raise);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    raise_fn,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Unowned,
-                    "raise",
-                    "raise",
-                );
-            }
+            OpCode::Raise => self.walker_op(|cx, b| cx.raise_op(b, op)),
 
-            // -- WarnStderr: side-effecting diagnostic emit --
-            OpCode::WarnStderr => {
-                let warn_fn = self.ensure_runtime_import(RuntimeFn::WarnStderr);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    warn_fn,
-                    &[RuntimeArg::Operand(op.operands[0])],
-                    ResultCustody::Boxed(RuntimeBoxedReturn::Void),
-                    "warn_stderr",
-                    "warn_stderr",
-                );
-            }
+            OpCode::WarnStderr => self.walker_op(|cx, b| cx.warn_stderr_op(b, op)),
 
             // -- ExceptionPending: read the runtime exception-pending flag as
             //    an exact i1 boolean (`molt_exception_pending() != 0`). Produced
@@ -555,21 +272,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    its `== 0` compare (baked literal vs live read).  Non-foldable:
             //    it observes mutable runtime state, so the read always survives.
             OpCode::FunctionDefaultsVersion => {
-                let func_id = *op
-                    .operands
-                    .first()
-                    .expect("FunctionDefaultsVersion requires a function operand");
-                let ver_fn = self.ensure_runtime_import(RuntimeFn::FunctionDefaultsVersion);
-                // Returns a NaN-boxed inline int; the consuming `== 0` compare
-                // routes through the boxed-int equality path.
-                self.emit_borrowed_runtime_call(
-                    op,
-                    ver_fn,
-                    &[RuntimeArg::Operand(func_id)],
-                    ResultCustody::canonical(RuntimeFn::FunctionDefaultsVersion, 1),
-                    "function_defaults_version",
-                    "func_defaults_version",
-                );
+                self.walker_op(|cx, b| cx.function_defaults_version_op(b, op))
             }
 
             // -- CheckException: transfer to its explicit exceptional successor --
@@ -681,7 +384,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- ModuleImportClosed: a Fixed row's import by id --
-            OpCode::ModuleImportClosed => self.emit_module_import_closed(op),
+            OpCode::ModuleImportClosed => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
@@ -723,11 +426,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
             }
             // -- Module global slot sites (call_anatomy.md 4.5) --
-            OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
-            OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
-            OpCode::StaticCellBase => self.emit_static_cell_base(op),
-            OpCode::StaticCellLoad => self.emit_static_cell_load(op),
-            OpCode::StaticCellSet => self.emit_static_cell_set(op),
+            OpCode::GlobalSlotBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::GlobalSlotGet => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellLoad => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellSet => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]

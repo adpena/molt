@@ -80,11 +80,15 @@ pub(crate) fn interpret<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact>
     }
 }
 
-/// Run `kernel` as Cranelift machine code. `fail_mint` makes the runtime's
-/// integer box fail, so the failure paths execute.
+/// Run `kernel` as Cranelift machine code. `fail_allocation` makes every
+/// runtime constructor fail, so the failure paths execute.
 #[cfg(feature = "native-backend")]
-pub(crate) fn machine<K: Kernel>(kernel: &K, inputs: &[Value], fail_mint: bool) -> Run<K::Fact> {
-    crate::native_backend::codegen_builder::machine::run(kernel, inputs, fail_mint)
+pub(crate) fn machine<K: Kernel>(
+    kernel: &K,
+    inputs: &[Value],
+    fail_allocation: bool,
+) -> Run<K::Fact> {
+    crate::native_backend::codegen_builder::machine::run(kernel, inputs, fail_allocation)
 }
 
 /// Run `kernel` on both machines, require them to agree, and return the run.
@@ -118,6 +122,15 @@ pub(crate) fn both<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact> {
         );
     }
     interpreted
+}
+
+/// Every runtime entry, as the selected runtime of a model test provides.
+pub(crate) fn every_runtime_entry() -> molt_ir::runtime_callable_symbols::RuntimeFnSet {
+    let mut set = molt_ir::runtime_callable_symbols::RuntimeFnSet::default();
+    for &function in RuntimeFn::ALL {
+        set.insert(function);
+    }
+    set
 }
 
 /// A [`Kernel`] from a body generic over the builder `B`. Captured fields are

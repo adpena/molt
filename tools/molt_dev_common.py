@@ -41,6 +41,10 @@ def _warn(msg: str) -> None:
     _say(f"    WARN: {msg}")
 
 
+# The exit code `_run_fast_captured_command` reports when its bound expires.
+COMMAND_TIMEOUT_EXIT = 124
+
+
 def _run_fast_captured_command(
     cmd: list[str],
     *,
@@ -82,7 +86,7 @@ def _run_fast_captured_command(
             stderr = f"{stderr.rstrip()}\n{timeout_msg}\n"
         else:
             stderr = f"{timeout_msg}\n"
-        return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+        return subprocess.CompletedProcess(cmd, COMMAND_TIMEOUT_EXIT, stdout, stderr)
 
 
 def _run_fast_captured_bytes(

@@ -15,7 +15,7 @@ use super::refcount::{INLINE_REFCOUNT_SITES_PER_FUNCTION, LlvmRefcountSite};
 use super::{LlvmBranchWords, LlvmWords, llvm_choose};
 use crate::codegen_ssa::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 use crate::llvm_backend::LlvmBackend;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
@@ -27,6 +27,8 @@ pub(in crate::llvm_backend) type BlockParams<'ctx> =
 /// Per-function instruction-selection state: what one LLVM function reads
 /// once and reuses, and how many reference-count sites it holds.
 pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
+    /// The invocation's thread record, loaded in the true entry.
+    thread_record: Cell<Option<PointerValue<'ctx>>>,
     /// The refcount admission word, read once in the entry.
     refcount_admission: Cell<Option<IntValue<'ctx>>>,
     /// Refcount sites emitted in this function
@@ -41,6 +43,7 @@ pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
 impl LlvmFunctionState<'_> {
     pub(in crate::llvm_backend) fn new(inline_fast_paths: bool) -> Self {
         Self {
+            thread_record: Cell::new(None),
             refcount_admission: Cell::new(None),
             refcount_sites: Cell::new(0),
             inline_fast_paths,
@@ -60,6 +63,23 @@ pub(in crate::llvm_backend) struct LlvmCodegen<'a, 'ctx> {
     pub(in crate::llvm_backend) state: &'a LlvmFunctionState<'ctx>,
 }
 
+/// A fresh builder in the target function's true entry, even before body
+/// lowering positions the module's instruction builder.
+pub(super) fn entry_builder<'ctx>(
+    context: &'ctx inkwell::context::Context,
+    function: FunctionValue<'ctx>,
+) -> inkwell::builder::Builder<'ctx> {
+    let builder = context.create_builder();
+    let entry = function
+        .get_first_basic_block()
+        .expect("llvm function missing entry block");
+    match entry.get_first_instruction() {
+        Some(first) => builder.position_before(&first),
+        None => builder.position_at_end(entry),
+    }
+    builder
+}
+
 impl<'ctx> LlvmCodegen<'_, 'ctx> {
     /// The function the builder is positioned in.
     fn function(&self) -> FunctionValue<'ctx> {
@@ -73,18 +93,27 @@ impl<'ctx> LlvmCodegen<'_, 'ctx> {
     /// A builder positioned before the first instruction of the current
     /// function's entry block.
     pub(in crate::llvm_backend) fn entry_builder(&self) -> inkwell::builder::Builder<'ctx> {
-        let builder = self.words.context.create_builder();
-        let entry = self
-            .function()
-            .get_first_basic_block()
-            .expect("llvm function missing entry block");
-        match entry.get_first_instruction() {
-            Some(first) => builder.position_before(&first),
-            None => builder.position_at_end(entry),
-        }
-        builder
+        entry_builder(self.words.context, self.function())
     }
 
+    pub(super) fn thread_record(&self) -> PointerValue<'ctx> {
+        if let Some(record) = self.state.thread_record.get() {
+            return record;
+        }
+        let builder = self.entry_builder();
+        let context = self.words.context;
+        let token = self.function().get_first_param().unwrap().into_int_value();
+        let bits = super::refcount::thread_record_bits(&builder, context, token);
+        let record = builder
+            .build_int_to_ptr(
+                bits,
+                context.ptr_type(inkwell::AddressSpace::default()),
+                "thread_record_ptr",
+            )
+            .unwrap();
+        self.state.thread_record.set(Some(record));
+        record
+    }
     /// One refcount site of this function: the admission word, read once in
     /// the entry, and the inline transition, or its one out-of-line copy once
     /// the function holds `INLINE_REFCOUNT_SITES_PER_FUNCTION` sites.
@@ -243,6 +272,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             )
             .unwrap()
     }
+    fn word_to_address(&mut self, word: IntValue<'ctx>) -> Self::Value {
+        self.words
+            .builder
+            .build_int_to_ptr(
+                word,
+                self.words
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default()),
+                "i2ptr",
+            )
+            .unwrap()
+            .into()
+    }
 
     fn int_binary(
         &mut self,
@@ -263,6 +305,9 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             (IntBinary::Or, _) => builder.build_or(left, right, "bor"),
             (IntBinary::Xor, _) => builder.build_xor(left, right, "bxor"),
             (IntBinary::ShiftLeft, _) => builder.build_left_shift(left, right, "shl"),
+            (IntBinary::ShiftRightLogical, _) => {
+                builder.build_right_shift(left, right, false, "lshr")
+            }
             (IntBinary::ShiftRightArithmetic, _) => {
                 builder.build_right_shift(left, right, true, "shr")
             }
@@ -300,6 +345,18 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap();
         let overflow = builder.build_extract_value(pair, 1, "overflow").unwrap();
         (value.into_int_value(), overflow.into_int_value())
+    }
+    fn is_zero(&mut self, value: Self::Value) -> IntValue<'ctx> {
+        let value = value.into_int_value();
+        self.words
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                value,
+                value.get_type().const_zero(),
+                "is_zero",
+            )
+            .unwrap()
     }
     fn int_to_float(&mut self, word: IntValue<'ctx>) -> Self::Value {
         self.words
@@ -420,6 +477,32 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .get(self.words.context, &self.backend.module, function)
     }
 
+    /// The module's declaration of the compiled function, from the backend's
+    /// own copy of the row (`linked_compiled_function`).
+    fn function_callee(
+        &mut self,
+        symbol: &str,
+        abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+    ) -> FunctionValue<'ctx> {
+        debug_assert_eq!(
+            self.backend.function_linkage_abis.get(symbol),
+            Some(abi),
+            "`{symbol}` is declared by its program row"
+        );
+        crate::llvm_backend::lowering::linked_compiled_function(self.backend, symbol)
+    }
+
+    fn function_address(&mut self, callee: FunctionValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_ptr_to_int(
+                callee.as_global_value().as_pointer_value(),
+                self.words.context.i64_type(),
+                "target_code",
+            )
+            .unwrap()
+    }
+
     fn call(
         &mut self,
         callee: FunctionValue<'ctx>,
@@ -433,6 +516,41 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap()
             .try_as_basic_value()
             .basic()
+    }
+
+    fn thread_record_word(&mut self) -> Self::Word {
+        let record = self.thread_record();
+        self.words
+            .builder
+            .build_ptr_to_int(record, self.words.context.i64_type(), "thread_record_word")
+            .unwrap()
+    }
+    fn load_byte(&mut self, address: IntValue<'ctx>, offset: i32) -> Self::Value {
+        let pointer = self.words.address(address, offset);
+        self.words
+            .builder
+            .build_load(self.words.context.i8_type(), pointer, "record_byte")
+            .unwrap()
+    }
+    fn call_cold(
+        &mut self,
+        callee: FunctionValue<'ctx>,
+        args: &[Self::Value],
+    ) -> Option<Self::Value> {
+        let args: Vec<_> = args.iter().copied().map(Into::into).collect();
+        let call = self
+            .words
+            .builder
+            .build_execution_call(callee, &args, "cold_call")
+            .unwrap();
+        call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.words.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        call.try_as_basic_value().basic()
     }
 
     fn create_block(&mut self, name: &str) -> BasicBlock<'ctx> {
@@ -492,6 +610,27 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.words.builder.build_store(element, word).unwrap();
     }
 
+    fn load_slot_at(&mut self, slot: PointerValue<'ctx>, index: u32) -> IntValue<'ctx> {
+        let i64_ty = self.words.context.i64_type();
+        // SAFETY: the walker loads only inside the array it allocated.
+        let element = unsafe {
+            self.words
+                .builder
+                .build_gep(
+                    i64_ty,
+                    slot,
+                    &[i64_ty.const_int(u64::from(index), false)],
+                    &format!("{}_{index}", slot.get_name().to_string_lossy()),
+                )
+                .unwrap()
+        };
+        self.words
+            .builder
+            .build_load(i64_ty, element, "slot_word")
+            .unwrap()
+            .into_int_value()
+    }
+
     fn slot_pointer(&mut self, slot: PointerValue<'ctx>) -> Self::Value {
         slot.into()
     }
@@ -519,6 +658,40 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         global.as_pointer_value().into()
     }
 
+    fn site_record(&mut self, symbol: &str, image: &[u8]) -> Self::Value {
+        self.backend
+            .site_record(symbol, image)
+            .as_pointer_value()
+            .into()
+    }
+
+    fn static_cell_block(&mut self, module: &str) -> Self::Value {
+        self.backend
+            .static_cell_block(module)
+            .as_pointer_value()
+            .into()
+    }
+
+    fn load_word(&mut self, address: Self::Value, offset: i32) -> IntValue<'ctx> {
+        let context = self.words.context;
+        let builder = self.words.builder;
+        // SAFETY: the walker loads only inside the object it names.
+        let pointer = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    context.i8_type(),
+                    address.into_pointer_value(),
+                    &[context.i64_type().const_int(offset as u64, false)],
+                    "word_address",
+                )
+                .unwrap()
+        };
+        builder
+            .build_load(context.i64_type(), pointer, "word")
+            .unwrap()
+            .into_int_value()
+    }
+
     fn program_slot(
         &mut self,
         kind: molt_ir::code_slots::ProgramSlotKind,
@@ -542,6 +715,40 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
 
     fn refcount(&mut self, site: LlvmRefcountSite<'ctx>, word: IntValue<'ctx>) {
         site.emit(self.words.builder, word.into());
+    }
+
+    /// The admission a retain site reads; it counts as one of the
+    /// function's refcount sites, as each site body's retains do.
+    fn refcount_admission(&mut self) -> IntValue<'ctx> {
+        self.llvm_refcount_site(RefcountOperation::Retain).admission
+    }
+
+    /// One always-inlined internal body per site body (`site_helper`), so
+    /// the body's blocks never split the caller's block.
+    fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value {
+        let helper = match body {
+            SiteBody::FieldGet { offset } => self.backend.field_slot_get_helper(offset),
+            SiteBody::FieldSet { offset } => self.backend.field_slot_set_helper(offset),
+            SiteBody::ItemGet { containers, cold } => {
+                self.backend.list_item_get_helper(containers, cold)
+            }
+            SiteBody::ListItemSet => self.backend.list_item_set_helper(),
+            SiteBody::GlobalSlotRead { index } => self.backend.global_slot_read_helper(index),
+            SiteBody::ModuleImportClosed => self.backend.module_import_closed_helper(),
+            SiteBody::MethodSiteLoad => self.backend.method_site_load_helper(),
+            SiteBody::StaticCellStore { index } => {
+                // The store body returns nothing; its answer is None.
+                let helper = self.backend.static_cell_store_helper(index);
+                self.call(helper, args);
+                return self
+                    .words
+                    .context
+                    .i64_type()
+                    .const_int(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE, false)
+                    .into();
+            }
+        };
+        self.call(helper, args).expect("a site body answers a word")
     }
 
     fn placeholder(&mut self, kind: MachineKind) -> Self::Value {

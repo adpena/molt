@@ -5,7 +5,6 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use inkwell::values::BasicValue;
 use molt_codegen_abi::task_site::TaskConstructorLayout;
-use std::collections::BTreeMap;
 
 /// A runtime-call argument on LLVM: the walker's, over LLVM values.
 pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
@@ -26,16 +25,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         assert!(self.owned_frame_entered.is_none());
-        let builder = self.backend.context.create_builder();
-        let entry = self
-            .llvm_fn
-            .get_first_basic_block()
-            .expect("function entry");
-        if let Some(first) = entry.get_first_instruction() {
-            builder.position_before(&first);
-        } else {
-            builder.position_at_end(entry);
-        }
+        let builder = super::codegen_builder::entry_builder(self.backend.context, self.llvm_fn);
         let slot = builder
             .build_alloca(self.backend.context.i64_type(), "owned_frame_base")
             .unwrap();
@@ -93,13 +83,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         owner: &str,
     ) -> inkwell::values::IntValue<'ctx> {
         self.codegen().program_slot(kind, owner)
-    }
-
-    pub(super) fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
-        self.backend
-            .context
-            .i64_type()
-            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
     }
 
     /// What the walker's custody reads from this function.
@@ -194,56 +177,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
     }
 
-    /// Eager custody for a consumer that needs every operand word up front:
-    /// fixed constructors and positional runtime calls. Operands are requested
-    /// in order; `construct` receives one word per position and the name its
-    /// value should carry.
-    pub(super) fn with_borrowed_boxed_operands(
-        &mut self,
-        operands: &[ValueId],
-        label: &str,
-        construct: impl FnOnce(
-            &mut Self,
-            &[inkwell::values::IntValue<'ctx>],
-            &str,
-        ) -> inkwell::values::IntValue<'ctx>,
-    ) -> BasicValueEnum<'ctx> {
-        let mut custody = self.begin_borrowed_operands(operands, label);
-        let mut words = Vec::with_capacity(operands.len());
-        for &operand in operands {
-            words.push(self.borrowed_operand(&mut custody, operand));
-        }
-        let name = if custody.can_fail() {
-            format!("{label}_constructed")
-        } else {
-            format!("{label}_result")
-        };
-        let constructed = construct(&mut *self, words.as_slice(), name.as_str());
-        self.finish_borrowed_operands(custody, constructed, &format!("{label}_result"), |_| {})
-            .into()
-    }
-
-    /// One runtime call whose object arguments are borrowed operands of the
-    /// lowered operation (`Operands::call`). With `retain_result`, a borrowed
-    /// word the caller keeps acquires its own reference.
-    pub(super) fn borrowed_runtime_call_value(
-        &mut self,
-        callee: FunctionValue<'ctx>,
-        args: &[RuntimeArg<'ctx>],
-        retain_result: bool,
-        label: &str,
-        call_name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands().call(
-            &mut self.codegen(),
-            callee,
-            args,
-            retain_result,
-            label,
-            call_name,
-        )
-    }
-
     /// Emit a borrowed runtime call and bind or retire its word by `custody`.
     pub(super) fn emit_borrowed_runtime_call(
         &mut self,
@@ -255,6 +188,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         call_name: &str,
     ) {
         let (mut cx, mut b) = self.walker();
+        let callee = crate::codegen_ssa::custody::CallTarget::Callee(callee);
         cx.runtime_call(&mut b, op, callee, args, custody, label, call_name);
     }
 
@@ -299,16 +233,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
         }
-    }
-
-    /// A +1 owned word for a value the consumer stores or returns rather than
-    /// borrows (`Operands::owned_word`).
-    pub(super) fn owned_operand_word(
-        &mut self,
-        operand: ValueId,
-        _retain_name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands().owned_word(&mut self.codegen(), operand)
     }
 
     /// Transfer one source reference into a storage home, without retaining an
@@ -360,19 +284,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         custody::spill_words(&mut self.codegen(), words, name)
     }
 
-    /// The boxed word of a compile-time integer inside the inline payload window
-    /// (IC site ids and similar); it owns nothing and can never fail.
-    pub(super) fn inline_int_constant(&self, value: i64) -> inkwell::values::IntValue<'ctx> {
-        assert!(
-            (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&value),
-            "compile-time integer word {value} does not fit the inline payload"
-        );
-        self.backend
-            .context
-            .i64_type()
-            .const_int(nanbox::box_int_bits(value) as u64, false)
-    }
-
     // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
@@ -420,8 +331,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             plan: &self.repr_facts,
             values: &mut self.values,
             diagnostics: &self.diagnostics,
+            runtime: &self.backend.runtime_callable_symbols,
+            linkage: &self.backend.function_linkage_abis,
+            functions: &self.backend.function_table,
+            call_sites: &self.call_site_counter,
         };
         (cx, codegen)
+    }
+
+    /// Run one walker family method on this function's walker context.
+    pub(super) fn walker_op(
+        &mut self,
+        lower: impl for<'a> FnOnce(
+            &mut crate::codegen_ssa::function::FunctionCx<'_, LlvmCodegen<'a, 'ctx>>,
+            &mut LlvmCodegen<'a, 'ctx>,
+        ),
+    ) {
+        let (mut cx, mut b) = self.walker();
+        lower(&mut cx, &mut b);
     }
 
     /// `IncRef`/`DecRef` (`FunctionCx::refcount_op`).
@@ -585,36 +512,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 default,
                 default_args,
             } => {
-                // Generator/coroutine `_poll` dispatch. The runtime restores
-                // the saved resume state across the suspend boundary, so the
-                // dispatch reads it from the frame header (no SSA value):
-                // `molt_obj_get_state(self)`. State 0 (initial entry) takes
-                // the `default` edge; every saved resume state takes the
-                // matching suspend op's resume continuation, whose block
-                // parameters the edge's arguments fill.
-                let self_bits = self.poll_frame_address();
-                let get_state_fn = self.ensure_runtime_import(RuntimeFn::ObjGetState);
-                let state_val = self
-                    .backend
-                    .builder
-                    .build_execution_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
+                let frame = self.poll_frame_address();
                 let mut diagnostics = Vec::new();
-                {
-                    let mut codegen = self.codegen();
-                    self.edges().switch(
-                        &mut codegen,
-                        source_block,
-                        state_val,
-                        cases,
-                        (*default, default_args),
-                        "state-dispatch",
-                        &mut diagnostics,
-                    );
-                }
+                self.edges().dispatch_state(
+                    &mut self.codegen(),
+                    source_block,
+                    frame,
+                    cases,
+                    (*default, default_args),
+                    &mut diagnostics,
+                );
                 self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
@@ -655,19 +562,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Helpers ──
 
-    /// The truth of `operand` as an i1: one spelling for a `Bool` op and a
-    /// conditional branch. A raw bool, int or float is tested inline; a boxed
-    /// word reaches here only where the late lowering stage could not expand
-    /// it (its shared truthiness expansion tests bool and int words inline).
-    pub(super) fn truth_bit(&mut self, operand_id: ValueId) -> inkwell::values::IntValue<'ctx> {
-        let operand = self.resolve(operand_id);
-        let carrier = self
-            .values
-            .repr(operand_id)
-            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed);
-        crate::codegen_ssa::scalar::truth(&mut self.codegen(), operand, carrier)
-    }
-
     /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
     /// it is held raw, `DynBox` when it is a boxed word. It names a
     /// representation for lowering helpers, never a proven Python type; that
@@ -707,19 +601,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// in the actual LLVM entry, including a CFG trampoline. The execution
     /// lease keeps the record alive for the invocation.
     pub(super) fn thread_record(&mut self) -> inkwell::values::PointerValue<'ctx> {
-        if let Some(record) = self.thread_record {
-            return record;
-        }
-        let builder = self.codegen().entry_builder();
-        let context = self.backend.context;
-        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
-        let token = self.llvm_fn.get_first_param().unwrap().into_int_value();
-        let bits = super::refcount::thread_record_bits(&builder, context, token);
-        let record = builder
-            .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
-            .unwrap();
-        self.thread_record = Some(record);
-        record
+        self.codegen().thread_record()
     }
 
     /// The pending-work word the thread record lends, loaded once in the
@@ -904,87 +786,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let pending_fn = self.ensure_runtime_import(RuntimeFn::ExceptionPending);
-        let record = self.thread_record();
-        let context = self.backend.context;
-        let byte_ptr = unsafe {
-            self.backend
-                .builder
-                .build_gep(
-                    context.i8_type(),
-                    record,
-                    &[context.i64_type().const_int(
-                        molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as u64,
-                        false,
-                    )],
-                    &format!("{name}_byte_ptr"),
-                )
-                .unwrap()
-        };
-        let byte = self
-            .backend
-            .builder
-            .build_load(context.i8_type(), byte_ptr, &format!("{name}_byte"))
-            .unwrap()
-            .into_int_value();
-        let set = self
-            .backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                byte,
-                context.i8_type().const_zero(),
-                &format!("{name}_byte_set"),
-            )
-            .unwrap();
-        let confirm = context.append_basic_block(self.llvm_fn, "exception_pending_confirm");
-        let join = context.append_basic_block(self.llvm_fn, "exception_pending_join");
-        let from = self.backend.builder.get_insert_block().unwrap();
-        self.backend
-            .builder
-            .build_conditional_branch(set, confirm, join)
-            .unwrap();
-        self.backend.builder.position_at_end(confirm);
-        let confirm_call = self
-            .backend
-            .builder
-            .build_execution_call(pending_fn, &[], name)
-            .unwrap();
-        confirm_call.add_attribute(
-            inkwell::attributes::AttributeLoc::Function,
-            context.create_enum_attribute(
-                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
-                0,
-            ),
-        );
-        let confirmed = confirm_call
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-        let confirm_exit = self.backend.builder.get_insert_block().unwrap();
-        self.backend
-            .builder
-            .build_unconditional_branch(join)
-            .unwrap();
-        self.backend.builder.position_at_end(join);
-        let pending = self
-            .backend
-            .builder
-            .build_phi(context.i64_type(), &format!("{name}_word"))
-            .unwrap();
-        pending.add_incoming(&[
-            (&confirmed, confirm_exit),
-            (&context.i64_type().const_zero(), from),
-        ]);
-        pending.as_basic_value().into_int_value()
+        let thread = self.thread_record_word();
+        let mut b = self.codegen();
+        let result = crate::codegen_ssa::pending::exception_pending_word(&mut b, thread);
+        b.set_name(result.into(), &format!("{name}_word"));
+        result
     }
 
     /// The module's declaration of runtime entry `function` (HF-821): its
     /// linker symbol, type and attributes come from the generated record.
     pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
-        self.backend
-            .runtime_imports
-            .get(self.backend.context, &self.backend.module, function)
+        self.backend.runtime_import(function)
     }
 
     pub(super) fn unbox_ptr_bits(
@@ -1016,57 +828,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         payload_operands: &[ValueId],
         call_name: &str,
     ) -> BasicValueEnum<'ctx> {
-        use molt_codegen_abi::task_site::PayloadCustody;
-        layout.validate_closure_size(
-            closure_size,
-            payload_operands.len(),
-            false,
-            crate::GENERATOR_CONTROL_BYTES,
-        );
-        // A value repeated in the payload keeps one identity (`SameAs` its first
-        // slot). A full-range raw int is boxed by the task once it exists, so a
-        // failed allocation mints nothing; any other scalar boxes by identity.
-        let mut first_slot: BTreeMap<ValueId, usize> = BTreeMap::new();
-        let mut payload: Vec<(inkwell::values::IntValue<'ctx>, PayloadCustody)> =
-            Vec::with_capacity(payload_operands.len());
-        for (slot, &operand) in payload_operands.iter().enumerate() {
-            if let Some(&first) = first_slot.get(&operand) {
-                payload.push((payload[first].0, PayloadCustody::SameAs(first)));
-                continue;
-            }
-            first_slot.insert(operand, slot);
-            let ty = self.repr_ty(operand);
-            if ty == TirType::I64 && !self.repr_facts.is_inline_safe_int(operand) {
-                let raw = self.ensure_i64(self.resolve(operand));
-                payload.push((raw, PayloadCustody::RawInt));
-                continue;
-            }
-            let word = self.materialize_dynbox_bits(operand);
-            let custody = if Self::tir_type_is_dynbox_like(&ty)
-                && !self.repr_facts.boxed_refcount_is_noop(operand)
-            {
-                PayloadCustody::Borrowed
-            } else {
-                PayloadCustody::Unowned
-            };
-            payload.push((word, custody));
-        }
-        let (source, context) = match function {
-            Some(function) => (
-                super::task_site::TaskContextSource::Function,
-                Some(self.materialize_dynbox_bits(function)),
-            ),
-            None => (super::task_site::TaskContextSource::NoFrame, None),
-        };
-        self.emit_task_construction(
-            layout,
-            poll_addr,
-            frame_bytes,
-            source,
-            context,
-            molt_codegen_abi::task_site::TaskPayload::Words(&payload),
-            call_name,
-        )
-        .into()
+        use crate::codegen_ssa::task::TaskPlacement;
+        let (cx, mut b) = self.walker();
+        let args = cx.task_operands(&mut b, layout, closure_size, function, payload_operands);
+        b.place_task(layout, poll_addr, frame_bytes, args, call_name)
+            .into()
     }
 }

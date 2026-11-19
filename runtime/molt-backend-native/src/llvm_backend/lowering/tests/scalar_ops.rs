@@ -1,7 +1,5 @@
 use super::*;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-#[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
@@ -539,24 +537,24 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
     );
     let entry = ctx.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(entry);
-    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let lowering = make_dummy_lowering(&backend, &func, llvm_fn);
     let mut results = Vec::new();
     for _ in 0..2 {
-        results.push(lowering.with_owned_name("same_name", |this, name_bits| {
-            let import = this.ensure_runtime_import(RuntimeFn::ModuleImport);
-            this.backend
-                .builder
-                .build_execution_call(import, &[name_bits.into()], "name_consumer")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-        }));
+        let mut b = lowering.codegen();
+        results.push(crate::codegen_ssa::object::with_owned_name(
+            &mut b,
+            "same_name",
+            |b, name| {
+                b.call_runtime(RuntimeFn::ModuleImport, &[name])
+                    .expect("an import answers a word")
+            },
+        ));
     }
     let [first, second] = results.as_slice() else {
         unreachable!()
     };
     assert_ne!(first, second);
-    let result = lowering.ensure_i64(*second);
+    let result = *second;
     backend.builder.build_return(Some(&result)).unwrap();
     backend
         .module
@@ -672,20 +670,20 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             llvm_fn
                 .get_basic_blocks()
                 .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_success0")
+                .find(|block| block.get_name().to_bytes() == b"owned_name_success")
                 .unwrap(),
         );
         let merge = block_text(
             llvm_fn
                 .get_basic_blocks()
                 .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_merge0")
+                .find(|block| block.get_name().to_bytes() == b"owned_name_merge")
                 .unwrap(),
         );
         assert!(source.contains_execution("icmp eq i32 %sfb, 0"), "{ir}");
         assert!(
             source.contains_execution(
-                "br i1 %owned_name_ok, label %owned_name_success0, label %owned_name_merge0"
+                "br i1 %owned_name_ok, label %owned_name_success, label %owned_name_merge"
             ),
             "{ir}"
         );
@@ -733,7 +731,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         let confirm = named("exception_pending_confirm");
         let join = named("exception_pending_join");
         assert!(
-            merge.contains_execution("load i8, ptr %check_exc_byte_ptr"),
+            merge.contains_execution("load i8, ptr %record_word"),
             "{ir}"
         );
         assert!(!merge.contains_execution("@molt_exception_pending"), "{ir}");

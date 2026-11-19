@@ -16,7 +16,7 @@ use target_lexicon::Architecture;
 use super::*;
 use crate::codegen_ssa::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 
 /// The trap a path that never executes ends with.
@@ -40,6 +40,15 @@ impl<'b> NativeCodegen<'_, 'b> {
         self.words.builder.ins()
     }
 
+    fn frame_sites(&mut self) -> NativeFrameSites {
+        NativeFrameSites {
+            retain: self.refcount_site(RefcountOperation::Retain),
+            release: self.refcount_site(RefcountOperation::Release),
+            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
+        }
+    }
+
     fn value_type(&self, value: Value) -> types::Type {
         self.words.builder.func.dfg.value_type(value)
     }
@@ -55,6 +64,20 @@ impl<'b> NativeCodegen<'_, 'b> {
 
     fn block_args(args: &[Value]) -> Vec<BlockArg> {
         args.iter().map(|&arg| BlockArg::Value(arg)).collect()
+    }
+
+    /// The address of the writable data object `symbol` another object of
+    /// the program defines.
+    fn data_address(&mut self, symbol: &str) -> Value {
+        let data = self
+            .module
+            .declare_data(symbol, Linkage::Import, true, false)
+            .unwrap_or_else(|error| panic!("import {symbol}: {error}"));
+        let local = self
+            .module
+            .declare_data_in_func(data, self.words.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().symbol_value(pointer, local)
     }
 
     /// Whether the target lowers Cranelift's overflow-flag instructions
@@ -158,6 +181,9 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     fn address_to_word(&mut self, value: Value) -> Value {
         value
     }
+    fn word_to_address(&mut self, word: Value) -> Value {
+        word
+    }
 
     fn int_binary(&mut self, op: IntBinary, left: Value, right: Value, _exact: bool) -> Value {
         let ins = self.ins();
@@ -170,6 +196,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             IntBinary::Xor => ins.bxor(left, right),
             IntBinary::ShiftLeft => ins.ishl(left, right),
             IntBinary::ShiftRightArithmetic => ins.sshr(left, right),
+            IntBinary::ShiftRightLogical => ins.ushr(left, right),
             IntBinary::SignedQuotient => ins.sdiv(left, right),
             IntBinary::SignedRemainder => ins.srem(left, right),
         }
@@ -193,6 +220,9 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             CheckedBinary::Add => self.ins().sadd_overflow(left, right),
             CheckedBinary::Mul => self.ins().smul_overflow(left, right),
         }
+    }
+    fn is_zero(&mut self, value: Value) -> Value {
+        self.ins().icmp_imm_s(IntCC::Equal, value, 0)
     }
     fn int_to_float(&mut self, word: Value) -> Value {
         self.ins().fcvt_from_sint(types::F64, word)
@@ -266,11 +296,57 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             function,
         )
     }
+    /// Imported by its attached execution symbol: the module merges the
+    /// declaration with the body's definition when the body is in it.
+    fn function_callee(
+        &mut self,
+        symbol: &str,
+        abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+    ) -> FuncRef {
+        let machine = |ty: &crate::tir::types::TirType| {
+            Self::machine_type(crate::codegen_ssa::control::carrier_kind(
+                crate::codegen_ssa::HeldCarrier::of(ty),
+            ))
+        };
+        let mut signature = self.module.make_signature();
+        for ty in &abi.param_types {
+            signature.params.push(AbiParam::new(machine(ty)));
+        }
+        if let Some(ty) = &abi.return_type {
+            signature.returns.push(AbiParam::new(machine(ty)));
+        }
+        let id =
+            declare_compiled_execution_function(self.module, symbol, Linkage::Import, &signature)
+                .unwrap_or_else(|error| panic!("declare compiled function `{symbol}`: {error}"));
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
+    }
+    fn function_address(&mut self, callee: FuncRef) -> Value {
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().func_addr(pointer, callee)
+    }
     /// An attached callee takes the logical arguments here; the function's
     /// finalization prepends the execution context (`complete_attached_calls`).
     fn call(&mut self, callee: FuncRef, args: &[Value]) -> Option<Value> {
         let call = self.ins().call(callee, args);
         self.words.builder.inst_results(call).first().copied()
+    }
+
+    fn thread_record_word(&mut self) -> Value {
+        self.imports.thread_record(self.words.builder)
+    }
+    fn load_byte(&mut self, address: Value, offset: i32) -> Value {
+        self.ins()
+            .load(types::I8, MemFlagsData::trusted(), address, offset)
+    }
+    fn call_cold(&mut self, callee: FuncRef, args: &[Value]) -> Option<Value> {
+        let block = self
+            .words
+            .builder
+            .current_block()
+            .expect("cold call has a block");
+        self.words.builder.set_cold_block(block);
+        self.call(callee, args)
     }
 
     fn create_block(&mut self, _name: &str) -> Block {
@@ -302,6 +378,11 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_store(pointer, word, slot, offset);
     }
+    fn load_slot_at(&mut self, slot: StackSlot, index: u32) -> Value {
+        let offset = i32::try_from(8 * index).expect("an entry array fits a frame");
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().stack_load(pointer, types::I64, slot, offset)
+    }
     fn slot_pointer(&mut self, slot: StackSlot) -> Value {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_addr(pointer, slot, 0)
@@ -327,6 +408,31 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let pointer = self.module.target_config().pointer_type();
         self.ins().symbol_value(pointer, local)
     }
+    fn site_record(&mut self, symbol: &str, image: &[u8]) -> Value {
+        let data = self
+            .module
+            .declare_data(symbol, Linkage::Local, true, false)
+            .unwrap_or_else(|error| panic!("site record `{symbol}`: {error}"));
+        let mut description = DataDescription::new();
+        description.set_align(8);
+        description.define(image.to_vec().into_boxed_slice());
+        match self.module.define_data(data, &description) {
+            Ok(()) | Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
+            Err(error) => panic!("site record `{symbol}`: {error}"),
+        }
+        let local = self
+            .module
+            .declare_data_in_func(data, self.words.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().symbol_value(pointer, local)
+    }
+    fn static_cell_block(&mut self, module: &str) -> Value {
+        self.data_address(&molt_ir::code_slots::static_cell_block_symbol(module))
+    }
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.ins()
+            .load(types::I64, MemFlagsData::trusted(), address, offset)
+    }
     fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
     }
@@ -340,6 +446,114 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn refcount(&mut self, site: NativeRefcountSite, word: Value) {
         emit_refcount(self.words.builder, word, site);
+    }
+    fn refcount_admission(&mut self) -> Value {
+        self.refcount_site(RefcountOperation::Retain).admission
+    }
+
+    /// Inline in the caller: Cranelift blocks may split anywhere, so a site
+    /// body needs no out-of-line copy. Its sites carry the admission, which
+    /// is the trailing word.
+    fn site(&mut self, body: SiteBody, args: &[Value]) -> Value {
+        let sites = self.frame_sites();
+        let mut sealed = BTreeSet::new();
+        match (body, args) {
+            (SiteBody::FieldGet { offset }, &[object, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ObjectFieldGetPtr);
+                emit_field_slot_get(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    object,
+                    offset,
+                    |builder, pointer| {
+                        let offset = builder.ins().iconst(types::I64, i64::from(offset));
+                        let call = builder.ins().call(cold, &[pointer, offset]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::FieldSet { offset }, &[object, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ObjectFieldSetPtr);
+                emit_field_slot_set(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    object,
+                    offset,
+                    value,
+                    |builder, pointer| {
+                        let offset = builder.ins().iconst(types::I64, i64::from(offset));
+                        builder.ins().call(cold, &[pointer, offset, value]);
+                    },
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::ItemGet { containers, cold }, &[sequence, index, _]) => {
+                let cold = self.runtime_callee(cold);
+                emit_list_item_get(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    sequence,
+                    index,
+                    containers,
+                    |builder| {
+                        let call = builder.ins().call(cold, &[sequence, index]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::ListItemSet, &[list, index, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::SetitemMethod);
+                let none = self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);
+                emit_list_item_set(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    list,
+                    index,
+                    value,
+                    none,
+                    |builder| {
+                        let call = builder.ins().call(cold, &[list, index, value]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::GlobalSlotRead { index }, &[base, module, name, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ModuleGetGlobal);
+                emit_global_slot_read(
+                    self.words.builder,
+                    base,
+                    index,
+                    sites.retain,
+                    cold,
+                    &[module, name],
+                )
+            }
+            (SiteBody::StaticCellStore { index }, &[base, value, _]) => {
+                emit_static_cell_store(
+                    self.words.builder,
+                    base,
+                    index,
+                    value,
+                    sites.retain,
+                    sites.release,
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::ModuleImportClosed, &[id, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ModuleEnsure);
+                let block = self.data_address(molt_ir::MODULE_READY_SYMBOL);
+                emit_module_import_closed(self.words.builder, block, id, sites.retain, cold)
+            }
+            (SiteBody::MethodSiteLoad, &[record, receiver, self_out, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::MethodSiteLoad);
+                emit_method_site_load(self.words.builder, sites, record, receiver, self_out, cold)
+            }
+            (body, args) => panic!("{body:?} takes other words than {}", args.len()),
+        }
     }
 
     fn placeholder(&mut self, kind: MachineKind) -> Value {
@@ -402,107 +616,49 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
 }
 
+impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn place_task(
+        &mut self,
+        layout: molt_codegen_abi::task_site::TaskConstructorLayout,
+        poll: Value,
+        frame_bytes: Value,
+        operands: crate::codegen_ssa::task::TaskOperands<Value>,
+        _name: &str,
+    ) -> Value {
+        let frames = self.frame_sites();
+        let tasks = NativeTaskSites::with_imports(|entry| self.runtime_callee(entry));
+        emit_task_construction(
+            self.words.builder,
+            &mut BTreeSet::new(),
+            frames,
+            tasks,
+            layout,
+            poll,
+            frame_bytes,
+            operands.context,
+            molt_codegen_abi::task_site::TaskPayload::Words(&operands.words),
+        )
+    }
+}
+
 /// Walker kernels as Cranelift machine code (`codegen_ssa::differential`):
 /// each kernel is built through [`NativeCodegen`] into one function, which
 /// the JIT compiles and the test calls. The runtime entries the walker calls
 /// are stubs over the model tests' runtime model.
 #[cfg(test)]
 pub(crate) mod machine {
-    use std::cell::RefCell;
-
     use cranelift_jit::{JITBuilder, JITModule};
     use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
 
     use super::*;
     use crate::codegen_ssa::differential::{Kernel, Run};
-    use crate::codegen_ssa::scalar::tests::{Memory, RuntimeModel, Value, program_slot_word};
+    use crate::codegen_ssa::runtime_stubs;
+    use crate::codegen_ssa::scalar::tests::Value;
 
     // Inputs and results travel as 64-bit words; a narrower value is read
     // from and written to the word's low bytes.
     const _: () = assert!(cfg!(target_endian = "little"));
 
-    /// What the stubs saw while the kernel ran on this thread.
-    #[derive(Default)]
-    struct Stubs {
-        model: RuntimeModel,
-        calls: Vec<RuntimeFn>,
-        refcounts: Vec<(RefcountOperation, u64)>,
-    }
-
-    thread_local! {
-        static STUBS: RefCell<Stubs> = RefCell::default();
-    }
-
-    /// The process memory the kernel's pointer arguments name.
-    struct ProcessMemory;
-
-    impl Memory for ProcessMemory {
-        fn bytes(&self, address: u64, len: usize) -> Vec<u8> {
-            // SAFETY: the kernel passed `len` readable bytes at `address`.
-            unsafe { std::slice::from_raw_parts(address as *const u8, len) }.to_vec()
-        }
-        fn word(&self, address: u64) -> u64 {
-            // SAFETY: the kernel passed an aligned word at `address`.
-            unsafe { *(address as *const u64) }
-        }
-        fn store(&mut self, address: u64, word: u64) {
-            // SAFETY: the kernel passed a writable aligned word at `address`.
-            unsafe { *(address as *mut u64) = word }
-        }
-    }
-
-    fn runtime(function: RuntimeFn, args: &[u64]) -> u64 {
-        STUBS.with_borrow_mut(|stubs| {
-            stubs.calls.push(function);
-            stubs
-                .model
-                .run(function, args, &mut ProcessMemory)
-                .unwrap_or(0)
-        })
-    }
-
-    fn refcount(operation: RefcountOperation, word: u64) {
-        STUBS.with_borrow_mut(|stubs| stubs.refcounts.push((operation, word)));
-    }
-
-    // Each runtime entry is attached: its first parameter is the execution
-    // context, which the stubs ignore.
-    extern "C" fn int_from_i64(_: u64, raw: u64) -> u64 {
-        runtime(RuntimeFn::IntFromI64, &[raw])
-    }
-    extern "C" fn int_as_i64(_: u64, word: u64) -> u64 {
-        runtime(RuntimeFn::IntAsI64, &[word])
-    }
-    extern "C" fn is_truthy(_: u64, word: u64) -> u64 {
-        runtime(RuntimeFn::IsTruthy, &[word])
-    }
-    extern "C" fn div(_: u64, left: u64, right: u64) -> u64 {
-        runtime(RuntimeFn::Div, &[left, right])
-    }
-    extern "C" fn floordiv(_: u64, left: u64, right: u64) -> u64 {
-        runtime(RuntimeFn::Floordiv, &[left, right])
-    }
-    extern "C" fn modulo(_: u64, left: u64, right: u64) -> u64 {
-        runtime(RuntimeFn::Mod, &[left, right])
-    }
-    extern "C" fn call_inputs_release(_: u64, callable: u64, args: u64, count: u64) {
-        runtime(RuntimeFn::CallInputsRelease, &[callable, args, count]);
-    }
-    extern "C" fn string_from_bytes(_: u64, data: u64, len: u64, out: u64) -> u32 {
-        runtime(RuntimeFn::StringFromBytes, &[data, len, out]) as u32
-    }
-    extern "C" fn bytes_from_bytes(_: u64, data: u64, len: u64, out: u64) -> u32 {
-        runtime(RuntimeFn::BytesFromBytes, &[data, len, out]) as u32
-    }
-    extern "C" fn bigint_from_bytes(_: u64, data: u64, len: u64) -> u64 {
-        runtime(RuntimeFn::BigintFromBytes, &[data, len])
-    }
-    extern "C" fn inc_ref_obj(_: u64, word: u64) {
-        refcount(RefcountOperation::Retain, word);
-    }
-    extern "C" fn dec_ref_obj(_: u64, word: u64) {
-        refcount(RefcountOperation::Release, word);
-    }
     extern "C" fn fmod(left: f64, right: f64) -> f64 {
         // Rust's `%` on floats is C's `fmod`.
         left % right
@@ -512,31 +668,7 @@ pub(crate) mod machine {
         if name == FMOD_SYMBOL {
             return Some(fmod as *const u8);
         }
-        if name.starts_with("__molt_module_slot_") || name.starts_with("__molt_code_slot_") {
-            // The binding the linker would resolve; it lives as long as the
-            // code that reads it, which the test never frees before the read.
-            let word: &'static u64 = Box::leak(Box::new(program_slot_word(name)));
-            return Some(std::ptr::from_ref(word).cast());
-        }
-        let function = RuntimeFn::ALL
-            .iter()
-            .copied()
-            .find(|function| function.linker_symbol() == name)?;
-        Some(match function {
-            RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
-            RuntimeFn::IntAsI64 => int_as_i64 as *const u8,
-            RuntimeFn::IsTruthy => is_truthy as *const u8,
-            RuntimeFn::Div => div as *const u8,
-            RuntimeFn::Floordiv => floordiv as *const u8,
-            RuntimeFn::Mod => modulo as *const u8,
-            RuntimeFn::CallInputsRelease => call_inputs_release as *const u8,
-            RuntimeFn::StringFromBytes => string_from_bytes as *const u8,
-            RuntimeFn::BytesFromBytes => bytes_from_bytes as *const u8,
-            RuntimeFn::BigintFromBytes => bigint_from_bytes as *const u8,
-            RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
-            RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
-            _ => return None,
-        })
+        runtime_stubs::lookup(name)
     }
 
     /// The host ISA at the optimization level release code uses.
@@ -582,14 +714,30 @@ pub(crate) mod machine {
 
     /// Compile `kernel` as `fn(context, inputs, results)` and run it once on
     /// `inputs`.
-    pub(crate) fn run<K: Kernel>(kernel: &K, inputs: &[Value], fail_mint: bool) -> Run<K::Fact> {
-        run_with(inputs, fail_mint, |b, args| kernel.build(b, args))
+    pub(crate) fn run<K: Kernel>(
+        kernel: &K,
+        inputs: &[Value],
+        fail_allocation: bool,
+    ) -> Run<K::Fact> {
+        run_with(inputs, fail_allocation, 0, |b, args| kernel.build(b, args))
+    }
+
+    pub(crate) fn run_with_pending_byte<K: Kernel>(
+        kernel: &K,
+        inputs: &[Value],
+        fail_allocation: bool,
+        pending: u8,
+    ) -> Run<K::Fact> {
+        run_with(inputs, fail_allocation, pending, |b, args| {
+            kernel.build(b, args)
+        })
     }
 
     /// [`run`] over a body that builds with `NativeCodegen` itself.
     fn run_with<F>(
         inputs: &[Value],
-        fail_mint: bool,
+        fail_allocation: bool,
+        pending: u8,
         body: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> (F, Vec<Value_>),
     ) -> Run<F> {
         let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
@@ -671,12 +819,22 @@ pub(crate) mod machine {
             unsafe { std::mem::transmute(code) };
         let input_words: Vec<u64> = inputs.iter().copied().map(input_word).collect();
         let mut result_words = vec![0u64; kinds.len()];
-        STUBS.with_borrow_mut(|stubs| {
-            *stubs = Stubs::default();
-            stubs.model.fail_mint = fail_mint;
-        });
-        kernel_code(0, input_words.as_ptr(), result_words.as_mut_ptr());
-        let stubs = STUBS.take();
+        runtime_stubs::begin(fail_allocation);
+        let mut record =
+            [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        // The exception hint is one byte at its ABI offset, on either byte order.
+        let first = &mut record[0];
+        let mut bytes = first.to_ne_bytes();
+        bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = pending;
+        *first = u64::from_ne_bytes(bytes);
+        let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
+        attached.bind_thread_record(record.as_mut_ptr() as u64);
+        kernel_code(
+            std::ptr::from_ref(&attached) as u64,
+            input_words.as_ptr(),
+            result_words.as_mut_ptr(),
+        );
+        let stubs = runtime_stubs::finish();
         // SAFETY: the kernel has returned; nothing refers to its code.
         unsafe { module.free_memory() };
         Run {
@@ -718,7 +876,7 @@ pub(crate) mod machine {
         ] {
             for (left, right) in cases {
                 let inputs = [Value::Word(left as u64), Value::Word(right as u64)];
-                let run = run_with(&inputs, false, |b, args| {
+                let run = run_with(&inputs, false, 0, |b, args| {
                     let (value, overflow) = b.int_checked_portable(op, args[0], args[1]);
                     ((), vec![value, overflow])
                 });

@@ -5,18 +5,30 @@
 //! native backend.
 
 pub(crate) mod builder;
+pub(crate) mod calls;
 pub(crate) mod constants;
+pub(crate) mod containers;
 pub(crate) mod control;
 pub(crate) mod custody;
 #[cfg(test)]
 pub(crate) mod differential;
+pub(crate) mod direct;
+pub(crate) mod frame;
 pub(crate) mod function;
+pub(crate) mod globals;
 pub(crate) mod numeric;
+pub(crate) mod object;
+pub(crate) mod operators;
+pub(crate) mod pending;
+#[cfg(test)]
+pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;
+pub(crate) mod state;
+pub(crate) mod task;
 pub(crate) mod value_table;
 
 pub(crate) use builder::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 pub(crate) use value_table::{HeldCarrier, ValueTable};

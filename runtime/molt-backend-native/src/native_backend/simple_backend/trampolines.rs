@@ -133,13 +133,7 @@ impl SimpleBackend {
                     enter: import(RuntimeFn::FrameRecordEnter),
                     exit: import(RuntimeFn::FrameRecordExit),
                 };
-                let tasks = NativeTaskSites {
-                    task_new: import(RuntimeFn::TaskNew),
-                    cancel_token_get_current: import(RuntimeFn::CancelTokenGetCurrent),
-                    task_register_execution: import(RuntimeFn::TaskRegisterExecution),
-                    asyncgen_new: import(RuntimeFn::AsyncgenNew),
-                    int_from_i64: import(RuntimeFn::IntFromI64),
-                };
+                let tasks = NativeTaskSites::with_imports(import);
                 // The caller published the function it calls as this thread's
                 // pending invocation; the task takes its frame context from it.
                 let thread = thread_record_address(&mut builder, execution_context);
