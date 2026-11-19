@@ -2294,8 +2294,25 @@ fn build_union_type(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
             .push(candidate);
     }
     let Some(merged) = merged else {
-        inc_ref_bits(py, left);
-        return left;
+        // Every right argument is already on the left. Through 3.13 the left
+        // operand is the result; from 3.14 a union operand always yields a
+        // new union object over a new argument tuple, while a single type
+        // still yields itself.
+        if left_owner.is_none() || !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+            inc_ref_bits(py, left);
+            return left;
+        }
+        let tuple_ptr = alloc_tuple(py, left_args);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let union_ptr = alloc_union_type(py, args_bits);
+        dec_ref_bits(py, args_bits);
+        if union_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(union_ptr).bits();
     };
     let tuple_ptr = alloc_tuple(py, merged.as_slice());
     if tuple_ptr.is_null() {
