@@ -483,11 +483,35 @@ pub(crate) unsafe fn call_bind_with_arguments(
         }
         if callable_matches_runtime_symbol(Some(func_bits), fn_key!(molt_type_call)) {
             let Some(self_bits) = self_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "type.__call__ expects type",
-                );
+                // The unbound slot wrapper `type.__call__(cls, *args)`: its
+                // first positional is the receiver, and `cls` is constructed
+                // as `type`'s own tp_call does, never through a metaclass
+                // `__call__`.
+                let Some(&receiver) = args.positional().first() else {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "descriptor '__call__' of 'type' object needs an argument",
+                    );
+                };
+                let Some(receiver_ptr) = obj_from_bits(receiver)
+                    .as_ptr()
+                    .filter(|&pointer| object_type_id(pointer) == TYPE_ID_TYPE)
+                else {
+                    let message = format!(
+                        "descriptor '__call__' requires a 'type' object but received a '{}'",
+                        type_name(_py, obj_from_bits(receiver))
+                    );
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
+                };
+                if let Err(error) = args.prepare_constructor_mapping() {
+                    return error;
+                }
+                let child = match args.constructor_child(None, &args.positional()[1..]) {
+                    Ok(child) => child,
+                    Err(error) => return error,
+                };
+                return call_type_with_arguments(_py, receiver_ptr, child);
             };
             let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
                 return raise_exception::<_>(

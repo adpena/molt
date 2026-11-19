@@ -635,13 +635,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         is_gen = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS_GENERATOR", args=[iter_obj], result=is_gen))
         pair = self._emit_iter_next_checked(iter_obj)
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", GEN_YIELD_FROM_OFFSET, iter_obj],
-                result=MoltValue("none"),
-            )
-        )
         # The step pair changes per delegated step; the iterator and its kind
         # are values the coroutine frame split carries across each resume.
         pair_home = self._new_compiler_local("tuple")
@@ -662,6 +655,18 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=value))
         self.state_count += 1
         resume_state = self.state_count
+        # `gi_yieldfrom` names the subiterator only while the frame is
+        # suspended in this delegation: published at each suspension and
+        # cleared at each resume, so an exception that leaves the `yield from`
+        # (a direct throw, or one the subiterator raises) leaves no stale
+        # delegation for a later throw or close.
+        self.emit(
+            MoltOp(
+                kind="STORE_CLOSURE",
+                args=["self", GEN_YIELD_FROM_OFFSET, iter_obj],
+                result=MoltValue("none"),
+            )
+        )
         self.emit(
             MoltOp(
                 kind="STATE_YIELD",
@@ -672,6 +677,13 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self._emit_state_yield_resume_entry(resume_state)
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        self.emit(
+            MoltOp(
+                kind="STORE_CLOSURE",
+                args=["self", GEN_YIELD_FROM_OFFSET, none_val],
+                result=MoltValue("none"),
+            )
+        )
         pending_throw = MoltValue(self.next_var(), type_hint="exception")
         self.emit(
             MoltOp(
@@ -739,15 +751,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
-        cleared_yield_from = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_yield_from))
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", GEN_YIELD_FROM_OFFSET, cleared_yield_from],
-                result=MoltValue("none"),
-            )
-        )
         pair = self._load_compiler_local(pair_home)
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
