@@ -132,7 +132,12 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// answer whether it did. A malformed op (wrong arity, missing
     /// attribute) is refused, as is a kind no family owns yet.
     pub(crate) fn preserved_op(&mut self, b: &mut B, op: &TirOp) -> bool {
-        let Some(kind) = op.origin else {
+        // The pattern is the one list of kinds the walker owns: a backend's
+        // routing maps the same pattern away, so the two never both lower a kind.
+        let Some(kind) = op
+            .origin
+            .filter(|&kind| matches!(kind, walker_preserved_kind_pattern!()))
+        else {
             return false;
         };
         self.direct_preserved_op(b, op, kind)
