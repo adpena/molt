@@ -48,6 +48,33 @@ pub(crate) unsafe fn direct_dict(py: &PyToken<'_>, source: u64) -> Result<Option
     }
 }
 
+/// The backing dict of an exact mappingproxy over an exact dict whose keys are
+/// all exact strs. The proxy's keys() and __getitem__ forward to dict's own
+/// methods, and with str keys neither hashing nor lookup runs Python code, so
+/// a merge may snapshot the keys and look each one up natively: the order of
+/// CPython's generic proxy merge, without dispatch through the proxy.
+/// `type.__dict__` is this shape (dir() merges it per class in the MRO).
+unsafe fn exact_str_proxy_backing(py: &PyToken<'_>, source: u64) -> Option<*mut u8> {
+    if type_of_bits(py, source) != crate::builtins::types::mappingproxy_class_bits(py) {
+        return None;
+    }
+    let proxy = obj_from_bits(source).as_ptr()?;
+    let mapping = unsafe { crate::builtins::types::mappingproxy_mapping_bits(proxy) };
+    if type_of_bits(py, mapping) != builtin_classes(py).dict {
+        return None;
+    }
+    let backing = super::ops::dict_backing_bits(py, mapping).ok()??;
+    let dict = obj_from_bits(backing).as_ptr()?;
+    let str_class = builtin_classes(py).str;
+    let mut cursor = 0;
+    while let Some(row) = unsafe { dict_next_entry(dict, &mut cursor) } {
+        if type_of_bits(py, row.key) != str_class {
+            return None;
+        }
+    }
+    Some(dict)
+}
+
 /// Consume a mapping method's owned output using CPython method_output_as_list.
 /// Exact semantic lists retain identity, including specialized int/bool storage.
 /// Length hints belong to the first iterator, never the method output.
@@ -182,6 +209,47 @@ pub(crate) unsafe fn apply(
                 }
             }
             return MergeOutcome::Complete;
+        }
+        if let Some(dict) = exact_str_proxy_backing(py, source) {
+            // Snapshot the keys (dict.keys() as a list), then look each one up:
+            // a finalizer a replaced target value runs may still mutate the
+            // class dict, and a key it deleted raises KeyError as in CPython.
+            let mut keys = Vec::with_capacity(dict_len(dict));
+            let mut cursor = 0;
+            while let Some(row) = dict_next_entry(dict, &mut cursor) {
+                inc_ref_bits(py, row.key);
+                keys.push((row.key, row.hash.expect("live dictionary row").get()));
+            }
+            let mut outcome = MergeOutcome::Complete;
+            for (key, hash) in keys {
+                if outcome == MergeOutcome::Complete {
+                    outcome = if !accept_key(key, Some(hash)) {
+                        MergeOutcome::Error
+                    } else {
+                        match super::ops::dict_get_with_hash_in_place(py, dict, key, hash) {
+                            Ok(Some(value)) => {
+                                inc_ref_bits(py, value);
+                                let ok = insert(key, value, Some(hash));
+                                dec_ref_bits(py, value);
+                                if ok {
+                                    MergeOutcome::Complete
+                                } else {
+                                    MergeOutcome::Error
+                                }
+                            }
+                            Ok(None) => {
+                                crate::builtins::exceptions::raise_key_error_with_key::<()>(
+                                    py, key,
+                                );
+                                MergeOutcome::Error
+                            }
+                            Err(()) => MergeOutcome::Error,
+                        }
+                    };
+                }
+                dec_ref_bits(py, key);
+            }
+            return outcome;
         }
         let Some(name) = crate::NameId::Keys.owned_bits(py) else {
             return MergeOutcome::Error;
