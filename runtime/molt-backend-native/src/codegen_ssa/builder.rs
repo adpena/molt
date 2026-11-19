@@ -377,6 +377,10 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// The invocation's refcount admission word, which a site body passes to
     /// its retains and releases.
     fn refcount_admission(&mut self) -> Self::Word;
+    /// The thread record's profile-enabled word (1 when the process collects
+    /// runtime profile counters), read at most once per invocation: a
+    /// profile-only guard tests it before its runtime call.
+    fn profile_enabled(&mut self) -> Self::Word;
 
     /// Run the shared generator's `body` on `args` (its words, the refcount
     /// admission last) and answer its word. A backend chooses only where the

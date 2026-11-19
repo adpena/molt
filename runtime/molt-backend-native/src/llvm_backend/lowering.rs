@@ -342,8 +342,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// entered, zero until it does.
     owned_frame_entered:
         Option<crate::codegen_ssa::returns::OwnedFrame<inkwell::values::PointerValue<'ctx>>>,
-    guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
-    guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     /// Per-function instruction-selection state (refcount sites).
     state: codegen_builder::LlvmFunctionState<'ctx>,
     /// Exceptional successor labels resolved to blocks once per function by
@@ -411,8 +409,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         repr_facts,
         frame_homes: None,
         owned_frame_entered: None,
-        guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
-        guard_profile_flag: None,
         state: codegen_builder::LlvmFunctionState::new(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
         ),
