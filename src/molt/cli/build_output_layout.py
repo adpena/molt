@@ -33,9 +33,9 @@ from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
 from molt import input_report
 from molt.build_output_selection import BuildOutputSelection, select_output_path
 from molt.default_paths import (
+    BUILD_ARTIFACTS_CACHE_DIRECTORY,
     _default_molt_bin,
     _default_molt_cache,
-    _default_molt_home,
 )
 from molt.process_environment import ProcessEnvironment
 
@@ -102,13 +102,20 @@ def _safe_output_base(name: str) -> str:
 
 
 @typed_cache(maxsize=8)
-def _default_build_base_cached(home_root_str: str) -> Path:
-    return Path(home_root_str) / "build"
+def _default_build_base_cached(cache_root_str: str) -> Path:
+    return Path(cache_root_str) / BUILD_ARTIFACTS_CACHE_DIRECTORY
 
 
 def _default_build_base() -> Path:
-    """Where builds without ``--out-dir`` keep their intermediates."""
-    return _default_build_base_cached(os.fspath(_default_molt_home()))
+    """Where builds without ``--out-dir`` keep their intermediates: the compile
+    cache, whose one retention budget (MOLT_CACHE_MAX_GB, MOLT_CACHE_MAX_AGE_DAYS)
+    evicts an idle configuration's root as it evicts any regenerable entry."""
+    return _default_build_base_cached(os.fspath(_default_molt_cache()))
+
+
+def _artifacts_root_lock(root: Path) -> Path:
+    """The lock a build of ``root`` holds, beside the root (``build_artifacts_entry``)."""
+    return root.with_name(f"{root.name}.lock")
 
 
 def artifacts_identity(
@@ -201,7 +208,10 @@ def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> No
 
 def _claim_artifacts_root(root: Path) -> None:
     """Serialize concurrent builds of one configuration, as Cargo locks its
-    build directory, so no build reads another's half-written objects."""
+    build directory, so no build reads another's half-written objects.
+
+    The cache pruner takes the same lock to evict the root, so the root is
+    (re)created only under the claim, and the claim marks the root used."""
     scope = _BUILD_SCOPE.get()
     if scope is None:
         raise RuntimeError("an artifacts root is claimed only inside build_scope()")
@@ -213,7 +223,8 @@ def _claim_artifacts_root(root: Path) -> None:
         _try_acquire_file_lock,
     )
 
-    lock_path = root / ".molt-build.lock"
+    lock_path = _artifacts_root_lock(root)
+    _mkdir_resilient(root.parent)
     handle = _try_acquire_file_lock(lock_path)
     if handle is None:
         print(
@@ -227,6 +238,10 @@ def _claim_artifacts_root(root: Path) -> None:
         )
     scope.claimed.add(root)
     scope.stack.callback(_release_file_lock, handle)
+    _mkdir_resilient(root)
+    # A warm rebuild may rewrite no top-level entry; the pruner orders by the
+    # root's mtime, so the claim records the use.
+    os.utime(root)
     if input_report.result_active():
         from molt.build_record import BuildClaimKind, RecordedBuildClaim
 
@@ -347,8 +362,8 @@ def _resolve_output_roots(
 
     # The default binary and output roots are created only when a default
     # destination is chosen (`_resolve_output_path`): a build that names its
-    # output leaves no empty `dist/` or binary directory behind.
-    _mkdir_resilient(artifacts_root)
+    # output leaves no empty `dist/` or binary directory behind. The claim
+    # creates the artifacts root.
     _claim_artifacts_root(artifacts_root)
     return artifacts_root, bin_root, output_root
 

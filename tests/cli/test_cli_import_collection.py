@@ -16104,13 +16104,14 @@ def test_default_build_base_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cli_build_output_layout._default_build_base_cached.cache_clear()
-    monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache-root"))
 
     first = cli_build_output_layout._default_build_base()
     second = cli_build_output_layout._default_build_base()
 
     info = cli_build_output_layout._default_build_base_cached.cache_info()
-    assert first == second == (tmp_path / "home-root" / "build")
+    # Build intermediates live in the compile cache, under its retention.
+    assert first == second == (tmp_path / "cache-root" / "build")
     assert info.hits >= 1
     assert info.currsize >= 1
 

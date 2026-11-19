@@ -290,6 +290,7 @@ WASM_LINK_CACHE_FAMILIES = frozenset(
 NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY = "native-stdlib-objects-v1"
 NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY = "native-stdlib-archives-v1"
 SHARED_STDLIB_CACHE_DIRECTORY = "shared-stdlib"
+BUILD_ARTIFACTS_CACHE_DIRECTORY = "build"
 
 
 def toolchain_symbol_facts_cache_entry(
@@ -425,6 +426,21 @@ def native_stdlib_archive_cache_entry(cache_root: Path, key: str) -> tuple[Path,
         cache_root / NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY / key,
         shared_cache_lock_path(cache_root, f"native-stdlib-archive.{key[:2]}"),
     )
+
+
+def build_artifacts_entry(cache_root: Path, name: str) -> tuple[Path, Path]:
+    """One build configuration's intermediates and the lock its build holds.
+
+    ``name`` is ``<entry stem>-<16-hex artifacts identity>``
+    (``build_output_layout.artifacts_identity``). The lock sits beside the
+    entry, never inside it: eviction removes the tree with no open handle in
+    it (Windows refuses that), and the lock's file outlives the tree, so a
+    build waiting on it never holds a lock on a deleted file.
+    """
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*-[0-9a-f]{16}", name) is None:
+        raise ValueError(f"not a build artifacts root name: {name!r}")
+    base = cache_root / BUILD_ARTIFACTS_CACHE_DIRECTORY
+    return base / name, base / f"{name}.lock"
 
 
 def native_stdlib_object_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
