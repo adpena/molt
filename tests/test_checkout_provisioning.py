@@ -1552,9 +1552,18 @@ def _hook_checkout(tmp_path: Path) -> Path:
 
 
 def test_shared_hooks_install_only_from_sources_matching_main(tmp_path: Path) -> None:
+    from molt.dx import MOLT_ROOT_ENV_KEYS
+
     work = _hook_checkout(tmp_path)
     marker = work / ".git" / "stub-hooks-installed"
-    environ = {"PATH": os.environ.get("PATH", "")}
+    # The installer runs under the memory guard, which keeps its checkout
+    # state under the session's Molt roots. Without them it falls back to the
+    # repository's target/, outside the test's storage authority when the
+    # session (as under the proof executor) selects other roots.
+    environ = {
+        "PATH": os.environ.get("PATH", ""),
+        **{key: os.environ[key] for key in MOLT_ROOT_ENV_KEYS if key in os.environ},
+    }
 
     # An unlanded hook change must not reach every other worktree.
     (work / ".githooks" / "commit-msg").write_text(

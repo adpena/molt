@@ -59,7 +59,7 @@ schema = "molt-perf-methodology-v1"
 # are read directly (5125aeef58), so admitted facts and instruction counts can
 # move; it landed without the lock. Earlier reports retain their recorded class.
 version = 44
-content_sha256 = "bcec8ed180895a524e9d52e89745d641a910b93e1ddf35ae1145d19a2d104671"
+content_sha256 = "80e74feaf493dcae4e43e11545480cc23b7eef813c314b76cb2450282f71f3dd"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -394,6 +394,10 @@ path = "src/molt/compiler_analysis/python_identity_catalog_generated.py"
 role = "canonical source/import analysis used to admit benchmark workload dependencies"
 
 [[methodology]]
+path = "src/molt/compiler_analysis/python_import_redirects.py"
+role = "canonical source/import analysis used to admit benchmark workload dependencies"
+
+[[methodology]]
 path = "src/molt/compiler_analysis/python_imports.py"
 role = "canonical source/import analysis used to admit benchmark workload dependencies"
 
@@ -436,6 +440,10 @@ reason = "provides the shared stable-file hash and timestamp transport used by t
 [[mechanics]]
 path = "src/molt/input_report.py"
 reason = "reports source-capture diagnostics without selecting source or verdict policy"
+
+[[methodology]]
+path = "src/molt/python_canonical_ast.py"
+role = "canonical source/import analysis used to admit benchmark workload dependencies"
 
 [[methodology]]
 path = "src/molt/python_private_names.py"

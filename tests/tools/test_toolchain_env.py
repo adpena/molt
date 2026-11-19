@@ -21,6 +21,7 @@ from tests.runtime_build_identity_helper import (  # noqa: E402
     RuntimeFixtureRoot,
     provisioned_wasi_sdk_fixture,
 )
+from tests.llvm_sdk_test_support import verified_llvm_tools  # noqa: E402
 from tools import proof_plan, toolchain_env  # noqa: E402
 
 PLAN = proof_plan.ProofPlan.load()
@@ -195,8 +196,7 @@ def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # HF-231: Homebrew's LLD 23.1.3 and wasm-tools 1.262.0 first on PATH.
-    if llvm_toolchain.verify_available_llvm_toolchain(ROOT) is None:
-        pytest.skip("no verified LLVM SDK is provisioned")
+    verified_llvm_tools()
     if tool_releases.discover_pinned_tool("wasm-tools", ROOT) is None:
         pytest.skip("the pinned wasm-tools release is not provisioned")
     decoys = tmp_path / "homebrew" / "bin"
@@ -239,9 +239,8 @@ def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
 
 
 def test_llvm_projection_matches_what_ci_exports(tmp_path: Path) -> None:
-    verification = llvm_toolchain.verify_available_llvm_toolchain(ROOT)
-    if verification is None:
-        pytest.skip("no verified LLVM SDK is provisioned")
+    # A missing managed SDK skips; a configured but invalid one fails.
+    verified_llvm_tools()
     github_env = tmp_path / "github-env"
     assert llvm_toolchain.main(["--verify", "--github-env", str(github_env)]) == 0
     exported = dict(
