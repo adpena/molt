@@ -64,10 +64,6 @@ FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
         "GUARD_TAG": "guard_tag",
         "DEC_REF": "dec_ref",
         # Conversions keep their dedicated lanes.
-        "BOX": "box",
-        "UNBOX": "unbox",
-        "CAST": "cast",
-        "WIDEN": "widen",
     }
 )
 

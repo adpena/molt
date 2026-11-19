@@ -5249,10 +5249,6 @@ kind = "FRAME_HOME_STORE"
 reason = "preserved-Copy: a boxed view of a raw integer may allocate in its home; transfer MemoryError at this store before the next effect or lexical-region exit"
 
 [[frontend_raising_kind]]
-kind = "BOX"
-opcode = "BoxVal"
-
-[[frontend_raising_kind]]
 kind = "CONST_STR"
 opcode = "ConstStr"
 
@@ -5656,6 +5652,22 @@ wire_kind = "copy"
 [[frontend_lowering_kind]]
 kinds = []
 wire_kind = "string_eq"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "box"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "unbox"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "cast"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "widen"
 
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"

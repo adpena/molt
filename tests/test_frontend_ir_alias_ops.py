@@ -76,31 +76,6 @@ def test_runtime_guard_preserves_value_and_expected_tag_operands(result: str) ->
     assert lowered == expected
 
 
-def test_box_lowers_to_explicit_box_lane() -> None:
-    op = MoltOp(kind="BOX", args=[MoltValue("value")], result=MoltValue("boxed"))
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "box",
-        "args": ["value"],
-        "out": "boxed",
-    }
-
-
-def test_unbox_cast_widen_lower_to_explicit_conversion_lanes() -> None:
-    unbox = _map_single(
-        MoltOp(kind="UNBOX", args=[MoltValue("boxed")], result=MoltValue("value"))
-    )
-    cast = _map_single(
-        MoltOp(kind="CAST", args=[MoltValue("value")], result=MoltValue("casted"))
-    )
-    widen = _map_single(
-        MoltOp(kind="WIDEN", args=[MoltValue("value")], result=MoltValue("wide"))
-    )
-    assert unbox == {"kind": "unbox", "args": ["boxed"], "out": "value"}
-    assert cast == {"kind": "cast", "args": ["value"], "out": "casted"}
-    assert widen == {"kind": "widen", "args": ["value"], "out": "wide"}
-
-
 def test_binding_alias_lowers_to_owned_alias_lane() -> None:
     op = MoltOp(
         kind="BINDING_ALIAS", args=[MoltValue("value")], result=MoltValue("owned")
@@ -247,11 +222,13 @@ def test_dec_ref_lowers_to_explicit_ownership_lane() -> None:
     assert dec == {"kind": "dec_ref", "args": ["value"], "out": "released"}
 
 
-@pytest.mark.parametrize("kind", ["INC_REF", "BORROW", "RELEASE"])
-def test_retired_reference_count_kinds_are_not_frontend_ops(kind: str) -> None:
-    # The frontend emits no explicit retain or borrow; drop insertion owns
-    # reference counts. A retired kind is refused at validation, not
-    # half-registered without a serializer.
+@pytest.mark.parametrize(
+    "kind", ["INC_REF", "BORROW", "RELEASE", "BOX", "UNBOX", "CAST", "WIDEN"]
+)
+def test_retired_frontend_kinds_are_refused(kind: str) -> None:
+    # No frontend code produces these: drop insertion owns reference counts,
+    # and representation conversions are TIR facts. A retired kind is refused
+    # at validation, not half-registered without a producer or serializer.
     with pytest.raises(ValueError):
         _map_single(MoltOp(kind=kind, args=[MoltValue("value")], result=MoltValue("x")))
 

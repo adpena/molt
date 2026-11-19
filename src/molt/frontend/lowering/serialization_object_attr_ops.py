@@ -25,9 +25,6 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 _SERIALIZE_OBJECT_ATTR_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
     {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
 )
-_SERIALIZE_OBJECT_ATTR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
-    {"BOX", "WIDEN", "CAST", "UNBOX"}
-)
 
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
@@ -320,25 +317,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind in _SERIALIZE_OBJECT_ATTR_OP_KINDS_2:
-            if (
-                op.args
-                and isinstance(op.args[0], MoltValue)
-                and op.result.name != "none"
-            ):
-                lowered_kind = {
-                    "BOX": "box",
-                    "UNBOX": "unbox",
-                    "CAST": "cast",
-                    "WIDEN": "widen",
-                }[op.kind]
-                ctx.json_ops.append(
-                    {
-                        "kind": lowered_kind,
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
         elif op.kind == FrontendKinds.IDENTITY_ALIAS:
             if (
                 op.args
