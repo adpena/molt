@@ -310,6 +310,8 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     the walker's kinds so LLVM's exhaustive family match maps them to None. LLVM keeps CallAsync,
     AllocClass, ExceptionLastPending, StatefulLocalsRegister and GuardType/GuardTag (W3 frame and
     guard facts); the container and callable families are the walker lane's next slices.
+    AllocClass and StatefulLocalsRegister moved next (2026-11-19); CallAsync stays with W3's task
+    family (it needs `TaskPlacement`).
   - Moved, slices 26-28 (2026-11-19, lane codegen-walker): the preserved container and callable
     families, and the rest of `CheckException`. `container_preserved_op` (iterator out-words,
     `len` with its typed entry, list/tuple/dict literals, set and frozenset aggregates,

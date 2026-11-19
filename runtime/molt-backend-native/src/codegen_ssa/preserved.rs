@@ -20,6 +20,7 @@ use crate::tir::ops::{AttrValue, TirOp};
 macro_rules! walker_preserved_kind_pattern {
     () => {
         molt_ir::OpKind::Abs
+            | molt_ir::OpKind::AllocClass
             | molt_ir::OpKind::BindingAlias
             | molt_ir::OpKind::Borrow
             | molt_ir::OpKind::BuiltinType
@@ -64,6 +65,7 @@ macro_rules! walker_preserved_kind_pattern {
             | molt_ir::OpKind::Missing
             | molt_ir::OpKind::ObjectNew
             | molt_ir::OpKind::Release
+            | molt_ir::OpKind::StatefulLocalsRegister
             | molt_ir::OpKind::StoreVar
             | molt_ir::OpKind::StringFormat
             | molt_ir::OpKind::TypeOf
@@ -222,6 +224,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 true
             }
             OpKind::ClassDef => self.class_def_op(b, op),
+            OpKind::AllocClass => self.alloc_class_op(b, op),
+            OpKind::StatefulLocalsRegister => self.stateful_locals_register_op(b, op),
             // The builtin exception's tag is a raw ABI word; the argument is
             // borrowed.
             OpKind::ExceptionNewBuiltin | OpKind::ExceptionNewBuiltinOne => {
@@ -413,6 +417,84 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         for &result in &op.results {
             self.bind(result, value, carrier);
         }
+        true
+    }
+
+    /// `AllocClass`: an unpublished instance of the borrowed class, of the
+    /// op's `value` size, published initialized before it is exposed or
+    /// retired; the result is owned.
+    fn alloc_class_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+        let Some(size) = int_value(op) else {
+            return false;
+        };
+        if op.operands.len() != 1 || op.results.len() > 1 {
+            return false;
+        }
+        let size = b.constant(size as u64);
+        let operands = self.operands();
+        let mut custody = operands.begin(b, &op.operands, OpKind::AllocClass.as_str());
+        let class = operands.operand(b, &mut custody, op.operands[0]);
+        let unpublished = b
+            .call_runtime(RuntimeFn::AllocClass, &[size, class])
+            .expect("molt_alloc_class returns a word");
+        let named = b.word_value(unpublished);
+        b.set_name(named, "alloc_class");
+        let initialized = b
+            .call_runtime(RuntimeFn::ObjectPublishInitialized, &[unpublished])
+            .expect("molt_object_publish_initialized returns a word");
+        let named = b.word_value(initialized);
+        b.set_name(named, "class_initialized");
+        let result = operands.finish(b, custody, initialized, "alloc_class_result", |_| {});
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+        true
+    }
+
+    /// `StatefulLocalsRegister`: a stateful function's raw code address and
+    /// its two borrowed layout tuples. The function's frozen linkage row owns
+    /// its parameters; the op's `value`, a Python-level arity claim a task
+    /// poll entry omits, must agree with the row where present.
+    fn stateful_locals_register_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+        if op.operands.len() != 2 || op.results.len() > 1 {
+            return false;
+        }
+        let symbol = match (op.callee, op.attrs.get("s_value")) {
+            (Some(callee), _) => self.functions.symbol(callee).to_owned(),
+            (None, Some(AttrValue::Str(symbol))) if !symbol.is_empty() => symbol.clone(),
+            _ => return false,
+        };
+        let Some(abi) = self.linkage.get(&symbol).cloned() else {
+            self.fatal(format!(
+                "stateful function `{symbol}` has no frozen linkage row"
+            ));
+            return true;
+        };
+        if let Some(arity) = int_value(op).and_then(|arity| usize::try_from(arity).ok())
+            && arity != abi.param_types.len()
+        {
+            self.fatal(format!(
+                "stateful function `{symbol}` claims {arity} parameters; its row has {}",
+                abi.param_types.len()
+            ));
+            return true;
+        }
+        let callee = b.function_callee(&symbol, &abi);
+        let address = b.function_address(callee);
+        let address = b.word_value(address);
+        let register = b.runtime_callee(RuntimeFn::StatefulLocalsRegister);
+        self.runtime_call(
+            b,
+            op,
+            CallTarget::Callee(register),
+            &[
+                RuntimeArg::Word(address),
+                RuntimeArg::Operand(op.operands[0]),
+                RuntimeArg::Operand(op.operands[1]),
+            ],
+            ResultCustody::SideEffect,
+            OpKind::StatefulLocalsRegister.as_str(),
+            OpKind::StatefulLocalsRegister.as_str(),
+        );
         true
     }
 

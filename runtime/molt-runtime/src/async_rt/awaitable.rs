@@ -271,6 +271,25 @@ pub(crate) fn molt_get_awaitable_attached_body(_py: &crate::PyToken<'_>, bits: u
             return MoltObject::none().bits();
         }
         if is_native_coroutine_bits(iterator) || is_iterable_coroutine_bits(iterator) {
+            // 3.15 names both types (`%T.__await__() must return an iterator,
+            // not coroutine`, Objects/genobject.c `_PyCoro_GetAwaitableIter`).
+            if crate::object::ops_sys::runtime_target_at_least(py, 3, 15) {
+                let message = [
+                    crate::builtins::classes::class_fully_qualified_name(
+                        py,
+                        type_of_bits(py, bits),
+                    )
+                    .as_slice(),
+                    b".__await__() must return an iterator, not coroutine",
+                ]
+                .concat();
+                dec_ref_bits(py, iterator);
+                return crate::builtins::exceptions::raise_exception_bytes::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    &message,
+                );
+            }
             dec_ref_bits(py, iterator);
             return raise_exception::<_>(
                 py,

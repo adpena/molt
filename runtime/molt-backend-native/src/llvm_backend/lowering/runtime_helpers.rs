@@ -9,14 +9,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         cx.preserved_runtime_call(&mut b, op, kind)
     }
 
-    /// Bind a transferred object owner, or retire it when the op discards it.
-    /// Dedicated mixed-ABI calls use this only after establishing ownership;
-    /// a borrowed runtime result must be explicitly retained first.
-    pub(super) fn bind_owned_runtime_result(&mut self, op: &TirOp, result: BasicValueEnum<'ctx>) {
-        let (mut cx, mut b) = self.walker();
-        cx.bind_owned(&mut b, op, result);
-    }
-
     /// Compiled polls receive the attached context and one raw frame address,
     /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {

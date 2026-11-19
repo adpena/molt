@@ -85,7 +85,6 @@ fn require_function_linkage_abi<'a>(
 }
 
 #[cfg(feature = "llvm")]
-mod call_lowering;
 #[cfg(feature = "llvm")]
 mod codegen_builder;
 #[cfg(feature = "llvm")]
@@ -734,19 +733,6 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// The linker symbol an op calls or references: its typed callee's row
-    /// (HF-847 slice 1), else the runtime or external symbol an optional
-    /// reference keeps (HF-821 B1).
-    fn callee_symbol(&self, op: &TirOp) -> Option<String> {
-        if let Some(callee) = op.callee {
-            return Some(self.backend.function_table.symbol(callee).to_owned());
-        }
-        match op.attrs.get("s_value") {
-            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
-            _ => None,
-        }
-    }
-
     /// The word builder at the current insertion point, for the shared
     /// NaN-box generators.
     pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
