@@ -29,6 +29,12 @@ collector for the remainder. The collector has one scheduling authority in
   poll owns automatic collection, so constructors never synchronously traverse a
   partially initialized graph.
 - Collection statistics are per runtime and exposed through `gc.get_stats()`.
+  A completed collection adds its counts once (`GenerationStatsWords::add`,
+  CPython's `add_stats`). From 3.15 the stats and the callback info also
+  report `candidates` (objects the collection considered) and `duration`
+  (seconds from the snapshot to the end of clearing, a monotonic clock read
+  after the start callbacks); the target policy word selects the shape
+  (`GcTargetFeatures`), and the start phase reports a zeroed collection.
   Embedded teardown resets thresholds, counts, pending work, statistics,
   membership, ordinals, and reusable workspace together.
 - `freeze()` moves ordinary members to permanent generation 3 without

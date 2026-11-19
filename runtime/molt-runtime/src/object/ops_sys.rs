@@ -1567,36 +1567,6 @@ pub(crate) fn molt_gc_get_count_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     })
 }
 
-fn gc_stats_dict(_py: &PyToken<'_>, stats: crate::object::gc::GenerationStats) -> *mut u8 {
-    let values = [stats.collections, stats.collected, stats.uncollectable];
-    let keys: [&[u8]; 3] = [b"collections", b"collected", b"uncollectable"];
-    let mut pairs = [0u64; 6];
-    let mut owned = [0u64; 6];
-    let mut owned_len = 0usize;
-    for (index, (key, value)) in keys.into_iter().zip(values).enumerate() {
-        let key_ptr = alloc_string(_py, key);
-        if key_ptr.is_null() {
-            for bits in &owned[..owned_len] {
-                dec_ref_bits(_py, *bits);
-            }
-            return std::ptr::null_mut();
-        }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let value = i64::try_from(value).unwrap_or_else(|_| std::process::abort());
-        let value_bits = MoltObject::from_int(value).bits();
-        pairs[index * 2] = key_bits;
-        pairs[index * 2 + 1] = value_bits;
-        owned[owned_len] = key_bits;
-        owned[owned_len + 1] = value_bits;
-        owned_len += 2;
-    }
-    let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-    for bits in owned {
-        dec_ref_bits(_py, bits);
-    }
-    dict_ptr
-}
-
 pub(crate) fn molt_gc_get_stats_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         // Snapshot before allocating the result containers, matching CPython's
@@ -1604,7 +1574,7 @@ pub(crate) fn molt_gc_get_stats_attached_body(_py: &crate::PyToken<'_>) -> u64 {
         let stats = crate::runtime_state(_py).gc.generation_stats();
         let mut dicts = [0u64; crate::object::gc::NUM_GENERATIONS];
         for (index, generation) in stats.into_iter().enumerate() {
-            let dict_ptr = gc_stats_dict(_py, generation);
+            let dict_ptr = crate::object::gc::gc_stats_dict(_py, generation);
             if dict_ptr.is_null() {
                 for bits in &dicts[..index] {
                     dec_ref_bits(_py, *bits);
