@@ -4,7 +4,7 @@ use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCall
 use crate::builtins::methods::is_missing_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
 
-unsafe fn mappingproxy_mapping_bits(ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn mappingproxy_mapping_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
 
