@@ -21,6 +21,11 @@ pub(super) struct DefIndex {
     /// Mathematical scalar resolution, including exact borrowed binding views.
     /// It describes values, never permission to erase publication or callbacks.
     pub(super) copy_src: HashMap<ValueId, ValueId>,
+    /// Blocks some execution reaches. An edge from any other block delivers
+    /// nothing: the SSA lift keeps a vestigial `loop_end -> header` edge whose
+    /// arguments are fabricated `None`s, and counting it as an entry would make
+    /// every loop's start value disagree (the standard SCCP phi rule).
+    pub(super) reachable: HashSet<BlockId>,
 }
 
 impl DefIndex {
@@ -53,7 +58,10 @@ pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId
             header_args.insert(bid, block.args.iter().map(|a| a.id).collect());
         }
         for op in &block.ops {
-            let nsw = matches!(op.attrs.get("no_signed_wrap"), Some(AttrValue::Bool(true)));
+            // A result proven to fit the inline-int47 window is the exact sum:
+            // it did not wrap.
+            let nsw = matches!(op.attrs.get("no_signed_wrap"), Some(AttrValue::Bool(true)))
+                || op.has_inline_int_proof();
             if op.opcode == OpCode::ConstInt
                 && let Some(AttrValue::Int(v)) = op.attrs.get("value")
             {
@@ -80,6 +88,7 @@ pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId
         const_int,
         header_args,
         copy_src,
+        reachable: crate::tir::dominators::executable_reachable_blocks(func),
     }
 }
 
@@ -95,9 +104,13 @@ pub(super) fn collect_header_incoming(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
+    reachable: &HashSet<BlockId>,
 ) -> HeaderIncoming {
     let mut edges = Vec::new();
     for (&bid, block) in &func.blocks {
+        if !reachable.contains(&bid) {
+            continue;
+        }
         let is_back = body.contains(&bid);
         block.terminator.for_each_edge(|target, args| {
             if target == header {

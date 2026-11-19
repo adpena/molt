@@ -47,7 +47,7 @@ use super::passes::{self, PassStats};
 use super::target_info::TargetInfo;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-fn trace_func_enabled(name: &str) -> bool {
+pub(crate) fn trace_func_enabled(name: &str) -> bool {
     backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
         .ok()
         .is_some_and(|filter| filter == "1" || name.contains(&filter))
@@ -734,6 +734,19 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
         // the pass only inserts ops, but it is the POSSIBILITY of a split that
         // fixes the mutation class. (The straight-line / edge-dying / suspension
         // insertions remain pure op additions that carry no exception edge.)
+        // First: drop insertion places the moved poll's exception-edge releases
+        // and frame-home placement its home writes. Only a backend that
+        // consumes final TIR lowers the boundary block (`poll_strip_mining`).
+        pass("poll_strip_mining", Cfg, |f, am, tti| {
+            if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+                passes::poll_strip_mining::run(f, am)
+            } else {
+                PassStats {
+                    name: "poll_strip_mining",
+                    ..Default::default()
+                }
+            }
+        }),
         pass("drop_insertion", Cfg, |f, am, tti| {
             if target_uses_tir_drop_insertion(tti) {
                 passes::drop_insertion::run(f, am)
@@ -1109,6 +1122,7 @@ mod tests {
         assert_eq!(
             pm.pass_names(),
             vec![
+                "poll_strip_mining",
                 "drop_insertion",
                 "refcount_elim_post",
                 "block_arg_prune_post_drop",
@@ -1177,6 +1191,7 @@ mod tests {
         assert_eq!(
             dp_cfg,
             vec![
+                "poll_strip_mining",
                 "drop_insertion",
                 "block_arg_prune_post_drop",
                 "check_exception_elim_post_drop",
@@ -1287,7 +1302,7 @@ mod tests {
         // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 7);
+        assert_eq!(dstats.len(), 8);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {
