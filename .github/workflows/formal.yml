@@ -33,6 +33,15 @@ jobs:
       - name: Setup exact Lean toolchain
         uses: ./.github/actions/setup-lean
 
+      # bv_decide runs CaDiCaL through fork(). Under the runner's heuristic
+      # overcommit (vm.overcommit_memory=0, 16 GB RAM + 3 GB swap) the kernel
+      # refuses to fork a Lean process that has elaborated NanBoxCorrect
+      # (clone -> ENOMEM, Lean "resource exhausted (error code: 12)"), though
+      # the process holds under 1 GB; the child execs at once. Always
+      # overcommit, as fork-and-exec servers configure Linux.
+      - name: Let Lean fork its SAT solver
+        run: sudo sysctl -w vm.overcommit_memory=1
+
       - name: Build proofs and check Lean sorry baseline
         run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean.json
 
