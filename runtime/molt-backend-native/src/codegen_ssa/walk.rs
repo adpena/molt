@@ -154,6 +154,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
+            OpCode::NativeSymbolAddr => self.native_symbol_addr_op(b, op),
+            OpCode::CallNative => self.call_native_op(b, op),
             OpCode::WarnStderr => self.warn_stderr_op(b, op),
             // A function object's defaults mutation stamp; it observes
             // mutable runtime state, so the read always survives.
@@ -170,7 +172,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::CallNative
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
             | OpCode::Copy
@@ -193,7 +194,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::ModuleGetName
             | OpCode::ModuleImportFrom
             | OpCode::ModuleSetAttr
-            | OpCode::NativeSymbolAddr
             | OpCode::ObjectNewBound
             | OpCode::RecursionAdmits
             | OpCode::RecursionCount

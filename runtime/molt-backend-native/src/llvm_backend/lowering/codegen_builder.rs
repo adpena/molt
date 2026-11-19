@@ -540,6 +540,35 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         crate::llvm_backend::lowering::linked_compiled_function(self.backend, symbol)
     }
 
+    /// The extension symbol, declared once per module with the ABI's exact
+    /// signature: wasm-ld replaces a function whose declared and defined
+    /// signatures differ with a trapping stub.
+    fn native_callee(
+        &mut self,
+        symbol: &str,
+        params: &[molt_ir::native_callable_abi::NativeCallableMachineType],
+        result: molt_ir::native_callable_abi::NativeCallableMachineType,
+    ) -> FunctionValue<'ctx> {
+        use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
+        use molt_ir::native_callable_abi::NativeCallableMachineType as Machine;
+        if let Some(function) = self.backend.module.get_function(symbol) {
+            return function;
+        }
+        let machine = |ty: Machine| -> BasicTypeEnum<'ctx> {
+            match ty {
+                Machine::MoltValue | Machine::U64 => self.backend.context.i64_type().into(),
+                Machine::Pointer => self.backend.pointer_sized_int_type().into(),
+                Machine::I32 => self.backend.context.i32_type().into(),
+            }
+        };
+        let params: Vec<BasicMetadataTypeEnum<'ctx>> =
+            params.iter().map(|&ty| machine(ty).into()).collect();
+        let ty = machine(result).fn_type(&params, false);
+        self.backend
+            .module
+            .add_function(symbol, ty, Some(inkwell::module::Linkage::External))
+    }
+
     fn function_address(&mut self, callee: FunctionValue<'ctx>) -> IntValue<'ctx> {
         self.words
             .builder
