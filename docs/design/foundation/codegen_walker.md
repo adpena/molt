@@ -310,6 +310,21 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     the walker's kinds so LLVM's exhaustive family match maps them to None. LLVM keeps CallAsync,
     AllocClass, ExceptionLastPending, StatefulLocalsRegister and GuardType/GuardTag (W3 frame and
     guard facts); the container and callable families are the walker lane's next slices.
+  - Moved, slices 26-28 (2026-11-19, lane codegen-walker): the preserved container and callable
+    families, and the rest of `CheckException`. `container_preserved_op` (iterator out-words,
+    `len` with its typed entry, list/tuple/dict literals, set and frozenset aggregates,
+    `UnpackSequence`) and `callable_preserved_op` (the callable runtime calls, `locals()` and its
+    setter, function construction) join the direct table behind `preserved_op`, and their kinds
+    join `walker_preserved_kind_pattern!`. A task constructor's trampoline is a walker helper
+    body (`callable::TaskTrampoline` over `task::task_trampoline_word`); `HelperBody::build` is
+    bounded by `TaskPlacement`, which every backend's helper builder implements. Every
+    `CheckException` edge is walker-owned: the async-work poll is one routine
+    (`FunctionCx::async_work_poll`, also behind LLVM's direct `AsyncWorkPoll`), and an origin
+    edge publishes the site's location and captures the traceback entry from
+    `RecordPlacement::frame_homes`. Deleted from LLVM: `task_trampoline.rs`, the container
+    family file and its iterator wrappers, `container_len_fn`, the `CheckException` arm with its
+    edge helpers, and the async poll body. LLVM's callable family keeps only the frame family's
+    entry, exit and homes (W3).
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
