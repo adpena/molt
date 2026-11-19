@@ -726,8 +726,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let callee = scalar::word_of(b, callee);
         let thread = b.thread_record_word();
         let record = b.word_to_address(thread);
-        let offset = i32::try_from(molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET)
-            .expect("a thread record offset fits an i32");
+        let offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET;
         let outer = b.load_word(record, offset);
         b.store_word(record, offset, callee);
         self.compiled_call(b, op, &target, &abi, &op.operands[1..], 1);
