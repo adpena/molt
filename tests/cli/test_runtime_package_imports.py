@@ -14,7 +14,7 @@ def test_active_runtime_package_never_hides_missing_intrinsics(monkeypatch, pack
     monkeypatch.setattr(_intrinsics, "runtime_active", lambda: True)
     failure = RuntimeError("missing required runtime intrinsic")
 
-    def missing_intrinsic(name, namespace):
+    def missing_intrinsic(name, namespace=None):
         raise failure
 
     monkeypatch.setattr(_intrinsics, "require_intrinsic", missing_intrinsic)
@@ -28,7 +28,7 @@ def test_active_runtime_package_never_hides_missing_intrinsics(monkeypatch, pack
 def test_cpython_package_does_not_probe_runtime_intrinsics(monkeypatch, package):
     monkeypatch.setattr(_intrinsics, "runtime_active", lambda: False)
 
-    def unexpected_probe(name, namespace):
+    def unexpected_probe(name, namespace=None):
         raise AssertionError(f"CPython attempted runtime intrinsic {name}")
 
     monkeypatch.setattr(_intrinsics, "require_intrinsic", unexpected_probe)
@@ -61,7 +61,7 @@ def test_active_buffer_owns_only_native_storage(monkeypatch):
         "molt_buffer2d_set": set_value,
     }
     monkeypatch.setattr(
-        _intrinsics, "require_intrinsic", lambda name, namespace: exports[name]
+        _intrinsics, "require_intrinsic", lambda name, namespace=None: exports[name]
     )
     source = Path(__file__).resolve().parents[2] / "src/molt_buffer/__init__.py"
     namespace = runpy.run_path(str(source))
