@@ -105,7 +105,8 @@ const DEBUG_STATS: i64 = 1;
 /// 3.13 on; from 3.14 on an empty dict is tracked from creation instead of on
 /// its first container insertion; from 3.15 on `gc.get_stats()` and the
 /// callback info report `candidates` and `duration` (`Modules/gcmodule.c`
-/// `gc_get_stats_impl`, `Python/gc.c` `invoke_gc_callback`). The committed
+/// `gc_get_stats_impl`, `Python/gc.c` `invoke_gc_callback`); 3.12 alone
+/// defers a release at trashcan nesting 50 (`object::bounded_release`). The committed
 /// compiled target selects one policy for the runtime
 /// (`GcRuntimeState::adopt_target`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +125,9 @@ impl GcTargetFeatures {
     const TRACKS_EMPTY_DICTS: u64 = 1 << 0;
     /// Statistics and callback info carry `candidates` and `duration` (3.15+).
     const REPORTS_COLLECTION_COST: u64 = 1 << 1;
+    /// Terminal releases count trashcan nesting (`_PyTrash_UNWIND_LEVEL`,
+    /// 3.12 only).
+    const COUNTS_TRASHCAN_NESTING: u64 = 1 << 2;
 
     const fn for_minor(minor: i64) -> Self {
         let mut bits = 0;
@@ -132,6 +136,9 @@ impl GcTargetFeatures {
         }
         if minor >= 15 {
             bits |= Self::REPORTS_COLLECTION_COST;
+        }
+        if minor <= 12 {
+            bits |= Self::COUNTS_TRASHCAN_NESTING;
         }
         Self(bits)
     }
@@ -564,6 +571,13 @@ impl GcRuntimeState {
     pub(crate) fn reports_collection_cost(&self) -> bool {
         self.target_features()
             .has(GcTargetFeatures::REPORTS_COLLECTION_COST)
+    }
+
+    /// Whether terminal releases count CPython 3.12's trashcan nesting.
+    #[inline(always)]
+    pub(crate) fn counts_trashcan_nesting(&self) -> bool {
+        self.target_features()
+            .has(GcTargetFeatures::COUNTS_TRASHCAN_NESTING)
     }
 
     #[inline(always)]
@@ -4697,16 +4711,18 @@ mod tests {
             assert!(state.enabled());
             // `gc.get_threshold()` of each managed CPython interpreter.
             // `gc.get_stats()` keys: `candidates` and `duration` from 3.15.
-            for (minor, thresholds, tracks_empty_dicts, reports_cost) in [
-                (12, [700, 10, 10], false, false),
-                (13, [2000, 10, 10], false, false),
-                (14, [2000, 10, 10], true, false),
-                (15, [2000, 10, 10], true, true),
+            // Trashcan nesting: `_PyTrash_UNWIND_LEVEL` on 3.12 only.
+            for (minor, thresholds, tracks_empty_dicts, reports_cost, trashcan) in [
+                (12, [700, 10, 10], false, false, true),
+                (13, [2000, 10, 10], false, false, false),
+                (14, [2000, 10, 10], true, false, false),
+                (15, [2000, 10, 10], true, true, false),
             ] {
                 state.adopt_target(minor);
                 assert_eq!(state.thresholds(), thresholds, "3.{minor}");
                 assert_eq!(state.tracks_empty_dicts(), tracks_empty_dicts, "3.{minor}");
                 assert_eq!(state.reports_collection_cost(), reports_cost, "3.{minor}");
+                assert_eq!(state.counts_trashcan_nesting(), trashcan, "3.{minor}");
             }
             // Thresholds a host chose before the target commit stay.
             state.set_thresholds([5, 6, 7]);

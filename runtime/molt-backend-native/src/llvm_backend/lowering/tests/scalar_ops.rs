@@ -395,40 +395,48 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     );
 }
 
+/// A heap literal is a load of its cell (call_anatomy.md 4.9): every
+/// evaluation of one literal loads the same cell, each evaluation site fills
+/// it through one cold `molt_literal_cell_fill` call when it is still zero,
+/// and no evaluation calls the per-evaluation constructor. A release of an
+/// earlier result does not rebuild the literal: the object is immortal.
 #[test]
-fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() {
-    for (opcode, result_ty, runtime_name, payload) in [
+fn heap_literals_load_one_cell_and_fill_it_cold() {
+    for (opcode, result_ty, kind, old_constructor, payload) in [
         (
             OpCode::ConstStr,
             TirType::Str,
+            molt_codegen_abi::literal_cell::LiteralKind::Str,
             RuntimeFn::StringFromBytes,
-            AttrValue::Bytes(b"same\0literal".to_vec()),
+            b"same\0literal".to_vec(),
         ),
         (
             OpCode::ConstBytes,
             TirType::Bytes,
+            molt_codegen_abi::literal_cell::LiteralKind::Bytes,
             RuntimeFn::BytesFromBytes,
-            AttrValue::Bytes(vec![0xff, 0, 0x80]),
+            vec![0xff, 0, 0x80],
         ),
         (
             OpCode::ConstBigInt,
             TirType::DynBox,
+            molt_codegen_abi::literal_cell::LiteralKind::BigInt,
             RuntimeFn::BigintFromBytes,
-            AttrValue::Bytes(vec![
+            vec![
                 0x01, 0x8e, 0xe9, 0x0f, 0xf6, 0xc3, 0x73, 0xe0, 0xee, 0x4e, 0x3f, 0x0a, 0xd2,
-            ]),
+            ],
         ),
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let func = TirFunction::new(
-            "literal_ownership".into(),
+            "literal_cells".into(),
             vec![],
             result_ty.clone(),
             molt_ir::FunctionReturnAbi::Value,
         );
         let llvm_fn = backend.module.add_compiled_function(
-            "literal_ownership",
+            "literal_cells",
             ctx.i64_type().fn_type(&[], false),
             None,
         );
@@ -436,7 +444,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         backend.builder.position_at_end(entry);
         let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
         let mut attrs = AttrDict::default();
-        attrs.insert("bytes".into(), payload);
+        attrs.insert("bytes".into(), AttrValue::Bytes(payload.clone()));
         for result in [ValueId(0), ValueId(1)] {
             lowering.lower_op(
                 func.entry_block,
@@ -473,53 +481,32 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                 );
             }
         }
-        assert_ne!(
-            lowering.values.value(ValueId(0)).unwrap(),
-            lowering.values.value(ValueId(1)).unwrap()
-        );
         let result = lowering.ensure_i64(lowering.values.value(ValueId(1)).unwrap());
         backend.builder.build_return(Some(&result)).unwrap();
         assert!(lowering.diagnostics.borrow().is_empty());
         backend.module.verify().expect("literal module verifies");
         let ir = llvm_fn.print_to_string().to_string();
-        let calls: Vec<_> = ir
+        let cell = molt_ir::code_slots::literal_cell_symbol(kind as u64, &payload);
+        assert!(
+            backend.module.get_global(&cell).is_some(),
+            "the literal owns cell {cell}"
+        );
+        let loads = ir
             .lines()
-            .filter(|line| {
-                line.contains_execution("call ")
-                    && !line.contains_execution("@molt_refcount_admission(")
-            })
-            .collect();
+            .filter(|line| line.contains("load i64") && line.contains(&format!("@{cell}")))
+            .count();
+        assert_eq!(loads, 2, "both evaluations load the one cell: {ir}");
+        let fills = ir
+            .lines()
+            .filter(|line| line.contains_execution("@molt_literal_cell_fill("))
+            .count();
         assert_eq!(
-            calls.len(),
-            3,
-            "one owned call per result and one drop: {ir}"
+            fills, 2,
+            "each evaluation site fills the cell when zero: {ir}"
         );
         assert!(
-            calls[0].contains_execution(&format!("@{}(", runtime_name.symbol())),
-            "{ir}"
-        );
-        assert!(
-            calls[1].contains_execution("@__molt_inline_release("),
-            "{ir}"
-        );
-        assert!(
-            calls[2].contains_execution(&format!("@{}(", runtime_name.symbol())),
-            "{ir}"
-        );
-        let materializer = backend
-            .module
-            .get_function(runtime_name.linker_symbol())
-            .unwrap();
-        assert_eq!(
-            materializer.get_type(),
-            crate::llvm_backend::runtime_imports::runtime_function(
-                &ctx,
-                &backend.module,
-                runtime_name
-            )
-            .get_type(),
-            "{}",
-            runtime_name.symbol()
+            !ir.contains(&format!("@{}(", old_constructor.symbol())),
+            "no evaluation builds a new object: {ir}"
         );
     }
 }

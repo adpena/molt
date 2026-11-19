@@ -2655,6 +2655,15 @@ type = 2
 runtime_name = "molt_ascii_from_obj"
 callable_arity = 1
 
+# A compiled literal's first evaluation (call_anatomy.md 4.9): builds the
+# str, bytes or big-int object once, publishes it into the literal's cell and
+# makes it immortal; later evaluations load the cell. Parameters: the cell, the
+# payload, the molt_codegen_abi::literal_cell::LiteralKind word, the length.
+[[import]]
+name = "literal_cell_fill"
+return_contract = "borrowed_object"
+type = 18
+
 [[import]]
 name = "bigint_from_bytes"
 return_contract = "owned_object"

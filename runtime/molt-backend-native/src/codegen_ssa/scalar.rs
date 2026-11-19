@@ -857,6 +857,26 @@ pub(crate) mod tests {
                 RuntimeFn::BigintFromBytes => {
                     literal_word(function, &memory.bytes(args[0], args[1] as usize))
                 }
+                // Fills the literal's cell with the word its kind's
+                // constructor would build, and answers it.
+                RuntimeFn::LiteralCellFill => {
+                    let constructor =
+                        match molt_codegen_abi::literal_cell::LiteralKind::from_bits(args[2]) {
+                            Some(molt_codegen_abi::literal_cell::LiteralKind::Str) => {
+                                RuntimeFn::StringFromBytes
+                            }
+                            Some(molt_codegen_abi::literal_cell::LiteralKind::Bytes) => {
+                                RuntimeFn::BytesFromBytes
+                            }
+                            Some(molt_codegen_abi::literal_cell::LiteralKind::BigInt) => {
+                                RuntimeFn::BigintFromBytes
+                            }
+                            None => panic!("a literal cell names no kind: {}", args[2]),
+                        };
+                    let word = literal_word(constructor, &memory.bytes(args[1], args[3] as usize));
+                    memory.store(args[0], word);
+                    word
+                }
                 RuntimeFn::ExceptionPending => u64::from(self.pending_exception),
                 RuntimeFn::IntFromI64 if self.fail_allocation => {
                     self.pending_exception = true;
