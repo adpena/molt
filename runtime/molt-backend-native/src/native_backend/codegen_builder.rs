@@ -321,6 +321,33 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.module
             .declare_func_in_func(id, self.words.builder.func)
     }
+    /// A plain import, never the attached-execution symbol: finalization
+    /// prepends the context only to names with the attached suffix.
+    fn native_callee(
+        &mut self,
+        symbol: &str,
+        params: &[molt_ir::native_callable_abi::NativeCallableMachineType],
+        result: molt_ir::native_callable_abi::NativeCallableMachineType,
+    ) -> FuncRef {
+        use molt_ir::native_callable_abi::NativeCallableMachineType as Machine;
+        let pointer = self.module.target_config().pointer_type();
+        let machine = |ty: Machine| match ty {
+            Machine::MoltValue | Machine::U64 => types::I64,
+            Machine::Pointer => pointer,
+            Machine::I32 => types::I32,
+        };
+        let mut signature = self.module.make_signature();
+        signature
+            .params
+            .extend(params.iter().map(|&ty| AbiParam::new(machine(ty))));
+        signature.returns.push(AbiParam::new(machine(result)));
+        let id = self
+            .module
+            .declare_function(symbol, Linkage::Import, &signature)
+            .unwrap_or_else(|error| panic!("declare extension symbol `{symbol}`: {error}"));
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
+    }
     fn function_address(&mut self, callee: FuncRef) -> Value {
         let pointer = self.module.target_config().pointer_type();
         self.ins().func_addr(pointer, callee)

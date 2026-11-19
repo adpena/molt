@@ -17,7 +17,8 @@ use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 use super::builder::CodegenBuilder;
 use super::builder::IntComparison;
 use super::control::{self, Edges};
-use super::function::FunctionCx;
+use super::custody::{CallTarget, RuntimeArg};
+use super::function::{FunctionCx, ResultCustody};
 use super::value_table::{HeldCarrier, ValueTable};
 use super::{constants, pending, returns};
 use crate::representation_plan::ProducerCarrierPlan;
@@ -50,6 +51,53 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            OpCode::UnpackSequence => assert!(
+                self.unpack_sequence_op(b, op),
+                "verified UnpackSequence must lower through the canonical runtime ABI"
+            ),
+            OpCode::ObjectNewBound => {
+                let Some(&class) = op.operands.first() else {
+                    panic!("{:?} requires class operand", op.opcode);
+                };
+                let callee = b.runtime_callee(RuntimeFn::ObjectNewBound);
+                self.runtime_call(
+                    b,
+                    op,
+                    CallTarget::Callee(callee),
+                    &[RuntimeArg::Operand(class)],
+                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
+                    "object_new_bound",
+                    "object_new_bound",
+                );
+            }
+            OpCode::GetIter => {
+                let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
+                    .expect("typed runtime-call contract");
+                self.contract_runtime_call(b, op, call);
+            }
+            // `next(iterator)`: the next value, or the exhaustion sentinel.
+            OpCode::IterNext | OpCode::ForIter => {
+                let abi = RuntimeFn::IterNext
+                    .boxed_abi()
+                    .filter(|abi| abi.arity() == 1)
+                    .expect("molt_iter_next must have a generated boxed ABI");
+                self.boxed_runtime_call(b, op, abi);
+            }
+            OpCode::IterNextUnboxed => assert!(
+                self.iterator_out_words(b, op, RuntimeFn::IterNextUnboxed, 1, "iter_next_unboxed"),
+                "IterNextUnboxed requires exactly one iterator operand"
+            ),
+            OpCode::IterNextUnpack2 => assert!(
+                op.results.len() == 3
+                    && self.iterator_out_words(
+                        b,
+                        op,
+                        RuntimeFn::IterNextUnpack2,
+                        2,
+                        "iter_next_unpack2"
+                    ),
+                "IterNextUnpack2 requires one iterator operand and three results"
+            ),
             OpCode::ConstInt
             | OpCode::ModuleSlot
             | OpCode::ConstFloat
@@ -154,6 +202,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
+            OpCode::NativeSymbolAddr => self.native_symbol_addr_op(b, op),
+            OpCode::CallNative => self.call_native_op(b, op),
             OpCode::WarnStderr => self.warn_stderr_op(b, op),
             // A function object's defaults mutation stamp; it observes
             // mutable runtime state, so the read always survives.
@@ -170,19 +220,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::CallNative
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
             | OpCode::Copy
-            | OpCode::ForIter
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
-            | OpCode::GetIter
             | OpCode::ImportFrom
             | OpCode::IsPending
-            | OpCode::IterNext
-            | OpCode::IterNextUnboxed
-            | OpCode::IterNextUnpack2
             | OpCode::ModuleCacheDel
             | OpCode::ModuleCacheGet
             | OpCode::ModuleCacheSet
@@ -193,8 +237,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::ModuleGetName
             | OpCode::ModuleImportFrom
             | OpCode::ModuleSetAttr
-            | OpCode::NativeSymbolAddr
-            | OpCode::ObjectNewBound
             | OpCode::RecursionAdmits
             | OpCode::RecursionCount
             | OpCode::RecursionRelease
@@ -207,7 +249,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::StateTransition
             | OpCode::StateYield
             | OpCode::TaskWait
-            | OpCode::UnpackSequence
             | OpCode::Yield
             | OpCode::YieldFrom => return false,
         }
@@ -308,6 +349,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
+    /// Link shape of this function's trace entry. A runtime-linked entry has no shape.
+    pub(crate) frame_entry_kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     /// The function's physical parameters after the execution context, in
     /// its linkage row's order.
     pub(crate) entry: &'a [B::Value],
@@ -339,28 +382,38 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
     let FunctionInput {
         func,
         plan,
+        frame_entry_kind,
         entry,
         linkage,
         functions,
         runtime,
     } = input;
-    crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
-        errors
+    // A refusal before the walk still leaves a well-formed function: its
+    // physical entry ends on a path that never executes.
+    let refuse = |b: &mut B, diagnostics: Vec<String>| {
+        b.unreachable();
+        Err(diagnostics)
+    };
+    if let Err(errors) = crate::tir::verify::verify_operation_shapes(func) {
+        let diagnostics = errors
             .into_iter()
             .map(|error| format!("{}: {error}", func.name))
-            .collect::<Vec<_>>()
-    })?;
+            .collect();
+        return refuse(b, diagnostics);
+    }
     if !func.blocks.contains_key(&func.entry_block) {
-        return Err(vec![format!(
+        let message = format!(
             "{}: entry block {:?} is missing from TIR block map",
             func.name, func.entry_block
-        )]);
+        );
+        return refuse(b, vec![message]);
     }
     let Some(own) = linkage.get(&func.name) else {
-        return Err(vec![format!(
+        let message = format!(
             "{}: the function has no exact native linkage ABI",
             func.name
-        )]);
+        );
+        return refuse(b, vec![message]);
     };
     // The TIR entry first, then every other block by id.
     let mut ids: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -412,6 +465,9 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         };
         entry_args.push(value);
     }
+    let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
+        frame_entry_kind
+    });
     b.jump(blocks[&func.entry_block], &entry_args);
     let call_sites = Cell::new(0);
     let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
@@ -451,9 +507,7 @@ pub(crate) fn lower_function<B: CodegenBuilder>(
         }
         match &block.terminator {
             Terminator::Return { values: returned } => {
-                // A function that enters a frame record never reaches here:
-                // its entry op is a family the walker does not own yet.
-                returns::emit_return(&mut cx, b, own, returned.first().copied(), None);
+                returns::emit_return(&mut cx, b, own, returned.first().copied(), frame.as_ref());
             }
             Terminator::StateDispatch {
                 cases,
@@ -512,20 +566,20 @@ mod tests {
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
 
-    /// `name`'s own linkage row: boxed parameters and a boxed result.
-    fn row(name: &str, params: usize) -> BTreeMap<String, NativeFunctionLinkageAbi> {
+    /// The test function's own linkage row: boxed parameters and a boxed result.
+    fn row(func: &TirFunction) -> BTreeMap<String, NativeFunctionLinkageAbi> {
         let abi = NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
-                arity: params,
+                arity: func.param_types.len(),
                 has_closure: false,
                 returns_value: true,
-                execution_context: crate::ir::ExecutionContextPolicy::None,
+                execution_context: func.execution_context,
             },
             parameter_custody: Vec::new(),
-            param_types: vec![TirType::DynBox; params],
+            param_types: vec![TirType::DynBox; func.param_types.len()],
             return_type: Some(TirType::DynBox),
         };
-        BTreeMap::from([(name.to_owned(), abi)])
+        BTreeMap::from([(func.name.clone(), abi)])
     }
 
     /// Walk `func` and call it on `args`; the fact is the walk's verdict.
@@ -541,7 +595,7 @@ mod tests {
         args: &[u64],
         state: ThreadState,
     ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
-        let linkage = row(&func.name, args.len());
+        let linkage = row(func);
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
@@ -551,6 +605,7 @@ mod tests {
                 FunctionInput {
                     func,
                     plan: &plan,
+                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -612,6 +667,24 @@ mod tests {
     }
 
     #[test]
+    fn a_local_return_before_frame_entry_skips_runtime_cleanup() {
+        let mut func = TirFunction::new(
+            "early_return".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        func.execution_context = crate::ir::ExecutionContextPolicy::Local;
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
     fn an_unproven_raw_constant_is_boxed_by_the_runtime_for_the_boxed_return() {
         let mut func = TirFunction::new(
             "walk_constant".into(),
@@ -654,11 +727,11 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry
             .ops
-            .push(op(OpCode::GetIter, &[0], &[iterator.0], None));
+            .push(op(OpCode::IsPending, &[0], &[iterator.0], None));
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0)],
         };
-        let linkage = row(&func.name, 1);
+        let linkage = row(&func);
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
@@ -669,6 +742,7 @@ mod tests {
                 FunctionInput {
                     func: &func,
                     plan: &plan,
+                    frame_entry_kind: None,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -677,11 +751,11 @@ mod tests {
             )
         });
         let Err(diagnostics) = run.fact else {
-            panic!("the walk refuses GetIter")
+            panic!("the walk refuses IsPending")
         };
         assert_eq!(
             diagnostics,
-            ["walk_refused: the walker does not lower GetIter yet"]
+            ["walk_refused: the walker does not lower IsPending yet"]
         );
     }
 
@@ -817,6 +891,145 @@ mod tests {
             Err(vec![
                 "walk_check: the walker does not lower CheckException yet".into()
             ])
+        );
+    }
+
+    /// The model's object for `function` over the words `args`.
+    fn object(function: molt_ir::runtime_fn_generated::RuntimeFn, args: &[u64]) -> u64 {
+        let bytes: Vec<u8> = args.iter().flat_map(|word| word.to_le_bytes()).collect();
+        crate::codegen_ssa::scalar::tests::literal_word(function, &bytes)
+    }
+
+    #[test]
+    fn next_of_iter_calls_each_entry_on_the_previous_answer() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        for advance in [OpCode::IterNext, OpCode::ForIter] {
+            let mut func = TirFunction::new(
+                "walk_iter".into(),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let iterator = func.fresh_value();
+            let item = func.fresh_value();
+            func.value_types.insert(iterator, TirType::DynBox);
+            func.value_types.insert(item, TirType::DynBox);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry
+                .ops
+                .push(op(OpCode::GetIter, &[0], &[iterator.0], None));
+            entry.ops.push(op(advance, &[iterator.0], &[item.0], None));
+            entry.terminator = Terminator::Return { values: vec![item] };
+            let run = walk(&func, &[OBJECT]);
+            assert_eq!(run.fact, Ok(()));
+            let expected = object(
+                RuntimeFn::IterNext,
+                &[object(RuntimeFn::IterChecked, &[OBJECT])],
+            );
+            assert_eq!(run.results, [Value::Word(expected)], "{advance:?}");
+            assert_eq!(
+                run.runtime_calls,
+                [RuntimeFn::IterChecked, RuntimeFn::IterNext]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unpacking_advance_binds_its_words_then_its_flag() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_unpack".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let results: Vec<ValueId> = (0..3).map(|_| func.fresh_value()).collect();
+        for &result in &results {
+            func.value_types.insert(result, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(
+            OpCode::IterNextUnpack2,
+            &[0],
+            &results.iter().map(|id| id.0).collect::<Vec<_>>(),
+            None,
+        ));
+        // Return the second word: the runtime wrote it through the entry array.
+        entry.terminator = Terminator::Return {
+            values: vec![results[1]],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        let mut key = OBJECT.to_le_bytes().to_vec();
+        key.push(1);
+        assert_eq!(
+            run.results,
+            [Value::Word(
+                crate::codegen_ssa::scalar::tests::literal_word(RuntimeFn::IterNextUnpack2, &key)
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unpacked_sequence_binds_each_target_the_runtime_wrote() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_unpack_sequence".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let targets: Vec<ValueId> = (0..3).map(|_| func.fresh_value()).collect();
+        for &target in &targets {
+            func.value_types.insert(target, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(
+            OpCode::UnpackSequence,
+            &[0],
+            &targets.iter().map(|id| id.0).collect::<Vec<_>>(),
+            Some(3),
+        ));
+        entry.terminator = Terminator::Return {
+            values: vec![targets[2]],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        let mut key = OBJECT.to_le_bytes().to_vec();
+        key.push(2);
+        assert_eq!(
+            run.results,
+            [Value::Word(
+                crate::codegen_ssa::scalar::tests::literal_word(RuntimeFn::UnpackSequence, &key)
+            )]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::UnpackSequence]);
+    }
+
+    #[test]
+    fn a_bound_object_is_allocated_from_its_class() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_object_new".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let object_id = func.fresh_value();
+        func.value_types.insert(object_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let mut new = op(OpCode::ObjectNewBound, &[0], &[object_id.0], None);
+        new.attrs
+            .insert("class_definition".into(), AttrValue::Str("Point".into()));
+        entry.ops.push(new);
+        entry.terminator = Terminator::Return {
+            values: vec![object_id],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(
+            run.results,
+            [Value::Word(object(RuntimeFn::ObjectNewBound, &[OBJECT]))]
         );
     }
 }

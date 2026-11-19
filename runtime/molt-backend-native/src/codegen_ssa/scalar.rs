@@ -174,12 +174,20 @@ pub(crate) mod tests {
         Address(u64),
     }
 
-    /// A callee of the model: a runtime entry, or the compiled function the
-    /// interpreter declared at this index.
+    /// A callee of the model: a runtime entry, or the compiled function or
+    /// extension symbol the interpreter declared at this index.
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub(crate) enum ModelCallee {
         Runtime(RuntimeFn),
         Compiled(usize),
+        Native(usize),
+    }
+
+    /// What the model's extension symbol `symbol` answers for `args`: a hash
+    /// of both as an inline int word, owned by the caller like any Molt value
+    /// an extension returns. It reads no execution context.
+    pub(crate) fn native_result(symbol: &str, args: &[u64]) -> u64 {
+        compiled_result(symbol, args)
     }
 
     /// What the model's compiled function `symbol` answers for `args`: a
@@ -232,6 +240,13 @@ pub(crate) mod tests {
         bytes: Vec<Vec<u8>>,
         /// The compiled functions called so far: each symbol and result kind.
         compiled: Vec<(String, Option<MachineKind>)>,
+        /// The extension symbols declared so far, each with its machine
+        /// signature.
+        native: Vec<(
+            String,
+            Vec<molt_ir::native_callable_abi::NativeCallableMachineType>,
+            molt_ir::native_callable_abi::NativeCallableMachineType,
+        )>,
     }
 
     impl Interpreter {
@@ -453,9 +468,28 @@ pub(crate) mod tests {
             self.compiled.push((symbol.to_owned(), result));
             ModelCallee::Compiled(self.compiled.len() - 1)
         }
+        fn native_callee(
+            &mut self,
+            symbol: &str,
+            params: &[molt_ir::native_callable_abi::NativeCallableMachineType],
+            result: molt_ir::native_callable_abi::NativeCallableMachineType,
+        ) -> ModelCallee {
+            if let Some(index) = self.native.iter().position(|(name, ..)| name == symbol) {
+                assert_eq!(
+                    (&self.native[index].1[..], self.native[index].2),
+                    (params, result),
+                    "`{symbol}` is declared with one machine signature"
+                );
+                return ModelCallee::Native(index);
+            }
+            self.native
+                .push((symbol.to_owned(), params.to_vec(), result));
+            ModelCallee::Native(self.native.len() - 1)
+        }
         fn function_address(&mut self, callee: ModelCallee) -> u64 {
             match callee {
                 ModelCallee::Compiled(index) => fnv(self.compiled[index].0.as_bytes()),
+                ModelCallee::Native(index) => fnv(self.native[index].0.as_bytes()),
                 ModelCallee::Runtime(function) => panic!("{function:?} is no compiled function"),
             }
         }
@@ -463,6 +497,17 @@ pub(crate) mod tests {
             let args: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
             let function = match callee {
                 ModelCallee::Runtime(function) => function,
+                ModelCallee::Native(index) => {
+                    use molt_ir::native_callable_abi::NativeCallableMachineType::MoltValue;
+                    let (symbol, params, result) = &self.native[index];
+                    assert!(
+                        params.len() == args.len()
+                            && params.iter().all(|&param| param == MoltValue)
+                            && *result == MoltValue,
+                        "the model calls an extension symbol over Molt values only"
+                    );
+                    return Some(Value::Word(native_result(symbol, &args)));
+                }
                 ModelCallee::Compiled(index) => {
                     let (symbol, result) = self.compiled[index].clone();
                     let mut args = args;
@@ -963,6 +1008,16 @@ pub(crate) mod tests {
                     key.extend(args[3].to_le_bytes());
                     literal_word(function, &key)
                 }
+                // Writes each target word through the out-pointer; answers a
+                // None status.
+                RuntimeFn::UnpackSequence => {
+                    for index in 0..args[1] {
+                        let mut key = args[0].to_le_bytes().to_vec();
+                        key.push(index as u8);
+                        memory.store(args[2] + 8 * index, literal_word(function, &key));
+                    }
+                    NONE_WORD
+                }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
                 // A hash aggregate of a raw capacity, or None with
@@ -1011,6 +1066,9 @@ pub(crate) mod tests {
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
                 | RuntimeFn::FunctionClosureBits
+                | RuntimeFn::IterChecked
+                | RuntimeFn::IterNext
+                | RuntimeFn::ObjectNewBound
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure
                 | RuntimeFn::FuncNewBuiltin

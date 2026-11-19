@@ -15,8 +15,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
             }
-            OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
-            OpCode::CallNative => self.emit_call_native(op),
 
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
@@ -40,15 +38,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // passes operand 0 through (`FunctionCx::copy_op`).
                 self.walker_op(|cx, b| cx.copy_op(b, op));
             }
-
-            // -- GetIter: iter(obj) --
-            OpCode::GetIter => self.emit_get_iter(op),
-
-            // -- IterNext: next(iter) -> value (or StopIteration sentinel) --
-            OpCode::IterNext => self.emit_iter_next(op),
-
-            // -- ForIter: advance iterator, returning next value or exhaustion sentinel --
-            OpCode::ForIter => self.emit_for_iter(op),
 
             // -- Async / generator / channel state machine --
             OpCode::AllocTask => self.emit_alloc_task(op),
@@ -257,28 +246,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
-            OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
-            OpCode::IterNextUnpack2 => self.emit_iter_next_unpack2(op),
-            OpCode::UnpackSequence => {
-                assert!(
-                    self.lower_preserved_container_op(op, OpKind::UnpackSequence),
-                    "verified UnpackSequence must lower through the canonical runtime ABI"
-                );
-            }
-            OpCode::ObjectNewBound => {
-                let Some(&class_id) = op.operands.first() else {
-                    panic!("{:?} requires class operand", op.opcode);
-                };
-                let new_fn = self.ensure_runtime_import(RuntimeFn::ObjectNewBound);
-                self.emit_borrowed_runtime_call(
-                    op,
-                    new_fn,
-                    &[RuntimeArg::Operand(class_id)],
-                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
-                    "object_new_bound",
-                    "object_new_bound",
-                );
-            }
             _ => unreachable!("the walker lowers {:?}", op.opcode),
         }
     }

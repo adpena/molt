@@ -286,6 +286,13 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     a frame record is refused by its entry op. The switch lane's Cranelift dispatch is its
     first production caller; LLVM keeps its own skeleton until its remaining families move.
     Tests compile whole functions as Cranelift machine code and call them.
+  - Moved (2026-11-19, integrator): a source extension's `NativeSymbolAddr` and `CallNative`
+    (`codegen_ssa::native`). The walker takes the symbol's code address, or calls it with
+    borrowed Molt values and binds the owned result; a malformed op or a non-Molt-value ABI is
+    a diagnostic, not a panic. A backend only declares the symbol with the exact machine
+    signature its ABI token names (`CodegenBuilder::native_callee`); on Cranelift it is a plain
+    import, so finalization never prepends the execution context. LLVM's `native_calls.rs` is
+    deleted.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
@@ -323,6 +330,10 @@ callable. The trampoline borrows the closure and argument array and takes its fr
 from the current thread's pending invocation. `TaskPoll` keeps each compiled entry address
 with its provider's frame-size relocation. A runtime poll key carries its fixed layout size
 and requires no provider data symbol.
+
+LLVM and the whole-function walker initialize local frame custody in the physical function
+entry. A branch back to the TIR entry preserves the current frame base. Each return consumes
+only the base this invocation acquired. An inherited frame has no local custody slot.
 
 1. **One body and one function identity.** Each definition owns its terminal `TirFunction` through emission. Each declaration uses its frozen `NativeFunctionLinkageAbi` and has no executable body. Use the document's `FunctionId` and the existing table/remapping operations for filtering, clones, externalization and partitioning. Recover link names only at object/JIT symbol boundaries. Preserve the roots introduced by module registry data and callable manifests. A body and each reference to it must survive or remap together.
 2. **One machine signature.** Caller and provider agree on parameter order, hidden execution context, ownership, and raw, boxed or void return. Use the frozen pre-partition linkage row for both declarations. Convert edge operands before branching with the shared coercion. Walker inputs carry `ValueId`, `BlockId`, `HeldCarrier` and TIR types. A missing definition, return mismatch or illegal opcode ends compilation before an object is finalized or a JIT address is published.

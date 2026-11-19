@@ -10,7 +10,7 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use super::scalar::tests::{
-    Memory, RuntimeModel, compiled_result, program_slot_word, set_exception_hint,
+    Memory, RuntimeModel, compiled_result, native_result, program_slot_word, set_exception_hint,
 };
 
 /// What the stubs saw while the kernel ran on this thread.
@@ -339,6 +339,18 @@ extern "C" fn func_new_builtin(
     )
 }
 
+extern "C" fn iter(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::IterChecked, &[a])
+}
+extern "C" fn iter_next(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::IterNext, &[a])
+}
+extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::UnpackSequence, &[a, b, c])
+}
+extern "C" fn object_new_bound(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::ObjectNewBound, &[a])
+}
 extern "C" fn set_new(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::SetNew, &[a])
 }
@@ -373,7 +385,41 @@ extern "C" fn compiled_handoff(context: u64, a: u64) -> u64 {
     compiled_result("walker_compiled_handoff", &[a, invocation])
 }
 
+// The model's extension symbols (`scalar::tests::native_result`): plain C
+// functions that take no execution context, as an extension archive defines.
+extern "C" fn native_object_call0() -> u64 {
+    native_result("walker_native_object_call0", &[])
+}
+extern "C" fn native_object_call1(a: u64) -> u64 {
+    native_result("walker_native_object_call1", &[a])
+}
+extern "C" fn native_object_call3(a: u64, b: u64, c: u64) -> u64 {
+    native_result("walker_native_object_call3", &[a, b, c])
+}
+extern "C" fn native_pyinit() -> usize {
+    0
+}
+
 pub(crate) fn lookup(name: &str) -> Option<*const u8> {
+    for (symbol, code) in [
+        (
+            "walker_native_object_call0",
+            native_object_call0 as *const u8,
+        ),
+        (
+            "walker_native_object_call1",
+            native_object_call1 as *const u8,
+        ),
+        (
+            "walker_native_object_call3",
+            native_object_call3 as *const u8,
+        ),
+        ("walker_native_pyinit", native_pyinit as *const u8),
+    ] {
+        if name == symbol {
+            return Some(code);
+        }
+    }
     for (symbol, code) in [
         ("walker_compiled_boxed", compiled_boxed as *const u8),
         ("walker_compiled_raw", compiled_raw as *const u8),
@@ -450,6 +496,10 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::FuncNew => func_new as *const u8,
         RuntimeFn::FuncNewClosure => func_new_closure as *const u8,
         RuntimeFn::FuncNewBuiltin => func_new_builtin as *const u8,
+        RuntimeFn::IterChecked => iter as *const u8,
+        RuntimeFn::IterNext => iter_next as *const u8,
+        RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
+        RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,
         RuntimeFn::FrozensetNew => frozenset_new as *const u8,
         RuntimeFn::SetAdd => set_add as *const u8,
