@@ -16,11 +16,6 @@ use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// The thread record as a word, for the frame helpers' address arithmetic.
-    pub(super) fn thread_record_word(&mut self) -> IntValue<'ctx> {
-        self.codegen().thread_record_word()
-    }
-
     /// Enter this invocation's frame for code slot `code_slot` and return its
     /// record base: zero when nothing was linked. A synchronous frame pushes
     /// its record inline and a stateful activation links its task's

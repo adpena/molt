@@ -1028,6 +1028,7 @@ pub(crate) mod machine {
             refcounts: stubs.refcounts,
             released: stubs.model.released,
             inserted: stubs.model.inserted,
+            origins: stubs.model.origins,
         }
     }
 
@@ -1152,6 +1153,7 @@ pub(crate) mod machine {
             refcounts: stubs.refcounts,
             released: stubs.model.released,
             inserted: stubs.model.inserted,
+            origins: stubs.model.origins,
         }
     }
 

@@ -1,14 +1,53 @@
 //! CPython's list sort (`Objects/listobject.c`): a stable natural mergesort
 //! with galloping and the powersort merge policy that compares with `<` alone,
-//! asking the target CPython's comparisons in its order. Run detection is the
-//! one part that differs by version ([`RunDetection`]). Every step moves whole
+//! asking the target CPython's comparisons in its order. Run detection and the
+//! minrun schedule differ by version ([`SortGeneration`]). Every step moves whole
 //! elements without loss or duplication, so the slice remains a permutation of
 //! its input when a comparison fails; an inconsistent `<` yields some
 //! permutation, never a failure of its own.
 
+/// The list sort of one CPython generation. Its run detection and its minrun
+/// schedule decide which comparisons it asks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SortGeneration {
+    /// Through 3.12: strictly descending runs and one minrun per sort.
+    Py312,
+    /// 3.13 and 3.14: weakly descending runs (gh-116554).
+    Py313,
+    /// From 3.15: each run takes the next value of a minrun schedule that
+    /// spreads the list evenly over a power of two of runs (`minrun_next`,
+    /// Objects/listsort.txt).
+    Py315,
+}
+
+impl SortGeneration {
+    /// The sort of the target that `at_least(major, minor)` describes.
+    pub fn for_target(at_least: impl Fn(i64, i64) -> bool) -> Self {
+        if at_least(3, 15) {
+            Self::Py315
+        } else if at_least(3, 13) {
+            Self::Py313
+        } else {
+            Self::Py312
+        }
+    }
+
+    /// The sort of the CPython target `3.minor`.
+    pub fn for_minor(minor: i64) -> Self {
+        Self::for_target(|major, at_least| major < 3 || (major == 3 && minor >= at_least))
+    }
+
+    const fn runs(self) -> RunDetection {
+        match self {
+            Self::Py312 => RunDetection::StrictlyDescending,
+            Self::Py313 | Self::Py315 => RunDetection::WeaklyDescending,
+        }
+    }
+}
+
 /// How the sort finds natural runs, which decides its comparisons.
 #[derive(Clone, Copy)]
-pub enum RunDetection {
+enum RunDetection {
     /// Through CPython 3.12: a run is non-descending or strictly descending.
     StrictlyDescending,
     /// From CPython 3.13 (gh-116554): a descending run may hold runs of equal
@@ -48,7 +87,7 @@ enum MergeExit {
 }
 
 /// Sort `v` in place with the strict order `lt` (`Err` stops the sort).
-pub fn timsort<T, F>(v: &mut [T], runs: RunDetection, mut lt: F) -> Result<(), TimsortError>
+pub fn timsort<T, F>(v: &mut [T], generation: SortGeneration, mut lt: F) -> Result<(), TimsortError>
 where
     T: Copy,
     F: FnMut(&T, &T) -> Result<bool, ()>,
@@ -74,12 +113,12 @@ where
         return Err(TimsortError::Memory);
     }
     let compare = |_: ()| TimsortError::Compare;
-    let minrun = compute_minrun(n);
+    let mut minruns = MinrunSchedule::new(n, generation);
     let mut lo = 0usize;
     let mut nremaining = n;
     while nremaining > 0 {
         let hi = lo + nremaining;
-        let mut run = match runs {
+        let mut run = match generation.runs() {
             RunDetection::StrictlyDescending => {
                 let (run, descending) = count_run(&mut lt, v, lo, hi).map_err(compare)?;
                 if descending {
@@ -91,6 +130,7 @@ where
                 count_weak_run(&mut lt, &mut v[lo..hi]).map_err(compare)?
             }
         };
+        let minrun = minruns.next();
         if run < minrun {
             let force = nremaining.min(minrun);
             binarysort(&mut lt, v, lo, lo + force, lo + run).map_err(compare)?;
@@ -108,15 +148,62 @@ where
     merge_force_collapse(&mut ms, &mut lt, v).map_err(compare)
 }
 
-/// `merge_compute_minrun`: `n` below 64; else a length in 32..=64 such that
-/// `n / minrun` is at or just below a power of two.
-fn compute_minrun(mut n: usize) -> usize {
-    let mut r = 0;
-    while n >= 64 {
-        r |= n & 1;
-        n >>= 1;
+/// The minrun each new run is extended to.
+enum MinrunSchedule {
+    /// Through 3.14 (`merge_compute_minrun`): `n` below 64; else one length
+    /// in 32..=64 such that `n / minrun` is at or just below a power of two.
+    Fixed(usize),
+    /// 3.15 (`minrun_next`): the exact quotient `listlen / 2**e`, emitted as
+    /// a sequence of integers whose running sum tracks it.
+    Spread {
+        listlen: usize,
+        current: usize,
+        shift: u32,
+        mask: usize,
+    },
+}
+
+impl MinrunSchedule {
+    const MAX_MINRUN: usize = 64;
+
+    fn new(listlen: usize, generation: SortGeneration) -> Self {
+        if generation != SortGeneration::Py315 {
+            let mut n = listlen;
+            let mut r = 0;
+            while n >= Self::MAX_MINRUN {
+                r |= n & 1;
+                n >>= 1;
+            }
+            return Self::Fixed(n + r);
+        }
+        let mut shift = 0;
+        while listlen >> shift >= Self::MAX_MINRUN {
+            shift += 1;
+        }
+        Self::Spread {
+            listlen,
+            current: 0,
+            shift,
+            mask: (1usize << shift) - 1,
+        }
     }
-    n + r
+
+    fn next(&mut self) -> usize {
+        match self {
+            Self::Fixed(minrun) => *minrun,
+            Self::Spread {
+                listlen,
+                current,
+                shift,
+                mask,
+            } => {
+                *current += *listlen;
+                let result = *current >> *shift;
+                *current &= *mask;
+                result
+            }
+        }
+    }
 }
 
 /// `binarysort`: binary insertion of `v[start..hi]` into the sorted
@@ -740,12 +827,13 @@ where
 mod tests {
     use super::*;
 
-    const BOTH: [RunDetection; 2] = [
-        RunDetection::StrictlyDescending,
-        RunDetection::WeaklyDescending,
+    const ALL: [SortGeneration; 3] = [
+        SortGeneration::Py312,
+        SortGeneration::Py313,
+        SortGeneration::Py315,
     ];
 
-    fn sort_counting(values: &mut [(i64, usize)], runs: RunDetection) -> usize {
+    fn sort_counting(values: &mut [(i64, usize)], runs: SortGeneration) -> usize {
         let mut compares = 0;
         let sorted = timsort(values, runs, |a: &(i64, usize), b: &(i64, usize)| {
             compares += 1;
@@ -811,7 +899,7 @@ mod tests {
                 })
                 .collect(),
         );
-        for runs in BOTH {
+        for runs in ALL {
             for input in &inputs {
                 let mut values = input.clone();
                 let mut expected = input.clone();
@@ -826,7 +914,7 @@ mod tests {
     /// strictly descending one (one run, reversed in place).
     #[test]
     fn a_single_run_costs_n_minus_one_comparisons() {
-        for runs in BOTH {
+        for runs in ALL {
             let mut ascending: Vec<(i64, usize)> = (0..1000).map(|i| (i as i64, i)).collect();
             assert_eq!(sort_counting(&mut ascending, runs), 999);
             let mut descending: Vec<(i64, usize)> = (0..1000).map(|i| (-(i as i64), i)).collect();
@@ -852,13 +940,39 @@ mod tests {
         assert_eq!(count_run(&mut lt, &values, 0, values.len()), Ok((2, false)));
     }
 
+    /// CPython's own counts for `[(i * 41) % 101 for i in range(65)]` and
+    /// `[(i * 41) % 131 for i in range(127)]` (tests/differential/basic/
+    /// builtin_reductions.py): 3.13 and 3.14 ask 309 and 706 comparisons,
+    /// 3.15, whose minrun varies per run, 313 and 715.
+    #[test]
+    fn minrun_schedule_decides_comparisons() {
+        let shuffled = |len: i64, modulus: i64| -> Vec<(i64, usize)> {
+            (0..len).map(|i| ((i * 41) % modulus, i as usize)).collect()
+        };
+        for (len, modulus, py313, py315) in [(65, 101, 309, 313), (127, 131, 706, 715)] {
+            let mut values = shuffled(len, modulus);
+            assert_eq!(sort_counting(&mut values, SortGeneration::Py313), py313);
+            let mut values = shuffled(len, modulus);
+            assert_eq!(sort_counting(&mut values, SortGeneration::Py315), py315);
+        }
+        // The 3.15 schedule spreads the list over 2**e runs exactly.
+        for len in [64usize, 65, 127, 1000, 4097] {
+            let mut schedule = MinrunSchedule::new(len, SortGeneration::Py315);
+            let MinrunSchedule::Spread { shift, .. } = schedule else {
+                unreachable!("3.15 spreads its minruns");
+            };
+            let total: usize = (0..1usize << shift).map(|_| schedule.next()).sum();
+            assert_eq!(total, len);
+        }
+    }
+
     /// A failing or inconsistent comparison leaves a permutation.
     #[test]
     fn failures_and_inconsistent_orders_keep_a_permutation() {
         let equal_runs: Vec<(i64, usize)> = (0..3000)
             .map(|index| ((3000 - index) as i64 / 5, index))
             .collect();
-        for runs in BOTH {
+        for runs in ALL {
             for input in [permutation(3000, 11), equal_runs.clone()] {
                 for fail_at in [1usize, 2, 3, 5, 10, 100, 1000, 4000] {
                     let mut values = input.clone();

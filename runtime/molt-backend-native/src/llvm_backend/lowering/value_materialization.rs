@@ -1,7 +1,5 @@
 use super::*;
 use crate::codegen_ssa::custody;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 
 /// A runtime-call argument on LLVM: the walker's, over LLVM values.
 pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
@@ -84,21 +82,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Parameters and phis project the same producer facts as frozen linkage.
     pub(super) fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
         self.repr_facts.effective_value_type(id, declared)
-    }
-
-    /// Resolve the specialized `len` runtime function from the operand's
-    /// refined TIR type. Container specialization is derived directly from TIR
-    /// types, not from SimpleIR-name lookup.
-    pub(super) fn container_len_fn(&self, operand_id: ValueId) -> RuntimeFn {
-        // The container's exact type is a TIR fact; a boxed word carries none.
-        match self.func.value_types.get(&operand_id) {
-            Some(TirType::List(_)) => RuntimeFn::LenList,
-            Some(TirType::Str) => RuntimeFn::LenStr,
-            Some(TirType::Dict(_, _)) => RuntimeFn::LenDict,
-            Some(TirType::Tuple(_)) => RuntimeFn::LenTuple,
-            Some(TirType::Set(_)) => RuntimeFn::LenSet,
-            _ => RuntimeFn::Len,
-        }
     }
 
     // ── Box / Unbox ──
@@ -205,50 +188,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    /// End the current block with a branch from `source` to `target` that
-    /// passes `args`.
-    pub(super) fn jump_with_args(
-        &mut self,
-        source: BlockId,
-        edge: &str,
-        target: BlockId,
-        args: &[ValueId],
-    ) {
-        let mut diagnostics = Vec::new();
-        let mut codegen = self.codegen();
-        let edges = self.edges();
-        let passed = edges.arguments(&mut codegen, source, edge, target, args, &mut diagnostics);
-        codegen.jump(self.block_map[&target], &passed);
-        self.record_fatals(diagnostics);
-    }
-
-    /// End the current block with a branch on `condition`: to `target`,
-    /// passing `args`, when it holds, else to `otherwise` with none.
-    pub(super) fn branch_with_args_if(
-        &mut self,
-        condition: inkwell::values::IntValue<'ctx>,
-        source: BlockId,
-        edge: &str,
-        target: BasicBlock<'ctx>,
-        target_block: BlockId,
-        args: &[ValueId],
-        otherwise: BasicBlock<'ctx>,
-    ) {
-        let mut diagnostics = Vec::new();
-        let mut codegen = self.codegen();
-        let edges = self.edges();
-        let passed = edges.arguments(
-            &mut codegen,
-            source,
-            edge,
-            target_block,
-            args,
-            &mut diagnostics,
-        );
-        codegen.branch_if(condition, (target, &passed), (otherwise, &[]));
-        self.record_fatals(diagnostics);
-    }
-
     pub(super) fn lower_terminator(&mut self, source_block: BlockId, term: &Terminator) {
         let mut diagnostics = Vec::new();
         let lowered = {
@@ -324,133 +263,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         crate::codegen_ssa::scalar::word_of(&mut self.codegen(), val)
     }
 
-    /// This invocation's thread record (invariant J1, `call_anatomy.md` 4.1):
-    /// one load from the execution context every compiled function takes,
-    /// in the actual LLVM entry, including a CFG trampoline. The execution
-    /// lease keeps the record alive for the invocation.
-    pub(super) fn thread_record(&mut self) -> inkwell::values::PointerValue<'ctx> {
-        self.codegen().thread_record()
-    }
-
+    /// The walker's async-work poll (`FunctionCx::async_work_poll`).
     pub(super) fn emit_async_work_poll(
         &mut self,
         payload: bool,
         cold_location: Option<i64>,
     ) -> BasicValueEnum<'ctx> {
-        let has_work = self.codegen().async_work_pending();
-        let record = self.thread_record();
-        let context = self.backend.context;
-        let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
-        let fast = context.append_basic_block(self.llvm_fn, "async_poll_fast");
-        let done = context.append_basic_block(self.llvm_fn, "async_poll_done");
-        self.backend
-            .builder
-            .build_conditional_branch(has_work, cold, fast)
-            .unwrap();
-        self.backend.builder.position_at_end(cold);
-        if let Some(location) = cold_location {
-            // Serviced work is Python code that can read this frame.
-            self.store_frame_location(location);
-        }
-        let cold_fn = self.ensure_runtime_import(if payload {
-            RuntimeFn::AsyncWorkPollAndExceptionLastPending
-        } else {
-            RuntimeFn::AsyncWorkPollAndExceptionPending
-        });
-        let cold_call = self
-            .backend
-            .builder
-            .build_execution_call(cold_fn, &[], "serviced_async_work")
-            .unwrap();
-        cold_call.add_attribute(
-            inkwell::attributes::AttributeLoc::Function,
-            context.create_enum_attribute(
-                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
-                0,
-            ),
-        );
-        let cold_value = cold_call.try_as_basic_value().unwrap_basic();
-        self.backend
-            .builder
-            .build_unconditional_branch(done)
-            .unwrap();
-        self.backend.builder.position_at_end(fast);
-        let byte = self
-            .backend
-            .builder
-            .build_load(context.i8_type(), record, "exception_pending")
-            .unwrap()
-            .into_int_value();
-        let mut no_exception = None;
-        let fast_value = if payload {
-            let capture = context.append_basic_block(self.llvm_fn, "async_poll_capture_exception");
-            let pending = self
-                .backend
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    byte,
-                    context.i8_type().const_zero(),
-                    "has_pending_exception",
-                )
-                .unwrap();
-            self.backend
-                .builder
-                .build_conditional_branch(pending, capture, done)
-                .unwrap();
-            no_exception = Some(
-                context
-                    .i64_type()
-                    .const_int(molt_codegen_abi::QNAN_TAG_NONE_I64 as u64, false),
-            );
-            self.backend.builder.position_at_end(capture);
-            let observer = self.ensure_runtime_import(RuntimeFn::ExceptionLastPending);
-            self.backend
-                .builder
-                .build_execution_call(observer, &[], "pending_exception_payload")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-        } else {
-            self.backend
-                .builder
-                .build_int_z_extend(byte, context.i64_type(), "pending_exception_word")
-                .unwrap()
-                .into()
-        };
-        let fast_exit = self.backend.builder.get_insert_block().unwrap();
-        self.backend
-            .builder
-            .build_unconditional_branch(done)
-            .unwrap();
-        self.backend.builder.position_at_end(done);
-        let result = self
-            .backend
-            .builder
-            .build_phi(context.i64_type(), "async_poll_result")
-            .unwrap();
-        result.add_incoming(&[(&cold_value, cold), (&fast_value, fast_exit)]);
-        if let Some(none) = no_exception {
-            result.add_incoming(&[(&none, fast)]);
-        }
-        result.as_basic_value()
-    }
-
-    /// `molt_exception_pending()` as an i64 0 or 1 (invariant J1). It tests
-    /// the thread record's pending byte inline and calls the runtime reader
-    /// only when the byte is set. The reader answers 0 at once for a clear
-    /// byte, and for a set byte it confirms it, repairing a stale task slot;
-    /// the inline test therefore returns exactly what the call returned. The
-    /// record costs one entry-block load in any function, less than one call.
-    pub(super) fn emit_exception_pending_word(
-        &mut self,
-        name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let thread = self.thread_record_word();
-        let mut b = self.codegen();
-        let result = crate::codegen_ssa::pending::exception_pending_word(&mut b, thread);
-        b.set_name(result.into(), &format!("{name}_word"));
-        result
+        let (mut cx, mut b) = self.walker();
+        cx.async_work_poll(&mut b, payload, cold_location).into()
     }
 
     /// The module's declaration of runtime entry `function` (HF-821): its

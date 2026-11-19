@@ -145,10 +145,6 @@ pub(crate) enum SiteBody {
     ClosureStore,
 }
 
-/// A helper function's body, written once for every builder
-/// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
-/// body is generic over the builder the backend makes for it, never the
-/// caller's.
 /// One step of the inline recursion charge of a direct call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecursionCharge {
@@ -157,9 +153,14 @@ pub(crate) enum RecursionCharge {
     Release,
 }
 
+/// A helper function's body, written once for every builder
+/// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
+/// body is generic over the builder the backend makes for it, never the
+/// caller's. Each backend's helper builder places tasks too, so a task
+/// trampoline is a helper body like any other.
 pub(crate) trait HelperBody {
     /// Build the body over the helper's word parameters and answer its word.
-    fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
+    fn build<H: super::task::TaskPlacement>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {

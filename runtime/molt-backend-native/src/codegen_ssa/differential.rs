@@ -43,6 +43,8 @@ pub(crate) struct Run<F> {
     pub(crate) released: Vec<Vec<u64>>,
     /// The words the hash-aggregate mutators inserted, in order.
     pub(crate) inserted: Vec<u64>,
+    /// The homes word each traceback origin capture read, in order.
+    pub(crate) origins: Vec<u64>,
 }
 
 /// A value's machine kind and bits: equal floats compare by their bits, so
@@ -80,6 +82,7 @@ pub(crate) fn interpret<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact>
             .collect(),
         released: b.runtime.released,
         inserted: b.runtime.inserted,
+        origins: b.runtime.origins,
     }
 }
 
@@ -126,6 +129,10 @@ pub(crate) fn both<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact> {
         assert_eq!(
             interpreted.inserted, compiled.inserted,
             "the machines inserted different keys on {inputs:?}"
+        );
+        assert_eq!(
+            interpreted.origins, compiled.origins,
+            "the machines captured different traceback origins on {inputs:?}"
         );
     }
     interpreted

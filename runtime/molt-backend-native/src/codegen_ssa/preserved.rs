@@ -70,6 +70,28 @@ macro_rules! walker_preserved_kind_pattern {
             | molt_ir::OpKind::StringFormat
             | molt_ir::OpKind::TypeOf
             | molt_ir::OpKind::Widen
+            // The container family (`containers.rs`).
+            | molt_ir::OpKind::IterNextUnboxed
+            | molt_ir::OpKind::IterNextUnpack2
+            | molt_ir::OpKind::Len
+            | molt_ir::OpKind::ListNew
+            | molt_ir::OpKind::DictNew
+            | molt_ir::OpKind::TupleNew
+            | molt_ir::OpKind::SetNew
+            | molt_ir::OpKind::FrozensetNew
+            | molt_ir::OpKind::UnpackSequence
+            // The callable family (`callable.rs`).
+            | molt_ir::OpKind::BuiltinFunc
+            | molt_ir::OpKind::FuncNew
+            | molt_ir::OpKind::FuncNewClosure
+            | molt_ir::OpKind::FunctionClosureBits
+            | molt_ir::OpKind::AsyncgenNew
+            | molt_ir::OpKind::CodeSlotSet
+            | molt_ir::OpKind::CodeSlotsInit
+            | molt_ir::OpKind::CallargsNew
+            | molt_ir::OpKind::FrameLocals
+            | molt_ir::OpKind::FrameLocalsSet
+            | molt_ir::OpKind::Line
     };
 }
 pub(crate) use walker_preserved_kind_pattern;
@@ -143,6 +165,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return false;
         };
         self.direct_preserved_op(b, op, kind)
+            || self.container_preserved_op(b, op, kind)
+            || self.callable_preserved_op(b, op, kind)
     }
 
     /// The direct family: operators carried as `Copy`, value forwarding,

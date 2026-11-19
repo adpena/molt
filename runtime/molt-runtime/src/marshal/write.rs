@@ -842,11 +842,7 @@ impl<'a, 'py> Writer<'a, 'py> {
         let mut order = Vec::new();
         reserve(py, &mut order, state.keys.len())?;
         order.extend(0..state.keys.len());
-        let runs = if target_minor(py) >= 13 {
-            molt_obj_model::timsort::RunDetection::WeaklyDescending
-        } else {
-            molt_obj_model::timsort::RunDetection::StrictlyDescending
-        };
+        let runs = molt_obj_model::timsort::SortGeneration::for_minor(target_minor(py));
         let sorted = molt_obj_model::timsort::timsort(&mut order, runs, |li, ri| {
             let (left, left_index) = &state.keys[*li];
             let (right, right_index) = &state.keys[*ri];

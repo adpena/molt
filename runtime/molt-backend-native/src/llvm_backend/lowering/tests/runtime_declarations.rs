@@ -336,18 +336,5 @@ fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
         "gen_fn".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::DynBox)),
     );
-    let dummy = TirFunction::new(
-        "dummy_function_symbol".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy_function_symbol",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-
-    let _ = lowering.ensure_function_symbol("gen_fn", 0, false);
+    let _ = crate::llvm_backend::lowering::linked_compiled_function(&backend, "gen_fn");
 }

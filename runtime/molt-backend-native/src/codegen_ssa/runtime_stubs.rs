@@ -75,6 +75,18 @@ fn refcount(operation: RefcountOperation, word: u64) {
 extern "C" fn exception_pending(_: u64) -> u64 {
     runtime(RuntimeFn::ExceptionPending, &[])
 }
+extern "C" fn async_work_poll_and_exception_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::AsyncWorkPollAndExceptionPending, &[])
+}
+extern "C" fn exception_frame_origin(_: u64, homes: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionFrameOrigin, &[homes])
+}
+extern "C" fn async_work_poll_and_exception_last_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::AsyncWorkPollAndExceptionLastPending, &[])
+}
+extern "C" fn exception_last_pending(_: u64) -> u64 {
+    runtime(RuntimeFn::ExceptionLastPending, &[])
+}
 extern "C" fn frame_home_load(_: u64, home: u64) -> u64 {
     runtime(RuntimeFn::FrameHomeLoad, &[home])
 }
@@ -360,6 +372,18 @@ extern "C" fn iter(_: u64, a: u64) -> u64 {
 extern "C" fn iter_next(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::IterNext, &[a])
 }
+extern "C" fn len(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::Len, &[a])
+}
+extern "C" fn len_list(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::LenList, &[a])
+}
+extern "C" fn locals_builtin(_: u64) -> u64 {
+    runtime(RuntimeFn::LocalsBuiltin, &[])
+}
+extern "C" fn frame_locals_set(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::FrameLocalsSet, &[a])
+}
 extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
     runtime(RuntimeFn::UnpackSequence, &[a, b, c])
 }
@@ -463,6 +487,14 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         .find(|function| function.linker_symbol() == name)?;
     Some(match function {
         RuntimeFn::ExceptionPending => exception_pending as *const u8,
+        RuntimeFn::AsyncWorkPollAndExceptionPending => {
+            async_work_poll_and_exception_pending as *const u8
+        }
+        RuntimeFn::ExceptionFrameOrigin => exception_frame_origin as *const u8,
+        RuntimeFn::AsyncWorkPollAndExceptionLastPending => {
+            async_work_poll_and_exception_last_pending as *const u8
+        }
+        RuntimeFn::ExceptionLastPending => exception_last_pending as *const u8,
         RuntimeFn::ExceptionLast => exception_last as *const u8,
         RuntimeFn::Ellipsis => ellipsis as *const u8,
         RuntimeFn::GeneratorSend => generator_send as *const u8,
@@ -525,6 +557,10 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::FuncNewBuiltin => func_new_builtin as *const u8,
         RuntimeFn::IterChecked => iter as *const u8,
         RuntimeFn::IterNext => iter_next as *const u8,
+        RuntimeFn::Len => len as *const u8,
+        RuntimeFn::LenList => len_list as *const u8,
+        RuntimeFn::LocalsBuiltin => locals_builtin as *const u8,
+        RuntimeFn::FrameLocalsSet => frame_locals_set as *const u8,
         RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
         RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
         RuntimeFn::ModuleGetAttr => module_get_attr as *const u8,
