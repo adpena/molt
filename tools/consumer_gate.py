@@ -56,6 +56,11 @@ _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV_TEST")
 # three times that is a hang, not a slow suite. pytest's
 # ``faulthandler_timeout`` (pyproject) dumps the stuck test's stacks first.
 IMPORTER_RUN_TIMEOUT_S = 1800
+# Each rerun (alone, then on the base) runs at most RERUN_LIMIT tests, about a
+# minute each alone under load. Unbounded, the base rerun's hung backend
+# daemon held the host slot for 41 minutes on 2026-11-18, the same queueing
+# the importer bound above was added for.
+RERUN_TIMEOUT_S = 600
 
 SCHEMA = "molt.consumer-receipt.v1"
 
@@ -556,7 +561,19 @@ def _rerun_failures_alone(
     print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
     alone = report.with_name("alone.junit.xml")
     rerun = [sys.executable, "-m", "pytest", "-q", *ids, f"--junitxml={alone}"]
-    if _COMMANDS.run(rerun, cwd=root, env=env).returncode == 0:
+    try:
+        passed = (
+            _COMMANDS.run(rerun, cwd=root, env=env, timeout=RERUN_TIMEOUT_S).returncode
+            == 0
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"consumer-gate: the rerun alone ran past {RERUN_TIMEOUT_S} s and was "
+            "stopped; every rerun test still fails",
+            file=sys.stderr,
+        )
+        return None, ids
+    if passed:
         for test in ids:
             print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
         return ids, []
@@ -593,11 +610,21 @@ def _failures_on_base(
                 [str(tree / "src"), str(tree), env.get("PYTHONPATH", "")]
             ).rstrip(os.pathsep),
         }
-        result = _COMMANDS.run(
-            [sys.executable, "-m", "pytest", "-q", *present, f"--junitxml={report}"],
-            cwd=tree,
-            env=base_env,
-        )
+        try:
+            result = _COMMANDS.run(
+                [sys.executable, "-m", "pytest", "-q", *present, f"--junitxml={report}"],
+                cwd=tree,
+                env=base_env,
+                timeout=RERUN_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            # A hang proves nothing about the base: no failure is main's.
+            print(
+                f"consumer-gate: the base rerun ran past {RERUN_TIMEOUT_S} s and was "
+                "stopped; no failure counts as main's defect",
+                file=sys.stderr,
+            )
+            return []
         if result.returncode == 0:
             return []
         failed_on_base = set(_failed_node_ids(tree, report) or ())
