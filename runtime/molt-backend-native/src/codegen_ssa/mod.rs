@@ -5,6 +5,7 @@
 //! native backend.
 
 pub(crate) mod builder;
+pub(crate) mod callable;
 pub(crate) mod calls;
 pub(crate) mod constants;
 pub(crate) mod containers;

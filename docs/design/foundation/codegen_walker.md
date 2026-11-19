@@ -239,6 +239,10 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     preserved origin is refused, as `alias_analysis::CopyLowering` requires), `Alloc`, `OrdAt`,
     `Raise`, `WarnStderr`, `FunctionDefaultsVersion`. `StackAlloc` (refused) and `Free` (no
     code) move with the dispatch.
+  - Moved, slice 16 (round 6): the callable family's runtime calls (`codegen_ssa::callable`):
+    `function_closure_bits`, `asyncgen_new`, `code_slot_set`, `code_slots_init`,
+    `callargs_new`, `line`. Function construction (`func_new`, `func_new_closure`,
+    `builtin_func`) waits for helper bodies through the builder (typed trampolines).
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

@@ -102,7 +102,7 @@ fn repr_of(repr: &Representation, value: ValueId) -> Repr {
     repr.get(&value).copied().unwrap_or(Repr::DynBox)
 }
 
-fn is_home_store(op: &TirOp) -> bool {
+pub(crate) fn is_home_store(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy && op.origin == Some(OpKind::FrameHomeStore)
 }
 
@@ -228,6 +228,7 @@ fn bound_changes(
     previous: &State,
     state: &mut State,
     changes: &mut HashMap<(BlockId, usize), u8>,
+    trace: bool,
 ) {
     for slot in 0..state.known.len() {
         let count = changes.entry((block, slot)).or_insert(0);
@@ -241,6 +242,9 @@ fn bound_changes(
             if *count > WORD_CHANGES {
                 state.known[slot] = Known::Unknown;
                 state.dirty[slot] |= previous.dirty[slot];
+                if trace {
+                    eprintln!("[TIR-HOMES] word {slot} at {block}: change bound reached");
+                }
             }
         }
     }
@@ -403,6 +407,8 @@ struct Planner<'a> {
     /// written there is written as often as the store it replaces, so the
     /// slot keeps its stores.
     every_iteration: HashSet<BlockId>,
+    /// `MOLT_TIR_TRACE_FUNC` names this function: say why a word stays eager.
+    trace: bool,
     slots: usize,
     excluded_slots: HashSet<usize>,
     order: Vec<BlockId>,
@@ -520,6 +526,7 @@ impl<'a> Planner<'a> {
             canon,
             region,
             every_iteration,
+            trace: crate::tir::pass_manager::trace_func_enabled(&func.name),
             slots,
             excluded_slots,
             order,
@@ -596,15 +603,35 @@ impl<'a> Planner<'a> {
     fn plan(&self) -> Option<Plan> {
         let mut candidates = self.initial_candidates();
         while !candidates.is_empty() {
-            let entry = self.solve(&candidates)?;
+            let Some(entry) = self.solve(&candidates) else {
+                if self.trace {
+                    eprintln!(
+                        "[TIR-HOMES] {}: entry states did not settle",
+                        self.func.name
+                    );
+                }
+                return None;
+            };
             let mut events = Events::default();
             for bid in &self.order {
                 if let Some(state) = entry.get(bid) {
                     self.transfer(*bid, state.clone(), &candidates, Some(&mut events));
                 }
             }
+            if self.trace {
+                eprintln!(
+                    "[TIR-HOMES] {}: {} candidates, failed words {:?}",
+                    self.func.name,
+                    candidates.len(),
+                    events.failed
+                );
+            }
             if events.failed.is_empty() {
-                let carries = self.carries(&entry, &candidates, &events.writes)?;
+                let carries = self.carries(&entry, &candidates, &events.writes);
+                if self.trace && carries.is_none() {
+                    eprintln!("[TIR-HOMES] {}: carried parameters refused", self.func.name);
+                }
+                let carries = carries?;
                 return Some(Plan {
                     candidates,
                     writes: events.writes,
@@ -715,8 +742,20 @@ impl<'a> Planner<'a> {
     /// Whether `header` carries `slot`'s binding (`Bound::Carried`): it heads
     /// an innermost loop entered only by normal edges, every edge from
     /// outside the loop arrives with the home current, and every edge from
-    /// inside arrives with it stale and holding a raw scalar of one type.
-    fn carries_slot(&self, header: BlockId, slot: usize, states: &[Arrival<'_>]) -> bool {
+    /// inside holds a raw scalar of one type or the header's own carried
+    /// binding. An inside edge may arrive with the home current: a poll on a
+    /// path back to the header (a strip-mined loop's boundary) wrote it, and
+    /// writing a current home again changes nothing. Requiring stale inside
+    /// arrivals made the solve oscillate (a write un-carried the header, which
+    /// dropped the write). An arrival still holding the header's previous
+    /// state was computed from it and passes its binding through (`meet`).
+    fn carries_slot(
+        &self,
+        header: BlockId,
+        slot: usize,
+        states: &[Arrival<'_>],
+        own: Option<Known>,
+    ) -> bool {
         if slot >= self.slots || self.region.get(&header) != Some(&header) {
             return false;
         }
@@ -732,11 +771,9 @@ impl<'a> Planner<'a> {
                 Side::Foreign => return false,
                 Side::Inside => {
                     any_inside = true;
-                    if !arrival.state.dirty[slot] {
-                        return false;
-                    }
                     match arrival.state.known[slot] {
                         Known::Value(Bound::Carried(at)) if at == header => {}
+                        known if Some(known) == own => {}
                         Known::Value(Bound::Value(value)) => {
                             let Some(value_ty) = self.func.value_types.get(&value) else {
                                 return false;
@@ -767,11 +804,11 @@ impl<'a> Planner<'a> {
         for _ in 0..limit {
             let mut changed = false;
             for bid in &self.order {
-                let Some(mut state) = self.meet(*bid, &out) else {
+                let Some(mut state) = self.meet(*bid, &out, entry.get(bid)) else {
                     continue;
                 };
                 if let Some(previous) = entry.get(bid) {
-                    bound_changes(*bid, previous, &mut state, &mut changes);
+                    bound_changes(*bid, previous, &mut state, &mut changes, self.trace);
                 }
                 if entry.get(bid) != Some(&state) {
                     entry.insert(*bid, state.clone());
@@ -788,7 +825,19 @@ impl<'a> Planner<'a> {
         None
     }
 
-    fn meet(&self, bid: BlockId, out: &HashMap<(BlockId, usize), State>) -> Option<State> {
+    /// `previous` is the block's own state from the last round. An arrival
+    /// that passes header parameter `p` through unchanged and still holds the
+    /// header's previous binding is consistent with "the binding is `p`": its
+    /// state was computed from that stale header state (optimistic phi
+    /// matching, as in value numbering). At a fixpoint such an arrival holds
+    /// `p` itself, so the rule admits nothing the plain match would refuse; a
+    /// case it cannot settle oscillates into the change bound.
+    fn meet(
+        &self,
+        bid: BlockId,
+        out: &HashMap<(BlockId, usize), State>,
+        previous: Option<&State>,
+    ) -> Option<State> {
         let mut states: Vec<Arrival<'_>> = Vec::new();
         for incoming in self.incoming.get(&bid).into_iter().flatten() {
             match incoming {
@@ -831,25 +880,41 @@ impl<'a> Planner<'a> {
                     Known::Value(value) => values.push((arrival.args, value)),
                 }
             }
+            let own = previous.map(|state| state.known[slot]);
+            let passes_own = |arrival: &Arrival<'_>, param: usize| {
+                Some(arrival.state.known[slot]) == own
+                    && arrival
+                        .args
+                        .and_then(|args| args.get(param))
+                        .is_some_and(|&arg| arg == params[param].id)
+            };
+            let param_binding = (0..params.len()).find(|&param| {
+                states
+                    .iter()
+                    .all(|arrival| match arrival.state.known[slot] {
+                        Known::Top => true,
+                        _ if passes_own(arrival, param) => true,
+                        Known::Value(value) => arrival
+                            .args
+                            .and_then(|args| args.get(param))
+                            .is_some_and(|&arg| Bound::Value(self.canon(arg)) == value),
+                        Known::Unknown => false,
+                    })
+            });
             merged.known[slot] = if unknown {
-                Known::Unknown
+                param_binding.map_or(Known::Unknown, |param| {
+                    Known::Value(Bound::Value(params[param].id))
+                })
             } else if values.is_empty() {
                 Known::Top
             } else if values.iter().all(|(_, value)| *value == values[0].1) {
                 Known::Value(values[0].1)
             } else {
-                (0..params.len())
-                    .find(|&param| {
-                        values.iter().all(|(args, value)| {
-                            args.and_then(|args| args.get(param))
-                                .is_some_and(|&arg| Bound::Value(self.canon(arg)) == *value)
-                        })
-                    })
-                    .map_or(Known::Unknown, |param| {
-                        Known::Value(Bound::Value(params[param].id))
-                    })
+                param_binding.map_or(Known::Unknown, |param| {
+                    Known::Value(Bound::Value(params[param].id))
+                })
             };
-            if merged.known[slot] == Known::Unknown && self.carries_slot(bid, slot, &states) {
+            if merged.known[slot] == Known::Unknown && self.carries_slot(bid, slot, &states, own) {
                 merged.known[slot] = Known::Value(Bound::Carried(bid));
             }
         }
@@ -993,6 +1058,9 @@ impl<'a> Planner<'a> {
         if let Point::BeforeOp(bid, _) = at
             && self.every_iteration.contains(&bid)
         {
+            if self.trace {
+                eprintln!("[TIR-HOMES] word {slot}: write at {at:?} runs every iteration");
+            }
             events.failed.insert(slot);
             return;
         }
@@ -1017,8 +1085,11 @@ impl<'a> Planner<'a> {
             // edge leaving the loop can test on a block of its own, and so can
             // a reader inside the loop on a path not every iteration takes:
             // its block splits before the reader (`split_carried_reader`).
+            // A poll's cold block is placement's own, so it splits there too: a
+            // strip-mined loop's boundary poll writes the binding the header
+            // carries.
             Known::Value(Bound::Carried(header))
-                if matches!(at, Point::Edge(..))
+                if matches!(at, Point::Edge(..) | Point::PollCold(..))
                     || matches!(at, Point::BeforeOp(bid, index)
                         if index < self.func.blocks[&bid].ops.len() && self.splittable(bid)) =>
             {
@@ -1028,7 +1099,10 @@ impl<'a> Planner<'a> {
                     .or_default()
                     .push((slot, Bound::Carried(header)));
             }
-            _ => {
+            ref known => {
+                if self.trace {
+                    eprintln!("[TIR-HOMES] word {slot}: write at {at:?} has no value ({known:?})");
+                }
                 events.failed.insert(slot);
             }
         }
@@ -1266,7 +1340,20 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
                     carried_readers.push((flag, carried_ops));
                 }
             }
-            Point::PollCold(bid, index) => polls.entry((bid, index)).or_default().extend(ops),
+            Point::PollCold(bid, index) => {
+                polls.entry((bid, index)).or_default().extend(ops);
+                if let Some((flag, carried_ops)) = carried {
+                    // The poll moves to its cold block with this marker, and
+                    // that block splits before it under the header's flag.
+                    let poll = &mut func.blocks.get_mut(&bid).expect("planned block").ops[index];
+                    debug_assert!(poll.is_async_work_poll());
+                    poll.attrs.insert(
+                        CARRIED_READER_ATTR.into(),
+                        AttrValue::Int(carried_readers.len() as i64),
+                    );
+                    carried_readers.push((flag, carried_ops));
+                }
+            }
             Point::Edge(bid, index) => edges.push((bid, index, ops, carried)),
         }
     }

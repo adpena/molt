@@ -29,7 +29,7 @@ use super::exception_observation::{
     post_operation_observation,
 };
 
-fn is_call_return_poll(op: &TirOp) -> bool {
+pub(crate) fn is_call_return_poll(op: &TirOp) -> bool {
     if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
     {
         // Compiler cleanup forwards an existing transfer. Service asynchronous
@@ -88,7 +88,7 @@ fn mark_poll(op: &mut TirOp) -> bool {
 
 /// Find the payload-bearing observation that services a loop backedge when
 /// non-raising bookkeeping follows it in the latch block.
-fn latch_check_site(
+pub(crate) fn latch_check_site(
     func: &TirFunction,
     latch: BlockId,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
@@ -200,7 +200,7 @@ fn dump_lexical_custody_failure(func: &TirFunction, position: ExceptionOpPositio
 
 /// Resolve a reachable insertion boundary. The outer `Option` is reachability;
 /// the inner `Option` is depth zero versus a labeled lexical handler.
-fn reachable_lexical_handler(
+pub(crate) fn reachable_lexical_handler(
     facts: &ExceptionRegionFacts,
     func: &TirFunction,
     position: ExceptionOpPosition,
