@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from molt.frontend import ClassId, DeclaredClass, MoltOp, MoltValue, SimpleTIRGenerator
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -42,6 +44,12 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
     WireOpKind,
 )
+
+
+# A closed program with no PEP 667 frame-locals writer, as a whole-program
+# build proves for these sources (HF-901). Without a premise the frontend must
+# assume a writer on 3.13+ targets, and any callback may rebind a local.
+_CLOSED_NO_FRAME_WRITER = PythonNamespacePremise((), 0, 0, (), ())
 
 
 def test_same_module_static_class_call_reuses_current_class_binding() -> None:
@@ -857,7 +865,9 @@ def test_runtime_callable_unknown_parameter_receiver_is_stamped_fail_closed(
 def test_runtime_callable_module_alias_provenance_joins_conservatively(
     case: str, source: str, function_suffix: str, expected_symbol: str | None
 ) -> None:
-    gen = SimpleTIRGenerator(module_name="__main__")
+    gen = SimpleTIRGenerator(
+        module_name="__main__", namespace_premise=_CLOSED_NO_FRAME_WRITER
+    )
     gen.visit(ast.parse(source))
     function = next(
         function
@@ -1360,7 +1370,9 @@ def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> Non
 def test_runtime_callable_provenance_stops_exactly_at_lexical_rebinding(
     scope: str, source: str, function_suffix: str, expected_exact_reads: int
 ) -> None:
-    gen = SimpleTIRGenerator(module_name="__main__")
+    gen = SimpleTIRGenerator(
+        module_name="__main__", namespace_premise=_CLOSED_NO_FRAME_WRITER
+    )
     gen.visit(ast.parse(source))
     function = next(
         function
