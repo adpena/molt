@@ -32,28 +32,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         builder
             .build_store(slot, self.backend.context.i64_type().const_zero())
             .unwrap();
-        self.owned_frame_entered = Some(slot);
-    }
-
-    fn exit_owned_execution_frame(&mut self) {
-        let Some(slot) = self.owned_frame_entered else {
-            return;
-        };
-        let i64_ty = self.backend.context.i64_type();
-        let base = self
-            .backend
-            .builder
-            .build_load(i64_ty, slot, "frame_base")
-            .unwrap()
-            .into_int_value();
-        // Retire the custody before releasing homes can call Python again.
-        self.backend
-            .builder
-            .build_store(slot, i64_ty.const_zero())
-            .unwrap();
-        // The pop body tests the base itself: a failed entry pops nothing.
-        let kind = self.frame_entry_kind();
-        self.emit_frame_record_pop(base, kind);
+        self.owned_frame_entered = Some(crate::codegen_ssa::returns::OwnedFrame {
+            slot,
+            kind: self.frame_entry_kind(),
+        });
     }
 
     pub(super) fn program_slot_id(
@@ -209,30 +191,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// its linkage return carrier. The return of a body without a value, and
     /// the early exit whose caller reads the pending exception instead.
     pub(super) fn build_empty_return(&mut self) {
-        let linkage_abi = require_function_linkage_abi(self.func, self.backend);
-        match linkage_abi.return_type.clone() {
-            None => {
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(None).unwrap();
-            }
-            Some(return_type) => {
-                let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                let ret_val = self
-                    .backend
-                    .context
-                    .i64_type()
-                    .const_int(none_bits, false)
-                    .into();
-                let ret_val = self.coerce_value(
-                    ret_val,
-                    crate::codegen_ssa::HeldCarrier::Boxed,
-                    None,
-                    &return_type,
-                );
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(Some(&ret_val)).unwrap();
-            }
-        }
+        self.emit_return(None);
     }
 
     /// Transfer one source reference into a storage home, without retaining an
@@ -460,41 +419,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_fatals(diagnostics);
     }
 
-    /// `value`, held as `source`, converted for a destination of type
-    /// `target` at the current position (a return, a direct call's raw
-    /// parameter).
-    pub(super) fn coerce_value(
-        &self,
-        value: BasicValueEnum<'ctx>,
-        source: crate::codegen_ssa::HeldCarrier,
-        source_id: Option<ValueId>,
-        target: &TirType,
-    ) -> BasicValueEnum<'ctx> {
-        let mut codegen = self.codegen();
-        crate::codegen_ssa::control::coerce(
-            &mut codegen,
-            &self.repr_facts,
-            value,
-            source,
-            source_id,
-            target,
-        )
-        .unwrap_or_else(|| {
-            self.record_fatal(format!(
-                "no conversion of a value held as {source:?} to {target:?}"
-            ));
-            codegen.placeholder(crate::codegen_ssa::control::carrier_kind(
-                crate::codegen_ssa::HeldCarrier::of(target),
-            ))
-        })
-    }
-
-    pub(super) fn held(&self, id: ValueId) -> crate::codegen_ssa::HeldCarrier {
-        self.values
-            .repr(id)
-            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed)
-    }
-
     pub(super) fn lower_terminator(&mut self, source_block: BlockId, term: &Terminator) {
         let mut diagnostics = Vec::new();
         let lowered = {
@@ -525,26 +449,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
-                let linkage_abi = require_function_linkage_abi(self.func, self.backend);
-                let Some(&value) = values.first() else {
-                    self.build_empty_return();
-                    return;
-                };
-                // A multi-value return returns its first value.
-                let return_type = linkage_abi.return_type.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "LLVM function `{}` returns a value through a native-void linkage ABI",
-                        self.func.name
-                    )
-                });
-                let ret_val = self.coerce_value(
-                    self.resolve(value),
-                    self.held(value),
-                    Some(value),
-                    return_type,
-                );
-                self.exit_owned_execution_frame();
-                self.backend.builder.build_return(Some(&ret_val)).unwrap();
+                self.emit_return(values.first().copied());
             }
             Terminator::Branch { .. }
             | Terminator::CondBranch { .. }

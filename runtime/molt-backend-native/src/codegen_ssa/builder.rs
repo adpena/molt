@@ -346,4 +346,12 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     );
     /// End the current block on a path that never executes.
     fn unreachable(&mut self);
+    /// Retire the frame whose base was taken from the invocation's entry slot.
+    fn pop_frame(
+        &mut self,
+        base: Self::Word,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    );
+    /// Return a value already converted to the function's declared machine ABI.
+    fn return_value(&mut self, value: Option<Self::Value>);
 }

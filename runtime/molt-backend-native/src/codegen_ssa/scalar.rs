@@ -201,6 +201,7 @@ pub(crate) mod tests {
         Jump(u32, Vec<Value>),
         Branch(bool, (u32, Vec<Value>), (u32, Vec<Value>)),
         Switch(u64, Vec<(i64, u32, Vec<Value>)>, (u32, Vec<Value>)),
+        Return(Option<Value>),
         Unreachable,
     }
 
@@ -210,6 +211,8 @@ pub(crate) mod tests {
     pub(crate) struct Interpreter {
         pub(crate) runtime: RuntimeModel,
         thread_record_slot: Option<usize>,
+        pub(in crate::codegen_ssa) popped_frames:
+            Vec<(u64, Option<molt_codegen_abi::frame_record::FrameEntryKind>)>,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -484,6 +487,16 @@ pub(crate) mod tests {
                 cases.to_vec(),
                 (default.0, default.1.to_vec()),
             ));
+        }
+        fn pop_frame(
+            &mut self,
+            base: u64,
+            kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+        ) {
+            self.popped_frames.push((base, kind));
+        }
+        fn return_value(&mut self, value: Option<Value>) {
+            self.edges.push(Edge::Return(value));
         }
         fn unreachable(&mut self) {
             self.edges.push(Edge::Unreachable);
