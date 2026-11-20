@@ -122,6 +122,9 @@ except Exception:
     _UnionType = None
 
 _SUPPORTS_TYPEVAR_DEFAULTS = tuple(_sys.version_info[:2]) >= (3, 13)
+# CPython 3.15 gives TypeVarTuple variance; an explicit one is invariant by
+# default and spells it like TypeVar (`~Ts`), a PEP 695 one infers it.
+_TYPEVARTUPLE_VARIANCE_REPR = tuple(_sys.version_info[:2]) >= (3, 15)
 _SUPPORTS_TYPE_EVALUATORS = tuple(_sys.version_info[:2]) >= (3, 14)
 _TYPEVAR_NO_DEFAULT = object()
 
@@ -427,23 +430,43 @@ def _evaluate_lazy_type_value_once(
         _MOLT_RLOCK_RELEASE(lock)
 
 
+# CPython 3.15 TypeAliasType gains a read-only `__qualname__` member.
+_TYPE_ALIAS_QUALNAME = tuple(_sys.version_info[:2]) >= (3, 15)
+
+
 class _MoltTypeAlias(_TypingBase):
     __slots__ = (
         "__name__",
+        "_module",
         "_value_evaluator",
         "_value_cache",
         "__type_params__",
         "__parameters__",
-    )
+    ) + (("__qualname__",) if _TYPE_ALIAS_QUALNAME else ())
 
     def __init__(
-        self, name: str, value_evaluator: object, type_params: tuple[object, ...]
+        self,
+        name: str,
+        value_evaluator: object,
+        type_params: tuple[object, ...],
+        module: str,
+        qualname: str,
     ) -> None:
         self.__name__ = name
+        self._module = module
+        if _TYPE_ALIAS_QUALNAME:
+            self.__qualname__ = qualname
         self._value_evaluator = value_evaluator
         self._value_cache = _LAZY_TYPE_VALUE_UNSET
         self.__type_params__ = type_params
         self.__parameters__ = type_params
+
+    def __getattribute__(self, name: str) -> object:
+        # An alias's `__module__` is its defining module (CPython's
+        # typealias getset); the type's own `__module__` stays `typing`.
+        if name == "__module__":
+            return object.__getattribute__(self, "_module")
+        return object.__getattribute__(self, name)
 
     @property
     def __value__(self) -> object:
@@ -485,7 +508,9 @@ class _MoltTypeAliasApplied(_TypingBase):
         return self._alias.__value__
 
     def __repr__(self) -> str:
-        return f"{self._alias.__name__}[{_format_args(self.__args__)}]"
+        # CPython's subscript is a types.GenericAlias; its repr is the one
+        # native authority (`_Py_typing_type_repr` for origin and arguments).
+        return repr(_MOLT_GENERIC_ALIAS_NEW(self._alias, self.__args__))
 
 
 class _UnionGenericAlias(_TypingBase):
@@ -1056,6 +1081,8 @@ class _TypeVarTuple(_TypingBase):
         self._default = NoDefault if _SUPPORTS_TYPEVAR_DEFAULTS else _TYPEVAR_NO_DEFAULT
 
     def __repr__(self) -> str:
+        if _TYPEVARTUPLE_VARIANCE_REPR and not self._pep695:
+            return f"~{self.__name__}"
         return self.__name__
 
     __str__ = __repr__
@@ -1239,10 +1266,14 @@ def _molt_class_getitem(cls: object, params: object) -> object:
 
 
 def _molt_type_alias(
-    name: str, value_evaluator: object, type_params: tuple[object, ...]
+    name: str,
+    value_evaluator: object,
+    type_params: tuple[object, ...],
+    module: str,
+    qualname: str,
 ) -> _MoltTypeAlias:
     params = _as_tuple(type_params)
-    return _MoltTypeAlias(name, value_evaluator, params)
+    return _MoltTypeAlias(name, value_evaluator, params, module, qualname)
 
 
 class Generic:

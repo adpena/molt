@@ -5,7 +5,8 @@ mod attribute_lookup;
 pub use attribute_lookup::AttributeLookup;
 
 pub mod byte_compare;
-pub mod exception_layout;
+/// The builtin exception layouts are ABI: codegen and the runtime read one table.
+pub use molt_codegen_abi::exception_layout;
 pub mod exception_render;
 pub mod float_bits;
 pub mod float_literal;

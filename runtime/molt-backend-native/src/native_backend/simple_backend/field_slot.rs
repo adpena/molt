@@ -54,3 +54,23 @@ pub(crate) fn emit_field_slot_set(
         |b, pointer| cold(&mut *b.words.builder, pointer),
     );
 }
+
+/// The proven builtin member read of `field` as an owned word, whose miss
+/// calls `cold(builder, object)`.
+pub(crate) fn emit_builtin_field_get(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    object: Value,
+    field: molt_codegen_abi::exception_layout::ExceptionTypedField,
+    cold: impl FnOnce(&mut FunctionBuilder<'_>, Value) -> Value,
+) -> Value {
+    use molt_codegen_abi::builtin_field::{exception_field_read, generate_builtin_field_get};
+    let mut b = field_slot_builder(builder, sites);
+    generate_builtin_field_get(
+        &mut b,
+        object,
+        exception_field_read(field),
+        ListLocking::BUILD,
+        |b, object| cold(&mut *b.words.builder, object),
+    )
+}

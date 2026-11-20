@@ -618,13 +618,31 @@ def test_scan_view_yields_the_same_scan_as_the_whole_premise(
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
         if token.type == tokenize.NAME
     }
+    foreign = tuple(sorted(spelled | universe | {f"unrelated_{n}" for n in range(64)}))
+    # Every lowering-only fact is set: the view drops them, so equal scans
+    # prove no such fact can change what a scan returns (its key omits them).
     premise = PythonNamespacePremise(
-        tuple(sorted(spelled | universe | {f"unrelated_{n}" for n in range(64)})),
+        foreign,
         NO_INVALID_MEMBERS,
         NO_INVALID_MEMBERS,
         (),
+        namespace_reflected=True,
+        code_rebinding=True,
+        escape_writes=tuple((name, "writer:1") for name in foreign[:8]),
+        instance_class_writer="writer:2",
+        exact_receivers=(((10, 4, 12, 8, "FunctionDef"), (9, 0, 20, 0, "ClassDef")),),
     )
     view = premise.scan_view(universe)
+    assert view == replace(
+        premise,
+        foreign_writes=view.foreign_writes,
+        foreign_universe=universe,
+        namespace_reflected=False,
+        code_rebinding=False,
+        escape_writes=(),
+        instance_class_writer=None,
+        exact_receivers=(),
+    )
     assert premise.foreign_writes is not None and view.foreign_writes is not None
     dropped = frozenset(premise.foreign_writes) - frozenset(view.foreign_writes)
     assert dropped - {f"unrelated_{n}" for n in range(64)}

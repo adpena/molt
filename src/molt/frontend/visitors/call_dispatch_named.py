@@ -17,6 +17,7 @@ from typing import (
 
 from molt.frontend._types import (
     BoundMethodHint,
+    BuiltinLayout,
     ClassId,
     ClassInfo,
     DeclaredClass,
@@ -26,7 +27,10 @@ from molt.frontend._types import (
     _intrinsic_arity_exact,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
+from molt.frontend.exception_kinds_generated import (
+    BUILTIN_EXCEPTION_CODES,
+    BUILTIN_EXCEPTION_LAYOUT_KINDS,
+)
 from molt.frontend.diagnostics import FrontendRejection
 
 
@@ -304,7 +308,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     packed = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(MoltOp(kind="TUPLE_NEW", args=items, result=packed))
                     tuples.append(packed)
-                return self._emit_intrinsic_call(
+                error = self._emit_intrinsic_call(
                     "molt_exception_new_builtin_kw",
                     [
                         self._emit_const_value(BUILTIN_EXCEPTION_CODES[exception_name]),
@@ -312,6 +316,14 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     ],
                     type_hint="exception",
                 )
+                # The tag construction builds that builtin (or the builtin
+                # OSError subclass errno promotion picks): its layout is fixed.
+                self._stamp_exact_class(
+                    error,
+                    BuiltinLayout(BUILTIN_EXCEPTION_LAYOUT_KINDS[exception_name]),
+                    durable=True,
+                )
+                return error
             if (
                 builtin is PythonIdentity.BUILTIN_ABS
                 and len(node.args) == 1
@@ -657,50 +669,29 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="STATICMETHOD_NEW", args=[func_val], result=res))
                 return res
             if builtin is PythonIdentity.BUILTIN_PROPERTY:
-                if any(kw.arg is None for kw in node.keywords):
+                # The fast path builds only a doc-less property whose accessors
+                # arrive positionally or by keyword in slot order, so visiting
+                # the slots evaluates them in source order. Every other call,
+                # including any doc (the constructor owns the getter-doc flag)
+                # and every malformed shape, is an ordinary call: CPython's
+                # Argument Clinic diagnostics follow argument evaluation.
+                accessor_names = ("fget", "fset", "fdel")
+                if len(node.args) > len(accessor_names) or any(
+                    isinstance(arg, ast.Starred) for arg in node.args
+                ):
                     return CALL_NOT_HANDLED
-                if len(node.args) > 4:
-                    return self._emit_type_error_value(
-                        "property expected at most 4 arguments", "property"
-                    )
-                getter_expr = node.args[0] if len(node.args) > 0 else None
-                setter_expr = node.args[1] if len(node.args) > 1 else None
-                deleter_expr = node.args[2] if len(node.args) > 2 else None
-                doc_expr = node.args[3] if len(node.args) > 3 else None
+                accessor_exprs: list[ast.expr | None] = list(node.args)
+                accessor_exprs.extend([None] * (len(accessor_names) - len(node.args)))
+                next_slot = len(node.args)
                 for kw in node.keywords:
-                    if kw.arg == "fget":
-                        if getter_expr is not None:
-                            return self._emit_type_error_value(
-                                "property() got multiple values for argument 'fget'",
-                                "property",
-                            )
-                        getter_expr = kw.value
-                    elif kw.arg == "fset":
-                        if setter_expr is not None:
-                            return self._emit_type_error_value(
-                                "property() got multiple values for argument 'fset'",
-                                "property",
-                            )
-                        setter_expr = kw.value
-                    elif kw.arg == "fdel":
-                        if deleter_expr is not None:
-                            return self._emit_type_error_value(
-                                "property() got multiple values for argument 'fdel'",
-                                "property",
-                            )
-                        deleter_expr = kw.value
-                    elif kw.arg == "doc":
-                        if doc_expr is not None:
-                            return self._emit_type_error_value(
-                                "property() got multiple values for argument 'doc'",
-                                "property",
-                            )
-                        doc_expr = kw.value
-                    else:
-                        return self._emit_type_error_value(
-                            f"property() got an unexpected keyword argument '{kw.arg}'",
-                            "property",
-                        )
+                    if kw.arg not in accessor_names:
+                        return CALL_NOT_HANDLED
+                    slot = accessor_names.index(kw.arg)
+                    if slot < next_slot:
+                        return CALL_NOT_HANDLED
+                    accessor_exprs[slot] = kw.value
+                    next_slot = slot + 1
+                getter_expr, setter_expr, deleter_expr = accessor_exprs
                 if getter_expr is None:
                     getter = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=getter))
@@ -739,20 +730,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         result=res,
                     )
                 )
-                if doc_expr is not None:
-                    doc_val = self.visit(doc_expr)
-                    if doc_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.UNSUPPORTED_FEATURE,
-                            "property doc unsupported",
-                        )
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_OBJ",
-                            args=[res, "__doc__", doc_val],
-                            result=MoltValue("none"),
-                        )
-                    )
                 return res
             if builtin is PythonIdentity.BUILTIN_PRINT:
                 # Print is an ordinary value-producing builtin call. Its runtime

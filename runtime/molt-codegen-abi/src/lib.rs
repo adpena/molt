@@ -26,8 +26,10 @@ mod runtime_callables_generated;
 pub use runtime_callables_generated::*;
 
 pub mod boxed_word;
+pub mod builtin_field;
 pub mod c_width;
 pub mod closure_slot;
+pub mod exception_layout;
 pub mod field_slot;
 pub mod frame_record;
 pub mod global_slot;

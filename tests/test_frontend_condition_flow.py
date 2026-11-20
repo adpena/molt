@@ -265,6 +265,19 @@ def test_namedexpr_signature_collection_respects_annotation_evaluation(
     assert generator._collect_namedexpr_names(tree) == expected
 
 
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_annotated_assignment_collection_respects_annotation_evaluation(
+    target: tuple[int, int],
+) -> None:
+    # A simple target's annotation runs at the assignment only before 3.14;
+    # a deferred annotation binds none of its named expressions there.
+    generator = SimpleTIRGenerator(module_name="condition_flow", target_python=target)
+    body = ast.parse("value: (annotation := int) = 1").body
+    expected = ["value", "annotation"] if target < (3, 14) else ["value"]
+    assert generator._collect_assigned_names_ordered(body) == expected
+    assert generator._collect_assigned_names(body) == set(expected)
+
+
 @pytest.mark.parametrize(
     "source, expected",
     [
@@ -290,7 +303,6 @@ def test_namedexpr_signature_collection_respects_annotation_evaluation(
         ("a[(key := f())] += value", ["key"]),
         ("del a[(key := 0)]", ["key"]),
         ("a[(key := 0)], value = source", ["key", "value"]),
-        ("value: (annotation := int) = 1", ["value", "annotation"]),
         ("value = [(outer := item) for item in data]", ["value", "outer"]),
         (
             "if False:\n    value = (outer := (inner := 1))\n",

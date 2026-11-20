@@ -912,7 +912,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 50
+# 51: a scan row no longer copies its key's premise view; the key alone names it.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 51
 
 
 def _import_scan_cache_key(
@@ -1206,46 +1207,8 @@ def _read_persisted_import_scan_record(
             )
             if payload is None:
                 return None
-        try:
-            same_as = _decode_namespace_premise_cache_identity(
-                payload["namespace_premise"]
-            )
-        except (KeyError, ValueError):
-            return None
-        if same_as == namespace_premise or (
-            _import_scan_cache_key(
-                path,
-                module_name=module_name,
-                is_package=is_package,
-                import_scan_mode=import_scan_mode,
-                source_owner=source_owner,
-                source_arguments=source_arguments,
-                namespace_premise=same_as,
-                native_support_function_roots=native_support_function_roots,
-                target_python=target_python,
-                target_sys_platform=target_sys_platform,
-                runtime_catalog_owner=runtime_catalog_owner,
-                purpose=purpose,
-            )
-            != target_key
-        ):
-            return None
-        return _read_persisted_import_scan_record(
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            source_owner=source_owner,
-            source_arguments=source_arguments,
-            namespace_premise=same_as,
-            native_support_function_roots=native_support_function_roots,
-            path_stat=path_stat,
-            snapshot=snapshot,
-            target_sys_platform=target_sys_platform,
-            target_python=target_python,
-            runtime_catalog_owner=runtime_catalog_owner,
-            purpose=purpose,
-        )
+        # The chain ends at a stored scan of the same header, proven equal to
+        # this view's scan for this source generation; it is validated below.
     # Source records are a closed versioned protocol. Retired projections and
     # partial migrations cannot be admitted under a current schema marker.
     if set(payload) != {
@@ -1258,7 +1221,6 @@ def _read_persisted_import_scan_record(
         "purpose",
         "source_owner",
         "source_arguments",
-        "namespace_premise",
         "body_selection",
         "source_demands",
         "source_sites",
@@ -1295,9 +1257,6 @@ def _read_persisted_import_scan_record(
         _validate_import_scan_namespace_summary(
             namespace_summary, source_owner=source_owner
         )
-        cached_premise = _decode_namespace_premise_cache_identity(
-            payload["namespace_premise"]
-        )
     except (KeyError, ValueError):
         return None
     if (
@@ -1318,7 +1277,6 @@ def _read_persisted_import_scan_record(
         or payload.get("source_owner")
         != (list(source_owner) if source_owner is not None else None)
         or payload.get("source_arguments") != list(source_arguments)
-        or cached_premise != namespace_premise
     ):
         return None
     if snapshot is not None:
@@ -1820,7 +1778,6 @@ def _write_persisted_import_scan(
         "purpose": purpose.value,
         "source_owner": source_owner,
         "source_arguments": source_arguments,
-        "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
         "source_demands": [
             [
                 item.source,

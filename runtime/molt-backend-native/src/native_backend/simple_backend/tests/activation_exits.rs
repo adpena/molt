@@ -127,6 +127,15 @@ fn payload_word(function: &Function, frame: Value, offset: i64) -> Value {
             if !roots.contains(&frame) {
                 return None;
             }
+            // A payload slot address is frame arithmetic. An address computed
+            // from a loaded word (the inline incref reads the loaded object's
+            // header) reads that object, not the payload.
+            if insts
+                .iter()
+                .any(|&source| function.dfg.insts[source].opcode() == Opcode::Load)
+            {
+                return None;
+            }
             let uses_offset = insts.iter().any(|&source| {
                 function
                     .dfg

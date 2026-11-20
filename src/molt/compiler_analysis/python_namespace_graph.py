@@ -47,6 +47,21 @@ from molt.compiler_analysis.python_value_identity import (
 # The frame-locals writer as a scan view states it: present, site elided.
 _SCAN_FRAME_LOCALS_WRITER: Final = "a frame-locals writer in the graph"
 
+# The premise fields a binding policy reads, each with the policy field it
+# sets (``python_namespace_binding_policy``). A scan reads its premise only
+# through this table and the ``__all__`` check's ``foreign_writes``, so a scan
+# view keeps exactly these fields: its cache key holds nothing a scan does not
+# read, and a field the policy does not read never re-keys a scan.
+_BINDING_POLICY_FIELDS: Final = (
+    ("foreign_writes", "foreign_namespace_writes"),
+    ("foreign_universe", "foreign_namespace_universe"),
+    ("member_writes", "callback_member_writes"),
+    ("entry_member_writes", "entry_invalid_members"),
+    ("noncanonical_imports", "noncanonical_imports"),
+    ("opaque_activation_sources", "opaque_activation_sources"),
+    ("frame_locals_writer", "frame_locals_writer"),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PythonNamespacePremise:
@@ -108,10 +123,12 @@ class PythonNamespacePremise:
 
         A scan reads the premise only through its binding policy
         (``python_namespace_binding_policy``, not lowering) and the ``__all__``
-        export check. Lowering-only facts (``exact_receivers``, escape writer
-        sites, namespace reflection, code rebinding, the instance-class writer)
-        never revise a scan. With ``universe`` (``python_namespace_name_universe``)
-        the foreign names shrink to those the source can spell: the binding
+        export check, so the view keeps the ``_BINDING_POLICY_FIELDS`` and
+        every other field takes its default. Lowering-only facts
+        (``exact_receivers``, escape writer sites, namespace reflection, code
+        rebinding, the instance-class writer) therefore never revise or re-key
+        a scan. With ``universe`` (``python_namespace_name_universe``) the
+        foreign names shrink to those the source can spell: the binding
         analysis reaches any other name only through a computed key, and then
         treats it as foreign-written. A write of a name the module never spells
         therefore neither revises nor re-keys its scan (HF-926).
@@ -123,21 +140,17 @@ class PythonNamespacePremise:
             universe = None
         else:
             foreign = tuple(name for name in foreign if name in universe)
-        return replace(
-            self,
+        read = {name: getattr(self, name) for name, _policy in _BINDING_POLICY_FIELDS}
+        read.update(
             foreign_writes=foreign,
             foreign_universe=universe,
-            namespace_reflected=False,
-            code_rebinding=False,
-            escape_writes=(),
-            instance_class_writer=None,
-            exact_receivers=(),
             # A scan reads only whether a frame-locals writer exists, never
             # its site, so a site change re-keys no scan.
             frame_locals_writer=None
             if self.frame_locals_writer is None
             else _SCAN_FRAME_LOCALS_WRITER,
         )
+        return PythonNamespacePremise(**read)
 
     def escape_writer(self, name: str) -> str | None:
         """The first site that may write ``name`` through an escaped value."""
@@ -252,19 +265,18 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
     """
     if premise is None:
         return policy
-    opaque = premise.opaque_activation_sources
-    if lowering and opaque is not None and not premise.code_rebinding:
-        opaque = ()
-    return replace(
-        policy,
-        foreign_namespace_writes=premise.foreign_writes,
-        foreign_namespace_universe=premise.foreign_universe,
-        callback_member_writes=premise.member_writes,
-        entry_invalid_members=premise.entry_member_writes,
-        noncanonical_imports=premise.noncanonical_imports,
-        opaque_activation_sources=opaque,
-        frame_locals_writer=premise.frame_locals_writer,
-    )
+    values = {
+        policy_field: getattr(premise, premise_field)
+        for premise_field, policy_field in _BINDING_POLICY_FIELDS
+    }
+    # Only lowering reads ``code_rebinding``; a scan never lowers.
+    if (
+        lowering
+        and values["opaque_activation_sources"] is not None
+        and not premise.code_rebinding
+    ):
+        values["opaque_activation_sources"] = ()
+    return replace(policy, **values)
 
 
 @dataclass(frozen=True, slots=True)

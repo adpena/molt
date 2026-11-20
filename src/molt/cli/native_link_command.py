@@ -284,8 +284,22 @@ def _build_native_link_plan(
     external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
     bolt_requested: bool = False,
     host_platform: str | None = None,
+    runtime_image: Path | None = None,
 ) -> NativeLinkPlan:
+    """The executable's link. ``runtime_image``, when given, is the shared
+    runtime image of ``runtime_lib``'s generation (``jit_runtime_image``):
+    the executable links it in place of the static archive, finds it through
+    an rpath to its exact store entry, and exports the isolate bootstrap the
+    image imports (design ``dev_shared_runtime.md``). Otherwise the static
+    archive is linked."""
     host_platform = sys.platform if host_platform is None else host_platform
+    if runtime_image is not None and target.object_format not in (
+        NativeObjectFormat.MACHO,
+        NativeObjectFormat.ELF,
+    ):
+        raise RuntimeError(
+            f"A shared runtime image is not available for {target.object_format.value}"
+        )
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
         target=target,
         sysroot_path=sysroot_path,
@@ -349,12 +363,17 @@ def _build_native_link_plan(
         bolt_requested=bolt_requested,
     )
     runtime_lib_str = str(runtime_lib)
+    runtime_link_inputs = (
+        [runtime_lib_str]
+        if runtime_image is None
+        else [str(runtime_image), f"-Wl,-rpath,{runtime_image.parent}"]
+    )
     if target.object_format is NativeObjectFormat.ELF:
         link_inputs.extend(
             [
                 "-Wl,--start-group",
                 *external_link_arguments,
-                runtime_lib_str,
+                *runtime_link_inputs,
                 "-Wl,--end-group",
                 "-o",
                 str(output_binary),
@@ -376,8 +395,12 @@ def _build_native_link_plan(
         link_inputs.extend(
             [
                 *external_link_arguments,
-                runtime_lib_str,
-                runtime_lib_str,
+                # A shared image resolves in one pass.
+                *(
+                    [runtime_lib_str, runtime_lib_str]
+                    if runtime_image is None
+                    else runtime_link_inputs
+                ),
                 "-o",
                 str(output_binary),
             ]
@@ -391,6 +414,9 @@ def _build_native_link_plan(
     if target.object_format is NativeObjectFormat.MACHO:
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
         exported_symbols = ["_main"]
+        if runtime_image is not None:
+            # The image imports the application's isolate bootstrap.
+            exported_symbols.append(f"_{COMPILED_ISOLATE_BOOTSTRAP_SYMBOL}")
         if has_external_inputs:
             for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
@@ -413,12 +439,14 @@ def _build_native_link_plan(
             link_cmd.append("-Wl,--emit-relocs")
         version_script_path = output_binary.parent / ".molt_version.ver"
         globals = "main;"
+        if runtime_image is not None:
+            globals = f"main; {COMPILED_ISOLATE_BOOTSTRAP_SYMBOL};"
         if has_external_inputs:
             singleton_globals = " ".join(
                 f"{canonical}; {storage};"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
             )
-            globals = f"main; {singleton_globals}"
+            globals = f"{globals} {singleton_globals}"
             link_cmd.extend(
                 f"-Wl,--defsym={canonical}={storage}"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
@@ -558,6 +586,9 @@ def _build_native_runtime_image_link_plan(
         link_cmd.extend(
             [
                 "-dynamiclib",
+                # An executable linked against the image finds it through
+                # its own rpath, the image's exact store entry.
+                f"-Wl,-install_name,@rpath/{output_image.name}",
                 f"-Wl,-force_load,{runtime_lib_str}",
                 f"-Wl,-U,_{COMPILED_ISOLATE_BOOTSTRAP_SYMBOL}",
                 "-o",
@@ -583,6 +614,7 @@ def _build_native_runtime_image_link_plan(
         link_cmd.extend(
             [
                 "-shared",
+                f"-Wl,-soname,{output_image.name}",
                 "-Wl,--whole-archive",
                 runtime_lib_str,
                 "-Wl,--no-whole-archive",

@@ -627,6 +627,20 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
+            (SiteBody::BuiltinFieldGet { field }, &[object, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ExceptionFieldGet);
+                emit_builtin_field_get(
+                    self.words.builder,
+                    sites,
+                    object,
+                    field,
+                    |builder, object| {
+                        let tag = builder.ins().iconst(types::I64, i64::from(field as u8));
+                        let call = builder.ins().call(cold, &[object, tag]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
             (SiteBody::FieldSet { offset }, &[object, value, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::ObjectFieldSetPtr);
                 emit_field_slot_set(
