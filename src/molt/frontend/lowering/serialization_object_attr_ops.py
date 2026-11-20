@@ -263,9 +263,16 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.GETATTR_NAME_DEFAULT:
+        elif op.kind in (
+            FrontendKinds.GETATTR_NAME,
+            FrontendKinds.GETATTR_NAME_DEFAULT,
+        ):
             entry: SimpleIROp = {
-                "kind": "get_attr_name_default",
+                "kind": (
+                    "get_attr_name"
+                    if op.kind == FrontendKinds.GETATTR_NAME
+                    else "get_attr_name_default"
+                ),
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }

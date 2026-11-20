@@ -406,23 +406,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
         )
         return res
 
-    def _emit_module_attr_get_default_on(
-        self, module_name: str, name: str, default_val: MoltValue
-    ) -> MoltValue:
-        module_val = self._emit_compiler_root(module_name)
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        res = MoltValue(self.next_var(), type_hint="Any")
-        self._emit_getattr_name_default(
-            module_val,
-            name_val,
-            default_val,
-            res,
-            literal_name=name,
-            qualified_module_name=module_name,
-        )
-        return res
-
     def _runtime_protected_attribute_requirement_bits(
         self,
         obj: MoltValue,
@@ -444,6 +427,36 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if attr is None:
             return SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS
         return SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS.get(attr, 0)
+
+    def _emit_getattr_name(
+        self,
+        obj: MoltValue,
+        name: MoltValue,
+        result: MoltValue,
+        *,
+        literal_name: str | None,
+        exact_class: ClassId | None = None,
+        qualified_module_name: str | None = None,
+    ) -> None:
+        """An attribute fetch by name without a default: absent raises."""
+        requirement_bits = self._runtime_protected_attribute_requirement_bits(
+            obj,
+            literal_name,
+            exact_class=exact_class,
+            qualified_module_name=qualified_module_name,
+        )
+        self.emit(
+            MoltOp(
+                kind="GETATTR_NAME",
+                args=[obj, name],
+                result=result,
+                metadata=(
+                    {"runtime_requirement_bits": requirement_bits}
+                    if requirement_bits
+                    else None
+                ),
+            )
+        )
 
     def _emit_getattr_name_default(
         self,

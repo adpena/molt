@@ -516,7 +516,7 @@ simpleir_runtime_protected_gateway_callables = [
 # target admission consume the generated predicate rather than mirrored lists.
 simpleir_runtime_requirement_carrier_kinds = [
     "builtin_func", "call_func",
-    "get_attr_generic_obj", "get_attr_name_default",
+    "get_attr_generic_obj", "get_attr_name", "get_attr_name_default",
     "module_get_attr", "module_get_global", "module_import_from",
 ]
 simpleir_runtime_symbol_carrier_kinds = [
@@ -5588,8 +5588,12 @@ kind = "GETATTR_GENERIC_PTR"
 reason = "frontend-internal: serializes to wire `get_attr_generic_ptr` (LoadAttr alias, may_throw); raises AttributeError"
 
 [[frontend_raising_kind]]
+kind = "GETATTR_NAME"
+reason = "frontend-internal: serializes to wire `get_attr_name` (attribute fetch by name without a default; raises AttributeError when absent)"
+
+[[frontend_raising_kind]]
 kind = "GETATTR_NAME_DEFAULT"
-reason = "frontend-internal: serializes to wire `get_attr_name_default` (attribute fetch with default; raises AttributeError when no default applies)"
+reason = "frontend-internal: serializes to wire `get_attr_name_default` (attribute fetch with a default, returned when the attribute is absent)"
 
 [[frontend_raising_kind]]
 kind = "GETATTR_SPECIAL_OBJ"
@@ -5866,6 +5870,11 @@ reason = "generic object lookup may invoke __getattribute__, descriptors, or __g
 kind = "GETATTR_GENERIC_PTR"
 effect = "writes_heap"
 reason = "generic pointer lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_NAME"
+effect = "writes_heap"
+reason = "lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_NAME_DEFAULT"

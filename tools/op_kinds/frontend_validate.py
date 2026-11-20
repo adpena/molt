@@ -301,6 +301,7 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "MODULE_GET_ATTR": "writes_heap",
         "GETATTR_GENERIC_OBJ": "writes_heap",
         "GETATTR_GENERIC_PTR": "writes_heap",
+        "GETATTR_NAME": "writes_heap",
         "GETATTR_NAME_DEFAULT": "writes_heap",
         "GETATTR_SPECIAL_OBJ": "writes_heap",
         "GUARDED_GETATTR": "writes_heap",

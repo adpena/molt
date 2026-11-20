@@ -1093,6 +1093,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         type_hint: TypeHint = ...,
     ) -> MoltValue: ...
 
+    def _emit_getattr_name(
+        self,
+        obj: MoltValue,
+        name: MoltValue,
+        result: MoltValue,
+        *,
+        literal_name: str | None,
+        exact_class: ClassId | None = ...,
+        qualified_module_name: str | None = ...,
+    ) -> None: ...
+
     def _emit_getattr_name_default(
         self,
         obj: MoltValue,
@@ -1366,10 +1377,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_module_annotations_dict_dynamic(self) -> MoltValue: ...
 
     def _emit_module_attr_get(self, name: str) -> MoltValue: ...
-
-    def _emit_module_attr_get_default_on(
-        self, module_name: str, name: str, default_val: MoltValue
-    ) -> MoltValue: ...
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue: ...
 

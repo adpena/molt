@@ -474,11 +474,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         qualified_module_name=receiver_module_name,
                     )
                 else:
-                    default = self._emit_missing_value()
-                    self._emit_getattr_name_default(
+                    # Without a default an absent attribute raises: its own op,
+                    # since GETATTR_NAME_DEFAULT returns any default it is given.
+                    self._emit_getattr_name(
                         obj,
                         name,
-                        default,
                         res,
                         literal_name=name_lit,
                         exact_class=receiver_exact_class,
