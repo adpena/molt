@@ -27,7 +27,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values"); a generator, coroutine or async-generator resume links its task's persistent record inline and its suspension unlinks it, from one generator (`generate_stateful_frame_link`), and a stateful frame publishes no context: `gen_for` -24.1% instructions on LLVM, -23.0% on Cranelift (section 4.3, "Slice 2") | per-resume exception state and poll scaffolding (section 4.3, "Slice 2", what remains); no record for a leaf no observer can reach | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2); the per-thread exception state (handler and active stacks, baseline, last exception, raise flags) lives in the thread record, and activation enter/exit, depth alignment and the exception-stack ABI entries reach it through the execution context with no thread-local read (generator profile: `_tlv_get_addr` 67 samples, almost all exception state, before) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM; a proven pair loop steps and unpacks in one call with no new tuple: an `enumerate` loop -31.0%, phase C of `bench_dict_comprehension` -20.1% instructions on LLVM (section 4.5a, "Pair loops") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties"); a method call binds its receiver, and a method whose every entry binds an instance of one class compiles with an exact `self`, whose field accesses need no guard (`method_call` -79.1% instructions on LLVM, -70.0% on Cranelift; `78_whole_program_type_flow.md` 5.6) | direct calls of methods resolved at compile time and inlining them (closed-world objects lane, HF-847; `GuardedFieldGet/Set` stay runtime calls where `self` is not exact); typed-layout deallocation | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties"); a method call binds its receiver, and a method whose every entry binds an instance of one class compiles with an exact `self`, whose field accesses need no guard (`method_call` -79.1% instructions on LLVM, -70.0% on Cranelift; `78_whole_program_type_flow.md` 5.6); each sealed class carries a lifecycle plan, a plain instance holding no pointer frees outside the bounded-release frame, and an exact `object()` is never GC-tracked (`bench_struct` -39.3% instructions on LLVM, -37.7% on Cranelift; section 4.5, "Implementation (object lifecycle)", S1) | direct calls of methods resolved at compile time and inlining them (closed-world objects lane, HF-847; `GuardedFieldGet/Set` stay runtime calls where `self` is not exact); object lifecycle S2-S6: plan allocation, inline allocate and free, pointer fields (lane object-lifecycle) | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6); `str()` of a builtin exception renders through its slot (38dd361449); a handler naming builtin classes matches by class code (stage 5, "A raise caught in its own function", S0) | local transfer, lazy state, scalar replacement (S1-S3); handler-entry push (I2) | HF-561, HF-207, HF-906 |
 | 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G); exact-int accumulators in any loop body are full-range raw carriers through loop versioning with exact transfer (`checked_int_loops`, HF-857 slice 1: the same loop 2.09G -> 1.72G, no tag guard or reference count left in the fast loop); an innermost loop writes its frame homes and location word only where a reader can run, home stores that box nothing are nothrow and lose their checks (`frame_home_placement`, section 4.7: `while_counter` 32.0 -> 17.0 instructions per iteration on LLVM) | - | HF-229, HF-857, HF-866 |
 | 7 TIR inlining | partial | proven guarded calls are static call-graph edges, and a body no observer can reach links no frame record, so the inliner splices a nothrow type-flow clone on LLVM (`78_whole_program_type_flow.md` 5.5) | inline frames for callees that can raise (HF-824); Cranelift (late stage, HF-821) | HF-773, HF-824 |
@@ -1723,6 +1723,151 @@ Cranelift 31.12 G -> 0.85 G (-97.3%); `bench_struct`, `bench_class_hierarchy` an
 from `molt_get_attr_object_ic` and the slow arms of `+=` and `<` to an inline field read; its
 remaining runtime calls (`molt_object_field_get_ptr`, `molt_operator_iadd`, `molt_operator_lt`)
 are cold arms. Differential program: `tests/differential/basic/class_property_closed_world.py`.
+
+**Implementation (object lifecycle, HF-202, design 2026-11-20).** Measured on main 24beaf227a
+(release native, macOS arm64): `value = object(); hits += type(value) is object` retires about
+2,200 instructions per iteration against 89 for the empty loop. C pays 20-50 for a `malloc`, a
+header store and a `free`. Compiled code already inlines the count decrement
+(`inline_refcount`); the cost is the runtime's terminal release (`molt_dec_ref_obj` 42.6% of
+samples) and its generic allocation (`molt_object_new` 28.5%). The release re-derives on every free
+what the class decided once: `object_has_finalizer` walks the MRO, the terminal body opens the
+bounded-release frame, classifies the retirement and looks up the field layout. The allocation
+re-validates the class (`class_finish_definition`, shape, layout size, native prefix, field table,
+class-edge admission) on every call. A bare `object()` is GC-tracked, which CPython never does.
+
+The design moves each per-class decision to the class, keeps it current through the one class
+mutation authority, and lets the runtime and compiled code act on it with plain loads.
+
+*1. The class lifecycle plan.* A new scalar class payload word, `CLASS_LIFECYCLE_PLAN_WORD`
+(after the native-next word; the two conditional reference slots move up one), holds a typed
+`ClassLifecyclePlan` (`object/lifecycle_plan.rs`): flags `FINALIZER` (some MRO member declares
+`__del__`), `PLAIN` (instances are `TYPE_ID_OBJECT` with shape `Plain`, no native prefix, no
+intrinsic layout owner, fields contiguous from offset 0, a dictionary word at the tail),
+`UNTRACKED` (instances are never GC members: exact `object` only), `INLINE_ALLOC` (`PLAIN`, sealed,
+not abstract, small size class), plus the size class and the field word count. The word is
+computed at the end of `class_finish_definition` and recomputed for the class and every descendant
+inside `class_bump_layout_version`, the HF-812 authority every class mutation already calls (a
+`__del__` store refreshes the declaration flag before its `TypeMutation` publishes the bump; a
+`__bases__` store bumps after it rebases). A zero word means "no plan": every reader takes the
+generic path, so a class that is not sealed is never misread. `object_has_finalizer` reads the
+`FINALIZER` bit for a class-bearing instance; debug builds compare the word with a fresh
+computation at each read (the oracle). Generators keep their own finalizer query.
+
+*2. GC admission follows CPython exactly.* CPython links every instance of a heap class into
+generation 0 at allocation (`type_new_alloc` sets `Py_TPFLAGS_HAVE_GC` on every heap type;
+`gc.is_tracked(C())`, `C` with `__slots__ = ()` or `('x',)`, is True on 3.12.16 and 3.14) and never
+tracks an exact `object()`. So an instance of a user class stays a member from allocation, and its
+allocation counts toward generation 0, as now; lazy admission on the first reference store would
+change `gc.is_tracked`, `gc.get_objects()` and the collection schedule. An exact `object()` takes
+no GC head, no membership and no count: it cannot hold a reference (no dictionary, no slots, no
+`__class__` assignment). The brief's outcome 2 ("admitted when it first publishes a reference")
+holds for exact dicts and tuples only; instances keep CPython's rule.
+
+*3. Runtime terminal fast path.* `dec_ref_ptr_terminal` frees in place, before the bounded-release
+frame, when the snapshot proves nothing can observe the death: `TYPE_ID_OBJECT`, aux kind
+`CLASS_INLINE` with an owned class edge, none of `HAS_WEAKREF`, `HAS_ABI_VIEW`, `SPAWN_RETAIN`,
+`SCOPED` or `HAS_PTRS` (field-slot invariant 4: while clear, every field holds an immediate or the
+immortal missing word and there is no dictionary), and a class plan with `PLAIN` and without
+`FINALIZER`. Such a release runs no Python code, releases no child and so cannot nest; it is
+equivalent to entering the frame and running the body, provided the frame would not defer it
+(no active release, or depth below `RELEASE_DEPTH_LIMIT` and, on a 3.12 target, trashcan nesting
+below 50). It untracks (when accounted), detaches the class edge, frees, accounts and releases the
+class. A plain instance that holds pointers keeps the bounded frame, but its field release reads
+the plan's field count (one loop over contiguous words and the tail dictionary word) instead of
+the field-layout closure and the dictionary-pointer dispatch.
+
+*4. Runtime allocation fast path.* `molt_object_new` and `molt_object_new_bound` read the class
+plan. With `INLINE_ALLOC` they allocate the size class (plus the GC head unless `UNTRACKED`),
+store the header, fill the field words with the missing singleton, retain the class into the
+inline lane, admit the GC member and publish, with no re-validation: the plan exists only for a
+sealed class, and a mutation that could invalidate it rewrites it first. Without it they take the
+current path, which keeps every error.
+
+*5. Compiled code, one generator.* `molt_codegen_abi::object_lifecycle` owns the meaning; the
+shared walker lowers it on every backend through its frame builder, as `field_slot` and
+`list_item` do. No backend holds a copy.
+- Allocation (`ObjectNew`, and `ObjectNewBound` whose class operand is a proven class): load the
+  class plan word; if `INLINE_ALLOC` and the thread record's lifecycle-hooks word is zero (no
+  resource limit installed, no profile counters), call the allocator entry
+  (`molt_heap_alloc_zeroed(bytes)`: `mi_zalloc_small` on native, the target allocator on WASM; a C
+  program pays the same call), store the header words (type id and count 1 as one 64-bit store;
+  flags, size class and aux kind as one; the class word), fill the fields with the missing
+  singleton, retain the class inline, and, unless `UNTRACKED`, push the member and count the
+  allocation through the GC record the thread record lends (step 6). A null result, a set hooks
+  word, a missing plan bit or a full member vector takes `molt_object_new_bound`.
+- Release: the existing `generate_refcount` release keeps its window. On the cold side, a count of
+  1 on an object whose header snapshot matches the terminal fast path of step 3, whose class plan
+  is `PLAIN` without `FINALIZER`, with the hooks word zero and no terminal release active on the
+  thread, frees inline: untrack through the GC record, store nothing else, call
+  `molt_heap_free(head)`, release the class inline. Everything else calls `molt_dec_ref_obj`.
+- `type(x)` where the frontend proved `x`'s exact class durable: the class word of the header
+  (aux word masked), retained, or the class constant when the class is a proven global.
+
+*6. The GC record.* Inline tracking needs the runtime's generation-0 member vector, ordinal counter
+and count words at fixed offsets. `GcRuntimeState` exposes them through one `#[repr(C)]` record
+whose address the thread record lends (as it lends the recursion-limit pointer). Track: if the
+vector has room, store `(object, ordinal)` at its end, write the head word, bump the length, the
+ordinal and count 0, and take the runtime's `schedule_if_due` only when count 0 passes threshold
+0. Untrack: read the head, swap-remove, rewrite the moved member's head, decrement count 0, and go
+cold when a retirement watch is armed. The runtime's `Membership` keeps the same layout, so the
+two cannot drift; the runtime's tests drive both through the shared test machine.
+
+Each runtime instance owns its own GC record, and the thread record of every thread attached to
+that runtime lends that record, so an isolate (every threaded program runs its threads as
+isolates) keeps the inline path with its own members, as its objects already are members of its
+own state.
+
+*7. Closed world first (section 4.5a).* Where the frontend proves a class sealed (no code in the
+program writes its `__del__`, `__bases__` or `__class__`, or a base's, and it binds no native
+extension), its plan is a compile-time constant: a proven `C()` emits the inline path with the plan
+bits as constants, no plan-word load and no plan test, only the hooks-word check. The plan-word load
+is the guarded form for a class the program can still mutate, and its build diagnostic names the
+writer (`module:line C(): lifecycle plan guarded: __del__ may be assigned at module:line`).
+
+*8. Pointer fields.* A `PLAIN` class without `FINALIZER` knows its field word count, so a release
+of an instance that holds pointers is an inline loop: apply the `generate_refcount` release to each
+field word and to the tail dictionary word, then free. It calls the runtime only when a child
+reaches zero (the child's own release decides its path) or when the bounded-release depth would
+defer the child; the runtime terminal fast path of step 3 does the same for runtime releases,
+inside the bounded frame, so nesting stays bounded.
+
+Correctness rules: `__del__` timing and order, resurrection and weakref callbacks are untouched,
+because every fast path requires no finalizer in the MRO and no weakref; `gc` counts, membership,
+`get_objects()` and `is_tracked` are CPython's (step 2); a 3.12 trashcan deposit is never skipped
+(step 3); a free-threaded build takes the runtime (no inline record). Oracles: the
+existing finalizer-declaration, weakref, bounded-release and GC tests; new differential programs
+for `__del__` added and removed on a base after instances exist, `__bases__` reassignment,
+resurrection, weakref callbacks on instances, `gc.is_tracked`/`gc.get_count` around `object()`
+and user instances, and deep release chains.
+
+Slices, each measured on the probe and the three benchmarks (LLVM and Cranelift) and landed alone:
+S1 plan word, plan-keyed finalizer query, terminal fast path and an untracked `object()`; S2 plan
+allocation in the runtime; S3 `object_lifecycle` allocation and free for `UNTRACKED` classes plus
+the hooks word; S4 the GC record and inline tracking, which makes a user class `C()` call-free,
+with closed-world constant plans (step 7) in S3 and S4; S5 `type(x)` as a header load; S6 the
+pointer-field release (step 8), measured on `bench_struct` and `bench_object_class_lifecycle`.
+Native is validated on LLVM and Cranelift; the frozen WASM backend gets the generator through the
+shared walker when WASM moves to LLVM wasm32.
+
+S1 landed (2026-11-20): the plan word, the plan-keyed finalizer query, the terminal fast path and
+an untracked `object()`. Measured (release, macOS arm64, instructions retired, median of three
+interleaved runs against d02c85cff4, output identical):
+
+| program | LLVM | Cranelift |
+|---|---|---|
+| `object()` probe, 1M | 2.26 G -> 1.44 G (-36.5%; 2,193 -> 1,367 per iteration) | 2.30 G -> 1.48 G (-35.8%) |
+| `Point(i, 1)` probe, 1M | 3.03 G -> 1.84 G (-39.2%) | 3.11 G -> 1.95 G (-37.3%) |
+| `bench_struct` | 3.02 G -> 1.83 G (-39.3%) | 3.08 G -> 1.92 G (-37.7%) |
+| `bench_object_class_lifecycle` | 10.65 G -> 9.07 G (-14.8%) | 10.73 G -> 9.19 G (-14.4%) |
+| `bench_gc_pressure` | 8.42 G -> 8.40 G (noise) | 8.42 G -> 8.45 G (noise) |
+
+`bench_object_class_lifecycle` moves least: its `Plain()` loop (`__slots__ = ()`) still
+constructs through the runtime class call. What remains of the `object()` iteration is the
+generic allocation (S2), the two runtime entries for allocation and release (S3) and `type(x)`
+(S5). Differential program: `tests/differential/basic/object_lifecycle_plan.py`. Rejected: lazy instance admission (diverges from CPython, step 2); a
+per-release MRO walk or version-validated cache (the bump already visits every affected class);
+inlining mimalloc's thread-local page pop (couples compiled code to allocator internals for about
+five instructions over the call).
 
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,

@@ -717,9 +717,11 @@ mod tests {
                     }
                 }
                 dec_ref_bits(py, head);
+                // Retired blocks are freed: ask the membership, never the
+                // freed GC head, which the allocator may already have reused.
                 for (index, ptr) in nodes.iter().copied().enumerate() {
                     assert_eq!(
-                        unsafe { crate::object::gc::gc_is_tracked(ptr) },
+                        crate::object::gc::gc_membership_names(py, ptr),
                         c_rooted && index <= 2048,
                         "retirement must stop exactly at the externally C-owned suffix"
                     );
@@ -729,7 +731,7 @@ mod tests {
                     assert!(
                         nodes
                             .into_iter()
-                            .all(|ptr| !unsafe { crate::object::gc::gc_is_tracked(ptr) })
+                            .all(|ptr| !crate::object::gc::gc_membership_names(py, ptr))
                     );
                 }
                 assert!(!exception_pending(py));

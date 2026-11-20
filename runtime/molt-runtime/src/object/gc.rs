@@ -1153,6 +1153,10 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
 /// and preserves an existing claim across untrack/retrack. Duplicate tracking
 /// violates the public C API precondition.
 pub(crate) unsafe fn gc_track_existing(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    // An allocation without a head (an exact `object()`) is never a member.
+    if !unsafe { has_gc_head(ptr) } {
+        return false;
+    }
     let projection = super::heap_track_projection(unsafe { object_type_id(ptr) });
     match projection {
         None | Some(super::HeapTrackProjection::Never) => return false,
