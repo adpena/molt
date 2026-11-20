@@ -1118,6 +1118,51 @@ def test_guarded_imports_name_what_a_handler_can_swallow(
         )
 
 
+_GUARDED_PWD = "    try:\n        import pwd\n    except ImportError:\n        pass\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "initialized"),
+    [
+        # A function exists only after its def, which runs after the import.
+        ("import sys\ndef f():\n" + _GUARDED_PWD, ("sys",)),
+        # A module-level guard runs after every statement before it.
+        ("import a.b\nif True:\n" + _GUARDED_PWD, ("a", "a.b")),
+        ("from a.b import c\nclass C:\n  def m(self):\n" + _GUARDED_PWD, ("a", "a.b")),
+        # An import after the guard's statement may not have run.
+        ("def f():\n" + _GUARDED_PWD + "import sys\n", ()),
+        # A conditional import may not have run.
+        ("if flag:\n    import sys\ndef f():\n" + _GUARDED_PWD, ()),
+        # A future statement is a compiler directive.
+        ("from __future__ import annotations\ndef f():\n" + _GUARDED_PWD, ()),
+    ],
+)
+def test_guarded_import_names_the_modules_completed_before_it(
+    source: str, initialized: tuple[str, ...]
+) -> None:
+    from molt.compiler_analysis.python_namespace_graph import (
+        graph_python_namespace_writes,
+    )
+
+    (row,) = [
+        write
+        for write in _summary(source).foreign_writes
+        if write.construct == "guarded_import"
+    ]
+    assert (row.module, row.initialized) == ("pwd", initialized)
+    assert decode_python_namespace_write(python_namespace_write_payload(row)) == row
+    redirects = graph_python_namespace_writes(
+        (row,), lambda _name: None
+    ).import_redirects
+    # The handler swallows a failure of pwd's own body, and of a module pwd
+    # imports first, unless that module completed before the guard ran.
+    assert redirects.swallowers("pwd", ())
+    for dependency in ("sys", "a.b"):
+        assert bool(redirects.swallowers(dependency, ("pwd",))) == (
+            dependency not in initialized
+        )
+
+
 @pytest.mark.parametrize(
     "operation",
     [

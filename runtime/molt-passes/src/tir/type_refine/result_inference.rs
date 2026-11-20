@@ -45,6 +45,15 @@ fn dict_index_key_matches(dict_key_ty: &TirType, index_ty: &TirType) -> bool {
     matches!(dict_key_ty, TirType::DynBox) || dict_key_ty == index_ty
 }
 
+/// The exact class of an allocation's result: its class statement's
+/// instance (I6, C1), by the same rule [`attr_result_type_override`] applies.
+pub(super) fn exact_allocation_class(op: &crate::tir::ops::TirOp) -> Option<TirType> {
+    (opcode_type_refine_attr_result_type_rule_table(op.opcode)
+        == TypeRefineAttrResultTypeRule::ObjectClassDefinition)
+        .then(|| attr_result_type_override(op.opcode, op.origin, &op.attrs, &[] as &[TirType]))
+        .flatten()
+}
+
 pub(super) fn attr_result_type_override<T>(
     opcode: OpCode,
     origin: Option<molt_ir::OpKind>,

@@ -13,7 +13,13 @@ class SourceBuildEnvironmentError(ValueError):
 
 
 SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION: Final = 9
-IMAGE_BYTECODE_POLICY: Final = "cpython-source-only.v1"
+IMAGE_BYTECODE_POLICY: Final = "cpython-source-only.v2"
+# v2 adds an image-owned site hook. A child started with -I and no -B ignores
+# PYTHONDONTWRITEBYTECODE, and a Windows token with SeBackupPrivilege or
+# SeRestorePrivilege writes through the mode seal (HF-544). Site startup runs
+# .pth files in sorted name order; this name sorts before every other hook.
+IMAGE_NO_BYTECODE_HOOK: Final = "00-molt-no-bytecode.pth"
+IMAGE_NO_BYTECODE_HOOK_SOURCE: Final = b"import sys; sys.dont_write_bytecode = True\n"
 SOURCE_BUILD_ENVIRONMENT_MANIFEST: Final = "molt-source-build-environment.json"
 DEVELOPMENT_ENVIRONMENT_SELECTION: Final = "molt-development-selection.json"
 DEVELOPMENT_ENVIRONMENT_SELECTION_SCHEMA: Final = "molt.development-selection-record.v1"

@@ -200,7 +200,9 @@ def test_a_handler_that_can_swallow_the_body_failure_keeps_the_dictionary(
 ) -> None:
     """M11/HF-877: a swallowed body failure re-runs the body with the first
     run's cell values, so the module keeps its dictionary."""
-    redirects = import_redirects(guarded=((guarded, ImportWriter("app:5", "guarded")),))
+    redirects = import_redirects(
+        guarded=((guarded, ImportWriter("app:5", "guarded"), ()),)
+    )
     plan = _plan(
         [_init()],
         _facts(),

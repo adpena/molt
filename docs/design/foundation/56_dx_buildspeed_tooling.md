@@ -2363,8 +2363,10 @@ Linux and Windows image behavior requires its own execution qualification.
 
 Managed images compile source on import rather than publishing caches for every
 installed and standard-library module at optimization levels 0, 1 and 2. The
-source-build address includes schema v9 and `cpython-source-only.v1`; old image
-addresses and the eager-publication probe API are retired together. The existing
+source-build address includes schema v9 and `cpython-source-only.v2`; old image
+addresses and the eager-publication probe API are retired together. v2 adds the
+image-owned `00-molt-no-bytecode.pth` site hook, so a child launched without `-B`
+cannot compile into the image even where a privileged token bypasses the seal. The existing
 publisher creates the empty physical cache prefix under its address lock, then
 performs one independent read-only capture. No generated executable caches means
 there is no producer/receiver compilation roundtrip or derivation-proof registry.
