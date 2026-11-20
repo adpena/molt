@@ -422,7 +422,9 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
             "-o",
             str(executable),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             "-framework",
             "Security",
@@ -477,7 +479,9 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
             "-o",
             str(executable),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             f"-L{tmp_path}",
             *explicit,
@@ -1360,7 +1364,10 @@ def test_native_identity_flags_are_driver_ready(
     )
     assert (
         native_link_plan.native_link_policy_flags(
-            target=target, capabilities=capabilities, msvc_driver=cc[0] == "clang-cl"
+            target=target,
+            capabilities=capabilities,
+            output=native_link_plan.NativeLinkOutput.EXECUTABLE,
+            msvc_driver=cc[0] == "clang-cl",
         )
         == expected
     )
@@ -1479,7 +1486,9 @@ def test_zig_linker_strip_capability_matches_its_output(
             "-o",
             str(image),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             *native_link_plan.native_link_strip_flags(target),
         ],
