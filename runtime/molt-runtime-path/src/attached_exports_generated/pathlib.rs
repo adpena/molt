@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_pathlib_parts(
     posix_bits: u64,
     windows_utf16_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3277);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_parts_attached_body(_py, path_bits, posix_bits, windows_utf16_bits)
@@ -20,6 +21,7 @@ pub unsafe extern "C" fn molt_path_splitroot(
     windows_utf16_bits: u64,
     pathlib_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3278);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_path_splitroot_attached_body(_py, path_bits, posix_bits, windows_utf16_bits, pathlib_bits)
@@ -27,6 +29,7 @@ pub unsafe extern "C" fn molt_path_splitroot(
 #[unsafe(export_name = "molt_pathlib_cwd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_cwd(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3279);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_cwd_attached_body(_py)
@@ -34,6 +37,7 @@ pub unsafe extern "C" fn molt_pathlib_cwd(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_pathlib_resolve__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_resolve(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3280);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_resolve_attached_body(_py, path_bits)
@@ -41,6 +45,7 @@ pub unsafe extern "C" fn molt_pathlib_resolve(__context: u64, path_bits: u64) ->
 #[unsafe(export_name = "molt_pathlib_is_mount__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_is_mount(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3281);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_is_mount_attached_body(_py, path_bits)
@@ -48,6 +53,7 @@ pub unsafe extern "C" fn molt_pathlib_is_mount(__context: u64, path_bits: u64) -
 #[unsafe(export_name = "molt_pathlib_iterdir__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_iterdir(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3282);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_iterdir_attached_body(_py, path_bits)
@@ -59,6 +65,7 @@ pub unsafe extern "C" fn molt_pathlib_touch(
     path_bits: u64,
     exist_ok_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3283);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_touch_attached_body(_py, path_bits, exist_ok_bits)
@@ -71,6 +78,7 @@ pub unsafe extern "C" fn molt_pathlib_hardlink_to(
     path_bits: u64,
     target_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3284);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_hardlink_to_attached_body(_py, path_bits, target_bits)
@@ -83,6 +91,7 @@ pub unsafe extern "C" fn molt_pathlib_hardlink_to(
     _path_bits: u64,
     _target_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3285);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_hardlink_to_attached_body(_py, _path_bits, _target_bits)
@@ -90,6 +99,7 @@ pub unsafe extern "C" fn molt_pathlib_hardlink_to(
 #[unsafe(export_name = "molt_pathlib_read_bytes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_read_bytes(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3286);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_read_bytes_attached_body(_py, path_bits)
@@ -101,6 +111,7 @@ pub unsafe extern "C" fn molt_pathlib_write_bytes(
     path_bits: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3287);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_write_bytes_attached_body(_py, path_bits, data_bits)
@@ -108,6 +119,7 @@ pub unsafe extern "C" fn molt_pathlib_write_bytes(
 #[unsafe(export_name = "molt_pathlib_owner__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_owner(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3288);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_owner_attached_body(_py, path_bits)
@@ -115,6 +127,7 @@ pub unsafe extern "C" fn molt_pathlib_owner(__context: u64, path_bits: u64) -> u
 #[unsafe(export_name = "molt_pathlib_group__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pathlib_group(__context: u64, path_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3289);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_group_attached_body(_py, path_bits)
@@ -126,6 +139,7 @@ pub unsafe extern "C" fn molt_pathlib_samefile(
     path_bits: u64,
     other_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3290);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pathlib_samefile_attached_body(_py, path_bits, other_bits)

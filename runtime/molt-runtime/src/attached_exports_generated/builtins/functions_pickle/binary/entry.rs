@@ -10,6 +10,7 @@ pub unsafe extern "C" fn molt_pickle_dumps_core(
     buffer_callback_bits: u64,
     dispatch_table_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(813);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pickle_dumps_core_attached_body(
@@ -34,6 +35,7 @@ pub unsafe extern "C" fn molt_pickle_loads_core(
     find_class_bits: u64,
     buffers_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(814);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pickle_loads_core_attached_body(
@@ -50,6 +52,7 @@ pub unsafe extern "C" fn molt_pickle_loads_core(
 #[unsafe(export_name = "molt_multiprocessing_codec_dumps__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_multiprocessing_codec_dumps(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(815);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_multiprocessing_codec_dumps_attached_body(_py, obj_bits)
@@ -57,6 +60,7 @@ pub unsafe extern "C" fn molt_multiprocessing_codec_dumps(__context: u64, obj_bi
 #[unsafe(export_name = "molt_multiprocessing_codec_loads__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_multiprocessing_codec_loads(__context: u64, data_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(816);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_multiprocessing_codec_loads_attached_body(_py, data_bits)

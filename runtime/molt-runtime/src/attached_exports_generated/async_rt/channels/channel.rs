@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_chan_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_new(__context: u64, capacity_bits: u64) -> ChanHandle {
+    molt_runtime_core::call_census::hit(62);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_chan_new_attached_body(_py, capacity_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_chan_new(__context: u64, capacity_bits: u64) -> Ch
 #[unsafe(export_name = "molt_chan_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_drop(__context: u64, chan_handle: ChanHandle) -> u64 {
+    molt_runtime_core::call_census::hit(63);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_drop_attached_body(_py, chan_handle) }
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_chan_drop(__context: u64, chan_handle: ChanHandle)
 #[unsafe(export_name = "molt_chan_send__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_send(__context: u64, chan_handle: ChanHandle, val: i64) -> i64 {
+    molt_runtime_core::call_census::hit(64);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_send_attached_body(_py, chan_handle, val) }
@@ -27,6 +30,7 @@ pub unsafe extern "C" fn molt_chan_try_send(
     chan_handle: ChanHandle,
     val: i64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(65);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_try_send_attached_body(_py, chan_handle, val) }
@@ -38,6 +42,7 @@ pub unsafe extern "C" fn molt_chan_send_blocking(
     chan_handle: ChanHandle,
     val: i64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(66);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_send_blocking_attached_body(_py, chan_handle, val) }
@@ -45,6 +50,7 @@ pub unsafe extern "C" fn molt_chan_send_blocking(
 #[unsafe(export_name = "molt_chan_recv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_recv(__context: u64, chan_handle: ChanHandle) -> i64 {
+    molt_runtime_core::call_census::hit(67);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_recv_attached_body(_py, chan_handle) }
@@ -52,6 +58,7 @@ pub unsafe extern "C" fn molt_chan_recv(__context: u64, chan_handle: ChanHandle)
 #[unsafe(export_name = "molt_chan_try_recv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_try_recv(__context: u64, chan_handle: ChanHandle) -> i64 {
+    molt_runtime_core::call_census::hit(68);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_try_recv_attached_body(_py, chan_handle) }
@@ -60,6 +67,7 @@ pub unsafe extern "C" fn molt_chan_try_recv(__context: u64, chan_handle: ChanHan
 #[unsafe(export_name = "molt_chan_recv_blocking__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_recv_blocking(__context: u64, chan_handle: ChanHandle) -> i64 {
+    molt_runtime_core::call_census::hit(69);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_recv_blocking_attached_body(_py, chan_handle) }
@@ -68,6 +76,7 @@ pub unsafe extern "C" fn molt_chan_recv_blocking(__context: u64, chan_handle: Ch
 #[unsafe(export_name = "molt_chan_recv_blocking__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_chan_recv_blocking(__context: u64, chan_handle: ChanHandle) -> i64 {
+    molt_runtime_core::call_census::hit(70);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_chan_recv_blocking_attached_body(_py, chan_handle) }

@@ -8,6 +8,7 @@ pub unsafe extern "C" fn molt_socketpair(
     type_bits: u64,
     proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(373);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socketpair_attached_body(_py, family_bits, type_bits, proto_bits) }
@@ -21,6 +22,7 @@ pub unsafe extern "C" fn molt_socketpair(
     _type_bits: u64,
     _proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(374);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketpair_attached_body(_py, _family_bits, _type_bits, _proto_bits)
@@ -37,6 +39,7 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
     proto_bits: u64,
     flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(375);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -63,6 +66,7 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
     _proto_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(376);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getaddrinfo_attached_body(
@@ -83,6 +87,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(
     addr_bits: u64,
     flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(377);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_getnameinfo_attached_body(_py, addr_bits, flags_bits) }
@@ -95,6 +100,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(
     _addr_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(378);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getnameinfo_attached_body(_py, _addr_bits, _flags_bits)
@@ -103,6 +109,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(
 #[unsafe(export_name = "molt_socket_gethostname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_gethostname(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(379);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_gethostname_attached_body(_py) }
@@ -111,6 +118,7 @@ pub unsafe extern "C" fn molt_socket_gethostname(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_gethostname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_gethostname(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(380);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_gethostname_attached_body(_py)
@@ -118,6 +126,7 @@ pub unsafe extern "C" fn molt_socket_gethostname(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_gethostbyname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_gethostbyname(__context: u64, host_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(381);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_gethostbyname_attached_body(_py, host_bits)
@@ -125,6 +134,7 @@ pub unsafe extern "C" fn molt_socket_gethostbyname(__context: u64, host_bits: u6
 #[unsafe(export_name = "molt_socket_gethostbyname_ex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_gethostbyname_ex(__context: u64, host_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(382);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_gethostbyname_ex_attached_body(_py, host_bits)
@@ -132,6 +142,7 @@ pub unsafe extern "C" fn molt_socket_gethostbyname_ex(__context: u64, host_bits:
 #[unsafe(export_name = "molt_socket_gethostbyaddr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_gethostbyaddr(__context: u64, host_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(383);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_gethostbyaddr_attached_body(_py, host_bits)
@@ -139,6 +150,7 @@ pub unsafe extern "C" fn molt_socket_gethostbyaddr(__context: u64, host_bits: u6
 #[unsafe(export_name = "molt_socket_getfqdn__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_getfqdn(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(384);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getfqdn_attached_body(_py, name_bits)
@@ -151,6 +163,7 @@ pub unsafe extern "C" fn molt_socket_getservbyname(
     name_bits: u64,
     proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(385);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_getservbyname_attached_body(_py, name_bits, proto_bits) }
@@ -163,6 +176,7 @@ pub unsafe extern "C" fn molt_socket_getservbyname(
     _name_bits: u64,
     _proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(386);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getservbyname_attached_body(_py, _name_bits, _proto_bits)
@@ -175,6 +189,7 @@ pub unsafe extern "C" fn molt_socket_getservbyport(
     port_bits: u64,
     proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(387);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_getservbyport_attached_body(_py, port_bits, proto_bits) }
@@ -187,6 +202,7 @@ pub unsafe extern "C" fn molt_socket_getservbyport(
     _port_bits: u64,
     _proto_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(388);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getservbyport_attached_body(_py, _port_bits, _proto_bits)
@@ -195,6 +211,7 @@ pub unsafe extern "C" fn molt_socket_getservbyport(
 #[unsafe(export_name = "molt_socket_getprotobyname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_getprotobyname(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(389);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_getprotobyname_attached_body(_py, name_bits) }
@@ -203,6 +220,7 @@ pub unsafe extern "C" fn molt_socket_getprotobyname(__context: u64, name_bits: u
 #[unsafe(export_name = "molt_socket_getprotobyname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_getprotobyname(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(390);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_getprotobyname_attached_body(_py, name_bits)
@@ -211,6 +229,7 @@ pub unsafe extern "C" fn molt_socket_getprotobyname(__context: u64, name_bits: u
 #[unsafe(export_name = "molt_socket_has_ipv6__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_has_ipv6(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(391);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_has_ipv6_attached_body(_py)
@@ -219,6 +238,7 @@ pub unsafe extern "C" fn molt_socket_has_ipv6(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_has_ipv6__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_has_ipv6(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(392);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_has_ipv6_attached_body(_py)
@@ -227,6 +247,7 @@ pub unsafe extern "C" fn molt_socket_has_ipv6(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_if_nameindex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_nameindex(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(393);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_nameindex_attached_body(_py)
@@ -235,6 +256,7 @@ pub unsafe extern "C" fn molt_socket_if_nameindex(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_if_nameindex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_nameindex(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(394);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_nameindex_attached_body(_py)
@@ -243,6 +265,7 @@ pub unsafe extern "C" fn molt_socket_if_nameindex(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_if_nametoindex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_nametoindex(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(395);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_nametoindex_attached_body(_py, name_bits)
@@ -251,6 +274,7 @@ pub unsafe extern "C" fn molt_socket_if_nametoindex(__context: u64, name_bits: u
 #[unsafe(export_name = "molt_socket_if_nametoindex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_nametoindex(__context: u64, _name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(396);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_nametoindex_attached_body(_py, _name_bits)
@@ -259,6 +283,7 @@ pub unsafe extern "C" fn molt_socket_if_nametoindex(__context: u64, _name_bits: 
 #[unsafe(export_name = "molt_socket_if_indextoname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_indextoname(__context: u64, index_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(397);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_indextoname_attached_body(_py, index_bits)
@@ -267,6 +292,7 @@ pub unsafe extern "C" fn molt_socket_if_indextoname(__context: u64, index_bits: 
 #[unsafe(export_name = "molt_socket_if_indextoname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_if_indextoname(__context: u64, _index_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(398);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_if_indextoname_attached_body(_py, _index_bits)
@@ -275,6 +301,7 @@ pub unsafe extern "C" fn molt_socket_if_indextoname(__context: u64, _index_bits:
 #[unsafe(export_name = "molt_socket_has_dualstack_ipv6__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_has_dualstack_ipv6(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(399);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_has_dualstack_ipv6_attached_body(_py)
@@ -283,6 +310,7 @@ pub unsafe extern "C" fn molt_socket_has_dualstack_ipv6(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_socket_has_dualstack_ipv6__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_has_dualstack_ipv6(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(400);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_has_dualstack_ipv6_attached_body(_py)
@@ -298,6 +326,7 @@ pub unsafe extern "C" fn molt_socket_send_fds(
     flags_bits: u64,
     address_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(401);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -322,6 +351,7 @@ pub unsafe extern "C" fn molt_socket_send_fds(
     _flags_bits: u64,
     _address_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(402);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -345,6 +375,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     maxfds_bits: u64,
     flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(403);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -361,6 +392,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     _maxfds_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(404);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -383,6 +415,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(405);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -399,6 +432,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(406);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -421,6 +455,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(407);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -437,6 +472,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     _offset_bits: u64,
     _count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(408);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_sendfile_attached_body(_py, _sock_bits, _file_fd_bits, _offset_bits, _count_bits)
@@ -445,6 +481,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
 #[unsafe(export_name = "molt_socket_sethostname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_sethostname(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(409);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_sethostname_attached_body(_py, name_bits) }
@@ -453,6 +490,7 @@ pub unsafe extern "C" fn molt_socket_sethostname(__context: u64, name_bits: u64)
 #[unsafe(export_name = "molt_socket_sethostname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_sethostname(__context: u64, _name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(410);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_sethostname_attached_body(_py, _name_bits)
@@ -469,6 +507,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
     assoclen_bits: u64,
     flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(411);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -495,6 +534,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
     _assoclen_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(412);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_sendmsg_afalg_attached_body(

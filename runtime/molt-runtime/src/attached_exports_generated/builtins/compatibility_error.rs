@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_compatibility_error__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_compatibility_error(__context: u64, outcome_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(537);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_compatibility_error_attached_body(_py, outcome_bits)

@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_warnings_warn(
     category_bits: u64,
     stacklevel_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1632);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_warn_attached_body(_py, message_bits, category_bits, stacklevel_bits)
@@ -23,6 +24,7 @@ pub unsafe extern "C" fn molt_warnings_warn_explicit(
     registry_bits: u64,
     module_globals_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1633);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_warn_explicit_attached_body(
@@ -46,6 +48,7 @@ pub unsafe extern "C" fn molt_warnings_formatwarning(
     lineno_bits: u64,
     line_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1634);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_formatwarning_attached_body(
@@ -66,6 +69,7 @@ pub unsafe extern "C" fn molt_warnings_simplefilter(
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1635);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_simplefilter_attached_body(
@@ -87,6 +91,7 @@ pub unsafe extern "C" fn molt_warnings_filterwarnings(
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1636);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_filterwarnings_attached_body(
@@ -102,6 +107,7 @@ pub unsafe extern "C" fn molt_warnings_filterwarnings(
 #[unsafe(export_name = "molt_warnings_resetwarnings__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_warnings_resetwarnings(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1637);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_resetwarnings_attached_body(_py)
@@ -109,6 +115,7 @@ pub unsafe extern "C" fn molt_warnings_resetwarnings(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_warnings_filters_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_warnings_filters_get(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1638);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_filters_get_attached_body(_py)
@@ -116,6 +123,7 @@ pub unsafe extern "C" fn molt_warnings_filters_get(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_warnings_onceregistry_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_warnings_onceregistry_get(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1639);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_onceregistry_get_attached_body(_py)
@@ -123,6 +131,7 @@ pub unsafe extern "C" fn molt_warnings_onceregistry_get(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_warnings_filters_mutated__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_warnings_filters_mutated(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1640);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_warnings_filters_mutated_attached_body(_py)

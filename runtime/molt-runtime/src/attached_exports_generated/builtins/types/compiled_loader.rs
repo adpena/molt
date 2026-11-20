@@ -8,6 +8,7 @@ pub unsafe extern "C" fn molt_importlib_frozen_importer_find_spec(
     _path_bits: u64,
     _target_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1534);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_frozen_importer_find_spec_attached_body(
@@ -27,6 +28,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_find_spec(
     _path_bits: u64,
     _target_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1535);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_find_spec_attached_body(
@@ -40,6 +42,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_find_spec(
 #[unsafe(export_name = "molt_importlib_compiled_loader_types__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_importlib_compiled_loader_types(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1536);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_types_attached_body(_py)
@@ -47,6 +50,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_types(__context: u64) ->
 #[unsafe(export_name = "molt_importlib_compiled_loader__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_importlib_compiled_loader(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1537);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_attached_body(_py)
@@ -58,6 +62,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_create_module(
     _self_bits: u64,
     _spec_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1538);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_create_module_attached_body(_py, _self_bits, _spec_bits)
@@ -69,6 +74,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_exec_module(
     self_bits: u64,
     module_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1539);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_exec_module_attached_body(_py, self_bits, module_bits)
@@ -80,6 +86,7 @@ pub unsafe extern "C" fn molt_importlib_compiled_loader_load_module(
     _self_bits: u64,
     fullname_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1540);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_compiled_loader_load_module_attached_body(_py, _self_bits, fullname_bits)

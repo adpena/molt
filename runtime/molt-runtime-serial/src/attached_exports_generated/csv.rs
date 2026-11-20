@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_csv_quote_minimal__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_minimal(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3356);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_minimal_attached_body(_py)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_csv_quote_minimal(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_quote_all__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_all(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3357);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_all_attached_body(_py)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_csv_quote_all(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_quote_nonnumeric__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_nonnumeric(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3358);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_nonnumeric_attached_body(_py)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_csv_quote_nonnumeric(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_quote_none__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_none(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3359);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_none_attached_body(_py)
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn molt_csv_quote_none(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_quote_strings__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_strings(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3360);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_strings_attached_body(_py)
@@ -37,6 +42,7 @@ pub unsafe extern "C" fn molt_csv_quote_strings(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_quote_notnull__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_quote_notnull(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3361);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_quote_notnull_attached_body(_py)
@@ -44,6 +50,7 @@ pub unsafe extern "C" fn molt_csv_quote_notnull(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_csv_field_size_limit__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_field_size_limit(__context: u64, new_limit_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3362);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_field_size_limit_attached_body(_py, new_limit_bits)
@@ -62,6 +69,7 @@ pub unsafe extern "C" fn molt_csv_register_dialect(
     quoting_bits: u64,
     strict_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3363);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_register_dialect_attached_body(
@@ -84,6 +92,7 @@ pub unsafe extern "C" fn molt_csv_unregister_dialect(
     name_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3364);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_unregister_dialect_attached_body(_py, name_bits, error_type_bits)
@@ -91,6 +100,7 @@ pub unsafe extern "C" fn molt_csv_unregister_dialect(
 #[unsafe(export_name = "molt_csv_list_dialects__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_list_dialects(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3365);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_list_dialects_attached_body(_py)
@@ -102,6 +112,7 @@ pub unsafe extern "C" fn molt_csv_get_dialect(
     name_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3366);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_get_dialect_attached_body(_py, name_bits, error_type_bits)
@@ -118,6 +129,7 @@ pub unsafe extern "C" fn molt_csv_reader_new(
     quoting_bits: u64,
     strict_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3367);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_reader_new_attached_body(
@@ -140,6 +152,7 @@ pub unsafe extern "C" fn molt_csv_reader_parse_line(
     at_eof_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3368);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_reader_parse_line_attached_body(
@@ -158,6 +171,7 @@ pub unsafe extern "C" fn molt_csv_reader_parse_lines(
     text_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3369);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_reader_parse_lines_attached_body(_py, handle_bits, text_bits, error_type_bits)
@@ -165,6 +179,7 @@ pub unsafe extern "C" fn molt_csv_reader_parse_lines(
 #[unsafe(export_name = "molt_csv_reader_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_reader_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3370);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_reader_drop_attached_body(_py, handle_bits)
@@ -180,6 +195,7 @@ pub unsafe extern "C" fn molt_csv_writer_new(
     quoting_bits: u64,
     lineterminator_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3371);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_writer_new_attached_body(
@@ -200,6 +216,7 @@ pub unsafe extern "C" fn molt_csv_writer_writerow(
     row_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3372);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_writer_writerow_attached_body(_py, handle_bits, row_bits, error_type_bits)
@@ -212,6 +229,7 @@ pub unsafe extern "C" fn molt_csv_writer_writerows(
     rows_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3373);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_writer_writerows_attached_body(_py, handle_bits, rows_bits, error_type_bits)
@@ -219,6 +237,7 @@ pub unsafe extern "C" fn molt_csv_writer_writerows(
 #[unsafe(export_name = "molt_csv_writer_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_writer_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3374);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_writer_drop_attached_body(_py, handle_bits)
@@ -232,6 +251,7 @@ pub unsafe extern "C" fn molt_csv_dict_project(
     restkey_bits: u64,
     restval_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3375);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_dict_project_attached_body(_py, fieldnames_bits, row_bits, restkey_bits, restval_bits)
@@ -243,6 +263,7 @@ pub unsafe extern "C" fn molt_csv_sniff(
     sample_bits: u64,
     delimiters_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3376);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_sniff_attached_body(_py, sample_bits, delimiters_bits)
@@ -254,6 +275,7 @@ pub unsafe extern "C" fn molt_csv_has_header(
     sample_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3377);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_has_header_attached_body(_py, sample_bits, error_type_bits)
@@ -261,6 +283,7 @@ pub unsafe extern "C" fn molt_csv_has_header(
 #[unsafe(export_name = "molt_csv_validate_fmtparams__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_validate_fmtparams(__context: u64, keys_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3378);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_validate_fmtparams_attached_body(_py, keys_bits)
@@ -280,6 +303,7 @@ pub unsafe extern "C" fn molt_csv_validate_dialect(
     quoting_omitted_bits: u64,
     python_minor_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3379);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_validate_dialect_attached_body(
@@ -299,6 +323,7 @@ pub unsafe extern "C" fn molt_csv_validate_dialect(
 #[unsafe(export_name = "molt_csv_normalize_row__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_csv_normalize_row(__context: u64, row_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3380);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_normalize_row_attached_body(_py, row_bits)
@@ -310,6 +335,7 @@ pub unsafe extern "C" fn molt_csv_dialect_lookup_name(
     name_bits: u64,
     error_type_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3381);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_csv_dialect_lookup_name_attached_body(_py, name_bits, error_type_bits)

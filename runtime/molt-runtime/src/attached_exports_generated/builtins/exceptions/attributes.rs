@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_exception_member_get(
     descriptor: u64,
     instance: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(664);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_get_attached_body(_py, descriptor, instance)
@@ -18,6 +19,7 @@ pub unsafe extern "C" fn molt_exception_member_set(
     instance: u64,
     value: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(665);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_set_attached_body(_py, descriptor, instance, value)
@@ -29,6 +31,7 @@ pub unsafe extern "C" fn molt_exception_member_delete(
     descriptor: u64,
     instance: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(666);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_delete_attached_body(_py, descriptor, instance)

@@ -3,6 +3,7 @@
 #[unsafe(export_name = "molt_io_wait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_io_wait(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(236);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_io_wait_attached_body(_py, obj_bits) }
@@ -16,6 +17,7 @@ pub unsafe extern "C" fn molt_io_wait_new(
     events_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(237);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_io_wait_new_attached_body(_py, socket_bits, events_bits, timeout_bits)
@@ -29,6 +31,7 @@ pub unsafe extern "C" fn molt_io_wait_new(
     events_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(238);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_io_wait_new_attached_body(_py, socket_bits, events_bits, timeout_bits)
@@ -37,6 +40,7 @@ pub unsafe extern "C" fn molt_io_wait_new(
 #[unsafe(export_name = "molt_io_wait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_io_wait(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(239);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_io_wait_attached_body(_py, obj_bits) }

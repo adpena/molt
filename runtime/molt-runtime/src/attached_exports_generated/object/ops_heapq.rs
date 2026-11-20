@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_heapq_heapify__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_heapq_heapify(__context: u64, list_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2328);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_heapify_attached_body(_py, list_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_heapq_heappush(
     list_bits: u64,
     item_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2329);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_heappush_attached_body(_py, list_bits, item_bits)
@@ -20,6 +22,7 @@ pub unsafe extern "C" fn molt_heapq_heappush(
 #[unsafe(export_name = "molt_heapq_heappop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_heapq_heappop(__context: u64, list_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2330);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_heappop_attached_body(_py, list_bits)
@@ -31,6 +34,7 @@ pub unsafe extern "C" fn molt_heapq_heapreplace(
     list_bits: u64,
     item_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2331);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_heapreplace_attached_body(_py, list_bits, item_bits)
@@ -42,6 +46,7 @@ pub unsafe extern "C" fn molt_heapq_heappushpop(
     list_bits: u64,
     item_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2332);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_heappushpop_attached_body(_py, list_bits, item_bits)
@@ -54,6 +59,7 @@ pub unsafe extern "C" fn molt_heapq_nsmallest(
     iterable_bits: u64,
     key_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2333);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_nsmallest_attached_body(_py, n_bits, iterable_bits, key_bits)
@@ -66,6 +72,7 @@ pub unsafe extern "C" fn molt_heapq_nlargest(
     iterable_bits: u64,
     key_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2334);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_nlargest_attached_body(_py, n_bits, iterable_bits, key_bits)
@@ -78,6 +85,7 @@ pub unsafe extern "C" fn molt_heapq_merge(
     key_bits: u64,
     reverse_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2335);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_heapq_merge_attached_body(_py, iterables_bits, key_bits, reverse_bits)

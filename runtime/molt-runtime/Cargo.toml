@@ -69,6 +69,9 @@ crate-type = ["cdylib"]
 required-features = ["cext_loader"]
 
 [features]
+# Runtime-call census and in-process pc sampler (HF-198); off in every shipped build.
+call-census = ["molt-runtime-core/call-census"]
+pc-sampler = []
 default = ["stdlib_full", "wasi_host"]
 l7-attestation-probe = ["molt-cpython-abi/allocation-observer"]
 free-threaded = ["molt-codegen-abi/free-threaded"]

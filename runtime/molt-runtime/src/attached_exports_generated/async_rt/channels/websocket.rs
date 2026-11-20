@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_ws_pair(
     out_left: *mut u64,
     out_right: *mut u64,
 ) -> i32 {
+    molt_runtime_core::call_census::hit(91);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_pair_attached_body(_py, capacity_bits, out_left, out_right) }
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_ws_pair(
 #[unsafe(export_name = "molt_ws_pair_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_pair_obj(__context: u64, capacity_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(92);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_pair_obj_attached_body(_py, capacity_bits)
@@ -27,6 +29,7 @@ pub unsafe extern "C" fn molt_ws_new_with_hooks(
     close_hook: usize,
     hook_ctx: *mut u8,
 ) -> *mut u8 {
+    molt_runtime_core::call_census::hit(93);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_new_with_hooks_attached_body(_py, send_hook, recv_hook, close_hook, hook_ctx)
@@ -35,6 +38,7 @@ pub unsafe extern "C" fn molt_ws_new_with_hooks(
 #[unsafe(export_name = "molt_ws_set_connect_hook__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_set_connect_hook(__context: u64, ptr: usize) {
+    molt_runtime_core::call_census::hit(94);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_set_connect_hook_attached_body(_py, ptr)
@@ -48,6 +52,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     port_bits: u64,
     server_hostname_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(95);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -68,6 +73,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     _port_bits: u64,
     _server_hostname_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(96);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_tls_client_connect_new_attached_body(
@@ -85,6 +91,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     fd_bits: u64,
     server_hostname_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(97);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_tls_client_from_fd_new_attached_body(_py, fd_bits, server_hostname_bits) }
@@ -97,6 +104,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     _fd_bits: u64,
     _server_hostname_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(98);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_tls_client_from_fd_new_attached_body(_py, _fd_bits, _server_hostname_bits)
@@ -105,6 +113,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
 #[unsafe(export_name = "molt_asyncio_tls_server_payload__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_tls_server_payload(__context: u64, ssl_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(99);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_tls_server_payload_attached_body(_py, ssl_bits)
@@ -113,6 +122,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_payload(__context: u64, ssl_bit
 #[unsafe(export_name = "molt_asyncio_tls_server_payload__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_tls_server_payload(__context: u64, _ssl_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(100);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_tls_server_payload_attached_body(_py, _ssl_bits)
@@ -126,6 +136,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     certfile_bits: u64,
     keyfile_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(101);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -141,6 +152,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     _certfile_bits: u64,
     _keyfile_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(102);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_tls_server_from_fd_new_attached_body(_py, _fd_bits, _certfile_bits, _keyfile_bits)
@@ -154,6 +166,7 @@ pub unsafe extern "C" fn molt_ws_connect(
     url_len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    molt_runtime_core::call_census::hit(103);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_connect_attached_body(_py, url_ptr, url_len_bits, out) }
@@ -162,6 +175,7 @@ pub unsafe extern "C" fn molt_ws_connect(
 #[unsafe(export_name = "molt_ws_connect_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_connect_obj(__context: u64, url_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(104);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_connect_obj_attached_body(_py, url_bits)
@@ -175,6 +189,7 @@ pub unsafe extern "C" fn molt_ws_connect(
     url_len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    molt_runtime_core::call_census::hit(105);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_connect_attached_body(_py, url_ptr, url_len_bits, out) }
@@ -188,6 +203,7 @@ pub unsafe extern "C" fn molt_ws_wait_new(
     events_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(106);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_wait_new_attached_body(_py, ws_bits, events_bits, timeout_bits)
@@ -201,6 +217,7 @@ pub unsafe extern "C" fn molt_ws_wait_new(
     events_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(107);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ws_wait_new_attached_body(_py, ws_bits, events_bits, timeout_bits)
@@ -209,6 +226,7 @@ pub unsafe extern "C" fn molt_ws_wait_new(
 #[unsafe(export_name = "molt_ws_wait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_wait(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(108);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_wait_attached_body(_py, obj_bits) }
@@ -217,6 +235,7 @@ pub unsafe extern "C" fn molt_ws_wait(__context: u64, obj_bits: u64) -> i64 {
 #[unsafe(export_name = "molt_ws_wait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_wait(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(109);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_wait_attached_body(_py, obj_bits) }
@@ -229,6 +248,7 @@ pub unsafe extern "C" fn molt_ws_send(
     data_ptr: *const u8,
     len_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(110);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_send_attached_body(_py, ws_bits, data_ptr, len_bits) }
@@ -236,6 +256,7 @@ pub unsafe extern "C" fn molt_ws_send(
 #[unsafe(export_name = "molt_ws_send_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_send_obj(__context: u64, ws_bits: u64, data_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(111);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_send_obj_attached_body(_py, ws_bits, data_bits) }
@@ -243,6 +264,7 @@ pub unsafe extern "C" fn molt_ws_send_obj(__context: u64, ws_bits: u64, data_bit
 #[unsafe(export_name = "molt_ws_recv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_recv(__context: u64, ws_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(112);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_recv_attached_body(_py, ws_bits) }
@@ -250,6 +272,7 @@ pub unsafe extern "C" fn molt_ws_recv(__context: u64, ws_bits: u64) -> i64 {
 #[unsafe(export_name = "molt_ws_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_close(__context: u64, ws_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(113);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_close_attached_body(_py, ws_bits) }
@@ -257,6 +280,7 @@ pub unsafe extern "C" fn molt_ws_close(__context: u64, ws_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_ws_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ws_drop(__context: u64, ws_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(114);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_ws_drop_attached_body(_py, ws_bits) }

@@ -694,6 +694,7 @@ outputs = [
   "wasm/socket_abi_generated.js",
   "runtime/molt-runtime-platform/src/wasm_socket_abi_generated.rs",
   "tools/wasm_allowed_imports.txt",
+  "runtime/molt-runtime-core/src/call_census_names_generated.rs",
 ]
 source = "tools/wasm_abi_gen/execution_context.py + src/molt/builtin_callables.py + runtime/molt-runtime/src/intrinsics/public_objects.toml + tools/public_objects.py + src/molt/_public_objects_generated.py + runtime/runtime_abi.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py + tools/gen_runtime_names.py + runtime/molt-ir/src/tir/runtime_names.toml"
 upstream_generators = ["tools/gen_host_capabilities.py", "tools/gen_intrinsics.py", "tools/gen_runtime_names.py"]

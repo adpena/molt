@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_linear(
     x_bits: u64,
     weight_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(24);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_linear_attached_body(_py, x_bits, weight_bits)
@@ -20,6 +21,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
     weight_bits: u64,
     split_sizes_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(25);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_linear_split_last_dim_attached_body(
@@ -37,6 +39,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interl
     x_bits: u64,
     weight_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(26);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved_attached_body(
@@ -53,6 +56,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_permute_dims(
     x_bits: u64,
     dims_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(27);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_permute_dims_attached_body(_py, x_bits, dims_bits)
@@ -64,6 +68,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(
     __context: u64,
     x_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(28);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_softmax_last_axis_attached_body(_py, x_bits)
@@ -76,6 +81,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_reshape_view(
     x_bits: u64,
     shape_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(29);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_reshape_view_attached_body(_py, x_bits, shape_bits)
@@ -84,6 +90,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_reshape_view(
 #[unsafe(export_name = "molt_gpu_tensor__tensor_data_list__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_tensor__tensor_data_list(__context: u64, x_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(30);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_data_list_attached_body(_py, x_bits)
@@ -97,6 +104,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_take_rows(
     indices_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(31);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_take_rows_attached_body(_py, x_bits, indices_bits, allow_negative_bits)
@@ -109,6 +117,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(
     a_bits: u64,
     b_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(32);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_concat_first_dim_attached_body(_py, a_bits, b_bits)
@@ -123,6 +132,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     updates_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(33);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_scatter_rows_attached_body(
@@ -141,6 +151,7 @@ pub unsafe extern "C" fn molt_gpu_tensor__zeros(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(34);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__zeros_attached_body(_py, shape_bits, dtype_bits)

@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_module_type_new(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1039);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_type_new_attached_body(_py, args_bits, kwargs_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_module_type_new(
 #[unsafe(export_name = "molt_module_init__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_init(__context: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1040);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_init_attached_body(_py, args_bits, kwargs_bits)

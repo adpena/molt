@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_module_getattribute__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_getattribute(__context: u64, module: u64, name: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1034);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_getattribute_attached_body(_py, module, name)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_module_setattr(
     name: u64,
     value: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1035);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_setattr_attached_body(_py, module, name, value)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_module_setattr(
 #[unsafe(export_name = "molt_module_delattr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_delattr(__context: u64, module: u64, name: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1036);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_delattr_attached_body(_py, module, name)
@@ -28,6 +31,7 @@ pub unsafe extern "C" fn molt_module_delattr(__context: u64, module: u64, name: 
 #[unsafe(export_name = "molt_module_dir__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_dir(__context: u64, module: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1037);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_dir_attached_body(_py, module)
@@ -35,6 +39,7 @@ pub unsafe extern "C" fn molt_module_dir(__context: u64, module: u64) -> u64 {
 #[unsafe(export_name = "molt_module_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_repr(__context: u64, module: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1038);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_repr_attached_body(_py, module)

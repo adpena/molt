@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_stringprep_in_table(
     table_bits: u64,
     char_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3554);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stringprep_in_table_attached_body(_py, table_bits, char_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_stringprep_in_table(
 #[unsafe(export_name = "molt_stringprep_map_table_b2__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stringprep_map_table_b2(__context: u64, char_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3555);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stringprep_map_table_b2_attached_body(_py, char_bits)
@@ -20,6 +22,7 @@ pub unsafe extern "C" fn molt_stringprep_map_table_b2(__context: u64, char_bits:
 #[unsafe(export_name = "molt_stringprep_map_table_b3__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stringprep_map_table_b3(__context: u64, char_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3556);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stringprep_map_table_b3_attached_body(_py, char_bits)

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_logging_handler_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_handler_new(__context: u64, level_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3032);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_handler_new_attached_body(_py, level_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_logging_handler_set_level(
     handler_bits: u64,
     level_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3033);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_handler_set_level_attached_body(_py, handler_bits, level_bits)
@@ -20,6 +22,7 @@ pub unsafe extern "C" fn molt_logging_handler_set_level(
 #[unsafe(export_name = "molt_logging_handler_flush__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_handler_flush(__context: u64, handler_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3034);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_handler_flush_attached_body(_py, handler_bits)
@@ -27,6 +30,7 @@ pub unsafe extern "C" fn molt_logging_handler_flush(__context: u64, handler_bits
 #[unsafe(export_name = "molt_logging_handler_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_handler_close(__context: u64, handler_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3035);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_handler_close_attached_body(_py, handler_bits)
@@ -34,6 +38,7 @@ pub unsafe extern "C" fn molt_logging_handler_close(__context: u64, handler_bits
 #[unsafe(export_name = "molt_logging_handler_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_handler_drop(__context: u64, handler_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3036);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_handler_drop_attached_body(_py, handler_bits)
@@ -45,6 +50,7 @@ pub unsafe extern "C" fn molt_logging_logger_new(
     name_bits: u64,
     level_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3037);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_new_attached_body(_py, name_bits, level_bits)
@@ -56,6 +62,7 @@ pub unsafe extern "C" fn molt_logging_logger_set_level(
     handle_bits: u64,
     level_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3038);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_set_level_attached_body(_py, handle_bits, level_bits)
@@ -67,6 +74,7 @@ pub unsafe extern "C" fn molt_logging_logger_add_handler(
     logger_bits: u64,
     handler_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3039);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_add_handler_attached_body(_py, logger_bits, handler_bits)
@@ -78,6 +86,7 @@ pub unsafe extern "C" fn molt_logging_logger_remove_handler(
     logger_bits: u64,
     handler_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3040);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_remove_handler_attached_body(_py, logger_bits, handler_bits)
@@ -89,6 +98,7 @@ pub unsafe extern "C" fn molt_logging_logger_is_enabled_for(
     logger_bits: u64,
     level_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3041);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_is_enabled_for_attached_body(_py, logger_bits, level_bits)
@@ -99,6 +109,7 @@ pub unsafe extern "C" fn molt_logging_logger_get_effective_level(
     __context: u64,
     logger_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3042);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_get_effective_level_attached_body(_py, logger_bits)
@@ -106,6 +117,7 @@ pub unsafe extern "C" fn molt_logging_logger_get_effective_level(
 #[unsafe(export_name = "molt_logging_logger_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_logger_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3043);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_logger_drop_attached_body(_py, handle_bits)
@@ -113,6 +125,7 @@ pub unsafe extern "C" fn molt_logging_logger_drop(__context: u64, handle_bits: u
 #[unsafe(export_name = "molt_logging_shutdown__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_shutdown(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3044);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_shutdown_attached_body(_py)
@@ -120,6 +133,7 @@ pub unsafe extern "C" fn molt_logging_shutdown(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_logging_get_level_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_get_level_name(__context: u64, level_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3045);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_get_level_name_attached_body(_py, level_bits)
@@ -131,6 +145,7 @@ pub unsafe extern "C" fn molt_logging_add_level_name(
     level_bits: u64,
     name_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3046);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_add_level_name_attached_body(_py, level_bits, name_bits)
@@ -138,6 +153,7 @@ pub unsafe extern "C" fn molt_logging_add_level_name(
 #[unsafe(export_name = "molt_logging_level_to_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_level_to_int(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3047);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_level_to_int_attached_body(_py, name_bits)

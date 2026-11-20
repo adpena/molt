@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_atexit_register(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(469);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_atexit_register_attached_body(_py, func_bits, args_bits, kwargs_bits)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_atexit_register(
 #[unsafe(export_name = "molt_atexit_unregister__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_atexit_unregister(__context: u64, func_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(470);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_atexit_unregister_attached_body(_py, func_bits)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_atexit_unregister(__context: u64, func_bits: u64) 
 #[unsafe(export_name = "molt_atexit_clear__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_atexit_clear(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(471);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_atexit_clear_attached_body(_py)
@@ -28,6 +31,7 @@ pub unsafe extern "C" fn molt_atexit_clear(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_atexit_run_exitfuncs__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_atexit_run_exitfuncs(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(472);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_atexit_run_exitfuncs_attached_body(_py)
@@ -35,6 +39,7 @@ pub unsafe extern "C" fn molt_atexit_run_exitfuncs(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_atexit_ncallbacks__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_atexit_ncallbacks(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(473);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_atexit_ncallbacks_attached_body(_py)
