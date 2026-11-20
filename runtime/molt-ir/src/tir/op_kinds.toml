@@ -5669,6 +5669,12 @@ wire_kind = "cast"
 kinds = []
 wire_kind = "widen"
 
+# By-name construction: the frontend constructs every builtin exception by its
+# BuiltinExc tag (exception_new_builtin*), so no frontend operation spells it.
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "exception_new"
+
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"
 effect = "pure"

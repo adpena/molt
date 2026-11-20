@@ -154,7 +154,7 @@ stdlib_archive = ["dep:zip", "stdlib_serial"]
 # it owns traceback expression ranges (diagnostics must not substitute
 # punctuation heuristics) and the core `compile()` builtin.
 stdlib_ast = []
-stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
+stdlib_fs_extra = ["dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
 stdlib_tk = ["dep:molt-runtime-tk", "molt-runtime-tk/tk"]
@@ -277,8 +277,7 @@ serde_cbor = { version = "0.11", optional = true }
 # Parsing
 rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"] }
 
-# Glob/tempfile
-glob = { version = "0.3", optional = true }
+# Tempfile
 tempfile = { version = "3", optional = true }
 
 # sqlite3 is a native provider. WASM keeps the host database channel surface

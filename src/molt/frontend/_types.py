@@ -34,10 +34,7 @@ from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError, CompatibilityReporter
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
-from molt.frontend.exception_kinds_generated import (
-    BUILTIN_EXCEPTION_CODES,
-    BUILTIN_EXCEPTION_NAMES,
-)
+from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_NAMES
 from molt.frontend.module_publication import SourceModulePublication
 from molt.frontend.dataclass_init import DataclassInitField
 from molt.type_facts import normalize_type_hint
@@ -629,29 +626,6 @@ _BUILTIN_FAST_METHODS: dict[str, frozenset[str]] = {
 
 OBJECT_CLASS = BuiltinClass("object")
 
-# The builtin exceptions the frontend constructs and matches by tag. A tag is
-# the class's `BuiltinExc` code (runtime/exception_kinds.toml), which the
-# runtime decodes with `ExcKind::from_code`; no second ordinal table exists.
-BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
-    name: BUILTIN_EXCEPTION_CODES[name]
-    for name in (
-        "BaseException",
-        "Exception",
-        "KeyError",
-        "IndexError",
-        "ValueError",
-        "TypeError",
-        "RuntimeError",
-        "StopIteration",
-        "StopAsyncIteration",
-        "AssertionError",
-        "ImportError",
-        "NameError",
-        "UnboundLocalError",
-        "NotImplementedError",
-    )
-}
-
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
 # Native code reads a chunk's role from `__molt_module_chunk_` in its symbol
@@ -880,7 +854,6 @@ __all__ = [
     "_function_is_instance_method",
     "_BUILTIN_FAST_METHODS",
     "BUILTIN_EXCEPTION_NAMES",
-    "BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS",
     "_MOLT_CLOSURE_PARAM",
     "_MOLT_MODULE_CHUNK_PARAM",
     "_MOLT_MODULE_CHUNK_PREFIX",
