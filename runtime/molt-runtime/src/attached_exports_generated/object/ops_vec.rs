@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_vec_sum(
     acc_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2581);
+    molt_runtime_core::call_census::hit(2582);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_vec_sum_attached_body(_py, iter_bits, acc_bits, target_bits)
@@ -20,7 +20,7 @@ pub unsafe extern "C" fn molt_vec_prod(
     acc_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2582);
+    molt_runtime_core::call_census::hit(2583);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_vec_prod_attached_body(_py, iter_bits, acc_bits, target_bits)
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn molt_vec_min(
     acc_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2583);
+    molt_runtime_core::call_census::hit(2584);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_vec_min_attached_body(_py, iter_bits, acc_bits, target_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_vec_max(
     acc_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2584);
+    molt_runtime_core::call_census::hit(2585);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_vec_max_attached_body(_py, iter_bits, acc_bits, target_bits)

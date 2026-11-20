@@ -8098,6 +8098,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_namespace_get),
     },
     IntrinsicSpec {
+        name: "molt_namespace_entry_get",
+        symbol: "molt_namespace_entry_get",
+        arity: 3,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_namespace_entry_get),
+    },
+    IntrinsicSpec {
         name: "molt_namespace_del",
         symbol: "molt_namespace_del",
         arity: 2,
@@ -18843,4 +18851,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x2185f1ef7425e659;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x7f26e6740f675f18;

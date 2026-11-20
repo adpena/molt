@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_select_constants__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_constants(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1291);
+    molt_runtime_core::call_census::hit(1292);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_constants_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_select_constants(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_select_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_poll(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1292);
+    molt_runtime_core::call_census::hit(1293);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_poll_attached_body(_py)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_select_epoll(
     sizehint_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1293);
+    molt_runtime_core::call_census::hit(1294);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_epoll_attached_body(_py, sizehint_bits, flags_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_select_epoll(
 #[unsafe(export_name = "molt_select_devpoll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_devpoll(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1294);
+    molt_runtime_core::call_census::hit(1295);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_devpoll_attached_body(_py)
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn molt_select_devpoll(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_select_fileno__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_fileno(__context: u64, fileobj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1295);
+    molt_runtime_core::call_census::hit(1296);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_fileno_attached_body(_py, fileobj_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_select_fileno(__context: u64, fileobj_bits: u64) -
 #[unsafe(export_name = "molt_select_default_selector_kind__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_default_selector_kind(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1296);
+    molt_runtime_core::call_census::hit(1297);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_default_selector_kind_attached_body(_py)
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_select_default_selector_kind(__context: u64) -> u6
 #[unsafe(export_name = "molt_select_backend_available__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_backend_available(__context: u64, kind_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1297);
+    molt_runtime_core::call_census::hit(1298);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_backend_available_attached_body(_py, kind_bits)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_select_backend_available(__context: u64, kind_bits
 #[unsafe(export_name = "molt_select_selector_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_selector_new(__context: u64, kind_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1298);
+    molt_runtime_core::call_census::hit(1299);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_new_attached_body(_py, kind_bits)
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn molt_select_selector_new(__context: u64, kind_bits: u64
 #[unsafe(export_name = "molt_select_selector_fileno__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_selector_fileno(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1299);
+    molt_runtime_core::call_census::hit(1300);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_fileno_attached_body(_py, handle_bits)
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn molt_select_selector_fileno(__context: u64, handle_bits
 #[unsafe(export_name = "molt_select_selector_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_selector_len(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1300);
+    molt_runtime_core::call_census::hit(1301);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_len_attached_body(_py, handle_bits)
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn molt_select_selector_events(
     handle_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1301);
+    molt_runtime_core::call_census::hit(1302);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_events_attached_body(_py, handle_bits, fd_bits)
@@ -103,7 +103,7 @@ pub unsafe extern "C" fn molt_select_selector_register(
     fileobj_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1302);
+    molt_runtime_core::call_census::hit(1303);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_register_attached_body(_py, handle_bits, fileobj_bits, events_bits)
@@ -116,7 +116,7 @@ pub unsafe extern "C" fn molt_select_selector_register_fd(
     fd_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1303);
+    molt_runtime_core::call_census::hit(1304);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_register_fd_attached_body(_py, handle_bits, fd_bits, events_bits)
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn molt_select_selector_unregister(
     handle_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1304);
+    molt_runtime_core::call_census::hit(1305);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_unregister_attached_body(_py, handle_bits, fd_bits)
@@ -140,7 +140,7 @@ pub unsafe extern "C" fn molt_select_selector_unregister_obj(
     handle_bits: u64,
     fileobj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1305);
+    molt_runtime_core::call_census::hit(1306);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_unregister_obj_attached_body(_py, handle_bits, fileobj_bits)
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn molt_select_selector_modify(
     fd_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1306);
+    molt_runtime_core::call_census::hit(1307);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_modify_attached_body(_py, handle_bits, fd_bits, events_bits)
@@ -166,7 +166,7 @@ pub unsafe extern "C" fn molt_select_selector_modify_obj(
     fileobj_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1307);
+    molt_runtime_core::call_census::hit(1308);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_modify_obj_attached_body(_py, handle_bits, fileobj_bits, events_bits)
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn molt_select_selector_poll(
     handle_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1308);
+    molt_runtime_core::call_census::hit(1309);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_poll_attached_body(_py, handle_bits, timeout_bits)
@@ -186,7 +186,7 @@ pub unsafe extern "C" fn molt_select_selector_poll(
 #[unsafe(export_name = "molt_select_selector_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_selector_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1309);
+    molt_runtime_core::call_census::hit(1310);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_close_attached_body(_py, handle_bits)
@@ -194,7 +194,7 @@ pub unsafe extern "C" fn molt_select_selector_close(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_select_selector_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_select_selector_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1310);
+    molt_runtime_core::call_census::hit(1311);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_selector_drop_attached_body(_py, handle_bits)
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn molt_select_select(
     xlist_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1311);
+    molt_runtime_core::call_census::hit(1312);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_select_select_attached_body(_py, rlist_bits, wlist_bits, xlist_bits, timeout_bits)

@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_new(
     maxsize_bits: u64,
     queue_type_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2669);
+    molt_runtime_core::call_census::hit(2670);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_new_attached_body(_py, maxsize_bits, queue_type_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_put_nowait(
     handle_bits: u64,
     item_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2670);
+    molt_runtime_core::call_census::hit(2671);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_put_nowait_attached_body(_py, handle_bits, item_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_put_nowait(
 #[unsafe(export_name = "molt_asyncio_queue_get_nowait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_get_nowait(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2671);
+    molt_runtime_core::call_census::hit(2672);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_get_nowait_attached_body(_py, handle_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_get_nowait(__context: u64, handle_bi
 #[unsafe(export_name = "molt_asyncio_queue_qsize__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_qsize(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2672);
+    molt_runtime_core::call_census::hit(2673);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_qsize_attached_body(_py, handle_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_qsize(__context: u64, handle_bits: u
 #[unsafe(export_name = "molt_asyncio_queue_maxsize__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_maxsize(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2673);
+    molt_runtime_core::call_census::hit(2674);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_maxsize_attached_body(_py, handle_bits)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_maxsize(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_asyncio_queue_empty__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_empty(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2674);
+    molt_runtime_core::call_census::hit(2675);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_empty_attached_body(_py, handle_bits)
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_empty(__context: u64, handle_bits: u
 #[unsafe(export_name = "molt_asyncio_queue_full__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_full(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2675);
+    molt_runtime_core::call_census::hit(2676);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_full_attached_body(_py, handle_bits)
@@ -66,7 +66,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_full(__context: u64, handle_bits: u6
 #[unsafe(export_name = "molt_asyncio_queue_task_done__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_task_done(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2676);
+    molt_runtime_core::call_census::hit(2677);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_task_done_attached_body(_py, handle_bits)
@@ -77,7 +77,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_unfinished_tasks(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2677);
+    molt_runtime_core::call_census::hit(2678);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_unfinished_tasks_attached_body(_py, handle_bits)
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_shutdown(
     handle_bits: u64,
     immediate_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2678);
+    molt_runtime_core::call_census::hit(2679);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_shutdown_attached_body(_py, handle_bits, immediate_bits)
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_shutdown(
 #[unsafe(export_name = "molt_asyncio_queue_is_shutdown__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_is_shutdown(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2679);
+    molt_runtime_core::call_census::hit(2680);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_is_shutdown_attached_body(_py, handle_bits)
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn molt_asyncio_queue_is_shutdown(__context: u64, handle_b
 #[unsafe(export_name = "molt_asyncio_queue_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_queue_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2680);
+    molt_runtime_core::call_census::hit(2681);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_queue_drop_attached_body(_py, handle_bits)

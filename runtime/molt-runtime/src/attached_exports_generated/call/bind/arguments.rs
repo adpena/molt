@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_callargs_new(
     pos_capacity_bits: u64,
     kw_capacity_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1725);
+    molt_runtime_core::call_census::hit(1726);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_callargs_new_attached_body(_py, pos_capacity_bits, kw_capacity_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_callargs_new_expanded(
     pos_capacity_bits: u64,
     kw_capacity_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1726);
+    molt_runtime_core::call_census::hit(1727);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_callargs_new_expanded_attached_body(_py, pos_capacity_bits, kw_capacity_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_callargs_push_pos(
     builder_bits: u64,
     val: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1727);
+    molt_runtime_core::call_census::hit(1728);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_callargs_push_pos_attached_body(_py, builder_bits, val) }
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
     name_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1728);
+    molt_runtime_core::call_census::hit(1729);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_callargs_push_kw_attached_body(_py, builder_bits, name_bits, val_bits) }
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(
     builder_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1729);
+    molt_runtime_core::call_census::hit(1730);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_callargs_expand_star_attached_body(_py, builder_bits, iterable_bits) }
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(
     builder_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1730);
+    molt_runtime_core::call_census::hit(1731);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_callargs_expand_kwstar_attached_body(_py, builder_bits, mapping_bits) }

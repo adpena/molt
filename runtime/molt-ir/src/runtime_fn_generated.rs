@@ -1810,6 +1810,7 @@ pub enum RuntimeFn {
     MultiprocessingCodecLoads,
     NamedtupleValidateFields,
     NamespaceDel,
+    NamespaceEntryGet,
     NamespaceGet,
     NativeCallableReduce,
     NativeDescriptorDelete,
@@ -4661,6 +4662,7 @@ impl RuntimeFn {
         Self::MultiprocessingCodecLoads,
         Self::NamedtupleValidateFields,
         Self::NamespaceDel,
+        Self::NamespaceEntryGet,
         Self::NamespaceGet,
         Self::NativeCallableReduce,
         Self::NativeDescriptorDelete,
@@ -5819,7 +5821,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2847;
+    pub const COUNT: usize = 2848;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -30480,6 +30482,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFFD24090A13D,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_namespace_entry_get",
+        linker_symbol: "molt_namespace_entry_get__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFCFB78CF7AE,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

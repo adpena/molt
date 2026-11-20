@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_secrets_token_bytes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_token_bytes(__context: u64, nbytes_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2823);
+    molt_runtime_core::call_census::hit(2824);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_token_bytes_attached_body(_py, nbytes_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_secrets_token_bytes(__context: u64, nbytes_bits: u
 #[unsafe(export_name = "molt_secrets_token_hex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_token_hex(__context: u64, nbytes_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2824);
+    molt_runtime_core::call_census::hit(2825);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_token_hex_attached_body(_py, nbytes_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_secrets_token_hex(__context: u64, nbytes_bits: u64
 #[unsafe(export_name = "molt_secrets_token_urlsafe__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_token_urlsafe(__context: u64, nbytes_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2825);
+    molt_runtime_core::call_census::hit(2826);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_token_urlsafe_attached_body(_py, nbytes_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_secrets_token_urlsafe(__context: u64, nbytes_bits:
 #[unsafe(export_name = "molt_secrets_randbits__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_randbits(__context: u64, k_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2826);
+    molt_runtime_core::call_census::hit(2827);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_randbits_attached_body(_py, k_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_secrets_randbits(__context: u64, k_bits: u64) -> u
 #[unsafe(export_name = "molt_secrets_choice__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_choice(__context: u64, seq_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2827);
+    molt_runtime_core::call_census::hit(2828);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_choice_attached_body(_py, seq_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_secrets_choice(__context: u64, seq_bits: u64) -> u
 #[unsafe(export_name = "molt_secrets_below__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_secrets_below(__context: u64, upper_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2828);
+    molt_runtime_core::call_census::hit(2829);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_secrets_below_attached_body(_py, upper_bits)

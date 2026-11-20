@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_statistics_mean__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_mean(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3095);
+    molt_runtime_core::call_census::hit(3096);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_mean_attached_body(_py, data_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_statistics_stdev(
     data_bits: u64,
     center_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3096);
+    molt_runtime_core::call_census::hit(3097);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_stdev_attached_body(_py, data_bits, center_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_statistics_variance(
     data_bits: u64,
     center_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3097);
+    molt_runtime_core::call_census::hit(3098);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_variance_attached_body(_py, data_bits, center_bits)
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn molt_statistics_pvariance(
     data_bits: u64,
     center_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3098);
+    molt_runtime_core::call_census::hit(3099);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_pvariance_attached_body(_py, data_bits, center_bits)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_statistics_pstdev(
     data_bits: u64,
     center_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3099);
+    molt_runtime_core::call_census::hit(3100);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_pstdev_attached_body(_py, data_bits, center_bits)
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_statistics_pstdev(
 #[unsafe(export_name = "molt_statistics_fmean__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_fmean(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3100);
+    molt_runtime_core::call_census::hit(3101);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_fmean_attached_body(_py, data_bits)
@@ -66,7 +66,7 @@ pub unsafe extern "C" fn molt_statistics_fmean(__context: u64, data_bits: u64) -
 #[unsafe(export_name = "molt_statistics_median__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_median(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3101);
+    molt_runtime_core::call_census::hit(3102);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_median_attached_body(_py, data_bits)
@@ -74,7 +74,7 @@ pub unsafe extern "C" fn molt_statistics_median(__context: u64, data_bits: u64) 
 #[unsafe(export_name = "molt_statistics_median_low__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_median_low(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3102);
+    molt_runtime_core::call_census::hit(3103);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_median_low_attached_body(_py, data_bits)
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn molt_statistics_median_low(__context: u64, data_bits: u
 #[unsafe(export_name = "molt_statistics_median_high__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_median_high(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3103);
+    molt_runtime_core::call_census::hit(3104);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_median_high_attached_body(_py, data_bits)
@@ -94,7 +94,7 @@ pub unsafe extern "C" fn molt_statistics_median_grouped(
     data_bits: u64,
     interval_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3104);
+    molt_runtime_core::call_census::hit(3105);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_median_grouped_attached_body(_py, data_bits, interval_bits)
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn molt_statistics_median_grouped(
 #[unsafe(export_name = "molt_statistics_mode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_mode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3105);
+    molt_runtime_core::call_census::hit(3106);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_mode_attached_body(_py, data_bits)
@@ -110,7 +110,7 @@ pub unsafe extern "C" fn molt_statistics_mode(__context: u64, data_bits: u64) ->
 #[unsafe(export_name = "molt_statistics_multimode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_multimode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3106);
+    molt_runtime_core::call_census::hit(3107);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_multimode_attached_body(_py, data_bits)
@@ -123,7 +123,7 @@ pub unsafe extern "C" fn molt_statistics_quantiles(
     n_bits: u64,
     inclusive_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3107);
+    molt_runtime_core::call_census::hit(3108);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_quantiles_attached_body(_py, data_bits, n_bits, inclusive_bits)
@@ -131,7 +131,7 @@ pub unsafe extern "C" fn molt_statistics_quantiles(
 #[unsafe(export_name = "molt_statistics_harmonic_mean__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_harmonic_mean(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3108);
+    molt_runtime_core::call_census::hit(3109);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_harmonic_mean_attached_body(_py, data_bits)
@@ -139,7 +139,7 @@ pub unsafe extern "C" fn molt_statistics_harmonic_mean(__context: u64, data_bits
 #[unsafe(export_name = "molt_statistics_geometric_mean__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_statistics_geometric_mean(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3109);
+    molt_runtime_core::call_census::hit(3110);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_geometric_mean_attached_body(_py, data_bits)
@@ -151,7 +151,7 @@ pub unsafe extern "C" fn molt_statistics_covariance(
     x_bits: u64,
     y_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3110);
+    molt_runtime_core::call_census::hit(3111);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_covariance_attached_body(_py, x_bits, y_bits)
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn molt_statistics_correlation(
     x_bits: u64,
     y_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3111);
+    molt_runtime_core::call_census::hit(3112);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_correlation_attached_body(_py, x_bits, y_bits)
@@ -176,7 +176,7 @@ pub unsafe extern "C" fn molt_statistics_linear_regression(
     y_bits: u64,
     proportional_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3112);
+    molt_runtime_core::call_census::hit(3113);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_linear_regression_attached_body(_py, x_bits, y_bits, proportional_bits)
@@ -188,7 +188,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_new(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3113);
+    molt_runtime_core::call_census::hit(3114);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_new_attached_body(_py, mu_bits, sigma_bits)
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_samples(
     seed_bits: u64,
     random_fn_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3114);
+    molt_runtime_core::call_census::hit(3115);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_samples_attached_body(
@@ -223,7 +223,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_inv_cdf(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3115);
+    molt_runtime_core::call_census::hit(3116);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_inv_cdf_attached_body(_py, p_bits, mu_bits, sigma_bits)
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_pdf(
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3116);
+    molt_runtime_core::call_census::hit(3117);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_pdf_attached_body(_py, mu_bits, sigma_bits, x_bits)
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_cdf(
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3117);
+    molt_runtime_core::call_census::hit(3118);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_cdf_attached_body(_py, mu_bits, sigma_bits, x_bits)
@@ -262,7 +262,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_zscore(
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3118);
+    molt_runtime_core::call_census::hit(3119);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_zscore_attached_body(_py, mu_bits, sigma_bits, x_bits)
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn molt_statistics_normal_dist_overlap(
     mu_b_bits: u64,
     sigma_b_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3119);
+    molt_runtime_core::call_census::hit(3120);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_statistics_normal_dist_overlap_attached_body(

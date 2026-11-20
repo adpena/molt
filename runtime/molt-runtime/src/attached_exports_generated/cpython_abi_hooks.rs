@@ -11,7 +11,7 @@ pub unsafe extern "C" fn molt_py_cfunction_create_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1883);
+    molt_runtime_core::call_census::hit(1884);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn molt_module_add_py_cfunction_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(1884);
+    molt_runtime_core::call_census::hit(1885);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn molt_cpython_abi_cext_call_trampoline_admitted(
     args_ptr: u64,
     args_len: u64,
 ) -> i64 {
-    molt_runtime_core::call_census::hit(1885);
+    molt_runtime_core::call_census::hit(1886);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cpython_abi_cext_call_trampoline_admitted_attached_body(
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn molt_cpython_abi_cext_call_trampoline_baseline(
     args_ptr: u64,
     args_len: u64,
 ) -> i64 {
-    molt_runtime_core::call_census::hit(1886);
+    molt_runtime_core::call_census::hit(1887);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cpython_abi_cext_call_trampoline_baseline_attached_body(
