@@ -213,10 +213,11 @@ pub(crate) fn molt_operator_length_hint_attached_body(
         };
         drop(result);
         if value < 0 {
-            return raise_exception::<_>(
+            let message = crate::builtins::classes::negative_length_hint_error(_py, obj_bits);
+            return crate::builtins::exceptions::raise_exception_bytes::<_>(
                 _py,
                 BuiltinExc::ValueError,
-                "__length_hint__() should return >= 0",
+                &message,
             );
         }
         crate::int_bits_from_i64(_py, value as i64)

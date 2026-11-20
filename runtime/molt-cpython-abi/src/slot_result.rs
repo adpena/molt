@@ -63,6 +63,29 @@ pub(crate) unsafe fn native_type_name(
     }
 }
 
+/// The `ValueError` text for a negative `__length_hint__()` result. 3.15
+/// names the owner type (`%T`); earlier targets do not.
+pub fn negative_length_hint(modern: bool, owner: &[u8]) -> Vec<u8> {
+    if modern {
+        [owner, b".__length_hint__() must return a non-negative int"].concat()
+    } else {
+        b"__length_hint__() should return >= 0".to_vec()
+    }
+}
+
+/// Set the `ValueError` for native `owner`'s negative `__length_hint__()`.
+pub(crate) unsafe fn set_native_negative_length_hint_error(owner: *mut crate::abi_types::PyObject) {
+    let modern = target_uses_modern_texts();
+    let name = unsafe { native_type_name(crate::bridge::semantic_type(owner), modern) };
+    let message = negative_length_hint(modern, name.as_bytes());
+    unsafe {
+        crate::api::errors::set_python_error_bytes(
+            (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+            &message,
+        );
+    }
+}
+
 /// Set the `TypeError` for `owner`'s `slot` method returning `result`, both
 /// native objects (`owner` may be null when the text names no owner).
 pub(crate) unsafe fn set_native_slot_result_error(
@@ -363,6 +386,20 @@ mod tests {
             "__complex__ returned non-complex (type C).  The ability to return an instance of a \
              strict subclass of complex is deprecated, and may be removed in a future version of \
              Python."
+        );
+    }
+
+    /// CPython 3.14.10 and 3.15.2 on `operator.length_hint` of a class `H`
+    /// whose `__length_hint__` returns -1.
+    #[test]
+    fn negative_length_hint_names_the_owner_from_3_15() {
+        assert_eq!(
+            text(negative_length_hint(false, b"H")),
+            "__length_hint__() should return >= 0"
+        );
+        assert_eq!(
+            text(negative_length_hint(true, b"pkg.H")),
+            "pkg.H.__length_hint__() must return a non-negative int"
         );
     }
 

@@ -1779,12 +1779,7 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     let length = unsafe { crate::api::numbers::PyLong_AsSsize_t(result) };
     unsafe { crate::api::refcount::Py_DECREF(result) };
     if length < 0 && !exception_already_pending() {
-        unsafe {
-            errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
-                c"__length_hint__() should return >= 0".as_ptr(),
-            )
-        };
+        unsafe { crate::slot_result::set_native_negative_length_hint_error(o) };
     }
     if length < 0 { -1 } else { length }
 }

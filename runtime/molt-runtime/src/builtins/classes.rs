@@ -1649,6 +1649,13 @@ pub(crate) fn slot_result_type_error(
     )
 }
 
+/// The `ValueError` text for `owner`'s negative `__length_hint__()`.
+pub(crate) fn negative_length_hint_error(py: &PyToken<'_>, owner: u64) -> Vec<u8> {
+    let modern =
+        molt_cpython_abi::slot_result::modern_slot_result_texts(3, runtime_target_minor(py));
+    molt_cpython_abi::slot_result::negative_length_hint(modern, &slot_owner_name(py, owner, modern))
+}
+
 /// Raise the `TypeError` for `owner`'s special method returning `result`.
 pub(crate) fn raise_slot_result_type_error<T: crate::builtins::exceptions::ExceptionSentinel>(
     py: &PyToken<'_>,
