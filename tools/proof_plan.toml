@@ -6460,7 +6460,7 @@ gates = [
 # --- Native-callable ABI authority --------------------------------------
 [[rule]]
 name = "native-callable-abi"
-toolchains = ["python", "rustc", "cargo", "rustfmt", "node", "wasm-ld"]
+toolchains = ["python", "rustc", "cargo", "rustfmt", "node", "wasm-ld", "llvm-sdk"]
 description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
 globs = [
   "runtime/test_support/native_object_execution.rs",

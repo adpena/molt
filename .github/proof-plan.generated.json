@@ -12672,7 +12672,8 @@
           "cargo",
           "rustfmt",
           "node",
-          "wasm-ld"
+          "wasm-ld",
+          "llvm-sdk"
         ]
       },
       {
@@ -13356,7 +13357,8 @@
         "git",
         "rustfmt",
         "node",
-        "wasm-ld"
+        "wasm-ld",
+        "llvm-sdk"
       ],
       "local.native-callable-abi.pytest": [
         "python",
@@ -13365,7 +13367,8 @@
         "git",
         "rustfmt",
         "node",
-        "wasm-ld"
+        "wasm-ld",
+        "llvm-sdk"
       ],
       "local.native-launch-abi.0": [
         "python",
