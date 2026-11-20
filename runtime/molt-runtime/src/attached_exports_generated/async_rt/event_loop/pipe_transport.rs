@@ -7,7 +7,9 @@ pub unsafe extern "C" fn molt_pipe_transport_new(
     fd_bits: u64,
     is_read_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(115);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_new_attached_body(_py, fd_bits, is_read_bits)
@@ -20,7 +22,9 @@ pub unsafe extern "C" fn molt_pipe_transport_new(
     _fd_bits: u64,
     _is_read_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(116);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_new_attached_body(_py, _fd_bits, _is_read_bits)
@@ -28,7 +32,9 @@ pub unsafe extern "C" fn molt_pipe_transport_new(
 #[unsafe(export_name = "molt_pipe_transport_get_fd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pipe_transport_get_fd(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(117);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_get_fd,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_get_fd_attached_body(_py, handle_bits)
@@ -36,7 +42,9 @@ pub unsafe extern "C" fn molt_pipe_transport_get_fd(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_pipe_transport_is_closing__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pipe_transport_is_closing(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(118);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_is_closing,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_is_closing_attached_body(_py, handle_bits)
@@ -45,7 +53,9 @@ pub unsafe extern "C" fn molt_pipe_transport_is_closing(__context: u64, handle_b
 #[unsafe(export_name = "molt_pipe_transport_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pipe_transport_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(119);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_close,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_close_attached_body(_py, handle_bits)
@@ -54,7 +64,9 @@ pub unsafe extern "C" fn molt_pipe_transport_close(__context: u64, handle_bits: 
 #[unsafe(export_name = "molt_pipe_transport_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pipe_transport_close(__context: u64, _handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(120);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_close,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_close_attached_body(_py, _handle_bits)
@@ -65,7 +77,9 @@ pub unsafe extern "C" fn molt_pipe_transport_pause_reading(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(121);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_pause_reading,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_pause_reading_attached_body(_py, handle_bits)
@@ -76,7 +90,9 @@ pub unsafe extern "C" fn molt_pipe_transport_resume_reading(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(122);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_resume_reading,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_resume_reading_attached_body(_py, handle_bits)
@@ -89,7 +105,9 @@ pub unsafe extern "C" fn molt_pipe_transport_write(
     handle_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(123);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_write,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_write_attached_body(_py, handle_bits, data_bits)
@@ -102,7 +120,9 @@ pub unsafe extern "C" fn molt_pipe_transport_write(
     _handle_bits: u64,
     _data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(124);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_write,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_write_attached_body(_py, _handle_bits, _data_bits)
@@ -113,7 +133,9 @@ pub unsafe extern "C" fn molt_pipe_transport_get_write_buffer_size(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(125);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_get_write_buffer_size,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_get_write_buffer_size_attached_body(_py, handle_bits)
@@ -121,7 +143,9 @@ pub unsafe extern "C" fn molt_pipe_transport_get_write_buffer_size(
 #[unsafe(export_name = "molt_pipe_transport_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pipe_transport_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(126);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_pipe_transport_drop,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pipe_transport_drop_attached_body(_py, handle_bits)

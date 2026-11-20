@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_call_bind_ic(
     call_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1733);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_call_bind_ic);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_bind_ic_attached_body(_py, site_bits, call_bits, builder_bits)
@@ -20,7 +20,9 @@ pub unsafe extern "C" fn molt_call_bind_ic_owned(
     call_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1734);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_bind_ic_owned,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_bind_ic_owned_attached_body(_py, site_bits, call_bits, builder_bits)
@@ -36,7 +38,7 @@ pub unsafe extern "C" fn molt_load_super_method(
     name_len_bits: u64,
     self_out_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1735);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_load_super_method);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_load_super_method_attached_body(
@@ -56,7 +58,9 @@ pub unsafe extern "C" fn molt_call_loaded_method0(
     callable_bits: u64,
     self_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1736);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method0,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method0_attached_body(_py, callable_bits, self_bits)
@@ -69,7 +73,9 @@ pub unsafe extern "C" fn molt_call_loaded_method1(
     self_bits: u64,
     a0: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1737);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method1,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method1_attached_body(_py, callable_bits, self_bits, a0)
@@ -83,7 +89,9 @@ pub unsafe extern "C" fn molt_call_loaded_method2(
     a0: u64,
     a1: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1738);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method2,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method2_attached_body(_py, callable_bits, self_bits, a0, a1)
@@ -98,7 +106,9 @@ pub unsafe extern "C" fn molt_call_loaded_method3(
     a1: u64,
     a2: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1739);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method3,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method3_attached_body(_py, callable_bits, self_bits, a0, a1, a2)
@@ -114,7 +124,9 @@ pub unsafe extern "C" fn molt_call_loaded_method4(
     a2: u64,
     a3: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1740);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method4,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method4_attached_body(_py, callable_bits, self_bits, a0, a1, a2, a3)
@@ -128,7 +140,9 @@ pub unsafe extern "C" fn molt_call_loaded_method_spilled(
     args_ptr_bits: u64,
     nargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1741);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_loaded_method_spilled,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_loaded_method_spilled_attached_body(
@@ -148,7 +162,7 @@ pub unsafe extern "C" fn molt_invoke_ffi_ic(
     builder_bits: u64,
     require_bridge_cap_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1742);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_invoke_ffi_ic);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_invoke_ffi_ic_attached_body(
@@ -167,7 +181,7 @@ pub unsafe extern "C" fn molt_call_indirect_ic(
     call_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1743);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_call_indirect_ic);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_indirect_ic_attached_body(_py, site_bits, call_bits, builder_bits)

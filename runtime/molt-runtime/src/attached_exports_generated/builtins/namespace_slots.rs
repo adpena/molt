@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_static_cells_bind(
     base_bits: u64,
     guard_mask_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1070);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_static_cells_bind);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_static_cells_bind_attached_body(_py, module_bits, base_bits, guard_mask_bits)
@@ -15,7 +15,7 @@ pub unsafe extern "C" fn molt_static_cells_bind(
 #[unsafe(export_name = "molt_global_slot_base__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_global_slot_base(__context: u64, module_id_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1071);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_global_slot_base);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_global_slot_base_attached_body(_py, module_id_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_global_slot_set(
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1072);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_global_slot_set);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_global_slot_set_attached_body(

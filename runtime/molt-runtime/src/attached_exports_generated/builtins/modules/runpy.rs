@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_runpy_run_module(
     init_globals_bits_value: u64,
     alter_sys_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1034);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_runpy_run_module);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_runpy_run_module_attached_body(
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn molt_runpy_run_path(
     run_name_bits: u64,
     init_globals_bits_value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1035);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_runpy_run_path);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_runpy_run_path_attached_body(_py, path_bits, run_name_bits, init_globals_bits_value)

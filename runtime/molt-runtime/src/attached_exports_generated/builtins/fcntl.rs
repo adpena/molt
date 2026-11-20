@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_fcntl_f_getfl__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_f_getfl(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(721);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_f_getfl);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_f_getfl_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_fcntl_f_getfl(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_fcntl_f_setfl__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_f_setfl(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(722);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_f_setfl);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_f_setfl_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_fcntl_f_setfl(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_fcntl_f_getfd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_f_getfd(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(723);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_f_getfd);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_f_getfd_attached_body(_py)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_fcntl_f_getfd(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_fcntl_f_setfd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_f_setfd(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(724);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_f_setfd);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_f_setfd_attached_body(_py)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_fcntl_f_setfd(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_fcntl_fd_cloexec__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_fd_cloexec(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(725);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_fd_cloexec);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_fd_cloexec_attached_body(_py)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_fcntl_fd_cloexec(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_fcntl_o_nonblock__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fcntl_o_nonblock(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(726);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl_o_nonblock);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_o_nonblock_attached_body(_py)
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn molt_fcntl(
     cmd_bits: u64,
     arg_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(727);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_fcntl);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fcntl_attached_body(_py, fd_bits, cmd_bits, arg_bits)

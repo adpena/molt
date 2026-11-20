@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_dict_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dict_new(__context: u64, capacity_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(567);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dict_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dict_new_attached_body(_py, capacity_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_dict_new(__context: u64, capacity_bits: u64) -> u6
 #[unsafe(export_name = "molt_dict_from_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dict_from_obj(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(568);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dict_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dict_from_obj_attached_body(_py, obj_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_dict_from_obj(__context: u64, obj_bits: u64) -> u6
 #[unsafe(export_name = "molt_set_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_new(__context: u64, capacity_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(569);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_new_attached_body(_py, capacity_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_set_new(__context: u64, capacity_bits: u64) -> u64
 #[unsafe(export_name = "molt_frozenset_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frozenset_new(__context: u64, capacity_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(570);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_frozenset_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_new_attached_body(_py, capacity_bits)

@@ -8,7 +8,9 @@ pub unsafe extern "C" fn molt_string_split_ws_dict_inc(
     delta_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1952);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_string_split_ws_dict_inc,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_ws_dict_inc_attached_body(_py, line_bits, dict_bits, delta_bits, target_bits)
@@ -23,7 +25,9 @@ pub unsafe extern "C" fn molt_string_split_sep_dict_inc(
     delta_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1953);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_string_split_sep_dict_inc,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_sep_dict_inc_attached_body(

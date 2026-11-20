@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_zipfile_crc32__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zipfile_crc32(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3547);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zipfile_crc32);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_crc32_attached_body(_py, data_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_zipfile_crc32(__context: u64, data_bits: u64) -> u
 #[unsafe(export_name = "molt_imghdr_detect__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_imghdr_detect(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3548);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_imghdr_detect);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_imghdr_detect_attached_body(_py, data_bits)
@@ -21,7 +21,9 @@ pub unsafe extern "C" fn molt_zipfile_parse_central_directory(
     __context: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3549);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_parse_central_directory,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_parse_central_directory_attached_body(_py, data_bits)
@@ -34,7 +36,9 @@ pub unsafe extern "C" fn molt_zipfile_build_zip64_extra(
     comp_size_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3550);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_build_zip64_extra,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_build_zip64_extra_attached_body(_py, size_bits, comp_size_bits, offset_bits)
@@ -42,7 +46,9 @@ pub unsafe extern "C" fn molt_zipfile_build_zip64_extra(
 #[unsafe(export_name = "molt_zipfile_path_implied_dirs__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zipfile_path_implied_dirs(__context: u64, names_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3551);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_path_implied_dirs,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_path_implied_dirs_attached_body(_py, names_bits)
@@ -54,7 +60,9 @@ pub unsafe extern "C" fn molt_zipfile_path_resolve_dir(
     name_bits: u64,
     names_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3552);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_path_resolve_dir,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_path_resolve_dir_attached_body(_py, name_bits, names_bits)
@@ -66,7 +74,9 @@ pub unsafe extern "C" fn molt_zipfile_path_is_child(
     path_at_bits: u64,
     parent_at_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3553);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_path_is_child,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_path_is_child_attached_body(_py, path_at_bits, parent_at_bits)
@@ -79,7 +89,9 @@ pub unsafe extern "C" fn molt_zipfile_path_translate_glob(
     seps_bits: u64,
     py313_plus_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3554);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_path_translate_glob,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_path_translate_glob_attached_body(_py, pattern_bits, seps_bits, py313_plus_bits)
@@ -90,7 +102,9 @@ pub unsafe extern "C" fn molt_zipfile_normalize_member_path(
     __context: u64,
     member_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3555);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zipfile_normalize_member_path,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zipfile_normalize_member_path_attached_body(_py, member_bits)
@@ -98,7 +112,7 @@ pub unsafe extern "C" fn molt_zipfile_normalize_member_path(
 #[unsafe(export_name = "molt_imghdr_what__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_imghdr_what(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3556);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_imghdr_what);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_imghdr_what_attached_body(_py, data_bits)
@@ -106,7 +120,7 @@ pub unsafe extern "C" fn molt_imghdr_what(__context: u64, data_bits: u64) -> u64
 #[unsafe(export_name = "molt_imghdr_test__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_imghdr_test(__context: u64, kind_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3557);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_imghdr_test);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_imghdr_test_attached_body(_py, kind_bits, data_bits)

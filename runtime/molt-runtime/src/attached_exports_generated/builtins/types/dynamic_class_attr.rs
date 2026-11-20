@@ -7,7 +7,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_init(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1588);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_init,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_init_attached_body(_py, self_bits, args_bits, kwargs_bits)
@@ -20,7 +22,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_get(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1589);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_get_attached_body(_py, self_bits, args_bits, kwargs_bits)
@@ -33,7 +37,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_set(
     instance_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1590);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_set_attached_body(_py, self_bits, instance_bits, value_bits)
@@ -45,7 +51,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_delete(
     self_bits: u64,
     instance_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1591);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_delete,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_delete_attached_body(_py, self_bits, instance_bits)
@@ -57,7 +65,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_getter(
     self_bits: u64,
     fget_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1592);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_getter,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_getter_attached_body(_py, self_bits, fget_bits)
@@ -69,7 +79,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_setter(
     self_bits: u64,
     fset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1593);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_setter,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_setter_attached_body(_py, self_bits, fset_bits)
@@ -81,7 +93,9 @@ pub unsafe extern "C" fn molt_types_dynamic_class_attr_deleter(
     self_bits: u64,
     fdel_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1594);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_types_dynamic_class_attr_deleter,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_dynamic_class_attr_deleter_attached_body(_py, self_bits, fdel_bits)

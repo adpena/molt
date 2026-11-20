@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_hash_new(
     options_bits: u64,
     unsupported_error_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2814);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_hash_new);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hash_new_attached_body(
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_hash_new(
 #[unsafe(export_name = "molt_hash_update__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hash_update(__context: u64, handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2815);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_hash_update);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hash_update_attached_body(_py, handle_bits, data_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_hash_update(__context: u64, handle_bits: u64, data
 #[unsafe(export_name = "molt_hash_copy__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hash_copy(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2816);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_hash_copy);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hash_copy_attached_body(_py, handle_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_hash_digest(
     handle_bits: u64,
     length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2817);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_hash_digest);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hash_digest_attached_body(_py, handle_bits, length_bits)
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_pbkdf2_hmac(
     dklen_bits: u64,
     unsupported_error_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2818);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_pbkdf2_hmac);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pbkdf2_hmac_attached_body(
@@ -83,7 +83,7 @@ pub unsafe extern "C" fn molt_scrypt(
     maxmem_bits: u64,
     dklen_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2819);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_scrypt);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_scrypt_attached_body(

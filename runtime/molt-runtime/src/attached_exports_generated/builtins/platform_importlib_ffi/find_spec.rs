@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_importlib_find_in_path_package_context(
     fullname_bits: u64,
     search_paths_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1184);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_find_in_path_package_context,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_find_in_path_package_context_attached_body(_py, fullname_bits, search_paths_bits)
@@ -19,7 +21,9 @@ pub unsafe extern "C" fn molt_importlib_find_spec(
     path: u64,
     target: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1185);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_find_spec,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_find_spec_attached_body(_py, name, path, target)

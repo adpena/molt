@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_get_awaitable__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_get_awaitable(__context: u64, bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(40);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_get_awaitable);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_get_awaitable_attached_body(_py, bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_get_awaitable(__context: u64, bits: u64) -> u64 {
 #[unsafe(export_name = "molt_awaitable_await__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_awaitable_await(__context: u64, bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(41);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_awaitable_await);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_awaitable_await_attached_body(_py, bits)
@@ -18,7 +18,9 @@ pub unsafe extern "C" fn molt_awaitable_await(__context: u64, bits: u64) -> u64 
 #[unsafe(export_name = "molt_asyncgen_awaitable_self__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncgen_awaitable_self(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(42);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncgen_awaitable_self,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncgen_awaitable_self_attached_body(_py, receiver)
@@ -30,7 +32,9 @@ pub unsafe extern "C" fn molt_asyncgen_awaitable_send(
     receiver: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(43);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncgen_awaitable_send,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncgen_awaitable_send_attached_body(_py, receiver, value)
@@ -38,7 +42,9 @@ pub unsafe extern "C" fn molt_asyncgen_awaitable_send(
 #[unsafe(export_name = "molt_asyncgen_awaitable_next__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncgen_awaitable_next(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(44);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncgen_awaitable_next,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncgen_awaitable_next_attached_body(_py, receiver)
@@ -50,7 +56,9 @@ pub unsafe extern "C" fn molt_asyncgen_awaitable_throw(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(45);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncgen_awaitable_throw,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncgen_awaitable_throw_attached_body(_py, args, kwargs)
@@ -58,7 +66,9 @@ pub unsafe extern "C" fn molt_asyncgen_awaitable_throw(
 #[unsafe(export_name = "molt_asyncgen_awaitable_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncgen_awaitable_close(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(46);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncgen_awaitable_close,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncgen_awaitable_close_attached_body(_py, receiver)
@@ -70,7 +80,9 @@ pub unsafe extern "C" fn molt_coroutine_send_method(
     receiver: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(47);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_send_method,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_coroutine_send_method_attached_body(_py, receiver, value)
@@ -82,7 +94,9 @@ pub unsafe extern "C" fn molt_coroutine_throw_method(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(48);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_throw_method,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_coroutine_throw_method_attached_body(_py, args, kwargs)
@@ -90,7 +104,9 @@ pub unsafe extern "C" fn molt_coroutine_throw_method(
 #[unsafe(export_name = "molt_coroutine_close_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_coroutine_close_method(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(49);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_close_method,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_coroutine_close_method_attached_body(_py, receiver)
@@ -98,7 +114,9 @@ pub unsafe extern "C" fn molt_coroutine_close_method(__context: u64, receiver: u
 #[unsafe(export_name = "molt_coroutine_wrapper_iter__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_coroutine_wrapper_iter(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(50);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_wrapper_iter,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_coroutine_wrapper_iter_attached_body(_py, receiver)
@@ -106,7 +124,9 @@ pub unsafe extern "C" fn molt_coroutine_wrapper_iter(__context: u64, receiver: u
 #[unsafe(export_name = "molt_coroutine_wrapper_next__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_coroutine_wrapper_next(__context: u64, receiver: u64) -> u64 {
-    molt_runtime_core::call_census::hit(51);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_wrapper_next,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_coroutine_wrapper_next_attached_body(_py, receiver)
@@ -114,7 +134,9 @@ pub unsafe extern "C" fn molt_coroutine_wrapper_next(__context: u64, receiver: u
 #[unsafe(export_name = "molt_coroutine_wrapper_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_coroutine_wrapper_poll(__context: u64, raw: u64) -> i64 {
-    molt_runtime_core::call_census::hit(52);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_coroutine_wrapper_poll,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_coroutine_wrapper_poll_attached_body(_py, raw) }
@@ -122,7 +144,9 @@ pub unsafe extern "C" fn molt_coroutine_wrapper_poll(__context: u64, raw: u64) -
 #[unsafe(export_name = "molt_await_iterator_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_await_iterator_poll(__context: u64, raw: u64) -> i64 {
-    molt_runtime_core::call_census::hit(53);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_await_iterator_poll,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_await_iterator_poll_attached_body(_py, raw) }
@@ -130,7 +154,7 @@ pub unsafe extern "C" fn molt_await_iterator_poll(__context: u64, raw: u64) -> i
 #[unsafe(export_name = "molt_iterator_throw__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_iterator_throw(__context: u64, iterator: u64, arguments: u64) -> u64 {
-    molt_runtime_core::call_census::hit(54);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_iterator_throw);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_iterator_throw_attached_body(_py, iterator, arguments)

@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_str_from_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_str_from_obj(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2266);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_str_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_str_from_obj_attached_body(_py, val_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_str_from_obj(__context: u64, val_bits: u64) -> u64
 #[unsafe(export_name = "molt_repr_from_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_repr_from_obj(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2267);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_repr_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_repr_from_obj_attached_body(_py, val_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_repr_from_obj(__context: u64, val_bits: u64) -> u6
 #[unsafe(export_name = "molt_ascii_from_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ascii_from_obj(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2268);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_ascii_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ascii_from_obj_attached_body(_py, val_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_ascii_from_obj(__context: u64, val_bits: u64) -> u
 #[unsafe(export_name = "molt_bin_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bin_builtin(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2269);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bin_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bin_builtin_attached_body(_py, val_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_bin_builtin(__context: u64, val_bits: u64) -> u64 
 #[unsafe(export_name = "molt_oct_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_oct_builtin(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2270);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_oct_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_oct_builtin_attached_body(_py, val_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_oct_builtin(__context: u64, val_bits: u64) -> u64 
 #[unsafe(export_name = "molt_hex_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hex_builtin(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2271);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_hex_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hex_builtin_attached_body(_py, val_bits)
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_bigint_from_bytes(
     ptr: *const u8,
     len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2272);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bigint_from_bytes);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_bigint_from_bytes_attached_body(_py, ptr, len_bits) }
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_bigint_from_bytes(
 #[unsafe(export_name = "molt_float_from_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_from_obj(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2273);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_from_obj_attached_body(_py, val_bits)
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn molt_float_from_obj(__context: u64, val_bits: u64) -> u
 #[unsafe(export_name = "molt_float_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_new(__context: u64, cls_bits: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2274);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_new_attached_body(_py, cls_bits, val_bits)
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn molt_float_new(__context: u64, cls_bits: u64, val_bits:
 #[unsafe(export_name = "molt_float_float__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_float(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2275);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_float);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_float_attached_body(_py, self_bits)
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn molt_float_float(__context: u64, self_bits: u64) -> u64
 #[unsafe(export_name = "molt_float_conjugate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_conjugate(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2276);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_conjugate);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_conjugate_attached_body(_py, self_bits)
@@ -94,7 +94,7 @@ pub unsafe extern "C" fn molt_float_conjugate(__context: u64, self_bits: u64) ->
 #[unsafe(export_name = "molt_float_is_integer__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_is_integer(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2277);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_is_integer);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_is_integer_attached_body(_py, self_bits)
@@ -102,7 +102,9 @@ pub unsafe extern "C" fn molt_float_is_integer(__context: u64, self_bits: u64) -
 #[unsafe(export_name = "molt_float_as_integer_ratio__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_as_integer_ratio(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2278);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_float_as_integer_ratio,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_as_integer_ratio_attached_body(_py, self_bits)
@@ -110,7 +112,7 @@ pub unsafe extern "C" fn molt_float_as_integer_ratio(__context: u64, self_bits: 
 #[unsafe(export_name = "molt_float_hex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_hex(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2279);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_hex);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_hex_attached_body(_py, self_bits)
@@ -118,7 +120,7 @@ pub unsafe extern "C" fn molt_float_hex(__context: u64, self_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_float_fromhex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_fromhex(__context: u64, cls_bits: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2280);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_fromhex);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_fromhex_attached_body(_py, cls_bits, text_bits)
@@ -130,7 +132,7 @@ pub unsafe extern "C" fn molt_float_getformat(
     _cls_bits: u64,
     typestr_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2281);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_getformat);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_getformat_attached_body(_py, _cls_bits, typestr_bits)
@@ -142,7 +144,7 @@ pub unsafe extern "C" fn molt_float_from_number(
     cls_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2282);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_float_from_number);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_from_number_attached_body(_py, cls_bits, val_bits)
@@ -155,7 +157,7 @@ pub unsafe extern "C" fn molt_complex_from_obj(
     imag_bits: u64,
     has_imag_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2283);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_complex_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_complex_from_obj_attached_body(_py, val_bits, imag_bits, has_imag_bits)
@@ -163,7 +165,7 @@ pub unsafe extern "C" fn molt_complex_from_obj(
 #[unsafe(export_name = "molt_complex_conjugate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_complex_conjugate(__context: u64, val_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2284);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_complex_conjugate);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_complex_conjugate_attached_body(_py, val_bits)
@@ -175,7 +177,9 @@ pub unsafe extern "C" fn molt_complex_from_number(
     cls_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2285);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_complex_from_number,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_complex_from_number_attached_body(_py, cls_bits, val_bits)
@@ -188,7 +192,7 @@ pub unsafe extern "C" fn molt_int_new(
     val_bits: u64,
     base_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2286);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_new_attached_body(_py, cls_bits, val_bits, base_bits)
@@ -196,7 +200,7 @@ pub unsafe extern "C" fn molt_int_new(
 #[unsafe(export_name = "molt_int_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_int(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2287);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_int);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_int_attached_body(_py, self_bits)
@@ -204,7 +208,7 @@ pub unsafe extern "C" fn molt_int_int(__context: u64, self_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_int_index__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_index(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2288);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_index);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_index_attached_body(_py, self_bits)
@@ -212,7 +216,7 @@ pub unsafe extern "C" fn molt_int_index(__context: u64, self_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_int_bit_length__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_bit_length(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2289);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_bit_length);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_bit_length_attached_body(_py, self_bits)
@@ -220,7 +224,7 @@ pub unsafe extern "C" fn molt_int_bit_length(__context: u64, self_bits: u64) -> 
 #[unsafe(export_name = "molt_int_bit_count__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_bit_count(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2290);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_bit_count);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_bit_count_attached_body(_py, self_bits)
@@ -228,7 +232,9 @@ pub unsafe extern "C" fn molt_int_bit_count(__context: u64, self_bits: u64) -> u
 #[unsafe(export_name = "molt_int_as_integer_ratio__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_as_integer_ratio(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2291);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_int_as_integer_ratio,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_as_integer_ratio_attached_body(_py, self_bits)
@@ -236,7 +242,7 @@ pub unsafe extern "C" fn molt_int_as_integer_ratio(__context: u64, self_bits: u6
 #[unsafe(export_name = "molt_int_conjugate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_conjugate(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2292);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_conjugate);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_conjugate_attached_body(_py, self_bits)
@@ -244,7 +250,7 @@ pub unsafe extern "C" fn molt_int_conjugate(__context: u64, self_bits: u64) -> u
 #[unsafe(export_name = "molt_int_is_integer__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_is_integer(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2293);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_is_integer);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_is_integer_attached_body(_py, self_bits)
@@ -257,7 +263,9 @@ pub unsafe extern "C" fn molt_int_from_str_of_obj(
     base_bits: u64,
     has_base_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2294);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_int_from_str_of_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_from_str_of_obj_attached_body(_py, val_bits, base_bits, has_base_bits)
@@ -270,7 +278,7 @@ pub unsafe extern "C" fn molt_int_from_obj(
     base_bits: u64,
     has_base_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2295);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_int_from_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_from_obj_attached_body(_py, val_bits, base_bits, has_base_bits)
@@ -283,7 +291,9 @@ pub unsafe extern "C" fn molt_string_split_field_to_int(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2296);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_string_split_field_to_int,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_to_int_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -291,7 +301,7 @@ pub unsafe extern "C" fn molt_string_split_field_to_int(
 #[unsafe(export_name = "molt_guard_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_guard_type(__context: u64, val_bits: u64, expected_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2297);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_guard_type);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_guard_type_attached_body(_py, val_bits, expected_bits)
@@ -299,7 +309,7 @@ pub unsafe extern "C" fn molt_guard_type(__context: u64, val_bits: u64, expected
 #[unsafe(export_name = "molt_is_truthy__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy(__context: u64, val: u64) -> i64 {
-    molt_runtime_core::call_census::hit(2298);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_is_truthy);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_is_truthy_attached_body(_py, val)
@@ -307,7 +317,7 @@ pub unsafe extern "C" fn molt_is_truthy(__context: u64, val: u64) -> i64 {
 #[unsafe(export_name = "molt_is_truthy_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy_int(__context: u64, bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(2299);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_is_truthy_int);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_is_truthy_int_attached_body(_py, bits)
@@ -315,7 +325,7 @@ pub unsafe extern "C" fn molt_is_truthy_int(__context: u64, bits: u64) -> i64 {
 #[unsafe(export_name = "molt_is_truthy_bool__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy_bool(__context: u64, bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(2300);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_is_truthy_bool);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_is_truthy_bool_attached_body(_py, bits)
@@ -323,7 +333,9 @@ pub unsafe extern "C" fn molt_is_truthy_bool(__context: u64, bits: u64) -> i64 {
 #[unsafe(export_name = "molt_is_truthy_int_nogil__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy_int_nogil(__context: u64, bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(2301);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_is_truthy_int_nogil,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_is_truthy_int_nogil_attached_body(_py, bits)
@@ -331,7 +343,9 @@ pub unsafe extern "C" fn molt_is_truthy_int_nogil(__context: u64, bits: u64) -> 
 #[unsafe(export_name = "molt_is_truthy_bool_nogil__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy_bool_nogil(__context: u64, bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(2302);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_is_truthy_bool_nogil,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_is_truthy_bool_nogil_attached_body(_py, bits)
@@ -339,7 +353,7 @@ pub unsafe extern "C" fn molt_is_truthy_bool_nogil(__context: u64, bits: u64) ->
 #[unsafe(export_name = "molt_not__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_not(__context: u64, val: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2303);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_not);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_not_attached_body(_py, val)

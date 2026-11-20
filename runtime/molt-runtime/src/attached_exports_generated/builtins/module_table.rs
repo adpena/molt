@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_module_initialization_spec(
     module: u64,
     spec: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1032);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_module_initialization_spec,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_initialization_spec_attached_body(_py, module, spec)
@@ -14,7 +16,7 @@ pub unsafe extern "C" fn molt_module_initialization_spec(
 #[unsafe(export_name = "molt_module_ensure__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_module_ensure(__context: u64, id_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1033);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_module_ensure);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_module_ensure_attached_body(_py, id_bits)

@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_frame_home_load__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frame_home_load(__context: u64, home: u64) -> u64 {
-    molt_runtime_core::call_census::hit(731);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_frame_home_load);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frame_home_load_attached_body(_py, home)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_frame_home_load(__context: u64, home: u64) -> u64 
 #[unsafe(export_name = "molt_frame_home_take__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frame_home_take(__context: u64, home: u64) -> u64 {
-    molt_runtime_core::call_census::hit(732);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_frame_home_take);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frame_home_take_attached_body(_py, home)

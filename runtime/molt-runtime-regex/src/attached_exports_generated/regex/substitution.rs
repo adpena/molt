@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_re_split(
     text_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3302);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_split);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_split_attached_body(_py, handle_bits, text_bits, maxsplit_bits)
@@ -21,7 +21,7 @@ pub unsafe extern "C" fn molt_re_sub(
     text_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3303);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_sub);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_sub_attached_body(_py, handle_bits, repl_bits, text_bits, count_bits)
@@ -29,7 +29,7 @@ pub unsafe extern "C" fn molt_re_sub(
 #[unsafe(export_name = "molt_re_escape__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_re_escape(__context: u64, pattern_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3304);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_escape);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_escape_attached_body(_py, pattern_bits)

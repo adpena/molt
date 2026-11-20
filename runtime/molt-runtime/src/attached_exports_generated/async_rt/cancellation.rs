@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_cancel_token_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_new(__context: u64, parent_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(55);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_cancel_token_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_new_attached_body(_py, parent_bits) }
@@ -10,7 +10,9 @@ pub unsafe extern "C" fn molt_cancel_token_new(__context: u64, parent_bits: u64)
 #[unsafe(export_name = "molt_cancel_token_clone__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_clone(__context: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(56);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cancel_token_clone,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_clone_attached_body(_py, token_bits) }
@@ -18,7 +20,7 @@ pub unsafe extern "C" fn molt_cancel_token_clone(__context: u64, token_bits: u64
 #[unsafe(export_name = "molt_cancel_token_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_drop(__context: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(57);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_cancel_token_drop);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_drop_attached_body(_py, token_bits) }
@@ -26,7 +28,9 @@ pub unsafe extern "C" fn molt_cancel_token_drop(__context: u64, token_bits: u64)
 #[unsafe(export_name = "molt_cancel_token_cancel__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_cancel(__context: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(58);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cancel_token_cancel,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_cancel_attached_body(_py, token_bits) }
@@ -34,7 +38,9 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(__context: u64, token_bits: u6
 #[unsafe(export_name = "molt_cancel_token_is_cancelled__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_is_cancelled(__context: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(59);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cancel_token_is_cancelled,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_is_cancelled_attached_body(_py, token_bits) }
@@ -42,7 +48,9 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(__context: u64, token_bi
 #[unsafe(export_name = "molt_cancel_token_set_current__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_set_current(__context: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(60);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cancel_token_set_current,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_set_current_attached_body(_py, token_bits) }
@@ -50,7 +58,9 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(__context: u64, token_bit
 #[unsafe(export_name = "molt_cancel_token_get_current__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cancel_token_get_current(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(61);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cancel_token_get_current,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cancel_token_get_current_attached_body(_py) }

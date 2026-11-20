@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_set_contains(
     container_bits: u64,
     item_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2390);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_contains);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_contains_attached_body(_py, container_bits, item_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_set_contains(
 #[unsafe(export_name = "molt_set_add__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_add(__context: u64, set_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2391);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_add);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_add_attached_body(_py, set_bits, key_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_set_add(__context: u64, set_bits: u64, key_bits: u
 #[unsafe(export_name = "molt_frozenset_add__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frozenset_add(__context: u64, set_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2392);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_frozenset_add);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_add_attached_body(_py, set_bits, key_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_frozenset_add(__context: u64, set_bits: u64, key_b
 #[unsafe(export_name = "molt_set_discard__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_discard(__context: u64, set_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2393);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_discard);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_discard_attached_body(_py, set_bits, key_bits)
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn molt_set_discard(__context: u64, set_bits: u64, key_bit
 #[unsafe(export_name = "molt_set_remove__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_remove(__context: u64, set_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2394);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_remove);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_remove_attached_body(_py, set_bits, key_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_set_remove(__context: u64, set_bits: u64, key_bits
 #[unsafe(export_name = "molt_set_pop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_pop(__context: u64, set_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2395);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_pop);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_pop_attached_body(_py, set_bits)
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_set_pop(__context: u64, set_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_set_clear__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_clear(__context: u64, set_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2396);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_clear);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_clear_attached_body(_py, set_bits)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_set_clear(__context: u64, set_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_set_copy_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_copy_method(__context: u64, set_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2397);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_copy_method);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_copy_method_attached_body(_py, set_bits)
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn molt_set_copy_method(__context: u64, set_bits: u64) -> 
 #[unsafe(export_name = "molt_set_update__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_update(__context: u64, set_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2398);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_update);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_update_attached_body(_py, set_bits, other_bits)
@@ -82,7 +82,9 @@ pub unsafe extern "C" fn molt_set_intersection_update(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2399);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_intersection_update,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_intersection_update_attached_body(_py, set_bits, other_bits)
@@ -94,7 +96,9 @@ pub unsafe extern "C" fn molt_set_difference_update(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2400);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_difference_update,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_difference_update_attached_body(_py, set_bits, other_bits)
@@ -106,7 +110,9 @@ pub unsafe extern "C" fn molt_set_symdiff_update(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2401);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_symdiff_update,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_symdiff_update_attached_body(_py, set_bits, other_bits)
@@ -118,7 +124,7 @@ pub unsafe extern "C" fn molt_set_update_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2402);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_update_multi);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_update_multi_attached_body(_py, set_bits, others_bits)
@@ -130,7 +136,9 @@ pub unsafe extern "C" fn molt_frozenset_union_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2403);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_union_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_union_multi_attached_body(_py, set_bits, others_bits)
@@ -142,7 +150,9 @@ pub unsafe extern "C" fn molt_frozenset_intersection_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2404);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_intersection_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_intersection_multi_attached_body(_py, set_bits, others_bits)
@@ -154,7 +164,9 @@ pub unsafe extern "C" fn molt_frozenset_difference_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2405);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_difference_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_difference_multi_attached_body(_py, set_bits, others_bits)
@@ -166,7 +178,9 @@ pub unsafe extern "C" fn molt_frozenset_symmetric_difference(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2406);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_symmetric_difference,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_symmetric_difference_attached_body(_py, set_bits, other_bits)
@@ -178,7 +192,9 @@ pub unsafe extern "C" fn molt_frozenset_isdisjoint(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2407);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_isdisjoint,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_isdisjoint_attached_body(_py, set_bits, other_bits)
@@ -190,7 +206,9 @@ pub unsafe extern "C" fn molt_frozenset_issubset(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2408);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_issubset,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_issubset_attached_body(_py, set_bits, other_bits)
@@ -202,7 +220,9 @@ pub unsafe extern "C" fn molt_frozenset_issuperset(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2409);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_issuperset,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_issuperset_attached_body(_py, set_bits, other_bits)
@@ -210,7 +230,9 @@ pub unsafe extern "C" fn molt_frozenset_issuperset(
 #[unsafe(export_name = "molt_frozenset_copy_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frozenset_copy_method(__context: u64, set_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2410);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_frozenset_copy_method,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frozenset_copy_method_attached_body(_py, set_bits)
@@ -222,7 +244,9 @@ pub unsafe extern "C" fn molt_set_intersection_update_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2411);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_intersection_update_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_intersection_update_multi_attached_body(_py, set_bits, others_bits)
@@ -234,7 +258,9 @@ pub unsafe extern "C" fn molt_set_difference_update_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2412);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_difference_update_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_difference_update_multi_attached_body(_py, set_bits, others_bits)
@@ -246,7 +272,9 @@ pub unsafe extern "C" fn molt_set_symmetric_difference_update(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2413);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_symmetric_difference_update,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_symmetric_difference_update_attached_body(_py, set_bits, other_bits)
@@ -258,7 +286,7 @@ pub unsafe extern "C" fn molt_set_union_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2414);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_union_multi);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_union_multi_attached_body(_py, set_bits, others_bits)
@@ -270,7 +298,9 @@ pub unsafe extern "C" fn molt_set_intersection_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2415);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_intersection_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_intersection_multi_attached_body(_py, set_bits, others_bits)
@@ -282,7 +312,9 @@ pub unsafe extern "C" fn molt_set_difference_multi(
     set_bits: u64,
     others_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2416);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_difference_multi,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_difference_multi_attached_body(_py, set_bits, others_bits)
@@ -294,7 +326,9 @@ pub unsafe extern "C" fn molt_set_symmetric_difference(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2417);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_symmetric_difference,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_symmetric_difference_attached_body(_py, set_bits, other_bits)
@@ -306,7 +340,7 @@ pub unsafe extern "C" fn molt_set_isdisjoint(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2418);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_isdisjoint);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_isdisjoint_attached_body(_py, set_bits, other_bits)
@@ -314,7 +348,7 @@ pub unsafe extern "C" fn molt_set_isdisjoint(
 #[unsafe(export_name = "molt_set_issubset__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_set_issubset(__context: u64, set_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2419);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_issubset);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_issubset_attached_body(_py, set_bits, other_bits)
@@ -326,7 +360,7 @@ pub unsafe extern "C" fn molt_set_issuperset(
     set_bits: u64,
     other_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2420);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_issuperset);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_issuperset_attached_body(_py, set_bits, other_bits)

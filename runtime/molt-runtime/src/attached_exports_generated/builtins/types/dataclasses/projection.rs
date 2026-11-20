@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_dataclasses_is_dataclass__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dataclasses_is_dataclass(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1575);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_dataclasses_is_dataclass,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_is_dataclass_attached_body(_py, obj_bits)
@@ -14,7 +16,9 @@ pub unsafe extern "C" fn molt_dataclasses_fields(
     class_or_instance_bits: u64,
     field_tag_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1576);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_dataclasses_fields,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_fields_attached_body(_py, class_or_instance_bits, field_tag_bits)
@@ -27,7 +31,9 @@ pub unsafe extern "C" fn molt_dataclasses_asdict(
     dict_factory_bits: u64,
     field_tag_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1577);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_dataclasses_asdict,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_asdict_attached_body(_py, obj_bits, dict_factory_bits, field_tag_bits)
@@ -40,7 +46,9 @@ pub unsafe extern "C" fn molt_dataclasses_astuple(
     tuple_factory_bits: u64,
     field_tag_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1578);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_dataclasses_astuple,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_astuple_attached_body(_py, obj_bits, tuple_factory_bits, field_tag_bits)
@@ -55,7 +63,9 @@ pub unsafe extern "C" fn molt_dataclasses_replace(
     initvar_tag_bits: u64,
     missing_default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1579);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_dataclasses_replace,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_replace_attached_body(

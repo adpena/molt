@@ -8,7 +8,9 @@ pub unsafe extern "C" fn molt_gpu_kernel_launch_python(
     threads_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1889);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_gpu_kernel_launch_python,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_kernel_launch_python_attached_body(
         _py,
@@ -25,7 +27,9 @@ pub unsafe extern "C" fn molt_gpu_kernel_descriptor_set(
     callable: u64,
     descriptor: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1890);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_gpu_kernel_descriptor_set,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_kernel_descriptor_set_attached_body(_py, callable, descriptor)
 }
