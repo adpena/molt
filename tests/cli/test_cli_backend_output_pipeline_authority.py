@@ -254,7 +254,7 @@ def terminal_build(
             backend_daemon_config_digest=None,
         ),
         app_export_contract_path=None,
-        native_artifact_plan=None,
+        native_artifact_plan=_ExternalPackageNativeArtifactPlan(),
         artifacts_root=tmp_path,
         resolved_modules=frozenset(),
         build_diagnostics_payload=snapshot,
@@ -310,6 +310,12 @@ def terminal_build(
 
     monkeypatch.setattr(
         cli_backend_output_pipeline._link_pipeline, "_prepare_native_link", prepare_link
+    )
+    # The fake link stands in for the whole native link, linkage included.
+    monkeypatch.setattr(
+        cli_backend_output_pipeline._link_pipeline,
+        "_links_shared_runtime_image",
+        lambda **_kwargs: False,
     )
     monkeypatch.setattr(build_results, "_finalize_native_link_candidate", finalize)
     monkeypatch.setattr(build_results, "_assert_native_binary_valid", validate)

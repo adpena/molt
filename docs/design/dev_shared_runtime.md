@@ -1,8 +1,38 @@
 # Development executables and the shared runtime (HF-634)
 
-Status: design and measurement work in progress; this document does not qualify
-a platform or announce a change to the default linkage. The V1 ledger owns
-completion. [The JIT design](dev_jit_tier.md) owns in-memory code generation.
+Status: slice 2 implemented 2026-11-20 for macOS (verified cell: macOS arm64)
+and ELF Linux (link plan tested, not yet measured on a Linux host). A dev build
+on the host links the shared runtime image; release, external native
+artifacts, BOLT, cross targets and Windows keep the static archive. The
+generation witness below is not yet implemented: the image's exact store entry
+is the rpath, and the store is immutable. The V1 ledger owns completion.
+[The JIT design](dev_jit_tier.md) owns in-memory code generation.
+
+## Measured verdict (2026-11-20)
+
+macOS arm64, a call-heavy program (`list.append`, `len`, `hash` in a 2 M loop),
+the same objects linked both ways from one dev build, load average 7-8:
+
+| | static archive | shared image |
+| --- | --- | --- |
+| Executable | 27.8 MB | 2.6 MB |
+| `ld` time (3 links) | 1.18-1.29 s | 0.14-0.30 s |
+| First exec of a fresh write (3 samples) | 0.36-0.42 s | 0.23-0.24 s (one 0.61 s) |
+| Warm exec | 0.10-0.11 s | 0.10-0.11 s |
+| Instructions retired | 2.548 G | 2.583 G (+1.4%, cross-image calls) |
+
+Output is identical. In the differential harness (8 class tests, warm, `--jobs 2`)
+the link phase per test fell from 1.5-2.6 s to 0.5-1.3 s; a test whose stdlib
+profile needs another runtime variant pays that variant's image link once per
+runtime generation (8-10 s here). The remaining per-test cost is backend
+preparation and module-graph work (1-3 s each), not linking.
+
+Implementation: `link_pipeline._links_shared_runtime_image` selects the linkage;
+`backend_output_pipeline` ensures the image through `jit_runtime_image`, the one
+image producer, which names it `@rpath/<image>` (Mach-O) or its soname (ELF);
+`_build_native_link_plan(runtime_image=...)` links it in place of the archive with
+an rpath to the image's store entry and exports the isolate bootstrap the image
+imports. Only an executable sizes the main thread's stack (`NativeLinkOutput`).
 
 ## Decision and admission
 

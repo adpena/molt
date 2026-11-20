@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable
 
 from molt import file_publication
+from molt.cli.jit_runtime_image import ensure_jit_runtime_image, jit_runtime_image_store
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
@@ -452,6 +453,27 @@ def _emit_backend_pipeline_outputs(
         prepared_backend_runtime_context.runtime_state.native_runtime_codegen_binding
     )
     assert runtime_codegen_binding is not None
+    runtime_image: Path | None = None
+    if _link_pipeline._links_shared_runtime_image(
+        profile=profile,
+        target=native_target,
+        external_native_artifacts=bool(native_artifact_plan.artifacts),
+        bolt_requested=bolt_requested,
+    ):
+        try:
+            runtime_image = ensure_jit_runtime_image(
+                store=jit_runtime_image_store(prepared_build_roots.molt_root),
+                binding=runtime_codegen_binding,
+                target=native_target,
+                sysroot_path=prepared_build_roots.sysroot_path,
+                profile=profile,
+                link_timeout=prepared_build_config.link_timeout,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            prepared_backend_runtime_context.runtime_state.revoke_native_runtime_admission()
+            return return_after_build_diagnostics(
+                _fail(f"Shared runtime image: {exc}", json_output, command="build")
+            )
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
@@ -481,6 +503,7 @@ def _emit_backend_pipeline_outputs(
             stdlib_cache_path=prepared_backend_setup.cache_setup.stdlib_cache_entry_path
             if cache
             else None,
+            runtime_image=runtime_image,
         )
     )
     if prepared_native_link_error is not None:
