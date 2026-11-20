@@ -44,6 +44,34 @@ fn raw_ints<B: CodegenBuilder>(
         .then(|| (b.expect_word(lhs.value), b.expect_word(rhs.value)))
 }
 
+/// The operands of an int-valued operator (`+ - *` and comparisons): raw
+/// ints, or raw bools, each the int 0 or 1 since Python's bool subclasses
+/// int. Bitwise operators keep [`raw_ints`]: `True & True` is the bool True.
+fn raw_int_valued<B: CodegenBuilder>(
+    b: &mut B,
+    lhs: Operand<B::Value>,
+    rhs: Operand<B::Value>,
+) -> Option<(B::Word, B::Word)> {
+    let admitted = |operand: &Operand<B::Value>| {
+        matches!(operand.carrier, HeldCarrier::RawI64 | HeldCarrier::RawBool)
+    };
+    if !(admitted(&lhs) && admitted(&rhs)) {
+        return None;
+    }
+    let word = |b: &mut B, operand: Operand<B::Value>| match operand.carrier {
+        HeldCarrier::RawBool => b.zero_extend(operand.value),
+        _ => b.expect_word(operand.value),
+    };
+    let left = word(b, lhs);
+    Some((left, word(b, rhs)))
+}
+
+/// A raw bool operand lies in the inline-int window, whatever the plan
+/// records for its producer.
+fn inline_safe_operand<V>(plan: &ProducerCarrierPlan, operand: &Operand<V>) -> bool {
+    operand.carrier == HeldCarrier::RawBool || plan.is_inline_safe_int(operand.id)
+}
+
 fn raw_floats<V: Copy>(lhs: Operand<V>, rhs: Operand<V>) -> Option<(V, V)> {
     (lhs.carrier == HeldCarrier::RawF64 && rhs.carrier == HeldCarrier::RawF64)
         .then_some((lhs.value, rhs.value))
@@ -66,7 +94,7 @@ pub(crate) fn binary_arith<B: CodegenBuilder>(
         OpKind::Mul => (IntBinary::Mul, FloatBinary::Mul),
         _ => return None,
     };
-    if let Some((left, right)) = raw_ints(b, lhs, rhs) {
+    if let Some((left, right)) = raw_int_valued(b, lhs, rhs) {
         // The result fits the inline window, so the instruction cannot wrap.
         let inline_safe = plan.is_inline_safe_int(result);
         // The exact result lies in i64, so the plan carries it as the
@@ -77,8 +105,8 @@ pub(crate) fn binary_arith<B: CodegenBuilder>(
         let exact = plan.is_full_deopt_int(result)
             && (op.has_i64_exact_proof()
                 || (matches!(name, OpKind::Add | OpKind::Sub)
-                    && plan.is_inline_safe_int(lhs.id)
-                    && plan.is_inline_safe_int(rhs.id)));
+                    && inline_safe_operand(plan, &lhs)
+                    && inline_safe_operand(plan, &rhs)));
         if !(inline_safe || exact) {
             return None;
         }
@@ -122,7 +150,7 @@ pub(crate) fn comparison<B: CodegenBuilder>(
         ),
         other => unreachable!("{other} is not a comparison"),
     };
-    let bit = if let Some((left, right)) = raw_ints(b, lhs, rhs) {
+    let bit = if let Some((left, right)) = raw_int_valued(b, lhs, rhs) {
         b.int_compare(int_cmp, left, right)
     } else {
         let (left, right) = raw_floats(lhs, rhs)?;
@@ -221,10 +249,13 @@ pub(crate) fn checked_arith<B: CodegenBuilder>(
         OpCode::CheckedMul => CheckedBinary::Mul,
         other => unreachable!("{other:?} is not a checked op"),
     };
-    if !(plan.is_raw_int_carrier(lhs.id) && plan.is_raw_int_carrier(rhs.id)) {
+    let raw_int = |operand: &Operand<B::Value>| {
+        operand.carrier == HeldCarrier::RawBool || plan.is_raw_int_carrier(operand.id)
+    };
+    if !(raw_int(&lhs) && raw_int(&rhs)) {
         return None;
     }
-    let (left, right) = raw_ints(b, lhs, rhs)?;
+    let (left, right) = raw_int_valued(b, lhs, rhs)?;
     let (value, overflow) = b.int_checked(checked, left, right);
     Some((b.word_value(value), b.bit_value(overflow)))
 }
