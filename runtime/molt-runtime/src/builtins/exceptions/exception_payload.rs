@@ -411,29 +411,29 @@ pub(crate) fn alloc_exception_from_class_bits(
         if obj_from_bits(args_bits).is_none() {
             return std::ptr::null_mut();
         }
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
+        // A class's layout root is fixed when the class is created and is
+        // inherited, so it answers "is a BaseExceptionGroup / OSError
+        // subclass" with one load instead of an MRO walk.
+        let layout = exception_layout_kind_for_class(_py, class_bits);
+        if layout == ExceptionLayoutKind::Group {
             return alloc_exception_group_from_class_bits(_py, class_bits, args_bits);
         }
-        let oserror_bits = exception_class_bits(_py, BuiltinExc::OSError);
-        let mut oserror_layout = false;
-        if issubclass_bits(class_bits, oserror_bits) {
-            oserror_layout = true;
-            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
+        let oserror_layout = layout == ExceptionLayoutKind::OSError;
+        let stored_args_bits = if oserror_layout {
+            let mut fields = oserror_fields_from_args(_py, class_bits, args_bits);
             // CPython promotes errno only for the canonical exact OSError.
             // Aliases already share that identity; names on subclasses are mutable.
-            if class_bits == oserror_bits
+            if class_bits == exception_class_bits(_py, BuiltinExc::OSError)
                 && let Some(errno_val) = fields.errno_value
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
             {
                 let mapped_bits = exception_class_bits(_py, subclass);
                 if mapped_bits != 0 && obj_from_bits(mapped_bits).as_ptr().is_some() {
                     class_bits = mapped_bits;
+                    // Field parsing depends on the class (exact BlockingIOError).
+                    fields = oserror_fields_from_args(_py, class_bits, args_bits);
                 }
             }
-        }
-        let stored_args_bits = if oserror_layout {
-            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
             let Some(stored) = oserror_stored_args(_py, fields, args_bits) else {
                 dec_ref_bits(_py, args_bits);
                 return std::ptr::null_mut();

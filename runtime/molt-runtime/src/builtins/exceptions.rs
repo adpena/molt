@@ -3629,10 +3629,22 @@ fn builtin_exception_class_for_tag(py: &PyToken<'_>, tag: u64) -> Option<u64> {
     (bits != 0).then_some(bits)
 }
 
+/// Group construction validates and may answer a different class, and exact
+/// OSError promotes errno to a subclass: both belong to the class constructor.
+fn builtin_exception_needs_class_constructor(py: &PyToken<'_>, class_bits: u64) -> bool {
+    matches!(
+        exception_layout_kind_for_class(py, class_bits),
+        ExceptionLayoutKind::Group | ExceptionLayoutKind::OSError
+    )
+}
+
 fn alloc_builtin_exception_from_tag(_py: &PyToken<'_>, tag: u64, args_bits: u64) -> *mut u8 {
     let Some(class_bits) = builtin_exception_class_for_tag(_py, tag) else {
         return std::ptr::null_mut();
     };
+    if builtin_exception_needs_class_constructor(_py, class_bits) {
+        return alloc_exception_from_class_bits(_py, class_bits, args_bits);
+    }
     let msg_bits = exception_message_for_storage(_py, class_bits, args_bits);
     let none_bits = MoltObject::none().bits();
     let mut ptr = alloc_exception_obj(_py, class_bits, msg_bits, args_bits, none_bits);
@@ -3650,6 +3662,16 @@ fn alloc_builtin_exception_from_tag_single(_py: &PyToken<'_>, tag: u64, arg_bits
     let Some(class_bits) = builtin_exception_class_for_tag(_py, tag) else {
         return std::ptr::null_mut();
     };
+    if builtin_exception_needs_class_constructor(_py, class_bits) {
+        let args_ptr = alloc_tuple(_py, &[arg_bits]);
+        if args_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+        dec_ref_bits(_py, args_bits);
+        return ptr;
+    }
     let msg_bits = exception_message_for_initial_args(_py, class_bits, &[arg_bits]);
     let none_bits = MoltObject::none().bits();
     let mut ptr = alloc_exception_obj_with_args_payload(

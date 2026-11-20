@@ -22,6 +22,7 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
 
 
 class CallRuntimeHelperMixin(GeneratorMixinBase):
@@ -115,14 +116,16 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         self._store_compiler_local(home, value_tuple)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         args_val = self._load_compiler_local(home)
-        kind_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=["StopIteration"], result=kind_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(
             MoltOp(
-                kind="EXCEPTION_NEW",
-                args=[kind_val, args_val],
+                kind="EXCEPTION_NEW_BUILTIN",
+                args=[args_val],
                 result=exc_val,
+                metadata={
+                    "exception_name": "StopIteration",
+                    "exception_tag": BUILTIN_EXCEPTION_CODES["StopIteration"],
+                },
             )
         )
         self._emit_raise(exc_val, origin=False)

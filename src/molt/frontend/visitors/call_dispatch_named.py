@@ -5,7 +5,10 @@ from __future__ import annotations
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
 
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
-from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
+    PythonIdentity,
+)
 
 import ast
 from typing import (
@@ -23,28 +26,12 @@ from molt.frontend._types import (
     _intrinsic_arity_exact,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
 from molt.frontend.diagnostics import FrontendRejection
 
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
-
-# Builtin exception classes whose call lowers to one construction operation.
-_EXCEPTION_GROUP_CONSTRUCTORS = frozenset(
-    {PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP, PythonIdentity.BUILTIN_EXCEPTIONGROUP}
-)
-_EXCEPTION_CONSTRUCTORS = frozenset(
-    {
-        PythonIdentity.BUILTIN_BASEEXCEPTION,
-        PythonIdentity.BUILTIN_EXCEPTION,
-        PythonIdentity.BUILTIN_KEYERROR,
-        PythonIdentity.BUILTIN_INDEXERROR,
-        PythonIdentity.BUILTIN_VALUEERROR,
-        PythonIdentity.BUILTIN_TYPEERROR,
-        PythonIdentity.BUILTIN_RUNTIMEERROR,
-        PythonIdentity.BUILTIN_STOPITERATION,
-    }
-)
 
 
 class CallNamedDispatchMixin(GeneratorMixinBase):
@@ -276,40 +263,34 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             # proved to select (HF-776). An unproved read matches none of them
             # and keeps the live read and a dynamic call.
             builtin = self._proven_builtin_identity(node.func)
+            exception_name = (
+                None if builtin is None else BUILTIN_NAMES_BY_IDENTITY[builtin]
+            )
             if (
-                builtin in _EXCEPTION_GROUP_CONSTRUCTORS
+                exception_name is not None
+                and exception_name in BUILTIN_EXCEPTION_CODES
+                and self._builtin_exception_is_available(exception_name)
                 and not node.keywords
                 and not any(isinstance(arg, ast.Starred) for arg in node.args)
             ):
+                # A proven builtin exception class called positionally is one
+                # construction by class tag (closed world: a builtin class has
+                # no writer). The class's own constructor validates the
+                # arguments (Unicode, syntax and group errors may refuse).
                 args: list[MoltValue] = []
                 for arg in node.args:
                     arg_val = self.visit(arg)
                     if arg_val is None:
                         raise FrontendRejection(
                             Diagnostic.OPERAND_VALUE,
-                            f"{func_id} with unsupported arg expression",
-                            f"{func_id} with simple literals",
+                            f"{exception_name} with unsupported arg expression",
+                            f"{exception_name} with simple literals",
                             "argument expression could not be lowered",
                         )
                     args.append(arg_val)
-                class_val = self._emit_exception_class(func_id)
-                return self._emit_exception_new_from_class(class_val, args)
-            if builtin in _EXCEPTION_CONSTRUCTORS:
-                if node.keywords or any(isinstance(a, ast.Starred) for a in node.args):
-                    pass  # fall through to generic call handler
-                else:
-                    args: list[MoltValue] = []
-                    for arg in node.args:
-                        arg_val = self.visit(arg)
-                        if arg_val is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                f"{func_id} with unsupported arg expression",
-                                f"{func_id} with simple literals",
-                                "argument expression could not be lowered",
-                            )
-                        args.append(arg_val)
-                    return self._emit_exception_new_from_args(func_id, args)
+                error = self._emit_exception_new_from_args(exception_name, args)
+                self._emit_raise_if_pending()
+                return error
             if (
                 builtin is PythonIdentity.BUILTIN_ABS
                 and len(node.args) == 1

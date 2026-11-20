@@ -210,7 +210,6 @@ FrontendOpKind = Literal[
     'EXCEPTION_LAST',
     'EXCEPTION_LAST_PENDING',
     'EXCEPTION_MATCH_BUILTIN',
-    'EXCEPTION_NEW',
     'EXCEPTION_NEW_BUILTIN',
     'EXCEPTION_NEW_BUILTIN_EMPTY',
     'EXCEPTION_NEW_BUILTIN_ONE',
@@ -1247,7 +1246,6 @@ class FrontendKinds:
     EXCEPTION_LAST: Final = 'EXCEPTION_LAST'
     EXCEPTION_LAST_PENDING: Final = 'EXCEPTION_LAST_PENDING'
     EXCEPTION_MATCH_BUILTIN: Final = 'EXCEPTION_MATCH_BUILTIN'
-    EXCEPTION_NEW: Final = 'EXCEPTION_NEW'
     EXCEPTION_NEW_BUILTIN: Final = 'EXCEPTION_NEW_BUILTIN'
     EXCEPTION_NEW_BUILTIN_EMPTY: Final = 'EXCEPTION_NEW_BUILTIN_EMPTY'
     EXCEPTION_NEW_BUILTIN_ONE: Final = 'EXCEPTION_NEW_BUILTIN_ONE'
@@ -2283,7 +2281,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'EXCEPTION_LAST': 'exception_last',
     'EXCEPTION_LAST_PENDING': 'exception_last_pending',
     'EXCEPTION_MATCH_BUILTIN': 'exception_match_builtin',
-    'EXCEPTION_NEW': 'exception_new',
     'EXCEPTION_NEW_BUILTIN': 'exception_new_builtin',
     'EXCEPTION_NEW_BUILTIN_EMPTY': 'exception_new_builtin_empty',
     'EXCEPTION_NEW_BUILTIN_ONE': 'exception_new_builtin_one',
@@ -3317,7 +3314,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "EXCEPTION_LAST",
         "EXCEPTION_LAST_PENDING",
         "EXCEPTION_MATCH_BUILTIN",
-        "EXCEPTION_NEW",
         "EXCEPTION_NEW_BUILTIN",
         "EXCEPTION_NEW_BUILTIN_EMPTY",
         "EXCEPTION_NEW_BUILTIN_ONE",
@@ -3673,6 +3669,7 @@ FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = 
     'copy': (),
     'del_attr_generic_obj': ('DELATTR_GENERIC_OBJ',),
     'del_attr_generic_ptr': ('DELATTR_GENERIC_PTR',),
+    'exception_new': (),
     'iter': ('ITER_NEW',),
     'ret': ('ret',),
     'ret_void': ('ret_void',),
