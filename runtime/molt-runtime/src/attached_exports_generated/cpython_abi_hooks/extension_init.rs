@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_cpython_abi_run_static_extension_init(
     init_address: u64,
     name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1880);
+    molt_runtime_core::call_census::hit(1881);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cpython_abi_run_static_extension_init_attached_body(_py, init_address, name_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_native_forward_f32(
     callable_address: u64,
     payload_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1881);
+    molt_runtime_core::call_census::hit(1882);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_forward_f32_attached_body(_py, callable_address, payload_bits)
