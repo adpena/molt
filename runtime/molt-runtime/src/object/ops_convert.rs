@@ -928,9 +928,10 @@ pub(crate) extern "C" fn complex_complex(__context: u64, bits: u64) -> u64 {
     })
 }
 
-fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
-    if complex_ptr_from_bits(bits).is_some()
-        || crate::object::ops::as_float_extended(obj_from_bits(bits)).is_some()
+/// Whether `bits` is a real number to complex(): CPython's `nb_float` or
+/// `nb_index` slot (a float, an int, or a `__float__`/`__index__` method).
+fn real_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
+    if crate::object::ops::as_float_extended(obj_from_bits(bits)).is_some()
         || obj_from_bits(bits).is_int()
         || obj_from_bits(bits).is_bool()
         || bigint_ptr_from_bits(bits).is_some()
@@ -945,6 +946,51 @@ fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
     }
 }
 
+fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
+    if complex_ptr_from_bits(bits).is_some() {
+        return Ok(true);
+    }
+    real_number_admitted(py, bits)
+}
+
+/// How complex() received its arguments: the third argument of
+/// `molt_complex_from_obj`. From 3.14 CPython sends a lone positional
+/// argument through `actual_complex_new` and every other shape through
+/// `complex_new_impl`; earlier targets use `complex_new_impl` for all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComplexArguments {
+    /// `real` alone, by keyword or defaulted.
+    Real = 0,
+    /// `real` and `imag`.
+    RealImag = 1,
+    /// One positional argument and no keyword.
+    LonePositional = 2,
+}
+
+impl ComplexArguments {
+    pub(crate) fn bits(self) -> u64 {
+        MoltObject::from_int(self as i64).bits()
+    }
+
+    fn from_bits(bits: u64) -> Option<Self> {
+        match to_i64(obj_from_bits(bits))? {
+            0 => Some(Self::Real),
+            1 => Some(Self::RealImag),
+            2 => Some(Self::LonePositional),
+            _ => None,
+        }
+    }
+}
+
+/// `%T`: the type's fully qualified name, as 3.14+ complex() errors print it.
+fn complex_argument_type_name(py: &PyToken<'_>, bits: u64) -> String {
+    String::from_utf8_lossy(&crate::builtins::classes::class_fully_qualified_name(
+        py,
+        type_of_bits(py, bits),
+    ))
+    .into_owned()
+}
+
 pub(crate) fn molt_complex_from_obj_attached_body(
     _py: &crate::PyToken<'_>,
     val_bits: u64,
@@ -952,13 +998,27 @@ pub(crate) fn molt_complex_from_obj_attached_body(
     has_imag_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        let has_imag = to_i64(obj_from_bits(has_imag_bits)).unwrap_or(0) != 0;
-        if !has_imag && type_of_bits(py, val_bits) == builtin_classes(py).complex {
+        let Some(shape) = ComplexArguments::from_bits(has_imag_bits) else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "complex() received an invalid argument shape",
+            );
+        };
+        let has_imag = shape == ComplexArguments::RealImag;
+        // 3.14 complex_new_impl names the 'real'/'imag' argument in its errors
+        // and deprecates complex values where a real number belongs;
+        // actual_complex_new keeps one generic error and no warning.
+        let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 14);
+        let lone = modern && shape == ComplexArguments::LonePositional;
+        let named = modern && !lone;
+        if !has_imag && !named && type_of_bits(py, val_bits) == builtin_classes(py).complex {
             inc_ref_bits(py, val_bits);
             return val_bits;
         }
         if let Some(ptr) = obj_from_bits(val_bits).as_ptr()
             && unsafe { object_type_id(ptr) == TYPE_ID_STRING }
+            && !(named && has_imag)
         {
             if has_imag {
                 return raise_exception::<_>(
@@ -981,6 +1041,7 @@ pub(crate) fn molt_complex_from_obj_attached_body(
             };
         }
         if has_imag
+            && !named
             && obj_from_bits(imag_bits)
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
@@ -1049,14 +1110,23 @@ pub(crate) fn molt_complex_from_obj_attached_body(
             Ok(admitted) => admitted,
             Err(()) => return MoltObject::none().bits(),
         } {
-            return raise_exception::<_>(
-                py,
-                BuiltinExc::TypeError,
-                &format!(
+            let message = if lone {
+                format!(
+                    "complex() argument must be a string or a number, not {}",
+                    complex_argument_type_name(py, real_bits)
+                )
+            } else if named {
+                format!(
+                    "complex() argument 'real' must be a real number, not {}",
+                    complex_argument_type_name(py, real_bits)
+                )
+            } else {
+                format!(
                     "complex() first argument must be a string or a number, not '{}'",
                     class_name_for_error(type_of_bits(py, real_bits))
-                ),
-            );
+                )
+            };
+            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
         }
         if has_imag
             && !match complex_number_admitted(py, imag_bits) {
@@ -1064,20 +1134,62 @@ pub(crate) fn molt_complex_from_obj_attached_body(
                 Err(()) => return MoltObject::none().bits(),
             }
         {
-            return raise_exception::<_>(
-                py,
-                BuiltinExc::TypeError,
-                &format!(
+            let message = if named {
+                format!(
+                    "complex() argument 'imag' must be a real number, not {}",
+                    complex_argument_type_name(py, imag_bits)
+                )
+            } else {
+                format!(
                     "complex() second argument must be a number, not '{}'",
                     class_name_for_error(type_of_bits(py, imag_bits))
-                ),
-            );
+                )
+            };
+            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
+        }
+        if named {
+            // A complex where a real number belongs: the real argument (or its
+            // __complex__ result) when the original object is not itself a
+            // real number, and any complex imag.
+            if complex_ptr_from_bits(real_bits).is_some()
+                && !match real_number_admitted(py, val_bits) {
+                    Ok(admitted) => admitted,
+                    Err(()) => return MoltObject::none().bits(),
+                }
+                && !crate::builtins::warnings_ext::emit_deprecation_warning(
+                    py,
+                    &format!(
+                        "complex() argument 'real' must be a real number, not {}",
+                        complex_argument_type_name(py, val_bits)
+                    ),
+                )
+            {
+                return MoltObject::none().bits();
+            }
+            if has_imag
+                && complex_ptr_from_bits(imag_bits).is_some()
+                && !crate::builtins::warnings_ext::emit_deprecation_warning(
+                    py,
+                    &format!(
+                        "complex() argument 'imag' must be a real number, not {}",
+                        complex_argument_type_name(py, imag_bits)
+                    ),
+                )
+            {
+                return MoltObject::none().bits();
+            }
         }
 
         let real_complex = complex_ptr_from_bits(real_bits);
         let (mut re, real_im) = if let Some(ptr) = real_complex {
             let parts = unsafe { *complex_ref(ptr) };
             (parts.re, parts.im)
+        } else if let Some(value) = crate::object::ops::as_float_extended(obj_from_bits(real_bits))
+            && lone
+        {
+            // actual_complex_new reads a float (subclass included) with
+            // PyFloat_AsDouble: its stored value, never its __float__.
+            (value, 0.0)
         } else {
             let Some(value) = crate::builtins::numbers::float_from_number_protocol(py, real_bits)
             else {
@@ -1143,9 +1255,13 @@ pub(crate) fn molt_complex_from_number_attached_body(
                 }
             }
         }
-        let none_bits = MoltObject::none().bits();
-        let false_bits = MoltObject::from_bool(false).bits();
-        let out_bits = molt_complex_from_obj_attached_body(_py, val_bits, none_bits, false_bits);
+        // complex.from_number reads its one argument as actual_complex_new does.
+        let out_bits = molt_complex_from_obj_attached_body(
+            _py,
+            val_bits,
+            MoltObject::none().bits(),
+            ComplexArguments::LonePositional.bits(),
+        );
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }

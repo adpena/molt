@@ -2810,7 +2810,7 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
                     py,
                     float_producer.bits(),
                     crate::MoltObject::none().bits(),
-                    crate::MoltObject::from_bool(false).bits(),
+                    crate::object::ops_convert::ComplexArguments::Real.bits(),
                 ),
             );
             let parts =

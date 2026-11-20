@@ -199,12 +199,17 @@ class CallNamedBuiltinDispatchMixin(
             args.append(self._emit_const_value(has_base))
             opcode = "INT_FROM_STR_OF_OBJ" if str_source is not None else "INT_FROM_OBJ"
         elif name == "complex":
+            # The argument shape is the runtime's ComplexArguments
+            # (object/ops_convert.rs): Real 0, RealImag 1, LonePositional 2.
+            # From 3.14 a lone positional argument follows actual_complex_new.
             if not args:
+                shape = 0
                 args.append(self._emit_const_value(0.0))
-            has_imag = len(args) == 2
-            if not has_imag:
+            else:
+                shape = 1 if len(args) == 2 else 2
+            if shape != 1:
                 args.append(self._emit_const_value(None))
-            args.append(self._emit_const_value(has_imag))
+            args.append(self._emit_const_value(shape))
             opcode = "COMPLEX_FROM_OBJ"
         elif name in {"bytes", "bytearray"}:
             if not args:
