@@ -35,6 +35,7 @@ from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
+    NativeLinkOutput,
     NativeLinkSidecar,
     NativeSymbolStrip,
     native_link_capabilities,
@@ -468,6 +469,7 @@ def _build_native_link_plan(
         native_link_policy_flags(
             target=target,
             capabilities=capabilities,
+            output=NativeLinkOutput.EXECUTABLE,
             dead_strip=policy.dead_strip,
         )
     )
@@ -568,7 +570,10 @@ def _build_native_runtime_image_link_plan(
         )
         link_cmd.extend(
             native_link_policy_flags(
-                target=target, capabilities=capabilities, dead_strip=policy.dead_strip
+                target=target,
+                capabilities=capabilities,
+                output=NativeLinkOutput.SHARED_IMAGE,
+                dead_strip=policy.dead_strip,
             )
         )
         _append_darwin_runtime_frameworks(link_cmd, target=target)
