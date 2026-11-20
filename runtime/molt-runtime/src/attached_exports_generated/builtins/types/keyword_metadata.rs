@@ -23,11 +23,3 @@ pub unsafe extern "C" fn molt_keyword_issoftkeyword(__context: u64, value_bits: 
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_keyword_issoftkeyword_attached_body(_py, value_bits)
 }
-#[unsafe(export_name = "molt_future_features__molt_context_d1086a27578cda22")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_future_features(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1597);
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_future_features_attached_body(_py)
-}

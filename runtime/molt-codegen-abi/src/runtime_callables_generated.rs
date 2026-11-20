@@ -1336,7 +1336,6 @@ pub enum RuntimeCallable {
     molt_future_cancel = 0xFFFFFF42F34C9283,
     molt_future_cancel_clear = 0xFFFFFF3937E77F60,
     molt_future_cancel_msg = 0xFFFFFFB9DB7E157B,
-    molt_future_features = 0xFFFFFFA7777489E5,
     molt_gc_callbacks = 0xFFFFFFEE798510DE,
     molt_gc_collect = 0xFFFFFF4DFB8C598A,
     molt_gc_disable = 0xFFFFFF60A230756B,
@@ -4515,7 +4514,6 @@ const _: () = {
     assert!(RuntimeCallable::molt_future_cancel.key() == runtime_callable_key("molt_future_cancel"));
     assert!(RuntimeCallable::molt_future_cancel_clear.key() == runtime_callable_key("molt_future_cancel_clear"));
     assert!(RuntimeCallable::molt_future_cancel_msg.key() == runtime_callable_key("molt_future_cancel_msg"));
-    assert!(RuntimeCallable::molt_future_features.key() == runtime_callable_key("molt_future_features"));
     assert!(RuntimeCallable::molt_gc_callbacks.key() == runtime_callable_key("molt_gc_callbacks"));
     assert!(RuntimeCallable::molt_gc_collect.key() == runtime_callable_key("molt_gc_collect"));
     assert!(RuntimeCallable::molt_gc_disable.key() == runtime_callable_key("molt_gc_disable"));

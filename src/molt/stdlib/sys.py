@@ -14,84 +14,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_GETFRAME = _require_intrinsic("molt_getframe")
 
 
-__all__ = [
-    "argv",
-    "executable",
-    "platform",
-    "version",
-    "version_info",
-    "hexversion",
-    "api_version",
-    "flags",
-    "implementation",
-    "breakpointhook",
-    "__breakpointhook__",
-    "path",
-    "meta_path",
-    "path_hooks",
-    "path_importer_cache",
-    "modules",
-    "stdin",
-    "stdout",
-    "stderr",
-    "__stdin__",
-    "__stdout__",
-    "__stderr__",
-    "getrecursionlimit",
-    "setrecursionlimit",
-    "exc_info",
-    "_getframe",
-    "getdefaultencoding",
-    "getfilesystemencoding",
-    "getfilesystemencodeerrors",
-    "get_asyncgen_hooks",
-    "set_asyncgen_hooks",
-    "exit",
-    "maxsize",
-    "maxunicode",
-    "byteorder",
-    "prefix",
-    "exec_prefix",
-    "base_prefix",
-    "base_exec_prefix",
-    "platlibdir",
-    "float_info",
-    "int_info",
-    "hash_info",
-    "thread_info",
-    "intern",
-    "getsizeof",
-    "stdlib_module_names",
-    "builtin_module_names",
-    "orig_argv",
-    "copyright",
-    "displayhook",
-    "__displayhook__",
-    "excepthook",
-    "__excepthook__",
-    "unraisablehook",
-    "__unraisablehook__",
-    "dont_write_bytecode",
-    "float_repr_style",
-    "pycache_prefix",
-    "warnoptions",
-    "_xoptions",
-    "get_int_max_str_digits",
-    "set_int_max_str_digits",
-    "is_finalizing",
-    "getrefcount",
-    "getswitchinterval",
-    "setswitchinterval",
-    "settrace",
-    "gettrace",
-    "setprofile",
-    "getprofile",
-    "call_tracing",
-    "exception",
-    "addaudithook",
-    "audit",
-]
-
 _MOLT_GETRECURSIONLIMIT = _require_intrinsic("molt_getrecursionlimit")
 _MOLT_SETRECURSIONLIMIT = _require_intrinsic("molt_setrecursionlimit")
 _MOLT_EXCEPTION_ACTIVE = _require_intrinsic("molt_exception_active")
@@ -184,40 +106,29 @@ def _expect_version_info_tuple(
     return major, minor, micro, (releaselevel_obj), serial
 
 
-_ImplementationNamespaceType = None
+class _ImplementationNamespace:
+    __slots__ = ("name", "cache_tag", "version", "hexversion")
 
+    def __init__(
+        self,
+        name: str,
+        cache_tag: str,
+        version: tuple[int, int, int, str, int],
+        hexversion: int,
+    ) -> None:
+        self.name = name
+        self.cache_tag = cache_tag
+        self.version = version
+        self.hexversion = hexversion
 
-def _implementation_namespace_type():
-    global _ImplementationNamespaceType
-    if _ImplementationNamespaceType is not None:
-        return _ImplementationNamespaceType
-
-    class _ImplementationNamespace:
-        __slots__ = ("name", "cache_tag", "version", "hexversion")
-
-        def __init__(
-            self,
-            name: str,
-            cache_tag: str,
-            version: tuple[int, int, int, str, int],
-            hexversion: int,
-        ) -> None:
-            self.name = name
-            self.cache_tag = cache_tag
-            self.version = version
-            self.hexversion = hexversion
-
-        def __repr__(self) -> str:
-            return (
-                "namespace("
-                f"name={self.name!r}, "
-                f"cache_tag={self.cache_tag!r}, "
-                f"version={self.version!r}, "
-                f"hexversion={self.hexversion!r})"
-            )
-
-    _ImplementationNamespaceType = _ImplementationNamespace
-    return _ImplementationNamespaceType
+    def __repr__(self) -> str:
+        return (
+            "namespace("
+            f"name={self.name!r}, "
+            f"cache_tag={self.cache_tag!r}, "
+            f"version={self.version!r}, "
+            f"hexversion={self.hexversion!r})"
+        )
 
 
 def _resolve_implementation(payload: object) -> object:
@@ -244,7 +155,7 @@ def _resolve_implementation(payload: object) -> object:
         raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
     version = _expect_version_info_tuple(version_obj, intrinsic_name, "version")
     hexversion = _expect_int(hexversion_obj, intrinsic_name, "hexversion")
-    return _implementation_namespace_type()(name, cache_tag, version, hexversion)
+    return _ImplementationNamespace(name, cache_tag, version, hexversion)
 
 
 _SYS_FLAGS_SEQUENCE_FIELDS = (
@@ -444,48 +355,22 @@ _AsyncgenHooks = _struct_sequence_type(
 )
 
 
-# The native bootstrap publishes abiflags on every target but Windows, as
-# CPython does; the build target answers, so no code reads this namespace.
-if _require_intrinsic("molt_sys_platform")() != "win32":
-    __all__.insert(__all__.index("flags"), "abiflags")
-
-
-def _validate_bootstrap_scalars() -> None:
-    """Validate the native bootstrap's values without replacing their owners."""
-    g = globals()
-    maxsize_value = g["maxsize"]
-    maxunicode_value = g["maxunicode"]
-    byteorder_value = g["byteorder"]
-    if (
-        not isinstance(maxsize_value, int)
-        or isinstance(maxsize_value, bool)
-        or maxsize_value <= 0
-    ):
-        raise RuntimeError("canonical sys bootstrap returned invalid maxsize")
-    if (
-        not isinstance(maxunicode_value, int)
-        or isinstance(maxunicode_value, bool)
-        or not 0 < maxunicode_value <= 0x10FFFF
-    ):
-        raise RuntimeError("canonical sys bootstrap returned invalid maxunicode")
-    if not isinstance(byteorder_value, str) or byteorder_value not in ("little", "big"):
-        raise RuntimeError("canonical sys bootstrap returned invalid byteorder")
-
-
 def _metadata_tuple(payload: object, name: str, count: int) -> tuple[object, ...]:
     if not isinstance(payload, (list, tuple)) or len(payload) != count:
         raise RuntimeError(f"{name} returned invalid value")
     return tuple(payload)
 
 
-def _init_metadata_views() -> None:
-    """Finalize public shapes once, during the canonical module initializer."""
-    g = globals()
-    _validate_bootstrap_scalars()
+def _metadata_views() -> tuple[object, ...]:
+    """Shape the native metadata once, during the canonical module initializer."""
     raw_version = _expect_version_info_tuple(
-        g["version_info"], "canonical sys bootstrap", "version_info"
+        _require_intrinsic("molt_sys_version_info")(),
+        "molt_sys_version_info",
+        "version_info",
     )
-    implementation_value = _resolve_implementation(g["implementation"])
+    implementation_value = _resolve_implementation(
+        _require_intrinsic("molt_sys_implementation_payload")()
+    )
     flags_values, flag_extras = _resolve_flags_payload(
         _MOLT_SYS_FLAGS_PAYLOAD(), raw_version[1]
     )
@@ -501,8 +386,6 @@ def _init_metadata_views() -> None:
     thread_values = _metadata_tuple(
         _MOLT_SYS_THREAD_INFO(), "molt_sys_thread_info", len(_THREAD_INFO_FIELDS)
     )
-    g["version_info"] = _struct_sequence_new(_VersionInfo, raw_version)
-    g["implementation"] = implementation_value
     flags_type = _struct_sequence_type(
         "flags",
         _SYS_FLAGS_SEQUENCE_FIELDS + tuple(flag_extras),
@@ -531,14 +414,16 @@ def _init_metadata_views() -> None:
         + tuple("-X " + name for name in flag_extras),
         doc="sys.flags\n\nFlags provided through command line arguments or environment vars.",
     )
-    g["flags"] = _struct_sequence_new(
-        flags_type, flags_values + tuple(flag_extras.values())
+    return (
+        _struct_sequence_new(_VersionInfo, raw_version),
+        implementation_value,
+        _struct_sequence_new(flags_type, flags_values + tuple(flag_extras.values())),
+        _struct_sequence_new(_FloatInfo, float_values),
+        _struct_sequence_new(_IntInfo, int_values),
+        _struct_sequence_new(_HashInfo, hash_values),
+        _struct_sequence_new(_ThreadInfo, thread_values),
+        frozenset(_require_intrinsic("molt_sys_stdlib_module_names")()),
     )
-    g["float_info"] = _struct_sequence_new(_FloatInfo, float_values)
-    g["int_info"] = _struct_sequence_new(_IntInfo, int_values)
-    g["hash_info"] = _struct_sequence_new(_HashInfo, hash_values)
-    g["thread_info"] = _struct_sequence_new(_ThreadInfo, thread_values)
-    g["stdlib_module_names"] = frozenset(g["stdlib_module_names"])
 
 
 _molt_bootstrap_pythonpath = ()
@@ -663,7 +548,10 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
         return
     text = _exception_text(exc_type, exc_value, exc_tb)
     if err is _MISSING_STREAM:
-        original = globals().get("__stderr__")
+        try:
+            original = __stderr__  # noqa: F821
+        except NameError:
+            return
         if original is not None:
             original.write(text)
             original.write("lost sys.stderr\n")
@@ -789,12 +677,22 @@ _xoptions: dict[str, object] = {}
 
 # CPython publishes its macOS framework name on darwin, "" for a build that is
 # not a framework. A Molt binary is never a framework build.
-if globals().get("platform") == "darwin":
+if _require_intrinsic("molt_sys_platform")() == "darwin":
     _framework = ""
 
 
-# Finalize shaped metadata before the initializer returns. Attribute reads
-# never rerun producers or resurrect a deleted public key.
-_init_metadata_views()
-
-globals().pop("_require_intrinsic", None)
+# Shape the native metadata before the initializer returns. The body owns
+# these views: each is one module store, read by no code before it, so no
+# code reads this namespace and attribute reads never rerun a producer.
+(
+    version_info,
+    implementation,
+    flags,
+    float_info,
+    int_info,
+    hash_info,
+    thread_info,
+    stdlib_module_names,
+) = _metadata_views()
+del _metadata_views
+del _require_intrinsic

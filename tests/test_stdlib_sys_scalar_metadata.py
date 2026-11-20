@@ -13,16 +13,16 @@ SYS_PATH = Path(__file__).resolve().parents[1] / "src/molt/stdlib/sys.py"
 
 
 def _bootstrap_namespace() -> dict[str, object]:
-    # The native module publisher owns these facts before executing sys.py.
-    # CPython supplies independent values for this Python-only facade fixture.
+    # The native module publisher owns these facts before executing sys.py;
+    # the body shapes version_info, implementation and stdlib_module_names
+    # from their intrinsics. CPython supplies independent values for this
+    # Python-only facade fixture.
     return {
         "modules": {},
         "platform": sys.platform,
         "version": sys.version,
-        "version_info": tuple(sys.version_info),
         "hexversion": sys.hexversion,
         "api_version": sys.api_version,
-        "implementation": sys.implementation,
         "maxsize": 2**31 - 1,
         "maxunicode": 0x10FFFF,
         "byteorder": "big",
@@ -39,7 +39,6 @@ def _bootstrap_namespace() -> dict[str, object]:
         "path_importer_cache": {},
         "orig_argv": ["native-origin"],
         "copyright": "native-copyright",
-        "stdlib_module_names": tuple(sys.stdlib_module_names),
         "builtin_module_names": sys.builtin_module_names,
         "stdin": sys.stdin,
         "stdout": sys.stdout,
@@ -75,6 +74,10 @@ def _load_sys_shim(
         "molt_sys_int_info": lambda: tuple(sys.int_info),
         "molt_sys_hash_info": lambda: tuple(sys.hash_info),
         "molt_sys_thread_info": lambda: tuple(sys.thread_info),
+        "molt_sys_version_info": lambda: tuple(sys.version_info),
+        "molt_sys_implementation_payload": lambda: sys.implementation,
+        "molt_sys_stdlib_module_names": lambda: tuple(sys.stdlib_module_names),
+        "molt_sys_platform": lambda: sys.platform,
     }
     values.update(overrides or {})
 
@@ -166,33 +169,6 @@ def test_flags_shape_matches_reference_interpreter(monkeypatch):
             assert value == reference, name
 
 
-@pytest.mark.parametrize("name", ["maxsize", "maxunicode", "byteorder"])
-def test_native_bootstrap_scalar_is_required(monkeypatch, name):
-    bootstrap = _bootstrap_namespace()
-    del bootstrap[name]
-    with pytest.raises(KeyError, match=name):
-        _load_sys_shim(monkeypatch, bootstrap=bootstrap)
-
-
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("maxsize", True),
-        ("maxsize", 0),
-        ("maxunicode", False),
-        ("maxunicode", -1),
-        ("maxunicode", 0x110000),
-        ("byteorder", b"little"),
-        ("byteorder", "middle"),
-    ],
-)
-def test_native_bootstrap_scalar_validation_is_eager(monkeypatch, name, value):
-    bootstrap = _bootstrap_namespace()
-    bootstrap[name] = value
-    with pytest.raises(RuntimeError, match=f"invalid {name}"):
-        _load_sys_shim(monkeypatch, bootstrap=bootstrap)
-
-
 def test_shaped_metadata_preserves_intrinsic_failure(monkeypatch):
     failure = LookupError("target metadata unavailable")
 
@@ -225,10 +201,28 @@ def test_api_publication_preserves_exact_intrinsic_resolution_error(
     assert raised.value is failure
 
 
-def test_all_public_exports_exist_before_attribute_access(monkeypatch):
+def test_public_names_exist_before_attribute_access(monkeypatch):
     module, _ = _load_sys_shim(monkeypatch)
     namespace = vars(module)
-    assert all(name in namespace for name in namespace["__all__"])
+    # CPython's sys has no __all__.
+    assert "__all__" not in namespace
+    assert all(
+        name in namespace
+        for name in (
+            "version_info",
+            "implementation",
+            "flags",
+            "float_info",
+            "int_info",
+            "hash_info",
+            "thread_info",
+            "stdlib_module_names",
+            "intern",
+            "exit",
+            "getrecursionlimit",
+            "excepthook",
+        )
+    )
     assert namespace["version_info"].major == sys.version_info.major
     assert namespace["implementation"].name == sys.implementation.name
     assert namespace["float_info"].max == sys.float_info.max

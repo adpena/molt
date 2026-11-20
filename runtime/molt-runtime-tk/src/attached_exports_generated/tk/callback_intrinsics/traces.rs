@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_tk_trace_add(
     mode_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3581);
+    molt_runtime_core::call_census::hit(3580);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_trace_add_attached_body(_py, app_bits, variable_name_bits, mode_bits, callback_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_tk_trace_remove(
     mode_bits: u64,
     cbname_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3582);
+    molt_runtime_core::call_census::hit(3581);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_trace_remove_attached_body(_py, app_bits, variable_name_bits, mode_bits, cbname_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_tk_trace_info(
     app_bits: u64,
     variable_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3583);
+    molt_runtime_core::call_census::hit(3582);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_trace_info_attached_body(_py, app_bits, variable_name_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_tk_trace_clear(
     app_bits: u64,
     variable_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3584);
+    molt_runtime_core::call_census::hit(3583);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_trace_clear_attached_body(_py, app_bits, variable_name_bits)

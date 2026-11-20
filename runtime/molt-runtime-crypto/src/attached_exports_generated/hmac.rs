@@ -11,7 +11,7 @@ pub unsafe extern "C" fn molt_hmac_new(
     error_bits: u64,
     digestmod_present_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2819);
+    molt_runtime_core::call_census::hit(2818);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hmac_new_attached_body(
@@ -28,7 +28,7 @@ pub unsafe extern "C" fn molt_hmac_new(
 #[unsafe(export_name = "molt_hmac_update__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hmac_update(__context: u64, handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2820);
+    molt_runtime_core::call_census::hit(2819);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hmac_update_attached_body(_py, handle_bits, data_bits)
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn molt_hmac_update(__context: u64, handle_bits: u64, data
 #[unsafe(export_name = "molt_hmac_copy__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hmac_copy(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2821);
+    molt_runtime_core::call_census::hit(2820);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hmac_copy_attached_body(_py, handle_bits)
@@ -44,7 +44,7 @@ pub unsafe extern "C" fn molt_hmac_copy(__context: u64, handle_bits: u64) -> u64
 #[unsafe(export_name = "molt_hmac_digest__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_hmac_digest(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2822);
+    molt_runtime_core::call_census::hit(2821);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_hmac_digest_attached_body(_py, handle_bits)
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn molt_hmac_digest(__context: u64, handle_bits: u64) -> u
 #[unsafe(export_name = "molt_compare_digest__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_compare_digest(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2823);
+    molt_runtime_core::call_census::hit(2822);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_compare_digest_attached_body(_py, a_bits, b_bits)

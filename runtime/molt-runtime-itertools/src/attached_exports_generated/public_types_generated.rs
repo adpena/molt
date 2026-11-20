@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_itertools_accumulate_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_accumulate_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3015);
+    molt_runtime_core::call_census::hit(3014);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_accumulate_type_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_itertools_accumulate_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_batched_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_batched_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3016);
+    molt_runtime_core::call_census::hit(3015);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_batched_type_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_itertools_batched_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_chain_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_chain_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3017);
+    molt_runtime_core::call_census::hit(3016);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_chain_type_attached_body(_py)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_itertools_chain_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_combinations_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_combinations_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3018);
+    molt_runtime_core::call_census::hit(3017);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_combinations_type_attached_body(_py)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_itertools_combinations_type(__context: u64) -> u64
 #[unsafe(export_name = "molt_itertools_combinations_with_replacement_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_combinations_with_replacement_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3019);
+    molt_runtime_core::call_census::hit(3018);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_combinations_with_replacement_type_attached_body(_py)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_itertools_combinations_with_replacement_type(__con
 #[unsafe(export_name = "molt_itertools_compress_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_compress_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3020);
+    molt_runtime_core::call_census::hit(3019);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_compress_type_attached_body(_py)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_itertools_compress_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_count_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_count_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3021);
+    molt_runtime_core::call_census::hit(3020);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_count_type_attached_body(_py)
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_itertools_count_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_cycle_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_cycle_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3022);
+    molt_runtime_core::call_census::hit(3021);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_cycle_type_attached_body(_py)
@@ -66,7 +66,7 @@ pub unsafe extern "C" fn molt_itertools_cycle_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_dropwhile_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_dropwhile_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3023);
+    molt_runtime_core::call_census::hit(3022);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_dropwhile_type_attached_body(_py)
@@ -74,7 +74,7 @@ pub unsafe extern "C" fn molt_itertools_dropwhile_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_filterfalse_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_filterfalse_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3024);
+    molt_runtime_core::call_census::hit(3023);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_filterfalse_type_attached_body(_py)
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn molt_itertools_filterfalse_type(__context: u64) -> u64 
 #[unsafe(export_name = "molt_itertools_groupby_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_groupby_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3025);
+    molt_runtime_core::call_census::hit(3024);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_groupby_type_attached_body(_py)
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn molt_itertools_groupby_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_islice_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_islice_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3026);
+    molt_runtime_core::call_census::hit(3025);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_islice_type_attached_body(_py)
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn molt_itertools_islice_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_pairwise_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_pairwise_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3027);
+    molt_runtime_core::call_census::hit(3026);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_pairwise_type_attached_body(_py)
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn molt_itertools_pairwise_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_permutations_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_permutations_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3028);
+    molt_runtime_core::call_census::hit(3027);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_permutations_type_attached_body(_py)
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn molt_itertools_permutations_type(__context: u64) -> u64
 #[unsafe(export_name = "molt_itertools_product_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_product_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3029);
+    molt_runtime_core::call_census::hit(3028);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_product_type_attached_body(_py)
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn molt_itertools_product_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_repeat_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_repeat_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3030);
+    molt_runtime_core::call_census::hit(3029);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_repeat_type_attached_body(_py)
@@ -130,7 +130,7 @@ pub unsafe extern "C" fn molt_itertools_repeat_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_starmap_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_starmap_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3031);
+    molt_runtime_core::call_census::hit(3030);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_starmap_type_attached_body(_py)
@@ -138,7 +138,7 @@ pub unsafe extern "C" fn molt_itertools_starmap_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_takewhile_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_takewhile_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3032);
+    molt_runtime_core::call_census::hit(3031);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_takewhile_type_attached_body(_py)
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn molt_itertools_takewhile_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_itertools_zip_longest_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_zip_longest_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3033);
+    molt_runtime_core::call_census::hit(3032);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_zip_longest_type_attached_body(_py)

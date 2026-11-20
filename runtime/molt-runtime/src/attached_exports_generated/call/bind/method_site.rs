@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_method_site_load(
     recv_bits: u64,
     self_out_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1743);
+    molt_runtime_core::call_census::hit(1742);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_method_site_load_attached_body(_py, record_bits, recv_bits, self_out_bits)
