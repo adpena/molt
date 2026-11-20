@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_token_payload__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_token_payload(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(789);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_token_payload);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_token_payload_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_token_payload(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_tokenize_scan__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tokenize_scan(__context: u64, source_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(790);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_tokenize_scan);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tokenize_scan_attached_body(_py, source_bits)
@@ -22,7 +22,9 @@ pub unsafe extern "C" fn molt_linecache_detect_encoding(
     first_bits: u64,
     second_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(791);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_linecache_detect_encoding,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_linecache_detect_encoding_attached_body(_py, first_bits, second_bits)

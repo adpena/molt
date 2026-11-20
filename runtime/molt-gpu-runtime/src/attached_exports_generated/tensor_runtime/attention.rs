@@ -10,7 +10,9 @@ pub unsafe extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(8);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_gpu_tensor__tensor_scaled_dot_product_attention,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor__tensor_scaled_dot_product_attention_attached_body(
@@ -28,7 +30,9 @@ pub unsafe extern "C" fn molt_gpu_turboquant_attention_packed(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(9);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_gpu_turboquant_attention_packed,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_turboquant_attention_packed_attached_body(

@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_signal_signal(
     signum_bits: u64,
     handler_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1334);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_signal);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_signal_attached_body(_py, signum_bits, handler_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_signal_signal(
 #[unsafe(export_name = "molt_signal_getsignal__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_getsignal(__context: u64, signum_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1335);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_getsignal);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_getsignal_attached_body(_py, signum_bits)
@@ -22,7 +22,9 @@ pub unsafe extern "C" fn molt_signal_getsignal(__context: u64, signum_bits: u64)
 #[unsafe(export_name = "molt_signal_raise_signal__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_raise_signal(__context: u64, signum_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1336);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_raise_signal,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_raise_signal_attached_body(_py, signum_bits)
@@ -30,7 +32,9 @@ pub unsafe extern "C" fn molt_signal_raise_signal(__context: u64, signum_bits: u
 #[unsafe(export_name = "molt_signal_set_interrupt__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_set_interrupt(__context: u64, signum_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1337);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_set_interrupt,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_set_interrupt_attached_body(_py, signum_bits)
@@ -38,7 +42,7 @@ pub unsafe extern "C" fn molt_signal_set_interrupt(__context: u64, signum_bits: 
 #[unsafe(export_name = "molt_signal_alarm__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_alarm(__context: u64, seconds_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1338);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_alarm);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_alarm_attached_body(_py, seconds_bits)
@@ -46,7 +50,7 @@ pub unsafe extern "C" fn molt_signal_alarm(__context: u64, seconds_bits: u64) ->
 #[unsafe(export_name = "molt_signal_pause__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_pause(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1339);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_pause);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_pause_attached_body(_py)
@@ -54,7 +58,9 @@ pub unsafe extern "C" fn molt_signal_pause(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_set_wakeup_fd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_set_wakeup_fd(__context: u64, fd_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1340);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_set_wakeup_fd,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_set_wakeup_fd_attached_body(_py, fd_bits)
@@ -62,7 +68,7 @@ pub unsafe extern "C" fn molt_signal_set_wakeup_fd(__context: u64, fd_bits: u64)
 #[unsafe(export_name = "molt_signal_sigabrt__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigabrt(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1341);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigabrt);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigabrt_attached_body(_py)
@@ -70,7 +76,7 @@ pub unsafe extern "C" fn molt_signal_sigabrt(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigfpe__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigfpe(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1342);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigfpe);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigfpe_attached_body(_py)
@@ -78,7 +84,7 @@ pub unsafe extern "C" fn molt_signal_sigfpe(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigill__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigill(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1343);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigill);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigill_attached_body(_py)
@@ -86,7 +92,7 @@ pub unsafe extern "C" fn molt_signal_sigill(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigint__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigint(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1344);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigint);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigint_attached_body(_py)
@@ -94,7 +100,7 @@ pub unsafe extern "C" fn molt_signal_sigint(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigsegv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigsegv(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1345);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigsegv);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigsegv_attached_body(_py)
@@ -102,7 +108,7 @@ pub unsafe extern "C" fn molt_signal_sigsegv(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigterm__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigterm(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1346);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigterm);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigterm_attached_body(_py)
@@ -110,7 +116,7 @@ pub unsafe extern "C" fn molt_signal_sigterm(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sighup__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sighup(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1347);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sighup);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sighup_attached_body(_py)
@@ -118,7 +124,7 @@ pub unsafe extern "C" fn molt_signal_sighup(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigquit__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigquit(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1348);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigquit);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigquit_attached_body(_py)
@@ -126,7 +132,7 @@ pub unsafe extern "C" fn molt_signal_sigquit(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigusr1__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigusr1(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1349);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigusr1);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigusr1_attached_body(_py)
@@ -134,7 +140,7 @@ pub unsafe extern "C" fn molt_signal_sigusr1(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigusr2__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigusr2(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1350);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigusr2);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigusr2_attached_body(_py)
@@ -142,7 +148,7 @@ pub unsafe extern "C" fn molt_signal_sigusr2(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigchld__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigchld(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1351);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigchld);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigchld_attached_body(_py)
@@ -150,7 +156,7 @@ pub unsafe extern "C" fn molt_signal_sigchld(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigalrm__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigalrm(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1352);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigalrm);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigalrm_attached_body(_py)
@@ -158,7 +164,7 @@ pub unsafe extern "C" fn molt_signal_sigalrm(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigpipe__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigpipe(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1353);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigpipe);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigpipe_attached_body(_py)
@@ -166,7 +172,7 @@ pub unsafe extern "C" fn molt_signal_sigpipe(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sig_dfl__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sig_dfl(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1354);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sig_dfl);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sig_dfl_attached_body(_py)
@@ -174,7 +180,7 @@ pub unsafe extern "C" fn molt_signal_sig_dfl(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sig_ign__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sig_ign(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1355);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sig_ign);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sig_ign_attached_body(_py)
@@ -182,7 +188,7 @@ pub unsafe extern "C" fn molt_signal_sig_ign(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_nsig__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_nsig(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1356);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_nsig);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_nsig_attached_body(_py)
@@ -190,7 +196,7 @@ pub unsafe extern "C" fn molt_signal_nsig(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sig_block__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sig_block(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1357);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sig_block);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sig_block_attached_body(_py)
@@ -198,7 +204,9 @@ pub unsafe extern "C" fn molt_signal_sig_block(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sig_unblock__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sig_unblock(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1358);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_sig_unblock,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sig_unblock_attached_body(_py)
@@ -206,7 +214,9 @@ pub unsafe extern "C" fn molt_signal_sig_unblock(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sig_setmask__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sig_setmask(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1359);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_sig_setmask,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sig_setmask_attached_body(_py)
@@ -214,7 +224,7 @@ pub unsafe extern "C" fn molt_signal_sig_setmask(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigbus__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigbus(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1360);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigbus);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigbus_attached_body(_py)
@@ -222,7 +232,7 @@ pub unsafe extern "C" fn molt_signal_sigbus(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigcont__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigcont(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1361);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigcont);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigcont_attached_body(_py)
@@ -230,7 +240,7 @@ pub unsafe extern "C" fn molt_signal_sigcont(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigstop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigstop(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1362);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigstop);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigstop_attached_body(_py)
@@ -238,7 +248,7 @@ pub unsafe extern "C" fn molt_signal_sigstop(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigtstp__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigtstp(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1363);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigtstp);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigtstp_attached_body(_py)
@@ -246,7 +256,7 @@ pub unsafe extern "C" fn molt_signal_sigtstp(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigttin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigttin(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1364);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigttin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigttin_attached_body(_py)
@@ -254,7 +264,7 @@ pub unsafe extern "C" fn molt_signal_sigttin(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigttou__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigttou(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1365);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigttou);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigttou_attached_body(_py)
@@ -262,7 +272,7 @@ pub unsafe extern "C" fn molt_signal_sigttou(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigxcpu__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigxcpu(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1366);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigxcpu);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigxcpu_attached_body(_py)
@@ -270,7 +280,7 @@ pub unsafe extern "C" fn molt_signal_sigxcpu(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigxfsz__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigxfsz(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1367);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigxfsz);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigxfsz_attached_body(_py)
@@ -278,7 +288,7 @@ pub unsafe extern "C" fn molt_signal_sigxfsz(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigvtalrm__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigvtalrm(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1368);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigvtalrm);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigvtalrm_attached_body(_py)
@@ -286,7 +296,7 @@ pub unsafe extern "C" fn molt_signal_sigvtalrm(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigprof__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigprof(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1369);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigprof);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigprof_attached_body(_py)
@@ -294,7 +304,7 @@ pub unsafe extern "C" fn molt_signal_sigprof(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigwinch__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigwinch(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1370);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigwinch);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigwinch_attached_body(_py)
@@ -302,7 +312,7 @@ pub unsafe extern "C" fn molt_signal_sigwinch(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigsys__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigsys(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1371);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigsys);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigsys_attached_body(_py)
@@ -314,7 +324,9 @@ pub unsafe extern "C" fn molt_signal_default_int_handler(
     _signum_bits: u64,
     _frame_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1372);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_default_int_handler,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_default_int_handler_attached_body(_py, _signum_bits, _frame_bits)
@@ -322,7 +334,7 @@ pub unsafe extern "C" fn molt_signal_default_int_handler(
 #[unsafe(export_name = "molt_signal_strsignal__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_strsignal(__context: u64, signum_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1373);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_strsignal);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_strsignal_attached_body(_py, signum_bits)
@@ -334,7 +346,9 @@ pub unsafe extern "C" fn molt_signal_pthread_sigmask(
     how_bits: u64,
     mask_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1374);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_pthread_sigmask,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_pthread_sigmask_attached_body(_py, how_bits, mask_bits)
@@ -346,7 +360,9 @@ pub unsafe extern "C" fn molt_signal_pthread_kill(
     thread_id_bits: u64,
     signum_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1375);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_pthread_kill,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_pthread_kill_attached_body(_py, thread_id_bits, signum_bits)
@@ -354,7 +370,7 @@ pub unsafe extern "C" fn molt_signal_pthread_kill(
 #[unsafe(export_name = "molt_signal_sigpending__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigpending(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1376);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigpending);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigpending_attached_body(_py)
@@ -362,7 +378,7 @@ pub unsafe extern "C" fn molt_signal_sigpending(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_signal_sigwait__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_sigwait(__context: u64, sigset_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1377);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_signal_sigwait);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_sigwait_attached_body(_py, sigset_bits)
@@ -370,7 +386,9 @@ pub unsafe extern "C" fn molt_signal_sigwait(__context: u64, sigset_bits: u64) -
 #[unsafe(export_name = "molt_signal_valid_signals__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_signal_valid_signals(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1378);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_signal_valid_signals,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_signal_valid_signals_attached_body(_py)

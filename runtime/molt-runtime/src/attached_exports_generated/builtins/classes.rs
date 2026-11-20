@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_builtin_class_lookup__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_builtin_class_lookup(__context: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(508);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_builtin_class_lookup,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_builtin_class_lookup_attached_body(_py, name_bits)

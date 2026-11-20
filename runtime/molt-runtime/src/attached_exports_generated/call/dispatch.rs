@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_call_builtin(
     name_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1745);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_call_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_builtin_attached_body(_py, name_bits, builder_bits)

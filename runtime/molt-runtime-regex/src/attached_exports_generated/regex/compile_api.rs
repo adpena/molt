@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_re_compile(
     pattern_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3294);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_compile);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_compile_attached_body(_py, pattern_bits, flags_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_re_compile(
 #[unsafe(export_name = "molt_re_pattern_info__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_re_pattern_info(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3295);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_pattern_info);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_pattern_info_attached_body(_py, handle_bits)

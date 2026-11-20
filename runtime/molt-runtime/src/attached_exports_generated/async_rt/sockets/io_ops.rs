@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_socket_recv(
     size_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(309);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_recv);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_recv_attached_body(_py, sock_bits, size_bits, flags_bits) }
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn molt_socket_recv_into(
     size_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(310);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_recv_into);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn molt_socket_send(
     data_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(311);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_send);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_send_attached_body(_py, sock_bits, data_bits, flags_bits) }
@@ -53,7 +53,7 @@ pub unsafe extern "C" fn molt_socket_sendall(
     data_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(312);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_sendall);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_sendall_attached_body(_py, sock_bits, data_bits, flags_bits) }
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
     flags_bits: u64,
     addr_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(313);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_sendto);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_sendto_attached_body(_py, sock_bits, data_bits, flags_bits, addr_bits) }
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn molt_socket_recvfrom(
     size_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(314);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_recvfrom);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_recvfrom_attached_body(_py, sock_bits, size_bits, flags_bits) }
@@ -97,7 +97,9 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
     size_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(315);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_socket_recvfrom_into,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -115,7 +117,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
     flags_bits: u64,
     address_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(316);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_sendmsg);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -139,7 +141,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
     ancbufsize_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(317);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_socket_recvmsg);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -156,7 +158,9 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
     ancbufsize_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(318);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_socket_recvmsg_into,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
