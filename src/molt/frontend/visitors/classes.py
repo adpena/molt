@@ -1648,12 +1648,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
                 class_def_attrs.append((key, attr_val))
-            static_attrs = (
-                self._collect_static_attributes(node)
-                if source_keys and dynamic_namespace is None
-                else ()
-            )
-            if static_attrs:
+            # Every 3.13+ class namespace holds __static_attributes__, an
+            # empty tuple when no method assigns a self attribute.
+            if source_keys and dynamic_namespace is None:
+                static_attrs = self._collect_static_attributes(node)
                 sa_vals: list[MoltValue] = []
                 for sa_name in static_attrs:
                     sv = MoltValue(self.next_var(), type_hint="str")
