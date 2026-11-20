@@ -347,3 +347,56 @@ Failed scratch uses the same typed lifecycle as successful scratch: terminal
 publication, retiring, retained, reclaiming and reclaimed, with blocked state
 reserved for interrupted or invalid custody. Archive availability grants no
 state transition. Reclamation still refuses identity drift and crash residue.
+
+## Compile cache: keys on recorded reads, immutable records (2026-11-20)
+
+Measured problem (2026-11-19, macOS arm64, data volume): the shared source-record
+store held 139.7 GiB of live rows plus a 59.9 GB WAL against the 30 GiB
+compile-cache budget: 4,582,015 import-scan, 85,551 module-lowering, 19,516
+intrinsic-facts and 19,066 module-analysis rows. Pruning backs off on
+`SQLITE_BUSY`, and with lanes running continuously the store is always busy, so
+the budget never wins. Checkpoints starve because some reader always holds a
+snapshot, so the WAL never resets ([SQLite WAL: checkpoint
+starvation](https://www.sqlite.org/wal.html#avoiding_excessively_large_wal_files)).
+In one oracle cache, 6,754 import-scan rows held 1,734 distinct results, and 53%
+of payload bytes copied the key's namespace premise.
+
+Design, in three slices that land separately:
+
+1. A query's key holds exactly what it reads. The import scan reads its premise
+   only through the binding policy and the `__all__` check, so
+   `_BINDING_POLICY_FIELDS` (`python_namespace_graph`) drives both the policy and
+   the scan view; a premise field stays out of the key until the policy reads
+   it. HF-926's read log already cuts off a rescan whose answers hold
+   (rustc red/green, Salsa backdating). Rows do not copy their key.
+2. Records become immutable content-addressed files (temp file plus rename)
+   with a small action index from key to result hash (Go `GOCACHE`, Bazel
+   AC/CAS). Readers take no lock and open no database; publication is
+   idempotent; equal results share one file. Retention touches a hit at most
+   hourly and unlinks by age and size at background I/O priority, so deletion
+   never waits for a reader and the budget holds.
+3. Module lowering replaces hand-scoped inputs (`_ScopedLoweringInputs`) with
+   recorded reads and moves its payloads to the same files; the SQLite store
+   then has no consumer and is deleted.
+
+Slice 1 result (interleaved discovery A/B against 207478f220, fresh cache per
+run, 2 runs): `import asyncio` import-scan bytes fell from 56.29 MB to 25.07 MB
+(-55%), `import unittest` from 52.48 MB to 28.51 MB (-46%); rows (6,265 and
+6,596) and distinct results (3,170 and 2,224) did not change; graph and scan
+authority dumps were byte-identical in every cold, warm and one-module-edit
+phase. Warm discovery CPU fell from 14.1/17.3 s to 10.6/9.2 s (asyncio) and
+from 10.9/9.9 s to 7.1/9.1 s (unittest); cold CPU stayed within run spread.
+The first 100 programs of `tests/differential/basic` (native, one cold and one
+warm run per side, not interleaved) kept the same 98 passes and the same two
+failures with identical Molt output; cold wall time was 1,947 s on main and
+1,583 s with the change, warm 879 s and 652 s. A whole `molt build` of the
+asyncio program did not change measurably (one run each): cold 450/440 s wall, steady no-change 0.41 s, one-module edit
+96/102 s. Two costs remain for slices 2 and 3: the first no-change rebuild
+after a cold build takes 31-35 s, and a one-line edit of a user module 96-102 s.
+
+Prior art: rustc incremental queries (dep graph, red/green), Salsa (tracked
+reads, revisions, backdating), Zig incremental compilation (InternPool,
+fine-grained dependencies), Swift's request evaluator, Buck2 DICE, Go
+`GOCACHE` (action ID to output ID, content-addressed files, hourly mtime),
+Bazel AC plus CAS, uv's content-addressed store with clonefile/hardlink,
+ccache and the Nix store.
