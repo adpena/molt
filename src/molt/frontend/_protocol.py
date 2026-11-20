@@ -2270,6 +2270,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, attrs: tuple[str, ...], state: dict[str, Any]
     ) -> None: ...
 
+    def _runtime_module_name(self) -> str: ...
+
     def _runtime_protected_attribute_requirement_bits(
         self,
         obj: MoltValue,

@@ -734,11 +734,40 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         )
         params_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=type_param_values, result=params_tuple))
+        # CPython's alias carries its defining module's name and its compute
+        # function's co_qualname (`__qualname__` from 3.15).
+        module_value = MoltValue(self.next_var(), type_hint="str")
+        self.emit(
+            MoltOp(
+                kind="CONST_STR",
+                args=[
+                    module_override
+                    if module_override is not None
+                    else self._runtime_module_name()
+                ],
+                result=module_value,
+            )
+        )
+        qualname_value = MoltValue(self.next_var(), type_hint="str")
+        self.emit(
+            MoltOp(
+                kind="CONST_STR",
+                args=[self._qualname_for_def(name)],
+                result=qualname_value,
+            )
+        )
         alias_value = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
                 kind="CALL_FUNC",
-                args=[alias_fn, name_value, evaluator, params_tuple],
+                args=[
+                    alias_fn,
+                    name_value,
+                    evaluator,
+                    params_tuple,
+                    module_value,
+                    qualname_value,
+                ],
                 result=alias_value,
             )
         )
