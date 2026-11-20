@@ -8,7 +8,9 @@ pub unsafe extern "C" fn molt_asyncio_child_watcher_add(
     callback_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(272);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_child_watcher_add,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_child_watcher_add_attached_body(
@@ -26,7 +28,9 @@ pub unsafe extern "C" fn molt_asyncio_child_watcher_remove(
     callbacks_bits: u64,
     pid_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(273);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_child_watcher_remove,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_child_watcher_remove_attached_body(_py, callbacks_bits, pid_bits)
@@ -37,7 +41,9 @@ pub unsafe extern "C" fn molt_asyncio_child_watcher_clear(
     __context: u64,
     callbacks_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(274);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_child_watcher_clear,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_child_watcher_clear_attached_body(_py, callbacks_bits)
@@ -49,7 +55,9 @@ pub unsafe extern "C" fn molt_asyncio_child_watcher_pop(
     callbacks_bits: u64,
     pid_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(275);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_child_watcher_pop,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_child_watcher_pop_attached_body(_py, callbacks_bits, pid_bits)

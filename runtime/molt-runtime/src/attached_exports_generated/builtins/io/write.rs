@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_file_write__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_file_write(__context: u64, handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(931);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_file_write);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_file_write_attached_body(_py, handle_bits, data_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_file_writelines(
     handle_bits: u64,
     lines_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(932);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_file_writelines);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_file_writelines_attached_body(_py, handle_bits, lines_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_file_writelines(
 #[unsafe(export_name = "molt_file_flush__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_file_flush(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(933);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_file_flush);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_file_flush_attached_body(_py, handle_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_file_flush(__context: u64, handle_bits: u64) -> u6
 #[unsafe(export_name = "molt_file_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_file_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(934);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_file_close);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_file_close_attached_body(_py, handle_bits)

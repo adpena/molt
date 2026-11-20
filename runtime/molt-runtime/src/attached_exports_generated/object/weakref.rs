@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_weakref_find_nocallback__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_find_nocallback(__context: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2598);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_weakref_find_nocallback,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_find_nocallback_attached_body(_py, target_bits)
@@ -10,7 +12,7 @@ pub unsafe extern "C" fn molt_weakref_find_nocallback(__context: u64, target_bit
 #[unsafe(export_name = "molt_weakref_refs__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_refs(__context: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2599);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_refs);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_refs_attached_body(_py, target_bits)
@@ -18,7 +20,7 @@ pub unsafe extern "C" fn molt_weakref_refs(__context: u64, target_bits: u64) -> 
 #[unsafe(export_name = "molt_weakref_count__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_count(__context: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2600);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_count);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_count_attached_body(_py, target_bits)
@@ -31,7 +33,7 @@ pub unsafe extern "C" fn molt_weakref_register(
     target_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2601);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_register);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_register_attached_body(_py, weak_bits, target_bits, callback_bits)
@@ -39,7 +41,7 @@ pub unsafe extern "C" fn molt_weakref_register(
 #[unsafe(export_name = "molt_weakref_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_get(__context: u64, weak_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2602);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_get);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_get_attached_body(_py, weak_bits)
@@ -47,7 +49,7 @@ pub unsafe extern "C" fn molt_weakref_get(__context: u64, weak_bits: u64) -> u64
 #[unsafe(export_name = "molt_weakref_callback__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_callback(__context: u64, weak_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2603);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_callback);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_callback_attached_body(_py, weak_bits)
@@ -55,7 +57,7 @@ pub unsafe extern "C" fn molt_weakref_callback(__context: u64, weak_bits: u64) -
 #[unsafe(export_name = "molt_weakref_peek__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_peek(__context: u64, weak_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2604);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_weakref_peek);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_peek_attached_body(_py, weak_bits)

@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_zoneinfo_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zoneinfo_new(__context: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3617);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zoneinfo_new);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_new_attached_body(_py, key_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_zoneinfo_new(__context: u64, key_bits: u64) -> u64
 #[unsafe(export_name = "molt_zoneinfo_key__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zoneinfo_key(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3618);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zoneinfo_key);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_key_attached_body(_py, handle_bits)
@@ -22,7 +22,9 @@ pub unsafe extern "C" fn molt_zoneinfo_utcoffset(
     handle_bits: u64,
     dt_components_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3619);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zoneinfo_utcoffset,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_utcoffset_attached_body(_py, handle_bits, dt_components_bits)
@@ -34,7 +36,7 @@ pub unsafe extern "C" fn molt_zoneinfo_tzname(
     handle_bits: u64,
     dt_components_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3620);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zoneinfo_tzname);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_tzname_attached_body(_py, handle_bits, dt_components_bits)
@@ -46,7 +48,7 @@ pub unsafe extern "C" fn molt_zoneinfo_dst(
     handle_bits: u64,
     dt_components_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3621);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zoneinfo_dst);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_dst_attached_body(_py, handle_bits, dt_components_bits)
@@ -54,7 +56,9 @@ pub unsafe extern "C" fn molt_zoneinfo_dst(
 #[unsafe(export_name = "molt_zoneinfo_available_timezones__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zoneinfo_available_timezones(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3622);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_zoneinfo_available_timezones,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_available_timezones_attached_body(_py)
@@ -62,7 +66,7 @@ pub unsafe extern "C" fn molt_zoneinfo_available_timezones(__context: u64) -> u6
 #[unsafe(export_name = "molt_zoneinfo_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_zoneinfo_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3623);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_zoneinfo_drop);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zoneinfo_drop_attached_body(_py, handle_bits)

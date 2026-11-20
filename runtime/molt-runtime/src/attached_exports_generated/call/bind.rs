@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_call_bind__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_call_bind(__context: u64, call_bits: u64, builder_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1744);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_call_bind);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_bind_attached_body(_py, call_bits, builder_bits)

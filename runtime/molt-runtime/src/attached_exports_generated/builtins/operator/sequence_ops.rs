@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_operator_contains(
     container_bits: u64,
     item_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1109);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_contains);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_contains_attached_body(_py, container_bits, item_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_operator_getitem(
     obj_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1110);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_getitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_getitem_attached_body(_py, obj_bits, key_bits)
@@ -31,7 +31,7 @@ pub unsafe extern "C" fn molt_operator_setitem(
     key_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1111);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_setitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_setitem_attached_body(_py, obj_bits, key_bits, val_bits)
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn molt_operator_delitem(
     obj_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1112);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_delitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_delitem_attached_body(_py, obj_bits, key_bits)
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn molt_operator_countof(
     container_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1113);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_countof);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_countof_attached_body(_py, container_bits, value_bits)
@@ -67,7 +67,9 @@ pub unsafe extern "C" fn molt_operator_length_hint(
     obj_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1114);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_operator_length_hint,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_length_hint_attached_body(_py, obj_bits, default_bits)
@@ -75,7 +77,7 @@ pub unsafe extern "C" fn molt_operator_length_hint(
 #[unsafe(export_name = "molt_operator_concat__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_concat(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1115);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_concat);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_concat_attached_body(_py, a, b)
@@ -83,7 +85,7 @@ pub unsafe extern "C" fn molt_operator_concat(__context: u64, a: u64, b: u64) ->
 #[unsafe(export_name = "molt_operator_iconcat__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_iconcat(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1116);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_iconcat);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_iconcat_attached_body(_py, a, b)
@@ -91,7 +93,7 @@ pub unsafe extern "C" fn molt_operator_iconcat(__context: u64, a: u64, b: u64) -
 #[unsafe(export_name = "molt_operator_iadd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_iadd(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1117);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_iadd);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_iadd_attached_body(_py, a, b)
@@ -99,7 +101,7 @@ pub unsafe extern "C" fn molt_operator_iadd(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_isub__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_isub(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1118);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_isub);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_isub_attached_body(_py, a, b)
@@ -107,7 +109,7 @@ pub unsafe extern "C" fn molt_operator_isub(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_imul__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_imul(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1119);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_imul);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_imul_attached_body(_py, a, b)
@@ -115,7 +117,7 @@ pub unsafe extern "C" fn molt_operator_imul(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_imatmul__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_imatmul(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1120);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_imatmul);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_imatmul_attached_body(_py, a, b)
@@ -123,7 +125,7 @@ pub unsafe extern "C" fn molt_operator_imatmul(__context: u64, a: u64, b: u64) -
 #[unsafe(export_name = "molt_operator_itruediv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_itruediv(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1121);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_itruediv);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_itruediv_attached_body(_py, a, b)
@@ -131,7 +133,9 @@ pub unsafe extern "C" fn molt_operator_itruediv(__context: u64, a: u64, b: u64) 
 #[unsafe(export_name = "molt_operator_ifloordiv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_ifloordiv(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1122);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_operator_ifloordiv,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_ifloordiv_attached_body(_py, a, b)
@@ -139,7 +143,7 @@ pub unsafe extern "C" fn molt_operator_ifloordiv(__context: u64, a: u64, b: u64)
 #[unsafe(export_name = "molt_operator_imod__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_imod(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1123);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_imod);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_imod_attached_body(_py, a, b)
@@ -147,7 +151,7 @@ pub unsafe extern "C" fn molt_operator_imod(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_ipow__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_ipow(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1124);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_ipow);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_ipow_attached_body(_py, a, b)
@@ -155,7 +159,7 @@ pub unsafe extern "C" fn molt_operator_ipow(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_ilshift__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_ilshift(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1125);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_ilshift);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_ilshift_attached_body(_py, a, b)
@@ -163,7 +167,7 @@ pub unsafe extern "C" fn molt_operator_ilshift(__context: u64, a: u64, b: u64) -
 #[unsafe(export_name = "molt_operator_irshift__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_irshift(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1126);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_irshift);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_irshift_attached_body(_py, a, b)
@@ -171,7 +175,7 @@ pub unsafe extern "C" fn molt_operator_irshift(__context: u64, a: u64, b: u64) -
 #[unsafe(export_name = "molt_operator_iand__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_iand(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1127);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_iand);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_iand_attached_body(_py, a, b)
@@ -179,7 +183,7 @@ pub unsafe extern "C" fn molt_operator_iand(__context: u64, a: u64, b: u64) -> u
 #[unsafe(export_name = "molt_operator_ior__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_ior(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1128);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_ior);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_ior_attached_body(_py, a, b)
@@ -187,7 +191,7 @@ pub unsafe extern "C" fn molt_operator_ior(__context: u64, a: u64, b: u64) -> u6
 #[unsafe(export_name = "molt_operator_ixor__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_ixor(__context: u64, a: u64, b: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1129);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_operator_ixor);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_ixor_attached_body(_py, a, b)

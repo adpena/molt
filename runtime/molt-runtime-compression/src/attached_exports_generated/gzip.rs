@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_gzip_open(
     mode_bits: u64,
     _compresslevel_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2742);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_gzip_open);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gzip_open_attached_body(_py, filename_bits, mode_bits, _compresslevel_bits)
@@ -15,7 +15,7 @@ pub unsafe extern "C" fn molt_gzip_open(
 #[unsafe(export_name = "molt_gzip_read__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gzip_read(__context: u64, handle_bits: u64, size_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2743);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_gzip_read);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gzip_read_attached_body(_py, handle_bits, size_bits)
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn molt_gzip_read(__context: u64, handle_bits: u64, size_b
 #[unsafe(export_name = "molt_gzip_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gzip_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2744);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_gzip_close);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gzip_close_attached_body(_py, handle_bits)

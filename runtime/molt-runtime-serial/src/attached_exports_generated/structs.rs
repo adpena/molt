@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_struct_calcsize__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_struct_calcsize(__context: u64, error: u64, format: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3539);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_struct_calcsize);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_calcsize_attached_body(_py, error, format)
@@ -15,7 +15,7 @@ pub unsafe extern "C" fn molt_struct_pack(
     format: u64,
     values: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3540);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_struct_pack);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_pack_attached_body(_py, error, format, values)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_struct_pack_into(
     offset: u64,
     values: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3541);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_struct_pack_into);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_pack_into_attached_body(_py, error, format, buffer, offset, values)
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn molt_struct_unpack(
     format: u64,
     buffer: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3542);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_struct_unpack);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_unpack_attached_body(_py, error, format, buffer)
@@ -57,7 +57,9 @@ pub unsafe extern "C" fn molt_struct_unpack_from(
     buffer: u64,
     offset: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3543);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_struct_unpack_from,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_unpack_from_attached_body(_py, error, format, buffer, offset)
@@ -65,7 +67,9 @@ pub unsafe extern "C" fn molt_struct_unpack_from(
 #[unsafe(export_name = "molt_struct_unpack_iterator_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_struct_unpack_iterator_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3544);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_struct_unpack_iterator_type,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_unpack_iterator_type_attached_body(_py)
@@ -79,7 +83,9 @@ pub unsafe extern "C" fn molt_struct_iter_unpack(
     format: u64,
     buffer: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3545);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_struct_iter_unpack,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_struct_iter_unpack_attached_body(_py, error, class, format, buffer)

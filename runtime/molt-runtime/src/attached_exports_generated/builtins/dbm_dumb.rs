@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_open(
     flag_bits: u64,
     _mode_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(644);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_open);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_open_attached_body(_py, path_bits, flag_bits, _mode_bits)
@@ -19,7 +19,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_getitem(
     handle_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(645);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_getitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_getitem_attached_body(_py, handle_bits, key_bits)
@@ -32,7 +32,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_setitem(
     key_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(646);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_setitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_setitem_attached_body(_py, handle_bits, key_bits, value_bits)
@@ -44,7 +44,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_delitem(
     handle_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(647);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_delitem);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_delitem_attached_body(_py, handle_bits, key_bits)
@@ -56,7 +56,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_contains(
     handle_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(648);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_contains);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_contains_attached_body(_py, handle_bits, key_bits)
@@ -64,7 +64,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_contains(
 #[unsafe(export_name = "molt_dbm_dumb_keys__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dbm_dumb_keys(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(649);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_keys);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_keys_attached_body(_py, handle_bits)
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_keys(__context: u64, handle_bits: u64) ->
 #[unsafe(export_name = "molt_dbm_dumb_sync__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dbm_dumb_sync(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(650);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_sync);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_sync_attached_body(_py, handle_bits)
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn molt_dbm_dumb_sync(__context: u64, handle_bits: u64) ->
 #[unsafe(export_name = "molt_dbm_dumb_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dbm_dumb_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(651);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dbm_dumb_close);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dbm_dumb_close_attached_body(_py, handle_bits)

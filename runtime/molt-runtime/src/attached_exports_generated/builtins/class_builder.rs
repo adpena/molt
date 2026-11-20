@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_build_class_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_build_class_builtin(__context: u64, _args: u64, _kwargs: u64) -> u64 {
-    molt_runtime_core::call_census::hit(506);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_build_class_builtin,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_build_class_builtin_attached_body(_py, _args, _kwargs)
@@ -10,7 +12,9 @@ pub unsafe extern "C" fn molt_build_class_builtin(__context: u64, _args: u64, _k
 #[unsafe(export_name = "molt_class_builder_check__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_class_builder_check(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(507);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_class_builder_check,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_class_builder_check_attached_body(_py)

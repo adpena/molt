@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_importlib_resolve_name(
     name_bits: u64,
     package_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1185);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_resolve_name,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_resolve_name_attached_body(_py, name_bits, package_bits)
@@ -18,7 +20,9 @@ pub unsafe extern "C" fn molt_importlib_import_module(
     name_bits: u64,
     package_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1186);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_module,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_module_attached_body(_py, name_bits, package_bits)
@@ -29,7 +33,9 @@ pub unsafe extern "C" fn molt_importlib_import_optional(
     __context: u64,
     module_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1187);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_optional,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_optional_attached_body(_py, module_name_bits)
@@ -41,7 +47,9 @@ pub unsafe extern "C" fn molt_importlib_import_or_fallback(
     module_name_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1188);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_or_fallback,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_or_fallback_attached_body(_py, module_name_bits, fallback_bits)
@@ -52,7 +60,9 @@ pub unsafe extern "C" fn molt_importlib_import_required(
     __context: u64,
     module_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1189);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_required,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_required_attached_body(_py, module_name_bits)
@@ -64,7 +74,9 @@ pub unsafe extern "C" fn molt_importlib_export_attrs(
     module_name_bits: u64,
     export_names_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1190);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_export_attrs,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_export_attrs_attached_body(_py, module_name_bits, export_names_bits)
@@ -77,7 +89,9 @@ pub unsafe extern "C" fn molt_importlib_load_module_shim(
     loader_bits: u64,
     fullname_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1191);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_load_module_shim,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_load_module_shim_attached_body(_py, bootstrap_bits, loader_bits, fullname_bits)
@@ -90,7 +104,9 @@ pub unsafe extern "C" fn molt_importlib_prepare_fromlist(
     module_bits: u64,
     fromlist_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1192);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_prepare_fromlist,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_prepare_fromlist_attached_body(_py, name_bits, module_bits, fromlist_bits)
@@ -105,7 +121,9 @@ pub unsafe extern "C" fn molt_importlib_import_transaction(
     fromlist_bits: u64,
     level_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1193);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_transaction,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_transaction_attached_body(
@@ -127,7 +145,9 @@ pub unsafe extern "C" fn molt_importlib_import_statement(
     fromlist_bits: u64,
     level_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1194);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_importlib_import_statement,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_import_statement_attached_body(
