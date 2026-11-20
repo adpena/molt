@@ -893,7 +893,9 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     ):
                         args = self._emit_call_args(node.args)
                         self.emit(
-                            MoltOp(kind="CALL_FUNC", args=[class_ref, *args], result=res)
+                            MoltOp(
+                                kind="CALL_FUNC", args=[class_ref, *args], result=res
+                            )
                         )
                         return res
                     callargs = self._emit_call_args_builder(node)
