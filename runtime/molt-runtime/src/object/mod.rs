@@ -5466,9 +5466,18 @@ mod tests {
                 unsafe { super::layout::native_descriptor_flavor(descriptor_ptr) },
                 Some(super::layout::NativeDescriptorFlavor::InstanceDictionary),
             );
+            // CPython 3.15 shares one getset per capability, declared on
+            // `object` (`__objclass__` is object); earlier targets give each
+            // heap class its own, which owns the class.
+            let shared = crate::object::ops_sys::runtime_target_at_least(_py, 3, 15);
+            let descriptor_owner = if shared {
+                crate::builtin_classes(_py).object
+            } else {
+                crate::MoltObject::from_ptr(class_ptr).bits()
+            };
             assert_eq!(
                 unsafe { super::layout::native_descriptor_owner_bits(descriptor_ptr) },
-                crate::MoltObject::from_ptr(class_ptr).bits(),
+                descriptor_owner,
             );
             dec_ref_bits(_py, dict_name);
             // CPython's add_weak rule: a heap class over `object` without
@@ -5485,13 +5494,13 @@ mod tests {
             );
             assert_eq!(
                 unsafe { super::layout::native_descriptor_owner_bits(weakref_ptr) },
-                crate::MoltObject::from_ptr(class_ptr).bits(),
+                descriptor_owner,
             );
             dec_ref_bits(_py, weakref_name);
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                allocated_class_rc + 2,
+                allocated_class_rc + if shared { 0 } else { 2 },
                 "sealing publishes both descriptors' class owners before the baseline"
             );
             (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
@@ -5553,10 +5562,16 @@ mod tests {
             );
             let class_ptr = crate::obj_from_bits(class_bits).as_ptr().unwrap();
             unsafe { super::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
+            // The 3.15 shared getsets own `object`, not this class.
+            let descriptor_owned = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 15) {
+                0
+            } else {
+                2
+            };
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                initial_class_rc - 2,
-                "fixture teardown releases both descriptor-owned class references"
+                initial_class_rc - descriptor_owned,
+                "fixture teardown releases every descriptor-owned class reference"
             );
             dec_ref_bits(_py, class_bits);
             assert!(!crate::exception_pending(_py));

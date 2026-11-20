@@ -41,6 +41,10 @@ fn field_object(_py: &PyToken<'_>) -> (u64, u64) {
     let field = dynamic_attr_name_bits(_py, b"field").unwrap();
     let class = crate::molt_class_new_attached_body(_py, name);
     assert!(obj_from_bits(class).as_ptr().is_some());
+    // Every class statement has `object` in its MRO; the shared
+    // `object.__dict__` getset admits only real instances of it.
+    crate::molt_class_set_base_attached_body(_py, class, crate::builtin_classes(_py).object);
+    assert!(!exception_pending(_py));
     let offsets_key = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
     let size_key = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
     let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
