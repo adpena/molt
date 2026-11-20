@@ -140,6 +140,11 @@ impl SimpleBackend {
 
         let compile_isa = Self::rebuild_owned_isa(self.module.isa(), None)
             .unwrap_or_else(|err| panic!("failed to rebuild TargetIsa for deferred flush: {err}"));
+        #[cfg(feature = "jit")]
+        let machine_cache = match &self.module {
+            super::CodeOwner::ProcessMemory(owner) => owner.machine_cache.as_ref(),
+            super::CodeOwner::Object(_) => None,
+        };
 
         let results: Vec<CompiledFunc> = {
             // Arc<dyn TargetIsa> contains a raw pointer that isn't marked
@@ -170,7 +175,14 @@ impl SimpleBackend {
                             let mut ctx = Context::for_function(func);
                             complete_native_control_flow(&mut ctx, &*isa, &name);
                             let mut ctrl = ControlPlane::default();
-                            if let Err(err) = ctx.compile(&*isa, &mut ctrl) {
+                            #[cfg(feature = "jit")]
+                            let compile = match machine_cache {
+                                Some(cache) => cache.compile(&mut ctx, &*isa, &mut ctrl),
+                                None => ctx.compile(&*isa, &mut ctrl),
+                            };
+                            #[cfg(not(feature = "jit"))]
+                            let compile = ctx.compile(&*isa, &mut ctrl);
+                            if let Err(err) = compile {
                                 let message =
                                     format!("Cranelift compilation failed for `{name}`: {err:?}");
                                 let _ = crate::debug_artifacts::append_debug_artifact(

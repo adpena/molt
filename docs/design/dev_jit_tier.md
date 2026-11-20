@@ -1,8 +1,9 @@
 # Development JIT tier: run without building
 
 Status: steps 1-3 and 5 implemented, 2026-10-21 (HF-371). Step 4 (lazy compilation) and
-"Incremental patching" remain. Verified cell: macOS arm64. The tier is slower than AOT
-for any program that imports `os` ("Costs"), so it stays opt-in.
+"Incremental patching" remain. The JIT runner reuses warm Cranelift machine-code stencils
+from its existing compilation cache. Verified cell: macOS arm64. The development tier
+stays opt-in while shared-stdlib reuse and differential latency qualification remain open.
 
 ## Problem
 
@@ -308,6 +309,30 @@ because the JIT tier already owns its program's call graph:
 
 ## Costs
 
+### Cranelift machine-code reuse (2026-11-20)
+
+On macOS arm64 with the dev runner and a CPython 3.12 target, the base (`f438660e32`)
+and the cache candidate started the same CLI-produced `os_path_basic.py` image and runtime
+image. One cold pair was followed by four alternating warm pairs at one-minute load
+8.2–14.5. These figures measure runner starts. The cache uses the existing bounded
+compilation cache, with the runner generation's namespace and Cranelift's IR-and-ISA
+key. Each start applies its own function parameters and relocations.
+
+| Warm start | Baseline | Machine-code cache |
+| --- | ---: | ---: |
+| Wall, median / p90 | 21.94 / 23.52 s | 12.55 / 19.65 s |
+| Peak RSS, median / p90 | 557 / 561 MiB | 468 / 469 MiB |
+
+The candidate reused all 908 stencils on all four warm starts. The first start was
+38.16 s against 32.64 s for the baseline, with 868 misses and 40 within-program hits.
+Every start exited zero with identical stdout and empty guest stderr. Codegen diagnostics
+were captured separately. All function bodies still go through TIR and Cranelift IR
+construction. Linking the AOT stdlib archive also needs a binding for application-owned
+data such as the module readiness block and program slots. Lazy materialization and the
+40-case comparison against native AOT remain open.
+
+### Whole-program compilation baseline (2026-10-21)
+
 The JIT tier is slower than the AOT tier for any program that imports `os`, and it needs
 about 0.7 GB at its peak to compile such a program. It stays opt-in (`--tier jit`) until it
 reuses compiled stdlib code, as an AOT build does.
@@ -492,6 +517,11 @@ stdlib set into the runtime image and compile only the application partition.
   ("Costs"). The target is Goose-class: well under a second for a one-module edit once
   HF-357 and HF-266 land, the untimed CLI overhead shrinks, and the per-run stdlib compile
   goes away.
+- The runner launch fixture starts one recording image in two fresh processes. It
+  checks that the first run populates the stencil cache, the second has only hits,
+  and both return identical output and exit status. This exercises relocation and
+  dispatch against each process's runtime addresses (see "Costs" for the real-image
+  measurement).
 
 ## Dependencies and decisions
 

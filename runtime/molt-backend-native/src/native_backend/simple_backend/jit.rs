@@ -10,7 +10,11 @@ use super::*;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use molt_ir::PROGRAM_ENTRY_SYMBOL;
 use molt_ir::backend_environment::BackendEnv;
-use std::sync::Arc;
+use molt_ir::content_digest::CompilationCacheKey;
+use molt_tir::tir::cache::{CompilationCache, CompilationCacheWriteError};
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Resolves an imported symbol to its address in the current process.
 pub type JitSymbolLookup = Arc<dyn Fn(&str) -> Option<*const u8> + Send + Sync>;
@@ -24,7 +28,66 @@ const JIT_ARENA_RESERVATION_BYTES: usize = 1 << 30;
 
 pub(crate) struct JitCodeOwner {
     pub(crate) module: JITModule,
+    pub(super) machine_cache: Option<MachineCodeCache>,
     lookup: JitSymbolLookup,
+}
+
+/// Cranelift caches unrelocated stencils. The cache is namespaced by the
+/// runner generation, and Cranelift keys each stencil by its IR and ISA.
+/// A hit still applies this program's parameters and relocates its code.
+pub(super) struct MachineCodeCache {
+    artifacts: Mutex<CompilationCache>,
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+}
+
+impl MachineCodeCache {
+    fn open(root: std::path::PathBuf) -> Self {
+        Self {
+            artifacts: Mutex::new(CompilationCache::open_backend_namespace_under(root)),
+            hits: AtomicUsize::new(0),
+            misses: AtomicUsize::new(0),
+        }
+    }
+
+    fn key(clif_key: &[u8]) -> String {
+        let mut key = CompilationCacheKey::new(b"molt-cranelift-machine-code-v1");
+        key.field(b"cranelift-stencil", clif_key);
+        key.finish_hex()
+    }
+
+    pub(super) fn compile<'a>(
+        &self,
+        context: &'a mut Context,
+        isa: &dyn cranelift_codegen::isa::TargetIsa,
+        control: &mut cranelift_codegen::control::ControlPlane,
+    ) -> Result<&'a cranelift_codegen::CompiledCode, cranelift_codegen::CompileError<'a>> {
+        let (compiled, hit) = context.compile_with_cache(isa, &mut CacheAdapter(self), control)?;
+        let count = if hit { &self.hits } else { &self.misses };
+        count.fetch_add(1, Ordering::Relaxed);
+        Ok(compiled)
+    }
+}
+
+struct CacheAdapter<'a>(&'a MachineCodeCache);
+
+impl cranelift_codegen::incremental_cache::CacheKvStore for CacheAdapter<'_> {
+    fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
+        self.0
+            .artifacts
+            .lock()
+            .unwrap()
+            .get(&MachineCodeCache::key(key))
+            .map(|bytes| Cow::Owned(bytes.to_vec()))
+    }
+
+    fn insert(&mut self, key: &[u8], value: Vec<u8>) {
+        let key = MachineCodeCache::key(key);
+        let stored = self.0.artifacts.lock().unwrap().put(&key, &value);
+        if let Err(CompilationCacheWriteError::Integrity(error)) = stored {
+            panic!("Cranelift machine-code cache integrity failure: {error}");
+        }
+    }
 }
 
 /// The application initializer the runtime calls for a fresh isolate.
@@ -197,6 +260,7 @@ impl SimpleBackend {
         builder.memory_provider(Box::new(arena));
         Self::with_code_owner(CodeOwner::ProcessMemory(Box::new(JitCodeOwner {
             module: JITModule::new(builder),
+            machine_cache: None,
             lookup,
         })))
     }
@@ -215,6 +279,12 @@ impl SimpleBackend {
             .map_err(JitCompileError::FunctionReferences)?;
         self.admit_program(&ir)
             .map_err(JitCompileError::Admission)?;
+        if let CodeOwner::ProcessMemory(owner) = &mut self.module
+            && let molt_tir::tir::pipeline_cache::TirCacheLocation::Root(root) = &self.tir_cache
+            && !molt_ir::backend_environment::compilation_diagnostics_requested()
+        {
+            owner.machine_cache = Some(MachineCodeCache::open(root.clone()));
+        }
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
         let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
@@ -226,7 +296,7 @@ impl SimpleBackend {
             panic!("JIT compilation requires a process-memory code owner");
         };
         let finalize_start = std::time::Instant::now();
-        let program = (*owner).finalize()?;
+        let program = (*owner).finalize(timing)?;
         if timing {
             eprintln!(
                 "MOLT_BACKEND_TIMING: JIT finalize took {:.2?}",
@@ -245,7 +315,7 @@ impl JitCodeOwner {
     /// Every import must resolve before relocation; `cranelift_jit` would
     /// otherwise panic on the first missing name, after part of the program
     /// was already patched.
-    fn finalize(mut self) -> Result<JitProgram, JitCompileError> {
+    fn finalize(mut self, timing: bool) -> Result<JitProgram, JitCompileError> {
         let declarations = self.module.declarations();
         let function_imports = declarations
             .get_functions()
@@ -268,6 +338,17 @@ impl JitCodeOwner {
         self.module
             .finalize_definitions()
             .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
+        if let Some(cache) = self.machine_cache.take() {
+            if timing {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
+                    cache.hits.load(Ordering::Relaxed),
+                    cache.misses.load(Ordering::Relaxed)
+                );
+            }
+            // The TIR cache trims this namespace on admission. Machine code
+            // uses the same entry and byte limits; the next run covers new writes.
+        }
         Ok(JitProgram {
             module: self.module,
         })
@@ -307,7 +388,7 @@ pub fn probe_jit_execution() -> Result<(), JitCompileError> {
     module
         .define_function(id, &mut context)
         .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
-    let program = owner.finalize()?;
+    let program = owner.finalize(false)?;
     let address = program
         .declared_function_address(PROBE_SYMBOL)
         .ok_or(JitCompileError::MissingProgramSymbol(PROBE_SYMBOL))?;
