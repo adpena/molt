@@ -1574,8 +1574,8 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     ],
 )
 def test_persisted_scan_with_a_retired_premise_copy_is_refused(
-    tmp_path, monkeypatch, retired
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retired: object
+) -> None:
     """Source records are a closed protocol: a row that still carries the
     retired premise copy, valid or malformed, is never admitted."""
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
