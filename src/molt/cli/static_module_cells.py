@@ -384,13 +384,16 @@ def _written_guard_mask(
 
 # Initialization dominance (HF-846, call_anatomy.md 4.5a).
 
-# (function name, op index, source line) of one op naming a symbol.
-_Reference = tuple[str, int, int | None]
+# (function name, op index, source line, op kind) of one op naming a symbol.
+_Reference = tuple[str, int, int | None, str]
 # A point of the init chain at which a function may start: during the op,
 # or only after it completes (the op publishes the function's object).
 _Entry = tuple[tuple[str, int], bool]
 # Ops that name a function's code without running it.
 _INERT_REFERENCES = frozenset({"code_slot_set", "trace_enter_slot"})
+# Ops that name a function and also hold its object as an operand: a guarded
+# call (the callee word) and a generator frame allocation (the function).
+_OBJECT_MEDIATED = frozenset({"call_guarded", "alloc_task"})
 # The call that records a new function object's metadata; it runs nothing.
 _FUNCTION_METADATA = "molt_function_init_metadata_packed"
 # Stores that publish a value into a module namespace without running it.
@@ -416,7 +419,7 @@ def _symbol_references(
             symbol = op.get("s_value")
             if isinstance(symbol, str):
                 found.setdefault(symbol, []).append(
-                    (name, index, op.get("source_line"))
+                    (name, index, op.get("source_line"), str(op.get("kind")))
                 )
     return found
 
@@ -466,9 +469,16 @@ def _function_entries(
     ``func_new`` through its object's uses); one inside another of the
     module's functions starts it no earlier than that function; a reference
     that runs many times is one start point, dominated or not as a whole. A
-    function with no reference, or one named by code outside the chain
-    (another module, a chunk that may run twice), may start at any time. The least fixed point
-    admits recursion: a function that only names itself adds no entry."""
+    function with no reference may start at any time, and so may one named by
+    code outside the chain (another module, a chunk that may run twice),
+    except through an op that holds the function's object
+    (``_OBJECT_MEDIATED``): that object exists once its ``func_new`` in the
+    chain has run and is published (the program reads no code object,
+    ``code_rebinding``), so such a reference adds no start point before the
+    object's own entries. A call by symbol alone (``call``,
+    ``call_internal``) holds no object and may run first, as in an import
+    cycle. The least fixed point admits recursion: a function that only names
+    itself adds no entry."""
     body = {func.get("name", "") for func in _module_body_functions(module, funcs)}
     candidates = sorted(
         func.get("name", "") for func in funcs if func.get("name", "") not in body
@@ -481,6 +491,15 @@ def _function_entries(
         )
         for name in candidates
     }
+    # Functions whose object a func_new in the init chain creates.
+    created_in_chain = {
+        name
+        for name in candidates
+        for user, index, _line, _kind in references.get(name, ())
+        if user in chain.functions
+        and chain.functions[user].ops[index].get("kind")
+        in {"func_new", "func_new_closure"}
+    }
     changed = True
     while changed:
         changed = False
@@ -490,7 +509,7 @@ def _function_entries(
                 continue
             found: set[_Entry] = set(current)
             verdict: tuple[frozenset[_Entry] | None, str] | None = None
-            for user, index, line in references.get(name, ()):
+            for user, index, line, kind in references.get(name, ()):
                 if user == name:
                     continue
                 if user in chain.functions:
@@ -501,6 +520,12 @@ def _function_entries(
                         found.update(_object_entries(ops, user, index))
                     else:
                         found.add(((user, index), False))
+                elif name in created_in_chain and (
+                    kind in _OBJECT_MEDIATED
+                ):
+                    # This op holds the function's object, which exists only
+                    # after the chain published it: already an entry.
+                    continue
                 elif user in entries:
                     starts = entries[user][0]
                     if starts is None:
@@ -777,6 +802,37 @@ def _task_constructor(
     return task
 
 
+def _intrinsic_call(
+    call: Mapping[str, Any], producer: Mapping[str, Any] | None
+) -> dict[str, Any] | str:
+    """The direct intrinsic call that a generic call of an
+    ``InitOnce(intrinsic)`` cell is, or why it stays generic.
+
+    The cell's one store binds a ``builtin_func`` of the canonical intrinsic
+    ``S`` with ABI arity ``n``; no code in the program writes the cell
+    afterward. A positional call with exactly ``n`` arguments therefore calls
+    ``S``: the same ``call`` the frontend emits for ``require_intrinsic("S")(...)``
+    (``_emit_intrinsic_call``). A runtime intrinsic is no function of the
+    program, so its direct entry borrows its arguments, as there."""
+    if producer is None or producer.get("kind") != "builtin_func":
+        return "the cell's store is not a builtin_func"
+    symbol = producer.get("s_value")
+    arity = producer.get("value")
+    if not isinstance(symbol, str) or not isinstance(arity, int):
+        return "the cell's builtin_func has no symbol and arity"
+    args = list(call.get("args") or ())
+    supplied = len(args) - 1
+    if supplied != arity:
+        return f"the call passes {supplied} of {arity} parameters"
+    direct = {
+        key: value
+        for key, value in call.items()
+        if key in {"out", "type_hint", "source_line", "col_offset", "end_col_offset"}
+    }
+    direct.update(kind="call", s_value=symbol, args=args[1:])
+    return direct
+
+
 def prove_init_once_calls(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
@@ -786,8 +842,10 @@ def prove_init_once_calls(
     ``InitOnce(function)`` cell holding its target's object ``proven_target``
     (copy-on-write, as the global slot stamps are). A generic ``call_func``
     whose callee is such a read of a generator function becomes the frame's
-    ``alloc_task`` (``_task_constructor``). Return a diagnostic for each such
-    call that keeps its guards or stays generic."""
+    ``alloc_task`` (``_task_constructor``), and one whose callee is a read of
+    an ``InitOnce(intrinsic)`` cell becomes the direct intrinsic call
+    (``_intrinsic_call``). Return a diagnostic for each such call that keeps
+    its guards or stays generic."""
     position, views = _init_once_views(functions, module_functions)
     diagnostics: list[str] = []
     rewritten: dict[str, dict[str, Any]] = {}
@@ -806,6 +864,23 @@ def prove_init_once_calls(
                     continue
                 cell_module, global_name = read
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
+                if (
+                    fact is not None
+                    and fact.value_kind == "intrinsic"
+                    and kind == "call_func"
+                ):
+                    producer, _ = _init_once_producer(
+                        fact, functions, position, current
+                    )
+                    direct = _intrinsic_call(op, producer)
+                    if isinstance(direct, str):
+                        diagnostics.append(
+                            f"{module}:{op.get('source_line')} {global_name}(): "
+                            f"generic intrinsic call: {direct}"
+                        )
+                    else:
+                        changed[index] = direct
+                    continue
                 if fact is None or fact.value_kind != "function":
                     continue
                 producer, has_record = _init_once_producer(
