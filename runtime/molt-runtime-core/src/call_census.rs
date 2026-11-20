@@ -18,8 +18,7 @@ use crate::call_census_names_generated::{CALL_CENSUS_NAMES, CALL_CENSUS_SLOTS};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "call-census")]
-static COUNTS: [AtomicU64; CALL_CENSUS_SLOTS] =
-    [const { AtomicU64::new(0) }; CALL_CENSUS_SLOTS];
+static COUNTS: [AtomicU64; CALL_CENSUS_SLOTS] = [const { AtomicU64::new(0) }; CALL_CENSUS_SLOTS];
 
 /// Count one call of the attached entry with census index `index`.
 #[inline(always)]

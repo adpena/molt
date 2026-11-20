@@ -71,7 +71,10 @@ def _runtime_cargo_features_cached(
     # Profiling instruments (HF-198): the runtime-call census counts every
     # attached entry compiled code calls; the pc sampler profiles the
     # process with its own SIGPROF timer. Each keys its own runtime artifact.
-    for raw, feature in ((call_census_raw, "call-census"), (pc_sampler_raw, "pc-sampler")):
+    for raw, feature in (
+        (call_census_raw, "call-census"),
+        (pc_sampler_raw, "pc-sampler"),
+    ):
         if raw is not None and raw.strip() != "" and _coerce_bool(raw, False):
             features.append(feature)
     return tuple(features)

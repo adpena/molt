@@ -3,7 +3,6 @@ pub(crate) mod lifecycle;
 pub(crate) mod metrics;
 pub(crate) mod names;
 mod names_generated;
-pub(crate) mod pending_work;
 #[cfg(all(
     feature = "pc-sampler",
     any(
@@ -12,6 +11,7 @@ pub(crate) mod pending_work;
     )
 ))]
 pub(crate) mod pc_sampler;
+pub(crate) mod pending_work;
 pub(crate) mod program_stack;
 mod program_stack_generated;
 pub(crate) mod recursion;

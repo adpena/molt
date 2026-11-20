@@ -40,10 +40,17 @@ unsafe fn registers(context: *mut libc::c_void) -> (u64, u64) {
 unsafe fn registers(context: *mut libc::c_void) -> (u64, u64) {
     let context = context.cast::<libc::ucontext_t>();
     let gregs = unsafe { &(*context).uc_mcontext.gregs };
-    (gregs[libc::REG_RIP as usize] as u64, gregs[libc::REG_RBP as usize] as u64)
+    (
+        gregs[libc::REG_RIP as usize] as u64,
+        gregs[libc::REG_RBP as usize] as u64,
+    )
 }
 
-extern "C" fn on_sample(_signal: libc::c_int, _info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+extern "C" fn on_sample(
+    _signal: libc::c_int,
+    _info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
     let slot = NEXT.fetch_add(1, Ordering::Relaxed);
     if slot >= CAPACITY {
         return;
@@ -97,8 +104,14 @@ pub(crate) fn start() {
         action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigemptyset(&mut action.sa_mask);
         libc::sigaction(libc::SIGPROF, &action, std::ptr::null_mut());
-        let interval = libc::timeval { tv_sec: 0, tv_usec: INTERVAL_US as _ };
-        let timer = libc::itimerval { it_interval: interval, it_value: interval };
+        let interval = libc::timeval {
+            tv_sec: 0,
+            tv_usec: INTERVAL_US as _,
+        };
+        let timer = libc::itimerval {
+            it_interval: interval,
+            it_value: interval,
+        };
         libc::setitimer(libc::ITIMER_PROF, &timer, std::ptr::null_mut());
     }
 }
@@ -113,8 +126,14 @@ pub(crate) fn write_report() {
     };
     unsafe {
         let off = libc::itimerval {
-            it_interval: libc::timeval { tv_sec: 0, tv_usec: 0 },
-            it_value: libc::timeval { tv_sec: 0, tv_usec: 0 },
+            it_interval: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            it_value: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
         };
         libc::setitimer(libc::ITIMER_PROF, &off, std::ptr::null_mut());
     }
@@ -146,7 +165,9 @@ pub(crate) fn write_report() {
             if text.is_null() {
                 String::from("?")
             } else {
-                unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned()
+                unsafe { std::ffi::CStr::from_ptr(text) }
+                    .to_string_lossy()
+                    .into_owned()
             }
         };
         let image = name(info.dli_fname);
