@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_asyncio_running_loop_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_running_loop_get(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(279);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_running_loop_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_running_loop_get_attached_body(_py)
@@ -10,7 +12,9 @@ pub unsafe extern "C" fn molt_asyncio_running_loop_get(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_asyncio_running_loop_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_running_loop_set(__context: u64, loop_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(280);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_running_loop_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_running_loop_set_attached_body(_py, loop_bits)
@@ -18,7 +22,9 @@ pub unsafe extern "C" fn molt_asyncio_running_loop_set(__context: u64, loop_bits
 #[unsafe(export_name = "molt_asyncio_event_loop_get_current__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_event_loop_get_current(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(281);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_event_loop_get_current,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_loop_get_current_attached_body(_py)
@@ -26,7 +32,9 @@ pub unsafe extern "C" fn molt_asyncio_event_loop_get_current(__context: u64) -> 
 #[unsafe(export_name = "molt_asyncio_event_loop_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_event_loop_set(__context: u64, loop_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(282);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_event_loop_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_loop_set_attached_body(_py, loop_bits)
@@ -34,7 +42,9 @@ pub unsafe extern "C" fn molt_asyncio_event_loop_set(__context: u64, loop_bits: 
 #[unsafe(export_name = "molt_asyncio_event_loop_policy_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_event_loop_policy_get(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(283);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_event_loop_policy_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_loop_policy_get_attached_body(_py)
@@ -45,7 +55,9 @@ pub unsafe extern "C" fn molt_asyncio_event_loop_policy_set(
     __context: u64,
     policy_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(284);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_event_loop_policy_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_loop_policy_set_attached_body(_py, policy_bits)

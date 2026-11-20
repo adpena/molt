@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_io_member_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_io_member_get(__context: u64, descriptor: u64, instance: u64) -> u64 {
-    molt_runtime_core::call_census::hit(886);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_io_member_get);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_io_member_get_attached_body(_py, descriptor, instance)

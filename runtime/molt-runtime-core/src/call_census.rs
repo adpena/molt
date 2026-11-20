@@ -1,8 +1,8 @@
 //! Dynamic census of the runtime entries compiled code calls (HF-198).
 //!
 //! Every generated attached-export wrapper calls [`hit`] with its dense census
-//! index (`tools/wasm_abi_gen/attached_entries.py` assigns them, in one order
-//! across every runtime crate). Without the `call-census` feature `hit` has an
+//! index, named by entry in [`id`] (`tools/wasm_abi_gen/attached_entries.py`
+//! assigns them, in one order across every runtime crate). Without the `call-census` feature `hit` has an
 //! empty body and inlines to nothing, so a shipped runtime pays nothing. With
 //! it, each call bumps one relaxed atomic counter, and at process exit the
 //! runtime writes every nonzero counter by entry name to the file named by
@@ -12,6 +12,7 @@
 //! runtime entry compiled code reaches except the eleven boundary entries
 //! that run once at startup.
 
+pub use crate::call_census_names_generated::id;
 #[cfg(feature = "call-census")]
 use crate::call_census_names_generated::{CALL_CENSUS_NAMES, CALL_CENSUS_SLOTS};
 #[cfg(feature = "call-census")]

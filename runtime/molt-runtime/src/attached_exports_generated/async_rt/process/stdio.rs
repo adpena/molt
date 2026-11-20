@@ -15,7 +15,9 @@ pub unsafe extern "C" fn molt_asyncio_subprocess_stdio_normalize(
     fd_base_bits: u64,
     fd_max_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(240);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_asyncio_subprocess_stdio_normalize,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_subprocess_stdio_normalize_attached_body(

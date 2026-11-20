@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_datetime_days_in_month(
     year_bits: u64,
     month_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3384);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_days_in_month,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_days_in_month_attached_body(_py, year_bits, month_bits)
@@ -14,7 +16,7 @@ pub unsafe extern "C" fn molt_datetime_days_in_month(
 #[unsafe(export_name = "molt_datetime_is_leap__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_is_leap(__context: u64, year_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3385);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_is_leap);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_is_leap_attached_body(_py, year_bits)
@@ -27,7 +29,9 @@ pub unsafe extern "C" fn molt_datetime_ymd_to_ordinal(
     month_bits: u64,
     day_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3386);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_ymd_to_ordinal,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_ymd_to_ordinal_attached_body(_py, year_bits, month_bits, day_bits)
@@ -35,7 +39,9 @@ pub unsafe extern "C" fn molt_datetime_ymd_to_ordinal(
 #[unsafe(export_name = "molt_datetime_ordinal_to_ymd__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_ordinal_to_ymd(__context: u64, ordinal_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3387);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_ordinal_to_ymd,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_ordinal_to_ymd_attached_body(_py, ordinal_bits)
@@ -48,7 +54,7 @@ pub unsafe extern "C" fn molt_datetime_weekday(
     month_bits: u64,
     day_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3388);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_weekday);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_weekday_attached_body(_py, year_bits, month_bits, day_bits)
@@ -61,7 +67,9 @@ pub unsafe extern "C" fn molt_datetime_isoweekday(
     month_bits: u64,
     day_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3389);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_isoweekday,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_isoweekday_attached_body(_py, year_bits, month_bits, day_bits)
@@ -74,7 +82,9 @@ pub unsafe extern "C" fn molt_datetime_isocalendar(
     month_bits: u64,
     day_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3390);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_isocalendar,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_isocalendar_attached_body(_py, year_bits, month_bits, day_bits)
@@ -91,7 +101,9 @@ pub unsafe extern "C" fn molt_datetime_td_normalize(
     hours_bits: u64,
     weeks_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3391);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_td_normalize,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_td_normalize_attached_body(
@@ -113,7 +125,9 @@ pub unsafe extern "C" fn molt_datetime_td_total_seconds(
     seconds_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3392);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_td_total_seconds,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_td_total_seconds_attached_body(_py, days_bits, seconds_bits, us_bits)
@@ -121,7 +135,9 @@ pub unsafe extern "C" fn molt_datetime_td_total_seconds(
 #[unsafe(export_name = "molt_datetime_parse_isoformat_date__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_parse_isoformat_date(__context: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3393);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_parse_isoformat_date,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_parse_isoformat_date_attached_body(_py, text_bits)
@@ -129,7 +145,9 @@ pub unsafe extern "C" fn molt_datetime_parse_isoformat_date(__context: u64, text
 #[unsafe(export_name = "molt_datetime_parse_isoformat_time__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_parse_isoformat_time(__context: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3394);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_parse_isoformat_time,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_parse_isoformat_time_attached_body(_py, text_bits)
@@ -137,7 +155,9 @@ pub unsafe extern "C" fn molt_datetime_parse_isoformat_time(__context: u64, text
 #[unsafe(export_name = "molt_datetime_parse_isoformat__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_parse_isoformat(__context: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3395);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_parse_isoformat,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_parse_isoformat_attached_body(_py, text_bits)
@@ -149,7 +169,7 @@ pub unsafe extern "C" fn molt_datetime_strptime(
     text_bits: u64,
     fmt_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3396);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_strptime);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_strptime_attached_body(_py, text_bits, fmt_bits)
@@ -162,7 +182,9 @@ pub unsafe extern "C" fn molt_datetime_format_isodate(
     m_bits: u64,
     d_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3397);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_format_isodate,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_format_isodate_attached_body(_py, y_bits, m_bits, d_bits)
@@ -177,7 +199,9 @@ pub unsafe extern "C" fn molt_datetime_format_isotime(
     us_bits: u64,
     timespec_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3398);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_format_isotime,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_format_isotime_attached_body(
@@ -204,7 +228,9 @@ pub unsafe extern "C" fn molt_datetime_format_isodatetime(
     timespec_bits: u64,
     tz_str_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3399);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_format_isodatetime,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_format_isodatetime_attached_body(
@@ -235,7 +261,7 @@ pub unsafe extern "C" fn molt_datetime_strftime(
     utcoff_bits: u64,
     fmt_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3400);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_strftime);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_strftime_attached_body(
@@ -262,7 +288,7 @@ pub unsafe extern "C" fn molt_datetime_ctime(
     min_bits: u64,
     s_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3401);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_ctime);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_ctime_attached_body(_py, y_bits, m_bits, d_bits, h_bits, min_bits, s_bits)
@@ -270,7 +296,7 @@ pub unsafe extern "C" fn molt_datetime_ctime(
 #[unsafe(export_name = "molt_datetime_now_utc__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_now_utc(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3402);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_now_utc);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_now_utc_attached_body(_py)
@@ -278,7 +304,9 @@ pub unsafe extern "C" fn molt_datetime_now_utc(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_datetime_now_local__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_now_local(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3403);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_now_local,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_now_local_attached_body(_py)
@@ -286,7 +314,9 @@ pub unsafe extern "C" fn molt_datetime_now_local(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_datetime_fromtimestamp_utc__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_fromtimestamp_utc(__context: u64, ts_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3404);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_fromtimestamp_utc,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_fromtimestamp_utc_attached_body(_py, ts_bits)
@@ -294,7 +324,9 @@ pub unsafe extern "C" fn molt_datetime_fromtimestamp_utc(__context: u64, ts_bits
 #[unsafe(export_name = "molt_datetime_fromtimestamp_local__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_fromtimestamp_local(__context: u64, ts_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3405);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_fromtimestamp_local,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_fromtimestamp_local_attached_body(_py, ts_bits)
@@ -312,7 +344,9 @@ pub unsafe extern "C" fn molt_datetime_to_timestamp(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3406);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_to_timestamp,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_to_timestamp_attached_body(
@@ -335,7 +369,9 @@ pub unsafe extern "C" fn molt_datetime_hash_date(
     m_bits: u64,
     d_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3407);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_hash_date,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_hash_date_attached_body(_py, y_bits, m_bits, d_bits)
@@ -350,7 +386,9 @@ pub unsafe extern "C" fn molt_datetime_hash_time(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3408);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_hash_time,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_hash_time_attached_body(_py, h_bits, min_bits, s_bits, us_bits, utcoff_bits)
@@ -368,7 +406,9 @@ pub unsafe extern "C" fn molt_datetime_hash_datetime(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3409);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_hash_datetime,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_hash_datetime_attached_body(
@@ -391,7 +431,9 @@ pub unsafe extern "C" fn molt_datetime_hash_timedelta(
     secs_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3410);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_hash_timedelta,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_hash_timedelta_attached_body(_py, days_bits, secs_bits, us_bits)
@@ -404,7 +446,9 @@ pub unsafe extern "C" fn molt_datetime_validate_date(
     m_bits: u64,
     d_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3411);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_validate_date,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_validate_date_attached_body(_py, y_bits, m_bits, d_bits)
@@ -419,7 +463,9 @@ pub unsafe extern "C" fn molt_datetime_validate_time(
     us_bits: u64,
     fold_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3412);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_validate_time,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_validate_time_attached_body(_py, h_bits, min_bits, s_bits, us_bits, fold_bits)
@@ -437,7 +483,7 @@ pub unsafe extern "C" fn molt_datetime_combine(
     us_bits: u64,
     fold_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3413);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_combine);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_combine_attached_body(
@@ -452,7 +498,9 @@ pub unsafe extern "C" fn molt_date_fromisocalendar(
     iso_week_bits: u64,
     iso_day_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3414);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_date_fromisocalendar,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_date_fromisocalendar_attached_body(_py, iso_year_bits, iso_week_bits, iso_day_bits)
@@ -466,7 +514,9 @@ pub unsafe extern "C" fn molt_timedelta_truediv_scalar(
     us_bits: u64,
     divisor_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3415);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_timedelta_truediv_scalar,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_truediv_scalar_attached_body(_py, days_bits, secs_bits, us_bits, divisor_bits)
@@ -482,7 +532,9 @@ pub unsafe extern "C" fn molt_timedelta_truediv_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3416);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_timedelta_truediv_td,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_truediv_td_attached_body(_py, a_days, a_secs, a_us, b_days, b_secs, b_us)
@@ -498,7 +550,9 @@ pub unsafe extern "C" fn molt_timedelta_floordiv_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3417);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_timedelta_floordiv_td,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_floordiv_td_attached_body(_py, a_days, a_secs, a_us, b_days, b_secs, b_us)
@@ -514,7 +568,7 @@ pub unsafe extern "C" fn molt_timedelta_mod_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3418);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timedelta_mod_td);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_mod_td_attached_body(_py, a_days, a_secs, a_us, b_days, b_secs, b_us)
@@ -528,7 +582,9 @@ pub unsafe extern "C" fn molt_timedelta_floordiv_scalar(
     us_bits: u64,
     divisor_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3419);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_timedelta_floordiv_scalar,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_floordiv_scalar_attached_body(_py, days_bits, secs_bits, us_bits, divisor_bits)
@@ -541,7 +597,7 @@ pub unsafe extern "C" fn molt_timedelta_abs(
     secs_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3420);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timedelta_abs);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_abs_attached_body(_py, days_bits, secs_bits, us_bits)
@@ -549,7 +605,7 @@ pub unsafe extern "C" fn molt_timedelta_abs(
 #[unsafe(export_name = "molt_datetime_as_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_datetime_as_int(__context: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3421);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_datetime_as_int);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_as_int_attached_body(_py, value_bits)
@@ -564,7 +620,9 @@ pub unsafe extern "C" fn molt_datetime_format_time(
     microsecond_bits: u64,
     timespec_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3422);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_format_time,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_format_time_attached_body(
@@ -584,7 +642,7 @@ pub unsafe extern "C" fn molt_timedelta_repr(
     secs_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3423);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timedelta_repr);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_repr_attached_body(_py, days_bits, secs_bits, us_bits)
@@ -597,7 +655,7 @@ pub unsafe extern "C" fn molt_timedelta_str(
     secs_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3424);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timedelta_str);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timedelta_str_attached_body(_py, days_bits, secs_bits, us_bits)
@@ -609,7 +667,7 @@ pub unsafe extern "C" fn molt_timezone_validate(
     days_bits: u64,
     secs_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3425);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timezone_validate);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timezone_validate_attached_body(_py, days_bits, secs_bits)
@@ -621,7 +679,7 @@ pub unsafe extern "C" fn molt_timezone_tzname(
     days_bits: u64,
     secs_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3426);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_timezone_tzname);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_timezone_tzname_attached_body(_py, days_bits, secs_bits)
@@ -634,7 +692,9 @@ pub unsafe extern "C" fn molt_datetime_date_repr(
     m_bits: u64,
     d_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3427);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_date_repr,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_date_repr_attached_body(_py, y_bits, m_bits, d_bits)
@@ -648,7 +708,9 @@ pub unsafe extern "C" fn molt_datetime_time_repr(
     s_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3428);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_time_repr,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_time_repr_attached_body(_py, h_bits, m_bits, s_bits, us_bits)
@@ -667,7 +729,9 @@ pub unsafe extern "C" fn molt_datetime_timetuple(
     yday_bits: u64,
     dst_flag_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3429);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_datetime_timetuple,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_datetime_timetuple_attached_body(

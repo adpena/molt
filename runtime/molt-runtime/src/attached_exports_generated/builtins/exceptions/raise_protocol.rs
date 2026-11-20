@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_exception_prepare_raise(
     exc_bits: u64,
     cause_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(691);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_exception_prepare_raise,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_prepare_raise_attached_body(_py, exc_bits, cause_bits)

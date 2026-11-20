@@ -2,14 +2,16 @@
 #[unsafe(export_name = "molt_re_subject_snapshot__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_re_subject_snapshot(__context: u64, subject_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2604);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_re_subject_snapshot,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_subject_snapshot_attached_body(_py, subject_bits)
 }
 #[unsafe(export_name = "molt_re_subject_view__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_re_subject_view(__context: u64, subject_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2605);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_subject_view);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_subject_view_attached_body(_py, subject_bits)
 }

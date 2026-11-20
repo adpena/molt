@@ -7,7 +7,9 @@ pub unsafe extern "C" fn molt_seq_read_item_owned(
     index: usize,
     out: *mut u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(2606);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_seq_read_item_owned,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_seq_read_item_owned_attached_body(_py, ptr, index, out)
 }
@@ -19,7 +21,7 @@ pub unsafe extern "C" fn molt_seq_snapshot(
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(2607);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_seq_snapshot);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_seq_snapshot_attached_body(_py, ptr, out_ptr, out_len)
 }
@@ -31,7 +33,7 @@ pub unsafe extern "C" fn molt_dict_snapshot(
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(2608);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_dict_snapshot);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dict_snapshot_attached_body(_py, ptr, out_ptr, out_len)
 }

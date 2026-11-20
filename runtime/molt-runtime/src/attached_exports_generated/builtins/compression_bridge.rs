@@ -9,21 +9,25 @@ pub unsafe extern "C" fn molt_bridge_runtime_state_get_or_init(
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(538);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_runtime_state_get_or_init,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_runtime_state_get_or_init_attached_body(_py, key_ptr, key_len, init, clear, drop)
 }
 #[unsafe(export_name = "molt_bridge_int_bits_from_i64__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_int_bits_from_i64(__context: u64, val: i64) -> u64 {
-    molt_runtime_core::call_census::hit(539);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_int_bits_from_i64,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_int_bits_from_i64_attached_body(_py, val)
 }
 #[unsafe(export_name = "molt_bridge_to_i64__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_to_i64(__context: u64, obj_bits: u64, ok: *mut bool) -> i64 {
-    molt_runtime_core::call_census::hit(540);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bridge_to_i64);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_to_i64_attached_body(_py, obj_bits, ok)
 }
@@ -35,14 +39,18 @@ pub unsafe extern "C" fn molt_bridge_index_i64_from_obj(
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    molt_runtime_core::call_census::hit(541);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_index_i64_from_obj,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_index_i64_from_obj_attached_body(_py, obj_bits, err_ptr, err_len)
 }
 #[unsafe(export_name = "molt_bridge_exception_pending__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_exception_pending(__context: u64) -> bool {
-    molt_runtime_core::call_census::hit(542);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_exception_pending,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_exception_pending_attached_body(_py)
 }
@@ -53,21 +61,23 @@ pub unsafe extern "C" fn molt_bridge_alloc_bytes(
     data_ptr: *const u8,
     data_len: usize,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(543);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_alloc_bytes,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_alloc_bytes_attached_body(_py, data_ptr, data_len)
 }
 #[unsafe(export_name = "molt_bridge_bytes_data__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_bytes_data(__context: u64, ptr: *mut u8) -> *const u8 {
-    molt_runtime_core::call_census::hit(544);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bridge_bytes_data);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_bytes_data_attached_body(_py, ptr)
 }
 #[unsafe(export_name = "molt_bridge_bytes_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_bytes_len(__context: u64, ptr: *mut u8) -> usize {
-    molt_runtime_core::call_census::hit(545);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bridge_bytes_len);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_bytes_len_attached_body(_py, ptr)
 }
@@ -78,7 +88,9 @@ pub unsafe extern "C" fn molt_bridge_string_obj_to_owned(
     obj_bits: u64,
     out_len: *mut usize,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(546);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_string_obj_to_owned,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_string_obj_to_owned_attached_body(_py, obj_bits, out_len)
 }
@@ -89,7 +101,7 @@ pub unsafe extern "C" fn molt_bridge_type_name(
     obj_bits: u64,
     out_len: *mut usize,
 ) -> *const u8 {
-    molt_runtime_core::call_census::hit(547);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bridge_type_name);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_type_name_attached_body(_py, obj_bits, out_len)
 }
@@ -100,7 +112,9 @@ pub unsafe extern "C" fn molt_bridge_alloc_string(
     data_ptr: *const u8,
     data_len: usize,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(548);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_alloc_string,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_alloc_string_attached_body(_py, data_ptr, data_len)
 }
@@ -111,7 +125,7 @@ pub unsafe extern "C" fn molt_bridge_alloc_list(
     items_ptr: *const u64,
     items_len: usize,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(549);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_bridge_alloc_list);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_alloc_list_attached_body(_py, items_ptr, items_len)
 }
@@ -122,21 +136,27 @@ pub unsafe extern "C" fn molt_bridge_alloc_tuple(
     items_ptr: *const u64,
     items_len: usize,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(550);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_alloc_tuple,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_alloc_tuple_attached_body(_py, items_ptr, items_len)
 }
 #[unsafe(export_name = "molt_bridge_object_type_id__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_object_type_id(__context: u64, ptr: *mut u8) -> u32 {
-    molt_runtime_core::call_census::hit(551);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_object_type_id,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_object_type_id_attached_body(_py, ptr)
 }
 #[unsafe(export_name = "molt_bridge_release_ptr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_bridge_release_ptr(__context: u64, ptr: *mut u8) {
-    molt_runtime_core::call_census::hit(552);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_bridge_release_ptr,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_bridge_release_ptr_attached_body(_py, ptr)
 }

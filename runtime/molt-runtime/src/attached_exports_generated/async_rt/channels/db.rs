@@ -3,7 +3,7 @@
 #[unsafe(export_name = "molt_db_set_query_hook__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_db_set_query_hook(__context: u64, ptr: usize) {
-    molt_runtime_core::call_census::hit(71);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_set_query_hook);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_db_set_query_hook_attached_body(_py, ptr)
@@ -12,7 +12,7 @@ pub unsafe extern "C" fn molt_db_set_query_hook(__context: u64, ptr: usize) {
 #[unsafe(export_name = "molt_db_set_exec_hook__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_db_set_exec_hook(__context: u64, ptr: usize) {
-    molt_runtime_core::call_census::hit(72);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_set_exec_hook);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_db_set_exec_hook_attached_body(_py, ptr)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_db_query(
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(73);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_query);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_db_query_attached_body(_py, req_ptr, len_bits, out, token_bits) }
@@ -40,7 +40,7 @@ pub unsafe extern "C" fn molt_db_exec(
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(74);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_exec);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_db_exec_attached_body(_py, req_ptr, len_bits, out, token_bits) }
@@ -48,7 +48,7 @@ pub unsafe extern "C" fn molt_db_exec(
 #[unsafe(export_name = "molt_db_query_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_db_query_obj(__context: u64, req_bits: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(75);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_query_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_db_query_obj_attached_body(_py, req_bits, token_bits)
@@ -56,7 +56,7 @@ pub unsafe extern "C" fn molt_db_query_obj(__context: u64, req_bits: u64, token_
 #[unsafe(export_name = "molt_db_exec_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_db_exec_obj(__context: u64, req_bits: u64, token_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(76);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_db_exec_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_db_exec_obj_attached_body(_py, req_bits, token_bits)

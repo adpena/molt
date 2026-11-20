@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_re_group_values(
     text_bits: u64,
     groups_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3298);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_re_group_values);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_group_values_attached_body(_py, text_bits, groups_bits)
@@ -19,7 +19,9 @@ pub unsafe extern "C" fn molt_re_expand_replacement(
     group_values_bits: u64,
     group_names_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3299);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_re_expand_replacement,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_expand_replacement_attached_body(_py, repl_bits, group_values_bits, group_names_bits)

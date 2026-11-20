@@ -2,7 +2,9 @@
 #[unsafe(export_name = "molt_native_descriptor_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_descriptor_new(__context: u64, args: u64, kwargs: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1606);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_new_attached_body(_py, args, kwargs)
@@ -10,7 +12,9 @@ pub unsafe extern "C" fn molt_native_descriptor_new(__context: u64, args: u64, k
 #[unsafe(export_name = "molt_native_descriptor_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_descriptor_get(__context: u64, args: u64, kwargs: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1607);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_get_attached_body(_py, args, kwargs)
@@ -18,7 +22,9 @@ pub unsafe extern "C" fn molt_native_descriptor_get(__context: u64, args: u64, k
 #[unsafe(export_name = "molt_native_descriptor_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_descriptor_set(__context: u64, args: u64, kwargs: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1608);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_set_attached_body(_py, args, kwargs)
@@ -30,7 +36,9 @@ pub unsafe extern "C" fn molt_native_descriptor_delete(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1609);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_delete,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_delete_attached_body(_py, args, kwargs)
@@ -38,7 +46,9 @@ pub unsafe extern "C" fn molt_native_descriptor_delete(
 #[unsafe(export_name = "molt_native_descriptor_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_descriptor_repr(__context: u64, descriptor: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1610);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_repr,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_repr_attached_body(_py, descriptor)
@@ -46,7 +56,9 @@ pub unsafe extern "C" fn molt_native_descriptor_repr(__context: u64, descriptor:
 #[unsafe(export_name = "molt_native_descriptor_reduce__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_descriptor_reduce(__context: u64, descriptor: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1611);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_native_descriptor_reduce,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_descriptor_reduce_attached_body(_py, descriptor)

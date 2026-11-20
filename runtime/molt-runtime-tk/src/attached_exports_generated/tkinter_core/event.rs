@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_tk_event_build_from_args(
     _widget_path_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3602);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_tk_event_build_from_args,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_event_build_from_args_attached_body(_py, _widget_path_bits, args_bits)
@@ -14,7 +16,7 @@ pub unsafe extern "C" fn molt_tk_event_build_from_args(
 #[unsafe(export_name = "molt_tk_event_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tk_event_int(__context: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3603);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_tk_event_int);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_event_int_attached_body(_py, value_bits)
@@ -22,7 +24,9 @@ pub unsafe extern "C" fn molt_tk_event_int(__context: u64, value_bits: u64) -> u
 #[unsafe(export_name = "molt_tk_event_state_decode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tk_event_state_decode(__context: u64, state_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3604);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_tk_event_state_decode,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_event_state_decode_attached_body(_py, state_bits)

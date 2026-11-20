@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_pwd_module_init__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pwd_module_init(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1288);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_pwd_module_init);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pwd_module_init_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_pwd_module_init(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_pwd_getpwuid__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pwd_getpwuid(__context: u64, uid: u64, class: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1289);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_pwd_getpwuid);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pwd_getpwuid_attached_body(_py, uid, class)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_pwd_getpwuid(__context: u64, uid: u64, class: u64)
 #[unsafe(export_name = "molt_pwd_getpwnam__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pwd_getpwnam(__context: u64, name: u64, class: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1290);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_pwd_getpwnam);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pwd_getpwnam_attached_body(_py, name, class)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_pwd_getpwnam(__context: u64, name: u64, class: u64
 #[unsafe(export_name = "molt_pwd_getpwall__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pwd_getpwall(__context: u64, class: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1291);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_pwd_getpwall);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pwd_getpwall_attached_body(_py, class)

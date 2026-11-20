@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_min_builtin(
     key_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2036);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_min_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_min_builtin_attached_body(_py, args_bits, key_bits, default_bits)
@@ -20,7 +20,7 @@ pub unsafe extern "C" fn molt_max_builtin(
     key_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2037);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_max_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_max_builtin_attached_body(_py, args_bits, key_bits, default_bits)
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn molt_sorted_builtin(
     key_bits: u64,
     reverse_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2038);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_sorted_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sorted_builtin_attached_body(_py, iter_bits, key_bits, reverse_bits)
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn molt_sorted_builtin(
 #[unsafe(export_name = "molt_sum_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sum_builtin(__context: u64, iter_bits: u64, start_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2039);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_sum_builtin);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sum_builtin_attached_body(_py, iter_bits, start_bits)

@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_stream_reader_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_reader_new(__context: u64, stream_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(77);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_reader_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_reader_new_attached_body(_py, stream_bits) }
@@ -10,7 +10,9 @@ pub unsafe extern "C" fn molt_stream_reader_new(__context: u64, stream_bits: u64
 #[unsafe(export_name = "molt_stream_reader_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_reader_drop(__context: u64, reader_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(78);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_reader_drop,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_reader_drop_attached_body(_py, reader_bits) }
@@ -18,7 +20,9 @@ pub unsafe extern "C" fn molt_stream_reader_drop(__context: u64, reader_bits: u6
 #[unsafe(export_name = "molt_stream_reader_at_eof__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_reader_at_eof(__context: u64, reader_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(79);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_reader_at_eof,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_reader_at_eof_attached_body(_py, reader_bits) }
@@ -30,7 +34,9 @@ pub unsafe extern "C" fn molt_stream_reader_read(
     reader_bits: u64,
     n_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(80);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_reader_read,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_reader_read_attached_body(_py, reader_bits, n_bits) }
@@ -38,7 +44,9 @@ pub unsafe extern "C" fn molt_stream_reader_read(
 #[unsafe(export_name = "molt_stream_reader_readline__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_reader_readline(__context: u64, reader_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(81);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_reader_readline,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_reader_readline_attached_body(_py, reader_bits) }
@@ -46,7 +54,7 @@ pub unsafe extern "C" fn molt_stream_reader_readline(__context: u64, reader_bits
 #[unsafe(export_name = "molt_stream_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_new(__context: u64, capacity_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(82);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_new);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stream_new_attached_body(_py, capacity_bits)
@@ -60,7 +68,9 @@ pub unsafe extern "C" fn molt_stream_new_with_io_hooks(
     close_hook: usize,
     hook_ctx: *mut u8,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(83);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_new_with_io_hooks,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stream_new_with_io_hooks_attached_body(_py, send_hook, recv_hook, close_hook, hook_ctx)
@@ -73,7 +83,9 @@ pub unsafe extern "C" fn molt_stream_new_with_hooks(
     close_hook: usize,
     hook_ctx: *mut u8,
 ) -> *mut u8 {
-    molt_runtime_core::call_census::hit(84);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_stream_new_with_hooks,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stream_new_with_hooks_attached_body(_py, send_hook, close_hook, hook_ctx)
@@ -81,7 +93,7 @@ pub unsafe extern "C" fn molt_stream_new_with_hooks(
 #[unsafe(export_name = "molt_stream_clone__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_clone(__context: u64, stream_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(85);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_clone);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_clone_attached_body(_py, stream_bits) }
@@ -94,7 +106,7 @@ pub unsafe extern "C" fn molt_stream_send(
     data_ptr: *const u8,
     len_bits: u64,
 ) -> i64 {
-    molt_runtime_core::call_census::hit(86);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_send);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_send_attached_body(_py, stream_bits, data_ptr, len_bits) }
@@ -106,7 +118,7 @@ pub unsafe extern "C" fn molt_stream_send_obj(
     stream_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(87);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_send_obj);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_send_obj_attached_body(_py, stream_bits, data_bits) }
@@ -114,7 +126,7 @@ pub unsafe extern "C" fn molt_stream_send_obj(
 #[unsafe(export_name = "molt_stream_recv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_recv(__context: u64, stream_bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(88);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_recv);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_recv_attached_body(_py, stream_bits) }
@@ -122,7 +134,7 @@ pub unsafe extern "C" fn molt_stream_recv(__context: u64, stream_bits: u64) -> i
 #[unsafe(export_name = "molt_stream_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_close(__context: u64, stream_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(89);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_close);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_close_attached_body(_py, stream_bits) }
@@ -130,7 +142,7 @@ pub unsafe extern "C" fn molt_stream_close(__context: u64, stream_bits: u64) -> 
 #[unsafe(export_name = "molt_stream_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_stream_drop(__context: u64, stream_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(90);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_stream_drop);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_stream_drop_attached_body(_py, stream_bits) }

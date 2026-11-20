@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_object_field_get_ptr(
     obj_ptr_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1916);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_object_field_get_ptr,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_get_ptr_attached_body(_py, obj_ptr_bits, offset_bits) }
@@ -19,7 +21,9 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1917);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_object_field_set_ptr,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_set_ptr_attached_body(_py, obj_ptr_bits, offset_bits, val_bits) }
@@ -32,7 +36,9 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1918);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_object_field_init_ptr,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_init_ptr_attached_body(_py, obj_ptr_bits, offset_bits, val_bits) }
@@ -45,7 +51,7 @@ pub unsafe extern "C" fn molt_guard_layout(
     definition_slot: u64,
     expected_version: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1919);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_guard_layout);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_guard_layout_attached_body(_py, obj_bits, definition_slot, expected_version) }
@@ -61,7 +67,7 @@ pub unsafe extern "C" fn molt_guarded_field_get(
     attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1920);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_guarded_field_get);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -88,7 +94,7 @@ pub unsafe extern "C" fn molt_guarded_field_set(
     attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1921);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_guarded_field_set);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -111,7 +117,7 @@ pub unsafe extern "C" fn molt_object_field_get(
     obj_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1922);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_object_field_get);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_get_attached_body(_py, obj_bits, offset_bits) }
@@ -124,7 +130,7 @@ pub unsafe extern "C" fn molt_object_field_set(
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1923);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_object_field_set);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_set_attached_body(_py, obj_bits, offset_bits, val_bits) }
@@ -137,7 +143,7 @@ pub unsafe extern "C" fn molt_object_field_init(
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1924);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_object_field_init);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_init_attached_body(_py, obj_bits, offset_bits, val_bits) }
@@ -149,7 +155,7 @@ pub unsafe extern "C" fn molt_object_field_load(
     obj_ptr: *mut u8,
     offset: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1925);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_object_field_load);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_field_load_attached_body(_py, obj_ptr, offset) }

@@ -5,7 +5,9 @@ pub unsafe extern "C" fn molt_concurrent_threadpool_new(
     __context: u64,
     max_workers_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(553);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_threadpool_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_threadpool_new_attached_body(_py, max_workers_bits)
@@ -18,7 +20,9 @@ pub unsafe extern "C" fn molt_concurrent_threadpool_submit(
     fn_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(554);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_threadpool_submit,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_threadpool_submit_attached_body(_py, handle_bits, fn_bits, args_bits)
@@ -31,7 +35,9 @@ pub unsafe extern "C" fn molt_concurrent_threadpool_shutdown(
     wait_bits: u64,
     cancel_futures_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(555);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_threadpool_shutdown,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_threadpool_shutdown_attached_body(
@@ -44,7 +50,9 @@ pub unsafe extern "C" fn molt_concurrent_threadpool_shutdown(
 #[unsafe(export_name = "molt_concurrent_threadpool_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_threadpool_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(556);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_threadpool_drop,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_threadpool_drop_attached_body(_py, handle_bits)
@@ -58,7 +66,9 @@ pub unsafe extern "C" fn molt_concurrent_future_result(
     cancelled_error: u64,
     timeout_error: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(557);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_result,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_result_attached_body(
@@ -78,7 +88,9 @@ pub unsafe extern "C" fn molt_concurrent_future_exception(
     cancelled_error: u64,
     timeout_error: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(558);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_exception,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_exception_attached_body(
@@ -92,7 +104,9 @@ pub unsafe extern "C" fn molt_concurrent_future_exception(
 #[unsafe(export_name = "molt_concurrent_future_done__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_future_done(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(559);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_done,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_done_attached_body(_py, handle_bits)
@@ -100,7 +114,9 @@ pub unsafe extern "C" fn molt_concurrent_future_done(__context: u64, handle_bits
 #[unsafe(export_name = "molt_concurrent_future_cancelled__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_future_cancelled(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(560);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_cancelled,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_cancelled_attached_body(_py, handle_bits)
@@ -108,7 +124,9 @@ pub unsafe extern "C" fn molt_concurrent_future_cancelled(__context: u64, handle
 #[unsafe(export_name = "molt_concurrent_future_cancel__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_future_cancel(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(561);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_cancel,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_cancel_attached_body(_py, handle_bits)
@@ -116,7 +134,9 @@ pub unsafe extern "C" fn molt_concurrent_future_cancel(__context: u64, handle_bi
 #[unsafe(export_name = "molt_concurrent_future_running__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_future_running(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(562);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_running,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_running_attached_body(_py, handle_bits)
@@ -128,7 +148,9 @@ pub unsafe extern "C" fn molt_concurrent_future_add_done_callback(
     handle_bits: u64,
     fn_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(563);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_add_done_callback,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_add_done_callback_attached_body(_py, handle_bits, fn_bits)
@@ -136,7 +158,9 @@ pub unsafe extern "C" fn molt_concurrent_future_add_done_callback(
 #[unsafe(export_name = "molt_concurrent_future_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_concurrent_future_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(564);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_future_drop,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_future_drop_attached_body(_py, handle_bits)
@@ -148,7 +172,9 @@ pub unsafe extern "C" fn molt_concurrent_as_completed(
     futures_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(565);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_concurrent_as_completed,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_as_completed_attached_body(_py, futures_bits, timeout_bits)
@@ -161,7 +187,7 @@ pub unsafe extern "C" fn molt_concurrent_wait(
     timeout_bits: u64,
     return_when_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(566);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_concurrent_wait);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_concurrent_wait_attached_body(_py, futures_bits, timeout_bits, return_when_bits)

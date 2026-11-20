@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_keyword_lists__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_keyword_lists(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1594);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_keyword_lists);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_keyword_lists_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_keyword_lists(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_keyword_iskeyword__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_keyword_iskeyword(__context: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1595);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_keyword_iskeyword);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_keyword_iskeyword_attached_body(_py, value_bits)
@@ -18,7 +18,9 @@ pub unsafe extern "C" fn molt_keyword_iskeyword(__context: u64, value_bits: u64)
 #[unsafe(export_name = "molt_keyword_issoftkeyword__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_keyword_issoftkeyword(__context: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1596);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_keyword_issoftkeyword,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_keyword_issoftkeyword_attached_body(_py, value_bits)

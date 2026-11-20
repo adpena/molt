@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_copy_deepcopy(
     copier: u64,
     sentinel: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(643);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_copy_deepcopy);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_copy_deepcopy_attached_body(_py, obj, memo, copier, sentinel)
