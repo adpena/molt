@@ -11,7 +11,7 @@ pub unsafe extern "C" fn molt_tk_dialog_show(
     default_index_bits: u64,
     strings_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3583);
+    molt_runtime_core::call_census::hit(3584);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_dialog_show_attached_body(
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_tk_commondialog_show(
     command_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3584);
+    molt_runtime_core::call_census::hit(3585);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_commondialog_show_attached_body(
@@ -53,7 +53,7 @@ pub unsafe extern "C" fn molt_tk_messagebox_show(
     master_path_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3585);
+    molt_runtime_core::call_census::hit(3586);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_messagebox_show_attached_body(_py, app_bits, master_path_bits, options_bits)
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn molt_tk_filedialog_show(
     command_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3586);
+    molt_runtime_core::call_census::hit(3587);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_filedialog_show_attached_body(
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn molt_tk_simpledialog_query(
     min_value_bits: u64,
     max_value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3587);
+    molt_runtime_core::call_census::hit(3588);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_simpledialog_query_attached_body(

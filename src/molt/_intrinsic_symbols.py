@@ -492,6 +492,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_math_nextafter": ("molt_math_nextafter", 2),
     "molt_math_ulp": ("molt_math_ulp", 1),
     "molt_math_remainder": ("molt_math_remainder", 2),
+    "molt_math_pow": ("molt_math_pow", 2),
     "molt_math_tan": ("molt_math_tan", 1),
     "molt_math_asin": ("molt_math_asin", 1),
     "molt_math_atan": ("molt_math_atan", 1),
@@ -2378,7 +2379,7 @@ INTRINSIC_RUNTIME_ROOTS: dict[str, tuple[str, ...]] = {
     "molt_urllib_request_open": ("socketserver",),
 }
 RUNTIME_ROOTS_FINGERPRINT = 0x650eaa14af1188ea
-INTRINSIC_MANIFEST_FINGERPRINT = 0x65f4f481a322f6c3
+INTRINSIC_MANIFEST_FINGERPRINT = 0x841697037f1829a8
 
 
 def intrinsic_runtime_symbol_name(name: str) -> str:

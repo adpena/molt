@@ -46,6 +46,7 @@ pub fn resolve_symbol_with(symbol: &str) -> Option<*const ()> {
         "molt_math_nextafter" => Some(crate::math::molt_math_nextafter as *const ()),
         "molt_math_ulp" => Some(crate::math::molt_math_ulp as *const ()),
         "molt_math_remainder" => Some(crate::math::molt_math_remainder as *const ()),
+        "molt_math_pow" => Some(crate::math::molt_math_pow as *const ()),
         "molt_math_tan" => Some(crate::math::molt_math_tan as *const ()),
         "molt_math_asin" => Some(crate::math::molt_math_asin as *const ()),
         "molt_math_atan" => Some(crate::math::molt_math_atan as *const ()),

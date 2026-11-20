@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_tk_tkwait_variable(
     app_bits: u64,
     variable_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3576);
+    molt_runtime_core::call_census::hit(3577);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_tkwait_variable_attached_body(_py, app_bits, variable_name_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_tk_tkwait_window(
     app_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3577);
+    molt_runtime_core::call_census::hit(3578);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_tkwait_window_attached_body(_py, app_bits, target_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_tk_tkwait_visibility(
     app_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3578);
+    molt_runtime_core::call_census::hit(3579);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_tkwait_visibility_attached_body(_py, app_bits, target_bits)

@@ -430,26 +430,35 @@ fn math_domain_error(_py: &PyToken) -> u64 {
     raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error")
 }
 
+/// A ValueError for an argument outside `expected`'s domain: CPython's
+/// "math domain error" through 3.13; from 3.14 the function's expectation and
+/// the rejected value ("expected a nonnegative input, got -1.0").
+fn domain_error(_py: &PyToken, expected: &str, got: f64) -> u64 {
+    if target_minor(_py) < 14 {
+        return math_domain_error(_py);
+    }
+    let Some(rendered) = render_float(_py, got) else {
+        return MoltObject::none().bits();
+    };
+    raise_exception::<u64>(
+        _py,
+        BuiltinExc::ValueError,
+        &format!("{expected}, got {rendered}"),
+    )
+}
+
 fn log_domain_error(_py: &PyToken, got: Option<f64>) -> u64 {
     if target_minor(_py) < 14 {
         return raise_exception::<u64>(_py, BuiltinExc::ValueError, "math domain error");
     }
     if let Some(value) = got {
-        let Some(rendered) = render_float(_py, value) else {
-            return MoltObject::none().bits();
-        };
-        let msg = format!("expected a positive input, got {rendered}");
-        return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
+        return domain_error(_py, "expected a positive input", value);
     }
     raise_exception::<u64>(_py, BuiltinExc::ValueError, "expected a positive input")
 }
 
 fn log1p_domain_error(_py: &PyToken, value: f64) -> u64 {
-    let Some(rendered) = render_float(_py, value) else {
-        return MoltObject::none().bits();
-    };
-    let msg = format!("expected argument value > -1, got {rendered}");
-    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
+    domain_error(_py, "expected argument value > -1", value)
 }
 
 fn isqrt_biguint(value: &BigUint) -> BigUint {
@@ -758,11 +767,7 @@ pub fn molt_math_sin_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a finite input", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_sin(f))
     })
@@ -777,11 +782,7 @@ pub fn molt_math_cos_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a finite input", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_cos(f))
     })
@@ -796,11 +797,7 @@ pub fn molt_math_acos_attached_body(_py: &molt_runtime_core::PyToken, val_bits: 
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a number in range from -1 up to 1", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_acos(f))
     })
@@ -815,11 +812,7 @@ pub fn molt_math_tan_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a finite input", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_tan(f))
     })
@@ -834,11 +827,7 @@ pub fn molt_math_asin_attached_body(_py: &molt_runtime_core::PyToken, val_bits: 
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a number in range from -1 up to 1", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_asin(f))
     })
@@ -928,11 +917,7 @@ pub fn molt_math_acosh_attached_body(_py: &molt_runtime_core::PyToken, val_bits:
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f < 1.0 {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a number greater than or equal to 1, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected argument value not less than 1", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_acosh(f))
     })
@@ -947,7 +932,7 @@ pub fn molt_math_atanh_attached_body(_py: &molt_runtime_core::PyToken, val_bits:
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f <= -1.0 || f >= 1.0 {
-            return math_domain_error(_py);
+            return domain_error(_py, "expected a number between -1 and 1", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_atanh(f))
     })
@@ -963,20 +948,12 @@ pub fn molt_math_gamma_attached_body(_py: &molt_runtime_core::PyToken, val_bits:
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                let Some(rendered) = render_float(_py, f) else {
-                    return MoltObject::none().bits();
-                };
-                let msg = format!("expected a noninteger or positive integer, got {rendered}");
-                return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+                return domain_error(_py, "expected a noninteger or positive integer", f);
             }
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f <= 0.0 && f.fract() == 0.0 {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a noninteger or positive integer, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a noninteger or positive integer", f);
         }
         let out = libm::tgamma(f);
         if out.is_infinite() {
@@ -1016,11 +993,7 @@ pub fn molt_math_lgamma_attached_body(_py: &molt_runtime_core::PyToken, val_bits
             return molt_runtime_core::rt_float_result_bits(_py, f.abs());
         }
         if f <= 0.0 && f.fract() == 0.0 {
-            let Some(rendered) = render_float(_py, f) else {
-                return MoltObject::none().bits();
-            };
-            let msg = format!("expected a noninteger or positive integer, got {rendered}");
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
+            return domain_error(_py, "expected a noninteger or positive integer", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_lgamma(f))
     })
@@ -1088,12 +1061,12 @@ pub fn molt_math_sqrt_attached_body(_py: &molt_runtime_core::PyToken, val_bits: 
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
+                return domain_error(_py, "expected a nonnegative input", f);
             }
             return molt_runtime_core::rt_float_result_bits(_py, f);
         }
         if f < 0.0 {
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
+            return domain_error(_py, "expected a nonnegative input", f);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_sqrt(f))
     })
@@ -1942,6 +1915,61 @@ pub fn molt_math_remainder_attached_body(
             return math_domain_error(_py);
         }
         molt_runtime_core::rt_float_result_bits(_py, math_remainder(x, y))
+    })
+}
+
+/// `math.pow(x, y)`, CPython's `math_pow`: IEEE specials are decided here,
+/// libm computes finite**finite, a NaN result (a negative base to a
+/// non-integer power) or an infinite result from a zero base is a domain
+/// error, and any other infinite result from finite operands is an overflow.
+pub fn molt_math_pow_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(x) = float_as_double(_py, x_bits) else {
+            return MoltObject::none().bits();
+        };
+        let Some(y) = float_as_double(_py, y_bits) else {
+            return MoltObject::none().bits();
+        };
+        let result = if !x.is_finite() || !y.is_finite() {
+            if x.is_nan() {
+                if y == 0.0 { 1.0 } else { x }
+            } else if y.is_nan() {
+                if x == 1.0 { 1.0 } else { y }
+            } else if x.is_infinite() {
+                let odd_y = y.is_finite() && libm::fmod(y.abs(), 2.0) == 1.0;
+                if y > 0.0 {
+                    if odd_y { x } else { x.abs() }
+                } else if y == 0.0 {
+                    1.0
+                } else if odd_y {
+                    0.0f64.copysign(x)
+                } else {
+                    0.0
+                }
+            } else if x.abs() == 1.0 {
+                1.0
+            } else if y > 0.0 && x.abs() > 1.0 {
+                y
+            } else if y < 0.0 && x.abs() < 1.0 {
+                -y
+            } else {
+                0.0
+            }
+        } else {
+            let result = libm::pow(x, y);
+            if result.is_nan() || (result.is_infinite() && x == 0.0) {
+                return math_domain_error(_py);
+            }
+            if result.is_infinite() {
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
+            }
+            result
+        };
+        molt_runtime_core::rt_float_result_bits(_py, result)
     })
 }
 

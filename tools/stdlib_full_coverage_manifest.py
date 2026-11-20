@@ -385,6 +385,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_math_modf",
         "molt_math_nextafter",
         "molt_math_perm",
+        "molt_math_pow",
         "molt_math_prod",
         "molt_math_radians",
         "molt_math_remainder",

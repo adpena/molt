@@ -2344,6 +2344,7 @@ macro_rules! attached_symbol {
     ("molt_math_modf") => { "molt_math_modf__molt_context_d1086a27578cda22" };
     ("molt_math_nextafter") => { "molt_math_nextafter__molt_context_d1086a27578cda22" };
     ("molt_math_perm") => { "molt_math_perm__molt_context_d1086a27578cda22" };
+    ("molt_math_pow") => { "molt_math_pow__molt_context_d1086a27578cda22" };
     ("molt_math_prod") => { "molt_math_prod__molt_context_d1086a27578cda22" };
     ("molt_math_radians") => { "molt_math_radians__molt_context_d1086a27578cda22" };
     ("molt_math_remainder") => { "molt_math_remainder__molt_context_d1086a27578cda22" };
