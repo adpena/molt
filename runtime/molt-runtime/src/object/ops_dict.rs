@@ -578,10 +578,31 @@ pub(crate) fn molt_dict_unpack_attached_body(
                     crate::BuiltinExc::AttributeError,
                 );
                 molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, error));
-                if attribute_error {
-                    // CPython 3.12–3.14 DICT_UPDATE converts any AttributeError,
-                    // including one raised by keys() or __getitem__, to TypeError.
+                // CPython 3.12–3.14 DICT_UPDATE converts any AttributeError,
+                // including one raised by keys() or __getitem__, to TypeError
+                // naming the type's tp_name (200 bytes). From 3.15 it converts
+                // only when the source has no `keys` attribute (the merge's
+                // NotMapping outcome), naming the type in full with `%T`; an
+                // AttributeError that keys() or __getitem__ raised propagates.
+                let modern = crate::object::ops_sys::runtime_target_at_least(_py, 3, 15);
+                if attribute_error
+                    && (outcome == crate::object::mapping_merge::MergeOutcome::NotMapping
+                        || !modern)
+                {
                     clear_exception(_py);
+                    if modern {
+                        let name = crate::builtins::classes::class_fully_qualified_name(
+                            _py,
+                            type_of_bits(_py, source_bits),
+                        );
+                        let message =
+                            [b"'".as_slice(), &name, b"' object is not a mapping"].concat();
+                        return crate::builtins::exceptions::raise_exception_bytes::<u64>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            &message,
+                        );
+                    }
                     let name = super::ops::protocol_type_name(_py, source_bits, 200);
                     return raise_exception::<u64>(
                         _py,
