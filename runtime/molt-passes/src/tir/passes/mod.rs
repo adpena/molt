@@ -49,6 +49,7 @@ pub mod refcount_elim;
 pub mod sccp;
 pub mod scev;
 pub mod slice_reverse;
+pub mod exact_receiver_fields;
 pub(crate) mod spliced_frame;
 pub mod sroa;
 pub mod strength_reduction;

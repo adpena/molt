@@ -608,6 +608,30 @@ class AttributeAccessMixin(GeneratorMixinBase):
         )
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
+    def _exact_field_slots(self, class_id: ClassId) -> dict[str, int] | None:
+        """The attributes an instance of exactly ``class_id`` reads and writes
+        at fixed field offsets, or None when its layout can change.
+
+        The same rule an exact receiver's access follows here: a stable
+        layout, an instance field, and no class on the MRO that can bind the
+        name to a data descriptor. Exception subclasses and metaclasses keep
+        the generic path, as ``_emit_guarded_getattr`` does. TIR applies it to
+        receivers it proves exact (``exact_receiver_fields``)."""
+        if not self._class_layout_stable(class_id):
+            return None
+        class_info = self.classes.get(class_id)
+        if (
+            class_info is None
+            or self._class_is_exception_subclass(class_id)
+            or BuiltinClass("type") in class_info.get("bases", ())
+        ):
+            return None
+        return {
+            name: offset
+            for name, offset in class_info.get("fields", {}).items()
+            if not self._class_attr_may_be_data_descriptor(class_id, name)
+        }
+
     def _emit_guarded_getattr(
         self,
         obj: MoltValue,

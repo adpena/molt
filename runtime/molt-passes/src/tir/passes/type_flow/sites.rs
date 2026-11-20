@@ -167,20 +167,33 @@ pub(super) fn sites_of(
 /// 3.11 "unknown callee"): the opaque sites of the shared operation-aware
 /// call-site projection.
 pub(super) fn unknown_callee_count(func: &TirFunction) -> usize {
+    unknown_callee_kinds(func).values().sum()
+}
+
+/// The unknown-callee sites of `func` by operation kind (its original kind,
+/// else its opcode): which call forms the type flow cannot follow, so the
+/// report ranks the forms to resolve next (design 78, 3.11).
+pub(super) fn unknown_callee_kinds(func: &TirFunction) -> std::collections::BTreeMap<String, usize> {
     let sites = crate::tir::call_sites::FunctionCallSites::for_function(func);
-    func.blocks
-        .iter()
-        .flat_map(|(&block, body)| (0..body.ops.len()).map(move |index| (block, index)))
-        .filter(|&position| {
-            sites
-                .at(position)
-                .is_some_and(|site| site.target == crate::tir::call_sites::CallSiteTarget::Opaque)
-        })
-        .count()
+    let mut kinds = std::collections::BTreeMap::new();
+    for (&block, body) in &func.blocks {
+        for (index, op) in body.ops.iter().enumerate() {
+            let opaque = sites
+                .at((block, index))
+                .is_some_and(|site| site.target == crate::tir::call_sites::CallSiteTarget::Opaque);
+            if opaque {
+                let kind = op
+                    .origin
+                    .map_or_else(|| format!("{:?}", op.opcode), |origin| origin.as_str().to_owned());
+                *kinds.entry(kind).or_insert(0) += 1;
+            }
+        }
+    }
+    kinds
 }
 
 /// One parameter's part of a context key: the exact scalar family it holds,
-/// or nothing proven.
+/// the exact class statement its instance came from, or nothing proven.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum ArgKind {
     Dyn,
@@ -189,6 +202,9 @@ pub(crate) enum ArgKind {
     Float,
     Str,
     NoneValue,
+    /// An instance of exactly this class statement (I6): only that
+    /// statement's allocation produces it.
+    Class(molt_ir::ClassId),
 }
 
 impl ArgKind {
@@ -201,6 +217,7 @@ impl ArgKind {
             TirType::F64 => Self::Float,
             TirType::Str => Self::Str,
             TirType::None => Self::NoneValue,
+            TirType::Class(class) => Self::Class(*class),
             _ => Self::Dyn,
         })
     }
@@ -215,17 +232,21 @@ impl ArgKind {
             Self::Float => TirType::F64,
             Self::Str => TirType::Str,
             Self::NoneValue => TirType::None,
+            Self::Class(class) => TirType::Class(class),
         }
     }
 
-    pub(super) fn letter(self) -> char {
+    /// This kind's part of a clone's name and of a body digest: one letter
+    /// for a scalar family, `c` and the class id for a class.
+    pub(super) fn tag(self) -> String {
         match self {
-            Self::Dyn => 'd',
-            Self::Int => 'i',
-            Self::Bool => 'b',
-            Self::Float => 'f',
-            Self::Str => 's',
-            Self::NoneValue => 'n',
+            Self::Dyn => "d".into(),
+            Self::Int => "i".into(),
+            Self::Bool => "b".into(),
+            Self::Float => "f".into(),
+            Self::Str => "s".into(),
+            Self::NoneValue => "n".into(),
+            Self::Class(class) => format!("c{:016x}", class.0),
         }
     }
 
