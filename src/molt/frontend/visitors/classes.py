@@ -731,13 +731,35 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         )
         if body_needs_block:
             dynamic_build = True
+        opaque = (
+            self.namespace_premise.opaque_activation_sources
+            if self.namespace_premise is not None
+            else None
+        )
+        source = python_node_source_key(node)
+        definition_sources = (
+            source,
+            *(python_node_source_key(method) for method in class_body_functions(node)),
+        )
+        definition_exposed = opaque is not None and any(
+            key in opaque for key in definition_sources
+        )
+        # The evaluators read the class's live mapping when they run, after the
+        # class exists: a store on the class object (`C.x = v`, here or from
+        # code its exposed definition reaches) adds a name the body never
+        # bound, so the namespace is open to them too.
         annotation_namespace_required = class_annotations_need_namespace(
             node,
             analysis_requires=(
                 self.python_binding_index is not None
                 and self.python_binding_index.class_annotation_namespace_required(node)
             ),
-            open_namespace=dynamic_build or not body_has_no_callbacks_or_reflection,
+            open_namespace=(
+                dynamic_build
+                or not body_has_no_callbacks_or_reflection
+                or class_id in self.mutated_classes
+                or definition_exposed
+            ),
             eager_annotations=self.eager_annotations,
         )
         if annotation_namespace_required:
@@ -770,19 +792,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # canonical constructor when the metaclass and bases are proved.
         dynamic = (
             dynamic_build or len(bases) > 1 or not body_has_no_callbacks_or_reflection
-        )
-        opaque = (
-            self.namespace_premise.opaque_activation_sources
-            if self.namespace_premise is not None
-            else None
-        )
-        source = python_node_source_key(node)
-        definition_sources = (
-            source,
-            *(python_node_source_key(method) for method in class_body_functions(node)),
-        )
-        definition_exposed = opaque is not None and any(
-            key in opaque for key in definition_sources
         )
         constructor_binding_proven = (
             self.namespace_premise is not None
@@ -1127,7 +1136,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
         qualname_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
-        module_name = "__main__" if self.is_entry_module else self.module_name
+        module_name = self._runtime_module_name()
         module_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
 

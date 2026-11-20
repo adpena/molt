@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -29,7 +30,7 @@ def test_type_alias_concurrent_first_read_evaluates_once(molt_typing) -> None:
         assert release.wait(5)
         return value
 
-    alias = molt_typing._molt_type_alias("Alias", evaluator, ())
+    alias = molt_typing._molt_type_alias("Alias", evaluator, (), "pkg", "Alias")
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(lambda: alias.__value__) for _ in range(8)]
         assert entered.wait(5)
@@ -77,7 +78,7 @@ def test_lazy_type_value_failure_is_not_cached_and_next_read_retries(
             raise LookupError("not ready")
         return "ready"
 
-    alias = molt_typing._molt_type_alias("Alias", evaluator, ())
+    alias = molt_typing._molt_type_alias("Alias", evaluator, (), "pkg", "Alias")
     with pytest.raises(LookupError, match="not ready"):
         _ = alias.__value__
     assert alias.__value__ == "ready"
@@ -100,7 +101,7 @@ def test_recursive_type_alias_evaluation_raises_and_next_read_retries(
             return alias.__value__
         return "recovered"
 
-    alias = molt_typing._molt_type_alias("Alias", evaluator, ())
+    alias = molt_typing._molt_type_alias("Alias", evaluator, (), "pkg", "Alias")
     with pytest.raises(RecursionError, match="maximum recursion depth exceeded"):
         _ = alias.__value__
     recursive = False
@@ -117,10 +118,15 @@ def test_applied_type_alias_repr_formats_concrete_argument_sequence(
         "Pair",
         lambda _format=1: tuple,
         (),
+        "pkg",
+        "Pair",
     )
 
-    assert repr(alias[int]) == "Pair[int]"
-    assert repr(alias[int, str]) == "Pair[int, str]"
+    # types.GenericAlias renders its origin with _Py_typing_type_repr: from
+    # 3.15 the alias has a __qualname__, so it reads module.qualname.
+    name = "pkg.Pair" if sys.version_info >= (3, 15) else "Pair"
+    assert repr(alias[int]) == f"{name}[int]"
+    assert repr(alias[int, str]) == f"{name}[int, str]"
 
 
 def test_applied_type_alias_parameters_are_residual_not_declared(molt_typing) -> None:
@@ -129,6 +135,8 @@ def test_applied_type_alias_parameters_are_residual_not_declared(molt_typing) ->
         "Pair",
         lambda _format=1: tuple,
         (parameter,),
+        "pkg",
+        "Pair",
     )
 
     assert alias.__type_params__ == (parameter,)

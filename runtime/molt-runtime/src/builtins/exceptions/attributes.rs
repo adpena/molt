@@ -9,7 +9,9 @@ use crate::builtins::types::{
 };
 use crate::object::layout;
 
-use molt_obj_model::{ExceptionAttributeField as Field, ExceptionDescriptorKind};
+use molt_obj_model::{
+    ExceptionAttributeField as Field, ExceptionDescriptorKind, ExceptionTypedField,
+};
 
 fn finish_field_mutation(py: &PyToken<'_>, result: Result<(), &'static str>) -> u64 {
     match result {
@@ -162,6 +164,42 @@ pub(crate) fn molt_exception_member_get_attached_body(
             }
             inc_ref_bits(py, bits);
             bits
+        }
+    })
+}
+
+/// The cold edge of a proven builtin member read (call_anatomy.md 4.5a,
+/// "Builtin layouts"): compiled code loads the member itself and calls here
+/// only for a member that raises when absent, a `Py_ssize_t` past the inline
+/// range, or a free-threaded build. `field_tag` is the raw
+/// `ExceptionTypedField` tag, never a spelling.
+pub(crate) fn molt_exception_field_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    exception_bits: u64,
+    field_tag: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let field = u8::try_from(field_tag)
+            .ok()
+            .and_then(ExceptionTypedField::from_u8);
+        let object = obj_from_bits(exception_bits)
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_EXCEPTION });
+        let (Some(field), Some(object)) = (field, object) else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "proven exception member read lost its receiver or member",
+            );
+        };
+        match exception_typed_field_get(py, object, field) {
+            Some(Ok(bits)) => bits,
+            Some(Err(message)) => raise_exception::<u64>(py, BuiltinExc::AttributeError, message),
+            None => raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "exception field is absent from its layout",
+            ),
         }
     })
 }

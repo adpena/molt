@@ -36,18 +36,12 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 /// Common payload prefix shared by every exception.  Typed builtin state starts
 /// immediately after this prefix and is sized by `ExceptionLayoutKind::tail_policies`.
 /// Slot 9 is an immutable, non-reference layout tag.
-pub(crate) const EXCEPTION_FIXED_WORDS: usize = 10;
-const EXCEPTION_MSG_SLOT: usize = 0;
-const EXCEPTION_CAUSE_SLOT: usize = 1;
-const EXCEPTION_CONTEXT_SLOT: usize = 2;
-const EXCEPTION_SUPPRESS_SLOT: usize = 3;
-const EXCEPTION_TRACE_SLOT: usize = 4;
-const EXCEPTION_ARGS_SLOT: usize = 5;
-const EXCEPTION_DICT_SLOT: usize = 6;
-const EXCEPTION_ARGS_PAYLOAD_SLOT: usize = 7;
-const EXCEPTION_NOTES_SLOT: usize = 8;
-const EXCEPTION_LAYOUT_KIND_SLOT: usize = 9;
-const EXCEPTION_TYPED_TAIL_SLOT: usize = 10;
+pub(crate) use molt_obj_model::exception_layout::EXCEPTION_FIXED_WORDS;
+use molt_obj_model::exception_layout::{
+    EXCEPTION_ARGS_PAYLOAD_SLOT, EXCEPTION_ARGS_SLOT, EXCEPTION_CAUSE_SLOT, EXCEPTION_CONTEXT_SLOT,
+    EXCEPTION_DICT_SLOT, EXCEPTION_LAYOUT_KIND_SLOT, EXCEPTION_MSG_SLOT, EXCEPTION_NOTES_SLOT,
+    EXCEPTION_SUPPRESS_SLOT, EXCEPTION_TRACE_SLOT, EXCEPTION_TYPED_TAIL_SLOT,
+};
 const EXCEPTION_OWNED_EDGE_SLOTS: [usize; 8] = [
     EXCEPTION_MSG_SLOT,
     EXCEPTION_DICT_SLOT,
@@ -63,7 +57,7 @@ const EXCEPTION_OWNED_EDGE_SLOTS: [usize; 8] = [
 // remain valid under memory pressure. The schema owns the maximum tail width.
 const MAX_EXCEPTION_OWNED_EDGES: usize =
     EXCEPTION_OWNED_EDGE_SLOTS.len() + MAX_EXCEPTION_TYPED_TAIL_WORDS;
-const PY_SSIZE_MISSING: u64 = (-1isize) as u64;
+const PY_SSIZE_MISSING: u64 = molt_obj_model::exception_layout::EXCEPTION_PY_SSIZE_MISSING;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DetachedExceptionEdges {
@@ -1029,11 +1023,8 @@ fn exception_typed_tail_slot(
     layout: ExceptionLayoutKind,
     field: ExceptionTypedField,
 ) -> Option<usize> {
-    layout
-        .tail_policies()
-        .iter()
-        .position(|policy| policy.field == field)
-        .map(|index| EXCEPTION_TYPED_TAIL_SLOT + index)
+    molt_obj_model::exception_layout::exception_field_slot(layout, field)
+        .filter(|&slot| slot >= EXCEPTION_TYPED_TAIL_SLOT)
 }
 
 #[inline]
@@ -1086,8 +1077,13 @@ pub(crate) unsafe fn exception_msg_bits(ptr: *mut u8) -> u64 {
 #[inline]
 pub(crate) fn exception_field_missing_bits() -> u64 {
     // Object-field absence is not Python None. This non-object marker is
-    // normalized by descriptors and travels as an absent ABI snapshot bit.
-    MoltObject::pending().bits()
+    // normalized by descriptors and travels as an absent ABI snapshot bit;
+    // compiled member loads compare with the same ABI constant.
+    const _: () = assert!(
+        molt_obj_model::exception_layout::EXCEPTION_FIELD_MISSING_BITS
+            == molt_codegen_abi::QNAN | molt_codegen_abi::TAG_PENDING
+    );
+    molt_obj_model::exception_layout::EXCEPTION_FIELD_MISSING_BITS
 }
 
 #[inline]

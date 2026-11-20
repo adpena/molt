@@ -102,6 +102,10 @@ def typing_source_modules(
         "molt_protocol_get_structural_members": lambda *_args: None,
         "molt_protocol_register": lambda *_args: None,
         "molt_collections_abc_runtime_types": _host_collection_runtime_types,
+        # A module's or function's namespace entry, or `missing` when absent.
+        "molt_namespace_entry_get": lambda owner, name, missing: (
+            owner.__globals__ if isinstance(owner, types.FunctionType) else vars(owner)
+        ).get(name, missing),
     }
     specs = [
         importlib.util.spec_from_file_location(

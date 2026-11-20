@@ -179,6 +179,28 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.bind_owned(b, op, b.word_value(word));
             return;
         }
+        if origin == Some(OpKind::ExceptionFieldGet) {
+            // operands = [exception]; `value` is the member's typed id
+            // (call_anatomy.md 4.5a, "Builtin layouts").
+            let callee = CallTarget::Site(SiteBody::BuiltinFieldGet {
+                field: exception_field(op),
+            });
+            let admission = b.refcount_admission();
+            let args = [
+                RuntimeArg::Operand(op.operands[0]),
+                RuntimeArg::Word(b.word_value(admission)),
+            ];
+            let word = self.operands().call(
+                b,
+                callee,
+                &args,
+                false,
+                "exception_field_load",
+                "exception_field_get",
+            );
+            self.bind_owned(b, op, b.word_value(word));
+            return;
+        }
         if origin == Some(OpKind::GuardedFieldGet) {
             // operands = [obj, expected_version]; the class statement is the
             // op's `class_definition` (HF-220).
@@ -467,6 +489,16 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 }
 
 /// A proven field's byte offset (the op's `value` attribute).
+fn exception_field(op: &TirOp) -> molt_codegen_abi::exception_layout::ExceptionTypedField {
+    match op.attrs.get("value") {
+        Some(AttrValue::Int(tag)) => u8::try_from(*tag)
+            .ok()
+            .and_then(molt_codegen_abi::exception_layout::ExceptionTypedField::from_u8)
+            .expect("a proven exception member carries its typed id"),
+        _ => panic!("a proven exception member carries its typed id"),
+    }
+}
+
 fn field_offset(op: &TirOp) -> i32 {
     match op.attrs.get("value") {
         Some(AttrValue::Int(offset)) => {

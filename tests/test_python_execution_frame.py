@@ -524,9 +524,12 @@ def test_deferred_arithmetic_reduction_retains_live_callable_and_generator():
     call = ops[index]
     assert call.kind == "CALL_FUNC" and len(call.args) == 2
     producers = {op.result.name: op for op in ops[:index]}
+    # The generator is allocated directly from its poll function, with the
+    # live genexpr callable as its function edge (ALLOC_TASK operand 3).
     argument = producers[call.args[1].name]
-    assert argument.kind == "CALL_FUNC"
-    constructor = producers[argument.args[0].name]
+    assert argument.kind == "ALLOC_TASK"
+    assert "genexpr_" in argument.args[0]
+    constructor = producers[argument.args[3].name]
     assert constructor.kind in {"FUNC_NEW", "FUNC_NEW_CLOSURE"}
     assert "genexpr_" in constructor.args[0]
 
@@ -859,14 +862,23 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
     name, ops = evaluators[0]
     entry = synchronous_entry(ops)
     definitions = {op.result.name: op for op in ops}
-    # `format` is the evaluator's first code slot on every target. PEP 649/749
-    # makes it a Python argument; before 3.14 it is Molt's transport and the
-    # code declares no parameter, so super() finds no argument zero.
+    # The hidden `.format` is the evaluator's first code slot on every target,
+    # so no source name collides with it. PEP 649/749 makes it a Python
+    # argument (published as `format`); before 3.14 it is Molt's transport and
+    # the code declares no parameter, so super() finds no argument zero.
     (store,) = home_stores(ops, 0)
-    assert ops[store].args[0].name == "format"
+    assert ops[store].args[0].name == ".format"
     assert code_argcount(generator, name) == (1 if target >= (3, 14) else 0)
-    body_start = next(index for index, op in enumerate(ops) if op.kind == "DICT_NEW")
-    assert entry < body_start
+    # Frame entry and the format binding precede the body's super(): a frame
+    # read (molt_super_from_frame) or, at module level, the name lookup. A
+    # value evaluator (alias, bound, constraints, default) builds no dict.
+    body_start = next(
+        index
+        for index, op in enumerate(ops)
+        if (op.kind == "CALL" and op.args == ["molt_super_from_frame"])
+        or (op.kind == "CONST_STR" and op.args == ["super"])
+    )
+    assert entry < store < body_start
     class_home = class_cell_home(ops)
     if not in_class:
         assert class_home is None
@@ -979,10 +991,10 @@ def test_annotation_format_transport_is_not_a_source_binding(scope, kind, expres
     )
     ops = function["ops"]
     entry = synchronous_entry(ops)
-    # The evaluator's own `format` parameter binds code slot 0 at entry.
+    # The evaluator's own hidden `.format` parameter binds code slot 0 at entry.
     (first_store, *_) = home_stores(ops, 0)
     parameter = ops[first_store]
-    assert parameter.args[0] == MoltValue("format", type_hint="Any")
+    assert parameter.args[0] == MoltValue(".format", type_hint="Any")
     # Even a class-owned "format" descriptor/namespace hook is a body lookup,
     # after the frame's entry and its argument binding.
     assert all(
@@ -991,7 +1003,9 @@ def test_annotation_format_transport_is_not_a_source_binding(scope, kind, expres
     )
     pairs = [op for op in ops if op.kind == "TUPLE_NEW" and len(op.args) == 2]
     assert pairs
-    assert all(op.args[0].name not in {"format", parameter.result.name} for op in pairs)
+    assert all(
+        op.args[0].name not in {".format", parameter.result.name} for op in pairs
+    )
 
 
 def test_source_argument_named_like_closure_transport_keeps_its_binding():

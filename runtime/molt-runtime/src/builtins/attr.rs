@@ -2293,10 +2293,11 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
                 inc_ref_bits(py, slots);
                 vec![slots]
             } else {
+                // type_new_get_slots materializes with PySequence_Tuple.
                 crate::object::iterable::collect(
                     py,
                     slots,
-                    crate::object::iterable::LengthHint::Consult,
+                    crate::object::iterable::tuple_length_hint_policy(py),
                 )?
             };
             Some(names)
@@ -2319,6 +2320,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
         let policy = admission.validate(py, names.as_deref()).ok()?;
         let mut exact_names = Vec::new();
         let mut exact_owners = Vec::new();
+        let mut fields = 0usize;
         if let Some(names) = names {
             for name in names {
                 let name = obj_from_bits(name).as_ptr().expect("validated slot string");
@@ -2360,8 +2362,12 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
                 }
                 exact_owners.push(crate::PtrDropGuard::new(py, exact));
                 exact_names.push(MoltObject::from_ptr(exact).bits());
+                if bytes != b"__dict__" && bytes != b"__weakref__" {
+                    fields += 1;
+                }
             }
         }
+        admission.admit_fields(py, fields).ok()?;
         let names = if slots.is_some() {
             let tuple = alloc_tuple(py, &exact_names);
             if tuple.is_null() {

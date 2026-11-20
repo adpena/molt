@@ -154,6 +154,11 @@ class SymbolNamingMixin(GeneratorMixinBase):
             self.func_code_ids[symbol] = code_id
         return code_id
 
+    def _runtime_module_name(self) -> str:
+        """The `__name__` a definition here records as its `__module__`: the
+        entry module runs as `__main__`."""
+        return "__main__" if self.is_entry_module else self.module_name
+
     def _qualname_prefix(self) -> str:
         if not self.qualname_stack:
             return ""
