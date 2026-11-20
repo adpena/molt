@@ -17,6 +17,7 @@ from molt.typed_cache import typed_cache
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
+from typing import Final
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
     MemberMask,
@@ -41,6 +42,10 @@ from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_write_mask,
 )
+
+
+# The frame-locals writer as a scan view states it: present, site elided.
+_SCAN_FRAME_LOCALS_WRITER: Final = "a frame-locals writer in the graph"
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +132,11 @@ class PythonNamespacePremise:
             escape_writes=(),
             instance_class_writer=None,
             exact_receivers=(),
+            # A scan reads only whether a frame-locals writer exists, never
+            # its site, so a site change re-keys no scan.
+            frame_locals_writer=None
+            if self.frame_locals_writer is None
+            else _SCAN_FRAME_LOCALS_WRITER,
         )
 
     def escape_writer(self, name: str) -> str | None:
@@ -351,6 +361,30 @@ def _frame_locals_writer(site: str | None, native_code: bool) -> str | None:
     return "a native extension module" if native_code else None
 
 
+def _site_order(site: str) -> tuple[str, int]:
+    label, _, line = site.rpartition(":")
+    return (label, int(line)) if line.isdigit() else (site, 0)
+
+
+def _earlier_site(known: str | None, site: str | None) -> bool:
+    """Whether ``site`` is a first writer site to keep over ``known``."""
+    return site is not None and (
+        known is None or _site_order(site) < _site_order(known)
+    )
+
+
+def _earlier_sites(
+    known: Mapping[str, str], batch: Mapping[str, str]
+) -> dict[str, str]:
+    """Each store name's first writer site by (module, line), whatever order
+    discovery admits the writers in: a new name, or an earlier site."""
+    return {
+        name: site
+        for name, site in batch.items()
+        if _earlier_site(known.get(name), site)
+    }
+
+
 def _module_member_stores(
     stores: Mapping[str, str],
     local_definitions: Mapping[str, str],
@@ -497,17 +531,11 @@ class PythonGraphNamespaceIndex:
             != self.import_redirects.canonical_redirected()
         )
         self.import_redirects = redirects
-        new_stores = {
-            name: site
-            for name, site in batch.member_stores.items()
-            if name not in self.member_stores
-        }
+        new_stores = _earlier_sites(self.member_stores, batch.member_stores)
         self.member_stores.update(new_stores)
-        new_local_stores = {
-            name: site
-            for name, site in batch.local_definition_stores.items()
-            if name not in self.local_definition_stores
-        }
+        new_local_stores = _earlier_sites(
+            self.local_definition_stores, batch.local_definition_stores
+        )
         self.local_definition_stores.update(new_local_stores)
         # The instance class writer is one fact of every premise.
         escape_global = "__class__" in new_stores

@@ -655,6 +655,96 @@ def test_scan_view_yields_the_same_scan_as_the_whole_premise(
     assert scan(view) == scan(premise)
 
 
+@pytest.mark.parametrize(
+    ("module", "relative"),
+    (
+        ("collections", "collections/__init__.py"),
+        ("enum", "enum.py"),
+        ("dataclasses", "dataclasses.py"),
+    ),
+)
+def test_premise_read_log_cuts_off_only_unchanged_scans(
+    module: str, relative: str
+) -> None:
+    """HF-926 early-cutoff oracle: scan real stdlib module code and function
+    bodies under one premise with the read log on, then scan each again,
+    in full, under premises that write one module name, activate one
+    function from unknown code, or write every name. Wherever the log says
+    its answers hold, the full scan must equal the logged one; the cases must
+    include a premise whose scan really changes, so the check is not vacuous."""
+    import ast
+
+    from molt.cli.module_resolution import _stdlib_root_path
+    from molt.compiler_analysis.python_import_scan import (
+        SCAN_PREMISE_READS,
+        ScanPremiseReads,
+        _collect_imports_for_graph,
+    )
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    path = _stdlib_root_path() / relative
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(path))
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)][:3]
+    names = sorted(
+        {
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        | {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+        }
+    )[:10]
+    base = PythonNamespacePremise(
+        (), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS, (), opaque_activation_sources=()
+    )
+    alternatives = (
+        [replace(base, foreign_writes=(name,)) for name in names]
+        + [
+            replace(base, opaque_activation_sources=(python_node_source_key(node),))
+            for node in functions
+        ]
+        + [replace(base, foreign_writes=None)]
+    )
+
+    def scan(
+        premise: PythonNamespacePremise,
+        owner: object,
+        log: ScanPremiseReads | None = None,
+    ) -> object:
+        token = SCAN_PREMISE_READS.set(log)
+        try:
+            return _collect_imports_for_graph(
+                ast.parse(text, filename=str(path)),
+                module,
+                relative.endswith("__init__.py"),
+                import_scan_mode="module_init",
+                source_owner=owner,
+                namespace_premise=premise,
+            )
+        finally:
+            SCAN_PREMISE_READS.reset(token)
+
+    kept = changed = 0
+    for owner in [None, *(python_node_source_key(node) for node in functions)]:
+        log = ScanPremiseReads()
+        logged = scan(base, owner, log)
+        assert log.usable
+        for premise in alternatives:
+            full = scan(premise, owner)
+            if log.unchanged_under(premise):
+                assert full == logged, (owner, premise)
+                kept += 1
+            else:
+                changed += full != logged
+    assert kept and changed
+
+
 _ESCAPED_MODULE = "import sys\nkeep(sys.modules[__name__])\n"
 _DEFINITION_STORES = (
     "def deco(f):\n"
