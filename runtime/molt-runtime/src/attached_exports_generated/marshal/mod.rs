@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_marshal_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_marshal_version(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1912);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_marshal_version);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_marshal_version_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_marshal_version(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_marshal_dumps__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_marshal_dumps(__context: u64, bits: u64, version_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1913);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_marshal_dumps);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_marshal_dumps_attached_body(_py, bits, version_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_marshal_dumps(__context: u64, bits: u64, version_b
 #[unsafe(export_name = "molt_marshal_loads__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_marshal_loads(__context: u64, bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1914);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_marshal_loads);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_marshal_loads_attached_body(_py, bits)
@@ -31,7 +31,7 @@ pub unsafe extern "C" fn molt_marshal_dump(
     file: u64,
     version_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1915);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_marshal_dump);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_marshal_dump_attached_body(_py, bits, file, version_bits)
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn molt_marshal_dump(
 #[unsafe(export_name = "molt_marshal_load__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_marshal_load(__context: u64, file: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1916);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_marshal_load);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_marshal_load_attached_body(_py, file)

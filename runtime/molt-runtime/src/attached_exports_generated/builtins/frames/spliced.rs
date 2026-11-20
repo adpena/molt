@@ -7,7 +7,9 @@ pub unsafe extern "C" fn molt_spliced_frame_link(
     location_bits: u64,
     _key_space_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(752);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_spliced_frame_link,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_spliced_frame_link_attached_body(_py, function_bits, location_bits, _key_space_bits)
 }
@@ -19,14 +21,18 @@ pub unsafe extern "C" fn molt_spliced_frame_bind(
     key_bits: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(753);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_spliced_frame_bind,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_spliced_frame_bind_attached_body(_py, key_space_bits, key_bits, value)
 }
 #[unsafe(export_name = "molt_spliced_frame_unlink__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_spliced_frame_unlink(__context: u64, count_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(754);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_spliced_frame_unlink,
+    );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_spliced_frame_unlink_attached_body(_py, count_bits)
 }

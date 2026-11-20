@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_json_parse_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_parse_int(__context: u64, ptr: *const u8, len_bits: u64) -> i64 {
-    molt_runtime_core::call_census::hit(988);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_parse_int);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_json_parse_int_attached_body(_py, ptr, len_bits) }
@@ -10,7 +10,9 @@ pub unsafe extern "C" fn molt_json_parse_int(__context: u64, ptr: *const u8, len
 #[unsafe(export_name = "molt_json_encode_basestring_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_encode_basestring_obj(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(989);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_encode_basestring_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_encode_basestring_obj_attached_body(_py, obj_bits)
@@ -21,7 +23,9 @@ pub unsafe extern "C" fn molt_json_encode_basestring_ascii_obj(
     __context: u64,
     obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(990);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_encode_basestring_ascii_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_encode_basestring_ascii_obj_attached_body(_py, obj_bits)
@@ -34,7 +38,9 @@ pub unsafe extern "C" fn molt_json_scanstring_obj(
     end_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(991);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_scanstring_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_scanstring_obj_attached_body(_py, text_bits, end_bits, strict_bits)
@@ -47,7 +53,7 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(992);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_parse_scalar);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_json_parse_scalar_attached_body(_py, ptr, len_bits, out) }
@@ -61,7 +67,9 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(993);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_msgpack_parse_scalar,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_msgpack_parse_scalar_attached_body(_py, ptr, len_bits, out) }
@@ -75,7 +83,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    molt_runtime_core::call_census::hit(994);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_cbor_parse_scalar);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_cbor_parse_scalar_attached_body(_py, ptr, len_bits, out) }
@@ -83,7 +91,9 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
 #[unsafe(export_name = "molt_json_parse_scalar_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_parse_scalar_obj(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(995);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_parse_scalar_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_parse_scalar_obj_attached_body(_py, obj_bits)
@@ -92,7 +102,9 @@ pub unsafe extern "C" fn molt_json_parse_scalar_obj(__context: u64, obj_bits: u6
 #[unsafe(export_name = "molt_msgpack_parse_scalar_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_msgpack_parse_scalar_obj(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(996);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_msgpack_parse_scalar_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_msgpack_parse_scalar_obj_attached_body(_py, obj_bits)
@@ -101,7 +113,9 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar_obj(__context: u64, obj_bits:
 #[unsafe(export_name = "molt_cbor_parse_scalar_obj__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cbor_parse_scalar_obj(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(997);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_cbor_parse_scalar_obj,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cbor_parse_scalar_obj_attached_body(_py, obj_bits)
@@ -115,7 +129,7 @@ pub unsafe extern "C" fn molt_json_dumps(
     sort_keys_bits: u64,
     ensure_ascii_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(998);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_dumps);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_dumps_attached_body(
@@ -141,7 +155,7 @@ pub unsafe extern "C" fn molt_json_dumps_ex(
     key_separator_bits: u64,
     default_fn_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(999);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_dumps_ex);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_dumps_ex_attached_body(
@@ -170,7 +184,7 @@ pub unsafe extern "C" fn molt_json_loads_ex(
     object_pairs_hook_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1000);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_loads_ex);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_loads_ex_attached_body(
@@ -197,7 +211,9 @@ pub unsafe extern "C" fn molt_json_raw_decode_ex(
     object_pairs_hook_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1001);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_raw_decode_ex,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_raw_decode_ex_attached_body(
@@ -219,7 +235,9 @@ pub unsafe extern "C" fn molt_json_calc_lineno_col(
     doc_bits: u64,
     pos_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1002);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_calc_lineno_col,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_calc_lineno_col_attached_body(_py, doc_bits, pos_bits)
@@ -227,7 +245,7 @@ pub unsafe extern "C" fn molt_json_calc_lineno_col(
 #[unsafe(export_name = "molt_json_coerce_text__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_coerce_text(__context: u64, payload_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1003);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_json_coerce_text);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_coerce_text_attached_body(_py, payload_bits)
@@ -235,7 +253,9 @@ pub unsafe extern "C" fn molt_json_coerce_text(__context: u64, payload_bits: u64
 #[unsafe(export_name = "molt_json_default_separators__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_default_separators(__context: u64, indent_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1004);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_default_separators,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_default_separators_attached_body(_py, indent_bits)
@@ -248,7 +268,9 @@ pub unsafe extern "C" fn molt_json_format_decode_error(
     doc_bits: u64,
     pos_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1005);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_format_decode_error,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_format_decode_error_attached_body(_py, msg_bits, doc_bits, pos_bits)
@@ -256,7 +278,9 @@ pub unsafe extern "C" fn molt_json_format_decode_error(
 #[unsafe(export_name = "molt_json_parse_error_msg__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_json_parse_error_msg(__context: u64, exc_msg_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1006);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_json_parse_error_msg,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_json_parse_error_msg_attached_body(_py, exc_msg_bits)

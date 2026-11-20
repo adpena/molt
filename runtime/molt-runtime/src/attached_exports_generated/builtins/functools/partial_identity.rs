@@ -6,7 +6,9 @@ pub unsafe extern "C" fn molt_functools_partial_member_get(
     descriptor: u64,
     instance: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(834);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_member_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_member_get_attached_body(_py, descriptor, instance)
@@ -19,7 +21,9 @@ pub unsafe extern "C" fn molt_functools_partial_dictionary_set(
     instance: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(835);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_dictionary_set,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_dictionary_set_attached_body(_py, _descriptor, instance, value)
@@ -31,7 +35,9 @@ pub unsafe extern "C" fn molt_functools_partial_dictionary_delete(
     _descriptor: u64,
     instance: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(836);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_dictionary_delete,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_dictionary_delete_attached_body(_py, _descriptor, instance)
@@ -44,7 +50,9 @@ pub unsafe extern "C" fn molt_functools_partial_new(
     arguments: u64,
     keywords: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(837);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_new_attached_body(_py, class, arguments, keywords)
@@ -52,7 +60,9 @@ pub unsafe extern "C" fn molt_functools_partial_new(
 #[unsafe(export_name = "molt_functools_partial_reduce__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_functools_partial_reduce(__context: u64, instance: u64) -> u64 {
-    molt_runtime_core::call_census::hit(838);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_reduce,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_reduce_attached_body(_py, instance)
@@ -64,7 +74,9 @@ pub unsafe extern "C" fn molt_functools_partial_setstate(
     instance: u64,
     state: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(839);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_setstate,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_setstate_attached_body(_py, instance, state)
@@ -77,7 +89,9 @@ pub unsafe extern "C" fn molt_functools_partial_get(
     receiver: u64,
     _owner: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(840);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_get,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_get_attached_body(_py, instance, receiver, _owner)
@@ -85,7 +99,9 @@ pub unsafe extern "C" fn molt_functools_partial_get(
 #[unsafe(export_name = "molt_functools_partial_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_functools_partial_repr(__context: u64, instance: u64) -> u64 {
-    molt_runtime_core::call_census::hit(841);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_functools_partial_repr,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_repr_attached_body(_py, instance)

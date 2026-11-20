@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_lzma_format_auto__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_format_auto(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1007);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_format_auto);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_format_auto_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_lzma_format_auto(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_format_xz__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_format_xz(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1008);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_format_xz);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_format_xz_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_lzma_format_xz(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_format_alone__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_format_alone(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1009);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_format_alone);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_format_alone_attached_body(_py)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_lzma_format_alone(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_format_raw__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_format_raw(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1010);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_format_raw);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_format_raw_attached_body(_py)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_lzma_format_raw(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_check_none__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_check_none(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1011);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_check_none);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_check_none_attached_body(_py)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_lzma_check_none(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_check_crc32__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_check_crc32(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1012);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_check_crc32);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_check_crc32_attached_body(_py)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_lzma_check_crc32(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_check_crc64__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_check_crc64(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1013);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_check_crc64);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_check_crc64_attached_body(_py)
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_lzma_check_crc64(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_check_sha256__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_check_sha256(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1014);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_check_sha256);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_check_sha256_attached_body(_py)
@@ -66,7 +66,9 @@ pub unsafe extern "C" fn molt_lzma_check_sha256(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_preset_default__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_preset_default(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1015);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_preset_default,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_preset_default_attached_body(_py)
@@ -74,7 +76,9 @@ pub unsafe extern "C" fn molt_lzma_preset_default(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_lzma_preset_extreme__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_lzma_preset_extreme(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1016);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_preset_extreme,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_preset_extreme_attached_body(_py)
@@ -89,7 +93,7 @@ pub unsafe extern "C" fn molt_lzma_compress(
     _check_bits: u64,
     _preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1017);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_compress);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_compress_attached_body(
@@ -110,7 +114,7 @@ pub unsafe extern "C" fn molt_lzma_decompress(
     _format_bits: u64,
     _memlimit_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1018);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_decompress);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompress_attached_body(_py, _error_class, _data_bits, _format_bits, _memlimit_bits)
@@ -123,7 +127,9 @@ pub unsafe extern "C" fn molt_lzma_compressor_new(
     _check_bits: u64,
     _preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1019);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_compressor_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_compressor_new_attached_body(_py, _format_bits, _check_bits, _preset_bits)
@@ -136,7 +142,9 @@ pub unsafe extern "C" fn molt_lzma_compressor_compress(
     _handle_bits: u64,
     _data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1020);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_compressor_compress,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_compressor_compress_attached_body(_py, _error_class, _handle_bits, _data_bits)
@@ -148,7 +156,9 @@ pub unsafe extern "C" fn molt_lzma_compressor_flush(
     _error_class: u64,
     _handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1021);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_compressor_flush,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_compressor_flush_attached_body(_py, _error_class, _handle_bits)
@@ -161,7 +171,9 @@ pub unsafe extern "C" fn molt_lzma_decompressor_new(
     _format_bits: u64,
     _memlimit_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1022);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_decompressor_new,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompressor_new_attached_body(_py, _error_class, _format_bits, _memlimit_bits)
@@ -175,7 +187,9 @@ pub unsafe extern "C" fn molt_lzma_decompressor_decompress(
     _data_bits: u64,
     _max_length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1023);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_decompressor_decompress,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompressor_decompress_attached_body(
@@ -193,7 +207,9 @@ pub unsafe extern "C" fn molt_lzma_decompressor_eof(
     _error_class: u64,
     _handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1024);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_decompressor_eof,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompressor_eof_attached_body(_py, _error_class, _handle_bits)
@@ -205,7 +221,9 @@ pub unsafe extern "C" fn molt_lzma_decompressor_needs_input(
     _error_class: u64,
     _handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1025);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_decompressor_needs_input,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompressor_needs_input_attached_body(_py, _error_class, _handle_bits)
@@ -217,7 +235,9 @@ pub unsafe extern "C" fn molt_lzma_decompressor_unused_data(
     _error_class: u64,
     _handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1026);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_lzma_decompressor_unused_data,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_decompressor_unused_data_attached_body(_py, _error_class, _handle_bits)
@@ -233,7 +253,7 @@ pub unsafe extern "C" fn molt_lzma_file_open(
     _check_bits: u64,
     _preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1027);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_file_open);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_file_open_attached_body(
@@ -254,7 +274,7 @@ pub unsafe extern "C" fn molt_lzma_file_read(
     _handle_bits: u64,
     _size_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1028);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_file_read);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_file_read_attached_body(_py, _error_class, _handle_bits, _size_bits)
@@ -267,7 +287,7 @@ pub unsafe extern "C" fn molt_lzma_file_write(
     _handle_bits: u64,
     _data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1029);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_file_write);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_file_write_attached_body(_py, _error_class, _handle_bits, _data_bits)
@@ -279,7 +299,7 @@ pub unsafe extern "C" fn molt_lzma_file_close(
     _error_class: u64,
     _handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1030);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_lzma_file_close);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_lzma_file_close_attached_body(_py, _error_class, _handle_bits)

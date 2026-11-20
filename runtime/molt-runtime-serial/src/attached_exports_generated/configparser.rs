@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_configparser_new(
     defaults_bits: u64,
     interpolation_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3336);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_configparser_new);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_new_attached_body(_py, defaults_bits, interpolation_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_configparser_read(
     handle_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3337);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_configparser_read);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_read_attached_body(_py, handle_bits, filename_bits)
@@ -30,7 +30,9 @@ pub unsafe extern "C" fn molt_configparser_read_string(
     handle_bits: u64,
     text_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3338);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_read_string,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_read_string_attached_body(_py, handle_bits, text_bits)
@@ -38,7 +40,9 @@ pub unsafe extern "C" fn molt_configparser_read_string(
 #[unsafe(export_name = "molt_configparser_sections__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_configparser_sections(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3339);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_sections,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_sections_attached_body(_py, handle_bits)
@@ -50,7 +54,9 @@ pub unsafe extern "C" fn molt_configparser_has_section(
     handle_bits: u64,
     section_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3340);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_has_section,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_has_section_attached_body(_py, handle_bits, section_bits)
@@ -63,7 +69,9 @@ pub unsafe extern "C" fn molt_configparser_has_option(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3341);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_has_option,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_has_option_attached_body(_py, handle_bits, section_bits, option_bits)
@@ -77,7 +85,7 @@ pub unsafe extern "C" fn molt_configparser_get(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3342);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_configparser_get);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_get_attached_body(_py, handle_bits, section_bits, option_bits, fallback_bits)
@@ -91,7 +99,9 @@ pub unsafe extern "C" fn molt_configparser_getint(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3343);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_getint,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_getint_attached_body(
@@ -111,7 +121,9 @@ pub unsafe extern "C" fn molt_configparser_getfloat(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3344);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_getfloat,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_getfloat_attached_body(
@@ -131,7 +143,9 @@ pub unsafe extern "C" fn molt_configparser_getboolean(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3345);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_getboolean,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_getboolean_attached_body(
@@ -151,7 +165,7 @@ pub unsafe extern "C" fn molt_configparser_set(
     option_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3346);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_configparser_set);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_set_attached_body(_py, handle_bits, section_bits, option_bits, value_bits)
@@ -163,7 +177,9 @@ pub unsafe extern "C" fn molt_configparser_add_section(
     handle_bits: u64,
     section_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3347);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_add_section,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_add_section_attached_body(_py, handle_bits, section_bits)
@@ -175,7 +191,9 @@ pub unsafe extern "C" fn molt_configparser_remove_section(
     handle_bits: u64,
     section_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3348);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_remove_section,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_remove_section_attached_body(_py, handle_bits, section_bits)
@@ -188,7 +206,9 @@ pub unsafe extern "C" fn molt_configparser_remove_option(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3349);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_remove_option,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_remove_option_attached_body(_py, handle_bits, section_bits, option_bits)
@@ -200,7 +220,9 @@ pub unsafe extern "C" fn molt_configparser_options(
     handle_bits: u64,
     section_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3350);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_options,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_options_attached_body(_py, handle_bits, section_bits)
@@ -212,7 +234,9 @@ pub unsafe extern "C" fn molt_configparser_items(
     handle_bits: u64,
     section_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3351);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_items,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_items_attached_body(_py, handle_bits, section_bits)
@@ -220,7 +244,7 @@ pub unsafe extern "C" fn molt_configparser_items(
 #[unsafe(export_name = "molt_configparser_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_configparser_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3352);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_configparser_drop);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_drop_attached_body(_py, handle_bits)
@@ -228,7 +252,9 @@ pub unsafe extern "C" fn molt_configparser_drop(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_configparser_write_string__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_configparser_write_string(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3353);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_write_string,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_write_string_attached_body(_py, handle_bits)
@@ -241,7 +267,9 @@ pub unsafe extern "C" fn molt_configparser_get_raw(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3354);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_get_raw,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_get_raw_attached_body(_py, handle_bits, section_bits, option_bits)
@@ -254,7 +282,9 @@ pub unsafe extern "C" fn molt_configparser_interpolate_basic(
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3355);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_interpolate_basic,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_interpolate_basic_attached_body(_py, handle_bits, section_bits, value_bits)
@@ -267,7 +297,9 @@ pub unsafe extern "C" fn molt_configparser_interpolate_extended(
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3356);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_interpolate_extended,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_interpolate_extended_attached_body(_py, handle_bits, section_bits, value_bits)
@@ -280,7 +312,9 @@ pub unsafe extern "C" fn molt_configparser_read_file(
     content_bits: u64,
     source_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3357);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_read_file,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_read_file_attached_body(_py, handle_bits, content_bits, source_bits)
@@ -288,7 +322,9 @@ pub unsafe extern "C" fn molt_configparser_read_file(
 #[unsafe(export_name = "molt_configparser_defaults__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_configparser_defaults(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3358);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_configparser_defaults,
+    );
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_configparser_defaults_attached_body(_py, handle_bits)

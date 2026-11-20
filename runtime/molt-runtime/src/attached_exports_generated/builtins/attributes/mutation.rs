@@ -8,7 +8,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(474);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_attr_generic);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_set_attr_ptr(
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(475);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_attr_ptr);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -45,7 +45,7 @@ pub unsafe extern "C" fn molt_del_attr_generic(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(476);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_del_attr_generic);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_del_attr_generic_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits) }
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn molt_del_attr_ptr(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(477);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_del_attr_ptr);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_del_attr_ptr_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits) }
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn molt_set_attr_object(
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(478);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_attr_object);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -95,7 +95,9 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
     val_bits: u64,
     site_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(479);
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_set_attr_object_ic,
+    );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -117,7 +119,7 @@ pub unsafe extern "C" fn molt_del_attr_object(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(480);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_del_attr_object);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_del_attr_object_attached_body(_py, obj_bits, attr_name_ptr, attr_name_len_bits) }
@@ -130,7 +132,7 @@ pub unsafe extern "C" fn molt_set_attr_name(
     name: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(481);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_set_attr_name);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_attr_name_attached_body(_py, object, name, value)
@@ -138,7 +140,7 @@ pub unsafe extern "C" fn molt_set_attr_name(
 #[unsafe(export_name = "molt_del_attr_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_del_attr_name(__context: u64, object: u64, name: u64) -> u64 {
-    molt_runtime_core::call_census::hit(482);
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_del_attr_name);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_del_attr_name_attached_body(_py, object, name)

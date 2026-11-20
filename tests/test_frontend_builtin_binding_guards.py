@@ -387,7 +387,10 @@ NAMED_LOWERINGS = [
     ("sum", "sum(x)", "builtin_func"),
     ("sorted", "sorted(x)", "builtin_func"),
     ("print", "print(x)", "builtin_func"),
-    ("getattr", "getattr(x, 'a')", "get_attr_name_default"),
+    # Two-argument getattr raises for an absent attribute; with a default it
+    # returns the default (4b07810547 gave the two forms two operations).
+    ("getattr", "getattr(x, 'a')", "get_attr_name"),
+    ("getattr", "getattr(x, 'a', None)", "get_attr_name_default"),
     ("dir", "dir(x)", "builtin_func"),
     ("ValueError", "ValueError(x)", "exception_new_builtin_one"),
     ("KeyError", "KeyError", "exception_class"),
@@ -404,7 +407,9 @@ def _member_writer(name: str) -> PythonNamespacePremise:
 
 
 @pytest.mark.parametrize(
-    "name,expression,operation", NAMED_LOWERINGS, ids=[c[0] for c in NAMED_LOWERINGS]
+    "name,expression,operation",
+    NAMED_LOWERINGS,
+    ids=[c[0] if c[1].count(",") < 2 else f"{c[0]}-default" for c in NAMED_LOWERINGS],
 )
 def test_every_named_builtin_lowering_requires_its_proof(
     name: str, expression: str, operation: str

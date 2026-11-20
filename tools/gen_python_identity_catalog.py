@@ -76,6 +76,7 @@ class IntrinsicCallable:
     compiler_from: tuple[str, ...] = ()
     attribute_read: tuple[int, str] | None = None
     native_initializer: str | None = None
+    namespace_entry_read: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -476,6 +477,7 @@ def load_schema(
             {"name", "identity", "import_behavior", "argument_roles"},
             {"name", "identity", "acquisition"},
             {"name", "identity", "attribute_read"},
+            {"name", "identity", "namespace_entry_read"},
             {"name", "identity", "native_initializer"},
             {"name", "identity"},
         ):
@@ -528,6 +530,24 @@ def load_schema(
                 argument,
                 _name(attribute_read["member"], "attribute member"),
             )
+        namespace_entry_read = row.get("namespace_entry_read")
+        if namespace_entry_read is not None:
+            if not isinstance(namespace_entry_read, dict) or set(
+                namespace_entry_read
+            ) != {"owner", "name", "missing"}:
+                raise SchemaError(
+                    "namespace entry read requires owner, name and missing"
+                )
+            positions = tuple(
+                namespace_entry_read[role] for role in ("owner", "name", "missing")
+            )
+            if producer.arity != 3 or sorted(
+                position for position in positions if type(position) is int
+            ) != [0, 1, 2]:
+                raise SchemaError(
+                    "namespace entry read maps three distinct manifest parameters"
+                )
+            namespace_entry_read = positions
         native_initializer = row.get("native_initializer")
         if native_initializer is not None:
             _reference(native_initializer, set(raw_initializers), "native initializer")
@@ -600,6 +620,7 @@ def load_schema(
                 compiler_from,
                 attribute_read,
                 native_initializer,
+                namespace_entry_read,
             )
         )
     if used_properties != set(properties):
@@ -797,6 +818,16 @@ def render_python(schema: Schema) -> str:
             (f"int(PythonIdentity.{row.identity})", repr(row.attribute_read))
             for row in schema.intrinsic_callables
             if row.attribute_read is not None
+        ],
+    )
+    mapping(
+        "INTRINSIC_NAMESPACE_ENTRY_READS",
+        "IdentityMask",
+        "tuple[int, int, int]",
+        [
+            (f"int(PythonIdentity.{row.identity})", repr(row.namespace_entry_read))
+            for row in schema.intrinsic_callables
+            if row.namespace_entry_read is not None
         ],
     )
     mapping(
