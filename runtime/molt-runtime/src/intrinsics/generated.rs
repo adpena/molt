@@ -9026,6 +9026,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_match_handler),
     },
     IntrinsicSpec {
+        name: "molt_exception_new_builtin_kw",
+        symbol: "molt_exception_new_builtin_kw",
+        arity: 4,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_new_builtin_kw),
+    },
+    IntrinsicSpec {
         name: "molt_exception_active",
         symbol: "molt_exception_active",
         arity: 0,
@@ -18835,4 +18843,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x88ba19bb31e4f2c6;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x2185f1ef7425e659;

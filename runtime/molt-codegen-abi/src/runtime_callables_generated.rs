@@ -1167,6 +1167,7 @@ pub enum RuntimeCallable {
     molt_exception_member_get = 0xFFFFFF5B15EA0552,
     molt_exception_member_set = 0xFFFFFF41D365C7AF,
     molt_exception_new_bound = 0xFFFFFFCE806CA1A9,
+    molt_exception_new_builtin_kw = 0xFFFFFF6E890738FB,
     molt_exception_prepare_raise = 0xFFFFFFB6E25CFAD6,
     molt_exception_reduce = 0xFFFFFF85BCB01913,
     molt_exception_setstate = 0xFFFFFFD1DBDBFD8D,
@@ -4343,6 +4344,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_exception_member_get.key() == runtime_callable_key("molt_exception_member_get"));
     assert!(RuntimeCallable::molt_exception_member_set.key() == runtime_callable_key("molt_exception_member_set"));
     assert!(RuntimeCallable::molt_exception_new_bound.key() == runtime_callable_key("molt_exception_new_bound"));
+    assert!(RuntimeCallable::molt_exception_new_builtin_kw.key() == runtime_callable_key("molt_exception_new_builtin_kw"));
     assert!(RuntimeCallable::molt_exception_prepare_raise.key() == runtime_callable_key("molt_exception_prepare_raise"));
     assert!(RuntimeCallable::molt_exception_reduce.key() == runtime_callable_key("molt_exception_reduce"));
     assert!(RuntimeCallable::molt_exception_setstate.key() == runtime_callable_key("molt_exception_setstate"));

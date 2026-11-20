@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_tk_flatten_args__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tk_flatten_args(__context: u64, args_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3603);
+    molt_runtime_core::call_census::hit(3604);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_flatten_args_attached_body(_py, args_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_tk_flatten_args(__context: u64, args_bits: u64) ->
 #[unsafe(export_name = "molt_tk_cnfmerge__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tk_cnfmerge(__context: u64, cnf_bits: u64, kw_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3604);
+    molt_runtime_core::call_census::hit(3605);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_cnfmerge_attached_body(_py, cnf_bits, kw_bits)

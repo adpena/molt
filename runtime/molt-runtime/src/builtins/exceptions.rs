@@ -4569,6 +4569,69 @@ pub(crate) fn molt_exception_new_builtin_one_attached_body(
     })
 }
 
+/// A proven builtin exception class called with keywords: the two steps
+/// `type.__call__` takes for an exact builtin class (default `__new__`, tuple
+/// `__init__`), as one call. The class constructor builds the instance from
+/// the positional tuple; the layout's constructor keywords then apply through
+/// the same transaction, with the same refusals (unknown or excess keywords,
+/// "OSError() takes no keyword arguments").
+pub(crate) fn molt_exception_new_builtin_kw_attached_body(
+    _py: &crate::PyToken<'_>,
+    tag_bits: u64,
+    args_bits: u64,
+    kw_names_bits: u64,
+    kw_values_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let tag = to_i64(obj_from_bits(tag_bits)).and_then(|tag| u64::try_from(tag).ok());
+        let Some(class_bits) = tag.and_then(|tag| builtin_exception_class_for_tag(_py, tag))
+        else {
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "unknown builtin exception tag",
+            );
+        };
+        let tuple_ptr = |bits: u64| {
+            obj_from_bits(bits)
+                .as_ptr()
+                .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE)
+        };
+        let (Some(_), Some(names_ptr), Some(values_ptr)) = (
+            tuple_ptr(args_bits),
+            tuple_ptr(kw_names_bits),
+            tuple_ptr(kw_values_bits),
+        ) else {
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "builtin exception keyword constructor expects tuples",
+            );
+        };
+        let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let inst_bits = MoltObject::from_ptr(ptr).bits();
+        let failed = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(names_ptr, |names| {
+                crate::object::seq_access::with_immutable_tuple_slice(values_ptr, |values| {
+                    crate::call::class_init::apply_builtin_exception_keywords(
+                        _py, class_bits, inst_bits, names, values,
+                    )
+                })
+            })
+        }
+        .flatten()
+        .unwrap_or(true);
+        if failed {
+            dec_ref_bits(_py, inst_bits);
+            return MoltObject::none().bits();
+        }
+        inst_bits
+    })
+}
+
 /// Validate the complete flat handler before matching, including tuple entries
 /// after a matching class. Handler admission never invokes metaclass hooks.
 fn validate_exception_handler(py: &PyToken<'_>, handler: u64) -> bool {

@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_opcode_payload_312_json__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_opcode_payload_312_json(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(784);
+    molt_runtime_core::call_census::hit(785);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_opcode_payload_312_json_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_opcode_payload_312_json(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_opcode_metadata_payload_314_json__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_opcode_metadata_payload_314_json(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(785);
+    molt_runtime_core::call_census::hit(786);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_opcode_metadata_payload_314_json_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_opcode_metadata_payload_314_json(__context: u64) -
 #[unsafe(export_name = "molt_opcode_get_specialization_stats__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_opcode_get_specialization_stats(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(786);
+    molt_runtime_core::call_census::hit(787);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_opcode_get_specialization_stats_attached_body(_py)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_opcode_stack_effect(
     opcode_bits: u64,
     oparg_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(787);
+    molt_runtime_core::call_census::hit(788);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_opcode_stack_effect_attached_body(_py, opcode_bits, oparg_bits)

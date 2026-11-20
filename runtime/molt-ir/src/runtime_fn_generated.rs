@@ -1024,6 +1024,7 @@ pub enum RuntimeFn {
     ExceptionNewBound,
     ExceptionNewBuiltin,
     ExceptionNewBuiltinEmpty,
+    ExceptionNewBuiltinKw,
     ExceptionNewBuiltinOne,
     ExceptionNewFromClass,
     ExceptionPending,
@@ -3874,6 +3875,7 @@ impl RuntimeFn {
         Self::ExceptionNewBound,
         Self::ExceptionNewBuiltin,
         Self::ExceptionNewBuiltinEmpty,
+        Self::ExceptionNewBuiltinKw,
         Self::ExceptionNewBuiltinOne,
         Self::ExceptionNewFromClass,
         Self::ExceptionPending,
@@ -5817,7 +5819,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2846;
+    pub const COUNT: usize = 2847;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -19124,6 +19126,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable: None,
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_exception_new_builtin_kw",
+        linker_symbol: "molt_exception_new_builtin_kw__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 4,
+        param_types: PARAMS_WWWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFF6E890738FB,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

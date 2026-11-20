@@ -78,6 +78,7 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
             Some(crate::molt_module_initialization_spec as *const ())
         }
         "molt_exception_match_handler" => Some(crate::molt_exception_match_handler as *const ()),
+        "molt_exception_new_builtin_kw" => Some(crate::molt_exception_new_builtin_kw as *const ()),
         "molt_exception_active" => Some(crate::molt_exception_active as *const ()),
         "molt_exception_last" => Some(crate::molt_exception_last as *const ()),
         "molt_exception_last_pending" => Some(crate::molt_exception_last_pending as *const ()),

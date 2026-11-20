@@ -1414,6 +1414,7 @@ macro_rules! attached_symbol {
     ("molt_exception_new_bound") => { "molt_exception_new_bound__molt_context_d1086a27578cda22" };
     ("molt_exception_new_builtin") => { "molt_exception_new_builtin__molt_context_d1086a27578cda22" };
     ("molt_exception_new_builtin_empty") => { "molt_exception_new_builtin_empty__molt_context_d1086a27578cda22" };
+    ("molt_exception_new_builtin_kw") => { "molt_exception_new_builtin_kw__molt_context_d1086a27578cda22" };
     ("molt_exception_new_builtin_one") => { "molt_exception_new_builtin_one__molt_context_d1086a27578cda22" };
     ("molt_exception_new_from_class") => { "molt_exception_new_from_class__molt_context_d1086a27578cda22" };
     ("molt_exception_pending") => { "molt_exception_pending__molt_context_d1086a27578cda22" };

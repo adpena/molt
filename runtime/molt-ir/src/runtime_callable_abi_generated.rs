@@ -3788,6 +3788,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_exception_new_builtin_kw",
+        arity: 4,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_exception_prepare_raise",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -18170,6 +18175,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_exception_new_builtin_empty" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_new_builtin_empty__molt_context_d1086a27578cda22",
+        },
+        "molt_exception_new_builtin_kw" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_exception_new_builtin_kw__molt_context_d1086a27578cda22",
         },
         "molt_exception_new_builtin_one" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

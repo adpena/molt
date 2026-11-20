@@ -270,27 +270,48 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 exception_name is not None
                 and exception_name in BUILTIN_EXCEPTION_CODES
                 and self._builtin_exception_is_available(exception_name)
-                and not node.keywords
+                and all(keyword.arg is not None for keyword in node.keywords)
                 and not any(isinstance(arg, ast.Starred) for arg in node.args)
             ):
-                # A proven builtin exception class called positionally is one
-                # construction by class tag (closed world: a builtin class has
-                # no writer). The class's own constructor validates the
-                # arguments (Unicode, syntax and group errors may refuse).
-                args: list[MoltValue] = []
-                for arg in node.args:
-                    arg_val = self.visit(arg)
-                    if arg_val is None:
+                # A proven builtin exception class is one construction by class
+                # tag (closed world: a builtin class has no writer). The class's
+                # own constructor validates the arguments (Unicode, syntax and
+                # group errors may refuse); named keywords apply through the
+                # layout's constructor keywords in the same runtime call.
+                def lower(expression: ast.expr) -> MoltValue:
+                    value = self.visit(expression)
+                    if value is None:
                         raise FrontendRejection(
                             Diagnostic.OPERAND_VALUE,
                             f"{exception_name} with unsupported arg expression",
                             f"{exception_name} with simple literals",
                             "argument expression could not be lowered",
                         )
-                    args.append(arg_val)
-                error = self._emit_exception_new_from_args(exception_name, args)
-                self._emit_raise_if_pending()
-                return error
+                    return value
+
+                args = [lower(arg) for arg in node.args]
+                if not node.keywords:
+                    error = self._emit_exception_new_from_args(exception_name, args)
+                    self._emit_raise_if_pending()
+                    return error
+                # Positional values, then keyword values, in source order.
+                kw_values = [lower(keyword.value) for keyword in node.keywords]
+                kw_names = [
+                    self._emit_const_value(keyword.arg) for keyword in node.keywords
+                ]
+                tuples = []
+                for items in (args, kw_names, kw_values):
+                    packed = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(MoltOp(kind="TUPLE_NEW", args=items, result=packed))
+                    tuples.append(packed)
+                return self._emit_intrinsic_call(
+                    "molt_exception_new_builtin_kw",
+                    [
+                        self._emit_const_value(BUILTIN_EXCEPTION_CODES[exception_name]),
+                        *tuples,
+                    ],
+                    type_hint="exception",
+                )
             if (
                 builtin is PythonIdentity.BUILTIN_ABS
                 and len(node.args) == 1
