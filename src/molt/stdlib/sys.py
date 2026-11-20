@@ -444,7 +444,9 @@ _AsyncgenHooks = _struct_sequence_type(
 )
 
 
-if "abiflags" in globals():
+# The native bootstrap publishes abiflags on every target but Windows, as
+# CPython does; the build target answers, so no code reads this namespace.
+if _require_intrinsic("molt_sys_platform")() != "win32":
     __all__.insert(__all__.index("flags"), "abiflags")
 
 
