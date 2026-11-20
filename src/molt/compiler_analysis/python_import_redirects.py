@@ -163,6 +163,11 @@ def _first(writers: Iterable[ImportWriter]) -> tuple[ImportWriter, ...]:
     return tuple(sorted(set(writers)))
 
 
+# A guarded import: its module name (or bound, or None), its handler site and
+# the modules completed before it runs.
+GuardedImport = tuple[str | PythonImportKeyBound | None, ImportWriter, tuple[str, ...]]
+
+
 @dataclass(frozen=True, slots=True)
 class ImportRedirects:
     """The program's one answer to "can ``import M`` yield something other
@@ -171,14 +176,15 @@ class ImportRedirects:
     ``global_writers`` redirect every row. ``key_writers`` pairs an exact
     ``sys.modules`` key with its writer; ``bound_writers`` pairs a computed
     key's bound with its writer. ``guarded`` pairs a guarded import's module
-    name (or bound, or None for an unbounded name) with its handler site.
+    name (or bound, or None for an unbounded name) with its handler site and
+    the modules whose bodies have completed whenever it runs.
     Every tuple is sorted, so equal facts compare equal.
     """
 
     global_writers: tuple[ImportWriter, ...] = ()
     key_writers: tuple[tuple[str, ImportWriter], ...] = ()
     bound_writers: tuple[tuple[PythonImportKeyBound, ImportWriter], ...] = ()
-    guarded: tuple[tuple[str | PythonImportKeyBound | None, ImportWriter], ...] = ()
+    guarded: tuple[GuardedImport, ...] = ()
     # D2b: a spec writer of one module (its name), or of every module (None).
     spec_writers: tuple[tuple[str | None, ImportWriter], ...] = ()
     # D2b: named stores of a spec attribute on a receiver that is not
@@ -231,7 +237,8 @@ class ImportRedirects:
 
         ``importers`` are the modules whose import runs ``module``'s body
         first (its transitive importers). A guarded import of ``module``, of
-        a dotted descendant of it, or of an importer swallows its failure.
+        a dotted descendant of it, or of an importer swallows its failure,
+        unless ``module``'s body has completed whenever that import runs.
 
         Requires: ``importers`` holds every module whose dependency closure
         contains ``module``.
@@ -240,7 +247,9 @@ class ImportRedirects:
         """
         targets = {module, *importers}
         found: list[ImportWriter] = []
-        for key, writer in self.guarded:
+        for key, writer, initialized in self.guarded:
+            if module in initialized:
+                continue
             if key is None:
                 found.append(writer)
             elif isinstance(key, PythonImportKeyBound):
@@ -293,7 +302,7 @@ def import_redirects(
     global_writers: Iterable[ImportWriter] = (),
     key_writers: Iterable[tuple[str, ImportWriter]] = (),
     bound_writers: Iterable[tuple[PythonImportKeyBound, ImportWriter]] = (),
-    guarded: Iterable[tuple[str | PythonImportKeyBound | None, ImportWriter]] = (),
+    guarded: Iterable[GuardedImport] = (),
     spec_writers: Iterable[tuple[str | None, ImportWriter]] = (),
     spec_member_stores: Iterable[ImportWriter] = (),
     escaped: Iterable[str] | None = (),
@@ -304,7 +313,9 @@ def import_redirects(
         _first(global_writers),
         tuple(sorted(set(key_writers))),
         tuple(sorted(set(bound_writers))),
-        tuple(sorted(set(guarded), key=lambda row: (_guard_order(row[0]), row[1]))),
+        tuple(
+            sorted(set(guarded), key=lambda row: (_guard_order(row[0]), row[1], row[2]))
+        ),
         tuple(sorted(set(spec_writers), key=lambda row: (row[0] or "", row[1]))),
         _first(spec_member_stores),
         None if escaped is None else tuple(sorted(set(escaped))),
@@ -316,7 +327,7 @@ NO_IMPORT_REDIRECTS = ImportRedirects()
 # No verified graph: every row may be redirected.
 UNKNOWN_IMPORT_REDIRECTS = ImportRedirects(
     global_writers=(ImportWriter("<no closed graph>", "an unverified program"),),
-    guarded=((None, ImportWriter("<no closed graph>", "an unverified program")),),
+    guarded=((None, ImportWriter("<no closed graph>", "an unverified program"), ()),),
     spec_writers=((None, ImportWriter("<no closed graph>", "an unverified program")),),
     escaped=None,
     import_hook_writers=(ImportWriter("<no closed graph>", "an unverified program"),),
