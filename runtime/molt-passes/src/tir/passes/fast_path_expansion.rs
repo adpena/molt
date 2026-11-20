@@ -319,6 +319,11 @@ enum NumOperand {
     /// past 2**53, so it joins int arms only, and a sum or product of it
     /// could leave i64, so those arms use a checked op (`FullRange`).
     RawInt,
+    /// A raw bool (`Repr::Bool`) of an int-valued op (`+ - *`, comparisons):
+    /// the int 0 or 1, since bool subclasses int. It joins int arms only (its
+    /// raw lane widens the bit), and the slow arm boxes it as the bool it is,
+    /// so a runtime operator or a user `__radd__` still receives True/False.
+    RawBool,
 }
 
 /// How an op's int arm takes a full-range raw int.
@@ -400,10 +405,18 @@ fn is_boxed_word(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
     )
 }
 
-fn num_operand(repr: &HashMap<ValueId, Repr>, value: ValueId) -> Option<NumOperand> {
+/// `admit_bool`: the op's result is an int or a comparison whatever its int
+/// operands are (`+ - *`, comparisons), so a raw bool is the int 0 or 1, an
+/// inline int. Bitwise ops refuse it: `True & True` is the bool True.
+fn num_operand(
+    repr: &HashMap<ValueId, Repr>,
+    value: ValueId,
+    admit_bool: bool,
+) -> Option<NumOperand> {
     match repr.get(&value) {
         _ if is_boxed_word(repr, value) => Some(NumOperand::Boxed),
         Some(Repr::RawI64Safe) => Some(NumOperand::InlineInt),
+        Some(Repr::Bool) if admit_bool => Some(NumOperand::RawBool),
         Some(Repr::FloatUnboxed) => Some(NumOperand::RawFloat),
         Some(Repr::RawI64FullDeopt) => Some(NumOperand::RawInt),
         _ => None,
@@ -425,11 +438,15 @@ fn expansion_of(
     // operand is the runtime's (bitwise ops raise TypeError on floats).
     let numeric = |int: Option<(OpCode, TirType, ArmShape)>,
                    float: Option<(OpCode, TirType)>,
-                   full: FullRange| {
+                   full: FullRange,
+                   admit_bool: bool| {
         let [lhs, rhs] = op.operands[..] else {
             return None;
         };
-        let operands = [num_operand(repr, lhs)?, num_operand(repr, rhs)?];
+        let operands = [
+            num_operand(repr, lhs, admit_bool)?,
+            num_operand(repr, rhs, admit_bool)?,
+        ];
         op.numeric_runtime()?;
         let full_range = operands.contains(&NumOperand::RawInt);
         // Two raw operands are the backend's raw lane. An expansion of one
@@ -460,7 +477,9 @@ fn expansion_of(
         // boxed operand proven an exact int (or float) takes no arm that reads
         // it as the other kind.
         let admits = |i: usize, payload: Payload| match operands[i] {
-            NumOperand::InlineInt | NumOperand::RawInt => payload == Payload::Int,
+            NumOperand::InlineInt | NumOperand::RawInt | NumOperand::RawBool => {
+                payload == Payload::Int
+            }
             NumOperand::RawFloat => payload == Payload::Float,
             NumOperand::Boxed => match exact.get(&op.operands[i]) {
                 Some(TirType::F64) => payload == Payload::Float,
@@ -479,6 +498,11 @@ fn expansion_of(
             [Payload::Int, Payload::Float],
         ] {
             if !(admits(0, payloads[0]) && admits(1, payloads[1])) {
+                continue;
+            }
+            // A float arm would convert the raw bool's bit as an i64 word;
+            // the slow arm owns bool with float.
+            if operands.contains(&NumOperand::RawBool) && payloads.contains(&Payload::Float) {
                 continue;
             }
             let (fast, raw, compute, shape) = match (&int, &float, payloads) {
@@ -528,11 +552,13 @@ fn expansion_of(
             Some((OpCode::Add, TirType::I64, ArmShape::Plain)),
             Some((OpCode::Add, TirType::F64)),
             FullRange::Checked(OpCode::CheckedAdd),
+            true,
         ),
         FastPathExpansionRule::NumericSub => numeric(
             Some((OpCode::Sub, TirType::I64, ArmShape::Plain)),
             Some((OpCode::Sub, TirType::F64)),
             FullRange::CheckedSub,
+            true,
         ),
         // The int product of two inline payloads can leave i64: CheckedMul
         // tests the overflow and the arm leaves for the runtime on it.
@@ -540,6 +566,7 @@ fn expansion_of(
             Some((OpCode::CheckedMul, TirType::I64, ArmShape::Checked)),
             Some((OpCode::Mul, TirType::F64)),
             FullRange::Checked(OpCode::CheckedMul),
+            true,
         ),
         // True division computes in F64 on every arm, two ints included: two
         // inline payloads convert exactly, and one IEEE division of exact
@@ -549,6 +576,7 @@ fn expansion_of(
             None,
             Some((OpCode::Div, TirType::F64)),
             FullRange::Declined,
+            false,
         )),
         // `//` of two inline payloads: the quotient is no larger than the
         // dividend, so it is an inline int, and the arm's divisor guard sends
@@ -559,6 +587,7 @@ fn expansion_of(
             Some((OpCode::FloorDiv, TirType::I64, ArmShape::Plain)),
             None,
             FullRange::Declined,
+            false,
         )),
         // `%` takes the int arm behind the divisor guard and the float and
         // mixed arms, whose int payload converts exactly as CPython converts
@@ -568,6 +597,7 @@ fn expansion_of(
             Some((OpCode::Mod, TirType::I64, ArmShape::Plain)),
             Some((OpCode::Mod, TirType::F64)),
             FullRange::Exact,
+            false,
         )),
         // AND, OR and XOR of two inline-int payloads stay within the inline
         // range, so the int arm never overflows; a float operand is the
@@ -578,6 +608,7 @@ fn expansion_of(
             Some((op.opcode, TirType::I64, ArmShape::Plain)),
             None,
             FullRange::Declined,
+            false,
         ),
         // A shift of two ints; the arm guards the count (and a full-range
         // value) before the machine shift. A float operand is the runtime's,
@@ -586,11 +617,13 @@ fn expansion_of(
             Some((OpCode::Shl, TirType::I64, ArmShape::ShiftLeft)),
             None,
             FullRange::Exact,
+            false,
         ),
         FastPathExpansionRule::NumericShiftRight => numeric(
             Some((OpCode::Shr, TirType::I64, ArmShape::ShiftRight)),
             None,
             FullRange::Exact,
+            false,
         ),
         // A comparison on two payloads is the same comparison on raw values;
         // float comparisons keep IEEE order, so NaN compares unequal.
@@ -598,6 +631,7 @@ fn expansion_of(
             Some((op.opcode, TirType::Bool, ArmShape::Plain)),
             Some((op.opcode, TirType::Bool)),
             FullRange::Exact,
+            true,
         ),
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
@@ -1315,7 +1349,7 @@ fn expand_numeric(
         let boxing = match kinds[i] {
             NumOperand::Boxed => continue,
             NumOperand::InlineInt => OpCode::BoxInlineInt,
-            NumOperand::RawFloat | NumOperand::RawInt => OpCode::BoxVal,
+            NumOperand::RawFloat | NumOperand::RawInt | NumOperand::RawBool => OpCode::BoxVal,
         };
         words[i] = fresh_typed(func, TirType::DynBox);
         let mut box_op = new_op(boxing, vec![operands[i]], vec![words[i]], span);
