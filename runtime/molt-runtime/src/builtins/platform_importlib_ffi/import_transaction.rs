@@ -810,11 +810,13 @@ pub(super) fn importlib_transaction_package_from_globals(
     let globals = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
         .map_err(|()| MoltObject::none().bits())?;
     let Some(globals_ptr) = globals else {
-        return Err(raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "globals must be a dict",
-        ));
+        // CPython 3.15 resolve_name accepts any dict (PEP 814 frozendict).
+        let message = if crate::object::ops_sys::runtime_target_minor(_py) >= 15 {
+            "globals must be a dict or a frozendict"
+        } else {
+            "globals must be a dict"
+        };
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, message));
     };
 
     let package_name = crate::NameId::DunderPackage.bits(_py);
