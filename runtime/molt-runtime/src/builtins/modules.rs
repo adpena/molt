@@ -2901,7 +2901,9 @@ pub(crate) fn molt_namespace_entry_get_attached_body(
         };
         let namespace_bits = match unsafe { object_type_id(owner) } {
             TYPE_ID_MODULE => unsafe { module_dict_bits(owner) },
-            crate::TYPE_ID_FUNCTION => unsafe { crate::object::layout::function_globals_bits(owner) },
+            crate::TYPE_ID_FUNCTION => unsafe {
+                crate::object::layout::function_globals_bits(owner)
+            },
             _ => return miss(),
         };
         let Some(dictionary) = obj_from_bits(namespace_bits)
