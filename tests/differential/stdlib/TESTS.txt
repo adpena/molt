@@ -2009,6 +2009,7 @@ tests/differential/stdlib/typing_basic_surface.py
 tests/differential/stdlib/typing_final.py
 tests/differential/stdlib/typing_forwardref.py
 tests/differential/stdlib/typing_get_type_hints.py
+tests/differential/stdlib/typing_get_type_hints_namespaces.py
 tests/differential/stdlib/typing_literal.py
 tests/differential/stdlib/typing_newtype.py
 tests/differential/stdlib/typing_paramspec_concatenate.py

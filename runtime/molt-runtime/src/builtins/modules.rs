@@ -2874,6 +2874,60 @@ pub(crate) fn molt_namespace_get_attached_body(
     })
 }
 
+/// `owner`'s namespace entry, `namespace.get(name, missing)`, without handing
+/// out the mapping: a module's namespace, or a function's globals.
+///
+/// A static-cell module keeps its layout names in cells attached to its
+/// dictionary, so a Python-level `dict.get` on `module.__dict__` (or on a
+/// function's `__globals__`) would miss them; reaching the mapping by identity
+/// therefore keeps every module that may be reached on a dictionary namespace
+/// (the namespace-writes analysis). This read consults the cell, then the
+/// dictionary, as a by-name global read does, with `dict.get` semantics: no
+/// module `__getattr__`, no builtins. Any other owner answers `missing`, as
+/// `getattr(owner, "__dict__", {}).get(name, missing)` does for None.
+pub(crate) fn molt_namespace_entry_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    owner_bits: u64,
+    name_bits: u64,
+    missing_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let miss = || {
+            inc_ref_bits(py, missing_bits);
+            missing_bits
+        };
+        let Some(owner) = obj_from_bits(owner_bits).as_ptr() else {
+            return miss();
+        };
+        let namespace_bits = match unsafe { object_type_id(owner) } {
+            TYPE_ID_MODULE => unsafe { module_dict_bits(owner) },
+            crate::TYPE_ID_FUNCTION => unsafe {
+                crate::object::layout::function_globals_bits(owner)
+            },
+            _ => return miss(),
+        };
+        let Some(dictionary) = obj_from_bits(namespace_bits)
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT)
+        else {
+            return miss();
+        };
+        if let Some(value) =
+            crate::builtins::namespace_slots::static_cell_get(py, dictionary, name_bits)
+        {
+            return value;
+        }
+        match unsafe { dict_get_in_place(py, dictionary, name_bits) } {
+            Ok(Some(value)) => {
+                inc_ref_bits(py, value);
+                value
+            }
+            Ok(None) => miss(),
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
 /// DELETE_NAME translates any mapping-deletion failure into NameError. This
 /// intentionally differs from LOAD_NAME's KeyError-only fallback (CPython3.12+).
 pub(crate) fn molt_namespace_del_attached_body(

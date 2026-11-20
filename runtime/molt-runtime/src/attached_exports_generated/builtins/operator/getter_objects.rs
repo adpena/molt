@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_operator_itemgetter_new(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1098);
+    molt_runtime_core::call_census::hit(1099);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_itemgetter_new_attached_body(_py, owner, args, kwargs)
@@ -20,7 +20,7 @@ pub unsafe extern "C" fn molt_operator_attrgetter_new(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1099);
+    molt_runtime_core::call_census::hit(1100);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_attrgetter_new_attached_body(_py, owner, args, kwargs)
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn molt_operator_methodcaller_new(
     args: u64,
     kwargs: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1100);
+    molt_runtime_core::call_census::hit(1101);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_methodcaller_new_attached_body(_py, owner, args, kwargs)
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn molt_operator_methodcaller_new(
 #[unsafe(export_name = "molt_operator_itemgetter_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_itemgetter_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1101);
+    molt_runtime_core::call_census::hit(1102);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_itemgetter_type_attached_body(_py)
@@ -49,7 +49,7 @@ pub unsafe extern "C" fn molt_operator_itemgetter_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_operator_attrgetter_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_attrgetter_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1102);
+    molt_runtime_core::call_census::hit(1103);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_attrgetter_type_attached_body(_py)
@@ -57,7 +57,7 @@ pub unsafe extern "C" fn molt_operator_attrgetter_type(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_operator_methodcaller_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_operator_methodcaller_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1103);
+    molt_runtime_core::call_census::hit(1104);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_methodcaller_type_attached_body(_py)
@@ -69,7 +69,7 @@ pub unsafe extern "C" fn molt_operator_itemgetter_call(
     self_bits: u64,
     obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1104);
+    molt_runtime_core::call_census::hit(1105);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_itemgetter_call_attached_body(_py, self_bits, obj_bits)
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn molt_operator_attrgetter_call(
     self_bits: u64,
     obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1105);
+    molt_runtime_core::call_census::hit(1106);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_attrgetter_call_attached_body(_py, self_bits, obj_bits)
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn molt_operator_methodcaller_call(
     self_bits: u64,
     obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1106);
+    molt_runtime_core::call_census::hit(1107);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_operator_methodcaller_call_attached_body(_py, self_bits, obj_bits)

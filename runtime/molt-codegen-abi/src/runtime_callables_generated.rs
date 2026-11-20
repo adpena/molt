@@ -1946,6 +1946,7 @@ pub enum RuntimeCallable {
     molt_multiprocessing_codec_loads = 0xFFFFFF760098ECAE,
     molt_namedtuple_validate_fields = 0xFFFFFF81ACF24741,
     molt_namespace_del = 0xFFFFFFD24090A13D,
+    molt_namespace_entry_get = 0xFFFFFFCFB78CF7AE,
     molt_namespace_get = 0xFFFFFF6D83098A3E,
     molt_native_callable_reduce = 0xFFFFFF2009A24BAF,
     molt_native_descriptor_delete = 0xFFFFFF50EEE09B9C,
@@ -5122,6 +5123,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_multiprocessing_codec_loads.key() == runtime_callable_key("molt_multiprocessing_codec_loads"));
     assert!(RuntimeCallable::molt_namedtuple_validate_fields.key() == runtime_callable_key("molt_namedtuple_validate_fields"));
     assert!(RuntimeCallable::molt_namespace_del.key() == runtime_callable_key("molt_namespace_del"));
+    assert!(RuntimeCallable::molt_namespace_entry_get.key() == runtime_callable_key("molt_namespace_entry_get"));
     assert!(RuntimeCallable::molt_namespace_get.key() == runtime_callable_key("molt_namespace_get"));
     assert!(RuntimeCallable::molt_native_callable_reduce.key() == runtime_callable_key("molt_native_callable_reduce"));
     assert!(RuntimeCallable::molt_native_descriptor_delete.key() == runtime_callable_key("molt_native_descriptor_delete"));

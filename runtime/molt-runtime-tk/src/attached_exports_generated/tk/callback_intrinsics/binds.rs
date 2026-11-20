@@ -9,7 +9,7 @@ pub unsafe extern "C" fn molt_tk_bind_callback_register(
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3557);
+    molt_runtime_core::call_census::hit(3558);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_bind_callback_register_attached_body(
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_tk_bind_callback_unregister(
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3558);
+    molt_runtime_core::call_census::hit(3559);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_bind_callback_unregister_attached_body(
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn molt_tk_widget_bind_callback_register(
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3559);
+    molt_runtime_core::call_census::hit(3560);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_widget_bind_callback_register_attached_body(
@@ -75,7 +75,7 @@ pub unsafe extern "C" fn molt_tk_widget_bind_callback_unregister(
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3560);
+    molt_runtime_core::call_census::hit(3561);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_widget_bind_callback_unregister_attached_body(
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn molt_tk_text_tag_bind_callback_register(
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3561);
+    molt_runtime_core::call_census::hit(3562);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_text_tag_bind_callback_register_attached_body(
@@ -121,7 +121,7 @@ pub unsafe extern "C" fn molt_tk_text_tag_bind_callback_unregister(
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3562);
+    molt_runtime_core::call_census::hit(3563);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_text_tag_bind_callback_unregister_attached_body(
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn molt_tk_treeview_tag_bind_callback_register(
     sequence_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3563);
+    molt_runtime_core::call_census::hit(3564);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_treeview_tag_bind_callback_register_attached_body(
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3564);
+    molt_runtime_core::call_census::hit(3565);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_treeview_tag_bind_callback_unregister_attached_body(
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn molt_tk_bind_command(
     name_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3565);
+    molt_runtime_core::call_census::hit(3566);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_bind_command_attached_body(_py, app_bits, name_bits, callback_bits)
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn molt_tk_unbind_command(
     app_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3566);
+    molt_runtime_core::call_census::hit(3567);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_unbind_command_attached_body(_py, app_bits, name_bits)
@@ -209,7 +209,7 @@ pub unsafe extern "C" fn molt_tk_bind_script_remove_command(
     script_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3567);
+    molt_runtime_core::call_census::hit(3568);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_bind_script_remove_command_attached_body(_py, script_bits, command_name_bits)

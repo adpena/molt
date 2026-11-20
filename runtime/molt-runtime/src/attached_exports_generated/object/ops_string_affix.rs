@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_string_strip__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_strip(__context: u64, hay_bits: u64, chars_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2454);
+    molt_runtime_core::call_census::hit(2455);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_strip_attached_body(_py, hay_bits, chars_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_string_strip(__context: u64, hay_bits: u64, chars_
 #[unsafe(export_name = "molt_string_lstrip__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_lstrip(__context: u64, hay_bits: u64, chars_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2455);
+    molt_runtime_core::call_census::hit(2456);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_lstrip_attached_body(_py, hay_bits, chars_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_string_lstrip(__context: u64, hay_bits: u64, chars
 #[unsafe(export_name = "molt_string_rstrip__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_rstrip(__context: u64, hay_bits: u64, chars_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2456);
+    molt_runtime_core::call_census::hit(2457);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rstrip_attached_body(_py, hay_bits, chars_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_string_removeprefix(
     hay_bits: u64,
     prefix_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2457);
+    molt_runtime_core::call_census::hit(2458);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_removeprefix_attached_body(_py, hay_bits, prefix_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_string_removesuffix(
     hay_bits: u64,
     suffix_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2458);
+    molt_runtime_core::call_census::hit(2459);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_removesuffix_attached_body(_py, hay_bits, suffix_bits)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_string_removesuffix(
 #[unsafe(export_name = "molt_string_zfill__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_zfill(__context: u64, hay_bits: u64, width_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2459);
+    molt_runtime_core::call_census::hit(2460);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_zfill_attached_body(_py, hay_bits, width_bits)
@@ -63,7 +63,7 @@ pub unsafe extern "C" fn molt_string_center(
     width_bits: u64,
     fill_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2460);
+    molt_runtime_core::call_census::hit(2461);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_center_attached_body(_py, hay_bits, width_bits, fill_bits)
@@ -76,7 +76,7 @@ pub unsafe extern "C" fn molt_string_ljust(
     width_bits: u64,
     fill_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2461);
+    molt_runtime_core::call_census::hit(2462);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_ljust_attached_body(_py, hay_bits, width_bits, fill_bits)
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn molt_string_rjust(
     width_bits: u64,
     fill_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2462);
+    molt_runtime_core::call_census::hit(2463);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rjust_attached_body(_py, hay_bits, width_bits, fill_bits)
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn molt_string_expandtabs(
     hay_bits: u64,
     tabsize_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2463);
+    molt_runtime_core::call_census::hit(2464);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_expandtabs_attached_body(_py, hay_bits, tabsize_bits)
@@ -113,7 +113,7 @@ pub unsafe extern "C" fn molt_string_translate(
     hay_bits: u64,
     table_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2464);
+    molt_runtime_core::call_census::hit(2465);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_translate_attached_body(_py, hay_bits, table_bits)
@@ -126,7 +126,7 @@ pub unsafe extern "C" fn molt_string_maketrans(
     y_bits: u64,
     z_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2465);
+    molt_runtime_core::call_census::hit(2466);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_maketrans_attached_body(_py, x_bits, y_bits, z_bits)

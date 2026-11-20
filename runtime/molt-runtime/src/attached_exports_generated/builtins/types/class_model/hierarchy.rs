@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_class_set_base__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_class_set_base(__context: u64, class: u64, bases: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1515);
+    molt_runtime_core::call_census::hit(1516);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_class_set_base_attached_body(_py, class, bases)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_class_set_base(__context: u64, class: u64, bases: 
 #[unsafe(export_name = "molt_class_apply_set_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_class_apply_set_name(__context: u64, class_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1516);
+    molt_runtime_core::call_census::hit(1517);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_class_apply_set_name_attached_body(_py, class_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_class_apply_set_name(__context: u64, class_bits: u
 #[unsafe(export_name = "molt_class_layout_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_class_layout_version(__context: u64, class_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1517);
+    molt_runtime_core::call_census::hit(1518);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_class_layout_version_attached_body(_py, class_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_class_set_definition(
     class_bits: u64,
     definition_slot: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1518);
+    molt_runtime_core::call_census::hit(1519);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_class_set_definition_attached_body(_py, class_bits, definition_slot)
