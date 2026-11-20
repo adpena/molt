@@ -338,16 +338,14 @@ impl JitCodeOwner {
         self.module
             .finalize_definitions()
             .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
-        if let Some(cache) = self.machine_cache.take() {
-            if timing {
-                eprintln!(
-                    "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
-                    cache.hits.load(Ordering::Relaxed),
-                    cache.misses.load(Ordering::Relaxed)
-                );
-            }
-            // The TIR cache trims this namespace on admission. Machine code
-            // uses the same entry and byte limits; the next run covers new writes.
+        // The TIR cache trims this namespace on admission. Machine code uses
+        // the same entry and byte limits; the next run covers new writes.
+        if timing && let Some(cache) = &self.machine_cache {
+            eprintln!(
+                "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
+                cache.hits.load(Ordering::Relaxed),
+                cache.misses.load(Ordering::Relaxed)
+            );
         }
         Ok(JitProgram {
             module: self.module,
