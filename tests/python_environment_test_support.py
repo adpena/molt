@@ -16,7 +16,10 @@ from molt import python_environment_identity
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from molt import source_build_environment_schema
 from molt.exact_json import canonical_json_sha256
-from molt.python_external_custody import empty_external_import_custody
+from molt.python_external_custody import (
+    _STARTUP_CAPABILITIES,
+    empty_external_import_custody,
+)
 from tests.process_guard_common import run_guarded_test_process
 
 
@@ -325,7 +328,10 @@ def realized_environment_manifest(
         f"{site_root}/{name}-{version}.dist-info/WHEEL"
         for name, version in ordered_packages
     ]
-    file_paths = [selected, "pyvenv.cfg", *installed_paths, *wheel_paths]
+    # Every managed image carries its publisher's no-bytecode site hook.
+    hook_path = f"{site_root}/{_contract.IMAGE_NO_BYTECODE_HOOK}"
+    hook_bytes = _contract.IMAGE_NO_BYTECODE_HOOK_SOURCE
+    file_paths = [selected, "pyvenv.cfg", hook_path, *installed_paths, *wheel_paths]
     if legacy_uv_lock:
         file_paths.append(".lock")
     file_paths.sort(key=lambda value: (value.casefold(), value))
@@ -336,13 +342,18 @@ def realized_environment_manifest(
         ".lock": _EMPTY_FILE_SHA256,
         selected: "1" * 64,
         "pyvenv.cfg": "2" * 64,
+        hook_path: hashlib.sha256(hook_bytes).hexdigest(),
         **{path: "4" * 64 for path in installed_paths},
         **{path: "5" * 64 for path in wheel_paths},
     }
     file_nodes = [
         {
             "id": nodes_by_path[path],
-            "size": 0 if path == ".lock" else 1,
+            "size": 0
+            if path == ".lock"
+            else len(hook_bytes)
+            if path == hook_path
+            else 1,
             "sha256": sha_by_path[path],
         }
         for path in file_paths
@@ -418,7 +429,7 @@ def realized_environment_manifest(
                 "node": nodes_by_path[path],
                 "access": _read_only_executable(),
             }
-            for path in [*installed_paths, *wheel_paths]
+            for path in [hook_path, *installed_paths, *wheel_paths]
         ],
     ]
     if legacy_uv_lock:
@@ -483,7 +494,28 @@ def realized_environment_manifest(
             },
         ],
         "external_roots": [],
-        "external_import_custody": empty_external_import_custody(),
+        "external_import_custody": {
+            **empty_external_import_custody(),
+            "path_declarations": [
+                {
+                    "path": hook_path,
+                    "node": nodes_by_path[hook_path],
+                    "content": hook_bytes.decode("utf-8"),
+                    "roles": [],
+                }
+            ],
+            "reviewed_startup": [
+                {
+                    "capability": "molt-no-bytecode.v1",
+                    "declaration": hook_path,
+                    "declaration_provenance": _STARTUP_CAPABILITIES[
+                        "molt-no-bytecode.v1"
+                    ]["declaration_artifacts"][0],
+                    "module": None,
+                    "gate": {},
+                }
+            ],
+        },
         "tree": {
             "id": "environment-root",
             "file_count": sum(row["kind"] == "file" for row in entries),
@@ -494,7 +526,7 @@ def realized_environment_manifest(
         },
         "distributions": distributions,
         "distribution_inventory_sha256": canonical_json_sha256(distributions),
-        "site_bootstrap_files": [],
+        "site_bootstrap_files": [{"path": hook_path, "node": nodes_by_path[hook_path]}],
         "console_scripts": {},
         "native_modules": [],
     }
@@ -896,14 +928,16 @@ def materialize_development_environment(
                 "manifest_sha256": canonical_json_sha256([]),
             }
         ]
-        realized["external_import_custody"]["path_declarations"] = [
+        declarations = realized["external_import_custody"]["path_declarations"]
+        declarations.append(
             {
                 "path": pth_path,
                 "node": additions[0]["node"],
                 "content": pth_content,
                 "roles": [role],
             }
-        ]
+        )
+        declarations.sort(key=lambda row: (row["path"].casefold(), row["path"]))
         realized["distribution_inventory_sha256"] = canonical_json_sha256(
             realized["distributions"]
         )

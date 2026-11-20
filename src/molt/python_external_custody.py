@@ -23,6 +23,7 @@ from typing import cast
 import unicodedata
 import zipimport
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_sha256
 from molt.python_file_node_custody import (
     PythonFileCaptureContext,
@@ -74,6 +75,28 @@ _SETUPTOOLS_WHEEL = {
     "artifact_sha256": "ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
 }
 _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
+    # The managed-image publisher writes this hook; its bytes are the contract.
+    "molt-no-bytecode.v1": {
+        "declaration": _contract.IMAGE_NO_BYTECODE_HOOK,
+        "distribution": None,
+        "version": None,
+        "declaration_artifacts": [
+            {
+                "project": "molt",
+                "contract": _contract.IMAGE_BYTECODE_POLICY,
+                "path": _contract.IMAGE_NO_BYTECODE_HOOK,
+                "sha256": hashlib.sha256(
+                    _contract.IMAGE_NO_BYTECODE_HOOK_SOURCE
+                ).hexdigest(),
+                "size": len(_contract.IMAGE_NO_BYTECODE_HOOK_SOURCE),
+            }
+        ],
+        "module": None,
+        "module_path": None,
+        "module_artifact": None,
+        "finder": None,
+        "gate": {},
+    },
     "uv-virtualenv.v1": {
         "declaration": "_virtualenv.pth",
         "distribution": None,

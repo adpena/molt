@@ -19,8 +19,8 @@ mod tests;
 
 use self::cfg_edges::collect_branch_edges;
 pub use self::exact::{
-    ExactScalarWitness, ExactSeeds, exact_scalar_witnesses, extract_exact_scalar_map,
-    solve_exact_scalars,
+    ExactScalarWitness, ExactSeeds, exact_scalar_witnesses, extract_exact_class_map,
+    extract_exact_scalar_map, solve_exact_scalars,
 };
 pub(crate) use self::facts::infer_return_type;
 use self::facts::{

@@ -48,6 +48,7 @@ pub enum OpShapeViolation {
     UnboundModuleSlot,
     ClassDefinitionSymbol,
     ForbiddenClassDefinition,
+    ForbiddenExactFieldSlots,
     UnboundClassDefinition,
     MissingResult,
     ForbiddenResult(String),
@@ -115,6 +116,12 @@ impl std::fmt::Display for OpShapeDiagnostic {
                 write!(
                     f,
                     "forbids `class_definition`; only class stamps and layout guards name a class statement"
+                )
+            }
+            OpShapeViolation::ForbiddenExactFieldSlots => {
+                write!(
+                    f,
+                    "forbids `exact_field_slots`; only a class definition stamp carries a class's field slots"
                 )
             }
             OpShapeViolation::UnboundClassDefinition => {
@@ -274,6 +281,22 @@ pub fn validate_class_definition_symbol(
     })
 }
 
+/// `exact_field_slots` rides only on the class definition stamp, the one op
+/// that names a class statement when it runs (`exact_receiver_fields`).
+pub fn validate_exact_field_slots(
+    kind: crate::OpKind,
+    slots: Option<&[(String, i64)]>,
+) -> Result<(), OpShapeDiagnostic> {
+    if slots.is_none() || kind == crate::OpKind::ClassSetDefinition {
+        return Ok(());
+    }
+    Err(OpShapeDiagnostic {
+        family: "class_layout",
+        kind: kind.to_string(),
+        violation: OpShapeViolation::ForbiddenExactFieldSlots,
+    })
+}
+
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     use crate::tir::op_kinds_generated::opcode_fixed_result_count_table;
     if op.kind.is_structural()
@@ -292,6 +315,7 @@ fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     validate_op_shape(op.kind, op.args.as_ref().map(Vec::len), op.value)?;
     validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
     validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
+    validate_exact_field_slots(op.kind, op.exact_field_slots.as_deref())?;
     if op.kind == crate::OpKind::ModuleSlot
         && op
             .out
