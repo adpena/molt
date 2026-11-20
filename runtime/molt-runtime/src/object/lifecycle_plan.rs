@@ -16,8 +16,8 @@
 
 use super::{
     ObjectShapeId, TYPE_ID_OBJECT, TYPE_ID_TYPE, class_definition_is_finished,
-    class_header_declares_finalizer, class_instance_shape_id, class_instance_type_id,
-    class_layout, class_storage, layout, object_type_id, seq_access,
+    class_header_declares_finalizer, class_instance_shape_id, class_instance_type_id, class_layout,
+    class_storage, layout, object_type_id, seq_access,
 };
 use crate::obj_from_bits;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -147,8 +147,7 @@ unsafe fn plain_field_words(class: *mut u8) -> Option<usize> {
             let mut count = 0usize;
             for (index, row) in rows.chunks_exact(3).enumerate() {
                 let field = class_layout::decode_row(row);
-                if field.kind.is_intrinsic() || field.offset != index * std::mem::size_of::<u64>()
-                {
+                if field.kind.is_intrinsic() || field.offset != index * std::mem::size_of::<u64>() {
                     return None;
                 }
                 count = index + 1;
@@ -205,7 +204,11 @@ pub(crate) unsafe fn refresh(class: *mut u8) {
         let word = plan_word(class);
         let identity = word.load(Ordering::Acquire) & IDENTITY_FACTS;
         let plan = compute(class);
-        let next = if plan.is_present() { plan.0 | identity } else { 0 };
+        let next = if plan.is_present() {
+            plan.0 | identity
+        } else {
+            0
+        };
         word.store(next, Ordering::Release);
     }
 }
