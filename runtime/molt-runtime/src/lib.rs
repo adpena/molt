@@ -676,7 +676,7 @@ pub(crate) use crate::builtins::exceptions::{
     molt_exception_frame_origin, molt_exception_kind_attached_body, molt_exception_last,
     molt_exception_last_attached_body, molt_exception_last_pending,
     molt_exception_last_pending_attached_body, molt_exception_match_handler,
-    molt_exception_pending, molt_exception_set_last_attached_body,
+    molt_exception_new_builtin_kw, molt_exception_pending, molt_exception_set_last_attached_body,
     molt_exception_trace_prepend_attached_body, molt_raise_attached_body,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
