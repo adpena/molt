@@ -556,12 +556,6 @@ pub(crate) unsafe fn sys_populate_version_metadata(
         sys_set_owned_attr(
             _py,
             dict_ptr,
-            "version_info",
-            crate::molt_sys_version_info_attached_body(_py),
-        )?;
-        sys_set_owned_attr(
-            _py,
-            dict_ptr,
             "hexversion",
             crate::molt_sys_hexversion_attached_body(_py),
         )?;
@@ -579,12 +573,6 @@ pub(crate) unsafe fn sys_populate_version_metadata(
                 crate::molt_sys_abiflags_attached_body(_py),
             )?;
         }
-        sys_set_owned_attr(
-            _py,
-            dict_ptr,
-            "implementation",
-            crate::molt_sys_implementation_payload_attached_body(_py),
-        )?;
         Ok(())
     }
 }
@@ -670,12 +658,6 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             dict_ptr,
             "copyright",
             crate::molt_sys_copyright_attached_body(_py),
-        )?;
-        sys_set_owned_attr(
-            _py,
-            dict_ptr,
-            "stdlib_module_names",
-            crate::molt_sys_stdlib_module_names_attached_body(_py),
         )?;
         sys_set_owned_attr(
             _py,

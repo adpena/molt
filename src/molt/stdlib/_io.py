@@ -64,7 +64,8 @@ __all__ = [
     "open",
     "text_encoding",
 ]
-__all__ = [name for name in __all__ if name in globals()]
+# `open` is the runtime's: it publishes `_io.open` before this body runs, so
+# every name above exists and no code reads this namespace to filter them.
 
 del _MOLT_IO_CLASS
-globals().pop("_require_intrinsic", None)
+del _require_intrinsic

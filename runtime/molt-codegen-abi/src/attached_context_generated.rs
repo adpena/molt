@@ -1628,7 +1628,6 @@ macro_rules! attached_symbol {
     ("molt_future_cancel") => { "molt_future_cancel__molt_context_d1086a27578cda22" };
     ("molt_future_cancel_clear") => { "molt_future_cancel_clear__molt_context_d1086a27578cda22" };
     ("molt_future_cancel_msg") => { "molt_future_cancel_msg__molt_context_d1086a27578cda22" };
-    ("molt_future_features") => { "molt_future_features__molt_context_d1086a27578cda22" };
     ("molt_future_new") => { "molt_future_new__molt_context_d1086a27578cda22" };
     ("molt_future_poll") => { "molt_future_poll__molt_context_d1086a27578cda22" };
     ("molt_future_poll_fn") => { "molt_future_poll_fn__molt_context_d1086a27578cda22" };

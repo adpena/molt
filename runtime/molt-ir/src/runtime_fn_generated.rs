@@ -1171,7 +1171,6 @@ pub enum RuntimeFn {
     FutureCancel,
     FutureCancelClear,
     FutureCancelMsg,
-    FutureFeatures,
     FuturePoll,
     GcCallbacks,
     GcCollect,
@@ -4025,7 +4024,6 @@ impl RuntimeFn {
         Self::FutureCancel,
         Self::FutureCancelClear,
         Self::FutureCancelMsg,
-        Self::FutureFeatures,
         Self::FuturePoll,
         Self::GcCallbacks,
         Self::GcCollect,
@@ -5825,7 +5823,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2850;
+    pub const COUNT: usize = 2849;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -21213,21 +21211,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFFB9DB7E157B,
-            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
-        }),
-        result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_future_features",
-        linker_symbol: "molt_future_features__molt_context_d1086a27578cda22",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: Some(RuntimeMachineType::Word),
-        callable: Some(RuntimeCallableFacts {
-            key: 0xFFFFFFA7777489E5,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,
