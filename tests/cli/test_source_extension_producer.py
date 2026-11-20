@@ -1366,6 +1366,11 @@ def _locked_environment_spec(
             str(custody["python_runtime"]["version"]),
         ),
     )
+    # The hook installer launches the same synthetic image interpreter; the
+    # synthetic capture already carries the hook (realized_environment_manifest).
+    monkeypatch.setattr(
+        build_environment, "_install_no_bytecode_hook", lambda *_args: None
+    )
     return (
         root,
         python,
