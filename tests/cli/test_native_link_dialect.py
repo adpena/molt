@@ -17,6 +17,7 @@ from molt.cli.native_link_plan import (
     native_artifact_link_arguments,
     native_link_capabilities,
     native_link_policy,
+    NativeLinkOutput,
     native_link_policy_flags,
 )
 from molt.native_target import (
@@ -69,7 +70,11 @@ def test_gnu_coff_archive_and_identity_policy_never_use_msvc_arguments(
         "--no-whole-archive",
     )
     # The image reserves the program stack for its main thread.
-    assert native_link_policy_flags(target=target, capabilities=capabilities) == (
+    assert native_link_policy_flags(
+        target=target,
+        capabilities=capabilities,
+        output=NativeLinkOutput.EXECUTABLE,
+    ) == (
         "-Wl,--no-insert-timestamp",
         f"-Wl,--stack,{PROGRAM_STACK_RESERVE_BYTES_64}",
         "-Wl,--gc-sections",
@@ -77,8 +82,41 @@ def test_gnu_coff_archive_and_identity_policy_never_use_msvc_arguments(
     )
     with pytest.raises(RuntimeError, match="MSVC driver"):
         native_link_policy_flags(
-            target=target, capabilities=capabilities, msvc_driver=True
+            target=target,
+            capabilities=capabilities,
+            output=NativeLinkOutput.EXECUTABLE,
+            msvc_driver=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("triple", "msvc_driver", "stack_flag"),
+    [
+        ("aarch64-apple-darwin", False, "-Wl,-stack_size,"),
+        ("x86_64-pc-windows-gnu", False, "-Wl,--stack,"),
+        ("x86_64-pc-windows-msvc", True, "/STACK:"),
+    ],
+)
+def test_only_an_executable_sizes_the_main_thread_stack(
+    triple: str, msvc_driver: bool, stack_flag: str
+) -> None:
+    # ld64 refuses -stack_size outside a main executable, so a shared runtime
+    # image linked with it fails (the JIT tier's image, 2026-11-20).
+    target = resolve_native_target_spec(triple)
+    capabilities = native_link_capabilities(target=target, linker_hint="lld")
+
+    def flags(output: NativeLinkOutput) -> str:
+        return " ".join(
+            native_link_policy_flags(
+                target=target,
+                capabilities=capabilities,
+                output=output,
+                msvc_driver=msvc_driver,
+            )
+        )
+
+    assert stack_flag in flags(NativeLinkOutput.EXECUTABLE)
+    assert stack_flag not in flags(NativeLinkOutput.SHARED_IMAGE)
 
 
 def test_gnu_coff_linker_discovery_and_replay_custody_use_same_role(
