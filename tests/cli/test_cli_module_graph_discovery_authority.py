@@ -2976,6 +2976,139 @@ def test_superseded_scan_outputs_leave_the_graph(tmp_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
+def test_continuation_keeps_every_module_an_earlier_call_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HF-926: callers publish each call's graph additively, so a continuation
+    never replays to a graph without a module an earlier call published.
+
+    The first call reaches `leaf` through `m`'s `import_module(NAME)`; CPython
+    imports it too when `entry` runs before `late`. `late` rebinds `m.NAME`,
+    so `m`'s rescan may see another name after `import hook` and supersedes
+    the scan that reached `leaf`. The continuation keeps `leaf`, and from then
+    on the operation accumulates: a third call whose own scans supersede runs
+    no replay pass (one would rebuild only one premise's graph, not the
+    published accumulation, and the runtime catalog names its modules).
+    """
+    import json
+    import sys
+
+    sources = {
+        "entry": "import m\n",
+        "m": "import importlib\nNAME = 'leaf'\nimport hook\nimportlib.import_module(NAME)\n",
+        "hook": "VALUE = 0\n",
+        "late": "import m\nm.NAME = 'other'\n",
+        "third": "import m3\n",
+        "m3": "import importlib\nNAME = 'leaf3'\nimport w3\nimportlib.import_module(NAME)\n",
+        "w3": "import m3\nm3.NAME = 'other3'\n",
+        "leaf": "VALUE = 1\n",
+        "other": "VALUE = 2\n",
+        "leaf3": "VALUE = 3\n",
+        "other3": "VALUE = 4\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    executed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\n"
+            "import entry, late, third\n"
+            "print(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n",
+            str(tmp_path),
+            json.dumps(sorted(sources)),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "leaf" in json.loads(executed.stdout)
+    common = ([tmp_path], [tmp_path], tmp_path / "stdlib", tmp_path, set())
+    first = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",), *common, full_scan_roots=True
+    )
+    state = first.discovery
+    assert state is not None and "leaf" in state.graph
+    module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "late.py",), *common, full_scan_roots=True, discovery=state
+    )
+    assert "leaf" in state.graph
+    assert state.superseded_scans and state.accumulated
+
+    replays: list[object] = []
+    discovery_pass = module_graph_discovery._discovery_pass
+
+    def counted(*args: object, **kwargs: object) -> object:
+        if kwargs.get("settled_premises") is not None:
+            replays.append(args[0])
+        return discovery_pass(*args, **kwargs)
+
+    monkeypatch.setattr(module_graph_discovery, "_discovery_pass", counted)
+    module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "third.py",), *common, full_scan_roots=True, discovery=state
+    )
+    assert state.superseded_scans
+    assert replays == []
+    assert {"leaf", "m3", "w3"} <= state.graph.keys()
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_runtime_custody_continuation_keeps_its_catalog_modules(
+    tmp_path: Path,
+) -> None:
+    """HF-926: the runtime-import custody catalog is built from the published
+    graph. When the custody call's own scans supersede, its replay rebuilds
+    the earlier call under the wider premise, which loses `leaf` (`owner`
+    rebinds `m.NAME`, so `m` may import another name after `import hook`).
+    That replay cannot reproduce the published graph the catalog names, so
+    the call keeps its accumulated outputs instead of refusing the build
+    ("runtime catalog lacks live source discovery")."""
+    from molt.cli.models import _RuntimeImportScanCustody
+
+    sources = {
+        "entry": "import m\n",
+        "m": "import importlib\nNAME = 'leaf'\nimport hook\nimportlib.import_module(NAME)\n",
+        "hook": "VALUE = 0\n",
+        "owner": "import m\nm.NAME = 'other'\n",
+        "leaf": "VALUE = 1\n",
+        "other": "VALUE = 2\n",
+    }
+    paths = {}
+    for name, source in sources.items():
+        paths[name] = (tmp_path / f"{name}.py").resolve()
+        paths[name].write_text(source, encoding="utf-8")
+    common = ([tmp_path], [tmp_path], tmp_path / "stdlib", tmp_path, set())
+    first = module_graph_discovery._discover_module_graph_from_paths(
+        (paths["entry"],), *common, full_scan_roots=True
+    )
+    state = first.discovery
+    assert state is not None and "leaf" in state.graph
+    custody = _RuntimeImportScanCustody(
+        (("owner", paths["owner"]),),
+        (("leaf", paths["leaf"]), ("owner", paths["owner"])),
+        (
+            (
+                "owner",
+                state.resolver_cache.module_ast_digest(
+                    paths["owner"], native_roots=(), target_python=state.target_python
+                ),
+            ),
+        ),
+    )
+    module_graph_discovery._discover_module_graph_from_paths(
+        (paths["owner"],),
+        *common,
+        runtime_import_custody=custody,
+        full_scan_roots=True,
+        discovery=state,
+    )
+    assert {"leaf", "owner"} <= state.graph.keys()
+    assert state.superseded_scans and state.accumulated
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_early_cutoff_alias_serves_the_equal_scan_for_its_source_only(
     tmp_path: Path,
 ) -> None:
