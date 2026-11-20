@@ -423,7 +423,21 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
     let normalized = if let ResumeRequest::Throw(exception) = request
         && (!initially_started || coroutine_is_done(ptr) || initial_awaited == 0)
     {
-        let Some(exception) = normalize_throw_argument(py, exception) else {
+        // 3.15 normalizes while the frame executes (cr_running is true and a
+        // reentrant resume is refused); through 3.14 it is not yet running.
+        let running = if crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+            && !coroutine_is_done(ptr)
+        {
+            match CoroutinePollGuard::enter_before_body(py, ptr) {
+                Ok(guard) => Some(guard),
+                Err(result) => return result as u64,
+            }
+        } else {
+            None
+        };
+        let normalized = normalize_throw_argument(py, exception);
+        drop(running);
+        let Some(exception) = normalized else {
             return MoltObject::none().bits();
         };
         Some(exception)

@@ -345,12 +345,18 @@ class ReentryDelegate(Delegate):
         )
 
 
+reentry_observations = []
+
+
 class ReentryFactory(type):
+    # 3.15 constructs the thrown class while the generator runs, so the
+    # reentrant send is refused; 3.12 to 3.14 construct it first.
     def __call__(cls, *arguments):
-        assert not reentry_value.gi_running
-        assert reentry_value.send(None) == (
-            "delegated" if reentry_delegates else "second"
-        )
+        try:
+            sent = reentry_value.send(None)
+        except ValueError as error:
+            sent = ("refused", str(error))
+        reentry_observations.append((reentry_value.gi_running, sent))
         return type.__call__(cls, *arguments)
 
 
@@ -371,10 +377,11 @@ def reentry_generator():
 
 for reentry_delegates in (False, True):
     reentry_value = reentry_generator()
+    reentry_observations.clear()
     assert next(reentry_value) == "first"
-    assert reentry_value.throw(ReentryError) == "caught"
+    thrown = reentry_value.throw(ReentryError)
     reentry_value.close()
-    print("constructor-reentry", reentry_delegates)
+    print("constructor-reentry", reentry_delegates, thrown, reentry_observations)
 
 
 coroutine_delegate_events = []
@@ -389,10 +396,16 @@ class CoroutineReentryDelegate(Delegate):
         coroutine_delegate_events.append("close")
 
 
+coroutine_reentry_observations = []
+
+
 class CoroutineReentryFactory(type):
     def __call__(cls, *arguments):
-        assert not coroutine_reentry_value.cr_running
-        assert coroutine_reentry_value.send(None) == "delegated"
+        try:
+            sent = coroutine_reentry_value.send(None)
+        except ValueError as error:
+            sent = ("refused", str(error))
+        coroutine_reentry_observations.append((coroutine_reentry_value.cr_running, sent))
         return type.__call__(cls, *arguments)
 
 
@@ -413,22 +426,27 @@ async def coroutine_reentry_body(child):
 
 for retains_inner in (False, True):
     coroutine_delegate_events.clear()
+    coroutine_reentry_observations.clear()
     child = retained_inner_coroutine() if retains_inner else CoroutineReentryDelegate()
     coroutine_reentry_value = coroutine_reentry_body(child)
     try:
         coroutine_reentry_value.throw(CoroutineReentryError)
     except StopIteration as result:
-        assert result.value == "caught"
-    else:
-        raise AssertionError("constructor-reentered coroutine did not return")
-    assert inspect.getcoroutinestate(coroutine_reentry_value) == "CORO_CLOSED"
-    assert not coroutine_delegate_events
+        outcome = ("returned", result.value)
+    except CoroutineReentryError:
+        outcome = ("raised",)
+    print(
+        "coroutine-constructor-reentry",
+        retains_inner,
+        outcome,
+        coroutine_reentry_observations,
+        inspect.getcoroutinestate(coroutine_reentry_value),
+        list(coroutine_delegate_events),
+    )
     if retains_inner:
-        assert inspect.getcoroutinestate(child) == "CORO_SUSPENDED"
-        assert child.send(None) == "delegated"
+        print("coroutine-reentry-child", inspect.getcoroutinestate(child), child.send(None))
         child.close()
-        assert coroutine_delegate_events == ["close"]
-    print("coroutine-constructor-reentry", retains_inner)
+        print("coroutine-reentry-child-closed", coroutine_delegate_events)
 
 
 class TracebackSpoof:
