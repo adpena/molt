@@ -149,6 +149,10 @@ def _gpu_env_webgpu() -> ProcessEnvironmentBuilder:
     return env
 
 
+# The three compiled-kernel tests build a program against their own GPU
+# runtime feature set: after any runtime change each is a cold runtime-variant
+# compile (minutes), so postsubmit runs them (a median of 60 s or more).
+@pytest.mark.slow
 def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     tmp_path: Path,
 ) -> None:
@@ -223,6 +227,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
         assert "launch semantics ok" not in refused.stdout
 
 
+@pytest.mark.slow
 def test_compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled(
     tmp_path: Path,
 ) -> None:
@@ -278,6 +283,7 @@ def test_compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled(
     assert "[molt gpu backend] metal" in run.stderr
 
 
+@pytest.mark.slow
 def test_compiled_gpu_kernel_vector_add_uses_webgpu_backend_when_enabled(
     tmp_path: Path,
 ) -> None:
