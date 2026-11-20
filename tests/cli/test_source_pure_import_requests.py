@@ -1556,33 +1556,15 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
             )
             == request
         )
-    # Key naming alone cannot prove cache identity: a misplaced payload must
-    # also be rejected by its complete premise, including missing-vs-unknown.
-    for index, premise in enumerate(premises):
-        replace_source_record(
-            "import-scan", paths[index], payloads[(index + 1) % len(premises)]
-        )
-        assert (
-            records._read_persisted_import_scan_record(
-                path,
-                **options,
-                namespace_premise=premise,
-                snapshot=snapshot,
-            )
-            is None
-        )
-    missing = dict(payloads[0])
-    del missing["namespace_premise"]
-    replace_source_record("import-scan", paths[0], missing)
-    assert (
-        records._read_persisted_import_scan_record(path, **options, snapshot=snapshot)
-        is None
-    )
+    # The key alone names the premise view (missing and unknown included):
+    # a row stores no copy of it (schema 51).
+    assert all("namespace_premise" not in payload for payload in payloads)
 
 
 @pytest.mark.parametrize(
-    "invalid",
+    "retired",
     [
+        None,
         {},
         {"foreign_writes": [], "member_writes": False},
         {"foreign_writes": [], "member_writes": -1},
@@ -1591,9 +1573,11 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
         {"foreign_writes": ["name", "name"], "member_writes": 0},
     ],
 )
-def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
-    tmp_path, monkeypatch, invalid
+def test_persisted_scan_with_a_retired_premise_copy_is_refused(
+    tmp_path, monkeypatch, retired
 ):
+    """Source records are a closed protocol: a row that still carries the
+    retired premise copy, valid or malformed, is never admitted."""
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     path = write(tmp_path / "entry.py")
@@ -1620,7 +1604,7 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
         path, **options, namespace_premise=premise
     )
     payload = source_records("import-scan")[cache_key]
-    payload["namespace_premise"] = invalid
+    payload["namespace_premise"] = retired
     replace_source_record("import-scan", cache_key, payload)
     assert (
         records._read_persisted_import_scan_record(
