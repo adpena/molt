@@ -37,6 +37,14 @@ class NativeLinkerKind(str, Enum):
     ZIG = "zig"
 
 
+class NativeLinkOutput(str, Enum):
+    """What a native link produces. Only a program's main executable sizes
+    the main thread's stack; a shared image runs on its loader's threads."""
+
+    EXECUTABLE = "executable"
+    SHARED_IMAGE = "shared_image"
+
+
 class NativeSymbolStrip(str, Enum):
     """Where a release plan removes non-global symbols from the image.
 
@@ -270,24 +278,27 @@ def native_link_policy_flags(
     *,
     target: NativeTargetSpec,
     capabilities: NativeLinkCapabilities,
+    output: NativeLinkOutput,
     msvc_driver: bool = False,
     dead_strip: bool = True,
 ) -> tuple[str, ...]:
     """Return one driver-ready deterministic and identity-preserving policy."""
+    executable = output is NativeLinkOutput.EXECUTABLE
     if target.link_dialect is LinkDialect.COFF_GNU:
         if msvc_driver:
             raise RuntimeError("A COFF-GNU target cannot use the MSVC driver dialect.")
-        flags = [
-            "-Wl,--no-insert-timestamp",
-            f"-Wl,--stack,{_windows_main_stack_reserve(target)}",
-        ]
+        flags = ["-Wl,--no-insert-timestamp"]
+        if executable:
+            flags.append(f"-Wl,--stack,{_windows_main_stack_reserve(target)}")
         if dead_strip:
             flags.append("-Wl,--gc-sections")
         if capabilities.explicit_no_icf_flag:
             flags.append(capabilities.explicit_no_icf_flag)
         return tuple(flags)
     if target.object_format is NativeObjectFormat.COFF:
-        flags = ["/Brepro", f"/STACK:{_windows_main_stack_reserve(target)}"]
+        flags = ["/Brepro"]
+        if executable:
+            flags.append(f"/STACK:{_windows_main_stack_reserve(target)}")
         if dead_strip:
             flags.append("/OPT:REF")
         flags.append("/OPT:NOICF")
@@ -303,10 +314,9 @@ def native_link_policy_flags(
         # a whole-runtime image retains its code but needs no unused dylibs.
         # The program runs on the main thread's own stack, sized here, so
         # profilers can walk it (molt-runtime state/program_stack.rs).
-        flags = [
-            "-Wl,-dead_strip_dylibs",
-            f"-Wl,-stack_size,{PROGRAM_STACK_MACHO_MAIN_BYTES:#x}",
-        ]
+        flags = ["-Wl,-dead_strip_dylibs"]
+        if executable:
+            flags.append(f"-Wl,-stack_size,{PROGRAM_STACK_MACHO_MAIN_BYTES:#x}")
         if dead_strip:
             flags.append("-Wl,-dead_strip")
         if capabilities.explicit_no_icf_flag:

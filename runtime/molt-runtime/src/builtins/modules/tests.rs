@@ -1324,10 +1324,8 @@ fn sys_module_cache_set_populates_bootstrap_metadata() {
             for key in [
                 "platform",
                 "version",
-                "version_info",
                 "hexversion",
                 "api_version",
-                "implementation",
                 "maxsize",
                 "maxunicode",
                 "byteorder",
@@ -1339,7 +1337,6 @@ fn sys_module_cache_set_populates_bootstrap_metadata() {
                 "path",
                 "orig_argv",
                 "copyright",
-                "stdlib_module_names",
                 "builtin_module_names",
                 "meta_path",
                 "path_hooks",

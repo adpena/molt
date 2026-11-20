@@ -1774,7 +1774,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         kind="CLASS_SET_DEFINITION",
                         args=[class_val],
                         result=MoltValue("none"),
-                        metadata={"class_definition": definition},
+                        metadata={"class_definition": definition, "class_id": class_id},
                     )
                 )
             if classcell_val is not None:

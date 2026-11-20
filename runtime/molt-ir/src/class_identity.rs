@@ -73,3 +73,37 @@ mod tests {
         assert_eq!(a, ClassId::of_definition("class:geometry:Point"));
     }
 }
+
+/// The TIR attribute that carries a class definition stamp's exact field
+/// slots (`OpIR::exact_field_slots`).
+pub const EXACT_FIELD_SLOTS_ATTR: &str = "exact_field_slots";
+
+/// Encode `(name, offset)` field slots as the bytes of one TIR attribute:
+/// per slot, the name's length (u32 little endian), its UTF-8 bytes, then the
+/// offset (i64 little endian). [`decode_field_slots`] is the only reader.
+pub fn encode_field_slots(slots: &[(String, i64)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (name, offset) in slots {
+        let length = u32::try_from(name.len()).expect("a field name fits u32");
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(&offset.to_le_bytes());
+    }
+    bytes
+}
+
+/// The field slots [`encode_field_slots`] wrote, or `None` for bytes it did
+/// not write.
+pub fn decode_field_slots(mut bytes: &[u8]) -> Option<Vec<(String, i64)>> {
+    let mut slots = Vec::new();
+    while !bytes.is_empty() {
+        let length = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+        bytes = &bytes[4..];
+        let name = std::str::from_utf8(bytes.get(..length)?).ok()?.to_owned();
+        bytes = &bytes[length..];
+        let offset = i64::from_le_bytes(bytes.get(..8)?.try_into().ok()?);
+        bytes = &bytes[8..];
+        slots.push((name, offset));
+    }
+    Some(slots)
+}

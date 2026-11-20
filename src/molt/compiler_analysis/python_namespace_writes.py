@@ -53,7 +53,7 @@ from molt.compiler_analysis.python_import_redirects import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 17
+SUMMARY_SCHEMA: Final = 18
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -220,6 +220,10 @@ class PythonNamespaceWrite:
     # The bound on a computed ``import_binding`` key or ``guarded_import``
     # name; never dropped (bedrock §13, B2a).
     key_bound: PythonImportKeyBound | None = None
+    # A ``guarded_import``'s modules whose bodies have completed whenever it
+    # runs: the unconditional top-level imports of its module that precede the
+    # top-level statement holding it. Its handler cannot swallow their failure.
+    initialized: tuple[str, ...] = ()
 
 
 def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
@@ -231,13 +235,20 @@ def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
         None if write.source_owner is None else list(write.source_owner),
         None if write.source_site is None else list(write.source_site),
         None if write.key_bound is None else write.key_bound.payload(),
+        list(write.initialized),
     ]
 
 
 def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
-    if not isinstance(raw, list) or len(raw) != 7:
+    if not isinstance(raw, list) or len(raw) != 8:
         raise ValueError("invalid foreign namespace write")
-    module, name, construct, line, owner, site, bound = raw
+    module, name, construct, line, owner, site, bound, initialized = raw
+    if not isinstance(initialized, list) or not all(
+        type(item) is str for item in initialized
+    ):
+        raise ValueError("invalid foreign namespace write")
+    if initialized and construct != "guarded_import":
+        raise ValueError("invalid initialized imports")
     if (
         module is not None
         and type(module) is not str
@@ -290,7 +301,14 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     if construct == "own_module_escape" and (module is not None or name is not None):
         raise ValueError("invalid own module escape")
     return PythonNamespaceWrite(
-        module, name, construct, line, source_owner, source_site, key_bound
+        module,
+        name,
+        construct,
+        line,
+        source_owner,
+        source_site,
+        key_bound,
+        tuple(initialized),
     )
 
 
@@ -1012,9 +1030,12 @@ class _NamespaceWriteCollector:
                 PythonSourceKey | None,
                 PythonSourceKey | None,
                 PythonImportKeyBound | None,
+                tuple[str, ...],
             ],
             PythonNamespaceWrite,
         ] = {}
+        # Top-level statement -> the modules completed before it runs.
+        self._initialized_at: dict[ast.AST, tuple[str, ...]] | None = None
 
     def collect(self) -> None:
         sites: list[_Site] = []
@@ -1299,16 +1320,32 @@ class _NamespaceWriteCollector:
         node: ast.AST | None = None,
         source_site: PythonSourceKey | None = None,
         key_bound: PythonImportKeyBound | None = None,
+        initialized: tuple[str, ...] = (),
     ) -> None:
         if not site.executing:
             return
         # The traversal is not in source order; keep each write's first site.
-        key = (module, name, construct, site.source_owner, source_site, key_bound)
+        key = (
+            module,
+            name,
+            construct,
+            site.source_owner,
+            source_site,
+            key_bound,
+            initialized,
+        )
         line = getattr(site.node if node is None else node, "lineno", 0)
         known = self.writes.get(key)
         if known is None or line < known.line:
             self.writes[key] = PythonNamespaceWrite(
-                module, name, construct, line, site.source_owner, source_site, key_bound
+                module,
+                name,
+                construct,
+                line,
+                site.source_owner,
+                source_site,
+                key_bound,
+                initialized,
             )
 
     def _member_store(
@@ -2157,7 +2194,8 @@ class _NamespaceWriteCollector:
         self, site: _Site, key: ast.expr | str | None, *, node: ast.AST | None = None
     ) -> None:
         """Record an import whose failure a handler can swallow (M11)."""
-        if not site.executing or not self._guarded(site.node if node is None else node):
+        at = site.node if node is None else node
+        if not site.executing or not self._guarded(at):
             return
         spelled = python_import_key(key)
         self._record(
@@ -2167,7 +2205,51 @@ class _NamespaceWriteCollector:
             site,
             node=node,
             key_bound=spelled if isinstance(spelled, PythonImportKeyBound) else None,
+            initialized=self._initialized_before(at),
         )
+
+    def _initialized_before(self, node: ast.AST) -> tuple[str, ...]:
+        """The modules whose bodies have completed whenever ``node`` runs.
+
+        The module body runs its top-level statements in order, and code
+        inside a top-level ``def`` or ``class`` exists only once that
+        statement has run (the closed world creates no function another way).
+        So an unconditional top-level import before the statement holding
+        ``node`` has completed: had its body failed, the failure would have
+        ended this module's body first. ``import a.b`` completes ``a`` and
+        ``a.b``; ``from a.b import c`` completes ``a.b`` (``c`` may be an
+        attribute), and ``from __future__ import ...`` completes nothing. A
+        redirected import is the redirect rule's concern."""
+        if self._initialized_at is None:
+            self._initialized_at = {}
+            done: list[str] = []
+            for statement in self.tree.body:
+                self._initialized_at[statement] = tuple(sorted(set(done)))
+                if isinstance(statement, ast.Import):
+                    names = [alias.name for alias in statement.names]
+                elif (
+                    isinstance(statement, ast.ImportFrom)
+                    # A future statement is a compiler directive.
+                    and statement.module != "__future__"
+                ):
+                    owner = _absolute_module(
+                        statement.module or "", statement.level, self.package
+                    )
+                    names = [] if owner is None else [owner]
+                else:
+                    continue
+                for name in names:
+                    parts = name.split(".")
+                    done.extend(
+                        ".".join(parts[:end]) for end in range(1, len(parts) + 1)
+                    )
+        parents = self._tree_parents()
+        statement = node
+        while (
+            parent := parents.get(statement)
+        ) is not None and parent is not self.tree:
+            statement = parent
+        return self._initialized_at.get(statement, ())
 
 
 def refine_namespace_cache_writes(

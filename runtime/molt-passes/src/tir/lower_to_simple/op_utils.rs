@@ -50,6 +50,16 @@ pub(super) fn annotate_lowered_op(
     if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("class_definition") {
         opir.class_definition = Some(symbol.clone());
     }
+    // A class definition stamp's exact field slots ride with its class.
+    if let Some(AttrValue::Bytes(bytes)) = tir_op
+        .attrs
+        .get(molt_ir::class_identity::EXACT_FIELD_SLOTS_ATTR)
+    {
+        opir.exact_field_slots = Some(
+            molt_ir::class_identity::decode_field_slots(bytes)
+                .expect("exact field slots decode from their own encoding"),
+        );
+    }
     if let Some(AttrValue::Int(bits)) = tir_op.attrs.get("runtime_requirement_bits") {
         opir.runtime_requirement_bits = (*bits).try_into().unwrap_or_else(|_| {
             panic!("TIR runtime_requirement_bits is outside the generated bitset domain: {bits}")

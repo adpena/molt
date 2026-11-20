@@ -74,6 +74,7 @@ def _plan(
     external_inputs: tuple[SourceExtensionLinkInput, ...] = (),
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_path: Path | None = None,
+    runtime_image: Path | None = None,
 ):
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -119,6 +120,7 @@ def _plan(
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         bolt_requested=bolt_requested,
         host_platform=host_platform,
+        runtime_image=runtime_image,
         external_link_requirements=(
             ()
             if external_target is None
@@ -187,6 +189,11 @@ def test_darwin_link_plans_use_admitted_target_without_arch_probe(
     assert "-dynamiclib" not in app.command
     assert "-Wl,-dead_strip" not in runtime.command
     assert runtime.policy.dead_strip is False
+    # An executable linked against the image finds it through its own rpath;
+    # only the executable sizes the main thread's stack.
+    assert "-Wl,-install_name,@rpath/runtime.dylib" in runtime.command
+    assert not any("-stack_size" in argument for argument in runtime.command)
+    assert any("-stack_size" in argument for argument in app.command)
 
 
 @pytest.mark.parametrize(
@@ -422,7 +429,9 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
             "-o",
             str(executable),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             "-framework",
             "Security",
@@ -477,7 +486,9 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
             "-o",
             str(executable),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             f"-L{tmp_path}",
             *explicit,
@@ -1360,7 +1371,10 @@ def test_native_identity_flags_are_driver_ready(
     )
     assert (
         native_link_plan.native_link_policy_flags(
-            target=target, capabilities=capabilities, msvc_driver=cc[0] == "clang-cl"
+            target=target,
+            capabilities=capabilities,
+            output=native_link_plan.NativeLinkOutput.EXECUTABLE,
+            msvc_driver=cc[0] == "clang-cl",
         )
         == expected
     )
@@ -1479,7 +1493,9 @@ def test_zig_linker_strip_capability_matches_its_output(
             "-o",
             str(image),
             *native_link_plan.native_link_policy_flags(
-                target=target, capabilities=capabilities
+                target=target,
+                capabilities=capabilities,
+                output=native_link_plan.NativeLinkOutput.EXECUTABLE,
             ),
             *native_link_plan.native_link_strip_flags(target),
         ],
@@ -1632,3 +1648,44 @@ def test_malformed_linker_signature_cannot_publish_or_invoke_signing(
     assert result is not None and "atomic native publication failed" in result
     assert output.read_bytes() == b"previously published"
     assert not candidate.exists()
+
+
+@pytest.mark.parametrize("host_platform", ["linux", "darwin"])
+def test_a_shared_runtime_image_replaces_the_static_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host_platform: str
+) -> None:
+    """A dev executable links the runtime image of its generation (HF-634):
+    no archive, an rpath to the image's exact store entry, and the isolate
+    bootstrap the image imports exported from the executable."""
+    from molt.cli.native_launch_abi_generated import COMPILED_ISOLATE_BOOTSTRAP_SYMBOL
+
+    image = tmp_path / "store" / "entry" / "libmolt_runtime.image"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"image")
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "static").mkdir()
+    shared = _plan(
+        monkeypatch,
+        tmp_path / "shared",
+        host_platform=host_platform,
+        runtime_image=image,
+    )
+    static = _plan(monkeypatch, tmp_path / "static", host_platform=host_platform)
+    assert str(tmp_path / "static" / "libmolt_runtime.a") in static.command
+    assert str(tmp_path / "shared" / "libmolt_runtime.a") not in shared.command
+    assert str(image) in shared.command
+    assert f"-Wl,-rpath,{image.parent}" in shared.command
+    assert not any("-rpath" in argument for argument in static.command)
+    (shared_exports,) = shared.sidecars
+    (static_exports,) = static.sidecars
+    assert COMPILED_ISOLATE_BOOTSTRAP_SYMBOL in shared_exports.content.decode()
+    assert COMPILED_ISOLATE_BOOTSTRAP_SYMBOL not in static_exports.content.decode()
+
+
+def test_a_shared_runtime_image_is_refused_for_coff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    image = tmp_path / "libmolt_runtime.dll"
+    image.write_bytes(b"image")
+    with pytest.raises(RuntimeError, match="shared runtime image is not available"):
+        _plan(monkeypatch, tmp_path, host_platform="win32", runtime_image=image)

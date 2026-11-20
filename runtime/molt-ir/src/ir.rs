@@ -705,6 +705,14 @@ pub struct OpIR {
     /// trusts the statement's field offsets. The program's code-slot bindings
     /// resolve it to the slot whose identity the class carries.
     pub class_definition: Option<String>,
+    /// On a `class_set_definition`: the attributes an instance of exactly
+    /// this class reads and writes at fixed field offsets, as `(name,
+    /// offset)` pairs, when no code can change the class's layout (the
+    /// frontend's exact-receiver rule, `_exact_field_slots`). TIR turns an
+    /// attribute access on a receiver it proves exactly this class into the
+    /// field load or store (`exact_receiver_fields`). No other kind carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_field_slots: Option<Vec<(String, i64)>>,
     /// Generated target-admission requirement bits for conservative acquisition
     /// provenance that is not an executable runtime/link symbol.
     #[serde(default)]
@@ -865,6 +873,7 @@ impl OpIR {
             builtin_name: Default::default(),
             runtime_symbol: Default::default(),
             class_definition: Default::default(),
+            exact_field_slots: Default::default(),
             runtime_requirement_bits: Default::default(),
             passes_execution_context: Default::default(),
             runtime: None,
@@ -2377,6 +2386,7 @@ mod json_parse_tests {
             builtin_name: Some("len".to_string()),
             runtime_symbol: Some("molt_len".to_string()),
             class_definition: Some("class:module:Owner".to_string()),
+            exact_field_slots: None,
             runtime_requirement_bits: 3,
             passes_execution_context: true,
             proven_target: true,
