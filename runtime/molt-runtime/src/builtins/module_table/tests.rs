@@ -2704,12 +2704,7 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
             );
             crate::dict_del_in_place(py, dict, hexversion_key).expect("operation succeeds");
             crate::dict_del_in_place(py, dict, stdout_key).expect("operation succeeds");
-            assert!(crate::dict_set_in_place(
-                py,
-                dict,
-                version_key,
-                marker
-            ));
+            assert!(crate::dict_set_in_place(py, dict, version_key, marker));
             assert!(crate::dict_set_in_place(py, dict, path_key, marker));
         }
         assert!(!exception_pending(py));
