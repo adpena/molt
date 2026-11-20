@@ -316,8 +316,8 @@ def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
 
 @pytest.mark.slow
 def test_image_hook_refuses_isolated_bytecode_through_a_writable_tree(
-    real_published_image,
-):
+    real_published_image: tuple[Path, Path, Path, Path],
+) -> None:
     """HF-544: a privileged Windows token writes through the mode seal.
 
     The tree stays writable here, as such a token sees it. Only the image's
@@ -347,8 +347,8 @@ def test_image_hook_refuses_isolated_bytecode_through_a_writable_tree(
 @pytest.mark.slow
 @pytest.mark.parametrize("fault", ["bytes", "earlier_hook"])
 def test_capture_refuses_a_hook_site_startup_would_not_run_first(
-    real_published_image, fault
-):
+    real_published_image: tuple[Path, Path, Path, Path], fault: str
+) -> None:
     root, executable, module, _manifest = real_published_image
     hook = module.parent / _contract.IMAGE_NO_BYTECODE_HOOK
     if fault == "bytes":
