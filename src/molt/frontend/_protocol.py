@@ -1367,10 +1367,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_module_attr_get(self, name: str) -> MoltValue: ...
 
-    def _emit_module_attr_get_default_on(
-        self, module_name: str, name: str, default_val: MoltValue
-    ) -> MoltValue: ...
-
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue: ...
 
     def _emit_module_attr_set(
