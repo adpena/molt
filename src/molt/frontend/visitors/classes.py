@@ -1540,14 +1540,25 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 )
 
-            if classcell_val is not None:
-                self._class_ns_store(class_ns_scope, "__classcell__", classcell_val)
+            # From 3.14 a class body that owns an annotation scope (a def or an
+            # annotated assignment) stores __classdictcell__; type creation
+            # pops it. Only a __prepare__ namespace observes the store, so a
+            # static namespace allocates no cell for it.
+            if (
+                dynamic_namespace is not None
+                and self.target_python >= (3, 14)
+                and class_ns_scope.annotation_namespace_cell is None
+                and _class_body_owns_annotation_scope(node.body)
+            ):
+                self._create_class_annotation_namespace(class_ns_scope)
             if class_ns_scope.annotation_namespace_cell is not None:
                 self._class_ns_store(
                     class_ns_scope,
                     "__classdictcell__",
                     class_ns_scope.annotation_namespace_cell,
                 )
+            if classcell_val is not None:
+                self._class_ns_store(class_ns_scope, "__classcell__", classcell_val)
             class_body_complete = True
         finally:
             self._pop_qualname()
@@ -1913,3 +1924,28 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
 
         return None
+
+
+def _class_body_owns_annotation_scope(body: list[ast.stmt]) -> bool:
+    """Whether a class body (through its compound statements, not nested
+    scopes) holds a def or an annotated assignment: CPython 3.14's symtable
+    then gives the class a __classdict__ cell (a lambda or nested class does not).
+    """
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.AnnAssign)):
+            return True
+        if isinstance(stmt, ast.ClassDef):
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            nested = getattr(stmt, field, None)
+            if not isinstance(nested, list):
+                continue
+            inner: list[ast.stmt] = []
+            for item in nested:
+                if isinstance(item, (ast.ExceptHandler, ast.match_case)):
+                    inner.extend(item.body)
+                elif isinstance(item, ast.stmt):
+                    inner.append(item)
+            if _class_body_owns_annotation_scope(inner):
+                return True
+    return False
