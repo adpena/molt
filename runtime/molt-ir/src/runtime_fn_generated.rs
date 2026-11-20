@@ -1754,6 +1754,7 @@ pub enum RuntimeFn {
     MathModf,
     MathNextafter,
     MathPerm,
+    MathPow,
     MathProd,
     MathRadians,
     MathRemainder,
@@ -4606,6 +4607,7 @@ impl RuntimeFn {
         Self::MathModf,
         Self::MathNextafter,
         Self::MathPerm,
+        Self::MathPow,
         Self::MathProd,
         Self::MathRadians,
         Self::MathRemainder,
@@ -5821,7 +5823,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2848;
+    pub const COUNT: usize = 2849;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -29693,6 +29695,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFF591B62DC0B,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_math_pow",
+        linker_symbol: "molt_math_pow__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 2,
+        param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFF4D07DD228B,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

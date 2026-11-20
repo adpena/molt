@@ -1141,7 +1141,17 @@ unsafe fn del_attr_ptr_with_access(
             let class_name =
                 string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
             let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-            attr_error_with_message(_py, &msg);
+            // CPython 3.13 started recording `name` and `obj` on this failure.
+            if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+                crate::builtins::attr::attr_error_with_message_obj(
+                    _py,
+                    &msg,
+                    attr_name,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                );
+            } else {
+                attr_error_with_message(_py, &msg);
+            }
             return Err(());
         }
         if type_id == crate::TYPE_ID_CELL {
@@ -1432,7 +1442,13 @@ pub(crate) unsafe fn object_delattr_raw(
             );
             return Err(());
         }
-        attr_error(_py, class_name_for_error(class_bits), attr_name);
+        // A dict-backed instance's failed delete records `name` and `obj`
+        // from CPython 3.15; through 3.14 both stay None.
+        if crate::object::ops_sys::runtime_target_at_least(_py, 3, 15) {
+            attr_error_with_obj(_py, class_name_for_error(class_bits), attr_name, obj_bits);
+        } else {
+            attr_error(_py, class_name_for_error(class_bits), attr_name);
+        }
         Err(())
     }
 }

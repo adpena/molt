@@ -55,7 +55,8 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
         return result;
     }
     let name = type_name(py, obj);
-    let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(100)]);
+    let name =
+        molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(name.as_bytes(), 100);
     raise_exception(
         py,
         BuiltinExc::TypeError,

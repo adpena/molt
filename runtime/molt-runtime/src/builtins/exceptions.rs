@@ -5047,8 +5047,13 @@ pub(crate) fn molt_exception_add_note_attached_body(
         });
         if !is_string {
             let note_type = type_name(_py, note_obj);
-            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
-                format!("add_note() argument must be str, not {note_type}")
+            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                // Argument Clinic's _PyArg_BadArgument names None by value.
+                if note_obj.is_none() {
+                    "add_note() argument must be str, not None".to_string()
+                } else {
+                    format!("add_note() argument must be str, not {note_type}")
+                }
             } else {
                 format!("note must be a str, not '{note_type}'")
             };

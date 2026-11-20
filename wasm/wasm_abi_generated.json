@@ -11430,6 +11430,10 @@
       "context": "Attached",
       "physical_symbol": "molt_math_perm__molt_context_d1086a27578cda22"
     },
+    "molt_math_pow": {
+      "context": "Attached",
+      "physical_symbol": "molt_math_pow__molt_context_d1086a27578cda22"
+    },
     "molt_math_prod": {
       "context": "Attached",
       "physical_symbol": "molt_math_prod__molt_context_d1086a27578cda22"
@@ -20070,6 +20074,7 @@
     "math_modf": "molt_math_modf__molt_context_d1086a27578cda22",
     "math_nextafter": "molt_math_nextafter__molt_context_d1086a27578cda22",
     "math_perm": "molt_math_perm__molt_context_d1086a27578cda22",
+    "math_pow": "molt_math_pow__molt_context_d1086a27578cda22",
     "math_prod": "molt_math_prod__molt_context_d1086a27578cda22",
     "math_radians": "molt_math_radians__molt_context_d1086a27578cda22",
     "math_remainder": "molt_math_remainder__molt_context_d1086a27578cda22",
@@ -23084,6 +23089,7 @@
     "molt_math_modf__molt_context_d1086a27578cda22": "molt_math_modf__molt_context_d1086a27578cda22",
     "molt_math_nextafter__molt_context_d1086a27578cda22": "molt_math_nextafter__molt_context_d1086a27578cda22",
     "molt_math_perm__molt_context_d1086a27578cda22": "molt_math_perm__molt_context_d1086a27578cda22",
+    "molt_math_pow__molt_context_d1086a27578cda22": "molt_math_pow__molt_context_d1086a27578cda22",
     "molt_math_prod__molt_context_d1086a27578cda22": "molt_math_prod__molt_context_d1086a27578cda22",
     "molt_math_radians__molt_context_d1086a27578cda22": "molt_math_radians__molt_context_d1086a27578cda22",
     "molt_math_remainder__molt_context_d1086a27578cda22": "molt_math_remainder__molt_context_d1086a27578cda22",

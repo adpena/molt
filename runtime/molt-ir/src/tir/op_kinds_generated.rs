@@ -16583,6 +16583,7 @@ pub const SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: &[OpKind] = &[
     OpKind::BuiltinFunc,
     OpKind::CallFunc,
     OpKind::GetAttrGenericObj,
+    OpKind::GetAttrName,
     OpKind::GetAttrNameDefault,
     OpKind::ModuleGetAttr,
     OpKind::ModuleGetGlobal,
@@ -16831,7 +16832,6 @@ impl OpKind {
             | OpKind::GenThrow
             | OpKind::GetAttr
             | OpKind::GetAttrGenericPtr
-            | OpKind::GetAttrName
             | OpKind::GetAttrSpecialObj
             | OpKind::GetItem
             | OpKind::GetIter
@@ -17095,6 +17095,7 @@ impl OpKind {
             OpKind::BuiltinFunc
             | OpKind::CallFunc
             | OpKind::GetAttrGenericObj
+            | OpKind::GetAttrName
             | OpKind::GetAttrNameDefault
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal

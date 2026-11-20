@@ -150,3 +150,26 @@ show("classmethod_getattr_kw", getattr(m, "cm")(value=3))
 show("staticmethod_getattr_instance", getattr(m, "sm")())
 show("staticmethod_getattr_class", getattr(Mix, "sm")())
 show("staticmethod_override_child", getattr(ChildMix(), "cm")())
+
+
+# Without a default an absent attribute raises; with one, any default comes
+# back, a falsy or sentinel-like value included. Literal and computed names.
+class Holder:
+    present = "here"
+
+
+holder = Holder()
+names = ["absent", "present"]
+for name in ("absent", names[0]):
+    try:
+        print("no_default", getattr(holder, name))
+    except AttributeError as error:
+        print("no_default AttributeError", error.name, error.obj is holder)
+marker = object()
+print("default_marker", getattr(holder, "absent", marker) is marker)
+print("default_none", getattr(holder, names[0], None))
+print("default_present", getattr(holder, names[1], marker))
+try:
+    getattr(holder)
+except TypeError as error:
+    print("arity TypeError")

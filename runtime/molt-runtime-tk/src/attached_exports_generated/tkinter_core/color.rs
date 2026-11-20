@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_tk_hex_to_rgb__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tk_hex_to_rgb(__context: u64, color_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3601);
+    molt_runtime_core::call_census::hit(3602);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_hex_to_rgb_attached_body(_py, color_bits)

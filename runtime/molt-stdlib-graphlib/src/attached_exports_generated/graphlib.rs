@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_graphlib_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_new(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3623);
+    molt_runtime_core::call_census::hit(3624);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_new_attached_body(_py)
@@ -15,7 +15,7 @@ pub unsafe extern "C" fn molt_graphlib_add(
     node_bits: u64,
     preds_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3624);
+    molt_runtime_core::call_census::hit(3625);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_add_attached_body(_py, handle_bits, node_bits, preds_bits)
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn molt_graphlib_add(
 #[unsafe(export_name = "molt_graphlib_prepare__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_prepare(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3625);
+    molt_runtime_core::call_census::hit(3626);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_prepare_attached_body(_py, handle_bits)
@@ -31,7 +31,7 @@ pub unsafe extern "C" fn molt_graphlib_prepare(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_graphlib_get_ready__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_get_ready(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3626);
+    molt_runtime_core::call_census::hit(3627);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_get_ready_attached_body(_py, handle_bits)
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn molt_graphlib_get_ready(__context: u64, handle_bits: u6
 #[unsafe(export_name = "molt_graphlib_is_active__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_is_active(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3627);
+    molt_runtime_core::call_census::hit(3628);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_is_active_attached_body(_py, handle_bits)
@@ -51,7 +51,7 @@ pub unsafe extern "C" fn molt_graphlib_done(
     handle_bits: u64,
     nodes_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3628);
+    molt_runtime_core::call_census::hit(3629);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_done_attached_body(_py, handle_bits, nodes_bits)
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn molt_graphlib_done(
 #[unsafe(export_name = "molt_graphlib_static_order__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_static_order(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3629);
+    molt_runtime_core::call_census::hit(3630);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_static_order_attached_body(_py, handle_bits)
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn molt_graphlib_static_order(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_graphlib_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_graphlib_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3630);
+    molt_runtime_core::call_census::hit(3631);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_graphlib_drop_attached_body(_py, handle_bits)

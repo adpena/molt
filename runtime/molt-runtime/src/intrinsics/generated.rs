@@ -3930,6 +3930,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_remainder),
     },
     IntrinsicSpec {
+        name: "molt_math_pow",
+        symbol: "molt_math_pow",
+        arity: 2,
+        defaults: &[],
+        public: Some(super::public_objects_generated::PublicObjectId::MathPow),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_pow),
+    },
+    IntrinsicSpec {
         name: "molt_math_tan",
         symbol: "molt_math_tan",
         arity: 1,
@@ -18851,4 +18859,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x7f26e6740f675f18;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x68773b8a522ae993;

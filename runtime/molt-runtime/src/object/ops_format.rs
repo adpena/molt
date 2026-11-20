@@ -2202,7 +2202,7 @@ mod tests {
                     py,
                     MoltObject::from_float(re).bits(),
                     MoltObject::from_float(im).bits(),
-                    MoltObject::from_bool(true).bits(),
+                    crate::object::ops_convert::ComplexArguments::RealImag.bits(),
                 );
                 let text = super::format_with_spec(py, obj_from_bits(bits), &spec)
                     .unwrap_or_else(|_| panic!("complex formatting failed"))

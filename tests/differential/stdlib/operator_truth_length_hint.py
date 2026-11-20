@@ -82,6 +82,12 @@ class NegativeLenAndHint:
         return 8
 
 
+class NegativeHint:
+    # 3.15 names the owner type in this ValueError; earlier versions do not.
+    def __length_hint__(self):
+        return -1
+
+
 if __name__ == "__main__":
     print("truth", operator.truth(Seq()))
     print("length", operator.length_hint([1, 2, 3]))
@@ -104,6 +110,7 @@ if __name__ == "__main__":
         ("len_value_error", LenValueErrorAndHint()),
         ("negative_len", NegativeLenAndHint()),
         ("hint_value_error", HintRaisesValueError()),
+        ("negative_hint", NegativeHint()),
         ("hint_returns_none", HintReturnsNone()),
     ):
         try:

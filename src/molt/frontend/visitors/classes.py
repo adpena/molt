@@ -575,6 +575,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self.type_parameter_bindings = previous_type_params
 
     def _emit_class_definition(self, node: ast.ClassDef) -> None:
+        if self.current_func_name == "molt_main":
+            # A class body runs where it stands, so a name it declares global
+            # is a module writer exactly as a module-level function's global
+            # is: later module reads must see the store, not a cached value.
+            class_globals = self._collect_global_decls(node.body)
+            self.module_global_mutations.update(class_globals)
+            for gname in class_globals:
+                self.locals.pop(gname, None)
         class_id = self._class_id_for_definition(node)
         self.local_class_ids.append(class_id)
         # CPython 3.13 added __firstlineno__ and __static_attributes__ to every
@@ -1532,14 +1540,25 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 )
 
-            if classcell_val is not None:
-                self._class_ns_store(class_ns_scope, "__classcell__", classcell_val)
+            # From 3.14 a class body that owns an annotation scope (a def or an
+            # annotated assignment) stores __classdictcell__; type creation
+            # pops it. Only a __prepare__ namespace observes the store, so a
+            # static namespace allocates no cell for it.
+            if (
+                dynamic_namespace is not None
+                and self.target_python >= (3, 14)
+                and class_ns_scope.annotation_namespace_cell is None
+                and _class_body_owns_annotation_scope(node.body)
+            ):
+                self._create_class_annotation_namespace(class_ns_scope)
             if class_ns_scope.annotation_namespace_cell is not None:
                 self._class_ns_store(
                     class_ns_scope,
                     "__classdictcell__",
                     class_ns_scope.annotation_namespace_cell,
                 )
+            if classcell_val is not None:
+                self._class_ns_store(class_ns_scope, "__classcell__", classcell_val)
             class_body_complete = True
         finally:
             self._pop_qualname()
@@ -1640,12 +1659,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
                 class_def_attrs.append((key, attr_val))
-            static_attrs = (
-                self._collect_static_attributes(node)
-                if source_keys and dynamic_namespace is None
-                else ()
-            )
-            if static_attrs:
+            # Every 3.13+ class namespace holds __static_attributes__, an
+            # empty tuple when no method assigns a self attribute.
+            if source_keys and dynamic_namespace is None:
+                static_attrs = self._collect_static_attributes(node)
                 sa_vals: list[MoltValue] = []
                 for sa_name in static_attrs:
                     sv = MoltValue(self.next_var(), type_hint="str")
@@ -1907,3 +1924,28 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
 
         return None
+
+
+def _class_body_owns_annotation_scope(body: list[ast.stmt]) -> bool:
+    """Whether a class body (through its compound statements, not nested
+    scopes) holds a def or an annotated assignment: CPython 3.14's symtable
+    then gives the class a __classdict__ cell (a lambda or nested class does not).
+    """
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.AnnAssign)):
+            return True
+        if isinstance(stmt, ast.ClassDef):
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            nested = getattr(stmt, field, None)
+            if not isinstance(nested, list):
+                continue
+            inner: list[ast.stmt] = []
+            for item in nested:
+                if isinstance(item, (ast.ExceptHandler, ast.match_case)):
+                    inner.extend(item.body)
+                elif isinstance(item, ast.stmt):
+                    inner.append(item)
+            if _class_body_owns_annotation_scope(inner):
+                return True
+    return False

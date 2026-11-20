@@ -470,7 +470,19 @@ pub(super) unsafe fn io_member_value(
                     return None;
                 }
                 let value = handle.buffer_bits;
-                if (handle.attachment == crate::object::FileAttachment::Detached) || value == 0 {
+                if handle.attachment == crate::object::FileAttachment::Detached {
+                    // From 3.14 TextIOWrapper.buffer checks attachment like
+                    // every other operation; through 3.13 it reads None.
+                    if crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+                        return raise_exception::<_>(
+                            py,
+                            BuiltinExc::ValueError,
+                            file_handle_detached_message(handle),
+                        );
+                    }
+                    return Some(MoltObject::none().bits());
+                }
+                if value == 0 {
                     return Some(MoltObject::none().bits());
                 }
                 inc_ref_bits(py, value);

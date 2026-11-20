@@ -434,3 +434,11 @@ pub unsafe extern "C" fn molt_math_remainder(__context: u64, x_bits: u64, y_bits
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_math_remainder_attached_body(_py, x_bits, y_bits)
 }
+#[unsafe(export_name = "molt_math_pow__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_math_pow(__context: u64, x_bits: u64, y_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3174);
+    let _py: &molt_runtime_core::PyToken =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_math_pow_attached_body(_py, x_bits, y_bits)
+}

@@ -261,6 +261,7 @@ FrontendOpKind = Literal[
     'GETATTR',
     'GETATTR_GENERIC_OBJ',
     'GETATTR_GENERIC_PTR',
+    'GETATTR_NAME',
     'GETATTR_NAME_DEFAULT',
     'GETATTR_SPECIAL_OBJ',
     'GETFRAME',
@@ -1297,6 +1298,7 @@ class FrontendKinds:
     GETATTR: Final = 'GETATTR'
     GETATTR_GENERIC_OBJ: Final = 'GETATTR_GENERIC_OBJ'
     GETATTR_GENERIC_PTR: Final = 'GETATTR_GENERIC_PTR'
+    GETATTR_NAME: Final = 'GETATTR_NAME'
     GETATTR_NAME_DEFAULT: Final = 'GETATTR_NAME_DEFAULT'
     GETATTR_SPECIAL_OBJ: Final = 'GETATTR_SPECIAL_OBJ'
     GETFRAME: Final = 'GETFRAME'
@@ -3365,6 +3367,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "GETATTR",
         "GETATTR_GENERIC_OBJ",
         "GETATTR_GENERIC_PTR",
+        "GETATTR_NAME",
         "GETATTR_NAME_DEFAULT",
         "GETATTR_SPECIAL_OBJ",
         "GETFRAME",
@@ -4270,6 +4273,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "GETATTR": True,
     "GETATTR_GENERIC_OBJ": True,
     "GETATTR_GENERIC_PTR": True,
+    "GETATTR_NAME": True,
     "GETATTR_NAME_DEFAULT": True,
     "GETATTR_SPECIAL_OBJ": True,
     "GET_ATTR": True,
@@ -4487,6 +4491,7 @@ SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: frozenset[str] = frozenset(
         "builtin_func",
         "call_func",
         "get_attr_generic_obj",
+        "get_attr_name",
         "get_attr_name_default",
         "module_get_attr",
         "module_get_global",

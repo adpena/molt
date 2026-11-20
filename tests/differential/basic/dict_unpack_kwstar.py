@@ -101,7 +101,12 @@ class BrokenItem:
     def __getitem__(self, key):
         raise AttributeError("item failed")
 
-for mapping in (BrokenKeys(), BrokenItem()):
+class NoKeys:
+    pass
+
+# 3.12-3.14 report every AttributeError as "not a mapping"; from 3.15 only a
+# source without keys() does, and one that keys() or __getitem__ raises passes.
+for mapping in (BrokenKeys(), BrokenItem(), NoKeys()):
     try:
         print({**mapping})
     except (AttributeError, TypeError) as error:

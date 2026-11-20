@@ -280,13 +280,17 @@ pub(crate) fn molt_complex_builtin_attached_body(
             real_bits
         };
         let has_imag = imag_bits != missing;
-        let has_imag_bits = if has_imag { 1u64 } else { 0u64 };
+        let shape = if has_imag {
+            crate::object::ops_convert::ComplexArguments::RealImag
+        } else {
+            crate::object::ops_convert::ComplexArguments::Real
+        };
         let actual_imag = if has_imag {
             imag_bits
         } else {
             MoltObject::from_int(0).bits()
         };
-        molt_complex_from_obj_attached_body(_py, actual_real, actual_imag, has_imag_bits)
+        molt_complex_from_obj_attached_body(_py, actual_real, actual_imag, shape.bits())
     })
 }
 

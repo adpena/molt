@@ -395,11 +395,18 @@ pub(crate) extern "C" fn complex_new(__context: u64, args: u64, kwargs: u64) -> 
             return MoltObject::none().bits();
         };
         let [real, imag] = *bound;
+        let shape = if imag.is_some() {
+            crate::object::ops_convert::ComplexArguments::RealImag
+        } else if call.values().len() == 1 && call.keyword_pairs().next().is_none() {
+            crate::object::ops_convert::ComplexArguments::LonePositional
+        } else {
+            crate::object::ops_convert::ComplexArguments::Real
+        };
         let result = molt_complex_from_obj_attached_body(
             py,
             real.unwrap_or_else(|| MoltObject::from_int(0).bits()),
             imag.unwrap_or_else(|| MoltObject::from_int(0).bits()),
-            MoltObject::from_int(i64::from(imag.is_some())).bits(),
+            shape.bits(),
         );
         if exception_pending(py) {
             dec_ref_bits(py, result);

@@ -480,12 +480,12 @@ pub unsafe extern "C" fn molt_object_init_subclass(__context: u64, _cls_bits: u6
 pub unsafe extern "C" fn molt_object_subclasshook(
     __context: u64,
     _cls_bits: u64,
-    _subclass_bits: u64,
+    subclass_bits: u64,
 ) -> u64 {
     molt_runtime_core::call_census::hit(2101);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_object_subclasshook_attached_body(_py, _cls_bits, _subclass_bits)
+    molt_object_subclasshook_attached_body(_py, _cls_bits, subclass_bits)
 }
 #[unsafe(export_name = "molt_object_getattribute__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

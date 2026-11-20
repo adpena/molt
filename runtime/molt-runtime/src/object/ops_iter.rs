@@ -2151,7 +2151,9 @@ impl<'a, 'py> OwnedRow<'a, 'py> {
 
 impl Drop for OwnedRow<'_, '_> {
     fn drop(&mut self) {
-        for &value in self.as_slice().iter().rev() {
+        // CPython's map_next releases its argument stack in order, on success
+        // and on a failed input alike.
+        for &value in self.as_slice() {
             dec_ref_bits(self.py, value);
         }
     }

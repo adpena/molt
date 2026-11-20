@@ -645,6 +645,7 @@ RUNTIME_SYMBOL_FEATURES: dict[str, str] = {
     "molt_math_modf": "stdlib_math",
     "molt_math_nextafter": "stdlib_math",
     "molt_math_perm": "stdlib_math",
+    "molt_math_pow": "stdlib_math",
     "molt_math_prod": "stdlib_math",
     "molt_math_radians": "stdlib_math",
     "molt_math_remainder": "stdlib_math",

@@ -1812,7 +1812,8 @@ fn bytes_from_obj_impl(
             );
         }
         let name = type_name(py, obj_from_bits(bits)).into_owned();
-        let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
+        let name =
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(name.as_bytes(), 200);
         return raise_exception::<_>(
             py,
             BuiltinExc::TypeError,

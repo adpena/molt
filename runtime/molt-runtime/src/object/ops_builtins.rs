@@ -2181,13 +2181,25 @@ pub(crate) fn molt_object_init_subclass_attached_body(
 }
 
 /// `object.__subclasshook__`: abstract base classes override it; the default
-/// defers to the normal subclass algorithm.
+/// defers to the normal subclass algorithm. Through 3.12 it accepts any
+/// arguments (METH_VARARGS); from 3.13 it takes exactly one (METH_O).
 pub(crate) fn molt_object_subclasshook_attached_body(
     _py: &crate::PyToken<'_>,
     _cls_bits: u64,
-    _subclass_bits: u64,
+    subclass_bits: u64,
 ) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, py, { not_implemented_bits(py) })
+    crate::with_attached_entry_nopanic!(_py, py, {
+        if subclass_bits == missing_bits(py)
+            && crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
+        {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "object.__subclasshook__() takes exactly one argument (0 given)",
+            );
+        }
+        not_implemented_bits(py)
+    })
 }
 
 pub(crate) fn molt_object_getattribute_attached_body(

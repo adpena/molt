@@ -407,7 +407,22 @@ pub(crate) fn setattr_no_attr_error_with_obj(
         attr_name,
         setattr_no_dict_suffix(_py),
     );
-    let res = raise_exception(_py, BuiltinExc::AttributeError, &msg);
+    // CPython 3.13 started recording `name` and `obj` on this failure.
+    if !crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+        return raise_exception(_py, BuiltinExc::AttributeError, &msg);
+    }
+    attr_error_with_message_obj(_py, &msg, attr_name, obj_bits)
+}
+
+/// Raise `AttributeError(msg)` with its `name` and `obj` members recorded.
+pub(crate) fn attr_error_with_message_obj(
+    _py: &PyToken<'_>,
+    msg: &str,
+    attr_name: &str,
+    obj_bits: u64,
+) -> u64 {
+    crate::gil_assert();
+    let res = raise_exception(_py, BuiltinExc::AttributeError, msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none()
         && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()

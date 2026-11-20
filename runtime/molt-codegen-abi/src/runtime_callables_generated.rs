@@ -1905,6 +1905,7 @@ pub enum RuntimeCallable {
     molt_math_modf = 0xFFFFFF04E3C781EE,
     molt_math_nextafter = 0xFFFFFF01007C730D,
     molt_math_perm = 0xFFFFFF591B62DC0B,
+    molt_math_pow = 0xFFFFFF4D07DD228B,
     molt_math_prod = 0xFFFFFFAC049CB8F0,
     molt_math_radians = 0xFFFFFF43C205BE1A,
     molt_math_remainder = 0xFFFFFF53445D890E,
@@ -5083,6 +5084,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_math_modf.key() == runtime_callable_key("molt_math_modf"));
     assert!(RuntimeCallable::molt_math_nextafter.key() == runtime_callable_key("molt_math_nextafter"));
     assert!(RuntimeCallable::molt_math_perm.key() == runtime_callable_key("molt_math_perm"));
+    assert!(RuntimeCallable::molt_math_pow.key() == runtime_callable_key("molt_math_pow"));
     assert!(RuntimeCallable::molt_math_prod.key() == runtime_callable_key("molt_math_prod"));
     assert!(RuntimeCallable::molt_math_radians.key() == runtime_callable_key("molt_math_radians"));
     assert!(RuntimeCallable::molt_math_remainder.key() == runtime_callable_key("molt_math_remainder"));

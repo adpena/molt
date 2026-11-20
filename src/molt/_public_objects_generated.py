@@ -387,6 +387,9 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
     "molt_math_radians": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "radians", "radians", "math"
     ),
+    "molt_math_pow": PublicObjectIdentity(
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "pow", "pow", "math"
+    ),
     "molt_math_remainder": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "remainder", "remainder", "math"
     ),
@@ -907,6 +910,7 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "math.modf": "molt_math_modf",
     "math.nextafter": "molt_math_nextafter",
     "math.radians": "molt_math_radians",
+    "math.pow": "molt_math_pow",
     "math.remainder": "molt_math_remainder",
     "math.sin": "molt_math_sin",
     "math.sinh": "molt_math_sinh",

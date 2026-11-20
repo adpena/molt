@@ -933,6 +933,13 @@ qualname = "radians"
 module = "math"
 bindings = ["math.radians"]
 
+[object.molt_math_pow]
+kind = "builtin_function_or_method"
+name = "pow"
+qualname = "pow"
+module = "math"
+bindings = ["math.pow"]
+
 [object.molt_math_remainder]
 kind = "builtin_function_or_method"
 name = "remainder"

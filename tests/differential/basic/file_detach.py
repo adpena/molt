@@ -27,7 +27,9 @@ print("text_detach", buf is not None)
 show_err("text_read", handle.read)
 show_err("text_close", handle.close)
 show_err("text_closed", lambda: handle.closed)
-print("text_buffer_none", handle.buffer is None)
+# Through 3.13 a detached TextIOWrapper's buffer reads None; from 3.14 it
+# raises like every other operation on the detached wrapper.
+show_err("text_buffer", lambda: print("text_buffer_none", handle.buffer is None))
 print("text_buf_read", buf.read())
 buf.close()
 

@@ -6084,7 +6084,7 @@ def test_runtime_requirement_carriers_reject_invalid_authority(tmp_path: Path) -
         assert mutated != source, label
         if label == "empty":
             mutated = mutated.replace(
-                '    "get_attr_generic_obj", "get_attr_name_default",\n'
+                '    "get_attr_generic_obj", "get_attr_name", "get_attr_name_default",\n'
                 '    "module_get_attr", "module_get_global", "module_import_from",\n',
                 "",
                 1,

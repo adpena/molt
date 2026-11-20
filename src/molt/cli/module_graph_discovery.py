@@ -181,6 +181,10 @@ class _ModuleGraphDiscovery:
         # premise view: a continuation replays the whole history.
         self.invocations: tuple[_DiscoveryInvocation, ...] = ()
         self.scan_memo: dict[tuple[object, ...], _LoadedModuleImportScan] = {}
+        # Set once a call keeps its accumulated outputs. The caller has
+        # published that graph, and no replay of the history reproduces it, so
+        # every later continuation of the operation accumulates too.
+        self.accumulated = False
         self.contexts: dict[str, _SourceDiscoveryContext] = {}
         self.context_epochs: dict[str, int] = {}
         self.source_generations: dict[
@@ -647,6 +651,45 @@ def _settled(premise: PythonNamespacePremise | None) -> PythonNamespacePremise |
     return None if premise is None else replace(premise, exact_receivers=())
 
 
+def _runtime_catalog_unadmitted(
+    custody: _RuntimeImportScanCustody, graph: Mapping[str, Path]
+) -> str | None:
+    """The first runtime catalog row, other than an owner the call admits,
+    that the enclosing graph does not hold at its path."""
+    for name, path in custody.catalog:
+        if name not in custody.owners_by_module and (
+            name not in graph or graph[name].resolve() != path
+        ):
+            return name
+    return None
+
+
+def _replay_history(
+    history: Sequence[_DiscoveryInvocation],
+    resolver: _module_resolution._ModuleResolutionCache,
+    settled: Mapping[str, PythonNamespacePremise | None],
+    memo: dict[tuple[object, ...], _LoadedModuleImportScan],
+) -> _DiscoveredModuleGraph | None:
+    """Replay every invocation of an operation from a fresh state: the graph
+    is what the current outputs reach, never an earlier scan's. None when a
+    step's runtime catalog, built from the published graph, names a module
+    the replay lost: the replay cannot reproduce what the caller published."""
+    replay: _DiscoveredModuleGraph | None = None
+    for step in history:
+        state = None if replay is None else replay.discovery
+        custody = step.runtime_import_custody
+        if (
+            custody is not None
+            and _runtime_catalog_unadmitted(
+                custody, {} if state is None else state.graph
+            )
+            is not None
+        ):
+            return None
+        replay = step.run(resolver, state, settled, memo)
+    return replay
+
+
 @_source_tree_fingerprint_transaction()
 def _discover_module_graph_from_paths(
     entry_paths: Sequence[Path],
@@ -682,7 +725,11 @@ def _discover_module_graph_from_paths(
     reproduce the settled ones, the replay's graph is the answer; when no
     premise reproduces itself, the first pass's accumulated graph is. A pass
     that scanned no unit twice needs no replay. A continuation
-    (``discovery``) extends a replayed state in place.
+    (``discovery``) extends a replayed state in place. The caller publishes
+    each call's graph additively, so a continuation never drops a module an
+    earlier call published: when its replay would, it keeps its accumulated
+    outputs. Once any call kept them, no later call replays: a replay of that
+    call reaches only one premise's graph, not the published accumulation.
     """
 
     invocation = _DiscoveryInvocation(
@@ -709,11 +756,14 @@ def _discover_module_graph_from_paths(
     # The caller's published rows: a continuation reports each one it changes.
     prior_sources = {} if discovery is None else dict(discovery.scan_sources)
     prior_solver = None if discovery is None else discovery.demands
+    # The caller's published modules: a replay must reach each of them.
+    prior_graph = {} if discovery is None else dict(discovery.graph)
+    accumulated = discovery is not None and discovery.accumulated
     result = invocation.run(resolver_cache, discovery, None, memo)
     assert result.discovery is not None
-    if not result.discovery.superseded_scans:
-        # No rescan changed a unit's output: the accumulated outputs are the
-        # current ones.
+    if not result.discovery.superseded_scans or accumulated:
+        # No rescan changed a unit's output, so the accumulated outputs are the
+        # current ones; or an earlier call published its accumulated graph.
         result.discovery.invocations = history
         result.discovery.scan_memo = memo
         return result
@@ -724,12 +774,10 @@ def _discover_module_graph_from_paths(
     }
     seen = {tuple(sorted(settled.items()))}
     for _ in range(_MAX_DISCOVERY_REPLAYS):
-        # Replay every invocation of this operation from a fresh state: the
-        # graph is what the current outputs reach, never an earlier scan's.
-        replay_state: _ModuleGraphDiscovery | None = None
-        for step in history:
-            replay = step.run(resolver, replay_state, settled, memo)
-            replay_state = replay.discovery
+        replay = _replay_history(history, resolver, settled, memo)
+        if replay is None:
+            break
+        replay_state = replay.discovery
         assert replay_state is not None
         derived = {
             name: _settled(premise)
@@ -738,6 +786,12 @@ def _discover_module_graph_from_paths(
         if all(settled.get(name) == premise for name, premise in derived.items()):
             # The current outputs derive exactly the premises they read: the
             # replay's graph is closed under them.
+            if any(
+                replay_state.graph.get(name) != path
+                for name, path in prior_graph.items()
+            ):
+                # It drops a module the caller published.
+                break
             replay_state.invocations = history
             replay_state.scan_memo = memo
             if discovery is None:
@@ -779,10 +833,12 @@ def _discover_module_graph_from_paths(
         if key in seen:
             break
         seen.add(key)
-    # No premise reproduces itself: the first pass accumulated the outputs of
-    # every premise it read, which covers each candidate's graph.
+    # No premise reproduces itself, or a replay loses a module the caller
+    # published: the first pass accumulated the outputs of every premise it
+    # read, which covers each candidate's graph.
     result.discovery.invocations = history
     result.discovery.scan_memo = memo
+    result.discovery.accumulated = True
     return result
 
 
@@ -829,13 +885,11 @@ def _discovery_pass(
     if runtime_import_custody is not None:
         if not full_scan_roots:
             raise ValueError("runtime import custody requires full-depth owner scans")
-        for name, path in runtime_import_custody.catalog:
-            if name not in runtime_import_custody.owners_by_module and (
-                name not in state.graph or state.graph[name].resolve() != path
-            ):
-                raise ValueError(
-                    f"runtime catalog lacks live source discovery: {name!r}"
-                )
+        missing = _runtime_catalog_unadmitted(runtime_import_custody, state.graph)
+        if missing is not None:
+            raise ValueError(
+                f"runtime catalog lacks live source discovery: {missing!r}"
+            )
     precomputed_scans_by_path = {
         path.resolve(): scan for path, scan in (precomputed_scans_by_path or {}).items()
     }
