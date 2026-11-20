@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_socket_inet_pton(
     family_bits: u64,
     address_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(301);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_inet_pton_attached_body(_py, family_bits, address_bits)
@@ -17,6 +18,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(
     family_bits: u64,
     packed_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(302);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_inet_ntop_attached_body(_py, family_bits, packed_bits)
@@ -24,6 +26,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(
 #[unsafe(export_name = "molt_socket_htons__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_htons(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(303);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_htons_attached_body(_py, value_bits)
@@ -31,6 +34,7 @@ pub unsafe extern "C" fn molt_socket_htons(__context: u64, value_bits: u64) -> u
 #[unsafe(export_name = "molt_socket_ntohs__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_ntohs(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(304);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_ntohs_attached_body(_py, value_bits)
@@ -38,6 +42,7 @@ pub unsafe extern "C" fn molt_socket_ntohs(__context: u64, value_bits: u64) -> u
 #[unsafe(export_name = "molt_socket_htonl__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_htonl(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(305);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_htonl_attached_body(_py, value_bits)
@@ -45,6 +50,7 @@ pub unsafe extern "C" fn molt_socket_htonl(__context: u64, value_bits: u64) -> u
 #[unsafe(export_name = "molt_socket_ntohl__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_ntohl(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(306);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_ntohl_attached_body(_py, value_bits)
@@ -52,6 +58,7 @@ pub unsafe extern "C" fn molt_socket_ntohl(__context: u64, value_bits: u64) -> u
 #[unsafe(export_name = "molt_socket_cmsg_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_cmsg_len(__context: u64, datalen_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(307);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_cmsg_len_attached_body(_py, datalen_bits)
@@ -59,6 +66,7 @@ pub unsafe extern "C" fn molt_socket_cmsg_len(__context: u64, datalen_bits: u64)
 #[unsafe(export_name = "molt_socket_cmsg_space__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_cmsg_space(__context: u64, datalen_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(308);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socket_cmsg_space_attached_body(_py, datalen_bits)

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_arena_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_arena_new(__context: u64) -> *mut ScopeArena {
+    molt_runtime_core::call_census::hit(35);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_arena_new_attached_body(_py)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_arena_alloc(
     arena: *mut ScopeArena,
     size: u64,
 ) -> *mut u8 {
+    molt_runtime_core::call_census::hit(36);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_arena_alloc_attached_body(_py, arena, size)
@@ -24,6 +26,7 @@ pub unsafe extern "C" fn molt_arena_alloc_object(
     arena: *mut ScopeArena,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(37);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_arena_alloc_object_attached_body(_py, arena, size_bits)
@@ -31,6 +34,7 @@ pub unsafe extern "C" fn molt_arena_alloc_object(
 #[unsafe(export_name = "molt_arena_reset__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_arena_reset(__context: u64, arena: *mut ScopeArena) {
+    molt_runtime_core::call_census::hit(38);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_arena_reset_attached_body(_py, arena)
@@ -38,6 +42,7 @@ pub unsafe extern "C" fn molt_arena_reset(__context: u64, arena: *mut ScopeArena
 #[unsafe(export_name = "molt_arena_free__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_arena_free(__context: u64, arena: *mut ScopeArena) {
+    molt_runtime_core::call_census::hit(39);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_arena_free_attached_body(_py, arena)

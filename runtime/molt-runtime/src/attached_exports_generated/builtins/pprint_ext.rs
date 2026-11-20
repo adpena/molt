@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_pprint_safe_repr(
     max_depth: u64,
     max_width: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1280);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pprint_safe_repr_attached_body(_py, obj_bits, max_depth, max_width)
@@ -21,6 +22,7 @@ pub unsafe extern "C" fn molt_pprint_format(
     depth: u64,
     compact: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1281);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pprint_format_attached_body(_py, obj_bits, indent, width, depth, compact)
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_pprint_format(
 #[unsafe(export_name = "molt_pprint_isreadable__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pprint_isreadable(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1282);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pprint_isreadable_attached_body(_py, obj_bits)
@@ -35,6 +38,7 @@ pub unsafe extern "C" fn molt_pprint_isreadable(__context: u64, obj_bits: u64) -
 #[unsafe(export_name = "molt_pprint_isrecursive__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pprint_isrecursive(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1283);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pprint_isrecursive_attached_body(_py, obj_bits)
@@ -51,6 +55,7 @@ pub unsafe extern "C" fn molt_pprint_pformat(
     sort_dicts: u64,
     underscore_numbers: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1284);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pprint_pformat_attached_body(

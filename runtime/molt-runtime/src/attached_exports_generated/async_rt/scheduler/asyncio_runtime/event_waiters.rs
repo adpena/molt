@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_register(
     token_bits: u64,
     waiter_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(276);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_waiters_register_attached_body(_py, token_bits, waiter_bits)
@@ -17,6 +18,7 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_unregister(
     token_bits: u64,
     waiter_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(277);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_waiters_unregister_attached_body(_py, token_bits, waiter_bits)
@@ -27,6 +29,7 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup_token(
     __context: u64,
     token_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(278);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_event_waiters_cleanup_token_attached_body(_py, token_bits)

@@ -12,6 +12,7 @@ pub unsafe extern "C" fn molt_structseq_type(
     static_origin: u64,
     doc: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1448);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_structseq_type_attached_body(
@@ -29,6 +30,7 @@ pub unsafe extern "C" fn molt_structseq_type(
 #[unsafe(export_name = "molt_structseq_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_structseq_new(__context: u64, class: u64, values: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1449);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_structseq_new_attached_body(_py, class, values)

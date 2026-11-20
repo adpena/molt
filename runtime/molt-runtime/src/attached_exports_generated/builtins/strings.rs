@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    molt_runtime_core::call_census::hit(1446);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_string_from_bytes_attached_body(_py, ptr, len_bits, out) }
@@ -19,6 +20,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    molt_runtime_core::call_census::hit(1447);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_bytes_from_bytes_attached_body(_py, ptr, len_bits, out) }

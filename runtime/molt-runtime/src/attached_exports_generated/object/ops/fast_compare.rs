@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_compare_int_fast__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_compare_int_fast(__context: u64, a: u64, b: u64, op: u32) -> u64 {
+    molt_runtime_core::call_census::hit(1952);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_compare_int_fast_attached_body(_py, a, b, op)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_compare_int_fast(__context: u64, a: u64, b: u64, o
 #[unsafe(export_name = "molt_string_eq_fast__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_eq_fast(__context: u64, a: u64, b: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1953);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_eq_fast_attached_body(_py, a, b)

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_obj_get_state__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_obj_get_state(__context: u64, data_ptr_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(1945);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_obj_get_state_attached_body(_py, data_ptr_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_obj_get_state(__context: u64, data_ptr_bits: u64) 
 #[unsafe(export_name = "molt_obj_set_state__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_obj_set_state(__context: u64, data_ptr_bits: u64, state: i64) {
+    molt_runtime_core::call_census::hit(1946);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_obj_set_state_attached_body(_py, data_ptr_bits, state)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_object_init_stack(
     cls_bits: u64,
     payload_size_bytes: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1947);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_object_init_stack_attached_body(_py, storage, cls_bits, payload_size_bytes) }
@@ -28,6 +31,7 @@ pub unsafe extern "C" fn molt_object_init_stack(
 #[unsafe(export_name = "molt_inc_ref__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inc_ref(__context: u64, ptr: *mut u8) {
+    molt_runtime_core::call_census::hit(1948);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_inc_ref_attached_body(_py, ptr) }
@@ -35,6 +39,7 @@ pub unsafe extern "C" fn molt_inc_ref(__context: u64, ptr: *mut u8) {
 #[unsafe(export_name = "molt_dec_ref__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dec_ref(__context: u64, ptr: *mut u8) {
+    molt_runtime_core::call_census::hit(1949);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_dec_ref_attached_body(_py, ptr) }

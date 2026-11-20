@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_range_new(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2337);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_range_new_attached_body(_py, start_bits, stop_bits, step_bits)
@@ -19,6 +20,7 @@ pub unsafe extern "C" fn molt_list_from_range(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2338);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_from_range_attached_body(_py, start_bits, stop_bits, step_bits)
@@ -26,6 +28,7 @@ pub unsafe extern "C" fn molt_list_from_range(
 #[unsafe(export_name = "molt_range_count__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_range_count(__context: u64, range_bits: u64, val_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2339);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_range_count_attached_body(_py, range_bits, val_bits)
@@ -33,6 +36,7 @@ pub unsafe extern "C" fn molt_range_count(__context: u64, range_bits: u64, val_b
 #[unsafe(export_name = "molt_range_index__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_range_index(__context: u64, range_bits: u64, val_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2340);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_range_index_attached_body(_py, range_bits, val_bits)
@@ -44,6 +48,7 @@ pub unsafe extern "C" fn molt_enumerate_builtin(
     iter_bits: u64,
     start_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2341);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_enumerate_builtin_attached_body(_py, iter_bits, start_bits)
@@ -55,6 +60,7 @@ pub unsafe extern "C" fn molt_next_builtin(
     iter_bits: u64,
     default_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2342);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_next_builtin_attached_body(_py, iter_bits, default_bits)
@@ -66,6 +72,7 @@ pub unsafe extern "C" fn molt_map_builtin(
     func_bits: u64,
     iterables_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2343);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_map_builtin_attached_body(_py, func_bits, iterables_bits)
@@ -77,6 +84,7 @@ pub unsafe extern "C" fn molt_filter_builtin(
     func_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2344);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_filter_builtin_attached_body(_py, func_bits, iterable_bits)
@@ -88,6 +96,7 @@ pub unsafe extern "C" fn molt_zip_builtin(
     iterables_bits: u64,
     strict_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2345);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_zip_builtin_attached_body(_py, iterables_bits, strict_bits)
@@ -95,6 +104,7 @@ pub unsafe extern "C" fn molt_zip_builtin(
 #[unsafe(export_name = "molt_reversed_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_reversed_builtin(__context: u64, seq_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2346);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_reversed_builtin_attached_body(_py, seq_bits)
@@ -106,6 +116,7 @@ pub unsafe extern "C" fn molt_anext_builtin(
     iter_bits: u64,
     default_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2347);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_anext_builtin_attached_body(_py, iter_bits, default_bits)
@@ -118,6 +129,7 @@ pub unsafe extern "C" fn molt_enumerate(
     start_bits: u64,
     has_start_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2348);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_enumerate_attached_body(_py, iterable_bits, start_bits, has_start_bits)
@@ -125,6 +137,7 @@ pub unsafe extern "C" fn molt_enumerate(
 #[unsafe(export_name = "molt_iter__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_iter(__context: u64, iter_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2349);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_iter_attached_body(_py, iter_bits)
@@ -132,6 +145,7 @@ pub unsafe extern "C" fn molt_iter(__context: u64, iter_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_iter_checked__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_iter_checked(__context: u64, iter_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2350);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_iter_checked_attached_body(_py, iter_bits)
@@ -143,6 +157,7 @@ pub unsafe extern "C" fn molt_iter_sentinel(
     callable_bits: u64,
     sentinel_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2351);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_iter_sentinel_attached_body(_py, callable_bits, sentinel_bits)
@@ -150,6 +165,7 @@ pub unsafe extern "C" fn molt_iter_sentinel(
 #[unsafe(export_name = "molt_aiter__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_aiter(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2352);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_aiter_attached_body(_py, obj_bits)
@@ -157,6 +173,7 @@ pub unsafe extern "C" fn molt_aiter(__context: u64, obj_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_iter_next__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_iter_next(__context: u64, iter_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2353);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_iter_next_attached_body(_py, iter_bits)
@@ -175,6 +192,7 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(
     iter_bits: u64,
     value_out_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2354);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_iter_next_unboxed_attached_body(_py, iter_bits, value_out_bits) }
@@ -186,6 +204,7 @@ pub unsafe extern "C" fn molt_iter_next_unpack2(
     iter_bits: u64,
     out_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2355);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_iter_next_unpack2_attached_body(_py, iter_bits, out_bits) }
@@ -193,6 +212,7 @@ pub unsafe extern "C" fn molt_iter_next_unpack2(
 #[unsafe(export_name = "molt_anext__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_anext(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2356);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_anext_attached_body(_py, obj_bits)

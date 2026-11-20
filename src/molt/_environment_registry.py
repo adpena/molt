@@ -5201,6 +5201,26 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
+      "name": "MOLT_RUNTIME_CALL_CENSUS",
+      "output_neutral": false,
+      "owner": "src/molt/cli/runtime_features.py",
+      "summary": "Adds the call-census cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive): every attached runtime entry compiled code calls bumps one counter, written at exit to MOLT_RUNTIME_CALL_CENSUS_FILE; unset, empty, or any other value leaves it off and shipped runtimes pay nothing.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_RUNTIME_CALL_CENSUS_FILE",
+      "output_neutral": false,
+      "owner": "runtime/molt-runtime-core/src/call_census.rs",
+      "summary": "Path a call-census runtime writes at process exit, one '<calls> <entry>' line per runtime entry called at least once, most-called first; unset writes nothing, and runtimes built without the call-census feature ignore it.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "0",
+      "kind": "bool",
       "name": "MOLT_RUNTIME_FEEDBACK",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
@@ -5255,6 +5275,26 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/cli/runtime_features.py",
       "summary": "Adds the molt_gpu_webgpu cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive), and on macOS also adds the Metal, Foundation, QuartzCore and AppKit frameworks and -lobjc to the native link; unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_RUNTIME_PC_SAMPLER",
+      "output_neutral": false,
+      "owner": "src/molt/cli/runtime_features.py",
+      "summary": "Adds the pc-sampler cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive): the process samples its own program counter and frame-pointer callers on a SIGPROF timer (macOS arm64 and Linux x86-64); unset, empty, or any other value leaves it off.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_RUNTIME_PC_SAMPLER_FILE",
+      "output_neutral": false,
+      "owner": "runtime/molt-runtime/src/state/pc_sampler.rs",
+      "summary": "Path a pc-sampler runtime writes at process exit: 'load <hex>' (the main image's load address, for atos -l), 'taken <n>', then one line of hex return addresses per sample; unset leaves the sampler stopped, and runtimes built without the pc-sampler feature ignore it.",
       "values": []
     },
     {

@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_tk_after(
     delay_ms_bits: u64,
     callback_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3572);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_after_attached_body(_py, app_bits, delay_ms_bits, callback_bits)
@@ -18,6 +19,7 @@ pub unsafe extern "C" fn molt_tk_after_idle(
     app_bits: u64,
     callback_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3573);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_after_idle_attached_body(_py, app_bits, callback_bits)
@@ -29,6 +31,7 @@ pub unsafe extern "C" fn molt_tk_after_cancel(
     app_bits: u64,
     identifier_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3574);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_after_cancel_attached_body(_py, app_bits, identifier_bits)
@@ -40,6 +43,7 @@ pub unsafe extern "C" fn molt_tk_after_info(
     app_bits: u64,
     identifier_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3575);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_after_info_attached_body(_py, app_bits, identifier_bits)

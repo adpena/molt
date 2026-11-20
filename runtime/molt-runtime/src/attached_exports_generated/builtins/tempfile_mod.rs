@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_tempfile_gettempdir__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tempfile_gettempdir(__context: u64, candidates_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1493);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tempfile_gettempdir_attached_body(_py, candidates_bits)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_tempfile_mkdtemp(
     prefix: u64,
     dir: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1494);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tempfile_mkdtemp_attached_body(_py, suffix, prefix, dir)
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_tempfile_mkstemp(
     dir: u64,
     text: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1495);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tempfile_mkstemp_attached_body(_py, suffix, prefix, dir, text)
@@ -42,6 +45,7 @@ pub unsafe extern "C" fn molt_tempfile_mkstemp(
     _dir: u64,
     _text: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1496);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tempfile_mkstemp_attached_body(_py, _suffix, _prefix, _dir, _text)
@@ -49,6 +53,7 @@ pub unsafe extern "C" fn molt_tempfile_mkstemp(
 #[unsafe(export_name = "molt_tempfile_cleanup__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_tempfile_cleanup(__context: u64, path: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1497);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tempfile_cleanup_attached_body(_py, path)

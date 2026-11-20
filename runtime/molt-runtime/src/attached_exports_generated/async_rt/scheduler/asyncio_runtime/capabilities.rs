@@ -8,6 +8,7 @@ pub unsafe extern "C" fn molt_asyncio_ssl_transport_orchestrate(
     server_hostname_bits: u64,
     server_side_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(269);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_ssl_transport_orchestrate_attached_body(
@@ -21,6 +22,7 @@ pub unsafe extern "C" fn molt_asyncio_ssl_transport_orchestrate(
 #[unsafe(export_name = "molt_asyncio_require_unix_socket_support__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_require_unix_socket_support(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(270);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_require_unix_socket_support_attached_body(_py)
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_asyncio_require_unix_socket_support(__context: u64
 #[unsafe(export_name = "molt_asyncio_require_child_watcher_support__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_require_child_watcher_support(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(271);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_require_child_watcher_support_attached_body(_py)

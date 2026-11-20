@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_buffer2d_new(
     cols_bits: u64,
     init_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1926);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_new_attached_body(_py, rows_bits, cols_bits, init_bits)
@@ -19,6 +20,7 @@ pub unsafe extern "C" fn molt_buffer2d_get(
     row_bits: u64,
     col_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1927);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_get_attached_body(_py, obj_bits, row_bits, col_bits)
@@ -26,6 +28,7 @@ pub unsafe extern "C" fn molt_buffer2d_get(
 #[unsafe(export_name = "molt_buffer2d_rows__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_buffer2d_rows(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1928);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_rows_attached_body(_py, obj_bits)
@@ -33,6 +36,7 @@ pub unsafe extern "C" fn molt_buffer2d_rows(__context: u64, obj_bits: u64) -> u6
 #[unsafe(export_name = "molt_buffer2d_cols__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_buffer2d_cols(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1929);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_cols_attached_body(_py, obj_bits)
@@ -46,6 +50,7 @@ pub unsafe extern "C" fn molt_buffer2d_set(
     col_bits: u64,
     val_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1930);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_set_attached_body(_py, obj_bits, row_bits, col_bits, val_bits)
@@ -53,6 +58,7 @@ pub unsafe extern "C" fn molt_buffer2d_set(
 #[unsafe(export_name = "molt_buffer2d_matmul__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_buffer2d_matmul(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1931);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_buffer2d_matmul_attached_body(_py, a_bits, b_bits)

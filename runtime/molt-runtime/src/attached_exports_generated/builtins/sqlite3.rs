@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_sqlite3_connect__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_connect(__context: u64, database_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1384);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_connect_attached_body(_py, database_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_sqlite3_connect(__context: u64, database_bits: u64
 #[unsafe(export_name = "molt_sqlite3_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_close(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1385);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_close_attached_body(_py, handle_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_sqlite3_close(__context: u64, handle_bits: u64) ->
 #[unsafe(export_name = "molt_sqlite3_commit__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_commit(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1386);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_commit_attached_body(_py, handle_bits)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_sqlite3_commit(__context: u64, handle_bits: u64) -
 #[unsafe(export_name = "molt_sqlite3_rollback__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_rollback(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1387);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_rollback_attached_body(_py, handle_bits)
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn molt_sqlite3_rollback(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_sqlite3_in_transaction__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_in_transaction(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1388);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_in_transaction_attached_body(_py, handle_bits)
@@ -37,6 +42,7 @@ pub unsafe extern "C" fn molt_sqlite3_in_transaction(__context: u64, handle_bits
 #[unsafe(export_name = "molt_sqlite3_total_changes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_total_changes(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1389);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_total_changes_attached_body(_py, handle_bits)
@@ -44,6 +50,7 @@ pub unsafe extern "C" fn molt_sqlite3_total_changes(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_sqlite3_cursor__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_cursor(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1390);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_cursor_attached_body(_py, handle_bits)
@@ -51,6 +58,7 @@ pub unsafe extern "C" fn molt_sqlite3_cursor(__context: u64, handle_bits: u64) -
 #[unsafe(export_name = "molt_sqlite3_cursor_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_cursor_close(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1391);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_cursor_close_attached_body(_py, cursor_bits)
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn molt_sqlite3_cursor_close(__context: u64, cursor_bits: 
 #[unsafe(export_name = "molt_sqlite3_cursor_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_cursor_drop(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1392);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_cursor_drop_attached_body(_py, cursor_bits)
@@ -70,6 +79,7 @@ pub unsafe extern "C" fn molt_sqlite3_execute(
     sql_bits: u64,
     params_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1393);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_execute_attached_body(_py, cursor_bits, sql_bits, params_bits)
@@ -82,6 +92,7 @@ pub unsafe extern "C" fn molt_sqlite3_executemany(
     sql_bits: u64,
     seq_of_params_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1394);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_executemany_attached_body(_py, cursor_bits, sql_bits, seq_of_params_bits)
@@ -93,6 +104,7 @@ pub unsafe extern "C" fn molt_sqlite3_executescript(
     cursor_bits: u64,
     script_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1395);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_executescript_attached_body(_py, cursor_bits, script_bits)
@@ -100,6 +112,7 @@ pub unsafe extern "C" fn molt_sqlite3_executescript(
 #[unsafe(export_name = "molt_sqlite3_fetchone__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_fetchone(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1396);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_fetchone_attached_body(_py, cursor_bits)
@@ -107,6 +120,7 @@ pub unsafe extern "C" fn molt_sqlite3_fetchone(__context: u64, cursor_bits: u64)
 #[unsafe(export_name = "molt_sqlite3_fetchall__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_fetchall(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1397);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_fetchall_attached_body(_py, cursor_bits)
@@ -118,6 +132,7 @@ pub unsafe extern "C" fn molt_sqlite3_fetchmany(
     cursor_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1398);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_fetchmany_attached_body(_py, cursor_bits, size_bits)
@@ -125,6 +140,7 @@ pub unsafe extern "C" fn molt_sqlite3_fetchmany(
 #[unsafe(export_name = "molt_sqlite3_lastrowid__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_lastrowid(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1399);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_lastrowid_attached_body(_py, cursor_bits)
@@ -132,6 +148,7 @@ pub unsafe extern "C" fn molt_sqlite3_lastrowid(__context: u64, cursor_bits: u64
 #[unsafe(export_name = "molt_sqlite3_rowcount__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_rowcount(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1400);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_rowcount_attached_body(_py, cursor_bits)
@@ -143,6 +160,7 @@ pub unsafe extern "C" fn molt_sqlite3_arraysize_set(
     cursor_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1401);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_arraysize_set_attached_body(_py, cursor_bits, size_bits)
@@ -150,6 +168,7 @@ pub unsafe extern "C" fn molt_sqlite3_arraysize_set(
 #[unsafe(export_name = "molt_sqlite3_description__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_description(__context: u64, cursor_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1402);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_description_attached_body(_py, cursor_bits)
@@ -157,6 +176,7 @@ pub unsafe extern "C" fn molt_sqlite3_description(__context: u64, cursor_bits: u
 #[unsafe(export_name = "molt_sqlite3_library_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_library_version(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1403);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_library_version_attached_body(_py)
@@ -164,6 +184,7 @@ pub unsafe extern "C" fn molt_sqlite3_library_version(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_sqlite3_complete_statement__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_sqlite3_complete_statement(__context: u64, sql_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1404);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sqlite3_complete_statement_attached_body(_py, sql_bits)

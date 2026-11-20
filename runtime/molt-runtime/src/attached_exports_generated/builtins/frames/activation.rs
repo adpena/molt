@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_stateful_locals_register(
     names_bits: u64,
     layout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(726);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_stateful_locals_register_attached_body(_py, fn_ptr, names_bits, layout_bits)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_stateful_locals_register(
 #[unsafe(export_name = "molt_frame_locals_begin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frame_locals_begin(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(727);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frame_locals_begin_attached_body(_py)
@@ -25,6 +27,7 @@ pub unsafe extern "C" fn molt_frame_cell_publish(
     offset_bits: u64,
     cell_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(728);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frame_cell_publish_attached_body(_py, offset_bits, cell_bits)

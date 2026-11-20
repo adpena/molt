@@ -3,6 +3,14 @@ pub(crate) mod lifecycle;
 pub(crate) mod metrics;
 pub(crate) mod names;
 mod names_generated;
+#[cfg(all(
+    feature = "pc-sampler",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
+pub(crate) mod pc_sampler;
 pub(crate) mod pending_work;
 pub(crate) mod program_stack;
 mod program_stack_generated;

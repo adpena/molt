@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_tk_splitdict(
     tcl_str_bits: u64,
     cut_minus_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3606);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_splitdict_attached_body(_py, tcl_str_bits, cut_minus_bits)

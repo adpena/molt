@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_weakref_reference_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_reference_type(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1642);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_reference_type_attached_body(_py)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_weakref_new(
     target_bits: u64,
     callback_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1643);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_new_attached_body(_py, class_bits, target_bits, callback_bits)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_weakref_new(
 #[unsafe(export_name = "molt_weakref_call__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_call(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1644);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_call_attached_body(_py, self_bits)
@@ -33,6 +36,7 @@ pub unsafe extern "C" fn molt_weakref_init(
     _target_bits: u64,
     _callback_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1645);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_init_attached_body(_py, self_bits, _target_bits, _callback_bits)
@@ -44,6 +48,7 @@ pub unsafe extern "C" fn molt_weakref_callback_get(
     _descriptor_bits: u64,
     self_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1646);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_callback_get_attached_body(_py, _descriptor_bits, self_bits)
@@ -51,6 +56,7 @@ pub unsafe extern "C" fn molt_weakref_callback_get(
 #[unsafe(export_name = "molt_weakref_eq__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_eq(__context: u64, self_bits: u64, other_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1647);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_eq_attached_body(_py, self_bits, other_bits)
@@ -58,6 +64,7 @@ pub unsafe extern "C" fn molt_weakref_eq(__context: u64, self_bits: u64, other_b
 #[unsafe(export_name = "molt_weakref_ne__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_ne(__context: u64, self_bits: u64, other_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1648);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_ne_attached_body(_py, self_bits, other_bits)
@@ -65,6 +72,7 @@ pub unsafe extern "C" fn molt_weakref_ne(__context: u64, self_bits: u64, other_b
 #[unsafe(export_name = "molt_weakref_hash__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_hash(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1649);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_hash_attached_body(_py, self_bits)
@@ -72,6 +80,7 @@ pub unsafe extern "C" fn molt_weakref_hash(__context: u64, self_bits: u64) -> u6
 #[unsafe(export_name = "molt_weakref_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_weakref_repr(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1650);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_weakref_repr_attached_body(_py, self_bits)

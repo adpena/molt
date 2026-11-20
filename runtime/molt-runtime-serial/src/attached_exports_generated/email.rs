@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_email_message_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_message_new(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3505);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_new_attached_body(_py)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_email_message_set(
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3506);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_set_attached_body(_py, message_bits, name_bits, value_bits)
@@ -25,6 +27,7 @@ pub unsafe extern "C" fn molt_email_message_set_content(
     message_bits: u64,
     content_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3507);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_set_content_attached_body(_py, message_bits, content_bits)
@@ -37,6 +40,7 @@ pub unsafe extern "C" fn molt_email_message_add_alternative(
     content_bits: u64,
     subtype_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3508);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_add_alternative_attached_body(_py, message_bits, content_bits, subtype_bits)
@@ -51,6 +55,7 @@ pub unsafe extern "C" fn molt_email_message_add_attachment(
     subtype_bits: u64,
     filename_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3509);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_add_attachment_attached_body(
@@ -65,6 +70,7 @@ pub unsafe extern "C" fn molt_email_message_add_attachment(
 #[unsafe(export_name = "molt_email_message_as_string__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_message_as_string(__context: u64, message_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3510);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_as_string_attached_body(_py, message_bits)
@@ -72,6 +78,7 @@ pub unsafe extern "C" fn molt_email_message_as_string(__context: u64, message_bi
 #[unsafe(export_name = "molt_email_message_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_message_drop(__context: u64, message_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3511);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_message_drop_attached_body(_py, message_bits)
@@ -79,6 +86,7 @@ pub unsafe extern "C" fn molt_email_message_drop(__context: u64, message_bits: u
 #[unsafe(export_name = "molt_email_utils_make_msgid__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_utils_make_msgid(__context: u64, domain_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3512);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_utils_make_msgid_attached_body(_py, domain_bits)
@@ -86,6 +94,7 @@ pub unsafe extern "C" fn molt_email_utils_make_msgid(__context: u64, domain_bits
 #[unsafe(export_name = "molt_email_utils_getaddresses__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_utils_getaddresses(__context: u64, values_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3513);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_utils_getaddresses_attached_body(_py, values_bits)
@@ -93,6 +102,7 @@ pub unsafe extern "C" fn molt_email_utils_getaddresses(__context: u64, values_bi
 #[unsafe(export_name = "molt_email_utils_parsedate_tz__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_utils_parsedate_tz(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3514);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_utils_parsedate_tz_attached_body(_py, value_bits)
@@ -100,6 +110,7 @@ pub unsafe extern "C" fn molt_email_utils_parsedate_tz(__context: u64, value_bit
 #[unsafe(export_name = "molt_email_utils_format_datetime__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_utils_format_datetime(__context: u64, dt_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3515);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_utils_format_datetime_attached_body(_py, dt_bits)
@@ -110,6 +121,7 @@ pub unsafe extern "C" fn molt_email_utils_parsedate_to_datetime(
     __context: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3516);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_utils_parsedate_to_datetime_attached_body(_py, value_bits)
@@ -121,6 +133,7 @@ pub unsafe extern "C" fn molt_email_headerregistry_value(
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3517);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_headerregistry_value_attached_body(_py, name_bits, value_bits)
@@ -132,6 +145,7 @@ pub unsafe extern "C" fn molt_email_header_encode_word(
     text_bits: u64,
     charset_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3518);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_header_encode_word_attached_body(_py, text_bits, charset_bits)
@@ -143,6 +157,7 @@ pub unsafe extern "C" fn molt_email_address_addr_spec(
     username_bits: u64,
     domain_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3519);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_address_addr_spec_attached_body(_py, username_bits, domain_bits)
@@ -155,6 +170,7 @@ pub unsafe extern "C" fn molt_email_address_format(
     username_bits: u64,
     domain_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3520);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_address_format_attached_body(_py, display_name_bits, username_bits, domain_bits)
@@ -167,6 +183,7 @@ pub unsafe extern "C" fn molt_quopri_encode(
     quotetabs_bits: u64,
     header_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3521);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_encode_attached_body(_py, data_bits, quotetabs_bits, header_bits)
@@ -178,6 +195,7 @@ pub unsafe extern "C" fn molt_quopri_decode(
     data_bits: u64,
     header_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3522);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_decode_attached_body(_py, data_bits, header_bits)
@@ -190,6 +208,7 @@ pub unsafe extern "C" fn molt_quopri_needs_quoting(
     quotetabs_bits: u64,
     header_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3523);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_needs_quoting_attached_body(_py, c_bits, quotetabs_bits, header_bits)
@@ -197,6 +216,7 @@ pub unsafe extern "C" fn molt_quopri_needs_quoting(
 #[unsafe(export_name = "molt_quopri_quote__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_quopri_quote(__context: u64, c_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3524);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_quote_attached_body(_py, c_bits)
@@ -204,6 +224,7 @@ pub unsafe extern "C" fn molt_quopri_quote(__context: u64, c_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_quopri_ishex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_quopri_ishex(__context: u64, c_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3525);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_ishex_attached_body(_py, c_bits)
@@ -211,6 +232,7 @@ pub unsafe extern "C" fn molt_quopri_ishex(__context: u64, c_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_quopri_unhex__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_quopri_unhex(__context: u64, s_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3526);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_quopri_unhex_attached_body(_py, s_bits)
@@ -221,6 +243,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_check(
     __context: u64,
     octet_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3527);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_header_check_attached_body(_py, octet_bits)
@@ -228,6 +251,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_check(
 #[unsafe(export_name = "molt_email_quoprimime_body_check__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_quoprimime_body_check(__context: u64, octet_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3528);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_body_check_attached_body(_py, octet_bits)
@@ -238,6 +262,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_length(
     __context: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3529);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_header_length_attached_body(_py, data_bits)
@@ -245,6 +270,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_length(
 #[unsafe(export_name = "molt_email_quoprimime_body_length__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_quoprimime_body_length(__context: u64, data_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3530);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_body_length_attached_body(_py, data_bits)
@@ -252,6 +278,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_body_length(__context: u64, data_
 #[unsafe(export_name = "molt_email_quoprimime_quote__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_quoprimime_quote(__context: u64, c_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3531);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_quote_attached_body(_py, c_bits)
@@ -259,6 +286,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_quote(__context: u64, c_bits: u64
 #[unsafe(export_name = "molt_email_quoprimime_unquote__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_quoprimime_unquote(__context: u64, s_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3532);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_unquote_attached_body(_py, s_bits)
@@ -270,6 +298,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_encode(
     header_bytes_bits: u64,
     charset_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3533);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_header_encode_attached_body(_py, header_bytes_bits, charset_bits)
@@ -277,6 +306,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_header_encode(
 #[unsafe(export_name = "molt_email_quoprimime_header_decode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_email_quoprimime_header_decode(__context: u64, s_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3534);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_header_decode_attached_body(_py, s_bits)
@@ -289,6 +319,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_body_encode(
     maxlinelen_bits: u64,
     eol_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3535);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_body_encode_attached_body(_py, body_bits, maxlinelen_bits, eol_bits)
@@ -300,6 +331,7 @@ pub unsafe extern "C" fn molt_email_quoprimime_decode(
     encoded_bits: u64,
     eol_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3536);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_email_quoprimime_decode_attached_body(_py, encoded_bits, eol_bits)

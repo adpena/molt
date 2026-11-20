@@ -455,15 +455,26 @@ class PythonExpressionFact:
         A read of a canonical import callable (``__import__``) is its own
         source origin: positive provenance for import discovery, not another
         value. That one origin keeps the proof; a star lookup does not.
+
+        A lexical read (a local or a closure cell) proves the same builtin
+        when the flow's identity for it is exactly one builtin: the binding
+        was stored from a proven builtin read and nothing invalidated it, as
+        in ``call_dir = dir`` (closed world, call_anatomy.md 4.5a). Star
+        exports never reach a local as identity bits, so a lexical read with
+        source origins proves nothing unless they are an import callable's
+        own provenance.
         """
         if (
             self.binding_invalidated
             or self.star_export_lookup
-            or self.name_lookup not in {"global", "class_global"}
+            or self.name_lookup not in {"global", "class_global", "lexical"}
         ):
             return None
         origins = self.result.source_origins
-        if origins and not (
+        if self.name_lookup == "lexical":
+            if origins and not self.identities & SOURCE_CALLABLE_IDENTITIES:
+                return None
+        elif origins and not (
             self.identities & SOURCE_CALLABLE_IDENTITIES
             and origins == {self.node.source_key}
         ):

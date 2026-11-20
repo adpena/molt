@@ -9,6 +9,7 @@ pub unsafe extern "C" fn molt_urllib_request_request_init(
     headers_bits: u64,
     method_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2860);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_request_init_attached_body(
@@ -23,6 +24,7 @@ pub unsafe extern "C" fn molt_urllib_request_request_init(
 #[unsafe(export_name = "molt_urllib_request_opener_init__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_urllib_request_opener_init(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2861);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_opener_init_attached_body(_py, self_bits)
@@ -34,6 +36,7 @@ pub unsafe extern "C" fn molt_urllib_request_add_handler(
     opener_bits: u64,
     handler_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2862);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_add_handler_attached_body(_py, opener_bits, handler_bits)
@@ -47,6 +50,7 @@ pub unsafe extern "C" fn molt_urllib_request_open(
     scheme_bits: u64,
     selected_proxy_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2863);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_open_attached_body(
@@ -64,6 +68,7 @@ pub unsafe extern "C" fn molt_urllib_request_process_http_error(
     request_bits: u64,
     response_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2864);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_process_http_error_attached_body(_py, request_bits, response_bits)
@@ -75,6 +80,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_read(
     handle_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2865);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_read_attached_body(_py, handle_bits, size_bits)
@@ -86,6 +92,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_readinto(
     handle_bits: u64,
     buffer_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2866);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_readinto_attached_body(_py, handle_bits, buffer_bits)
@@ -97,6 +104,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_read1(
     handle_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2867);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_read1_attached_body(_py, handle_bits, size_bits)
@@ -108,6 +116,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_readinto1(
     handle_bits: u64,
     buffer_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2868);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_readinto1_attached_body(_py, handle_bits, buffer_bits)
@@ -119,6 +128,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_readline(
     handle_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2869);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_readline_attached_body(_py, handle_bits, size_bits)
@@ -130,6 +140,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_readlines(
     handle_bits: u64,
     hint_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2870);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_readlines_attached_body(_py, handle_bits, hint_bits)
@@ -140,6 +151,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_readable(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2871);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_readable_attached_body(_py, handle_bits)
@@ -150,6 +162,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_writable(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2872);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_writable_attached_body(_py, handle_bits)
@@ -160,6 +173,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_seekable(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2873);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_seekable_attached_body(_py, handle_bits)
@@ -170,6 +184,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_tell(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2874);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_tell_attached_body(_py, handle_bits)
@@ -182,6 +197,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_seek(
     offset_bits: u64,
     whence_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2875);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_seek_attached_body(_py, handle_bits, offset_bits, whence_bits)
@@ -192,6 +208,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_close(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2876);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_close_attached_body(_py, handle_bits)
@@ -202,6 +219,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_drop(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2877);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_drop_attached_body(_py, handle_bits)
@@ -212,6 +230,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_geturl(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2878);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_geturl_attached_body(_py, handle_bits)
@@ -222,6 +241,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_getcode(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2879);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_getcode_attached_body(_py, handle_bits)
@@ -232,6 +252,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_getreason(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2880);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_getreason_attached_body(_py, handle_bits)
@@ -244,6 +265,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_getheader(
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2881);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_getheader_attached_body(_py, handle_bits, name_bits, default_bits)
@@ -254,6 +276,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_getheaders_list(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2882);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_getheaders_list_attached_body(_py, handle_bits)
@@ -264,6 +287,7 @@ pub unsafe extern "C" fn molt_urllib_request_response_message(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2883);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_urllib_request_response_message_attached_body(_py, handle_bits)

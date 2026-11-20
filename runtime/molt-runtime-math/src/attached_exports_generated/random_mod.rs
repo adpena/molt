@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_random_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_random_new(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3173);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_new_attached_body(_py)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_random_seed(
     seed_bits: u64,
     _version_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3174);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_seed_attached_body(_py, handle_bits, seed_bits, _version_bits)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_random_seed(
 #[unsafe(export_name = "molt_random_random__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_random_random(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3175);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_random_attached_body(_py, handle_bits)
@@ -32,6 +35,7 @@ pub unsafe extern "C" fn molt_random_getrandbits(
     handle_bits: u64,
     k_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3176);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_getrandbits_attached_body(_py, handle_bits, k_bits)
@@ -43,6 +47,7 @@ pub unsafe extern "C" fn molt_random_randbelow(
     handle_bits: u64,
     n_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3177);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_randbelow_attached_body(_py, handle_bits, n_bits)
@@ -50,6 +55,7 @@ pub unsafe extern "C" fn molt_random_randbelow(
 #[unsafe(export_name = "molt_random_getstate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_random_getstate(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3178);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_getstate_attached_body(_py, handle_bits)
@@ -61,6 +67,7 @@ pub unsafe extern "C" fn molt_random_setstate(
     handle_bits: u64,
     state_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3179);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_setstate_attached_body(_py, handle_bits, state_bits)
@@ -72,6 +79,7 @@ pub unsafe extern "C" fn molt_random_shuffle(
     handle_bits: u64,
     list_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3180);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_shuffle_attached_body(_py, handle_bits, list_bits)
@@ -84,6 +92,7 @@ pub unsafe extern "C" fn molt_random_gauss(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3181);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_gauss_attached_body(_py, handle_bits, mu_bits, sigma_bits)
@@ -96,6 +105,7 @@ pub unsafe extern "C" fn molt_random_uniform(
     a_bits: u64,
     b_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3182);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_uniform_attached_body(_py, handle_bits, a_bits, b_bits)
@@ -109,6 +119,7 @@ pub unsafe extern "C" fn molt_random_triangular(
     high_bits: u64,
     mode_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3183);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_triangular_attached_body(_py, handle_bits, low_bits, high_bits, mode_bits)
@@ -120,6 +131,7 @@ pub unsafe extern "C" fn molt_random_expovariate(
     handle_bits: u64,
     lambd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3184);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_expovariate_attached_body(_py, handle_bits, lambd_bits)
@@ -132,6 +144,7 @@ pub unsafe extern "C" fn molt_random_normalvariate(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3185);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_normalvariate_attached_body(_py, handle_bits, mu_bits, sigma_bits)
@@ -144,6 +157,7 @@ pub unsafe extern "C" fn molt_random_lognormvariate(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3186);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_lognormvariate_attached_body(_py, handle_bits, mu_bits, sigma_bits)
@@ -156,6 +170,7 @@ pub unsafe extern "C" fn molt_random_vonmisesvariate(
     mu_bits: u64,
     kappa_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3187);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_vonmisesvariate_attached_body(_py, handle_bits, mu_bits, kappa_bits)
@@ -167,6 +182,7 @@ pub unsafe extern "C" fn molt_random_paretovariate(
     handle_bits: u64,
     alpha_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3188);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_paretovariate_attached_body(_py, handle_bits, alpha_bits)
@@ -179,6 +195,7 @@ pub unsafe extern "C" fn molt_random_weibullvariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3189);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_weibullvariate_attached_body(_py, handle_bits, alpha_bits, beta_bits)
@@ -191,6 +208,7 @@ pub unsafe extern "C" fn molt_random_gammavariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3190);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_gammavariate_attached_body(_py, handle_bits, alpha_bits, beta_bits)
@@ -203,6 +221,7 @@ pub unsafe extern "C" fn molt_random_betavariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3191);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_betavariate_attached_body(_py, handle_bits, alpha_bits, beta_bits)
@@ -216,6 +235,7 @@ pub unsafe extern "C" fn molt_random_choices(
     cum_weights_bits: u64,
     k_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3192);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_choices_attached_body(_py, handle_bits, population_bits, cum_weights_bits, k_bits)
@@ -228,6 +248,7 @@ pub unsafe extern "C" fn molt_random_sample(
     population_bits: u64,
     k_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3193);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_sample_attached_body(_py, handle_bits, population_bits, k_bits)
@@ -240,6 +261,7 @@ pub unsafe extern "C" fn molt_random_binomialvariate(
     n_bits: u64,
     p_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3194);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_binomialvariate_attached_body(_py, handle_bits, n_bits, p_bits)
@@ -253,6 +275,7 @@ pub unsafe extern "C" fn molt_random_randrange(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3195);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_randrange_attached_body(_py, handle_bits, start_bits, stop_bits, step_bits)
@@ -264,6 +287,7 @@ pub unsafe extern "C" fn molt_random_randbytes(
     handle_bits: u64,
     n_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3196);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_random_randbytes_attached_body(_py, handle_bits, n_bits)

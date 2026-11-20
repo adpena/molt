@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_rt_object_type_id__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_rt_object_type_id(__context: u64, ptr: *mut u8) -> u32 {
+    molt_runtime_core::call_census::hit(2612);
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_rt_object_type_id_attached_body(_py, ptr)
 }

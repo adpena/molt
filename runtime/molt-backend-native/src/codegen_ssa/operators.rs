@@ -312,10 +312,51 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 
     /// The late stage's representation primitives (HF-821): word tests and
     /// payload reads, each one shared word generator.
+    ///
+    /// A test or read asks about its operand's boxed word, whatever carrier
+    /// the operand is held in: the representation facts may hold a value raw
+    /// after the late stage guarded it as a word (HF-899: a try/except join of
+    /// two int constants). A raw float is its own word and a raw bool is one
+    /// tag away; a raw integer is answered from its carrier, since boxing it
+    /// may mint a heap owner.
     pub(crate) fn word_primitive_op(&mut self, b: &mut B, op: &TirOp) {
         use nanbox::boxed_word::{self as word, BoxTag};
-        let value = self.operands().resolve(b, op.operands[0]);
-        let input = scalar::word_of(b, value);
+        let operand = op.operands[0];
+        let held = self.operands().held(operand);
+        let value = self.operands().resolve(b, operand);
+        let raw = scalar::word_of(b, value);
+        let reads_word = !matches!(op.opcode, OpCode::IntToFloat | OpCode::BoxInlineInt);
+        if reads_word && held == HeldCarrier::RawI64 {
+            let (value, carrier) = match op.opcode {
+                OpCode::IsInlineInt => {
+                    let bit = if self.plan.is_inline_safe_int(operand) {
+                        b.bit_constant(true)
+                    } else {
+                        word::generate_inline_int_fits(b, raw)
+                    };
+                    (b.bit_value(bit), HeldCarrier::RawBool)
+                }
+                OpCode::UnboxInlineInt => (b.word_value(raw), HeldCarrier::RawI64),
+                OpCode::IsFloatWord | OpCode::IsBoolWord => {
+                    let bit = b.bit_constant(false);
+                    (b.bit_value(bit), HeldCarrier::RawBool)
+                }
+                // Only reachable under a test above that is false for an int.
+                OpCode::UnboxFloatWord => (b.int_to_float(raw), HeldCarrier::RawF64),
+                OpCode::UnboxBoolWord => {
+                    let bit = b.low_bit(raw);
+                    (b.bit_value(bit), HeldCarrier::RawBool)
+                }
+                other => unreachable!("{other:?} is not a word test or read"),
+            };
+            self.bind(op.results[0], value, carrier);
+            return;
+        }
+        let input = if reads_word && held == HeldCarrier::RawBool {
+            b.or(raw, nanbox::QNAN | nanbox::TAG_BOOL)
+        } else {
+            raw
+        };
         let (value, carrier) = match op.opcode {
             OpCode::IsInlineInt => {
                 let bit = word::generate_has_tag(b, input, BoxTag::Int);

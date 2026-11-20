@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_punycode_encode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_punycode_encode(__context: u64, text_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1285);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_punycode_encode_attached_body(_py, text_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_punycode_decode(
     data_bits: u64,
     errors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1286);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_punycode_decode_attached_body(_py, data_bits, errors_bits)

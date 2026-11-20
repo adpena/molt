@@ -27,6 +27,18 @@ def handler_value(divisor):
     return value * 100
 
 
+def handler_flag(divisor):
+    # The join of two bool constants is held as a raw bit; the arithmetic
+    # guards that follow must read it as the boxed bool it stands for.
+    flag = False
+    try:
+        flag = 10 // divisor
+        flag = True
+    except ZeroDivisionError:
+        flag = False
+    return flag + 0
+
+
 def changing_loop(limit):
     i = 0
     total = 0
@@ -70,6 +82,7 @@ def none_join(flag):
 print(equal_arms(True), equal_arms(False))
 print(unequal_arms(True), unequal_arms(False))
 print(handler_value(0), handler_value(5))
+print(handler_flag(0), handler_flag(5))
 print(changing_loop(4), changing_loop(0))
 print(invariant_loop(3), invariant_loop(0))
 print(constant_predicate_pair())

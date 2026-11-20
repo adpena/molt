@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_list_int_getitem(
     list_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1954);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_getitem_attached_body(_py, list_bits, index_bits)
@@ -17,6 +18,7 @@ pub unsafe extern "C" fn molt_list_int_getitem_raw(
     list_bits: u64,
     raw_index: i64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(1955);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_getitem_raw_attached_body(_py, list_bits, raw_index)
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_list_int_getitem_raw_checked(
     list_bits: u64,
     raw_index: i64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(1956);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_getitem_raw_checked_attached_body(_py, list_bits, raw_index)
@@ -40,6 +43,7 @@ pub unsafe extern "C" fn molt_list_int_setitem(
     index_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1957);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_setitem_attached_body(_py, list_bits, index_bits, value_bits)
@@ -51,6 +55,7 @@ pub unsafe extern "C" fn molt_list_bool_getitem(
     list_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1958);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_bool_getitem_attached_body(_py, list_bits, index_bits)
@@ -63,6 +68,7 @@ pub unsafe extern "C" fn molt_list_bool_setitem(
     index_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1959);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_bool_setitem_attached_body(_py, list_bits, index_bits, value_bits)
@@ -70,6 +76,7 @@ pub unsafe extern "C" fn molt_list_bool_setitem(
 #[unsafe(export_name = "molt_list_int_data__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_int_data(__context: u64, list_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1960);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_data_attached_body(_py, list_bits)
@@ -77,6 +84,7 @@ pub unsafe extern "C" fn molt_list_int_data(__context: u64, list_bits: u64) -> u
 #[unsafe(export_name = "molt_list_int_len_raw__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_int_len_raw(__context: u64, list_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1961);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_len_raw_attached_body(_py, list_bits)
@@ -84,6 +92,7 @@ pub unsafe extern "C" fn molt_list_int_len_raw(__context: u64, list_bits: u64) -
 #[unsafe(export_name = "molt_list_int_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_int_len(__context: u64, list_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1962);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_len_attached_body(_py, list_bits)
@@ -95,6 +104,7 @@ pub unsafe extern "C" fn molt_list_int_getitem_truthy(
     list_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1963);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_getitem_truthy_attached_body(_py, list_bits, index_bits)
@@ -106,6 +116,7 @@ pub unsafe extern "C" fn molt_list_getitem_unchecked(
     list_bits: u64,
     index: i64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1964);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_getitem_unchecked_attached_body(_py, list_bits, index)
@@ -117,6 +128,7 @@ pub unsafe extern "C" fn molt_list_getitem_int_fast(
     list_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1965);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_getitem_int_fast_attached_body(_py, list_bits, index_bits)
@@ -128,6 +140,7 @@ pub unsafe extern "C" fn molt_list_getitem_raw_idx(
     list_bits: u64,
     raw_idx: i64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1966);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_getitem_raw_idx_attached_body(_py, list_bits, raw_idx)
@@ -135,6 +148,7 @@ pub unsafe extern "C" fn molt_list_getitem_raw_idx(
 #[unsafe(export_name = "molt_list_int_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_int_new(__context: u64, count: u64, fill_value: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1967);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_int_new_attached_body(_py, count, fill_value)
@@ -142,6 +156,7 @@ pub unsafe extern "C" fn molt_list_int_new(__context: u64, count: u64, fill_valu
 #[unsafe(export_name = "molt_list_fill_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_fill_new(__context: u64, count: u64, fill_value: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1968);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_fill_new_attached_body(_py, count, fill_value)

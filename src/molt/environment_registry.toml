@@ -3484,6 +3484,22 @@ owner = "runtime/molt-ir/src/runtime_callable_symbols.rs"
 summary = "Lowercase 64-hex SHA-256 digest of the MOLT_RUNTIME_CALLABLE_SYMBOLS file; the CLI (src/molt/cli/runtime_native_codegen.py) sets it for the backend child, which verifies the file bytes against it before admitting any callable symbol and panics on mismatch or when only one of the pair is set."
 
 [[variable]]
+name = "MOLT_RUNTIME_CALL_CENSUS"
+audience = "user"
+kind = "bool"
+default = "0"
+owner = "src/molt/cli/runtime_features.py"
+summary = "Adds the call-census cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive): every attached runtime entry compiled code calls bumps one counter, written at exit to MOLT_RUNTIME_CALL_CENSUS_FILE; unset, empty, or any other value leaves it off and shipped runtimes pay nothing."
+
+[[variable]]
+name = "MOLT_RUNTIME_CALL_CENSUS_FILE"
+audience = "user"
+kind = "string"
+default = ""
+owner = "runtime/molt-runtime-core/src/call_census.rs"
+summary = "Path a call-census runtime writes at process exit, one '<calls> <entry>' line per runtime entry called at least once, most-called first; unset writes nothing, and runtimes built without the call-census feature ignore it."
+
+[[variable]]
 name = "MOLT_RUNTIME_FEEDBACK"
 audience = "user"
 kind = "bool"
@@ -3530,6 +3546,22 @@ kind = "bool"
 default = "0"
 owner = "src/molt/cli/runtime_features.py"
 summary = "Adds the molt_gpu_webgpu cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive), and on macOS also adds the Metal, Foundation, QuartzCore and AppKit frameworks and -lobjc to the native link; unset, empty, or any other value leaves it off; wasm32 targets ignore it; release verification refuses it."
+
+[[variable]]
+name = "MOLT_RUNTIME_PC_SAMPLER"
+audience = "user"
+kind = "bool"
+default = "0"
+owner = "src/molt/cli/runtime_features.py"
+summary = "Adds the pc-sampler cargo feature to the native runtime build when set to 1, true, yes, or on (case-insensitive): the process samples its own program counter and frame-pointer callers on a SIGPROF timer (macOS arm64 and Linux x86-64); unset, empty, or any other value leaves it off."
+
+[[variable]]
+name = "MOLT_RUNTIME_PC_SAMPLER_FILE"
+audience = "user"
+kind = "string"
+default = ""
+owner = "runtime/molt-runtime/src/state/pc_sampler.rs"
+summary = "Path a pc-sampler runtime writes at process exit: 'load <hex>' (the main image's load address, for atos -l), 'taken <n>', then one line of hex return addresses per sample; unset leaves the sampler stopped, and runtimes built without the pc-sampler feature ignore it."
 
 [[variable]]
 name = "MOLT_RUNTIME_TK_NATIVE"

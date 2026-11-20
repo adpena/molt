@@ -39,7 +39,10 @@ from tools.generator_io import (  # noqa: E402
 )
 
 from tools.op_kinds.render_wire import variant as _wire_kind_variant  # noqa: E402
-from tools.wasm_abi_gen.attached_entries import render_attached_entries  # noqa: E402
+from tools.wasm_abi_gen.attached_entries import (  # noqa: E402
+    CALL_CENSUS_NAMES_RS,
+    render_attached_entries,
+)
 from tools.wasm_abi_gen.execution_context import (  # noqa: E402
     render_rust_context_abi,
     render_context_storage,
@@ -91,7 +94,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
 )
 
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v9"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v10"
 
 
 def _attached_entry_output_paths() -> tuple[Path, ...]:
@@ -112,6 +115,7 @@ def _attached_entry_output_paths() -> tuple[Path, ...]:
 OUTPUT_PATHS: tuple[Path, ...] = (
     ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs",
     *_attached_entry_output_paths(),
+    ROOT / CALL_CENSUS_NAMES_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLE_KEYS_RS,

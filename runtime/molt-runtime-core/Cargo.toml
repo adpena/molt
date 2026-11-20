@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
 
+[features]
+# Count every attached runtime entry compiled code calls (`call_census`, HF-198).
+call-census = []
+
 [dependencies]
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 crc32fast = "1.5"

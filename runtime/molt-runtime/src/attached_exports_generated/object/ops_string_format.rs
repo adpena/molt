@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_string_format_method(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2467);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_format_method_attached_body(_py, self_bits, args_bits, kwargs_bits)
@@ -18,6 +19,7 @@ pub unsafe extern "C" fn molt_string_format_map(
     self_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2468);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_format_map_attached_body(_py, self_bits, mapping_bits)
@@ -25,6 +27,7 @@ pub unsafe extern "C" fn molt_string_format_map(
 #[unsafe(export_name = "molt_string_format__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_format(__context: u64, val_bits: u64, spec_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2469);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_format_attached_body(_py, val_bits, spec_bits)

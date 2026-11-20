@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_string_find__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_find(__context: u64, hay_bits: u64, needle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2425);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_find_attached_body(_py, hay_bits, needle_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_string_find(__context: u64, hay_bits: u64, needle_
 #[unsafe(export_name = "molt_string_rfind__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_rfind(__context: u64, hay_bits: u64, needle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2426);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rfind_attached_body(_py, hay_bits, needle_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_string_rfind(__context: u64, hay_bits: u64, needle
 #[unsafe(export_name = "molt_string_index__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_index(__context: u64, hay_bits: u64, needle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2427);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_index_attached_body(_py, hay_bits, needle_bits)
@@ -27,6 +30,7 @@ pub unsafe extern "C" fn molt_string_rindex(
     hay_bits: u64,
     needle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2428);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rindex_attached_body(_py, hay_bits, needle_bits)
@@ -40,6 +44,7 @@ pub unsafe extern "C" fn molt_string_find_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2429);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_find_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -53,6 +58,7 @@ pub unsafe extern "C" fn molt_string_rfind_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2430);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rfind_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -66,6 +72,7 @@ pub unsafe extern "C" fn molt_string_index_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2431);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_index_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -79,6 +86,7 @@ pub unsafe extern "C" fn molt_string_rindex_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2432);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rindex_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -92,6 +100,7 @@ pub unsafe extern "C" fn molt_string_count_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2433);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_count_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -105,6 +114,7 @@ pub unsafe extern "C" fn molt_string_startswith_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2434);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_startswith_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -118,6 +128,7 @@ pub unsafe extern "C" fn molt_string_endswith_method(
     start_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2435);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_endswith_method_attached_body(_py, hay_bits, needle_bits, start_bits, end_bits)
@@ -133,6 +144,7 @@ pub unsafe extern "C" fn molt_string_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2436);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_find_slice_attached_body(
@@ -156,6 +168,7 @@ pub unsafe extern "C" fn molt_string_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2437);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rfind_slice_attached_body(
@@ -179,6 +192,7 @@ pub unsafe extern "C" fn molt_string_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2438);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_index_slice_attached_body(
@@ -202,6 +216,7 @@ pub unsafe extern "C" fn molt_string_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2439);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rindex_slice_attached_body(
@@ -221,6 +236,7 @@ pub unsafe extern "C" fn molt_string_startswith(
     hay_bits: u64,
     needle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2440);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_startswith_attached_body(_py, hay_bits, needle_bits)
@@ -232,6 +248,7 @@ pub unsafe extern "C" fn molt_string_endswith(
     hay_bits: u64,
     needle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2441);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_endswith_attached_body(_py, hay_bits, needle_bits)
@@ -247,6 +264,7 @@ pub unsafe extern "C" fn molt_string_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2442);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_startswith_slice_attached_body(
@@ -270,6 +288,7 @@ pub unsafe extern "C" fn molt_string_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2443);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_endswith_slice_attached_body(
@@ -285,6 +304,7 @@ pub unsafe extern "C" fn molt_string_endswith_slice(
 #[unsafe(export_name = "molt_string_count__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_count(__context: u64, hay_bits: u64, needle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2444);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_count_attached_body(_py, hay_bits, needle_bits)
@@ -300,6 +320,7 @@ pub unsafe extern "C" fn molt_string_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2445);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_count_slice_attached_body(
@@ -315,6 +336,7 @@ pub unsafe extern "C" fn molt_string_count_slice(
 #[unsafe(export_name = "molt_string_join__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_join(__context: u64, sep_bits: u64, items_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2446);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_join_attached_body(_py, sep_bits, items_bits)
@@ -328,6 +350,7 @@ pub unsafe extern "C" fn molt_string_replace(
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2447);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_replace_attached_body(_py, hay_bits, needle_bits, replacement_bits, count_bits)
@@ -340,6 +363,7 @@ pub unsafe extern "C" fn molt_string_encode(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2448);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_encode_attached_body(_py, hay_bits, encoding_bits, errors_bits)
@@ -347,6 +371,7 @@ pub unsafe extern "C" fn molt_string_encode(
 #[unsafe(export_name = "molt_string_lower__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_lower(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2449);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_lower_attached_body(_py, hay_bits)
@@ -354,6 +379,7 @@ pub unsafe extern "C" fn molt_string_lower(__context: u64, hay_bits: u64) -> u64
 #[unsafe(export_name = "molt_string_casefold__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_casefold(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2450);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_casefold_attached_body(_py, hay_bits)
@@ -361,6 +387,7 @@ pub unsafe extern "C" fn molt_string_casefold(__context: u64, hay_bits: u64) -> 
 #[unsafe(export_name = "molt_string_upper__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_upper(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2451);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_upper_attached_body(_py, hay_bits)
@@ -368,6 +395,7 @@ pub unsafe extern "C" fn molt_string_upper(__context: u64, hay_bits: u64) -> u64
 #[unsafe(export_name = "molt_string_swapcase__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_swapcase(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2452);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_swapcase_attached_body(_py, hay_bits)
@@ -375,6 +403,7 @@ pub unsafe extern "C" fn molt_string_swapcase(__context: u64, hay_bits: u64) -> 
 #[unsafe(export_name = "molt_string_capitalize__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_capitalize(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2453);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_capitalize_attached_body(_py, hay_bits)
@@ -382,6 +411,7 @@ pub unsafe extern "C" fn molt_string_capitalize(__context: u64, hay_bits: u64) -
 #[unsafe(export_name = "molt_string_title__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_title(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2454);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_title_attached_body(_py, hay_bits)

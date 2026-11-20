@@ -855,8 +855,21 @@ pub(crate) unsafe fn generator_throw_step(
             || !generator_started(ptr)
             || obj_from_bits(generator_yieldfrom_bits(ptr)).is_none()
         {
-            let Some(exception) = super::throw_protocol::normalize_throw_argument(py, arguments)
-            else {
+            // 3.15 normalizes while the frame executes: a constructor that
+            // resumes this generator meets "generator already executing".
+            // Through 3.14 the frame is not yet running.
+            let running = if crate::object::ops_sys::runtime_target_at_least(py, 3, 15) {
+                match GeneratorExecution::enter(ptr) {
+                    Ok(execution) => Some(execution),
+                    Err(EntryRefusal::Executing) => return refuse_entry(py),
+                    Err(EntryRefusal::Terminal) => None,
+                }
+            } else {
+                None
+            };
+            let normalized = super::throw_protocol::normalize_throw_argument(py, arguments);
+            drop(running);
+            let Some(exception) = normalized else {
                 return Err(());
             };
             exception

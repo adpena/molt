@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_ipaddress_v4_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_new(__context: u64, addr_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2935);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_new_attached_body(_py, addr_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_new(__context: u64, addr_bits: u64) -
 #[unsafe(export_name = "molt_ipaddress_v4_packed__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_packed(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2936);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_packed_attached_body(_py, handle_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_packed(__context: u64, handle_bits: u
 #[unsafe(export_name = "molt_ipaddress_v4_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_int(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2937);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_int_attached_body(_py, handle_bits)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_int(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_ipaddress_v4_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_str(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2938);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_str_attached_body(_py, handle_bits)
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_str(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_ipaddress_v4_is_private__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_private(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2939);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_private_attached_body(_py, handle_bits)
@@ -37,6 +42,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_private(__context: u64, handle_bit
 #[unsafe(export_name = "molt_ipaddress_v4_is_loopback__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_loopback(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2940);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_loopback_attached_body(_py, handle_bits)
@@ -44,6 +50,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_loopback(__context: u64, handle_bi
 #[unsafe(export_name = "molt_ipaddress_v4_is_multicast__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_multicast(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2941);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_multicast_attached_body(_py, handle_bits)
@@ -51,6 +58,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_multicast(__context: u64, handle_b
 #[unsafe(export_name = "molt_ipaddress_v4_is_reserved__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_reserved(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2942);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_reserved_attached_body(_py, handle_bits)
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_reserved(__context: u64, handle_bi
 #[unsafe(export_name = "molt_ipaddress_v4_is_link_local__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_link_local(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2943);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_link_local_attached_body(_py, handle_bits)
@@ -65,6 +74,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_link_local(__context: u64, handle_
 #[unsafe(export_name = "molt_ipaddress_v4_is_global__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_is_global(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2944);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_is_global_attached_body(_py, handle_bits)
@@ -72,6 +82,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_is_global(__context: u64, handle_bits
 #[unsafe(export_name = "molt_ipaddress_v4_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_version(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2945);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_version_attached_body(_py, handle_bits)
@@ -79,6 +90,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_version(__context: u64, handle_bits: 
 #[unsafe(export_name = "molt_ipaddress_v4_max_prefixlen__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_max_prefixlen(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2946);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_max_prefixlen_attached_body(_py, handle_bits)
@@ -86,6 +98,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_max_prefixlen(__context: u64, handle_
 #[unsafe(export_name = "molt_ipaddress_v6_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_new(__context: u64, addr_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2947);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_new_attached_body(_py, addr_bits)
@@ -93,6 +106,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_new(__context: u64, addr_bits: u64) -
 #[unsafe(export_name = "molt_ipaddress_v6_packed__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_packed(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2948);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_packed_attached_body(_py, handle_bits)
@@ -100,6 +114,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_packed(__context: u64, handle_bits: u
 #[unsafe(export_name = "molt_ipaddress_v6_int__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_int(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2949);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_int_attached_body(_py, handle_bits)
@@ -107,6 +122,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_int(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_ipaddress_v6_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_str(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2950);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_str_attached_body(_py, handle_bits)
@@ -114,6 +130,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_str(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_ipaddress_v6_is_private__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_is_private(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2951);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_is_private_attached_body(_py, handle_bits)
@@ -121,6 +138,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_is_private(__context: u64, handle_bit
 #[unsafe(export_name = "molt_ipaddress_v6_is_loopback__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_is_loopback(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2952);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_is_loopback_attached_body(_py, handle_bits)
@@ -128,6 +146,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_is_loopback(__context: u64, handle_bi
 #[unsafe(export_name = "molt_ipaddress_v6_is_multicast__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_is_multicast(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2953);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_is_multicast_attached_body(_py, handle_bits)
@@ -135,6 +154,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_is_multicast(__context: u64, handle_b
 #[unsafe(export_name = "molt_ipaddress_v6_is_link_local__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_is_link_local(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2954);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_is_link_local_attached_body(_py, handle_bits)
@@ -142,6 +162,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_is_link_local(__context: u64, handle_
 #[unsafe(export_name = "molt_ipaddress_v6_is_global__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_is_global(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2955);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_is_global_attached_body(_py, handle_bits)
@@ -149,6 +170,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_is_global(__context: u64, handle_bits
 #[unsafe(export_name = "molt_ipaddress_v6_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_version(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2956);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_version_attached_body(_py, handle_bits)
@@ -160,6 +182,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_new(
     addr_bits: u64,
     strict_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2957);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_new_attached_body(_py, addr_bits, strict_bits)
@@ -167,6 +190,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_new(
 #[unsafe(export_name = "molt_ipaddress_v4_network_hosts__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_network_hosts(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2958);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_hosts_attached_body(_py, handle_bits)
@@ -178,6 +202,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_contains(
     net_bits: u64,
     addr_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2959);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_contains_attached_body(_py, net_bits, addr_bits)
@@ -188,6 +213,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_prefixlen(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2960);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_prefixlen_attached_body(_py, handle_bits)
@@ -195,6 +221,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_prefixlen(
 #[unsafe(export_name = "molt_ipaddress_v4_network_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_network_str(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2961);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_str_attached_body(_py, handle_bits)
@@ -205,6 +232,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_broadcast(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2962);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_broadcast_attached_body(_py, handle_bits)
@@ -212,6 +240,7 @@ pub unsafe extern "C" fn molt_ipaddress_v4_network_broadcast(
 #[unsafe(export_name = "molt_ipaddress_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2963);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_drop_attached_body(_py, handle_bits)
@@ -219,6 +248,7 @@ pub unsafe extern "C" fn molt_ipaddress_drop(__context: u64, handle_bits: u64) -
 #[unsafe(export_name = "molt_ipaddress_v6_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v6_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2964);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v6_drop_attached_body(_py, handle_bits)
@@ -226,6 +256,7 @@ pub unsafe extern "C" fn molt_ipaddress_v6_drop(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_ipaddress_v4_network_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ipaddress_v4_network_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2965);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ipaddress_v4_network_drop_attached_body(_py, handle_bits)

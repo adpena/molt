@@ -1346,3 +1346,38 @@ def test_runtime_fingerprint_read_observes_same_size_preserved_mtime_rewrite(
         **second_fingerprint,
         "cargo_environment": compiler_environment_inputs().to_dict(),
     }
+
+
+def test_runtime_cargo_features_include_profiling_instruments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The runtime-call census and the pc sampler (HF-198) are opt-in: each
+    # adds its own cargo feature, so it keys its own runtime artifact, and a
+    # wasm target ignores both.
+    monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "0")
+    for name in (
+        "MOLT_RUNTIME_GPU_METAL",
+        "MOLT_RUNTIME_GPU_WEBGPU",
+        "MOLT_RUNTIME_GPU_CUDA",
+        "MOLT_RUNTIME_GPU_HIP",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_PC_SAMPLER", raising=False)
+    monkeypatch.setenv("MOLT_RUNTIME_CALL_CENSUS", "1")
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(_target(None)) == ("call-census",)
+
+    monkeypatch.setenv("MOLT_RUNTIME_PC_SAMPLER", "yes")
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(_target(None)) == (
+        "call-census",
+        "pc-sampler",
+    )
+
+    monkeypatch.setenv("MOLT_RUNTIME_CALL_CENSUS", "0")
+    monkeypatch.setenv("MOLT_RUNTIME_PC_SAMPLER", "")
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(_target(None)) == ()
+    monkeypatch.setenv("MOLT_RUNTIME_CALL_CENSUS", "1")
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(_target("wasm32-wasip1")) == ()

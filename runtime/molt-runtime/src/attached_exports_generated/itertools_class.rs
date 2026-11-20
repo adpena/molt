@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_itertools_reduce__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_reduce(__context: u64, instance: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1909);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_reduce_attached_body(_py, instance)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_itertools_reduce(__context: u64, instance: u64) ->
 #[unsafe(export_name = "molt_itertools_setstate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_itertools_setstate(__context: u64, instance: u64, state: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1910);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_itertools_setstate_attached_body(_py, instance, state)

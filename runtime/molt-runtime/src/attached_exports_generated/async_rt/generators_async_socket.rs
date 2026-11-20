@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_new(
     n_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(210);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_socket_reader_read_new_attached_body(_py, reader_bits, n_bits, fd_bits)
@@ -17,6 +18,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(
     __context: u64,
     obj_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(211);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_socket_reader_read_poll_attached_body(_py, obj_bits) }
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_new(
     reader_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(212);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_socket_reader_readline_new_attached_body(_py, reader_bits, fd_bits)
@@ -38,6 +41,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(
     __context: u64,
     obj_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(213);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_socket_reader_readline_poll_attached_body(_py, obj_bits) }
@@ -50,6 +54,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_new(
     size_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(214);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_recv_new_attached_body(_py, sock_bits, size_bits, fd_bits)
@@ -57,6 +62,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_new(
 #[unsafe(export_name = "molt_asyncio_sock_recv_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(215);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_recv_poll_attached_body(_py, obj_bits) }
@@ -70,6 +76,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_new(
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(216);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_recv_into_new_attached_body(_py, sock_bits, buf_bits, nbytes_bits, fd_bits)
@@ -77,6 +84,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_new(
 #[unsafe(export_name = "molt_asyncio_sock_recv_into_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(217);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_recv_into_poll_attached_body(_py, obj_bits) }
@@ -89,6 +97,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_new(
     data_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(218);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_sendall_new_attached_body(_py, sock_bits, data_bits, fd_bits)
@@ -96,6 +105,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_new(
 #[unsafe(export_name = "molt_asyncio_sock_sendall_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(219);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_sendall_poll_attached_body(_py, obj_bits) }
@@ -108,6 +118,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_new(
     size_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(220);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_recvfrom_new_attached_body(_py, sock_bits, size_bits, fd_bits)
@@ -115,6 +126,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_new(
 #[unsafe(export_name = "molt_asyncio_sock_recvfrom_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(221);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_recvfrom_poll_attached_body(_py, obj_bits) }
@@ -128,6 +140,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_new(
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(222);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_recvfrom_into_new_attached_body(
@@ -144,6 +157,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(
     __context: u64,
     obj_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(223);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_recvfrom_into_poll_attached_body(_py, obj_bits) }
@@ -157,6 +171,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_new(
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(224);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_sendto_new_attached_body(_py, sock_bits, data_bits, addr_bits, fd_bits)
@@ -164,6 +179,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_new(
 #[unsafe(export_name = "molt_asyncio_sock_sendto_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(225);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_sendto_poll_attached_body(_py, obj_bits) }
@@ -176,6 +192,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_new(
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(226);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_connect_new_attached_body(_py, sock_bits, addr_bits, fd_bits)
@@ -183,6 +200,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_new(
 #[unsafe(export_name = "molt_asyncio_sock_connect_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(227);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_connect_poll_attached_body(_py, obj_bits) }
@@ -194,6 +212,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_new(
     sock_bits: u64,
     fd_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(228);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_sock_accept_new_attached_body(_py, sock_bits, fd_bits)
@@ -201,6 +220,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_new(
 #[unsafe(export_name = "molt_asyncio_sock_accept_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(229);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_sock_accept_poll_attached_body(_py, obj_bits) }

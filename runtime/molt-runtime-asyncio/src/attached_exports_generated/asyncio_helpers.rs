@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_asyncio_task_next_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_task_next_name(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2656);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_task_next_name_attached_body(_py)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_asyncio_task_next_name(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_asyncio_validate_coro__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_validate_coro(__context: u64, coro_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2657);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_validate_coro_attached_body(_py, coro_bits) }
@@ -19,6 +21,7 @@ pub unsafe extern "C" fn molt_asyncio_task_cancel_state(
     __context: u64,
     cancel_requested_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2658);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_task_cancel_state_attached_body(_py, cancel_requested_bits) }
@@ -29,6 +32,7 @@ pub unsafe extern "C" fn molt_asyncio_task_uncancel_state(
     __context: u64,
     cancel_requested_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2659);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_task_uncancel_state_attached_body(_py, cancel_requested_bits) }
@@ -39,6 +43,7 @@ pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(
     __context: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2660);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_validate_semaphore_value_attached_body(_py, value_bits) }
@@ -49,6 +54,7 @@ pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(
     __context: u64,
     parties_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2661);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_validate_barrier_parties_attached_body(_py, parties_bits) }
@@ -56,6 +62,7 @@ pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(
 #[unsafe(export_name = "molt_asyncio_barrier_count_incr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_barrier_count_incr(__context: u64, count_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2662);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_barrier_count_incr_attached_body(_py, count_bits) }
@@ -63,6 +70,7 @@ pub unsafe extern "C" fn molt_asyncio_barrier_count_incr(__context: u64, count_b
 #[unsafe(export_name = "molt_asyncio_barrier_reset_state__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_barrier_reset_state(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2663);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_barrier_reset_state_attached_body(_py)
@@ -70,6 +78,7 @@ pub unsafe extern "C" fn molt_asyncio_barrier_reset_state(__context: u64) -> u64
 #[unsafe(export_name = "molt_asyncio_barrier_abort_state__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_barrier_abort_state(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2664);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_barrier_abort_state_attached_body(_py)
@@ -80,6 +89,7 @@ pub unsafe extern "C" fn molt_asyncio_lock_validate_release(
     __context: u64,
     locked_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2665);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_lock_validate_release_attached_body(_py, locked_bits) }
@@ -90,6 +100,7 @@ pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(
     __context: u64,
     locked_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2666);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_condition_validate_locked_attached_body(_py, locked_bits) }
@@ -101,6 +112,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_read(
     _buffer_bits: u64,
     n_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2667);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_stream_buffer_read_attached_body(_py, _buffer_bits, n_bits) }
@@ -112,6 +124,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_writer_buffer_append(
     _buffer_bits: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2668);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_stream_writer_buffer_append_attached_body(_py, _buffer_bits, data_bits) }

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_code_positions__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_code_positions(__context: u64, code_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(486);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_code_positions_attached_body(_py, code_bits)
@@ -14,6 +15,7 @@ pub unsafe extern "C" fn molt_get_attr_generic(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(487);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_get_attr_generic_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits) }
@@ -26,6 +28,7 @@ pub unsafe extern "C" fn molt_get_attr_ptr(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(488);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_get_attr_ptr_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits) }
@@ -38,6 +41,7 @@ pub unsafe extern "C" fn molt_get_attr_object(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(489);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_get_attr_object_attached_body(_py, obj_bits, attr_name_ptr, attr_name_len_bits) }
@@ -51,6 +55,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
     attr_name_len_bits: u64,
     site_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(490);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -71,6 +76,7 @@ pub unsafe extern "C" fn molt_get_attr_special(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(491);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_get_attr_special_attached_body(_py, obj_bits, attr_name_ptr, attr_name_len_bits) }
@@ -83,6 +89,7 @@ pub unsafe extern "C" fn molt_function_descriptor_get(
     instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(492);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_function_descriptor_get_attached_body(_py, self_bits, instance_bits, owner_bits)
@@ -90,6 +97,7 @@ pub unsafe extern "C" fn molt_function_descriptor_get(
 #[unsafe(export_name = "molt_get_attr_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_get_attr_name(__context: u64, obj_bits: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(493);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_get_attr_name_attached_body(_py, obj_bits, name_bits)
@@ -102,6 +110,7 @@ pub unsafe extern "C" fn molt_get_attr_name_default(
     name: u64,
     default: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(494);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_get_attr_name_default_attached_body(_py, object, name, default)
@@ -109,6 +118,7 @@ pub unsafe extern "C" fn molt_get_attr_name_default(
 #[unsafe(export_name = "molt_has_attr_name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_has_attr_name(__context: u64, object: u64, name: u64) -> u64 {
+    molt_runtime_core::call_census::hit(495);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_has_attr_name_attached_body(_py, object, name)

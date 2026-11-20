@@ -1846,6 +1846,14 @@ pub extern "C" fn molt_runtime_init() -> u64 {
 }
 
 fn runtime_init() -> u64 {
+    #[cfg(all(
+        feature = "pc-sampler",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    crate::state::pc_sampler::start();
     runtime_init_impl(
         #[cfg(test)]
         None,
