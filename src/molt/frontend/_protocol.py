@@ -39,6 +39,7 @@ from molt.frontend._types import (
     AsyncFrameSlot,
     AsyncFrameSlotRole,
     BoundMethodHint,
+    BuiltinLayout,
     CallableId,
     ClassId,
     ClassInfo,
@@ -48,6 +49,7 @@ from molt.frontend._types import (
     ComprehensionBinding,
     DeclaredClass,
     ExactClassFact,
+    ExactFact,
     FrontendOpKind,
     FunctionDefinitionValues,
     ImportForm,
@@ -329,6 +331,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     @staticmethod
     def _builtin_guard_region_duplicable(region: ast.AST) -> bool: ...
+
+    def _builtin_layout_for_value(
+        self, value: MoltValue, source_name: str | None
+    ) -> BuiltinLayout | None: ...
 
     def _builtin_min_layout(self, mro: tuple[ClassRef, ...]) -> int: ...
 
@@ -1637,6 +1643,18 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         fields: bool = ...,
     ) -> ClassId | None: ...
 
+    def _exact_fact_for_name(
+        self, name: str, *, fields: bool = ...
+    ) -> ExactFact | None: ...
+
+    def _exact_fact_for_value(
+        self,
+        value: MoltValue | None,
+        source_name: str | None = ...,
+        *,
+        fields: bool = ...,
+    ) -> ExactFact | None: ...
+
     def _exact_field_slots(self, class_id: ClassId) -> dict[str, int] | None: ...
 
     def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None: ...
@@ -2110,7 +2128,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _publish_definition_binding(self, name: str, value: MoltValue) -> None: ...
 
     def _publish_exact_local(
-        self, name: str, class_id: ClassId, *, durable: bool = ...
+        self, name: str, class_id: ExactFact, *, durable: bool = ...
     ) -> None: ...
 
     def _publish_import_binding(self, name: str, value: MoltValue) -> None: ...
@@ -2383,7 +2401,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[list[ast.arg], list[ast.arg], list[ast.arg], str | None, str | None]: ...
 
     def _stamp_exact_class(
-        self, value: MoltValue, class_id: ClassId, *, durable: bool = ...
+        self, value: MoltValue, class_id: ExactFact, *, durable: bool = ...
     ) -> MoltValue: ...
 
     def _stamp_exact_class_from_name(self, value: MoltValue, name: str) -> None: ...

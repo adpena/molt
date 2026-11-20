@@ -4,6 +4,34 @@ use object::{Object, ObjectSection, ObjectSymbol};
 #[path = "support/generated_object_abi.rs"]
 mod generated_object_abi;
 
+#[path = "support/calling_program.rs"]
+mod calling_program;
+
+/// The CLI selects the linked runtime's entries before codegen. A compiled
+/// Python call reaches its recursion refusal, which `calling_program` selects;
+/// the request keeps the admitted set, so the file is gone before codegen.
+fn enter_selected_runtime() -> molt_ir::backend_environment::ScopeGuard {
+    use molt_ir::backend_environment::{self, BackendEnvironment};
+    let path = std::env::temp_dir().join(format!(
+        "molt-extern-linkage-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let digest = calling_program::write_symbols(&path, &[]);
+    let request = serde_json::json!({
+        "MOLT_RUNTIME_CALLABLE_SYMBOLS": path,
+        "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": digest,
+    });
+    let environment = std::sync::Arc::new(
+        BackendEnvironment::from_request(request.as_object().expect("request object"))
+            .expect("admitted request environment"),
+    );
+    let scope = backend_environment::enter(environment);
+    molt_ir::runtime_callable_symbols::RuntimeCallableSymbols::capture();
+    std::fs::remove_file(&path).expect("remove selected runtime exports");
+    scope
+}
+
 fn op(kind: molt_ir::OpKind) -> OpIR {
     OpIR::new(kind)
 }
@@ -37,10 +65,6 @@ fn externalized_function(name: &str, params: &[&str], returns_value: bool) -> Fu
     let mut function = provider_function(name, params, returns_value);
     molt_backend::externalize_function_with_signature(&mut function);
     function
-}
-
-fn mixed_void_and_value_extern_ir() -> SimpleIR {
-    mixed_void_and_value_extern_fixture().0
 }
 
 fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBackendModuleContext) {
@@ -438,40 +462,33 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
 
 #[test]
 fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
+    let _runtime = enter_selected_runtime();
     let mut init_sys = op(molt_ir::OpKind::Call);
     init_sys.s_value = Some("molt_init_sys".to_string());
 
+    let main = FunctionIR {
+        module: None,
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "molt_main".to_string(),
+        params: Vec::new(),
+        ops: vec![init_sys, op(molt_ir::OpKind::RetVoid)],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        frame_locals_exposed: false,
+        parameter_custody: Vec::new(),
+        execution_context: Default::default(),
+    };
+    // A declaration's linkage is its independently compiled provider's
+    // frozen signature, carried by the module context (production builds it
+    // in `prepare_module_context`); an extern row has no local linkage.
+    let module_context = SimpleBackend::prepare_module_context(&mut vec![
+        main.clone(),
+        provider_function("molt_init_sys", &[], false),
+    ]);
     let ir = SimpleIR {
-        functions: vec![
-            FunctionIR {
-                module: None,
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "molt_main".to_string(),
-                params: Vec::new(),
-                ops: vec![init_sys, op(molt_ir::OpKind::RetVoid)],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                frame_locals_exposed: false,
-                parameter_custody: Vec::new(),
-                execution_context: Default::default(),
-            },
-            FunctionIR {
-                module: None,
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "molt_init_sys".to_string(),
-                params: Vec::new(),
-                ops: Vec::new(),
-                param_types: None,
-                source_file: None,
-                is_extern: true,
-                codegen_partition: false,
-                frame_locals_exposed: false,
-                parameter_custody: Vec::new(),
-                execution_context: Default::default(),
-            },
-        ],
+        functions: vec![main, externalized_function("molt_init_sys", &[], false)],
         profile: None,
     };
 
@@ -484,6 +501,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
     // `molt-backend` as a non-test library.
     let mut backend = SimpleBackend::new();
     backend.emit_app_callable_resolver = false;
+    backend.set_module_context(module_context);
     let output = backend.compile(ir);
 
     assert!(!output.bytes.is_empty());
@@ -498,9 +516,12 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
 
 #[test]
 fn cranelift_declares_mixed_void_and_value_externs_without_bodies() {
+    let _runtime = enter_selected_runtime();
+    let (ir, module_context) = mixed_void_and_value_extern_fixture();
     let mut backend = SimpleBackend::new();
     backend.emit_app_callable_resolver = false;
-    let output = backend.compile(mixed_void_and_value_extern_ir());
+    backend.set_module_context(module_context);
+    let output = backend.compile(ir);
     assert!(!output.bytes.is_empty());
     assert_mixed_extern_linkage(&output.bytes, "Cranelift");
 }
@@ -517,9 +538,12 @@ fn cranelift_rejects_exact_extern_arity_mismatch() {
 
 #[test]
 fn cranelift_void_extern_call_may_bind_boxed_none() {
+    let _runtime = enter_selected_runtime();
+    let (ir, module_context) = extern_call_mismatch_fixture(&[], false, &[], true);
     let mut backend = SimpleBackend::new();
     backend.emit_app_callable_resolver = false;
-    let output = backend.compile(extern_call_mismatch_ir(&[], false, &[], true));
+    backend.set_module_context(module_context);
+    let output = backend.compile(ir);
     assert!(!output.bytes.is_empty());
     assert_extern_helper_linkage(&output.bytes, "Cranelift void-to-None");
 }

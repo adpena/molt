@@ -1012,6 +1012,7 @@ pub enum RuntimeFn {
     ExceptionContextSet,
     ExceptionCurrent,
     ExceptionEnterHandler,
+    ExceptionFieldGet,
     ExceptionFrameOrigin,
     ExceptionInit,
     ExceptionKind,
@@ -3864,6 +3865,7 @@ impl RuntimeFn {
         Self::ExceptionContextSet,
         Self::ExceptionCurrent,
         Self::ExceptionEnterHandler,
+        Self::ExceptionFieldGet,
         Self::ExceptionFrameOrigin,
         Self::ExceptionInit,
         Self::ExceptionKind,
@@ -5821,7 +5823,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2848;
+    pub const COUNT: usize = 2849;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -18966,6 +18968,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         }),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_exception_field_get",
+        linker_symbol: "molt_exception_field_get__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 2,
+        param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
@@ -47860,6 +47874,7 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::ExceptionClear => Some(RuntimeFn::ExceptionClear),
         crate::OpKind::ExceptionContextSet => Some(RuntimeFn::ExceptionContextSet),
         crate::OpKind::ExceptionCurrent => Some(RuntimeFn::ExceptionCurrent),
+        crate::OpKind::ExceptionFieldGet => Some(RuntimeFn::ExceptionFieldGet),
         crate::OpKind::ExceptionLast => Some(RuntimeFn::ExceptionLast),
         crate::OpKind::ExceptionLastPending => Some(RuntimeFn::ExceptionLastPending),
         crate::OpKind::ExceptionMatchBuiltin => Some(RuntimeFn::ExceptionMatchBuiltin),

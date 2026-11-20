@@ -16,6 +16,7 @@ from typing import Literal, Sequence, get_args
 
 from molt.frontend._types import (
     ActiveException,
+    BuiltinLayout,
     AsyncContextExit,
     MoltOp,
     MoltValue,
@@ -23,7 +24,10 @@ from molt.frontend._types import (
     TryScope,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
+from molt.frontend.exception_kinds_generated import (
+    BUILTIN_EXCEPTION_CODES,
+    BUILTIN_EXCEPTION_LAYOUT_KINDS,
+)
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 
@@ -103,6 +107,11 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         kind_tag = BUILTIN_EXCEPTION_CODES[kind]
         metadata = {"exception_name": kind, "exception_tag": kind_tag}
         exc_val = MoltValue(self.next_var(), type_hint="exception")
+        # The tag construction fixes the builtin layout (errno promotion keeps
+        # the OSError layout), so the fact survives every callback.
+        self._stamp_exact_class(
+            exc_val, BuiltinLayout(BUILTIN_EXCEPTION_LAYOUT_KINDS[kind]), durable=True
+        )
         if not args:
             self.emit(
                 MoltOp(

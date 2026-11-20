@@ -17,6 +17,7 @@ from typing import (
 
 from molt.frontend._types import (
     BoundMethodHint,
+    BuiltinLayout,
     ClassId,
     ClassInfo,
     DeclaredClass,
@@ -26,7 +27,10 @@ from molt.frontend._types import (
     _intrinsic_arity_exact,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
+from molt.frontend.exception_kinds_generated import (
+    BUILTIN_EXCEPTION_CODES,
+    BUILTIN_EXCEPTION_LAYOUT_KINDS,
+)
 from molt.frontend.diagnostics import FrontendRejection
 
 
@@ -304,7 +308,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     packed = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(MoltOp(kind="TUPLE_NEW", args=items, result=packed))
                     tuples.append(packed)
-                return self._emit_intrinsic_call(
+                error = self._emit_intrinsic_call(
                     "molt_exception_new_builtin_kw",
                     [
                         self._emit_const_value(BUILTIN_EXCEPTION_CODES[exception_name]),
@@ -312,6 +316,14 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     ],
                     type_hint="exception",
                 )
+                # The tag construction builds that builtin (or the builtin
+                # OSError subclass errno promotion picks): its layout is fixed.
+                self._stamp_exact_class(
+                    error,
+                    BuiltinLayout(BUILTIN_EXCEPTION_LAYOUT_KINDS[exception_name]),
+                    durable=True,
+                )
+                return error
             if (
                 builtin is PythonIdentity.BUILTIN_ABS
                 and len(node.args) == 1

@@ -389,6 +389,8 @@ pub enum OpKind {
     ExceptionContextSet,
     #[serde(rename = "exception_current")]
     ExceptionCurrent,
+    #[serde(rename = "exception_field_get")]
+    ExceptionFieldGet,
     #[serde(rename = "exception_finally_pending_observer")]
     ExceptionFinallyPendingObserver,
     #[serde(rename = "exception_last")]
@@ -1221,6 +1223,7 @@ impl OpKind {
         Self::ExceptionClear,
         Self::ExceptionContextSet,
         Self::ExceptionCurrent,
+        Self::ExceptionFieldGet,
         Self::ExceptionFinallyPendingObserver,
         Self::ExceptionLast,
         Self::ExceptionLastPending,
@@ -1732,6 +1735,7 @@ impl OpKind {
             Self::ExceptionClear => "exception_clear",
             Self::ExceptionContextSet => "exception_context_set",
             Self::ExceptionCurrent => "exception_current",
+            Self::ExceptionFieldGet => "exception_field_get",
             Self::ExceptionFinallyPendingObserver => "exception_finally_pending_observer",
             Self::ExceptionLast => "exception_last",
             Self::ExceptionLastPending => "exception_last_pending",
@@ -2254,6 +2258,7 @@ impl std::str::FromStr for OpKind {
             "exception_clear" => Ok(Self::ExceptionClear),
             "exception_context_set" => Ok(Self::ExceptionContextSet),
             "exception_current" => Ok(Self::ExceptionCurrent),
+            "exception_field_get" => Ok(Self::ExceptionFieldGet),
             "exception_finally_pending_observer" => Ok(Self::ExceptionFinallyPendingObserver),
             "exception_last" => Ok(Self::ExceptionLast),
             "exception_last_pending" => Ok(Self::ExceptionLastPending),
@@ -2788,6 +2793,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -3392,6 +3398,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -3912,6 +3919,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -4428,6 +4436,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -4943,6 +4952,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -5457,6 +5467,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -5975,6 +5986,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -6490,6 +6502,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -7007,6 +7020,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -7522,6 +7536,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -8038,6 +8053,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -8550,6 +8566,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -9069,6 +9086,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -9585,6 +9603,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -10097,6 +10116,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -10615,6 +10635,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -11135,6 +11156,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -11654,6 +11676,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -12166,6 +12189,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -12683,6 +12707,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -13205,6 +13230,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -13716,6 +13742,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -14236,6 +14263,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -14921,6 +14949,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -15458,6 +15487,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -16281,6 +16311,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::DictUpdateKwstar
         | OpKind::DictUpdateMissing
         | OpKind::DictValues
+        | OpKind::ExceptionFieldGet
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
         | OpKind::FuncNew
@@ -16777,6 +16808,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -17299,6 +17331,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -17818,6 +17851,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -18334,6 +18368,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -18852,6 +18887,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -19593,14 +19629,8 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::DeleteVar => Some(OpCode::DeleteVar),
         OpKind::Div => Some(OpCode::Div),
         OpKind::Eq | OpKind::StringEq => Some(OpCode::Eq),
-        OpKind::ExceptionPending => Some(OpCode::ExceptionPending),
-        OpKind::ForIter => Some(OpCode::ForIter),
-        OpKind::FrameContextSet => Some(OpCode::FrameContextSet),
-        OpKind::FrameSetLocation => Some(OpCode::FrameSetLocation),
-        OpKind::Free => Some(OpCode::Free),
-        OpKind::FunctionDefaultsVersion => Some(OpCode::FunctionDefaultsVersion),
-        OpKind::Ge => Some(OpCode::Ge),
-        OpKind::GetAttr
+        OpKind::ExceptionFieldGet
+        | OpKind::GetAttr
         | OpKind::GetAttrGenericObj
         | OpKind::GetAttrGenericPtr
         | OpKind::GetAttrName
@@ -19608,6 +19638,13 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::GuardedLoad
         | OpKind::Load
         | OpKind::LoadAttr => Some(OpCode::LoadAttr),
+        OpKind::ExceptionPending => Some(OpCode::ExceptionPending),
+        OpKind::ForIter => Some(OpCode::ForIter),
+        OpKind::FrameContextSet => Some(OpCode::FrameContextSet),
+        OpKind::FrameSetLocation => Some(OpCode::FrameSetLocation),
+        OpKind::Free => Some(OpCode::Free),
+        OpKind::FunctionDefaultsVersion => Some(OpCode::FunctionDefaultsVersion),
+        OpKind::Ge => Some(OpCode::Ge),
         OpKind::GetIter => Some(OpCode::GetIter),
         OpKind::GlobalSlotGet => Some(OpCode::GlobalSlotGet),
         OpKind::Gt => Some(OpCode::Gt),
@@ -20467,6 +20504,7 @@ impl OpKind {
             | OpKind::DelAttrGenericObj
             | OpKind::DelAttrGenericPtr
             | OpKind::DelAttrName
+            | OpKind::ExceptionFieldGet
             | OpKind::GetAttrGenericObj
             | OpKind::GetAttrGenericPtr
             | OpKind::GetAttrName
@@ -20607,6 +20645,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Eq
         | OpKind::ExceptEnd
         | OpKind::ExceptStart
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionPending
         | OpKind::ExceptionRegionDropsInserted
         | OpKind::FinallyEnd
@@ -21195,6 +21234,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -21709,6 +21749,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -22222,6 +22263,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -22734,6 +22776,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -23246,6 +23289,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -23761,6 +23805,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -24273,6 +24318,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -25559,6 +25605,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -26073,6 +26120,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -26587,6 +26635,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -27099,6 +27148,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -27604,6 +27654,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -28126,6 +28177,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -28642,6 +28694,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -29156,6 +29209,7 @@ impl OpKind {
             | OpKind::ExceptionClass
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -29671,6 +29725,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionFinallyPendingObserver
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
@@ -30187,6 +30242,7 @@ impl OpKind {
             | OpKind::ExceptionClear
             | OpKind::ExceptionContextSet
             | OpKind::ExceptionCurrent
+            | OpKind::ExceptionFieldGet
             | OpKind::ExceptionLast
             | OpKind::ExceptionLastPending
             | OpKind::ExceptionMatchBuiltin
@@ -41985,6 +42041,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -42490,6 +42547,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -43005,6 +43063,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -43524,6 +43583,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -44195,6 +44255,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -44709,6 +44770,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending
@@ -45227,6 +45289,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::ExceptionClear
         | OpKind::ExceptionContextSet
         | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFieldGet
         | OpKind::ExceptionFinallyPendingObserver
         | OpKind::ExceptionLast
         | OpKind::ExceptionLastPending

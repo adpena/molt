@@ -1,19 +1,9 @@
 //! Determinism and size guard for the native arithmetic codegen family.
 //!
-//! `fc::arith::handle_arith_op` was a ~1.9K-line single-function monolith
-//! dispatching every scalar add/sub/mul (+ their in-place and `checked_*`
-//! peel forms) inline. It was decomposed into one thin `match` dispatcher
-//! delegating to per-family free `fn`s (`handle_add_op`, `handle_checked_add_op`,
-//! `handle_checked_mul_op`, `handle_inplace_add_op`, `handle_sub_op`,
-//! `handle_inplace_sub_op`, `handle_mul_op`, `handle_inplace_mul_op`), each
-//! carrying one arm's body VERBATIM — the same move-only idiom that split
-//! `handle_call_op` (`fc::calls`).
-//!
-//! The original test pinned bytes from a historical move-only decomposition.
-//! That baseline predated explicit CFG live-value transport and therefore
-//! encoded zero-initialized live ranges as if they were valid codegen. The
-//! current guard checks the durable properties instead: deterministic object
-//! bytes and a bounded size for the full arithmetic-family stress program.
+//! Cranelift lowers scalar add/sub/mul (and their in-place and checked forms)
+//! through the shared final-TIR walker, as LLVM does. The guard checks the
+//! durable properties: deterministic object bytes and a bounded size for the
+//! full arithmetic-family stress program, per compiler build profile.
 
 use super::*;
 use molt_ir::OpKind;
@@ -167,10 +157,30 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // object (FNV 57e0d4815f12c728), including its different code and object
 // layout. Keep approximately the same headroom for that measured target;
 // the arm64 calibration is not an x86_64 object-format budget.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+//
+// The emitted object depends on the compiler's own build profile: a debug
+// compiler hardens every pointer refcount into one runtime call
+// (`RefcountStorage::HardenedPlain`), and a release compiler inlines the
+// attached-plain transition (`Plain`), as production code does since Cranelift
+// moved to the shared walker (5144080ca6). arm64, 2026-11-20 at 7584d01602:
+// debug 4,720 bytes (FNV 46b7b3fd84e0c9d9), release 6,352 bytes
+// (FNV ada08ea9e15b080e). Each profile keeps about 10% headroom. The Linux
+// x86_64 release ceiling scales the measured debug control by the arm64
+// release/debug ratio; it is unverified until a Linux release run measures it.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", debug_assertions))]
 const ARITH_OBJECT_SIZE_CEILING: usize = 6_144;
-#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", not(debug_assertions)))]
+const ARITH_OBJECT_SIZE_CEILING: usize = 8_272;
+#[cfg(all(
+    not(all(target_arch = "x86_64", target_os = "linux")),
+    debug_assertions
+))]
 const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
+#[cfg(all(
+    not(all(target_arch = "x86_64", target_os = "linux")),
+    not(debug_assertions)
+))]
+const ARITH_OBJECT_SIZE_CEILING: usize = 6_992;
 
 /// One-shot capture probe: run with `--ignored --nocapture` to print the
 /// current `(len, digest)` when investigating a deliberate codegen change.

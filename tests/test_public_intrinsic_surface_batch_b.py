@@ -89,7 +89,7 @@ def _merge(iterables, key, reverse):
 
 
 def _builtin_class(name):
-    # The runtime owns these classes (molt-obj-model exception_layout.rs); the
+    # The runtime owns these classes (molt-codegen-abi exception_layout.rs); the
     # probe needs only statistics' error, a ValueError the module re-exports.
     if name == "StatisticsError":
         return type(name, (ValueError,), {{"__module__": "statistics"}})
