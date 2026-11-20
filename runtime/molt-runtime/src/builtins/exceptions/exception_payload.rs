@@ -290,8 +290,8 @@ fn unicode_error_position_arg(_py: &PyToken<'_>, bits: u64) -> Result<u64, ()> {
         "'{}' object cannot be interpreted as an integer",
         type_name(_py, obj_from_bits(bits))
     );
-    let value = crate::builtins::numbers::index_bigint_from_obj(_py, bits, message.as_str())
-        .ok_or(())?;
+    let value =
+        crate::builtins::numbers::index_bigint_from_obj(_py, bits, message.as_str()).ok_or(())?;
     let Some(value) = value.to_isize() else {
         let _ = raise_exception::<u64>(
             _py,
@@ -300,7 +300,10 @@ fn unicode_error_position_arg(_py: &PyToken<'_>, bits: u64) -> Result<u64, ()> {
         );
         return Err(());
     };
-    Ok(crate::builtins::numbers::int_bits_from_i64(_py, value as i64))
+    Ok(crate::builtins::numbers::int_bits_from_i64(
+        _py,
+        value as i64,
+    ))
 }
 
 pub(super) fn unicode_error_fields_from_args(
