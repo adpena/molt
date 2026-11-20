@@ -302,6 +302,9 @@ CACHE_MAINTENANCE_INTERVAL_SECONDS = 300.0
 # interactive build loop must not pay it every few minutes.
 CLI_CACHE_RETENTION_INTERVAL_SECONDS = 24 * 3600.0
 SHARED_SOURCE_RECORDS_DIRECTORY = "toolchain_source_records"
+# Immutable content-addressed import-scan and module-analysis records
+# (molt.cli.frontend_record_files).
+FRONTEND_RECORD_FILES_DIRECTORY = "frontend_records"
 TOOLCHAIN_SYMBOL_FACTS_CACHE_DIRECTORY = "toolchain_symbol_facts"
 TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION = 6
 RUNTIME_WASM_CACHE_DIRECTORY = "runtime-wasm-generations-v2"

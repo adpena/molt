@@ -6,17 +6,21 @@ from molt.typed_cache import typed_cache
 import argparse
 import heapq
 import os
+import re
 import shutil
 import stat
+import sys
 import time
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from molt.default_paths import (
     BUILD_ARTIFACTS_CACHE_DIRECTORY,
+    FRONTEND_RECORD_FILES_DIRECTORY,
     build_artifacts_entry,
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
@@ -60,6 +64,62 @@ from molt.file_locks import (
 
 if TYPE_CHECKING:
     from molt.cli.source_record_store import SourceRecordMetadata
+
+
+def _enter_background_disk_priority() -> Callable[[], None] | None:
+    """Throttle this thread's disk I/O; return the restoring call, or None.
+
+    macOS ``setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD,
+    IOPOL_THROTTLE)``, Linux ``ioprio_set`` to the idle class, Windows
+    ``THREAD_MODE_BACKGROUND_BEGIN``. Advisory: any failure keeps the normal
+    priority.
+    """
+    import ctypes
+    import platform
+
+    try:
+        if sys.platform == "darwin":
+            libc = ctypes.CDLL(None, use_errno=True)
+            previous = libc.getiopolicy_np(0, 1)
+            if previous < 0 or libc.setiopolicy_np(0, 1, 3) != 0:
+                return None
+            return lambda: libc.setiopolicy_np(0, 1, previous)
+        if sys.platform.startswith("linux"):
+            numbers = {"x86_64": (251, 252), "aarch64": (30, 31)}
+            machine = platform.machine()
+            if machine not in numbers:
+                return None
+            set_number, get_number = numbers[machine]
+            libc = ctypes.CDLL(None, use_errno=True)
+            previous = libc.syscall(get_number, 1, 0)
+            if previous < 0 or libc.syscall(set_number, 1, 0, 3 << 13) != 0:
+                return None
+            return lambda: libc.syscall(set_number, 1, 0, previous)
+        if sys.platform == "win32":
+            kernel32 = ctypes.WinDLL("kernel32")
+            thread = kernel32.GetCurrentThread()
+            if not kernel32.SetThreadPriority(thread, 0x00010000):
+                return None
+            return lambda: kernel32.SetThreadPriority(thread, 0x00020000)
+    except (OSError, AttributeError):
+        return None
+    return None
+
+
+@contextmanager
+def _background_disk_priority() -> Generator[None]:
+    """Run a cache sweep at background disk priority, so its many unlinks and
+    stats never compete with a build for the device."""
+    restore = _enter_background_disk_priority()
+    try:
+        yield
+    finally:
+        if restore is not None:
+            restore()
+
+
+_HEX2 = re.compile(r"[0-9a-f]{2}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _default_cache_root() -> Path:
@@ -416,6 +476,43 @@ def _collect_entries(
                         except ValueError:
                             continue
                         append(entry_root, lock)
+            continue
+        if child.name == FRONTEND_RECORD_FILES_DIRECTORY and _is_direct_directory(
+            child
+        ):
+            # Immutable blobs and index files: a reader that loses one misses
+            # and recomputes, so each file is its own entry and needs no lock.
+            # Future layouts and stages have no eviction authority here.
+            from molt.cli.frontend_record_files import (
+                INDEX_SUFFIX,
+                frontend_record_files_root,
+            )
+
+            layout = frontend_record_files_root(cache_root)
+            blobs, index = layout / "blobs", layout / "index"
+            if _is_direct_directory(blobs):
+                for shard in _children(blobs):
+                    if not (
+                        _is_direct_directory(shard) and _HEX2.fullmatch(shard.name)
+                    ):
+                        continue
+                    for leaf in _children(shard):
+                        if (
+                            _HEX64.fullmatch(leaf.name)
+                            and leaf.name.startswith(shard.name)
+                            and leaf.is_file()
+                            and not leaf.is_symlink()
+                        ):
+                            append(leaf)
+            if _is_direct_directory(index):
+                for leaf in _children(index):
+                    if (
+                        leaf.name.endswith(INDEX_SUFFIX)
+                        and _HEX64.fullmatch(leaf.name.removesuffix(INDEX_SUFFIX))
+                        and leaf.is_file()
+                        and not leaf.is_symlink()
+                    ):
+                        append(leaf)
             continue
         if child.name == SHARED_SOURCE_RECORDS_DIRECTORY and _is_direct_directory(
             child
@@ -1032,13 +1129,14 @@ def _prune(
                 # sweep is not immediately repeated by another completed proof.
                 stamp_attempt()
             try:
-                result = _prune_locked(
-                    cache_root,
-                    max_bytes=max_bytes,
-                    max_age_days=max_age_days,
-                    dry_run=dry_run,
-                    environ=environ,
-                )
+                with _background_disk_priority():
+                    result = _prune_locked(
+                        cache_root,
+                        max_bytes=max_bytes,
+                        max_age_days=max_age_days,
+                        dry_run=dry_run,
+                        environ=environ,
+                    )
             except BaseException as error:
                 if automatic:
                     try:

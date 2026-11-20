@@ -30,6 +30,7 @@ from molt.cli.python_source_closure import local_python_import_graph_transaction
 
 
 if TYPE_CHECKING:
+    from molt.cli.frontend_record_files import FrontendRecordFiles
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
@@ -376,6 +377,8 @@ class _SourceTreeFingerprintTransaction:
     resolved_paths: dict[str, Path] = field(default_factory=dict)
     # Pin one connection owner through the operation, including nested calls.
     source_records: SourceRecordStore | None = None
+    # The record-file view whose index this operation publishes once.
+    frontend_records: FrontendRecordFiles | None = None
 
 
 _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
@@ -447,7 +450,21 @@ def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[No
             ):
                 _save_operation_records(store)
         finally:
-            _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
+            try:
+                files = transaction.frontend_records
+                if (
+                    not implicit_close
+                    and files is not None
+                    and (current is None or files is not current.frontend_records)
+                    and not files.save()
+                ):
+                    print(
+                        f"molt: warning: cannot index {files.pending_count()} "
+                        f"frontend record(s) in {files.root}",
+                        file=sys.stderr,
+                    )
+            finally:
+                _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
 
 
 def _operation_resolved(path: str | os.PathLike[str]) -> Path:

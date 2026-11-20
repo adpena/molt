@@ -29,7 +29,7 @@ from molt.cli import module_source
 from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.cli.source_record_store import SourceRecordStore
+from molt.cli.frontend_record_files import FrontendRecordFiles
 from tests.source_record_test_support import replace_source_record, source_records
 from tests.cli.test_installed_compiler import installation as installation
 from molt.cli.models import (
@@ -738,19 +738,15 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
     published_fingerprints: list[str] = []
 
     def fail_publication(
-        _store: SourceRecordStore,
-        _kind: str,
-        _key: str,
-        payload: bytes,
-        *,
-        generation: str,
+        _files: FrontendRecordFiles, _kind: str, _key: str, payload: bytes
     ) -> NoReturn:
         fingerprint = json.loads(payload)["compiler_fingerprint"]
-        assert isinstance(fingerprint, str) and fingerprint == generation
+        assert isinstance(fingerprint, str)
         published_fingerprints.append(fingerprint)
         raise OSError("publication interrupted")
 
-    monkeypatch.setattr(SourceRecordStore, "put", fail_publication)
+    # Import scans publish as record files (cache frontier step 2).
+    monkeypatch.setattr(FrontendRecordFiles, "put", fail_publication)
 
     def write() -> None:
         scans._write_persisted_import_scan(

@@ -1,6 +1,8 @@
 """Opaque, process-owned source records and their SQLite lifecycle.
 
-All four source record families share the existing WAL database. Raw reads
+Intrinsic source facts and module lowerings share this WAL database (import
+scans and module analyses are immutable record files, cache frontier step 2;
+step 3 moves lowerings and retires this store). Raw reads
 never renew retention: consumers admit the returned bytes, then refresh the
 immutable observation. Its random revision and observed use fence replacement
 and concurrent reuse. Generation is provenance, not a separate retention clock.
@@ -47,9 +49,9 @@ from molt.default_paths import (
 )
 from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 
-RecordKind = Literal[
-    "import-scan", "intrinsic-facts", "module-analysis", "module-lowering"
-]
+# Import scans and module analyses are immutable record files
+# (molt.cli.frontend_record_files); the table admits only these two kinds.
+RecordKind = Literal["intrinsic-facts", "module-lowering"]
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 # Records queued inside a frontend operation are saved in chunks of the batch
@@ -67,7 +69,7 @@ _JOURNAL_SIZE_LIMIT_BYTES = 64 << 20
 # require a distinct namespace grammar or identity even when DDL is unchanged.
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
-        kind TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('intrinsic-facts', 'module-lowering')),
         key TEXT NOT NULL,
         generation TEXT NOT NULL,
         payload BLOB NOT NULL,
