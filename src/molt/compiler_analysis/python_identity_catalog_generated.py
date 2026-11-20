@@ -201,6 +201,7 @@ class PythonIdentity(IntFlag):
     BUILTIN_WARNING = 1 << 186
     BUILTIN_ZERODIVISIONERROR = 1 << 187
     BUILTIN_BUILD_CLASS = 1 << 188
+    INTRINSIC_NAMESPACE_ENTRY_GET = 1 << 189
 
 
 class PythonMember(IntFlag):
@@ -462,6 +463,7 @@ INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProx
     {
         'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
         'molt_dataclasses_init_globals': PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS,
+        'molt_namespace_entry_get': PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET,
         'molt_dataclasses_init': PythonIdentity.INTRINSIC_DATACLASSES_INIT,
         'molt_os_name': PythonIdentity.INTRINSIC_OS_NAME,
         'molt_module_import': PythonIdentity.INTRINSIC_MODULE_IMPORT,
@@ -506,6 +508,12 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
 INTRINSIC_ATTRIBUTE_READS: Final[Mapping[IdentityMask, tuple[int, str]]] = MappingProxyType(
     {
         int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS): (0, '__dict__'),
+    }
+)
+
+INTRINSIC_NAMESPACE_ENTRY_READS: Final[Mapping[IdentityMask, tuple[int, int, int]]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET): (0, 1, 2),
     }
 )
 
@@ -575,6 +583,7 @@ INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS: Final[tuple[IdentityMask, ...]] = (
 ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_SYS_PLATFORM) |
     int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS) |
+    int(PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET) |
     int(PythonIdentity.INTRINSIC_DATACLASSES_INIT) |
     int(PythonIdentity.INTRINSIC_OS_NAME) |
     int(PythonIdentity.INTRINSIC_MODULE_IMPORT) |

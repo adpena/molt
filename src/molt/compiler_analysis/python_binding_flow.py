@@ -47,6 +47,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     INTRINSIC_CALLABLE_IDENTITIES,
     INTRINSIC_TARGET_PROPERTIES,
     INTRINSIC_ATTRIBUTE_READS,
+    INTRINSIC_NAMESPACE_ENTRY_READS,
     INTRINSIC_NATIVE_INITIALIZERS,
     PythonNativeInitializer,
     DataclassInitSpecField,
@@ -4390,6 +4391,48 @@ class _Analyzer:
             effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
             argument_protocol_indices = frozenset()
             selected_deferred = self._attribute_dispatch(owner, effects)
+        elif (
+            (entry_read := INTRINSIC_NAMESPACE_ENTRY_READS.get(callee)) is not None
+            and not node.keywords
+            and len(node.args) == len(argument_results) == 3
+            and not any(isinstance(arg, ast.Starred) for arg in node.args)
+        ):
+            # ``owner.__dict__.get(name, missing)``, as ``dict.get`` on the
+            # attribute mapping models it: the same projections and keyed
+            # read, with no lookup hook (the runtime reads the static cell,
+            # then the mapping) and no operand escape.
+            owner_index, name_index, missing_index = entry_read
+            owner = argument_results[owner_index]
+            mapping = python_source_projection_key(
+                node, PythonSourceProjection.CALL_ATTRIBUTE
+            )
+            previous = self.source_attributes.get(mapping)
+            self.source_attributes[mapping] = (
+                "__dict__",
+                owner.source_origins | (previous[1] if previous else frozenset()),
+            )
+            selected = python_source_projection_key(
+                node, PythonSourceProjection.CALL_MAPPING_VALUE
+            )
+            name = argument_results[name_index]
+            key = name.value if name.value_known and type(name.value) is str else None
+            prior = self.source_elements.get(selected)
+            self.source_elements[selected] = PythonSourceElement(
+                selected,
+                PythonElementProtocol.SUBSCRIPT,
+                frozenset({mapping}) | (prior.origins if prior else frozenset()),
+                key if prior is None or prior.key == key else None,
+            )
+            result_fact = join_static_expression_results(
+                (
+                    StaticExpressionResult(source_origins=frozenset({selected})),
+                    argument_results[missing_index],
+                )
+            )
+            result = result_fact.identities
+            source_result_projected = True
+            effects |= READS_OBJECT_STATE | RAISES
+            argument_protocol_indices = frozenset()
         elif (
             INTRINSIC_NATIVE_INITIALIZERS.get(callee)
             is PythonNativeInitializer.DATACLASS

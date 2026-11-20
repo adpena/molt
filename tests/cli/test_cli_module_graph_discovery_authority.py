@@ -588,6 +588,12 @@ def test_public_stdlib_deferred_demand_graph(
         ("api.__dict__.copy()['callback']()", {"live_leaf"}),
         ("read(api)['callback']()", {"live_leaf"}),
         ("read(api)", set()),
+        # ``molt_namespace_entry_get`` is ``api.__dict__.get(name, missing)``:
+        # a value read and then called runs; a read alone runs nothing, and
+        # neither escapes ``api`` to the ``__getattr__`` hook.
+        ("entry_get(api, 'callback', None)()", {"live_leaf"}),
+        ("entry_get(api, 'callback', None)", set()),
+        ("entry_get(api, 'absent', len)('')", set()),
     ],
 )
 def test_namespace_acquisition_selects_values_without_calling_the_hook(
@@ -598,7 +604,8 @@ def test_namespace_acquisition_selects_values_without_calling_the_hook(
 
     sources = {
         "entry": "import api\nfrom _intrinsics import require_intrinsic\n"
-        "read = require_intrinsic('molt_dataclasses_init_globals')\n" + use + "\n",
+        "read = require_intrinsic('molt_dataclasses_init_globals')\n"
+        "entry_get = require_intrinsic('molt_namespace_entry_get')\n" + use + "\n",
         "api": "def callback():\n    import live_leaf\n"
         "def unused():\n    import dead_leaf\n"
         "def __getattr__(name):\n    import hook_leaf\n    raise AttributeError(name)\n",
@@ -616,7 +623,10 @@ def test_namespace_acquisition_selects_values_without_calling_the_hook(
             "-c",
             "import json,sys,types\n"
             "intrinsics=types.ModuleType('_intrinsics')\n"
-            "intrinsics.require_intrinsic=lambda name: lambda owner: getattr(owner, '__dict__')\n"
+            "intrinsics.require_intrinsic=lambda name: ("
+            "(lambda owner, key, missing: owner.__dict__.get(key, missing)) "
+            "if name == 'molt_namespace_entry_get' "
+            "else (lambda owner: getattr(owner, '__dict__')))\n"
             "sys.modules['_intrinsics']=intrinsics\n"
             "sys.path.insert(0,sys.argv[1])\nimport entry\n"
             "print(json.dumps(sorted(set(sys.modules)&{'live_leaf','dead_leaf','hook_leaf'})))\n",

@@ -883,9 +883,20 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     refusal = constructed
                 self._record_constructor_fallback(node, class_id, refusal)
                 if class_info.get("dataclass"):
-                    # Allocation and the generated method use the ordinary class protocol.
-                    callargs = self._emit_call_args_builder(node)
+                    # Allocation and the generated method use the ordinary class
+                    # protocol. A positional call passes its operands directly,
+                    # as the unresolved-callee path does: binding an argument
+                    # builder cost one allocation and a bind-cache miss per call.
                     res = MoltValue(self.next_var(), type_hint="Any")
+                    if not node.keywords and not any(
+                        isinstance(argument, ast.Starred) for argument in node.args
+                    ):
+                        args = self._emit_call_args(node.args)
+                        self.emit(
+                            MoltOp(kind="CALL_FUNC", args=[class_ref, *args], result=res)
+                        )
+                        return res
+                    callargs = self._emit_call_args_builder(node)
                     self.emit(
                         MoltOp(kind="CALL_BIND", args=[class_ref, callargs], result=res)
                     )
