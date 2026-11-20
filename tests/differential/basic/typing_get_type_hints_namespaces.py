@@ -8,13 +8,13 @@ module ``__getattr__``.
 
 from __future__ import annotations
 
-import typing
+import collections
 from typing import get_type_hints
 
 Alias = int
 
 
-def function(a: Alias, b: str, c: Later, d: typing.List[int]) -> bool:
+def function(a: Alias, b: str, c: Later, d: collections.OrderedDict) -> bool:
     return True
 
 
