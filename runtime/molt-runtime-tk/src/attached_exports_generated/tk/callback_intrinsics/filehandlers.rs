@@ -9,7 +9,7 @@ pub unsafe extern "C" fn molt_tk_filehandler_create(
     callback_bits: u64,
     file_obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3572);
+    molt_runtime_core::call_census::hit(3573);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_filehandler_create_attached_body(
@@ -28,7 +28,7 @@ pub unsafe extern "C" fn molt_tk_filehandler_delete(
     app_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3573);
+    molt_runtime_core::call_census::hit(3574);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_filehandler_delete_attached_body(_py, app_bits, fd_bits)

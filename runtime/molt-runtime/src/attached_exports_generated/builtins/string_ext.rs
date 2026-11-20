@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_string_template_scan(
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1442);
+    molt_runtime_core::call_census::hit(1443);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_template_scan_attached_body(_py, template_bits, delimiter_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_string_template_is_valid(
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1443);
+    molt_runtime_core::call_census::hit(1444);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_template_is_valid_attached_body(_py, template_bits, delimiter_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_string_template_get_identifiers(
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1444);
+    molt_runtime_core::call_census::hit(1445);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_template_get_identifiers_attached_body(_py, template_bits, delimiter_bits)
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn molt_string_formatter_parse(
     __context: u64,
     format_string_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1445);
+    molt_runtime_core::call_census::hit(1446);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_formatter_parse_attached_body(_py, format_string_bits)
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn molt_string_formatter_field_name_split(
     __context: u64,
     field_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1446);
+    molt_runtime_core::call_census::hit(1447);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_formatter_field_name_split_attached_body(_py, field_name_bits)

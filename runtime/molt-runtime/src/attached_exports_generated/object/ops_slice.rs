@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_slice_new(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2420);
+    molt_runtime_core::call_census::hit(2421);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_new_attached_body(_py, start_bits, stop_bits, step_bits)
@@ -19,7 +19,7 @@ pub unsafe extern "C" fn molt_slice_indices(
     slice_bits: u64,
     length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2421);
+    molt_runtime_core::call_census::hit(2422);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_indices_attached_body(_py, slice_bits, length_bits)
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn molt_slice_indices(
 #[unsafe(export_name = "molt_slice_hash__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_slice_hash(__context: u64, slice_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2422);
+    molt_runtime_core::call_census::hit(2423);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_hash_attached_body(_py, slice_bits)
@@ -35,7 +35,7 @@ pub unsafe extern "C" fn molt_slice_hash(__context: u64, slice_bits: u64) -> u64
 #[unsafe(export_name = "molt_slice_eq__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_slice_eq(__context: u64, slice_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2423);
+    molt_runtime_core::call_census::hit(2424);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_eq_attached_body(_py, slice_bits, other_bits)
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn molt_slice_eq(__context: u64, slice_bits: u64, other_bi
 #[unsafe(export_name = "molt_slice_reduce__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_slice_reduce(__context: u64, slice_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2424);
+    molt_runtime_core::call_census::hit(2425);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_reduce_attached_body(_py, slice_bits)
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn molt_slice_reduce_ex(
     slice_bits: u64,
     _protocol_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2425);
+    molt_runtime_core::call_census::hit(2426);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_slice_reduce_ex_attached_body(_py, slice_bits, _protocol_bits)

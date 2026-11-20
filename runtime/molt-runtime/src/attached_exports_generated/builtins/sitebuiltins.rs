@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_site_help0__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_help0(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1379);
+    molt_runtime_core::call_census::hit(1380);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_help0_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_site_help0(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_site_help1__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_help1(__context: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1380);
+    molt_runtime_core::call_census::hit(1381);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_help1_attached_body(_py, target_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_site_help1(__context: u64, target_bits: u64) -> u6
 #[unsafe(export_name = "molt_site_credits__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_credits(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1381);
+    molt_runtime_core::call_census::hit(1382);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_credits_attached_body(_py)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_site_credits(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_site_license__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_license(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1382);
+    molt_runtime_core::call_census::hit(1383);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_license_attached_body(_py)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_site_license(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_site_copyright__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_copyright(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1383);
+    molt_runtime_core::call_census::hit(1384);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_copyright_attached_body(_py)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_site_copyright(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_site_quitter_call__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_site_quitter_call(__context: u64, code_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1384);
+    molt_runtime_core::call_census::hit(1385);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_site_quitter_call_attached_body(_py, code_bits)

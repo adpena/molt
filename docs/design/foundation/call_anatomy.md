@@ -2050,6 +2050,103 @@ static fact the pass could carry; the step is still a runtime call per item, and
 dict or enumerate-over-list loop needs no call at all (the late TIR stage would read the row or
 the list slot inline).
 
+#### Builtin layouts (design round, 2026-11-20)
+
+**Problem (measured).** User classes have fixed field layouts in codegen: a proven field read is
+`molt_codegen_abi::field_slot`, machine code in the shared walker. Builtin types have no such
+authority. A read of a builtin object's typed member goes through `molt_get_attr_object_ic` and
+then a member getter. `bench_exception_typed_fields` (release native, main 6c6b246fa5, census and
+in-process sampler): 6 member reads per iteration cost 12 of 32 runtime calls; samples under
+`molt_get_attr_object_ic` and `molt_exception_member_get` are 14.6% + 3.5% = 18.1% of the run. The
+rest is construction (31.2% under `molt_exception_new_builtin*`), releases and arithmetic.
+`bench_weakref_native` and `bench_object_class_lifecycle` were profiled the same way: their cost is
+the generic call path (`call_bind_with_arguments` 84.7% and 90.0% inclusive: `type.__call__` of
+`ReferenceType`, the bound `__call__`, `Plain()` through `molt_call_bind_ic_owned`), the hash
+dispatch and the terminal release. A layout load removes little there until the call itself is
+direct, so they consume this ABI only where a profile shows layout access.
+
+**Authority.** `molt-codegen-abi::builtin_layout` owns every builtin object layout that compiled
+code reads: the heap type id, the word slots of the fixed prefix, and per typed member its slot,
+storage policy and missing-read rule. The exception family moves there from
+`molt-obj-model/src/exception_layout.rs` (with `exception_kinds_generated.rs`; the
+`tools/gen_exception_kinds.py` model output and its generator manifest row move in the same
+commit). `molt-obj-model` already depends on `molt-codegen-abi`, so the reverse placement would be
+a cycle; `molt-obj-model` re-exports the module, and the runtime's private slot constants
+(`EXCEPTION_MSG_SLOT` .. `EXCEPTION_TYPED_TAIL_SLOT`, `builtins/exceptions.rs`) become reads of the
+ABI's constants. One table: the runtime allocates, reads and writes by it, and codegen reads by it.
+A later builtin family (weakref, slice, range, the C-API projection) adds its rows to the same
+module, never a second table.
+
+**Fact.** A value has a builtin layout fact `(root, exact)` when the frontend proves its layout
+root. Producers, slice 1: the tag constructions (`EXCEPTION_NEW_BUILTIN*`,
+`molt_exception_new_builtin_kw`): the result's class is the named builtin, or the builtin
+`OSError` subclass errno promotion selects; both keep the class's layout root, and no user class
+can be the result. Later producers: a handler binding whose classes are proven builtins, where the
+closed world holds no user subclass of the root that overrides the member or defines
+`__getattribute__`/`__getattr__` (the writer, when one exists, is that class statement, and the
+build diagnostic names it). The fact rides the exact-class map behind `_exact_class_for_value`
+(today user `ClassId`s) as a second kind, so it lives on the SSA value and crosses lowering
+unchanged. A builtin exception instance has no `__class__` writer: CPython refuses `__class__`
+assignment to a non-heap builtin type, and Molt follows.
+
+**Operation.** `builtin_field_get(value)` carries the member as a typed id
+(`ExceptionTypedField`), never an offset or a spelling. molt-ir has no codegen-abi edge, so the
+shared walker (`codegen_ssa`, Cranelift and LLVM since W3; WASM through LLVM) lowers it once
+through one codegen-abi generator, `generate_builtin_field_get`, beside `field_slot`:
+
+```text
+  p = unbox_ptr(value)                         ; the fact proves a pointer
+  w = load [p + slot(field)]
+  Object:      if w == MISSING: missing_read    ; None, or cold (AttributeError)
+               else retain w
+  PySsize:     if w == -1 and missing_read == AttributeError: cold
+               else box_int(w)                  ; inline int, else cold box
+  RuntimeMessage: the message slot, as Object
+  free-threaded: cold
+```
+
+`cold` is the runtime getter (`molt_exception_member_get` through the member's descriptor), kept
+only for the raising and boxing edges. The proven path makes no runtime call.
+
+**Refusal.** An unproven read keeps the generic attribute path. The frontend pass that refuses a
+read whose receiver may be a builtin exception says why in a build diagnostic: no layout fact, the
+member is not a typed field of the root, or the overriding subclass by name.
+
+**Adversarial review against the code (2026-11-20).**
+1. *Slot arithmetic.* `exception_typed_tail_slot` counts only non-`RuntimeMessage` policies after
+   `EXCEPTION_TYPED_TAIL_SLOT`; `RuntimeMessage` fields read `EXCEPTION_MSG_SLOT`. The generator
+   takes the slot from the same function moved into the ABI, so it cannot disagree with the
+   allocator. A unit test pins every family's slots against the runtime's allocation size.
+2. *Missing marker.* Object fields hold `MoltObject::pending()` when absent
+   (`exception_field_missing_bits`), not None, and `del` of an object member writes it back
+   (`exception_typed_field_delete`); a deletable `PySsize` member is reset to its default. The generator compares
+   with that constant, which moves into the ABI too; a deleted member reads per its rule.
+3. *`characters_written`.* `PySsize` with `AttributeError` on -1: the one raising read; it stays
+   `cold` on -1.
+4. *Errno promotion.* `OSError(2, ...)` builds a `FileNotFoundError`; its layout root is `OSError`,
+   so the fact is the root, not the named class.
+5. *Writers between construction and read.* A store to a writable member (`e.name = v`) replaces
+   the word in place through the same table; the load reads the current word, so no fact
+   invalidates. The fact never claims a member's value, only its slot.
+6. *Foreign exceptions.* A C-API exception is `TYPE_ID_FOREIGN`; no producer gives it a fact.
+7. *Free-threaded builds.* As `field_slot` invariant 5: a word load then retain is safe under the
+   GIL only; the free-threaded build takes `cold`.
+8. *Subclass overriding a member.* Construction facts never name a user class; a handler fact
+   refuses when the closed world holds such a subclass. Differential coverage: a user subclass
+   that overrides `name` keeps the generic path.
+9. *C-API views.* An exception with a C-API view (`HEADER_FLAG_HAS_ABI_VIEW`) keeps its Molt
+   slots authoritative: every runtime write updates the slot, then refreshes the view
+   (`exception_typed_field_delete`, `exception_typed_field_replace_internal`), and the runtime
+   getter reads the slot without the view. The load reads exactly what the getter reads.
+10. *Wrong layout.* `exception_typed_field_policy` refuses a member the instance's layout lacks.
+   A fact names the root, and the root fixes the layout kind, so a proven read never needs that
+   refusal; a debug build asserts the layout-kind word.
+
+**Proof per slice.** The census shows zero `molt_get_attr_object_ic` and member-getter calls on
+proven sites; differential tests over every typed member on native and LLVM (missing members,
+`del`, a user subclass that overrides a member, errno promotion, `characters_written`); an
+instruction A/B, interleaved, median of 3, output identical. Ledger rows HF-561 and HF-847.
+
 ### 4.6 Reference counts
 
 - Values whose TIR type is an immediate carrier (`I64` within the tagged range, `Bool`, `None`,

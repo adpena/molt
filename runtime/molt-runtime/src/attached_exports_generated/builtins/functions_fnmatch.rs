@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_fnmatchcase__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fnmatchcase(__context: u64, name_bits: u64, pat_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(810);
+    molt_runtime_core::call_census::hit(811);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fnmatchcase_attached_body(_py, name_bits, pat_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_fnmatchcase(__context: u64, name_bits: u64, pat_bi
 #[unsafe(export_name = "molt_fnmatch__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fnmatch(__context: u64, name_bits: u64, pat_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(811);
+    molt_runtime_core::call_census::hit(812);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fnmatch_attached_body(_py, name_bits, pat_bits)
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn molt_fnmatch_filter(
     pat_bits: u64,
     invert_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(812);
+    molt_runtime_core::call_census::hit(813);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fnmatch_filter_attached_body(_py, names_bits, pat_bits, invert_bits)
@@ -31,7 +31,7 @@ pub unsafe extern "C" fn molt_fnmatch_filter(
 #[unsafe(export_name = "molt_fnmatch_translate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fnmatch_translate(__context: u64, pat_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(813);
+    molt_runtime_core::call_census::hit(814);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fnmatch_translate_attached_body(_py, pat_bits)

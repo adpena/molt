@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_profile_snapshot__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_profile_snapshot(__context: u64) {
-    molt_runtime_core::call_census::hit(2610);
+    molt_runtime_core::call_census::hit(2611);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_profile_snapshot_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_profile_snapshot(__context: u64) {
 #[unsafe(export_name = "molt_profile_struct_field_store__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_profile_struct_field_store(__context: u64) {
-    molt_runtime_core::call_census::hit(2611);
+    molt_runtime_core::call_census::hit(2612);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_profile_struct_field_store_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_profile_struct_field_store(__context: u64) {
 #[unsafe(export_name = "molt_profile_handle_resolve__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_profile_handle_resolve(__context: u64) {
-    molt_runtime_core::call_census::hit(2612);
+    molt_runtime_core::call_census::hit(2613);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_profile_handle_resolve_attached_body(_py)

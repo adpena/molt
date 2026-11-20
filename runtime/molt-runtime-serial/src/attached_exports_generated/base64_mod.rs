@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_base64_b64encode(
     data_bits: u64,
     altchars_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3304);
+    molt_runtime_core::call_census::hit(3305);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b64encode_attached_body(_py, data_bits, altchars_bits)
@@ -19,7 +19,7 @@ pub unsafe extern "C" fn molt_base64_b64decode(
     altchars_bits: u64,
     validate_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3305);
+    molt_runtime_core::call_census::hit(3306);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b64decode_attached_body(_py, data_bits, altchars_bits, validate_bits)
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn molt_base64_b64decode(
 #[unsafe(export_name = "molt_base64_standard_b64encode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_standard_b64encode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3306);
+    molt_runtime_core::call_census::hit(3307);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_standard_b64encode_attached_body(_py, data_bits)
@@ -35,7 +35,7 @@ pub unsafe extern "C" fn molt_base64_standard_b64encode(__context: u64, data_bit
 #[unsafe(export_name = "molt_base64_standard_b64decode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_standard_b64decode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3307);
+    molt_runtime_core::call_census::hit(3308);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_standard_b64decode_attached_body(_py, data_bits)
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn molt_base64_standard_b64decode(__context: u64, data_bit
 #[unsafe(export_name = "molt_base64_urlsafe_b64encode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_urlsafe_b64encode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3308);
+    molt_runtime_core::call_census::hit(3309);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_urlsafe_b64encode_attached_body(_py, data_bits)
@@ -51,7 +51,7 @@ pub unsafe extern "C" fn molt_base64_urlsafe_b64encode(__context: u64, data_bits
 #[unsafe(export_name = "molt_base64_urlsafe_b64decode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_urlsafe_b64decode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3309);
+    molt_runtime_core::call_census::hit(3310);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_urlsafe_b64decode_attached_body(_py, data_bits)
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn molt_base64_urlsafe_b64decode(__context: u64, data_bits
 #[unsafe(export_name = "molt_base64_b32encode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_b32encode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3310);
+    molt_runtime_core::call_census::hit(3311);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b32encode_attached_body(_py, data_bits)
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn molt_base64_b32decode(
     data_bits: u64,
     casefold_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3311);
+    molt_runtime_core::call_census::hit(3312);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b32decode_attached_body(_py, data_bits, casefold_bits)
@@ -79,7 +79,7 @@ pub unsafe extern "C" fn molt_base64_b32decode(
 #[unsafe(export_name = "molt_base64_b32hexencode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_b32hexencode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3312);
+    molt_runtime_core::call_census::hit(3313);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b32hexencode_attached_body(_py, data_bits)
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn molt_base64_b32hexdecode(
     data_bits: u64,
     casefold_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3313);
+    molt_runtime_core::call_census::hit(3314);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b32hexdecode_attached_body(_py, data_bits, casefold_bits)
@@ -99,7 +99,7 @@ pub unsafe extern "C" fn molt_base64_b32hexdecode(
 #[unsafe(export_name = "molt_base64_b16encode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_b16encode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3314);
+    molt_runtime_core::call_census::hit(3315);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b16encode_attached_body(_py, data_bits)
@@ -111,7 +111,7 @@ pub unsafe extern "C" fn molt_base64_b16decode(
     data_bits: u64,
     casefold_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3315);
+    molt_runtime_core::call_census::hit(3316);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b16decode_attached_body(_py, data_bits, casefold_bits)
@@ -126,7 +126,7 @@ pub unsafe extern "C" fn molt_base64_a85encode(
     pad_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3316);
+    molt_runtime_core::call_census::hit(3317);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_a85encode_attached_body(
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn molt_base64_a85decode(
     foldspaces_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3317);
+    molt_runtime_core::call_census::hit(3318);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_a85decode_attached_body(_py, data_bits, foldspaces_bits, adobe_bits)
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn molt_base64_b85encode(
     data_bits: u64,
     pad_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3318);
+    molt_runtime_core::call_census::hit(3319);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b85encode_attached_body(_py, data_bits, pad_bits)
@@ -166,7 +166,7 @@ pub unsafe extern "C" fn molt_base64_b85encode(
 #[unsafe(export_name = "molt_base64_b85decode__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_b85decode(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3319);
+    molt_runtime_core::call_census::hit(3320);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_b85decode_attached_body(_py, data_bits)
@@ -174,7 +174,7 @@ pub unsafe extern "C" fn molt_base64_b85decode(__context: u64, data_bits: u64) -
 #[unsafe(export_name = "molt_base64_encodebytes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_encodebytes(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3320);
+    molt_runtime_core::call_census::hit(3321);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_encodebytes_attached_body(_py, data_bits)
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn molt_base64_encodebytes(__context: u64, data_bits: u64)
 #[unsafe(export_name = "molt_base64_decodebytes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_base64_decodebytes(__context: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3321);
+    molt_runtime_core::call_census::hit(3322);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_base64_decodebytes_attached_body(_py, data_bits)

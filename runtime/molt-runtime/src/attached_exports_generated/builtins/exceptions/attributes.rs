@@ -11,6 +11,18 @@ pub unsafe extern "C" fn molt_exception_member_get(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_get_attached_body(_py, descriptor, instance)
 }
+#[unsafe(export_name = "molt_exception_field_get__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_exception_field_get(
+    __context: u64,
+    exception_bits: u64,
+    field_tag: u64,
+) -> u64 {
+    molt_runtime_core::call_census::hit(665);
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_exception_field_get_attached_body(_py, exception_bits, field_tag)
+}
 #[unsafe(export_name = "molt_exception_member_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_exception_member_set(
@@ -19,7 +31,7 @@ pub unsafe extern "C" fn molt_exception_member_set(
     instance: u64,
     value: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(665);
+    molt_runtime_core::call_census::hit(666);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_set_attached_body(_py, descriptor, instance, value)
@@ -31,7 +43,7 @@ pub unsafe extern "C" fn molt_exception_member_delete(
     descriptor: u64,
     instance: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(666);
+    molt_runtime_core::call_census::hit(667);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_member_delete_attached_body(_py, descriptor, instance)

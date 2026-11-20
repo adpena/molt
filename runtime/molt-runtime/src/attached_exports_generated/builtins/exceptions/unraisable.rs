@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_unraisable_hook_args_is_exact__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_unraisable_hook_args_is_exact(__context: u64, bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(692);
+    molt_runtime_core::call_census::hit(693);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_unraisable_hook_args_is_exact_attached_body(_py, bits)

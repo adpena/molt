@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_html_escape__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_escape(__context: u64, text_bits: u64, quote_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3632);
+    molt_runtime_core::call_census::hit(3633);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_escape_attached_body(_py, text_bits, quote_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_html_escape(__context: u64, text_bits: u64, quote_
 #[unsafe(export_name = "molt_html_unescape__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_unescape(__context: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3633);
+    molt_runtime_core::call_census::hit(3634);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_unescape_attached_body(_py, text_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_html_unescape(__context: u64, text_bits: u64) -> u
 #[unsafe(export_name = "molt_html_parser_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_parser_new(__context: u64, convert_charrefs_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3634);
+    molt_runtime_core::call_census::hit(3635);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_parser_new_attached_body(_py, convert_charrefs_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_html_parser_feed(
     handle_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3635);
+    molt_runtime_core::call_census::hit(3636);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_parser_feed_attached_body(_py, handle_bits, data_bits)
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn molt_html_parser_feed(
 #[unsafe(export_name = "molt_html_parser_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_parser_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3636);
+    molt_runtime_core::call_census::hit(3637);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_parser_close_attached_body(_py, handle_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_html_parser_close(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_html_parser_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_parser_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3637);
+    molt_runtime_core::call_census::hit(3638);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_parser_drop_attached_body(_py, handle_bits)
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_html_parser_drop(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_html_entities_html5__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_entities_html5(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3638);
+    molt_runtime_core::call_census::hit(3639);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_entities_html5_attached_body(_py)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_html_entities_html5(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_html_entities_codepoint2name__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_entities_codepoint2name(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3639);
+    molt_runtime_core::call_census::hit(3640);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_entities_codepoint2name_attached_body(_py)
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn molt_html_entities_codepoint2name(__context: u64) -> u6
 #[unsafe(export_name = "molt_html_entities_name2codepoint__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_html_entities_name2codepoint(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3640);
+    molt_runtime_core::call_census::hit(3641);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_html_entities_name2codepoint_attached_body(_py)

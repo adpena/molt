@@ -7,7 +7,7 @@ pub unsafe extern "C" fn molt_dataclasses_set_init_template(
     schema: u64,
     factory: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1570);
+    molt_runtime_core::call_census::hit(1571);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_set_init_template_attached_body(_py, class, schema, factory)
@@ -15,7 +15,7 @@ pub unsafe extern "C" fn molt_dataclasses_set_init_template(
 #[unsafe(export_name = "molt_dataclasses_init_globals__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dataclasses_init_globals(__context: u64, module: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1571);
+    molt_runtime_core::call_census::hit(1572);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_init_globals_attached_body(_py, module)
@@ -28,7 +28,7 @@ pub unsafe extern "C" fn molt_dataclasses_init(
     schema: u64,
     spec: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1572);
+    molt_runtime_core::call_census::hit(1573);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_init_attached_body(_py, class, schema, spec)
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn molt_dataclasses_init_trampoline(
     argv: u64,
     argc: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1573);
+    molt_runtime_core::call_census::hit(1574);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_init_trampoline_attached_body(_py, closure, argv, argc)

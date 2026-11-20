@@ -137,6 +137,17 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
+        elif op.kind == FrontendKinds.EXCEPTION_FIELD_GET:
+            obj, member_tag, attr = op.args
+            ctx.json_ops.append(
+                {
+                    "kind": "exception_field_get",
+                    "args": [obj.name],
+                    "value": member_tag,
+                    "s_value": attr,
+                    "out": op.result.name,
+                }
+            )
         elif op.kind == FrontendKinds.GETATTR:
             obj, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)

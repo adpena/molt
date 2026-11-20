@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_xml_element_tag__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_tag(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3609);
+    molt_runtime_core::call_census::hit(3610);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_tag_attached_body(_py, handle_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_xml_element_tag(__context: u64, handle_bits: u64) 
 #[unsafe(export_name = "molt_xml_element_text__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_text(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3610);
+    molt_runtime_core::call_census::hit(3611);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_text_attached_body(_py, handle_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_xml_element_text(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_xml_element_tail__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_tail(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3611);
+    molt_runtime_core::call_census::hit(3612);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_tail_attached_body(_py, handle_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_xml_element_tail(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_xml_element_attrib_items__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_attrib_items(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3612);
+    molt_runtime_core::call_census::hit(3613);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_attrib_items_attached_body(_py, handle_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_xml_element_attrib_items(__context: u64, handle_bi
 #[unsafe(export_name = "molt_xml_element_children__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_children(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3613);
+    molt_runtime_core::call_census::hit(3614);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_children_attached_body(_py, handle_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_xml_element_children(__context: u64, handle_bits: 
 #[unsafe(export_name = "molt_xml_element_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_element_drop(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3614);
+    molt_runtime_core::call_census::hit(3615);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_element_drop_attached_body(_py, handle_bits)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_xml_element_drop(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_xml_fromstring__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_xml_fromstring(__context: u64, xml_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(3615);
+    molt_runtime_core::call_census::hit(3616);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_fromstring_attached_body(_py, xml_bits)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_xml_register_namespace(
     prefix_bits: u64,
     uri_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(3616);
+    molt_runtime_core::call_census::hit(3617);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_xml_register_namespace_attached_body(_py, prefix_bits, uri_bits)

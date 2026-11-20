@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_ctypes_require_ffi__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ctypes_require_ffi(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2830);
+    molt_runtime_core::call_census::hit(2831);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ctypes_require_ffi_attached_body(_py)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_ctypes_coerce_value(
     ctype_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2831);
+    molt_runtime_core::call_census::hit(2832);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ctypes_coerce_value_attached_body(_py, ctype_bits, value_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_ctypes_coerce_value(
 #[unsafe(export_name = "molt_ctypes_default_value__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ctypes_default_value(__context: u64, ctype_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2832);
+    molt_runtime_core::call_census::hit(2833);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ctypes_default_value_attached_body(_py, ctype_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_ctypes_default_value(__context: u64, ctype_bits: u
 #[unsafe(export_name = "molt_ctypes_sizeof__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ctypes_sizeof(__context: u64, obj_or_type_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2833);
+    molt_runtime_core::call_census::hit(2834);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ctypes_sizeof_attached_body(_py, obj_or_type_bits)

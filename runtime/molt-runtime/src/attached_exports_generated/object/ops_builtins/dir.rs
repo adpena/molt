@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_object_dir_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_object_dir_method(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2041);
+    molt_runtime_core::call_census::hit(2042);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_object_dir_method_attached_body(_py, self_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_object_dir_method(__context: u64, self_bits: u64) 
 #[unsafe(export_name = "molt_type_dir_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_type_dir_method(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2042);
+    molt_runtime_core::call_census::hit(2043);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_type_dir_method_attached_body(_py, self_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_type_dir_method(__context: u64, self_bits: u64) ->
 #[unsafe(export_name = "molt_dir_builtin__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_dir_builtin(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2043);
+    molt_runtime_core::call_census::hit(2044);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dir_builtin_attached_body(_py, obj_bits)

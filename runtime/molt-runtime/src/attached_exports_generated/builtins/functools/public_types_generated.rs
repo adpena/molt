@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_functools_partial_type__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_functools_partial_type(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(842);
+    molt_runtime_core::call_census::hit(843);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_functools_partial_type_attached_body(_py)

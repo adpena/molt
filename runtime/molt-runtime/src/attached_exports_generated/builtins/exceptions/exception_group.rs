@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_init(
     self_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(667);
+    molt_runtime_core::call_census::hit(668);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_init_attached_body(_py, self_bits, args_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_subgroup(
     self_bits: u64,
     matcher_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(668);
+    molt_runtime_core::call_census::hit(669);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_subgroup_attached_body(_py, self_bits, matcher_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_split(
     self_bits: u64,
     matcher_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(669);
+    molt_runtime_core::call_census::hit(670);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_split_attached_body(_py, self_bits, matcher_bits)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_derive(
     self_bits: u64,
     exceptions_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(670);
+    molt_runtime_core::call_census::hit(671);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_derive_attached_body(_py, self_bits, exceptions_bits)
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_match(
     exc_bits: u64,
     matcher_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(671);
+    molt_runtime_core::call_census::hit(672);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_match_attached_body(_py, exc_bits, matcher_bits)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_exceptiongroup_match(
 #[unsafe(export_name = "molt_exceptiongroup_combine__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_exceptiongroup_combine(__context: u64, list_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(672);
+    molt_runtime_core::call_census::hit(673);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exceptiongroup_combine_attached_body(_py, list_bits)

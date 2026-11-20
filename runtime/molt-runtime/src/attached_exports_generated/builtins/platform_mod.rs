@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_platform_system__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_system(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1268);
+    molt_runtime_core::call_census::hit(1269);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_system_attached_body(_py)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_platform_system(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_machine__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_machine(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1269);
+    molt_runtime_core::call_census::hit(1270);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_machine_attached_body(_py)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_platform_machine(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_processor__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_processor(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1270);
+    molt_runtime_core::call_census::hit(1271);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_processor_attached_body(_py)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_platform_processor(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_architecture__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_architecture(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1271);
+    molt_runtime_core::call_census::hit(1272);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_architecture_attached_body(_py)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_platform_architecture(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_node__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_node(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1272);
+    molt_runtime_core::call_census::hit(1273);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_node_attached_body(_py)
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn molt_platform_node(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_release__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_release(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1273);
+    molt_runtime_core::call_census::hit(1274);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_release_attached_body(_py)
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn molt_platform_release(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_version(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1274);
+    molt_runtime_core::call_census::hit(1275);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_version_attached_body(_py)
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn molt_platform_platform(
     aliased_bits: u64,
     terse_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1275);
+    molt_runtime_core::call_census::hit(1276);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_platform_attached_body(_py, aliased_bits, terse_bits)
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn molt_platform_platform(
 #[unsafe(export_name = "molt_platform_python_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_python_version(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1276);
+    molt_runtime_core::call_census::hit(1277);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_python_version_attached_body(_py)
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn molt_platform_python_version(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_python_version_tuple__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_python_version_tuple(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1277);
+    molt_runtime_core::call_census::hit(1278);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_python_version_tuple_attached_body(_py)
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn molt_platform_python_version_tuple(__context: u64) -> u
 #[unsafe(export_name = "molt_platform_python_implementation__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_python_implementation(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1278);
+    molt_runtime_core::call_census::hit(1279);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_python_implementation_attached_body(_py)
@@ -94,7 +94,7 @@ pub unsafe extern "C" fn molt_platform_python_implementation(__context: u64) -> 
 #[unsafe(export_name = "molt_platform_python_compiler__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_python_compiler(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1279);
+    molt_runtime_core::call_census::hit(1280);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_python_compiler_attached_body(_py)
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn molt_platform_python_compiler(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_platform_uname__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_platform_uname(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1280);
+    molt_runtime_core::call_census::hit(1281);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_platform_uname_attached_body(_py)

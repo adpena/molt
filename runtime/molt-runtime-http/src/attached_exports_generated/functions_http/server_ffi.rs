@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_socketserver_register__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socketserver_register(__context: u64, server_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2885);
+    molt_runtime_core::call_census::hit(2886);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_register_attached_body(_py, server_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_socketserver_register(__context: u64, server_bits:
 #[unsafe(export_name = "molt_socketserver_unregister__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socketserver_unregister(__context: u64, server_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2886);
+    molt_runtime_core::call_census::hit(2887);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_unregister_attached_body(_py, server_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_socketserver_dispatch_begin(
     server_bits: u64,
     request_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2887);
+    molt_runtime_core::call_census::hit(2888);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_dispatch_begin_attached_body(_py, server_bits, request_bits)
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn molt_socketserver_dispatch_poll(
     server_bits: u64,
     request_id_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2888);
+    molt_runtime_core::call_census::hit(2889);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_dispatch_poll_attached_body(_py, server_bits, request_id_bits)
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn molt_socketserver_dispatch_cancel(
     server_bits: u64,
     request_id_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2889);
+    molt_runtime_core::call_census::hit(2890);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_dispatch_cancel_attached_body(_py, server_bits, request_id_bits)
@@ -57,7 +57,7 @@ pub unsafe extern "C" fn molt_socketserver_get_request_poll(
     __context: u64,
     server_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2890);
+    molt_runtime_core::call_census::hit(2891);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_get_request_poll_attached_body(_py, server_bits)
@@ -69,7 +69,7 @@ pub unsafe extern "C" fn molt_socketserver_serve_forever(
     server_bits: u64,
     poll_interval_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2891);
+    molt_runtime_core::call_census::hit(2892);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_serve_forever_attached_body(_py, server_bits, poll_interval_bits)
@@ -77,7 +77,7 @@ pub unsafe extern "C" fn molt_socketserver_serve_forever(
 #[unsafe(export_name = "molt_socketserver_handle_request__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socketserver_handle_request(__context: u64, server_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2892);
+    molt_runtime_core::call_census::hit(2893);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_handle_request_attached_body(_py, server_bits)
@@ -85,7 +85,7 @@ pub unsafe extern "C" fn molt_socketserver_handle_request(__context: u64, server
 #[unsafe(export_name = "molt_socketserver_shutdown__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socketserver_shutdown(__context: u64, server_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2893);
+    molt_runtime_core::call_census::hit(2894);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_socketserver_shutdown_attached_body(_py, server_bits)
@@ -96,7 +96,7 @@ pub unsafe extern "C" fn molt_http_server_handle_one_request(
     __context: u64,
     handler_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2894);
+    molt_runtime_core::call_census::hit(2895);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_handle_one_request_attached_body(_py, handler_bits)
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn molt_http_server_send_response(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2895);
+    molt_runtime_core::call_census::hit(2896);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_send_response_attached_body(_py, handler_bits, code_bits, message_bits)
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn molt_http_server_send_response_only(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2896);
+    molt_runtime_core::call_census::hit(2897);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_send_response_only_attached_body(_py, handler_bits, code_bits, message_bits)
@@ -135,7 +135,7 @@ pub unsafe extern "C" fn molt_http_server_send_header(
     keyword_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2897);
+    molt_runtime_core::call_census::hit(2898);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_send_header_attached_body(_py, handler_bits, keyword_bits, value_bits)
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn molt_http_server_send_header(
 #[unsafe(export_name = "molt_http_server_end_headers__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_http_server_end_headers(__context: u64, handler_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2898);
+    molt_runtime_core::call_census::hit(2899);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_end_headers_attached_body(_py, handler_bits)
@@ -156,7 +156,7 @@ pub unsafe extern "C" fn molt_http_server_send_error(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2899);
+    molt_runtime_core::call_census::hit(2900);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_send_error_attached_body(_py, handler_bits, code_bits, message_bits)
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn molt_http_server_version_string(
     server_version_bits: u64,
     sys_version_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2900);
+    molt_runtime_core::call_census::hit(2901);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_version_string_attached_body(_py, server_version_bits, sys_version_bits)
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn molt_http_server_date_time_string(
     __context: u64,
     timestamp_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(2901);
+    molt_runtime_core::call_census::hit(2902);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_server_date_time_string_attached_body(_py, timestamp_bits)
@@ -187,7 +187,7 @@ pub unsafe extern "C" fn molt_http_server_date_time_string(
 #[unsafe(export_name = "molt_http_status_reason__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_http_status_reason(__context: u64, code_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2902);
+    molt_runtime_core::call_census::hit(2903);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_status_reason_attached_body(_py, code_bits)
@@ -195,7 +195,7 @@ pub unsafe extern "C" fn molt_http_status_reason(__context: u64, code_bits: u64)
 #[unsafe(export_name = "molt_http_status_constants__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_http_status_constants(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2903);
+    molt_runtime_core::call_census::hit(2904);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_status_constants_attached_body(_py)
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn molt_http_status_constants(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_http_status_responses__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_http_status_responses(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2904);
+    molt_runtime_core::call_census::hit(2905);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_http_status_responses_attached_body(_py)

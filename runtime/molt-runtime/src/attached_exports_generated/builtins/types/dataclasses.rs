@@ -11,7 +11,7 @@ pub unsafe extern "C" fn molt_dataclasses_make_dataclass(
     default_field_type_bits: u64,
     _field_class_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1579);
+    molt_runtime_core::call_census::hit(1580);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_make_dataclass_attached_body(
@@ -32,7 +32,7 @@ pub unsafe extern "C" fn molt_dataclasses_set_field_metadata(
     field_bits: u64,
     metadata_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1580);
+    molt_runtime_core::call_census::hit(1581);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_dataclasses_set_field_metadata_attached_body(_py, field_bits, metadata_bits)

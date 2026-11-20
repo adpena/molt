@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_method_hash__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_method_hash(__context: u64, bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2326);
+    molt_runtime_core::call_census::hit(2327);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_method_hash_attached_body(_py, bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_method_hash(__context: u64, bits: u64) -> u64 {
 #[unsafe(export_name = "molt_int_hash_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_hash_method(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2327);
+    molt_runtime_core::call_census::hit(2328);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_hash_method_attached_body(_py, self_bits)
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn molt_int_hash_method(__context: u64, self_bits: u64) ->
 #[unsafe(export_name = "molt_float_hash_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_float_hash_method(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2328);
+    molt_runtime_core::call_census::hit(2329);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_float_hash_method_attached_body(_py, self_bits)
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn molt_float_hash_method(__context: u64, self_bits: u64) 
 #[unsafe(export_name = "molt_str_hash_method__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_str_hash_method(__context: u64, self_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(2329);
+    molt_runtime_core::call_census::hit(2330);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_str_hash_method_attached_body(_py, self_bits)

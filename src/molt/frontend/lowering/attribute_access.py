@@ -17,6 +17,8 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 import ast
 
+from molt.frontend.exception_kinds_generated import EXCEPTION_LAYOUT_MEMBER_TAGS
+
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -944,6 +946,26 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return result
+        layout = (
+            None
+            if generic or method_load
+            else self._builtin_layout_for_value(obj, obj_name)
+        )
+        if layout is not None:
+            member_tag = EXCEPTION_LAYOUT_MEMBER_TAGS[layout.kind].get(node.attr)
+            if member_tag is not None:
+                # A typed member of a proven builtin layout is a load at its
+                # slot (molt-codegen-abi builtin_field); the runtime getter is
+                # the cold edge only (call_anatomy.md 4.5a, "Builtin layouts").
+                result = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_FIELD_GET",
+                        args=[obj, member_tag, node.attr],
+                        result=result,
+                    )
+                )
+                return result
         protected_requirement_bits = self._runtime_protected_attribute_requirement_bits(
             obj,
             node.attr,

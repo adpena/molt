@@ -6,7 +6,7 @@ pub unsafe extern "C" fn molt_shelve_open(
     dbm_handle_bits: u64,
     protocol_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(1313);
+    molt_runtime_core::call_census::hit(1314);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_shelve_open_attached_body(_py, dbm_handle_bits, protocol_bits)
@@ -14,7 +14,7 @@ pub unsafe extern "C" fn molt_shelve_open(
 #[unsafe(export_name = "molt_shelve_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_shelve_close(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1314);
+    molt_runtime_core::call_census::hit(1315);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_shelve_close_attached_body(_py, handle_bits)
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn molt_shelve_close(__context: u64, handle_bits: u64) -> 
 #[unsafe(export_name = "molt_shelve_get_dbm_handle__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_shelve_get_dbm_handle(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1315);
+    molt_runtime_core::call_census::hit(1316);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_shelve_get_dbm_handle_attached_body(_py, handle_bits)
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn molt_shelve_get_dbm_handle(__context: u64, handle_bits:
 #[unsafe(export_name = "molt_shelve_get_protocol__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_shelve_get_protocol(__context: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1316);
+    molt_runtime_core::call_census::hit(1317);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_shelve_get_protocol_attached_body(_py, handle_bits)

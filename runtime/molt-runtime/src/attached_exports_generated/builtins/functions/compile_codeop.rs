@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_compile_builtin(
     dont_inherit_bits: u64,
     optimize_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(764);
+    molt_runtime_core::call_census::hit(765);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_compile_builtin_attached_body(
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn molt_codeop_compile(
     flags_bits: u64,
     incomplete_input_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(765);
+    molt_runtime_core::call_census::hit(766);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codeop_compile_attached_body(
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn molt_codeop_compile_command(
     mode_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    molt_runtime_core::call_census::hit(766);
+    molt_runtime_core::call_census::hit(767);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codeop_compile_command_attached_body(

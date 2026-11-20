@@ -251,7 +251,7 @@ class MoltValue:
     type_hint: TypeHint = "Unknown"
     # Concrete runtime class identity proven by the operation that produced
     # this value.  Unlike ``type_hint``, this may authorize fixed-layout access.
-    exact_class: ClassId | None = None
+    exact_class: ExactFact | None = None
     # Exact identity is a temporal fact.  A callback or other invalidating
     # boundary advances the generator token, making already-held values stale.
     exact_class_token: int | None = None
@@ -264,9 +264,24 @@ class MoltValue:
     borrows_binding: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class BuiltinLayout:
+    """A value's proven builtin layout (`ExceptionLayoutKind` name): a builtin
+    tag construction produced it. It fixes typed member slots, not the exact
+    class (errno promotion may pick an OSError subclass), and no `__class__`
+    store can change a builtin exception's layout (call_anatomy.md 4.5a,
+    "Builtin layouts")."""
+
+    kind: str
+
+
+# A lowered value's exact-identity fact: a user class, or a builtin layout.
+type ExactFact = ClassId | BuiltinLayout
+
+
 @dataclass(frozen=True)
 class ExactClassFact:
-    class_id: ClassId
+    class_id: ExactFact
     token: int
     # The fact survived a callback (no ``__class__`` writer in the closed
     # graph): it proves the class, which fixes field offsets. A callback may

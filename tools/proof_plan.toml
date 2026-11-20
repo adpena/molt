@@ -5476,7 +5476,7 @@ globs = [
   "src/molt/frontend/_types.py",
   "runtime/molt-runtime/src/object/type_ids.rs",
   "runtime/molt-runtime/src/builtins/exceptions.rs",
-  "runtime/molt-obj-model/src/exception_layout.rs",
+  "runtime/molt-codegen-abi/src/exception_layout.rs",
   "src/molt/rust_source_scan.py",
   # #5 C-API module slots have two maintained header consumers.
   "include/molt/Python.h",

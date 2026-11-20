@@ -2,7 +2,7 @@
 #[unsafe(export_name = "molt_types_coroutine__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_coroutine(__context: u64, func_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1632);
+    molt_runtime_core::call_census::hit(1633);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_coroutine_attached_body(_py, func_bits)
@@ -10,7 +10,7 @@ pub unsafe extern "C" fn molt_types_coroutine(__context: u64, func_bits: u64) ->
 #[unsafe(export_name = "molt_types_bootstrap__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_bootstrap(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(1633);
+    molt_runtime_core::call_census::hit(1634);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_bootstrap_attached_body(_py)

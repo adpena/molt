@@ -7494,6 +7494,10 @@
       "context": "Attached",
       "physical_symbol": "molt_exception_enter_handler__molt_context_d1086a27578cda22"
     },
+    "molt_exception_field_get": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_field_get__molt_context_d1086a27578cda22"
+    },
     "molt_exception_frame_origin": {
       "context": "Attached",
       "physical_symbol": "molt_exception_frame_origin__molt_context_d1086a27578cda22"
@@ -19333,6 +19337,7 @@
     "exception_context_set": "molt_exception_context_set__molt_context_d1086a27578cda22",
     "exception_current": "molt_exception_current__molt_context_d1086a27578cda22",
     "exception_enter_handler": "molt_exception_enter_handler__molt_context_d1086a27578cda22",
+    "exception_field_get": "molt_exception_field_get__molt_context_d1086a27578cda22",
     "exception_frame_origin": "molt_exception_frame_origin__molt_context_d1086a27578cda22",
     "exception_init": "molt_exception_init__molt_context_d1086a27578cda22",
     "exception_kind": "molt_exception_kind__molt_context_d1086a27578cda22",
@@ -22066,6 +22071,7 @@
     "molt_exception_context_set__molt_context_d1086a27578cda22": "molt_exception_context_set__molt_context_d1086a27578cda22",
     "molt_exception_current__molt_context_d1086a27578cda22": "molt_exception_current__molt_context_d1086a27578cda22",
     "molt_exception_enter_handler__molt_context_d1086a27578cda22": "molt_exception_enter_handler__molt_context_d1086a27578cda22",
+    "molt_exception_field_get__molt_context_d1086a27578cda22": "molt_exception_field_get__molt_context_d1086a27578cda22",
     "molt_exception_frame_origin__molt_context_d1086a27578cda22": "molt_exception_frame_origin__molt_context_d1086a27578cda22",
     "molt_exception_init__molt_context_d1086a27578cda22": "molt_exception_init__molt_context_d1086a27578cda22",
     "molt_exception_init_owned__molt_context_d1086a27578cda22": "molt_exception_init_owned__molt_context_d1086a27578cda22",

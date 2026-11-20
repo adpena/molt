@@ -446,6 +446,9 @@ pub(crate) mod tests {
                 | SiteBody::ModuleImportClosed => {
                     panic!("the model has no module globals for {body:?}")
                 }
+                SiteBody::BuiltinFieldGet { .. } => {
+                    panic!("the model has no exceptions for {body:?}")
+                }
                 SiteBody::MethodSiteLoad | SiteBody::MethodSiteCall { .. } => {
                     panic!("the model has no method sites")
                 }
