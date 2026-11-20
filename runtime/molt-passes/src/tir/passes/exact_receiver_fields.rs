@@ -76,9 +76,7 @@ pub fn run(func: &mut TirFunction, table: &ClassFieldSlots) -> usize {
                 {
                     (OpKind::Store, &[0, 1])
                 }
-                Some(OpKind::GuardedFieldSet) if op.operands.len() == 3 => {
-                    (OpKind::Store, &[0, 2])
-                }
+                Some(OpKind::GuardedFieldSet) if op.operands.len() == 3 => (OpKind::Store, &[0, 2]),
                 _ => continue,
             };
             let Some(TirType::Class(class)) = exact.get(&op.operands[0]) else {

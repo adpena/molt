@@ -51,8 +51,9 @@ pub(super) fn annotate_lowered_op(
         opir.class_definition = Some(symbol.clone());
     }
     // A class definition stamp's exact field slots ride with its class.
-    if let Some(AttrValue::Bytes(bytes)) =
-        tir_op.attrs.get(molt_ir::class_identity::EXACT_FIELD_SLOTS_ATTR)
+    if let Some(AttrValue::Bytes(bytes)) = tir_op
+        .attrs
+        .get(molt_ir::class_identity::EXACT_FIELD_SLOTS_ATTR)
     {
         opir.exact_field_slots = Some(
             molt_ir::class_identity::decode_field_slots(bytes)

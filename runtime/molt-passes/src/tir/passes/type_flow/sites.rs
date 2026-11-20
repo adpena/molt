@@ -173,7 +173,9 @@ pub(super) fn unknown_callee_count(func: &TirFunction) -> usize {
 /// The unknown-callee sites of `func` by operation kind (its original kind,
 /// else its opcode): which call forms the type flow cannot follow, so the
 /// report ranks the forms to resolve next (design 78, 3.11).
-pub(super) fn unknown_callee_kinds(func: &TirFunction) -> std::collections::BTreeMap<String, usize> {
+pub(super) fn unknown_callee_kinds(
+    func: &TirFunction,
+) -> std::collections::BTreeMap<String, usize> {
     let sites = crate::tir::call_sites::FunctionCallSites::for_function(func);
     let mut kinds = std::collections::BTreeMap::new();
     for (&block, body) in &func.blocks {
@@ -182,9 +184,10 @@ pub(super) fn unknown_callee_kinds(func: &TirFunction) -> std::collections::BTre
                 .at((block, index))
                 .is_some_and(|site| site.target == crate::tir::call_sites::CallSiteTarget::Opaque);
             if opaque {
-                let kind = op
-                    .origin
-                    .map_or_else(|| format!("{:?}", op.opcode), |origin| origin.as_str().to_owned());
+                let kind = op.origin.map_or_else(
+                    || format!("{:?}", op.opcode),
+                    |origin| origin.as_str().to_owned(),
+                );
                 *kinds.entry(kind).or_insert(0) += 1;
             }
         }
