@@ -3662,13 +3662,26 @@ fn alloc_builtin_exception_from_tag_single(_py: &PyToken<'_>, tag: u64, arg_bits
     let Some(class_bits) = builtin_exception_class_for_tag(_py, tag) else {
         return std::ptr::null_mut();
     };
-    if builtin_exception_needs_class_constructor(_py, class_bits) {
+    // The lazy single-argument form stores the argument without a tuple. Only
+    // layouts whose initializer reads that form take it; the others (Unicode
+    // validation, OSError fields, groups) parse a real one-element tuple.
+    let lazy_single = matches!(
+        exception_layout_kind_for_class(_py, class_bits),
+        ExceptionLayoutKind::Base
+            | ExceptionLayoutKind::Syntax
+            | ExceptionLayoutKind::Import
+            | ExceptionLayoutKind::StopIteration
+            | ExceptionLayoutKind::SystemExit
+            | ExceptionLayoutKind::NameError
+            | ExceptionLayoutKind::AttributeError
+    );
+    if !lazy_single {
         let args_ptr = alloc_tuple(_py, &[arg_bits]);
         if args_ptr.is_null() {
             return std::ptr::null_mut();
         }
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
-        let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+        let ptr = alloc_builtin_exception_from_tag(_py, tag, args_bits);
         dec_ref_bits(_py, args_bits);
         return ptr;
     }
@@ -4162,7 +4175,10 @@ pub(crate) unsafe fn exception_set_system_exit_code(
         }
         let mut code_bits = MoltObject::none().bits();
         let args_obj = obj_from_bits(args_bits);
-        if let Some(args_ptr) = args_obj.as_ptr() {
+        if exception_args_is_lazy_single(args_bits) {
+            // One argument is the code itself, as for a one-element tuple.
+            code_bits = exception_args_payload_bits(ptr);
+        } else if let Some(args_ptr) = args_obj.as_ptr() {
             let type_id = object_type_id(args_ptr);
             if type_id == TYPE_ID_TUPLE {
                 code_bits =

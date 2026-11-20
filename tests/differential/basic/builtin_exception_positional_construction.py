@@ -56,6 +56,40 @@ try:
 except TypeError as exc:
     print("decode refused", exc)
 
+try:
+    UnicodeEncodeError("only one")
+except TypeError as exc:
+    print("encode one argument", exc)
+try:
+    UnicodeTranslateError("only one")
+except TypeError as exc:
+    print("translate one argument", exc)
+
+
+class Position:
+    def __index__(self):
+        return 1
+
+
+indexed = UnicodeEncodeError("utf-8", "xy", Position(), 2, "indexed")
+print("encode index positions", indexed.start, indexed.end, type(indexed.start).__name__)
+for label, args in (
+    ("str start", ("utf-8", "x", "bad", 1, "reason")),
+    ("float end", ("utf-8", "x", 0, 1.5, "reason")),
+    ("bad object and reason", ("utf-8", 5, 0, 1, 6)),
+    ("bad start and reason", ("utf-8", "x", "bad", 1, 6)),
+):
+    try:
+        UnicodeEncodeError(*args)
+    except TypeError as exc:
+        print("encode refused", label, exc)
+try:
+    UnicodeDecodeError("utf-8", "not bytes", 0, 1, 6)
+except TypeError as exc:
+    print("decode refused bad object and reason", exc)
+print("one-argument exit code", SystemExit(9).code, SystemExit("bye").code)
+print("one-argument stop value", StopIteration([1]).value)
+
 syntax = SyntaxError("bad", ("file.py", 3, 4, "text\n"))
 print("syntax", syntax.msg, syntax.filename, syntax.lineno, syntax.offset, syntax.text)
 try:
