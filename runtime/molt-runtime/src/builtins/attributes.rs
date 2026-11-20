@@ -1625,10 +1625,10 @@ pub(crate) fn molt_get_attr_name_default_attached_body(
     name: u64,
     default: u64,
 ) -> u64 {
-    // The default is an ordinary value, the missing sentinel included: the
-    // frontend's optional lookups (class patterns, __name__ probes) pass it to
-    // detect absence. builtins.getattr owns "no default given" itself.
     crate::with_attached_entry_nopanic!(_py, py, {
+        if is_missing_bits(py, default) {
+            return molt_get_attr_name_attached_body(py, object, name);
+        }
         match lookup_attribute(py, object, name) {
             AttributeLookup::Found(value) => value,
             AttributeLookup::Missing => {

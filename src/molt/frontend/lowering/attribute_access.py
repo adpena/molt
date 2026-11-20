@@ -406,6 +406,23 @@ class AttributeAccessMixin(GeneratorMixinBase):
         )
         return res
 
+    def _emit_module_attr_get_default_on(
+        self, module_name: str, name: str, default_val: MoltValue
+    ) -> MoltValue:
+        module_val = self._emit_compiler_root(module_name)
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
+        res = MoltValue(self.next_var(), type_hint="Any")
+        self._emit_getattr_name_default(
+            module_val,
+            name_val,
+            default_val,
+            res,
+            literal_name=name,
+            qualified_module_name=module_name,
+        )
+        return res
+
     def _runtime_protected_attribute_requirement_bits(
         self,
         obj: MoltValue,
