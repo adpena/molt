@@ -654,6 +654,37 @@ nothrow method frameless and the inliner spliced it. The probe `total = (total +
 and its binding aliases cost more in the caller's versioned loop than the direct call. The
 rule waits until that loop cost is understood; the patch is kept with the lane's notes.
 
+### 5.8 The measured gate (2026-11-20)
+
+**Coverage.** Across the 22 benchmarks slower than CPython (release LLVM, macOS arm64,
+`MOLT_INLINE_STATS=1`), the type flow resolves 28 call sites and leaves 4,598 with an unknown
+callee; it makes 9 clones, all in `matrix_math` and `object_class_lifecycle`. Most unknown
+sites are not calls but value releases that may run Python (`frame_home_store`, `trace_exit`,
+`store`, `tuple_new`); the Python calls left are polymorphic method sites (`class_hierarchy`),
+calls through the generic binder (`call_bind`) and calls of function objects.
+
+**Time.** The in-process sampler over the same 22 (symbol-keeping builds named with `atos`;
+each benchmark weighted equally) puts 12.9% of samples in compiled code. Generic call entries
+take `call_bind_ic_owned` 52% of `object_class_lifecycle`, `call_loaded_method1` plus
+`load_super_method` 62% of `class_hierarchy`, and `call_func_owned` 35% of `matrix_math`, 34%
+of `heap_canonical_cache` and 28% of `weakref_native`. Object lifecycle (reference counts,
+instance allocation, allocator page work) takes 50% of `struct` and up to 79% of
+`builtin_locals_slice`; by-name attribute access 15% of `heap_canonical_cache`.
+
+**Exact classes in TIR.** The exact solver now carries `Class(id)` from allocations, and the
+type flow clones a function for an exact-class parameter (`ArgKind::Class`). A probe whose
+`driver` calls `norm2(Point(i, i + 1))` gets the clone `norm2__tf_c…`, but the clone compiles
+to the same 1,119 instructions: the frontend lowered `point.x` on an unannotated parameter as
+a by-name read (`get_attr_generic_obj`), because class layouts (field name to offset) exist only
+in the frontend (call_anatomy 4.10, `FieldSlot(ClassId, j)` missing at compile time). A fact
+proven in TIR cannot reach an attribute access the frontend has already lowered by name.
+
+**Order.** Facts first: class layouts as a typed TIR table (one authority, from the frontend's
+class model), so any attribute access on a receiver TIR proves exact becomes a field load or
+store; then call resolution (union dispatch for polymorphic method sites, function-object calls
+of proven functions). Object lifecycle (inline allocation, reference-count elimination,
+scalar replacement) follows, since its facts are the same exact classes.
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed

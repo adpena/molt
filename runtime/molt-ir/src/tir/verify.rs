@@ -129,9 +129,12 @@ fn verify_entry_block(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | TirType::F64
                 | TirType::Str
                 | TirType::None
+                // A type flow class context (design 78, 3.2): an instance of
+                // exactly one class statement.
+                | TirType::Class(_)
         ) {
             errors.push(VerifyError::func(format!(
-                "exact_param_types holds {ty:?}, which is not an exact scalar"
+                "exact_param_types holds {ty:?}, which is neither an exact scalar nor an exact class"
             )));
         }
     }

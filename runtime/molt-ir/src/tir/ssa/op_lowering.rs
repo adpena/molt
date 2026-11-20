@@ -205,6 +205,12 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.class_definition {
             attrs.insert("class_definition".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(slots) = &op.exact_field_slots {
+            attrs.insert(
+                crate::class_identity::EXACT_FIELD_SLOTS_ATTR.into(),
+                AttrValue::Bytes(crate::class_identity::encode_field_slots(slots)),
+            );
+        }
         if op.runtime_requirement_bits != 0 {
             attrs.insert(
                 "runtime_requirement_bits".into(),

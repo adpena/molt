@@ -1773,7 +1773,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
     assert imports["socket_drop"].get("callable_result", "i64") == "i64"
     assert imports["stream_close"].get("callable_result", "i64") == "i64"
-    assert imports["future_features"]["runtime_name"] == "molt_future_features"
     assert imports["site_help0"]["callable_arity"] == 0
     assert imports["site_help1"]["callable_arity"] == 1
     assert imports["load_intrinsic_runtime"]["runtime_name"] == (
@@ -3059,7 +3058,7 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
         required.update(
             re.findall(r"""_require_intrinsic\(\s*["'](molt_\w+)["']""", source)
         )
-    assert {"molt_asyncgen_hooks_get", "molt_future_features"} <= required
+    assert {"molt_asyncgen_hooks_get", "molt_sys_intern"} <= required
     assert required <= import_by_runtime_name.keys()
     stripped = sorted(
         name

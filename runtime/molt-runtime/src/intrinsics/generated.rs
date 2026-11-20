@@ -11298,14 +11298,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_keyword_issoftkeyword),
     },
     IntrinsicSpec {
-        name: "molt_future_features",
-        symbol: "molt_future_features",
-        arity: 0,
-        defaults: &[],
-        public: None,
-        callable: Some(crate::builtins::functions::RuntimeCallable::molt_future_features),
-    },
-    IntrinsicSpec {
         name: "molt_types_bootstrap",
         symbol: "molt_types_bootstrap",
         arity: 0,
@@ -18859,4 +18851,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x68773b8a522ae993;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x4055381ee16944f7;

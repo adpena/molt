@@ -2690,26 +2690,21 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         let dict = obj_from_bits(unsafe { crate::module_dict_bits(sys_ptr) })
             .as_ptr()
             .unwrap();
-        let version_key = crate::dynamic_attr_name_bits(py, b"version_info").unwrap();
-        let implementation_key = crate::dynamic_attr_name_bits(py, b"implementation").unwrap();
+        let hexversion_key = crate::dynamic_attr_name_bits(py, b"hexversion").unwrap();
+        let version_key = crate::dynamic_attr_name_bits(py, b"version").unwrap();
         let path_key = crate::dynamic_attr_name_bits(py, b"path").unwrap();
         let stdout_key = crate::dynamic_attr_name_bits(py, b"stdout").unwrap();
         let marker =
             MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(82).bits()])).bits();
         unsafe {
             assert!(
-                crate::dict_get_in_place(py, dict, version_key)
+                crate::dict_get_in_place(py, dict, hexversion_key)
                     .expect("dictionary lookup succeeds")
                     .is_some()
             );
-            crate::dict_del_in_place(py, dict, version_key).expect("operation succeeds");
+            crate::dict_del_in_place(py, dict, hexversion_key).expect("operation succeeds");
             crate::dict_del_in_place(py, dict, stdout_key).expect("operation succeeds");
-            assert!(crate::dict_set_in_place(
-                py,
-                dict,
-                implementation_key,
-                marker
-            ));
+            assert!(crate::dict_set_in_place(py, dict, version_key, marker));
             assert!(crate::dict_set_in_place(py, dict, path_key, marker));
         }
         assert!(!exception_pending(py));
@@ -2773,7 +2768,7 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         assert!(!exception_pending(py));
         unsafe {
             assert!(
-                crate::dict_get_in_place(py, dict, version_key)
+                crate::dict_get_in_place(py, dict, hexversion_key)
                     .expect("dictionary lookup succeeds")
                     .is_none()
             );
@@ -2783,7 +2778,7 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
                     .is_none()
             );
             assert_eq!(
-                crate::dict_get_in_place(py, dict, implementation_key)
+                crate::dict_get_in_place(py, dict, version_key)
                     .expect("dictionary lookup succeeds"),
                 Some(marker)
             );
@@ -2795,8 +2790,8 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         for bits in [
             release,
             marker,
+            hexversion_key,
             version_key,
-            implementation_key,
             path_key,
             stdout_key,
             reimported,
