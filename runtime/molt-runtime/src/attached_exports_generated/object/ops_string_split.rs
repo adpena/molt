@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_string_partition(
     hay_bits: u64,
     sep_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2481);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_partition_attached_body(_py, hay_bits, sep_bits)
@@ -17,6 +18,7 @@ pub unsafe extern "C" fn molt_string_rpartition(
     hay_bits: u64,
     sep_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2482);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rpartition_attached_body(_py, hay_bits, sep_bits)
@@ -28,6 +30,7 @@ pub unsafe extern "C" fn molt_string_splitlines(
     hay_bits: u64,
     keepends_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2483);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_splitlines_attached_body(_py, hay_bits, keepends_bits)
@@ -35,6 +38,7 @@ pub unsafe extern "C" fn molt_string_splitlines(
 #[unsafe(export_name = "molt_string_split__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_split(__context: u64, hay_bits: u64, needle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2484);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_attached_body(_py, hay_bits, needle_bits)
@@ -46,6 +50,7 @@ pub unsafe extern "C" fn molt_string_split_validate(
     hay_bits: u64,
     needle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2485);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_validate_attached_body(_py, hay_bits, needle_bits)
@@ -58,6 +63,7 @@ pub unsafe extern "C" fn molt_string_split_field(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2486);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -70,6 +76,7 @@ pub unsafe extern "C" fn molt_string_split_field_len(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2487);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_len_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -83,6 +90,7 @@ pub unsafe extern "C" fn molt_string_split_field_eq(
     index_bits: u64,
     expected_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2488);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_eq_attached_body(_py, hay_bits, needle_bits, index_bits, expected_bits)
@@ -95,6 +103,7 @@ pub unsafe extern "C" fn molt_string_split_field_start(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2489);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_start_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -107,6 +116,7 @@ pub unsafe extern "C" fn molt_string_split_field_end(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2490);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_end_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -119,6 +129,7 @@ pub unsafe extern "C" fn molt_string_split_field_is_ascii(
     needle_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2491);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_is_ascii_attached_body(_py, hay_bits, needle_bits, index_bits)
@@ -132,6 +143,7 @@ pub unsafe extern "C" fn molt_string_split_field_len_from_bounds(
     end_bits: u64,
     is_ascii_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2492);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_len_from_bounds_attached_body(
@@ -152,6 +164,7 @@ pub unsafe extern "C" fn molt_string_split_field_ord_at_bounds(
     is_ascii_bits: u64,
     index_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2493);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_ord_at_bounds_attached_body(
@@ -171,6 +184,7 @@ pub unsafe extern "C" fn molt_string_split_max(
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2494);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)
@@ -182,6 +196,7 @@ pub unsafe extern "C" fn molt_string_rsplit(
     hay_bits: u64,
     needle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2495);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rsplit_attached_body(_py, hay_bits, needle_bits)
@@ -194,6 +209,7 @@ pub unsafe extern "C" fn molt_string_rsplit_max(
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2496);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_rsplit_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)

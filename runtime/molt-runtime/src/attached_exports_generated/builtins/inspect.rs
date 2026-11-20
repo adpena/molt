@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_inspect_signature_data__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_signature_data(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(869);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_signature_data_attached_body(_py, obj_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_inspect_signature_data(__context: u64, obj_bits: u
 #[unsafe(export_name = "molt_inspect_cleandoc__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_cleandoc(__context: u64, doc_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(870);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_cleandoc_attached_body(_py, doc_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_inspect_cleandoc(__context: u64, doc_bits: u64) ->
 #[unsafe(export_name = "molt_inspect_currentframe__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_currentframe(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(871);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_currentframe_attached_body(_py)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_inspect_currentframe(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_inspect_getdoc__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_getdoc(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(872);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_getdoc_attached_body(_py, obj_bits)
@@ -34,6 +38,7 @@ pub unsafe extern "C" fn molt_inspect_getmembers(
     obj_bits: u64,
     predicate_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(873);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_getmembers_attached_body(_py, obj_bits, predicate_bits)
@@ -41,6 +46,7 @@ pub unsafe extern "C" fn molt_inspect_getmembers(
 #[unsafe(export_name = "molt_inspect_isfunction__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_isfunction(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(874);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_isfunction_attached_body(_py, obj_bits)
@@ -48,6 +54,7 @@ pub unsafe extern "C" fn molt_inspect_isfunction(__context: u64, obj_bits: u64) 
 #[unsafe(export_name = "molt_inspect_isclass__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_isclass(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(875);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_isclass_attached_body(_py, obj_bits)
@@ -55,6 +62,7 @@ pub unsafe extern "C" fn molt_inspect_isclass(__context: u64, obj_bits: u64) -> 
 #[unsafe(export_name = "molt_inspect_ismodule__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_ismodule(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(876);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_ismodule_attached_body(_py, obj_bits)
@@ -62,6 +70,7 @@ pub unsafe extern "C" fn molt_inspect_ismodule(__context: u64, obj_bits: u64) ->
 #[unsafe(export_name = "molt_inspect_iscoroutine__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_iscoroutine(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(877);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_iscoroutine_attached_body(_py, obj_bits)
@@ -69,6 +78,7 @@ pub unsafe extern "C" fn molt_inspect_iscoroutine(__context: u64, obj_bits: u64)
 #[unsafe(export_name = "molt_inspect_iscoroutinefunction__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_iscoroutinefunction(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(878);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_iscoroutinefunction_attached_body(_py, obj_bits)
@@ -76,6 +86,7 @@ pub unsafe extern "C" fn molt_inspect_iscoroutinefunction(__context: u64, obj_bi
 #[unsafe(export_name = "molt_inspect_isasyncgenfunction__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_isasyncgenfunction(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(879);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_isasyncgenfunction_attached_body(_py, obj_bits)
@@ -83,6 +94,7 @@ pub unsafe extern "C" fn molt_inspect_isasyncgenfunction(__context: u64, obj_bit
 #[unsafe(export_name = "molt_inspect_isgeneratorfunction__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_isgeneratorfunction(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(880);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_isgeneratorfunction_attached_body(_py, obj_bits)
@@ -90,6 +102,7 @@ pub unsafe extern "C" fn molt_inspect_isgeneratorfunction(__context: u64, obj_bi
 #[unsafe(export_name = "molt_inspect_isnativeawaitable__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_isnativeawaitable(__context: u64, obj_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(881);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_isnativeawaitable_attached_body(_py, obj_bits)
@@ -97,6 +110,7 @@ pub unsafe extern "C" fn molt_inspect_isnativeawaitable(__context: u64, obj_bits
 #[unsafe(export_name = "molt_inspect_getgeneratorstate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_getgeneratorstate(__context: u64, gen_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(882);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_getgeneratorstate_attached_body(_py, gen_bits)
@@ -104,6 +118,7 @@ pub unsafe extern "C" fn molt_inspect_getgeneratorstate(__context: u64, gen_bits
 #[unsafe(export_name = "molt_inspect_getasyncgenstate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_getasyncgenstate(__context: u64, agen_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(883);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_getasyncgenstate_attached_body(_py, agen_bits)
@@ -111,6 +126,7 @@ pub unsafe extern "C" fn molt_inspect_getasyncgenstate(__context: u64, agen_bits
 #[unsafe(export_name = "molt_inspect_getcoroutinestate__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_inspect_getcoroutinestate(__context: u64, coro_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(884);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_inspect_getcoroutinestate_attached_body(_py, coro_bits)

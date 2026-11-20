@@ -1428,6 +1428,18 @@ fail closed; the inventory itself makes no claim about current file bytes.
   you need compiler-side hotspots.
 - Use `--molt-profile` to enable runtime counters (`MOLT_PROFILE=1`) and capture
   allocation/dispatch metrics in the manifest.
+- `MOLT_RUNTIME_CALL_CENSUS=1` at build time compiles the runtime with the
+  `call-census` feature: every attached entry compiled code calls counts its
+  calls, and the program writes the counts at exit to
+  `MOLT_RUNTIME_CALL_CENSUS_FILE`. Judge a lowering by the runtime calls it
+  executes per iteration (call_anatomy 4.5a), not by static call sites.
+- `MOLT_RUNTIME_PC_SAMPLER=1` at build time compiles the `pc-sampler` feature:
+  the program samples its own pc and seven frame-pointer return addresses every
+  100 us with `ITIMER_PROF`, names each address with `dladdr` at exit, and
+  writes the samples to `MOLT_RUNTIME_PC_SAMPLER_FILE`. It needs no macOS
+  permission. macOS delivers the signal at kernel exit, so samples gather on
+  syscall return sites: confirm a hot syscall against `/usr/bin/time` sys time
+  before reporting it.
 - Runtime microbenchmarks that make steady-state allocation, GC, or contention
   claims must bracket each measured phase with the profiling epoch intrinsics.
   The emitted `molt_profile_epoch_json` records process-wide counter deltas and

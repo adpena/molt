@@ -59,6 +59,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime-compression/src/attached_exports_generated/zipfile.rs" merge=binary
 "/runtime/molt-runtime-compression/src/attached_exports_generated/zlib.rs" merge=binary
 "/runtime/molt-runtime-core/src/bridge_test_stubs.rs" merge=binary
+"/runtime/molt-runtime-core/src/call_census_names_generated.rs" merge=binary
 "/runtime/molt-runtime-core/src/heap_kinds_generated.rs" merge=binary
 "/runtime/molt-runtime-core/src/host_capabilities_generated.rs" merge=binary
 "/runtime/molt-runtime-core/src/numeric_error_policy_generated.rs" merge=binary

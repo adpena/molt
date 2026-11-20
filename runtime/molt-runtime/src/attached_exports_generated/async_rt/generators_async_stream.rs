@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_new(
     reader_bits: u64,
     n_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(230);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_stream_reader_read_new_attached_body(_py, reader_bits, n_bits)
@@ -16,6 +17,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(
     __context: u64,
     obj_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(231);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_stream_reader_read_poll_attached_body(_py, obj_bits) }
@@ -26,6 +28,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_new(
     __context: u64,
     reader_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(232);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_stream_reader_readline_new_attached_body(_py, reader_bits)
@@ -36,6 +39,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(
     __context: u64,
     obj_bits: u64,
 ) -> i64 {
+    molt_runtime_core::call_census::hit(233);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_stream_reader_readline_poll_attached_body(_py, obj_bits) }
@@ -47,6 +51,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_new(
     stream_bits: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(234);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_asyncio_stream_send_all_new_attached_body(_py, stream_bits, data_bits)
@@ -54,6 +59,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_new(
 #[unsafe(export_name = "molt_asyncio_stream_send_all_poll__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(__context: u64, obj_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(235);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_asyncio_stream_send_all_poll_attached_body(_py, obj_bits) }

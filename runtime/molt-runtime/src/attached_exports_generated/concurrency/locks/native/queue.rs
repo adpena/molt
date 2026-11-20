@@ -3,6 +3,7 @@
 #[unsafe(export_name = "molt_queue_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_new(__context: u64, maxsize_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1778);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_new_attached_body(_py, maxsize_bits) }
@@ -11,6 +12,7 @@ pub unsafe extern "C" fn molt_queue_new(__context: u64, maxsize_bits: u64) -> u6
 #[unsafe(export_name = "molt_queue_lifo_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_lifo_new(__context: u64, maxsize_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1779);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_lifo_new_attached_body(_py, maxsize_bits) }
@@ -19,6 +21,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(__context: u64, maxsize_bits: u64) 
 #[unsafe(export_name = "molt_queue_priority_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_priority_new(__context: u64, maxsize_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1780);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_priority_new_attached_body(_py, maxsize_bits) }
@@ -27,6 +30,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(__context: u64, maxsize_bits: u
 #[unsafe(export_name = "molt_queue_qsize__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_qsize(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1781);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_qsize_attached_body(_py, handle_bits) }
@@ -35,6 +39,7 @@ pub unsafe extern "C" fn molt_queue_qsize(__context: u64, handle_bits: u64) -> u
 #[unsafe(export_name = "molt_queue_empty__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_empty(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1782);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_empty_attached_body(_py, handle_bits) }
@@ -43,6 +48,7 @@ pub unsafe extern "C" fn molt_queue_empty(__context: u64, handle_bits: u64) -> u
 #[unsafe(export_name = "molt_queue_full__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_full(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1783);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_full_attached_body(_py, handle_bits) }
@@ -57,6 +63,7 @@ pub unsafe extern "C" fn molt_queue_put(
     blocking_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1784);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -73,6 +80,7 @@ pub unsafe extern "C" fn molt_queue_get(
     timeout_bits: u64,
     sentinel_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1785);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe {
@@ -87,6 +95,7 @@ pub unsafe extern "C" fn molt_queue_shutdown(
     handle_bits: u64,
     immediate_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1786);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_shutdown_attached_body(_py, handle_bits, immediate_bits) }
@@ -95,6 +104,7 @@ pub unsafe extern "C" fn molt_queue_shutdown(
 #[unsafe(export_name = "molt_queue_is_shutdown__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_is_shutdown(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1787);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_is_shutdown_attached_body(_py, handle_bits) }
@@ -103,6 +113,7 @@ pub unsafe extern "C" fn molt_queue_is_shutdown(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_queue_task_done__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_task_done(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1788);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_task_done_attached_body(_py, handle_bits) }
@@ -111,6 +122,7 @@ pub unsafe extern "C" fn molt_queue_task_done(__context: u64, handle_bits: u64) 
 #[unsafe(export_name = "molt_queue_join__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_join(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1789);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_join_attached_body(_py, handle_bits) }
@@ -119,6 +131,7 @@ pub unsafe extern "C" fn molt_queue_join(__context: u64, handle_bits: u64) -> u6
 #[unsafe(export_name = "molt_queue_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_queue_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1790);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_queue_drop_attached_body(_py, handle_bits) }

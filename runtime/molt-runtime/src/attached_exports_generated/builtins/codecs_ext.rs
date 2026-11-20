@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_codecs_register_error(
     name_bits: u64,
     handler_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(513);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_register_error_attached_body(_py, name_bits, handler_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_codecs_register_error(
 #[unsafe(export_name = "molt_codecs_lookup_error__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_lookup_error(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(514);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_lookup_error_attached_body(_py, name_bits)
@@ -24,6 +26,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_encoder_new(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(515);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_encoder_new_attached_body(_py, encoding_bits, errors_bits)
@@ -36,6 +39,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_encoder_encode(
     input_bits: u64,
     final_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(516);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_encoder_encode_attached_body(_py, handle_bits, input_bits, final_bits)
@@ -46,6 +50,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_encoder_reset(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(517);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_encoder_reset_attached_body(_py, handle_bits)
@@ -56,6 +61,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_encoder_drop(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(518);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_encoder_drop_attached_body(_py, handle_bits)
@@ -67,6 +73,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_decoder_new(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(519);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_decoder_new_attached_body(_py, encoding_bits, errors_bits)
@@ -79,6 +86,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_decoder_decode(
     input_bits: u64,
     final_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(520);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_decoder_decode_attached_body(_py, handle_bits, input_bits, final_bits)
@@ -89,6 +97,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_decoder_reset(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(521);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_decoder_reset_attached_body(_py, handle_bits)
@@ -99,6 +108,7 @@ pub unsafe extern "C" fn molt_codecs_incremental_decoder_drop(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(522);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_incremental_decoder_drop_attached_body(_py, handle_bits)
@@ -111,6 +121,7 @@ pub unsafe extern "C" fn molt_codecs_stream_reader_new(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(523);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_stream_reader_new_attached_body(_py, stream_bits, encoding_bits, errors_bits)
@@ -122,6 +133,7 @@ pub unsafe extern "C" fn molt_codecs_stream_reader_read(
     handle_bits: u64,
     size_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(524);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_stream_reader_read_attached_body(_py, handle_bits, size_bits)
@@ -132,6 +144,7 @@ pub unsafe extern "C" fn molt_codecs_stream_reader_readline(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(525);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_stream_reader_readline_attached_body(_py, handle_bits)
@@ -139,6 +152,7 @@ pub unsafe extern "C" fn molt_codecs_stream_reader_readline(
 #[unsafe(export_name = "molt_codecs_stream_reader_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_stream_reader_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(526);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_stream_reader_drop_attached_body(_py, handle_bits)
@@ -146,6 +160,7 @@ pub unsafe extern "C" fn molt_codecs_stream_reader_drop(__context: u64, handle_b
 #[unsafe(export_name = "molt_codecs_bom_utf8__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_bom_utf8(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(527);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_bom_utf8_attached_body(_py)
@@ -153,6 +168,7 @@ pub unsafe extern "C" fn molt_codecs_bom_utf8(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_codecs_bom_utf16_le__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_bom_utf16_le(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(528);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_bom_utf16_le_attached_body(_py)
@@ -160,6 +176,7 @@ pub unsafe extern "C" fn molt_codecs_bom_utf16_le(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_codecs_bom_utf16_be__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_bom_utf16_be(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(529);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_bom_utf16_be_attached_body(_py)
@@ -167,6 +184,7 @@ pub unsafe extern "C" fn molt_codecs_bom_utf16_be(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_codecs_bom_utf32_le__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_bom_utf32_le(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(530);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_bom_utf32_le_attached_body(_py)
@@ -174,6 +192,7 @@ pub unsafe extern "C" fn molt_codecs_bom_utf32_le(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_codecs_bom_utf32_be__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_bom_utf32_be(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(531);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_bom_utf32_be_attached_body(_py)
@@ -181,6 +200,7 @@ pub unsafe extern "C" fn molt_codecs_bom_utf32_be(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_codecs_charmap_build__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_charmap_build(__context: u64, table_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(532);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_charmap_build_attached_body(_py, table_bits)
@@ -193,6 +213,7 @@ pub unsafe extern "C" fn molt_codecs_charmap_decode(
     errors_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(533);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_charmap_decode_attached_body(_py, input_bits, errors_bits, mapping_bits)
@@ -205,6 +226,7 @@ pub unsafe extern "C" fn molt_codecs_charmap_encode(
     errors_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(534);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_charmap_encode_attached_body(_py, input_bits, errors_bits, mapping_bits)
@@ -212,6 +234,7 @@ pub unsafe extern "C" fn molt_codecs_charmap_encode(
 #[unsafe(export_name = "molt_codecs_make_identity_dict__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_make_identity_dict(__context: u64, range_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(535);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_make_identity_dict_attached_body(_py, range_bits)
@@ -219,6 +242,7 @@ pub unsafe extern "C" fn molt_codecs_make_identity_dict(__context: u64, range_bi
 #[unsafe(export_name = "molt_codecs_normalize_encoding__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_codecs_normalize_encoding(__context: u64, name_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(536);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_codecs_normalize_encoding_attached_body(_py, name_bits)

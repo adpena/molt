@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_fraction_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_new(__context: u64, num_bits: u64, den_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3072);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_new_attached_body(_py, num_bits, den_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_fraction_new(__context: u64, num_bits: u64, den_bi
 #[unsafe(export_name = "molt_fraction_from_float__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_from_float(__context: u64, f_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3073);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_from_float_attached_body(_py, f_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_fraction_from_float(__context: u64, f_bits: u64) -
 #[unsafe(export_name = "molt_fraction_from_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_from_str(__context: u64, s_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3074);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_from_str_attached_body(_py, s_bits)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_fraction_from_str(__context: u64, s_bits: u64) -> 
 #[unsafe(export_name = "molt_fraction_add__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_add(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3075);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_add_attached_body(_py, a_bits, b_bits)
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn molt_fraction_add(__context: u64, a_bits: u64, b_bits: 
 #[unsafe(export_name = "molt_fraction_sub__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_sub(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3076);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_sub_attached_body(_py, a_bits, b_bits)
@@ -37,6 +42,7 @@ pub unsafe extern "C" fn molt_fraction_sub(__context: u64, a_bits: u64, b_bits: 
 #[unsafe(export_name = "molt_fraction_mul__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_mul(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3077);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_mul_attached_body(_py, a_bits, b_bits)
@@ -44,6 +50,7 @@ pub unsafe extern "C" fn molt_fraction_mul(__context: u64, a_bits: u64, b_bits: 
 #[unsafe(export_name = "molt_fraction_truediv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_truediv(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3078);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_truediv_attached_body(_py, a_bits, b_bits)
@@ -51,6 +58,7 @@ pub unsafe extern "C" fn molt_fraction_truediv(__context: u64, a_bits: u64, b_bi
 #[unsafe(export_name = "molt_fraction_floordiv__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_floordiv(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3079);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_floordiv_attached_body(_py, a_bits, b_bits)
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn molt_fraction_floordiv(__context: u64, a_bits: u64, b_b
 #[unsafe(export_name = "molt_fraction_mod__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_mod(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3080);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_mod_attached_body(_py, a_bits, b_bits)
@@ -65,6 +74,7 @@ pub unsafe extern "C" fn molt_fraction_mod(__context: u64, a_bits: u64, b_bits: 
 #[unsafe(export_name = "molt_fraction_neg__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_neg(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3081);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_neg_attached_body(_py, a_bits)
@@ -72,6 +82,7 @@ pub unsafe extern "C" fn molt_fraction_neg(__context: u64, a_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_fraction_abs__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_abs(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3082);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_abs_attached_body(_py, a_bits)
@@ -79,6 +90,7 @@ pub unsafe extern "C" fn molt_fraction_abs(__context: u64, a_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_fraction_eq__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_eq(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3083);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_eq_attached_body(_py, a_bits, b_bits)
@@ -86,6 +98,7 @@ pub unsafe extern "C" fn molt_fraction_eq(__context: u64, a_bits: u64, b_bits: u
 #[unsafe(export_name = "molt_fraction_lt__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_lt(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3084);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_lt_attached_body(_py, a_bits, b_bits)
@@ -93,6 +106,7 @@ pub unsafe extern "C" fn molt_fraction_lt(__context: u64, a_bits: u64, b_bits: u
 #[unsafe(export_name = "molt_fraction_le__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_le(__context: u64, a_bits: u64, b_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3085);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_le_attached_body(_py, a_bits, b_bits)
@@ -100,6 +114,7 @@ pub unsafe extern "C" fn molt_fraction_le(__context: u64, a_bits: u64, b_bits: u
 #[unsafe(export_name = "molt_fraction_numerator__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_numerator(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3086);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_numerator_attached_body(_py, a_bits)
@@ -107,6 +122,7 @@ pub unsafe extern "C" fn molt_fraction_numerator(__context: u64, a_bits: u64) ->
 #[unsafe(export_name = "molt_fraction_denominator__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_denominator(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3087);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_denominator_attached_body(_py, a_bits)
@@ -114,6 +130,7 @@ pub unsafe extern "C" fn molt_fraction_denominator(__context: u64, a_bits: u64) 
 #[unsafe(export_name = "molt_fraction_to_float__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_to_float(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3088);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_to_float_attached_body(_py, a_bits)
@@ -121,6 +138,7 @@ pub unsafe extern "C" fn molt_fraction_to_float(__context: u64, a_bits: u64) -> 
 #[unsafe(export_name = "molt_fraction_to_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_to_str(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3089);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_to_str_attached_body(_py, a_bits)
@@ -132,6 +150,7 @@ pub unsafe extern "C" fn molt_fraction_limit_denominator(
     a_bits: u64,
     max_den_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3090);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_limit_denominator_attached_body(_py, a_bits, max_den_bits)
@@ -139,6 +158,7 @@ pub unsafe extern "C" fn molt_fraction_limit_denominator(
 #[unsafe(export_name = "molt_fraction_as_integer_ratio__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_as_integer_ratio(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3091);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_as_integer_ratio_attached_body(_py, a_bits)
@@ -146,6 +166,7 @@ pub unsafe extern "C" fn molt_fraction_as_integer_ratio(__context: u64, a_bits: 
 #[unsafe(export_name = "molt_fraction_hash__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_hash(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3092);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_hash_attached_body(_py, a_bits)
@@ -153,6 +174,7 @@ pub unsafe extern "C" fn molt_fraction_hash(__context: u64, a_bits: u64) -> u64 
 #[unsafe(export_name = "molt_fraction_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fraction_drop(__context: u64, a_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3093);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_fraction_drop_attached_body(_py, a_bits)

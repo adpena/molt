@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_ssl_create_default_context__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_create_default_context(__context: u64, purpose_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1404);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_create_default_context_attached_body(_py, purpose_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_ssl_create_default_context(__context: u64, purpose
 #[unsafe(export_name = "molt_ssl_context_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_context_new(__context: u64, protocol_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1405);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_new_attached_body(_py, protocol_bits)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_ssl_context_load_cert_chain(
     certfile_bits: u64,
     keyfile_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1406);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_load_cert_chain_attached_body(_py, handle_bits, certfile_bits, keyfile_bits)
@@ -34,6 +37,7 @@ pub unsafe extern "C" fn molt_ssl_context_load_verify_locations(
     _capath_bits: u64,
     cadata_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1407);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_load_verify_locations_attached_body(
@@ -50,6 +54,7 @@ pub unsafe extern "C" fn molt_ssl_context_set_default_verify_paths(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1408);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_set_default_verify_paths_attached_body(_py, handle_bits)
@@ -61,6 +66,7 @@ pub unsafe extern "C" fn molt_ssl_context_set_ciphers(
     handle_bits: u64,
     cipherstring_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1409);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_set_ciphers_attached_body(_py, handle_bits, cipherstring_bits)
@@ -68,6 +74,7 @@ pub unsafe extern "C" fn molt_ssl_context_set_ciphers(
 #[unsafe(export_name = "molt_ssl_context_get_protocol__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_context_get_protocol(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1410);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_get_protocol_attached_body(_py, handle_bits)
@@ -78,6 +85,7 @@ pub unsafe extern "C" fn molt_ssl_context_check_hostname_get(
     __context: u64,
     handle_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1411);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_check_hostname_get_attached_body(_py, handle_bits)
@@ -89,6 +97,7 @@ pub unsafe extern "C" fn molt_ssl_context_check_hostname_set(
     handle_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1412);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_check_hostname_set_attached_body(_py, handle_bits, value_bits)
@@ -96,6 +105,7 @@ pub unsafe extern "C" fn molt_ssl_context_check_hostname_set(
 #[unsafe(export_name = "molt_ssl_context_verify_mode_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_context_verify_mode_get(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1413);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_verify_mode_get_attached_body(_py, handle_bits)
@@ -107,6 +117,7 @@ pub unsafe extern "C" fn molt_ssl_context_verify_mode_set(
     handle_bits: u64,
     mode_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1414);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_verify_mode_set_attached_body(_py, handle_bits, mode_bits)
@@ -114,6 +125,7 @@ pub unsafe extern "C" fn molt_ssl_context_verify_mode_set(
 #[unsafe(export_name = "molt_ssl_context_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_context_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1415);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_context_drop_attached_body(_py, handle_bits)
@@ -128,6 +140,7 @@ pub unsafe extern "C" fn molt_ssl_wrap_socket(
     server_hostname_bits: u64,
     server_side_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1416);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_wrap_socket_attached_body(
@@ -148,6 +161,7 @@ pub unsafe extern "C" fn molt_ssl_wrap_socket(
     _server_hostname_bits: u64,
     _server_side_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1417);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_wrap_socket_attached_body(
@@ -162,6 +176,7 @@ pub unsafe extern "C" fn molt_ssl_wrap_socket(
 #[unsafe(export_name = "molt_ssl_socket_do_handshake__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_do_handshake(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1418);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_do_handshake_attached_body(_py, handle_bits)
@@ -170,6 +185,7 @@ pub unsafe extern "C" fn molt_ssl_socket_do_handshake(__context: u64, handle_bit
 #[unsafe(export_name = "molt_ssl_socket_do_handshake__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_do_handshake(__context: u64, _handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1419);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_do_handshake_attached_body(_py, _handle_bits)
@@ -182,6 +198,7 @@ pub unsafe extern "C" fn molt_ssl_socket_read(
     handle_bits: u64,
     len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1420);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_read_attached_body(_py, handle_bits, len_bits)
@@ -194,6 +211,7 @@ pub unsafe extern "C" fn molt_ssl_socket_read(
     _handle_bits: u64,
     _len_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1421);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_read_attached_body(_py, _handle_bits, _len_bits)
@@ -206,6 +224,7 @@ pub unsafe extern "C" fn molt_ssl_socket_write(
     handle_bits: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1422);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_write_attached_body(_py, handle_bits, data_bits)
@@ -218,6 +237,7 @@ pub unsafe extern "C" fn molt_ssl_socket_write(
     _handle_bits: u64,
     _data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1423);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_write_attached_body(_py, _handle_bits, _data_bits)
@@ -230,6 +250,7 @@ pub unsafe extern "C" fn molt_ssl_socket_getpeercert(
     handle_bits: u64,
     binary_form_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1424);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_getpeercert_attached_body(_py, handle_bits, binary_form_bits)
@@ -242,6 +263,7 @@ pub unsafe extern "C" fn molt_ssl_socket_getpeercert(
     _handle_bits: u64,
     _binary_form_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1425);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_getpeercert_attached_body(_py, _handle_bits, _binary_form_bits)
@@ -250,6 +272,7 @@ pub unsafe extern "C" fn molt_ssl_socket_getpeercert(
 #[unsafe(export_name = "molt_ssl_socket_cipher__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_cipher(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1426);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_cipher_attached_body(_py, handle_bits)
@@ -258,6 +281,7 @@ pub unsafe extern "C" fn molt_ssl_socket_cipher(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_ssl_socket_cipher__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_cipher(__context: u64, _handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1427);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_cipher_attached_body(_py, _handle_bits)
@@ -266,6 +290,7 @@ pub unsafe extern "C" fn molt_ssl_socket_cipher(__context: u64, _handle_bits: u6
 #[unsafe(export_name = "molt_ssl_socket_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_version(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1428);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_version_attached_body(_py, handle_bits)
@@ -274,6 +299,7 @@ pub unsafe extern "C" fn molt_ssl_socket_version(__context: u64, handle_bits: u6
 #[unsafe(export_name = "molt_ssl_socket_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_version(__context: u64, _handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1429);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_version_attached_body(_py, _handle_bits)
@@ -282,6 +308,7 @@ pub unsafe extern "C" fn molt_ssl_socket_version(__context: u64, _handle_bits: u
 #[unsafe(export_name = "molt_ssl_socket_unwrap__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_unwrap(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1430);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_unwrap_attached_body(_py, handle_bits)
@@ -289,6 +316,7 @@ pub unsafe extern "C" fn molt_ssl_socket_unwrap(__context: u64, handle_bits: u64
 #[unsafe(export_name = "molt_ssl_socket_close__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_close(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1431);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_close_attached_body(_py, handle_bits)
@@ -296,6 +324,7 @@ pub unsafe extern "C" fn molt_ssl_socket_close(__context: u64, handle_bits: u64)
 #[unsafe(export_name = "molt_ssl_socket_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_socket_drop(__context: u64, handle_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1432);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_socket_drop_attached_body(_py, handle_bits)
@@ -303,6 +332,7 @@ pub unsafe extern "C" fn molt_ssl_socket_drop(__context: u64, handle_bits: u64) 
 #[unsafe(export_name = "molt_ssl_protocol_tls_client__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_protocol_tls_client(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1433);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_protocol_tls_client_attached_body(_py)
@@ -310,6 +340,7 @@ pub unsafe extern "C" fn molt_ssl_protocol_tls_client(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_protocol_tls_server__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_protocol_tls_server(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1434);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_protocol_tls_server_attached_body(_py)
@@ -317,6 +348,7 @@ pub unsafe extern "C" fn molt_ssl_protocol_tls_server(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_cert_none__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_cert_none(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1435);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_cert_none_attached_body(_py)
@@ -324,6 +356,7 @@ pub unsafe extern "C" fn molt_ssl_cert_none(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_cert_optional__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_cert_optional(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1436);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_cert_optional_attached_body(_py)
@@ -331,6 +364,7 @@ pub unsafe extern "C" fn molt_ssl_cert_optional(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_cert_required__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_cert_required(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1437);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_cert_required_attached_body(_py)
@@ -338,6 +372,7 @@ pub unsafe extern "C" fn molt_ssl_cert_required(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_has_sni__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_has_sni(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1438);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_has_sni_attached_body(_py)
@@ -345,6 +380,7 @@ pub unsafe extern "C" fn molt_ssl_has_sni(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_ssl_openssl_version__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ssl_openssl_version(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1439);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ssl_openssl_version_attached_body(_py)
