@@ -4584,8 +4584,7 @@ pub(crate) fn molt_exception_new_builtin_kw_attached_body(
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let tag = to_i64(obj_from_bits(tag_bits)).and_then(|tag| u64::try_from(tag).ok());
-        let Some(class_bits) = tag.and_then(|tag| builtin_exception_class_for_tag(_py, tag))
-        else {
+        let Some(class_bits) = tag.and_then(|tag| builtin_exception_class_for_tag(_py, tag)) else {
             return raise_exception::<u64>(
                 _py,
                 BuiltinExc::RuntimeError,
