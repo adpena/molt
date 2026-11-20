@@ -17,7 +17,6 @@ from typing import Literal, Sequence, get_args
 from molt.frontend._types import (
     ActiveException,
     AsyncContextExit,
-    BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS,
     MoltOp,
     MoltValue,
     SyncContextExit,
@@ -96,48 +95,42 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_exception_new_from_args(
         self, kind: str, args: list[MoltValue]
     ) -> MoltValue:
+        """Construct the builtin exception class ``kind`` from positional args.
+
+        The class travels as its `BuiltinExc` tag, never as a spelling: every
+        builtin exception has one (runtime/exception_kinds.toml).
+        """
+        kind_tag = BUILTIN_EXCEPTION_CODES[kind]
+        metadata = {"exception_name": kind, "exception_tag": kind_tag}
         exc_val = MoltValue(self.next_var(), type_hint="exception")
-        if kind_tag := BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS.get(kind):
-            if not args:
-                self.emit(
-                    MoltOp(
-                        kind="EXCEPTION_NEW_BUILTIN_EMPTY",
-                        args=[],
-                        result=exc_val,
-                        metadata={"exception_name": kind, "exception_tag": kind_tag},
-                    )
-                )
-                return exc_val
-            if len(args) == 1:
-                self.emit(
-                    MoltOp(
-                        kind="EXCEPTION_NEW_BUILTIN_ONE",
-                        args=[args[0]],
-                        result=exc_val,
-                        metadata={"exception_name": kind, "exception_tag": kind_tag},
-                    )
-                )
-                return exc_val
-            args_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
+        if not args:
             self.emit(
                 MoltOp(
-                    kind="EXCEPTION_NEW_BUILTIN",
-                    args=[args_val],
+                    kind="EXCEPTION_NEW_BUILTIN_EMPTY",
+                    args=[],
                     result=exc_val,
-                    metadata={"exception_name": kind, "exception_tag": kind_tag},
+                    metadata=metadata,
+                )
+            )
+            return exc_val
+        if len(args) == 1:
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_NEW_BUILTIN_ONE",
+                    args=[args[0]],
+                    result=exc_val,
+                    metadata=metadata,
                 )
             )
             return exc_val
         args_val = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
-        kind_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[kind], result=kind_val))
         self.emit(
             MoltOp(
-                kind="EXCEPTION_NEW",
-                args=[kind_val, args_val],
+                kind="EXCEPTION_NEW_BUILTIN",
+                args=[args_val],
                 result=exc_val,
+                metadata=metadata,
             )
         )
         return exc_val

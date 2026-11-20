@@ -72,14 +72,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.EXCEPTION_NEW:
-            ctx.json_ops.append(
-                {
-                    "kind": "exception_new",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == FrontendKinds.EXCEPTION_NEW_BUILTIN:
             metadata = op.metadata or {}
             ctx.json_ops.append(

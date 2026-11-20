@@ -23,6 +23,7 @@ from molt.cli.models import _SerialFrontendLoweringContext
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
 from molt.target_python import TargetPythonVersion
 from tests.process_guard_common import run_guarded_test_process
 
@@ -505,15 +506,21 @@ def test_module_syntax_error_keeps_native_class_args_and_spans(source) -> None:
     gen = SimpleTIRGenerator(module_name="invalid_module", module_source_role="user")
     gen.visit(tree)
     operations = [op for function in gen.funcs_map.values() for op in function["ops"]]
-    constructors = [op for op in operations if op.kind == "EXCEPTION_NEW"]
-    assert len(constructors) == 1
-    constructor = constructors[0]
-    assert any(
-        op.kind == "CONST_STR"
-        and op.result == constructor.args[0]
-        and op.args == [type(original).__name__]
+    constructors = [
+        op
         for op in operations
-    )
+        if op.kind
+        in {
+            "EXCEPTION_NEW_BUILTIN",
+            "EXCEPTION_NEW_BUILTIN_ONE",
+            "EXCEPTION_NEW_BUILTIN_EMPTY",
+        }
+    ]
+    assert len(constructors) == 1
+    # The class travels as its BuiltinExc tag, never as a spelling.
+    metadata = constructors[0].metadata
+    assert metadata["exception_name"] == type(original).__name__
+    assert metadata["exception_tag"] == BUILTIN_EXCEPTION_CODES[type(original).__name__]
     assert any(op.kind == "RAISE" for op in operations)
 
 

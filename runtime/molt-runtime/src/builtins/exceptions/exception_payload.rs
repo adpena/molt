@@ -276,7 +276,34 @@ impl UnicodeErrorFields {
         if self.owned_object {
             dec_ref_bits(_py, self.object_bits);
         }
+        // Start and end are always converted ints this parse owns.
+        dec_ref_bits(_py, self.start_bits);
+        dec_ref_bits(_py, self.end_bits);
     }
+}
+
+/// CPython parses Unicode error positions with the `n` format: any
+/// `__index__` object, converted to `Py_ssize_t`. Its refusals differ from the
+/// attribute setter's ("an integer is required"). The result is an owned int.
+fn unicode_error_position_arg(_py: &PyToken<'_>, bits: u64) -> Result<u64, ()> {
+    let message = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(_py, obj_from_bits(bits))
+    );
+    let value =
+        crate::builtins::numbers::index_bigint_from_obj(_py, bits, message.as_str()).ok_or(())?;
+    let Some(value) = value.to_isize() else {
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::OverflowError,
+            "Python int too large to convert to C ssize_t",
+        );
+        return Err(());
+    };
+    Ok(crate::builtins::numbers::int_bits_from_i64(
+        _py,
+        value as i64,
+    ))
 }
 
 pub(super) fn unicode_error_fields_from_args(
@@ -320,6 +347,9 @@ pub(super) fn unicode_error_fields_from_args(
                     (elems[0], elems[1], elems[2], elems[3], elems[4], 2)
                 }
             };
+        // CPython's argument order: encode and translate parse `U U n n U`
+        // (encoding, object as str, start, end, reason); decode parses
+        // `U O n n U` and checks the object's buffer after the whole tuple.
         let builtins = builtin_classes(_py);
         if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Decode)
             && !isinstance_bits(_py, encoding_bits, builtins.str)
@@ -331,55 +361,63 @@ pub(super) fn unicode_error_fields_from_args(
             let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
+        if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Translate)
+            && !isinstance_bits(_py, object_bits, builtins.str)
+        {
+            let msg = format!(
+                "argument {object_idx} must be str, not {}",
+                type_name(_py, obj_from_bits(object_bits))
+            );
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
+            return Err(());
+        }
+        let start_bits = unicode_error_position_arg(_py, start_bits)?;
+        let end_bits = match unicode_error_position_arg(_py, end_bits) {
+            Ok(bits) => bits,
+            Err(()) => {
+                dec_ref_bits(_py, start_bits);
+                return Err(());
+            }
+        };
+        let refuse = |message: String| {
+            dec_ref_bits(_py, start_bits);
+            dec_ref_bits(_py, end_bits);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
+            Err(())
+        };
         if !isinstance_bits(_py, reason_bits, builtins.str) {
             let arg_index = match kind {
                 UnicodeErrorKind::Translate => 4,
                 UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
             };
-            let msg = format!(
+            return refuse(format!(
                 "argument {arg_index} must be str, not {}",
                 type_name(_py, obj_from_bits(reason_bits))
-            );
-            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
-            return Err(());
+            ));
         }
         let mut owned_object = false;
-        match kind {
-            UnicodeErrorKind::Decode => {
-                let Some(object_ptr) = obj_from_bits(object_bits).as_ptr() else {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, obj_from_bits(object_bits))
-                    );
-                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
-                    return Err(());
-                };
-                let Some(bytes) = bytes_like_slice(object_ptr) else {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, obj_from_bits(object_bits))
-                    );
-                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
-                    return Err(());
-                };
-                if object_type_id(object_ptr) != crate::TYPE_ID_BYTES {
-                    let bytes_ptr = alloc_bytes(_py, bytes);
-                    if bytes_ptr.is_null() {
-                        return Err(());
-                    }
-                    object_bits = MoltObject::from_ptr(bytes_ptr).bits();
-                    owned_object = true;
-                }
-            }
-            UnicodeErrorKind::Encode | UnicodeErrorKind::Translate => {
-                if !isinstance_bits(_py, object_bits, builtins.str) {
-                    let msg = format!(
-                        "argument {object_idx} must be str, not {}",
-                        type_name(_py, obj_from_bits(object_bits))
-                    );
-                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
+        if matches!(kind, UnicodeErrorKind::Decode) {
+            let not_bytes = || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, obj_from_bits(object_bits))
+                )
+            };
+            let Some(object_ptr) = obj_from_bits(object_bits).as_ptr() else {
+                return refuse(not_bytes());
+            };
+            let Some(bytes) = bytes_like_slice(object_ptr) else {
+                return refuse(not_bytes());
+            };
+            if object_type_id(object_ptr) != crate::TYPE_ID_BYTES {
+                let bytes_ptr = alloc_bytes(_py, bytes);
+                if bytes_ptr.is_null() {
+                    dec_ref_bits(_py, start_bits);
+                    dec_ref_bits(_py, end_bits);
                     return Err(());
                 }
+                object_bits = MoltObject::from_ptr(bytes_ptr).bits();
+                owned_object = true;
             }
         }
         Ok(UnicodeErrorFields {
@@ -411,29 +449,29 @@ pub(crate) fn alloc_exception_from_class_bits(
         if obj_from_bits(args_bits).is_none() {
             return std::ptr::null_mut();
         }
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
+        // A class's layout root is fixed when the class is created and is
+        // inherited, so it answers "is a BaseExceptionGroup / OSError
+        // subclass" with one load instead of an MRO walk.
+        let layout = exception_layout_kind_for_class(_py, class_bits);
+        if layout == ExceptionLayoutKind::Group {
             return alloc_exception_group_from_class_bits(_py, class_bits, args_bits);
         }
-        let oserror_bits = exception_class_bits(_py, BuiltinExc::OSError);
-        let mut oserror_layout = false;
-        if issubclass_bits(class_bits, oserror_bits) {
-            oserror_layout = true;
-            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
+        let oserror_layout = layout == ExceptionLayoutKind::OSError;
+        let stored_args_bits = if oserror_layout {
+            let mut fields = oserror_fields_from_args(_py, class_bits, args_bits);
             // CPython promotes errno only for the canonical exact OSError.
             // Aliases already share that identity; names on subclasses are mutable.
-            if class_bits == oserror_bits
+            if class_bits == exception_class_bits(_py, BuiltinExc::OSError)
                 && let Some(errno_val) = fields.errno_value
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
             {
                 let mapped_bits = exception_class_bits(_py, subclass);
                 if mapped_bits != 0 && obj_from_bits(mapped_bits).as_ptr().is_some() {
                     class_bits = mapped_bits;
+                    // Field parsing depends on the class (exact BlockingIOError).
+                    fields = oserror_fields_from_args(_py, class_bits, args_bits);
                 }
             }
-        }
-        let stored_args_bits = if oserror_layout {
-            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
             let Some(stored) = oserror_stored_args(_py, fields, args_bits) else {
                 dec_ref_bits(_py, args_bits);
                 return std::ptr::null_mut();
