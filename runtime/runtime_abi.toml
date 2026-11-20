@@ -2024,12 +2024,6 @@ runtime_name = "molt_future_cancel_msg"
 callable_arity = 2
 
 [[import]]
-name = "future_features"
-type = 0
-runtime_name = "molt_future_features"
-callable_arity = 0
-
-[[import]]
 name = "future_poll"
 return_contract = "poll_result"
 boxed_call = true

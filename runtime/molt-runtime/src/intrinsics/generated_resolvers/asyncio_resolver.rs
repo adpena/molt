@@ -134,7 +134,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_asyncgen_hooks_get" => Some(crate::molt_asyncgen_hooks_get as *const ()),
         "molt_asyncgen_hooks_set" => Some(crate::molt_asyncgen_hooks_set as *const ()),
         "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const ()),
-        "molt_future_features" => Some(crate::molt_future_features as *const ()),
         "molt_event_loop_spawn" => Some(crate::molt_event_loop_spawn as *const ()),
         "molt_event_loop_new" => Some(crate::molt_event_loop_new as *const ()),
         "molt_event_loop_call_soon" => Some(crate::molt_event_loop_call_soon as *const ()),

@@ -18,10 +18,10 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `949`
-- `intrinsic-backed`: `39`
+- `intrinsic-backed`: `38`
 - `intrinsic-partial`: `164`
 - `intrinsic-support`: `26`
-- `python-compiled`: `344`
+- `python-compiled`: `345`
 - `stub`: `376`
 - `policy-gate`: `0`
 
@@ -71,7 +71,6 @@
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
-- `__future__`
 - `_abc`
 - `_asyncio`
 - `_bisect`
@@ -306,6 +305,7 @@
 - `xml.etree.cElementTree`
 
 ### Compiled pure-Python modules
+- `__future__`
 - `_blake2`
 - `_codecs_cn`
 - `_codecs_hk`

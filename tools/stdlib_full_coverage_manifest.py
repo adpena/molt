@@ -64,7 +64,7 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
 # Every module listed in STDLIB_FULLY_COVERED_MODULES must have a key here.
 # Value is the canonical intrinsic contract required for full coverage.
 STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
-    "__future__": ("molt_future_features",),
+    "__future__": (),
     "_abc": (
         "molt_abc_get_cache_token",
         "molt_abc_get_dump",
