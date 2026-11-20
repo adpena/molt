@@ -281,7 +281,18 @@ class Box[T]:
         function for function in ir["functions"] if "__annotate__" in function["name"]
     )
 
-    assert annotate["params"] == ["__molt_closure__", "format"]
+    # As CPython's compiler, the evaluator's argument zero lowers as the
+    # hidden `.format` slot, so a source binding named `format` gets its own
+    # home; the published code object names it `format` (co_varnames and the
+    # signature; differential basic/annotate_format_parameter.py).
+    assert annotate["params"] == ["__molt_closure__", ".format"]
+    published = {
+        op["s_value"]
+        for function in ir["functions"]
+        for op in function["ops"]
+        if op.get("kind") == "const_str"
+    }
+    assert "format" in published and ".format" not in published
     assert any(
         op.get("kind") == "func_new_closure" and op.get("s_value") == annotate["name"]
         for function in ir["functions"]
