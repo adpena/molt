@@ -201,7 +201,9 @@ def test_api_publication_preserves_exact_intrinsic_resolution_error(
     assert raised.value is failure
 
 
-def test_public_names_exist_before_attribute_access(monkeypatch):
+def test_public_names_exist_before_attribute_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module, _ = _load_sys_shim(monkeypatch)
     namespace = vars(module)
     # CPython's sys has no __all__.
