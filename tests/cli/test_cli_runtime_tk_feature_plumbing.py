@@ -1348,7 +1348,9 @@ def test_runtime_fingerprint_read_observes_same_size_preserved_mtime_rewrite(
     }
 
 
-def test_runtime_cargo_features_include_profiling_instruments(monkeypatch) -> None:
+def test_runtime_cargo_features_include_profiling_instruments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # The runtime-call census and the pc sampler (HF-198) are opt-in: each
     # adds its own cargo feature, so it keys its own runtime artifact, and a
     # wasm target ignores both.
