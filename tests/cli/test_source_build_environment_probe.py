@@ -22,6 +22,7 @@ import pytest
 
 from molt import source_build_environment as authority
 from molt import python_environment_location as location
+from molt.process_environment import ProcessEnvironment
 from molt import source_build_environment_selection as selection
 from molt import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
@@ -107,6 +108,9 @@ def real_published_image(tmp_path):
         encoding="utf-8",
     )
     (root / "bytecode").mkdir()
+    authority._install_no_bytecode_hook(
+        executable, ProcessEnvironment(os.environ), root
+    )
     custody = {**recipe, "environment_id": identity}
     realized = authority._probe_environment_identity(executable, root)
     manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
@@ -297,7 +301,7 @@ def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
     assert manifest.read_bytes() == before  # Never rewrite a legacy attestation.
     with pytest.raises(PermissionError):
         (module.parent / "__pycache__").mkdir()
-    # No -B or cache prefix: prove the filesystem backstop, not argv policy.
+    # No -B or cache prefix: prove the image's own rules, not argv policy.
     child = run_guarded_test_process(
         [str(executable), "-I", "-c", "import hf529_probe; print(hf529_probe.VALUE)"],
         capture_output=True,
@@ -308,6 +312,54 @@ def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
     assert not list(root.rglob("*.pyc"))
     assert _admit_published_image(root, executable) == live_custody
     assert manifest.read_bytes() == before
+
+
+@pytest.mark.slow
+def test_image_hook_refuses_isolated_bytecode_through_a_writable_tree(
+    real_published_image: tuple[Path, Path, Path, Path],
+) -> None:
+    """HF-544: a privileged Windows token writes through the mode seal.
+
+    The tree stays writable here, as such a token sees it. Only the image's
+    own site hook can keep `-I` without `-B` from compiling into the image.
+    """
+    from tests.process_guard_common import run_guarded_test_process
+
+    root, executable, module, _manifest = real_published_image
+    hook = module.parent / _contract.IMAGE_NO_BYTECODE_HOOK
+    assert hook.read_bytes() == _contract.IMAGE_NO_BYTECODE_HOOK_SOURCE
+    argv = [str(executable), "-I", "-c", "import hf529_probe; print(hf529_probe.VALUE)"]
+
+    def run() -> list[Path]:
+        child = run_guarded_test_process(
+            argv, capture_output=True, text=True, timeout=30
+        )
+        assert child.returncode == 0 and child.stdout == "529\n", child.stderr
+        return sorted(root.rglob("*.pyc"))
+
+    assert run() == []
+    # Control: the same launch without the hook compiles into the image, so the
+    # assertion above observes the hook rather than an inert interpreter.
+    hook.unlink()
+    assert run() != []
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fault", ["bytes", "earlier_hook"])
+def test_capture_refuses_a_hook_site_startup_would_not_run_first(
+    real_published_image: tuple[Path, Path, Path, Path], fault: str
+) -> None:
+    root, executable, module, _manifest = real_published_image
+    hook = module.parent / _contract.IMAGE_NO_BYTECODE_HOOK
+    if fault == "bytes":
+        hook.write_bytes(b"import sys\n")
+        expected = "unsupported molt-no-bytecode.v1 startup declaration"
+    else:
+        # "-" sorts before "0", so site.addsitedir() would run this file first.
+        (module.parent / "-early.pth").write_bytes(b"import json\n")
+        expected = "before the image no-bytecode hook"
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match=expected):
+        authority._probe_environment_identity(executable, root)
 
 
 @pytest.mark.slow

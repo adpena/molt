@@ -1602,7 +1602,8 @@ def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     assert [row["name"] for row in environment["distributions"]] == sorted(
         name for name, _version in packages
     )
-    assert environment["tree"]["file_count"] == 2 + 2 * len(packages)
+    # The selected executable, pyvenv.cfg and the image no-bytecode hook.
+    assert environment["tree"]["file_count"] == 3 + 2 * len(packages)
 
 
 @pytest.mark.parametrize(
@@ -1744,6 +1745,7 @@ def test_base_selector_projection_binds_the_exact_captured_target(tmp_path, targ
 
 
 def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_path):
+    from molt import python_environment_contract as _contract
     from molt.exact_json import canonical_json_sha256
     from tests.python_environment_test_support import realized_environment_manifest
 
@@ -1768,13 +1770,21 @@ def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_pat
         for row in environment["tree"]["entries"]
         if row["path"] == wheel["path"]
     )
+    hook_node = next(
+        row["node"]
+        for row in environment["tree"]["entries"]
+        if row["path"].endswith(f"/{_contract.IMAGE_NO_BYTECODE_HOOK}")
+    )
     environment_pool = files._FileNodePool(capture_context=context)
     for index in range(len(environment["tree"]["file_nodes"])):
         path = tmp_path / f"file-{index}"
+        node_id = environment["tree"]["file_nodes"][index]["id"]
         if index:
             path.write_bytes(
                 b"Wheel-Version: 1.0\nTag: py3-none-any\n"
-                if environment["tree"]["file_nodes"][index]["id"] == wheel_node
+                if node_id == wheel_node
+                else _contract.IMAGE_NO_BYTECODE_HOOK_SOURCE
+                if node_id == hook_node
                 else f"environment-{index}".encode()
             )
         environment_pool.bind(path, path.stat(), label="environment")

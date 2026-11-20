@@ -545,6 +545,13 @@ def _attested_environment(
             "provisioned source-build environment differs from its selected lock "
             "or CPython runtime closure"
         )
+    if not any(
+        str(row.get("path", "")).endswith(f"/{_contract.IMAGE_NO_BYTECODE_HOOK}")
+        for row in cast(list[Mapping[str, object]], realized["site_bootstrap_files"])
+    ):
+        raise _contract.SourceBuildEnvironmentError(
+            "provisioned source-build environment has no admitted no-bytecode hook"
+        )
     if binding is not None:
         from molt.python_environment_custody import immutable_environment_image
 
@@ -976,6 +983,47 @@ def _run_uv_sync(
     )
 
 
+def _install_no_bytecode_hook(
+    python_executable: Path, environment: ProcessEnvironment, root: Path
+) -> None:
+    """Write the image's no-bytecode hook into the site root its own CPython reads.
+
+    The image interpreter names its purelib scheme; this process may run another
+    CPython minor. Under -S, sys.prefix is the base install, so the scheme takes
+    the image root explicitly, as capture's site roots do. Capture admits only
+    the exact contract bytes there.
+    """
+    image = str(root.resolve(strict=True))
+    script = (
+        "import sysconfig\n"
+        "from pathlib import Path\n"
+        f"root = Path({image!r})\n"
+        "site = Path(sysconfig.get_path('purelib', vars=dict.fromkeys("
+        "('base', 'platbase', 'installed_base', 'installed_platbase'), str(root))))\n"
+        "site.resolve(strict=True).relative_to(root)\n"
+        f"(site / {_contract.IMAGE_NO_BYTECODE_HOOK!r})"
+        f".write_bytes({_contract.IMAGE_NO_BYTECODE_HOOK_SOURCE!r})\n"
+    )
+    result = process_guard.run_completed_command(
+        [str(python_executable), "-I", "-B", "-S", "-c", script],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=60.0,
+    )
+    if result.returncode != 0:
+        raise _contract.SourceBuildEnvironmentError(
+            "cannot install the image no-bytecode hook: "
+            + (
+                result.stderr or result.stdout or f"returncode={result.returncode}"
+            ).strip()
+        )
+
+
 def _validate_recipe_inputs(repo_root: Path, custody: Mapping[str, object]) -> None:
     groups = tuple(cast(list[str], custody["dependency_groups"]))
     requirements = tuple(
@@ -1259,8 +1307,10 @@ def _provision_source_build_environment(
             )
         realized_interpreter.publish(root)
         # The published read namespace is empty. CPython compiles only modules
-        # actually imported by a command; -B keeps this image immutable.
+        # actually imported by a command; -B and the image's own no-bytecode
+        # site hook keep this image immutable.
         environment_bytecode_prefix(root).mkdir(exist_ok=True)
+        _install_no_bytecode_hook(python_executable, child_environment, root)
         if binding is not None:
             write_exact(
                 root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION,
