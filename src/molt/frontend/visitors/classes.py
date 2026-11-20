@@ -575,6 +575,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self.type_parameter_bindings = previous_type_params
 
     def _emit_class_definition(self, node: ast.ClassDef) -> None:
+        if self.current_func_name == "molt_main":
+            # A class body runs where it stands, so a name it declares global
+            # is a module writer exactly as a module-level function's global
+            # is: later module reads must see the store, not a cached value.
+            class_globals = self._collect_global_decls(node.body)
+            self.module_global_mutations.update(class_globals)
+            for gname in class_globals:
+                self.locals.pop(gname, None)
         class_id = self._class_id_for_definition(node)
         self.local_class_ids.append(class_id)
         # CPython 3.13 added __firstlineno__ and __static_attributes__ to every
