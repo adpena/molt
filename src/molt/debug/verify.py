@@ -62,16 +62,8 @@ FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
     {
         "CALL_INDIRECT": "call_indirect",
         "GUARD_TAG": "guard_tag",
-        "INC_REF": "inc_ref",
         "DEC_REF": "dec_ref",
-        # Ownership transfers lower through the canonical refcount lanes.
-        "BORROW": "inc_ref",
-        "RELEASE": "dec_ref",
         # Conversions keep their dedicated lanes.
-        "BOX": "box",
-        "UNBOX": "unbox",
-        "CAST": "cast",
-        "WIDEN": "widen",
     }
 )
 

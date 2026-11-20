@@ -25,9 +25,6 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 _SERIALIZE_OBJECT_ATTR_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
     {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
 )
-_SERIALIZE_OBJECT_ATTR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
-    {"BOX", "WIDEN", "CAST", "UNBOX"}
-)
 
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
@@ -242,19 +239,21 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             # One frontend value names the pair; the wire op defines both
             # results: `var` the callable, `out` the self-or-null word.
             *operands, attr = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": (
-                        "load_method"
-                        if op.kind == FrontendKinds.LOAD_METHOD
-                        else "load_super_method"
-                    ),
-                    "args": [operand.name for operand in operands],
-                    "s_value": attr,
-                    "var": op.result.name,
-                    "out": loaded_method_self_name(op),
-                }
-            )
+            method_entry: SimpleIROp = {
+                "kind": (
+                    "load_method"
+                    if op.kind == FrontendKinds.LOAD_METHOD
+                    else "load_super_method"
+                ),
+                "args": [operand.name for operand in operands],
+                "s_value": attr,
+                "var": op.result.name,
+                "out": loaded_method_self_name(op),
+            }
+            if (op.metadata or {}).get("proven_target") is True:
+                # The selection resolves a proven member (design 78, 3.8).
+                method_entry["proven_target"] = True
+            ctx.json_ops.append(method_entry)
         elif op.kind == FrontendKinds.GETATTR_SPECIAL_OBJ:
             ctx.json_ops.append(
                 {
@@ -318,25 +317,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind in _SERIALIZE_OBJECT_ATTR_OP_KINDS_2:
-            if (
-                op.args
-                and isinstance(op.args[0], MoltValue)
-                and op.result.name != "none"
-            ):
-                lowered_kind = {
-                    "BOX": "box",
-                    "UNBOX": "unbox",
-                    "CAST": "cast",
-                    "WIDEN": "widen",
-                }[op.kind]
-                ctx.json_ops.append(
-                    {
-                        "kind": lowered_kind,
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
         elif op.kind == FrontendKinds.IDENTITY_ALIAS:
             if (
                 op.args

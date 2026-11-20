@@ -95,6 +95,9 @@ class SimpleIROp(TypedDict):
     # A def with positional parameters only on ``func_new``: synchronous, or a
     # generator without a closure (OpIR::direct_shape, HF-846).
     direct_shape: NotRequired[bool]
+    # A ``call_guarded`` whose callee the program proves (HF-846 slice 2;
+    # a resolved method of an exact receiver, design 78 3.8).
+    proven_target: NotRequired[bool]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]
     native_callable_export: NotRequired[Any]
@@ -269,9 +272,12 @@ class ExactClassFact:
     class_id: ClassId
     token: int
     # The fact survived a callback (no ``__class__`` writer in the closed
-    # graph): it proves the class, which fixes field offsets, and nothing
-    # else. A callback may have stored an instance attribute that shadows a
-    # class attribute or method, so only field access consumes it.
+    # graph): it proves the class, which fixes field offsets. A callback may
+    # have stored an instance attribute that shadows a class attribute or
+    # method, so a member consumer also needs a namespace-closed class: the
+    # source demands expose a class whose instances get a shadowing store or
+    # reach code through their mapping (design 78, 5.6). Field access and
+    # direct calls of resolved methods consume it.
     durable: bool = False
 
 

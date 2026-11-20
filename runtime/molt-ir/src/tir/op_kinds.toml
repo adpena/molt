@@ -5249,10 +5249,6 @@ kind = "FRAME_HOME_STORE"
 reason = "preserved-Copy: a boxed view of a raw integer may allocate in its home; transfer MemoryError at this store before the next effect or lexical-region exit"
 
 [[frontend_raising_kind]]
-kind = "BOX"
-opcode = "BoxVal"
-
-[[frontend_raising_kind]]
 kind = "CONST_STR"
 opcode = "ConstStr"
 
@@ -5656,6 +5652,22 @@ wire_kind = "copy"
 [[frontend_lowering_kind]]
 kinds = []
 wire_kind = "string_eq"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "box"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "unbox"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "cast"
+
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "widen"
 
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"
@@ -6109,10 +6121,6 @@ kind = "IS_NOT"
 opcode = "IsNot"
 
 [[frontend_check_exception_skip]]
-kind = "INC_REF"
-opcode = "IncRef"
-
-[[frontend_check_exception_skip]]
 kind = "DEC_REF"
 opcode = "DecRef"
 
@@ -6303,14 +6311,6 @@ reason = "const: the NotImplemented singleton"
 [[frontend_check_exception_skip]]
 kind = "CONST_ELLIPSIS"
 reason = "const: the Ellipsis singleton"
-
-[[frontend_check_exception_skip]]
-kind = "BORROW"
-reason = "rc: borrow a reference (no throw)"
-
-[[frontend_check_exception_skip]]
-kind = "RELEASE"
-reason = "rc: release a borrowed reference (no throw)"
 
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_NEW_BUILTIN_EMPTY"

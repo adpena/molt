@@ -59,7 +59,6 @@ FrontendOpKind = Literal[
     'BOR',
     'BORROW',
     'BOUND_METHOD_NEW',
-    'BOX',
     'BOX_FROM_RAW_INT',
     'BRANCH_FALSE',
     'BRANCH_TRUE',
@@ -129,7 +128,6 @@ FrontendOpKind = Literal[
     'CALL_INTERNAL',
     'CALL_LOADED_METHOD',
     'CALL_METHOD',
-    'CAST',
     'CAST_BOOL',
     'CAST_FLOAT',
     'CAST_INT',
@@ -530,7 +528,6 @@ FrontendOpKind = Literal[
     'UNARY_NEG',
     'UNARY_NOT',
     'UNARY_POS',
-    'UNBOX',
     'UNBOX_TO_RAW_INT',
     'UNPACK_SEQUENCE',
     'UNREACHABLE',
@@ -539,7 +536,6 @@ FrontendOpKind = Literal[
     'VEC_PROD',
     'VEC_SUM',
     'WARN_STDERR',
-    'WIDEN',
     'YIELD',
     'YIELD_FROM',
     'ZIP',
@@ -1100,7 +1096,6 @@ class FrontendKinds:
     BOR: Final = 'BOR'
     BORROW: Final = 'BORROW'
     BOUND_METHOD_NEW: Final = 'BOUND_METHOD_NEW'
-    BOX: Final = 'BOX'
     BOX_FROM_RAW_INT: Final = 'BOX_FROM_RAW_INT'
     BRANCH_FALSE: Final = 'BRANCH_FALSE'
     BRANCH_TRUE: Final = 'BRANCH_TRUE'
@@ -1170,7 +1165,6 @@ class FrontendKinds:
     CALL_INTERNAL: Final = 'CALL_INTERNAL'
     CALL_LOADED_METHOD: Final = 'CALL_LOADED_METHOD'
     CALL_METHOD: Final = 'CALL_METHOD'
-    CAST: Final = 'CAST'
     CAST_BOOL: Final = 'CAST_BOOL'
     CAST_FLOAT: Final = 'CAST_FLOAT'
     CAST_INT: Final = 'CAST_INT'
@@ -1571,7 +1565,6 @@ class FrontendKinds:
     UNARY_NEG: Final = 'UNARY_NEG'
     UNARY_NOT: Final = 'UNARY_NOT'
     UNARY_POS: Final = 'UNARY_POS'
-    UNBOX: Final = 'UNBOX'
     UNBOX_TO_RAW_INT: Final = 'UNBOX_TO_RAW_INT'
     UNPACK_SEQUENCE: Final = 'UNPACK_SEQUENCE'
     UNREACHABLE: Final = 'UNREACHABLE'
@@ -1580,7 +1573,6 @@ class FrontendKinds:
     VEC_PROD: Final = 'VEC_PROD'
     VEC_SUM: Final = 'VEC_SUM'
     WARN_STDERR: Final = 'WARN_STDERR'
-    WIDEN: Final = 'WIDEN'
     YIELD: Final = 'YIELD'
     YIELD_FROM: Final = 'YIELD_FROM'
     ZIP: Final = 'ZIP'
@@ -2142,7 +2134,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'BOR': 'bor',
     'BORROW': 'borrow',
     'BOUND_METHOD_NEW': 'bound_method_new',
-    'BOX': 'box',
     'BOX_FROM_RAW_INT': 'box_from_raw_int',
     'BRANCH_FALSE': 'branch_false',
     'BRANCH_TRUE': 'branch_true',
@@ -2212,7 +2203,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'CALL_INTERNAL': 'call_internal',
     'CALL_LOADED_METHOD': 'call_loaded_method',
     'CALL_METHOD': 'call_method',
-    'CAST': 'cast',
     'CAST_BOOL': 'cast_bool',
     'CAST_FLOAT': 'cast_float',
     'CAST_INT': 'cast_int',
@@ -2597,7 +2587,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'UNARY_NEG': 'unary_neg',
     'UNARY_NOT': 'unary_not',
     'UNARY_POS': 'unary_pos',
-    'UNBOX': 'unbox',
     'UNBOX_TO_RAW_INT': 'unbox_to_raw_int',
     'UNPACK_SEQUENCE': 'unpack_sequence',
     'UNREACHABLE': 'unreachable',
@@ -2606,7 +2595,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'VEC_PROD': 'vec_prod',
     'VEC_SUM': 'vec_sum',
     'WARN_STDERR': 'warn_stderr',
-    'WIDEN': 'widen',
     'YIELD': 'yield',
     'YIELD_FROM': 'yield_from',
     'ZIP': 'zip',
@@ -3178,7 +3166,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "BOR",
         "BORROW",
         "BOUND_METHOD_NEW",
-        "BOX",
         "BOX_FROM_RAW_INT",
         "BRANCH_FALSE",
         "BRANCH_TRUE",
@@ -3248,7 +3235,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CALL_INTERNAL",
         "CALL_LOADED_METHOD",
         "CALL_METHOD",
-        "CAST",
         "CAST_BOOL",
         "CAST_FLOAT",
         "CAST_INT",
@@ -3649,7 +3635,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "UNARY_NEG",
         "UNARY_NOT",
         "UNARY_POS",
-        "UNBOX",
         "UNBOX_TO_RAW_INT",
         "UNPACK_SEQUENCE",
         "UNREACHABLE",
@@ -3658,7 +3643,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "VEC_PROD",
         "VEC_SUM",
         "WARN_STDERR",
-        "WIDEN",
         "YIELD",
         "YIELD_FROM",
         "ZIP",
@@ -3682,6 +3666,8 @@ INTEGRATION_LOWERED_KINDS: frozenset[WireOpKind] = frozenset(
 
 # Explicit frontend spellings replacing the uppercase wire default.
 FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = {
+    'box': (),
+    'cast': (),
     'closure_load': ('LOAD_CLOSURE',),
     'closure_store': ('STORE_CLOSURE',),
     'copy': (),
@@ -3691,6 +3677,8 @@ FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = 
     'ret': ('ret',),
     'ret_void': ('ret_void',),
     'string_eq': (),
+    'unbox': (),
+    'widen': (),
 }
 
 SIMPLEIR_STRUCTURAL_KINDS: frozenset[WireOpKind] = frozenset(
@@ -4101,7 +4089,6 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CONST_FLOAT",
         "IS",
         "IS_NOT",
-        "INC_REF",
         "DEC_REF",
         "BINDING_ALIAS",
         "DELETE_VAR",
@@ -4149,8 +4136,6 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[FrontendOpKind] = frozenset(
         "FRAME_HOME_CLEAR",
         "CONST_NOT_IMPLEMENTED",
         "CONST_ELLIPSIS",
-        "BORROW",
-        "RELEASE",
         "EXCEPTION_NEW_BUILTIN_EMPTY",
         "EXCEPTION_NEW_BUILTIN_ONE",
         "EXCEPTION_NEW_BUILTIN",
@@ -4188,7 +4173,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "BIT_XOR": True,
     "BOOL": True,
     "BORROW": True,
-    "BOX": False,
     "BOX_FROM_RAW_INT": False,
     "BR_IF": True,
     "BUILD_DICT": True,
@@ -4442,7 +4426,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "TYPE_OF": False,
     "UNARY_NEG": True,
     "UNARY_POS": True,
-    "UNBOX": False,
     "UNBOX_TO_RAW_INT": False,
     "UNPACK_SEQUENCE": True,
     "WARN_STDERR": True,
@@ -5111,7 +5094,6 @@ SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS: int = 81920
 
 FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
-        "BOX",
         "BOX_FROM_RAW_INT",
         "CONST",
         "CONST_BIGINT",
@@ -5132,7 +5114,6 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
         "PHI",
         "STATIC_CELL_BASE",
         "STATIC_CELL_LOAD",
-        "UNBOX",
         "UNBOX_TO_RAW_INT",
     }
 )

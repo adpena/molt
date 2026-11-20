@@ -247,7 +247,12 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         if not isinstance(attr_node.value, ast.Name):
             return None
         obj_name = attr_node.value.id
-        class_id = self._exact_class_for_name(obj_name)
+        # A durable fact (one that survived a callback) proves the class. On a
+        # namespace-closed class it also proves the member: the source demands
+        # expose a class whose instance gets an attribute that shadows a
+        # member, or whose instance mapping some code reaches (design 78,
+        # 5.6), so no callback can have shadowed ``method`` on this instance.
+        class_id = self._exact_class_for_name(obj_name, fields=True)
         if class_id is None:
             return None
         class_info = self.classes.get(class_id)
@@ -309,6 +314,17 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         method_symbol = function_hint.split(":", 1)[1]
         if method_symbol not in self.func_symbol_names:
             return None
+        # ``m.__code__ = other.__code__`` would replace the body this call
+        # enters; with no code object reachable (``code_rebinding``), no code
+        # can. An exact positional call binds no default.
+        premise = self.namespace_premise
+        if premise is None or premise.code_rebinding:
+            return None
+        # The source call adopts its operands (`_mark_source_call`); a proven
+        # call enters the target's machine entry, which must adopt them too
+        # (`static_module_cells._proven_call_reason` holds the same rule).
+        if not self._entry_adopts_symbol(method_symbol):
+            return None
 
         # No eligibility fallback is permitted after evaluating Python operands.
         receiver = self.visit(attr_node.value)
@@ -320,16 +336,29 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         inlined = self._try_inline_method_call(method_info, receiver, call_args)
         if inlined is not None:
             return inlined
+        # The method's function object, which the entry's frame record holds:
+        # the late stage hands it through the thread record. Loading it after
+        # the arguments is unobservable, since resolving a proven member runs
+        # no code.
+        callable_value = self._emit_method_load(receiver, method_name)
+        # The load runs no code and cannot fail: when the call it feeds is
+        # inlined, nothing reads it and it is deleted.
+        load_metadata = self._op_by_result[callable_value.name].metadata
+        assert load_metadata is not None
+        load_metadata["proven_target"] = True
 
-        # A known callable body does not make its return annotation a value
-        # proof. Inlining above can carry actual result facts; an uninlined
-        # Python call must retain generic representation without such evidence.
+        # A proven call of the resolved method (design 78, 3.8): the call graph,
+        # the type flow and the inliner read it as a static edge, and the late
+        # stage enters the target directly. A known callable body does not make
+        # its return annotation a value proof; an uninlined Python call keeps
+        # a generic representation without such evidence.
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
-                kind="CALL",
-                args=[method_symbol, receiver] + call_args,
+                kind="CALL_GUARDED",
+                args=[callable_value, receiver, *call_args],
                 result=res,
+                metadata={"target": method_symbol, "proven_target": True},
             )
         )
         return res

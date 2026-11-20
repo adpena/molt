@@ -3135,7 +3135,6 @@ pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {
     matches!(
         kind,
         OpKind::BindingAlias
-            | OpKind::Borrow
             | OpKind::BrIf
             | OpKind::CheckException
             | OpKind::ClassSetDefinition
@@ -3175,7 +3174,6 @@ pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {
             | OpKind::FrameHomePrivateCell
             | OpKind::FuncNew
             | OpKind::If
-            | OpKind::IncRef
             | OpKind::Is
             | OpKind::IsNot
             | OpKind::Jump
@@ -3194,7 +3192,6 @@ pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {
             | OpKind::Phi
             | OpKind::PropertyNew
             | OpKind::Raise
-            | OpKind::Release
             | OpKind::Reraise
             | OpKind::Ret
             | OpKind::StateLabel

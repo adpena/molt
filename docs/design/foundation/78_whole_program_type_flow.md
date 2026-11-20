@@ -610,6 +610,50 @@ compile time (3.8), a field type from the join of its stores so `count + k` is a
 add, and inlining `bump` (it can raise only on a missing field, so it needs either a
 definite-initialization fact or inline frames, HF-824), then scalar replacement of `c`.
 
+### 5.7 Proven method calls (2026-11-17)
+
+**What runs.** `obj.m(args)` whose receiver holds an exact class fact, durable or not, is a
+proven call when the class is namespace-closed, `m` resolves through the MRO to a plain
+function with no closure, defaults, `*args`, `**kwargs` or keyword-only parameters, the class
+defines no `__getattribute__` or `__getattr__`, the call is positional with the exact arity, no
+code object is reachable (`code_rebinding`), and the target's entry adopts its arguments as the
+source call does. A durable fact (one that survived a callback) suffices: the source demands
+expose a class whose instance gets an attribute that shadows a member, or whose instance
+mapping some code reaches (5.6), so no callback can have shadowed `m`. The frontend emits the
+method load and a `call_guarded` of the method's symbol with `proven_target`, the shape
+integration gives a proven module call (HF-846 slice 2). So the call is a static edge for the
+call graph, the type flow and the inliner, and the late stage enters the target (or its
+clone) directly, handing it the loaded function for its frame record.
+
+**The load.** The callee's frame record needs the function object (`generate_frame_push`
+validates the handoff). A first version called the method's symbol with no handoff: every call
+took the runtime's frame entry (`molt_frame_record_enter`), and `method_call` rose from 404 to
+1,375 instructions per iteration. The method load supplies the object. A `load_method` with
+`proven_target` runs no code and raises nothing a program can observe, so
+`op_instance_effects_for_op` makes it nothrow and effect-free: its exception check goes, and a
+load nothing reads (its call was inlined) is dead. The load still runs the method site's
+guard. The end state is a static member cell: the function object of a member no code
+rebinds, stored once when the class statement runs and read by one load, as module functions
+read their `InitOnce` cells; that removes the guard and the site record from proven sites
+(call_anatomy.md 4.5a).
+
+**Measured; landed 2026-11-19.** Instructions per iteration (slope of two sizes, best of 3,
+release, macOS arm64), main e75c63a77f against this change: `method_call` LLVM 383.0 -> 379.3
+(-1.0%), Cranelift 523.2 -> 507.3 (-3.0%); output identical. On 2026-11-17 Cranelift rose
+653.5 -> 752.5 (+15.2%) because it lowered `call_guarded` in its own backend and ignored
+`proven_target`; since the W3 switch (5144080ca6) both backends enter a proven call through the
+shared late stage, so the admission call and the code compare are gone on both. The gain is small
+because the call itself stays: C pays 1.1 instructions per iteration, so `method_call` is still
+about 345x C. What remains is the static member cell (the load below) and inlining the target.
+
+**Inlined methods were slower (not landed).** A frame-elision rule that admits one object
+parameter home (a method's `self`; CPython clears a returning frame's locals with the caller
+already current, so releasing the parameter at its last use is indistinguishable) made a
+nothrow method frameless and the inliner spliced it. The probe `total = (total + s.twice(i)) &
+16777215` went from 386.6 to 444.3 instructions per iteration (main 400.9): the spliced body
+and its binding aliases cost more in the caller's versioned loop than the direct call. The
+rule waits until that loop cost is understood; the patch is kept with the lane's notes.
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed

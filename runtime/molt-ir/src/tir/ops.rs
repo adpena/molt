@@ -964,8 +964,9 @@ impl TirOp {
         }
     }
 
-    /// Whether integration proved this guarded call's callee is its target's
-    /// function object (HF-846 slice 2, `OpIR::proven_target`).
+    /// Whether the program proved this guarded call's callee is its target's
+    /// function object (HF-846 slice 2, `OpIR::proven_target`), or that this
+    /// method load selects a proven member and runs no code.
     pub fn proven_target(&self) -> bool {
         match self.attrs.get(PROVEN_TARGET_ATTR) {
             None => false,

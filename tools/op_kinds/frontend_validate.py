@@ -320,7 +320,6 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             )
 
     required_raising = {
-        "BOX": True,
         "ADD": True,
         "EQ": True,
         "NEG": True,

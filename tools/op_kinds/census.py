@@ -255,6 +255,13 @@ class _Resolver:
             )
         if isinstance(expr, ast.Attribute) and expr.attr == "kind":
             return frozenset()  # re-emit of an existing operation
+        if (
+            isinstance(expr, ast.Attribute)
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id == "FrontendKinds"
+        ):
+            # The typed spelling: each generated constant is its own name.
+            return frozenset({expr.attr})
         if isinstance(expr, ast.Name):
             return self._name(expr, depth + 1)
         if isinstance(expr, ast.Subscript):

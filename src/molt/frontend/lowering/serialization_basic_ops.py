@@ -603,6 +603,10 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             )
             if custody is not None:
                 guarded_entry["argument_custody"] = custody
+            if op.metadata and op.metadata.get("proven_target") is True:
+                # The frontend proved the callee: a resolved method of an
+                # exact receiver (design 78, 3.8).
+                guarded_entry["proven_target"] = True
             ctx.json_ops.append(guarded_entry)
         elif op.kind == FrontendKinds.CALL_FUNC:
             entry: SimpleIROp = {

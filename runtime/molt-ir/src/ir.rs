@@ -769,7 +769,11 @@ pub struct OpIR {
     /// init-dominated InitOnce cell stored once from that `func_new`, with an
     /// exact positional call of a positional-only signature and matching
     /// entry custody. The late lowering enters the target directly, without
-    /// the admission call or the code guard.
+    /// the admission call or the code guard. The frontend proves the same of
+    /// a method call on an exact receiver (design 78, 3.8): the callee is the
+    /// `load_method` of a plain function of a namespace-closed class. On that
+    /// `load_method` the flag says the selection runs no code and cannot
+    /// fail, so a load nothing reads is dead.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub proven_target: bool,
     /// A `func_new` of a def with positional parameters only (synchronous, or

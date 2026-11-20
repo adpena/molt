@@ -678,7 +678,13 @@ def test_a_root_owned_link_in_a_writable_directory_is_refused(
             fields[4] = 0  # st_uid
             if path == link.parent:
                 fields[0] = stat.S_IFDIR | 0o777
-            return os.stat_result(fields)
+            # Keep the fields past the tuple (Windows reparse attributes).
+            extras = {
+                name: getattr(result, name)
+                for name in dir(result)
+                if name.startswith("st_")
+            }
+            return os.stat_result(fields, extras)
         return result
 
     monkeypatch.setattr(Path, "lstat", lstat)

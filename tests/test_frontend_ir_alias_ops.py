@@ -76,41 +76,6 @@ def test_runtime_guard_preserves_value_and_expected_tag_operands(result: str) ->
     assert lowered == expected
 
 
-def test_box_lowers_to_explicit_box_lane() -> None:
-    op = MoltOp(kind="BOX", args=[MoltValue("value")], result=MoltValue("boxed"))
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "box",
-        "args": ["value"],
-        "out": "boxed",
-    }
-
-
-def test_unbox_cast_widen_lower_to_explicit_conversion_lanes() -> None:
-    unbox = _map_single(
-        MoltOp(kind="UNBOX", args=[MoltValue("boxed")], result=MoltValue("value"))
-    )
-    cast = _map_single(
-        MoltOp(kind="CAST", args=[MoltValue("value")], result=MoltValue("casted"))
-    )
-    widen = _map_single(
-        MoltOp(kind="WIDEN", args=[MoltValue("value")], result=MoltValue("wide"))
-    )
-    assert unbox == {"kind": "unbox", "args": ["boxed"], "out": "value"}
-    assert cast == {"kind": "cast", "args": ["value"], "out": "casted"}
-    assert widen == {"kind": "widen", "args": ["value"], "out": "wide"}
-
-
-def test_borrow_lowers_to_canonical_inc_ref_lane() -> None:
-    op = MoltOp(kind="BORROW", args=[MoltValue("value")], result=MoltValue("borrowed"))
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "inc_ref",
-        "args": ["value"],
-        "out": "borrowed",
-    }
-
-
 def test_binding_alias_lowers_to_owned_alias_lane() -> None:
     op = MoltOp(
         kind="BINDING_ALIAS", args=[MoltValue("value")], result=MoltValue("owned")
@@ -250,22 +215,22 @@ def test_class_control_flow_type_alias_publishes_through_class_namespace() -> No
     )
 
 
-def test_inc_ref_and_dec_ref_lower_to_explicit_ownership_lanes() -> None:
-    inc = _map_single(
-        MoltOp(kind="INC_REF", args=[MoltValue("value")], result=MoltValue("owned"))
-    )
+def test_dec_ref_lowers_to_explicit_ownership_lane() -> None:
     dec = _map_single(
         MoltOp(kind="DEC_REF", args=[MoltValue("value")], result=MoltValue("released"))
     )
-    assert inc == {"kind": "inc_ref", "args": ["value"], "out": "owned"}
     assert dec == {"kind": "dec_ref", "args": ["value"], "out": "released"}
 
 
-def test_release_lowers_to_canonical_dec_ref_lane() -> None:
-    lowered = _map_single(
-        MoltOp(kind="RELEASE", args=[MoltValue("value")], result=MoltValue("done"))
-    )
-    assert lowered == {"kind": "dec_ref", "args": ["value"], "out": "done"}
+@pytest.mark.parametrize(
+    "kind", ["INC_REF", "BORROW", "RELEASE", "BOX", "UNBOX", "CAST", "WIDEN"]
+)
+def test_retired_frontend_kinds_are_refused(kind: str) -> None:
+    # No frontend code produces these: drop insertion owns reference counts,
+    # and representation conversions are TIR facts. A retired kind is refused
+    # at validation, not half-registered without a producer or serializer.
+    with pytest.raises(ValueError):
+        _map_single(MoltOp(kind=kind, args=[MoltValue("value")], result=MoltValue("x")))
 
 
 def _raw_kinds(source: str, **kwargs: object) -> set[str]:

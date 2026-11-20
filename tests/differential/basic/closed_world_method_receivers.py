@@ -201,6 +201,51 @@ def super_reaches_base_import():
     print("lazy", LazySub().load(), LazyInherited().load())
 
 
+class Tally:
+    def __init__(self):
+        self.n = 0
+
+    def add(self, k):
+        self.n += k
+        return self.n
+
+
+class Root:
+    def twice(self, x):
+        return 2 * x
+
+
+class Child(Root):
+    pass
+
+
+class Victim:
+    def act(self):
+        return "class"
+
+
+def shadow_later(obj, step):
+    if step == 2:
+        obj.act = lambda: "instance"
+
+
+def loop_callbacks():
+    # Each call is a callback, so every receiver's fact is durable inside the
+    # loop. Tally and Child stay closed: their methods are direct calls. A
+    # callback shadows Victim's method on its instance, which must be seen.
+    t = Tally()
+    c = Child()
+    v = Victim()
+    seen = []
+    total = 0
+    for i in range(4):
+        t.add(i)
+        total += c.twice(i)
+        seen.append(v.act())
+        shadow_later(v, i)
+    print("loop", t.n, total, seen)
+
+
 hierarchy()
 self_class_writer()
 leaked_receiver()
@@ -212,3 +257,4 @@ rebound_first_argument()
 attribute_hook()
 setattr_writer()
 super_reaches_base_import()
+loop_callbacks()
