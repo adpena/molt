@@ -68,14 +68,20 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
             )
         elif op.kind == FrontendKinds.CLASS_SET_DEFINITION:
             (created_class,) = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "class_set_definition",
-                    "args": [created_class.name],
-                    "class_definition": (op.metadata or {})["class_definition"],
-                    "out": op.result.name,
-                }
-            )
+            entry: SimpleIROp = {
+                "kind": "class_set_definition",
+                "args": [created_class.name],
+                "class_definition": (op.metadata or {})["class_definition"],
+                "out": op.result.name,
+            }
+            # The class's facts are frozen once lowering ends, so its exact
+            # field slots are read here (design 78, 5.8).
+            slots = self._exact_field_slots((op.metadata or {})["class_id"])
+            if slots:
+                entry["exact_field_slots"] = [
+                    [name, offset] for name, offset in sorted(slots.items())
+                ]
+            ctx.json_ops.append(entry)
         elif op.kind == FrontendKinds.GUARD_LAYOUT:
             obj, expected_version = op.args
             ctx.json_ops.append(

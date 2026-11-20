@@ -224,7 +224,7 @@ fn reached(analysis: &Analysis, context: ContextId) -> bool {
 /// per parameter. Names serve linkage and messages; the clone's identity is
 /// its row.
 fn clone_symbol(origin: &str, key: &Key) -> String {
-    let letters: String = key.iter().map(|kind| kind.letter()).collect();
+    let letters: String = key.iter().map(|kind| kind.tag()).collect();
     format!("{origin}__tf_{letters}")
 }
 
@@ -480,15 +480,15 @@ fn body_digest(func: &TirFunction, table: &molt_ir::FunctionTable) -> Vec<u8> {
         .get(&func.entry_block)
         .map(|entry| entry.args.iter().map(|arg| arg.id).collect())
         .unwrap_or_default();
-    let mut facts: Vec<(ValueId, char)> = crate::tir::type_refine::extract_exact_scalar_map(func)
+    let mut facts: Vec<(ValueId, String)> = crate::tir::type_refine::extract_exact_scalar_map(func)
         .into_iter()
         .filter(|(value, _)| !params.contains(value))
-        .map(|(value, ty)| (value, ArgKind::of(&ty).unwrap_or(ArgKind::Dyn).letter()))
+        .map(|(value, ty)| (value, ArgKind::of(&ty).unwrap_or(ArgKind::Dyn).tag()))
         .collect();
     facts.sort_unstable();
-    for (value, letter) in facts {
+    for (value, tag) in facts {
         bytes.extend_from_slice(&value.0.to_le_bytes());
-        bytes.push(letter as u8);
+        bytes.extend_from_slice(tag.as_bytes());
     }
     bytes
 }
@@ -512,6 +512,14 @@ fn describe(
         let func = &module.functions[*body];
         let sites = &inputs.sites[*body];
         let unresolved = sites::unknown_callee_count(func);
+        if unresolved > 0 {
+            let kinds = sites::unknown_callee_kinds(func)
+                .into_iter()
+                .map(|(kind, count)| format!("{kind} {count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            report.push(format!("[type-flow-unknown] {}: {kinds}", func.name));
+        }
         if sites.is_empty() && contexts_of.get(body).copied().unwrap_or(0) <= 1 {
             if unresolved > 0 {
                 report.push(format!(

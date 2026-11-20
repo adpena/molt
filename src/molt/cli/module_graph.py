@@ -1645,7 +1645,7 @@ def _materialize_import_plan(
         import_redirects = import_redirects.join(
             _import_redirects(
                 (NATIVE_EXTENSION_WRITER,),
-                guarded=((None, NATIVE_EXTENSION_WRITER),),
+                guarded=((None, NATIVE_EXTENSION_WRITER, ()),),
                 import_hook_writers=(NATIVE_EXTENSION_WRITER,),
             )
         )

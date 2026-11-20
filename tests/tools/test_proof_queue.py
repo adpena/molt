@@ -2926,6 +2926,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     # The source-only publisher captures the actual immutable installation.
     # Its empty prefix is part of the exact tree; no eager cache writer exists.
     (root / "bytecode").mkdir(exist_ok=True)
+    publisher._install_no_bytecode_hook(
+        executable, ProcessEnvironment(os.environ), root
+    )
     if development:
         (root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
             json.dumps(development_selection_record(root, custody)), encoding="utf-8"

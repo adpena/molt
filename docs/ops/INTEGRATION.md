@@ -511,7 +511,7 @@ native search coordinates through observed child closure. Search membership is
 conservative and does not establish interpreter identity; absent, unowned or
 unavailable optional coordinates do not change native executable search errors.
 
-Managed image publication uses the schema-v9 `cpython-source-only.v1` policy.
+Managed image publication uses the schema-v9 `cpython-source-only.v2` policy.
 The publisher disables uv bytecode generation, creates the physical empty
 `bytecode` read namespace under its existing address lock, and captures the
 installed source/runtime/native closure once. Admission requires that same

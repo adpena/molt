@@ -1,8 +1,14 @@
-//! Exact scalar provenance, distinct from annotation/guard type refinement.
+//! Exact provenance, distinct from annotation/guard type refinement.
 //!
 //! A Python annotation admits overriding subclasses. Intrinsic producers and
 //! computations on exact operands do not. This monotone SSA transfer uses the
 //! existing generated result/effect rules without importing return hints.
+//!
+//! The lattice holds the exact scalars and `Class(id)`: an instance whose
+//! class is exactly one class statement, produced only by that statement's
+//! allocation (I6, design 78 section 5.1). Scalar consumers read
+//! [`extract_exact_scalar_map`], which keeps the scalars; the type flow keys
+//! its contexts on both (design 78 section 3.2).
 
 use molt_ir::deterministic_hash::HashMap;
 
@@ -18,8 +24,11 @@ use crate::tir::values::ValueId;
 use super::cfg_edges::{collect_branch_edges, handler_entry_blocks};
 use super::result_inference::infer_result_facts_with_attrs;
 
-fn scalar_or_bottom(ty: TirType) -> TirType {
-    if ty == TirType::Never || comparison_scalar_domain(&ty).is_some() {
+fn exact_or_bottom(ty: TirType) -> TirType {
+    if ty == TirType::Never
+        || comparison_scalar_domain(&ty).is_some()
+        || matches!(ty, TirType::Class(_))
+    {
         ty
     } else {
         TirType::DynBox
@@ -95,6 +104,20 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
     facts
 }
 
+/// Every value of `func` the exact solver proves an instance of exactly one
+/// class statement (`TirType::Class`), from its own seeds and allocations.
+pub fn extract_exact_class_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let mut facts = solve_exact_scalars(
+        func,
+        ExactSeeds {
+            params: &func.exact_param_types,
+            call_results: None,
+        },
+    );
+    facts.retain(|_, ty| matches!(ty, TirType::Class(_)));
+    facts
+}
+
 /// The exact scalar facts of `func` from `seeds` and its producers: every
 /// reachable value, with `Never` for one no executable path has reached and
 /// `DynBox` for one that is not an exact scalar.
@@ -150,7 +173,7 @@ pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap
                 } else {
                     entry_seed.unwrap_or(TirType::DynBox)
                 };
-                let next = scalar_or_bottom(facts[&arg.id].meet(&ty));
+                let next = exact_or_bottom(facts[&arg.id].meet(&ty));
                 if facts[&arg.id] != next {
                     facts.insert(arg.id, next);
                     changed = true;
@@ -192,6 +215,10 @@ pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap
                 {
                     // An exact int of any magnitude: the carrier stays boxed.
                     vec![TirType::BigInt; op.results.len()]
+                } else if let Some(class) = super::result_inference::exact_allocation_class(op) {
+                    // An allocation's result is exactly its class statement's
+                    // instance (I6, C1).
+                    vec![class; op.results.len()]
                 } else if let Some(result_type) = instance.and_then(|facts| facts.result_type) {
                     vec![result_type; op.results.len()]
                 } else if let Some(ty) =
@@ -218,7 +245,7 @@ pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap
                     } else {
                         inferred
                     };
-                    let next = scalar_or_bottom(facts[&result].meet(&ty));
+                    let next = exact_or_bottom(facts[&result].meet(&ty));
                     if facts[&result] != next {
                         facts.insert(result, next);
                         changed = true;

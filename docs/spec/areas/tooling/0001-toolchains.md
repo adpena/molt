@@ -707,9 +707,15 @@ claim support for another architecture. Synthetic fixtures project the selected
 executable from their realized environment, not the test runner's executable.
 
 Managed development and source-build images use the schema-v8
-`cpython-source-only.v1` policy. Their physical `bytecode/` read namespace stays
+`cpython-source-only.v2` policy. Their physical `bytecode/` read namespace stays
 empty: launchers pass `-B` and the explicit prefix before site startup, and uv
-installation disables eager bytecode compilation. CPython compiles only imported
+installation disables eager bytecode compilation. A child that runs `-I` without
+`-B` ignores `PYTHONDONTWRITEBYTECODE`, and a Windows token with SeBackupPrivilege
+or SeRestorePrivilege writes through the mode seal. The publisher therefore
+installs the image-owned site hook `00-molt-no-bytecode.pth`, which sets
+`sys.dont_write_bytecode` before any other `.pth` file runs. Capture admits it
+only as its exact contract bytes and only when site startup runs it first; an
+image without it is not attested (HF-544). CPython compiles only imported
 source modules, at the command's actual optimization level. Publication performs
 one fresh read-only capture after installation; there is no whole-image cache
 producer or derivation table. Admission still hashes the complete source,

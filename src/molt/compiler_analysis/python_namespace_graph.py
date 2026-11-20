@@ -748,6 +748,7 @@ def graph_python_namespace_writes(
                 (
                     write.module if write.key_bound is None else write.key_bound,
                     ImportWriter(site, "an import under a swallowing handler"),
+                    write.initialized,
                 )
             )
             continue

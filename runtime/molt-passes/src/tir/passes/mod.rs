@@ -17,6 +17,7 @@ pub mod deforestation;
 pub mod drop_insertion;
 pub mod effects;
 pub mod escape_analysis;
+pub mod exact_receiver_fields;
 mod exception_observation;
 pub mod fast_math;
 pub mod fast_path_expansion;
