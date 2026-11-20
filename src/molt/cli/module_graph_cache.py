@@ -1019,6 +1019,105 @@ def _decode_source_path(payload: Any) -> str | _StaticSourcePath:
     )
 
 
+# An alias record, stored under a scan's key (which hashes its premise view),
+# names the record of an equal scan under another view; the source identity it
+# carries still has to match the aliased record's.
+_IMPORT_SCAN_ALIAS_FIELDS = frozenset(
+    {
+        "version",
+        "parser",
+        "compiler_fingerprint",
+        "module_name",
+        "is_package",
+        "import_scan_mode",
+        "purpose",
+        "source_owner",
+        "source_arguments",
+        "same_as_key",
+        "body_selection",
+        "target_python",
+        "target_sys_platform",
+        "runtime_catalog_owner",
+        "size",
+        "source_sha256",
+    }
+)
+# An alias names the scanned view's record; a chain forms only when that row
+# was itself replaced by an alias, so a short bound refuses cycles.
+_IMPORT_SCAN_ALIAS_DEPTH = 8
+
+
+@_source_tree_fingerprint_transaction()
+def _write_persisted_import_scan_alias(
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None,
+    source_arguments: tuple[str, ...],
+    namespace_premise: PythonNamespacePremise | None,
+    same_as_premise: PythonNamespacePremise | None,
+    native_support_function_roots: tuple[str, ...],
+    snapshot: _module_source.PythonSourceSnapshot,
+    target_sys_platform: str | None,
+    target_python: TargetPythonVersion,
+    runtime_catalog_owner: bool,
+    purpose: SourceImportPurpose,
+) -> None:
+    """Publish that a scan under ``namespace_premise`` equals its scan under
+    ``same_as_premise``: a key row, not a second copy of the result."""
+    if snapshot.path != path or namespace_premise == same_as_premise:
+        raise ValueError("an import-scan alias needs its own source and a new view")
+
+    def key(premise: PythonNamespacePremise | None) -> str:
+        return _import_scan_cache_key(
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
+            namespace_premise=premise,
+            native_support_function_roots=native_support_function_roots,
+            target_python=target_python,
+            target_sys_platform=target_sys_platform,
+            runtime_catalog_owner=runtime_catalog_owner,
+            purpose=purpose,
+        )
+
+    record_key = key(namespace_premise)
+    if _read_import_scan_record(record_key) is not None:
+        # A stored scan (or alias) of this view already answers it.
+        return
+    payload = {
+        "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
+        "parser": [sys.implementation.name, sys.version],
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+        "module_name": module_name,
+        "is_package": is_package,
+        "import_scan_mode": import_scan_mode,
+        "purpose": purpose.value,
+        "source_owner": source_owner,
+        "source_arguments": source_arguments,
+        "same_as_key": key(same_as_premise),
+        "body_selection": ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
+        "target_python": target_python.tag,
+        "target_sys_platform": target_sys_platform,
+        "runtime_catalog_owner": runtime_catalog_owner,
+        "size": len(snapshot.content),
+        "source_sha256": snapshot.sha256,
+    }
+    shared_source_records().put(
+        "import-scan",
+        record_key,
+        json.dumps(payload, separators=(",", ":")).encode(),
+        generation=_frontend_semantic_tooling_fingerprint(),
+    )
+
+
 @_source_tree_fingerprint_transaction()
 def _read_persisted_import_scan_record(
     path: Path,
@@ -1055,6 +1154,98 @@ def _read_persisted_import_scan_record(
     payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is None:
         return None
+    if set(payload) == _IMPORT_SCAN_ALIAS_FIELDS:
+        # A proven equal scan under another premise view (HF-926 early cutoff).
+        # Follow the chain to the stored scan, checking every link.
+        header = {
+            "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
+            "parser": [sys.implementation.name, sys.version],
+            "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+            "module_name": module_name,
+            "is_package": is_package,
+            "import_scan_mode": import_scan_mode,
+            "purpose": purpose.value,
+            "source_owner": list(source_owner) if source_owner is not None else None,
+            "source_arguments": list(source_arguments),
+            "body_selection": ModuleBodySelection.from_requested_roots(
+                native_support_function_roots
+            ).payload(),
+            "target_python": target_python.tag,
+            "target_sys_platform": target_sys_platform,
+            "runtime_catalog_owner": runtime_catalog_owner,
+        }
+        seen = {record_key}
+        while set(payload) == _IMPORT_SCAN_ALIAS_FIELDS:
+            target_key = payload.get("same_as_key")
+            if (
+                any(payload.get(name) != value for name, value in header.items())
+                or not isinstance(target_key, str)
+                or target_key in seen
+                or len(seen) > _IMPORT_SCAN_ALIAS_DEPTH
+            ):
+                return None
+            # The equality was proven for one source generation only.
+            if snapshot is not None:
+                if (
+                    snapshot.path != path
+                    or payload.get("size") != len(snapshot.content)
+                    or payload.get("source_sha256") != snapshot.sha256
+                ):
+                    return None
+            else:
+                try:
+                    path_stat = path.stat() if path_stat is None else path_stat
+                except OSError:
+                    return None
+                if not _module_source._payload_source_matches(payload, path, path_stat):
+                    return None
+            seen.add(target_key)
+            target = _read_import_scan_record(target_key)
+            payload = _decode_source_record_json(
+                None if target is None else target.payload
+            )
+            if payload is None:
+                return None
+        try:
+            same_as = _decode_namespace_premise_cache_identity(
+                payload["namespace_premise"]
+            )
+        except (KeyError, ValueError):
+            return None
+        if same_as == namespace_premise or (
+            _import_scan_cache_key(
+                path,
+                module_name=module_name,
+                is_package=is_package,
+                import_scan_mode=import_scan_mode,
+                source_owner=source_owner,
+                source_arguments=source_arguments,
+                namespace_premise=same_as,
+                native_support_function_roots=native_support_function_roots,
+                target_python=target_python,
+                target_sys_platform=target_sys_platform,
+                runtime_catalog_owner=runtime_catalog_owner,
+                purpose=purpose,
+            )
+            != target_key
+        ):
+            return None
+        return _read_persisted_import_scan_record(
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
+            namespace_premise=same_as,
+            native_support_function_roots=native_support_function_roots,
+            path_stat=path_stat,
+            snapshot=snapshot,
+            target_sys_platform=target_sys_platform,
+            target_python=target_python,
+            runtime_catalog_owner=runtime_catalog_owner,
+            purpose=purpose,
+        )
     # Source records are a closed versioned protocol. Retired projections and
     # partial migrations cannot be admitted under a current schema marker.
     if set(payload) != {

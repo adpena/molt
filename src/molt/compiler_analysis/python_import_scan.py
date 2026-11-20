@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import contextvars
+from collections.abc import Callable
 from molt.python_private_names import (
     python_import_binding,
     python_source_field,
@@ -31,6 +33,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_imports import (
+    ModuleImportFlow,
     RuntimeCatalogDeferral,
     _ImportDiscoveryProjection,
     _ImportScanRequests,
@@ -78,7 +81,10 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_binding_facts,
     analyze_python_bindings,
 )
-from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
+from molt.compiler_analysis.python_binding_facts import (
+    PythonBindingFacts,
+    PythonClassPreparation,
+)
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
@@ -137,6 +143,143 @@ def _source_binding_policy(
         ),
         namespace_premise,
     )
+
+
+# One logged read: the call that rebuilds its source under another premise,
+# the attribute path (None for a value read), the call's arguments (None for
+# an attribute read) and the answer.
+type _PremiseRead = tuple[
+    Callable[[object], object],
+    tuple[str, ...] | None,
+    tuple[object, ...] | None,
+    dict[str, object],
+    object,
+]
+
+
+class ScanPremiseReads:
+    """Every premise-dependent answer one scan consumed (HF-926 early cutoff).
+
+    A scan reads its namespace premise only through the binding analyses it
+    requests and the module's export fact. Each read is logged with the call
+    that rebuilds its source under another premise. A deterministic scan whose
+    every logged answer is unchanged under a new premise reads the same things
+    and returns the same output, so its consumer need not run it again
+    (rustc's red/green verification). A read that cannot be replayed makes
+    the log unusable, and the consumer scans again.
+    """
+
+    __slots__ = ("_reads", "usable")
+
+    def __init__(self) -> None:
+        self._reads: dict[tuple[object, ...], _PremiseRead] = {}
+        self.usable = True
+
+    def track(self, build: Callable[[object], object], target: object) -> object:
+        return _TrackedPremiseRead(self, build, (), target)
+
+    def value(self, build: Callable[[object], object], result: object) -> None:
+        self._reads.setdefault((id(build), None), (build, None, (), {}, result))
+
+    def record(
+        self,
+        build: Callable[[object], object],
+        path: tuple[str, ...],
+        args: tuple[object, ...] | None,
+        kwargs: dict[str, object],
+        result: object,
+    ) -> None:
+        key = (
+            id(build),
+            path,
+            None if args is None else tuple(id(arg) for arg in args),
+            tuple((name, id(arg)) for name, arg in sorted(kwargs.items())),
+        )
+        self._reads.setdefault(key, (build, path, args, kwargs, result))
+
+    def unchanged_under(self, premise: PythonNamespacePremise | None) -> bool:
+        """Whether every logged answer is the same under ``premise``."""
+        if not self.usable:
+            return False
+        roots: dict[int, object] = {}
+        try:
+            for build, path, args, kwargs, result in self._reads.values():
+                root = roots.get(id(build))
+                if root is None:
+                    root = roots[id(build)] = build(premise)
+                if path is None:
+                    answer = root
+                else:
+                    answer = root
+                    for name in path[:-1]:
+                        answer = getattr(answer, name)
+                    answer = getattr(answer, path[-1])
+                    if args is not None:
+                        answer = cast(Callable[..., object], answer)(*args, **kwargs)
+                if answer != result:
+                    return False
+        except Exception:
+            return False
+        return True
+
+
+# The log of the scan running in this context, if its consumer asked for one.
+SCAN_PREMISE_READS: contextvars.ContextVar[ScanPremiseReads | None] = (
+    contextvars.ContextVar("SCAN_PREMISE_READS", default=None)
+)
+
+
+class _TrackedPremiseRead:
+    """A premise-dependent analysis object whose every read is logged."""
+
+    __slots__ = ("_log", "_build", "_path", "_target")
+
+    def __init__(
+        self,
+        log: ScanPremiseReads,
+        build: Callable[[object], object],
+        path: tuple[str, ...],
+        target: object,
+    ) -> None:
+        self._log = log
+        self._build = build
+        self._path = path
+        self._target = target
+
+    def __getattr__(self, name: str) -> object:
+        value = getattr(self._target, name)
+        path = (*self._path, name)
+        if isinstance(value, (PythonBindingFacts, ModuleImportFlow)):
+            return _TrackedPremiseRead(self._log, self._build, path, value)
+        if not callable(value) or isinstance(value, type):
+            self._log.record(self._build, path, None, {}, value)
+            return value
+
+        def call(*args: object, **kwargs: object) -> object:
+            try:
+                result = value(*args, **kwargs)
+            except BaseException:
+                self._log.usable = False
+                raise
+            self._log.record(self._build, path, args, kwargs, result)
+            if isinstance(result, (PythonBindingFacts, ModuleImportFlow)):
+                # Reads of a returned analysis object have no replay path.
+                self._log.usable = False
+            return result
+
+        return call
+
+
+def _premise_analysis[T](
+    build: Callable[[PythonNamespacePremise | None], T],
+    namespace_premise: PythonNamespacePremise | None,
+) -> T:
+    """Run one premise-dependent analysis, logged when a scan records reads."""
+    result = build(namespace_premise)
+    log = SCAN_PREMISE_READS.get()
+    if log is None:
+        return result
+    return cast(T, log.track(cast(Callable[[object], object], build), result))
 
 
 def _module_import_scan_mode(module_name: str, *, full_scan: bool) -> ImportScanMode:
@@ -356,20 +499,24 @@ def _collect_static_source_execution_requests(
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
-    import_flow = analyze_python_bindings(
-        cast(ast.Module, tree),
-        source_digest=ast_digest_admission.digest,
-        ast_digest_admission=ast_digest_admission,
-        policy=_source_binding_policy(
-            target_sys_platform=target_sys_platform,
-            target_python=target_python,
-            module_name=module_name,
-            is_package=source_path.name == "__init__.py",
-            namespace_premise=namespace_premise,
-            activation_argument_values=_source_argument_values(
-                ast_digest_admission, source_owner, source_arguments
+    admission = ast_digest_admission
+    import_flow = _premise_analysis(
+        lambda premise: analyze_python_bindings(
+            cast(ast.Module, tree),
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=_source_binding_policy(
+                target_sys_platform=target_sys_platform,
+                target_python=target_python,
+                module_name=module_name,
+                is_package=source_path.name == "__init__.py",
+                namespace_premise=premise,
+                activation_argument_values=_source_argument_values(
+                    admission, source_owner, source_arguments
+                ),
             ),
         ),
+        namespace_premise,
     ).module_import_flow
     aliases: dict[str, str] = {
         "importlib": "importlib",
@@ -604,18 +751,23 @@ def _static_scan_nodes(
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
-    binding_index = analyze_python_binding_facts(
-        tree,
-        source_digest=ast_digest_admission.digest,
-        ast_digest_admission=ast_digest_admission,
-        policy=_source_binding_policy(
-            target_sys_platform=target_sys_platform,
-            target_python=target_python,
-            namespace_premise=namespace_premise,
-            activation_argument_values=_source_argument_values(
-                ast_digest_admission, source_owner, source_arguments
-            ),
-        ).flow_policy(),
+    admission = ast_digest_admission
+    module = tree
+    binding_index = _premise_analysis(
+        lambda premise: analyze_python_binding_facts(
+            module,
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=_source_binding_policy(
+                target_sys_platform=target_sys_platform,
+                target_python=target_python,
+                namespace_premise=premise,
+                activation_argument_values=_source_argument_values(
+                    admission, source_owner, source_arguments
+                ),
+            ).flow_policy(),
+        ),
+        namespace_premise,
     )
     return tuple(
         region.node
@@ -740,21 +892,26 @@ def _collect_imports(
         target_python=target_python.feature_version,
         execution_kind="script" if module_name is None else "imported",
     )
-    binding_index = analyze_python_bindings(
-        cast(ast.Module, tree),
-        source_digest=ast_digest_admission.digest,
-        ast_digest_admission=ast_digest_admission,
-        policy=_source_binding_policy(
-            target_sys_platform=target_sys_platform,
-            target_python=target_python,
-            module_name=module_name,
-            is_package=is_package,
-            namespace_premise=namespace_premise,
-            include_import_discovery=_dynamic_relative_import_discovery is not None,
-            activation_argument_values=_source_argument_values(
-                ast_digest_admission, source_owner, source_arguments
+    admission = ast_digest_admission
+    include_import_discovery = _dynamic_relative_import_discovery is not None
+    binding_index = _premise_analysis(
+        lambda premise: analyze_python_bindings(
+            cast(ast.Module, tree),
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=_source_binding_policy(
+                target_sys_platform=target_sys_platform,
+                target_python=target_python,
+                module_name=module_name,
+                is_package=is_package,
+                namespace_premise=premise,
+                include_import_discovery=include_import_discovery,
+                activation_argument_values=_source_argument_values(
+                    admission, source_owner, source_arguments
+                ),
             ),
         ),
+        namespace_premise,
     )
     import_flow = binding_index.module_import_flow
     uses_runtime_import_protocol = False
@@ -798,6 +955,37 @@ def _collect_imports(
         return binding_index.expression_result(node).identities == int(
             PythonIdentity.SYS_MODULES
         )
+
+    native_cache_operands: set[int] | None = None
+
+    def exposed_import_dictionary(node: ast.expr) -> bool:
+        # A value that may be, but is not proven to be, the import dictionary
+        # (a writer may rebind ``sys`` or its member). Its dictionary part
+        # exposes every module wherever it reaches code other than a native
+        # dictionary operation: a method receiver or subscript base runs the
+        # dictionary's own code, and a plain name binding is an alias whose
+        # uses are judged in turn. Dropping the read elsewhere would shrink
+        # the scan as its premise grows (HF-926).
+        nonlocal native_cache_operands
+        if not (
+            binding_index.expression_result(node).identities
+            & int(PythonIdentity.SYS_MODULES)
+        ):
+            return False
+        if native_cache_operands is None:
+            native_cache_operands = set()
+            for parent in ast.walk(tree):
+                if isinstance(parent, ast.Subscript):
+                    native_cache_operands.add(id(parent.value))
+                elif isinstance(parent, ast.Call) and isinstance(
+                    parent.func, ast.Attribute
+                ):
+                    native_cache_operands.add(id(parent.func.value))
+                elif isinstance(parent, ast.Assign) and all(
+                    isinstance(target, ast.Name) for target in parent.targets
+                ):
+                    native_cache_operands.add(id(parent.value))
+        return id(node) not in native_cache_operands
 
     def cache_keys(node):
         key = binding_index.static_value(node)
@@ -1987,7 +2175,9 @@ def _collect_imports(
                     and cache_keys(target.slice) is not None
                 ):
                     native_receiver_origins |= cache_receiver_origins(target.value)
-        if isinstance(node, ast.expr) and exact_import_dictionary(node):
+        if isinstance(node, ast.expr) and (
+            exact_import_dictionary(node) or exposed_import_dictionary(node)
+        ):
             # As a value this is a container; native item access/store does not
             # execute its contents. Opaque consumers can inspect all values.
             cache_reads.append(
@@ -2491,18 +2681,31 @@ def _static_module_all_exports(
     storage belongs to the read-only source generation, never a global cache.
     """
     admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
-    context = (target_python, target_sys_platform, namespace_premise)
-    cached = admission.module_all_exports.get(context)
-    if cached is None:
-        cached = _compute_static_module_all_exports(
-            tree,
-            target_sys_platform=target_sys_platform,
-            target_python=target_python,
-            namespace_premise=namespace_premise,
-            ast_digest_admission=admission,
-        )
-        admission.module_all_exports[context] = cached
-    return cached
+
+    def exports(premise: PythonNamespacePremise | None) -> SourceAllExports:
+        context = (target_python, target_sys_platform, premise)
+        cached = admission.module_all_exports.get(context)
+        if cached is None:
+            # A recording scan logs this fact as one value, not its reads.
+            token = SCAN_PREMISE_READS.set(None)
+            try:
+                cached = _compute_static_module_all_exports(
+                    tree,
+                    target_sys_platform=target_sys_platform,
+                    target_python=target_python,
+                    namespace_premise=premise,
+                    ast_digest_admission=admission,
+                )
+            finally:
+                SCAN_PREMISE_READS.reset(token)
+            admission.module_all_exports[context] = cached
+        return cached
+
+    result = exports(namespace_premise)
+    log = SCAN_PREMISE_READS.get()
+    if log is not None:
+        log.value(cast(Callable[[object], object], exports), result)
+    return result
 
 
 def _compute_static_module_all_exports(

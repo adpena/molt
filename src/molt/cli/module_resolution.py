@@ -889,6 +889,11 @@ class _ModuleResolutionCache:
         )
         cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
+            from molt.compiler_analysis.python_import_scan import SCAN_PREMISE_READS
+
+            if (log := SCAN_PREMISE_READS.get()) is not None:
+                # A served result logged no reads: nothing can verify it.
+                log.usable = False
             return cached
         owner_kwargs = {"runtime_catalog_owner": True} if runtime_catalog_owner else {}
         result = collector(

@@ -16,10 +16,10 @@ import ast
 import contextlib
 import re
 from dataclasses import dataclass, field, replace
-from collections.abc import Collection, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from functools import cached_property
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import module_dependencies as _module_dependency_authority
@@ -38,12 +38,20 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
 )
-from molt.compiler_analysis.python_imports import _ImportScanRequests
+from molt.compiler_analysis.python_imports import (
+    _ImportDiscoveryProjection,
+    _ImportScanRequests,
+)
+from molt.compiler_analysis.python_import_scan import (
+    SCAN_PREMISE_READS,
+    ScanPremiseReads,
+)
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
     PythonGraphNamespaceIndex,
     UNKNOWN_GRAPH_NAMESPACE_WRITES,
     graph_python_namespace_writes,
+    join_python_namespace_premises,
     python_namespace_name_universe,
 )
 from molt.compiler_analysis.python_namespace_writes import (
@@ -151,6 +159,28 @@ class _ModuleGraphDiscovery:
         self.scan_sources: dict[str, _ModuleSourceScanAuthority] = {}
         # Each scanned source's name universe: its premise view keys receipts.
         self.scan_universes: dict[str, frozenset[str] | None] = {}
+        # The premise each module's last module-level scan read. Its body scans
+        # read the same premise, so they share that scan's binding analysis; a
+        # body scan never reads a premise behind its module's current one.
+        self.scan_premises: dict[str, PythonNamespacePremise | None] = {}
+        # Body scans whose module premise moved past its pin: they wait,
+        # unscanned and without outputs, until that module's own scan settles.
+        self.deferred_bodies: dict[str, set[_SourceScanJob]] = {}
+        # Each unit's latest scan output. A rescan with a different output
+        # supersedes the earlier one, whose accumulated facts only a replay
+        # can drop; the flag records that for the last pass.
+        self.scan_outputs: dict[_SourceScanJob, _CompleteImportScan] = {}
+        # Each unit's latest scan with the premise answers it read: a unit
+        # whose answers hold under a new premise keeps its output unscanned.
+        self.scan_loads: dict[_SourceScanJob, _LoadedModuleImportScan] = {}
+        self.superseded_scans = False
+        # The premise each module's admitted outputs derive at the end of a
+        # pass (``_discover_module_graph_from_paths``, replay convergence).
+        self.derived_premises: dict[str, PythonNamespacePremise | None] = {}
+        # Every call this operation made, and each unit's scan outputs by
+        # premise view: a continuation replays the whole history.
+        self.invocations: tuple[_DiscoveryInvocation, ...] = ()
+        self.scan_memo: dict[tuple[object, ...], _LoadedModuleImportScan] = {}
         self.contexts: dict[str, _SourceDiscoveryContext] = {}
         self.context_epochs: dict[str, int] = {}
         self.source_generations: dict[
@@ -200,6 +230,26 @@ class _LoadedModuleImportScan(NamedTuple):
     tree: ast.AST | None
     snapshot: _module_source.PythonSourceSnapshot | None = None
     source_pruned: bool = False
+    # The early-cutoff witness of HF-926, when the caller asked for it
+    # (``record_premise_reads``).
+    premise_reads: "_ScanCutoff | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ScanCutoff:
+    """What one scan read of its premise, and how to republish its result.
+
+    ``view`` projects a premise as the loader projected the scanned one;
+    ``publish`` records that the scan under another premise equals this one
+    (a key row aliasing the stored result), when the scan was persisted.
+    """
+
+    reads: ScanPremiseReads
+    view: Callable[[PythonNamespacePremise | None], PythonNamespacePremise | None]
+    publish: Callable[[PythonNamespacePremise | None], None] | None
+
+    def unchanged_under(self, premise: PythonNamespacePremise | None) -> bool:
+        return self.reads.unchanged_under(self.view(premise))
 
 
 def _bind_precomputed_module_import_scan(
@@ -511,6 +561,92 @@ def _record_new_module_reasons(
         _record_module_reason(module_reasons, name, reason)
 
 
+@dataclass(frozen=True, slots=True)
+class _DiscoveryInvocation:
+    """One call of ``_discover_module_graph_from_paths``, kept so a replay can
+    rebuild the operation's graph from its current scan outputs."""
+
+    entry_paths: Sequence[Path]
+    roots: list[Path]
+    module_roots: list[Path]
+    stdlib_root: Path
+    project_root: Path | None
+    stdlib_allowlist: set[str]
+    skip_modules: set[str] | None
+    stub_parents: set[str] | None
+    precomputed_scans_by_path: Mapping[Path, _PrecomputedModuleImportScan] | None
+    enclosing_scan_authority: "_ModuleGraphScanAuthority | None"
+    import_admission_policy: _ImportAdmissionPolicy | None
+    allow_entry_external_imports: bool
+    target_python: TargetPythonVersion
+    runtime_import_custody: _RuntimeImportScanCustody | None
+    full_scan_roots: bool
+    entry_imports: Collection[str]
+    native_callable_exports: Mapping[str, tuple[str, ...]] | None
+
+    def run(
+        self,
+        resolver: _module_resolution._ModuleResolutionCache | None,
+        state: "_ModuleGraphDiscovery | None",
+        settled: Mapping[str, PythonNamespacePremise | None] | None,
+        memo: dict[tuple[object, ...], "_LoadedModuleImportScan"],
+    ) -> _DiscoveredModuleGraph:
+        return _discovery_pass(
+            self.entry_paths,
+            self.roots,
+            self.module_roots,
+            self.stdlib_root,
+            self.project_root,
+            self.stdlib_allowlist,
+            self.skip_modules,
+            self.stub_parents,
+            resolver if state is None else state.resolver_cache,
+            self.precomputed_scans_by_path,
+            self.enclosing_scan_authority,
+            self.import_admission_policy,
+            self.allow_entry_external_imports,
+            self.target_python,
+            self.runtime_import_custody,
+            full_scan_roots=self.full_scan_roots,
+            discovery=state,
+            entry_imports=self.entry_imports,
+            native_callable_exports=self.native_callable_exports,
+            settled_premises=settled,
+            scan_memo=memo,
+        )
+
+
+# Replays a call tries before it keeps its first pass's accumulated outputs,
+# which cover every premise that pass read.
+_MAX_DISCOVERY_REPLAYS: Final = 8
+
+
+# Rows that write a module namespace by naming or reaching it, as opposed to
+# member stores the graph joins with escaped module values.
+_DIRECT_NAMESPACE_WRITES: Final = frozenset(
+    {"attribute", "setattr", "namespace", "reflection", "import_binding"}
+)
+
+
+def _written_names(premise: PythonNamespacePremise | None) -> object:
+    """The names other code writes into a module, as its scan view reads them."""
+    return None if premise is None else (premise.foreign_writes,)
+
+
+def _joined(
+    left: PythonNamespacePremise | None, right: PythonNamespacePremise | None
+) -> PythonNamespacePremise | None:
+    """The least premise above both (no premise is unbounded)."""
+    if left == right:
+        return left
+    return join_python_namespace_premises(left, right)
+
+
+def _settled(premise: PythonNamespacePremise | None) -> PythonNamespacePremise | None:
+    """A premise as a scan reads it: exact receivers join after discovery."""
+    return None if premise is None else replace(premise, exact_receivers=())
+
+
 @_source_tree_fingerprint_transaction()
 def _discover_module_graph_from_paths(
     entry_paths: Sequence[Path],
@@ -535,6 +671,146 @@ def _discover_module_graph_from_paths(
     entry_imports: Collection[str] = (),
     native_callable_exports: Mapping[str, tuple[str, ...]] | None = None,
 ) -> _DiscoveredModuleGraph:
+    """Discover a graph whose edges, demands and premises are the union of
+    each scan unit's current output, never the history of its scans (HF-926).
+
+    The first pass finds the units and settles their premises; its scans may
+    read a premise behind the latest one, and their outputs accumulate. A
+    replay from a fresh state then admits only each reached unit's output
+    under the settled premises (memoized: no unit scans twice for the same
+    inputs) and derives the premises again. When the derived premises
+    reproduce the settled ones, the replay's graph is the answer; when no
+    premise reproduces itself, the first pass's accumulated graph is. A pass
+    that scanned no unit twice needs no replay. A continuation
+    (``discovery``) extends a replayed state in place.
+    """
+
+    invocation = _DiscoveryInvocation(
+        entry_paths,
+        roots,
+        module_roots,
+        stdlib_root,
+        project_root,
+        stdlib_allowlist,
+        skip_modules,
+        stub_parents,
+        precomputed_scans_by_path,
+        enclosing_scan_authority,
+        import_admission_policy,
+        allow_entry_external_imports,
+        target_python,
+        runtime_import_custody,
+        full_scan_roots,
+        entry_imports,
+        native_callable_exports,
+    )
+    history = (*(() if discovery is None else discovery.invocations), invocation)
+    memo = {} if discovery is None else discovery.scan_memo
+    # The caller's published rows: a continuation reports each one it changes.
+    prior_sources = {} if discovery is None else dict(discovery.scan_sources)
+    prior_solver = None if discovery is None else discovery.demands
+    result = invocation.run(resolver_cache, discovery, None, memo)
+    assert result.discovery is not None
+    if not result.discovery.superseded_scans:
+        # No rescan changed a unit's output: the accumulated outputs are the
+        # current ones.
+        result.discovery.invocations = history
+        result.discovery.scan_memo = memo
+        return result
+    resolver = result.discovery.resolver_cache
+    settled = {
+        name: _settled(premise)
+        for name, premise in result.discovery.derived_premises.items()
+    }
+    seen = {tuple(sorted(settled.items()))}
+    for _ in range(_MAX_DISCOVERY_REPLAYS):
+        # Replay every invocation of this operation from a fresh state: the
+        # graph is what the current outputs reach, never an earlier scan's.
+        replay_state: _ModuleGraphDiscovery | None = None
+        for step in history:
+            replay = step.run(resolver, replay_state, settled, memo)
+            replay_state = replay.discovery
+        assert replay_state is not None
+        derived = {
+            name: _settled(premise)
+            for name, premise in replay_state.derived_premises.items()
+        }
+        if all(settled.get(name) == premise for name, premise in derived.items()):
+            # The current outputs derive exactly the premises they read: the
+            # replay's graph is closed under them.
+            replay_state.invocations = history
+            replay_state.scan_memo = memo
+            if discovery is None:
+                return replay
+            # The caller holds its continuation state: it becomes the replay.
+            # A replay settles every step's premises at once, so the rows this
+            # call changed are those that differ from the caller's own.
+            vars(discovery).clear()
+            vars(discovery).update(vars(replay_state))
+            if prior_solver is not None and discovery.demands is not prior_solver:
+                # So does the solver a caller already holds.
+                vars(prior_solver).clear()
+                vars(prior_solver).update(vars(discovery.demands))
+                discovery.demands = prior_solver
+            return replace(
+                replay,
+                discovery=discovery,
+                revised_sources=tuple(
+                    authority
+                    for name, authority in sorted(discovery.scan_sources.items())
+                    if name in prior_sources
+                    and name not in replay.graph
+                    and prior_sources[name] != authority
+                ),
+            )
+        joined = {
+            name: _joined(settled.get(name, premise), premise)
+            for name, premise in derived.items()
+        }
+        # Below the settled premises, read the derived ones next: a scan's
+        # output need not shrink with its premise, so only a premise its own
+        # outputs reproduce is closed. Above them, widen to the join.
+        settled = (
+            derived
+            if all(settled.get(name, p) == p for name, p in joined.items())
+            else joined
+        )
+        key = tuple(sorted(settled.items()))
+        if key in seen:
+            break
+        seen.add(key)
+    # No premise reproduces itself: the first pass accumulated the outputs of
+    # every premise it read, which covers each candidate's graph.
+    result.discovery.invocations = history
+    result.discovery.scan_memo = memo
+    return result
+
+
+def _discovery_pass(
+    entry_paths: Sequence[Path],
+    roots: list[Path],
+    module_roots: list[Path],
+    stdlib_root: Path,
+    project_root: Path | None,
+    stdlib_allowlist: set[str],
+    skip_modules: set[str] | None = None,
+    stub_parents: set[str] | None = None,
+    resolver_cache: _module_resolution._ModuleResolutionCache | None = None,
+    precomputed_scans_by_path: Mapping[Path, _PrecomputedModuleImportScan]
+    | None = None,
+    enclosing_scan_authority: _ModuleGraphScanAuthority | None = None,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    *,
+    full_scan_roots: bool,
+    discovery: _ModuleGraphDiscovery | None = None,
+    entry_imports: Collection[str] = (),
+    native_callable_exports: Mapping[str, tuple[str, ...]] | None = None,
+    settled_premises: Mapping[str, PythonNamespacePremise | None] | None = None,
+    scan_memo: dict[tuple[object, ...], _LoadedModuleImportScan] | None = None,
+) -> _DiscoveredModuleGraph:
     resolution_cache = resolver_cache or (
         discovery.resolver_cache
         if discovery is not None
@@ -547,8 +823,9 @@ def _discover_module_graph_from_paths(
         or state.target_sys_platform != resolution_cache.target_sys_platform
     ):
         raise ValueError("module discovery continuation lost target/resolver custody")
-    if state.queue or state.scan_revisions:
+    if state.queue or state.scan_revisions or state.deferred_bodies:
         raise ValueError("module discovery continuation has unfinished source jobs")
+    state.superseded_scans = False
     if runtime_import_custody is not None:
         if not full_scan_roots:
             raise ValueError("runtime import custody requires full-depth owner scans")
@@ -581,9 +858,9 @@ def _discover_module_graph_from_paths(
         runtime_import_custody,
     )
     graph, scan_sources = state.graph, state.scan_sources
-    scan_universes = state.scan_universes
+    scan_universes, scan_premises = state.scan_universes, state.scan_premises
     queue, queued_scans = state.queue, state.queued_scans
-    scan_revisions = state.scan_revisions
+    scan_revisions, deferred_bodies = state.scan_revisions, state.deferred_bodies
     source_generations, scanned_bodies = state.source_generations, state.scanned_bodies
     scan_receipts = state.scan_receipts
     namespace_index = state.namespace_index
@@ -639,6 +916,9 @@ def _discover_module_graph_from_paths(
 
     def queue_scan(module, owner=None, arguments=()):
         job = _SourceScanJob(module, owner, arguments)
+        if job in deferred_bodies.get(module, ()):
+            # Already waiting for its module's scan to settle.
+            return
         if job not in queued_scans:
             if job in scan_receipts:
                 # New admissions and first body demands may contribute more
@@ -646,6 +926,23 @@ def _discover_module_graph_from_paths(
                 # that work drains, using the entire latest premise once.
                 scan_revisions.add(job)
             else:
+                queued_scans.add(job)
+                queue.append(job)
+
+    def release_deferred_bodies(module: str, *, forced: bool = False) -> None:
+        # A settled module premise: each waiting body scans once, now.
+        pinned = scan_premises.get(module)
+        if not forced and scan_view(module, pinned) != scan_view(
+            module, scan_sources[module].namespace_premise
+        ):
+            return
+        for job in sorted(
+            deferred_bodies.pop(module, ()),
+            key=lambda item: (item.source or (), item.arguments),
+            reverse=True,
+        ):
+            scan_revisions.discard(job)
+            if job not in queued_scans:
                 queued_scans.add(job)
                 queue.append(job)
 
@@ -669,7 +966,16 @@ def _discover_module_graph_from_paths(
             set(source_context.stdlib_allowlist),
         )
 
-    def namespace_premise(path, package_paths, source_context, module_name):
+    def namespace_premise(
+        path: Path,
+        package_paths: tuple[Path, ...],
+        source_context: _SourceDiscoveryContext,
+        module_name: str,
+        *,
+        settled: bool = True,
+    ) -> PythonNamespacePremise | None:
+        if settled and settled_premises is not None and module_name in settled_premises:
+            return settled_premises[module_name]
         path = resolution_cache.resolved_path(path)
         exclusions = resolution_cache.noncanonical_imports(
             source_context.roots,
@@ -838,6 +1144,7 @@ def _discover_module_graph_from_paths(
                     writer=None if writer_path is None else (module_name, writer_path),
                 )
             )
+        return writes
 
     def accept_source_scan(
         module_name, path, scan, generation=None, snapshot=None, *, source_owner=None
@@ -996,7 +1303,14 @@ def _discover_module_graph_from_paths(
     demands.drain()
     refresh_namespace_premises(demands.drain_opaque_activation_changes())
 
-    while queue or scan_revisions:
+    while queue or scan_revisions or deferred_bodies:
+        if not queue and not scan_revisions:
+            # Nothing else can settle these modules: scan each waiting body
+            # once against its module's final premise.
+            for module in sorted(deferred_bodies):
+                scan_premises[module] = scan_sources[module].namespace_premise
+                release_deferred_bodies(module, forced=True)
+            continue
         if not queue:
             # A revision wave retains the same typed source jobs and receipts.
             # New work discovered by a revision takes priority over the rest
@@ -1018,7 +1332,17 @@ def _discover_module_graph_from_paths(
             queued_scans.discard(job)
             module_name = job.module_name
             path = graph[module_name]
-            activate_namespace_writes(module_name, job.source)
+            before_activation = _written_names(
+                scan_view(module_name, scan_sources[module_name].namespace_premise)
+            )
+            activated = activate_namespace_writes(module_name, job.source)
+            # A scan always sees the names its own unit writes into a module
+            # namespace directly (not through an escaped value's member store).
+            own_writes_moved = any(
+                write.construct in _DIRECT_NAMESPACE_WRITES for write in activated
+            ) and before_activation != _written_names(
+                scan_view(module_name, scan_sources[module_name].namespace_premise)
+            )
             source_context = state.contexts[module_name]
             custody = source_context.runtime_import_custody
             if (
@@ -1032,15 +1356,63 @@ def _discover_module_graph_from_paths(
                 # their availability does not assert execution.
                 continue
             authority = scan_sources[module_name]
+            premise = authority.namespace_premise
+            if (
+                job.source is not None
+                and module_name in scan_premises
+                and not own_writes_moved
+            ):
+                premise = scan_premises[module_name]
+                if scan_view(module_name, premise) != scan_view(
+                    module_name, authority.namespace_premise
+                ):
+                    # Never scan a body against a stale premise: it waits for
+                    # its module's scan to settle and adds nothing meanwhile.
+                    deferred_bodies.setdefault(module_name, set()).add(job)
+                    continue
             receipt = (
-                scan_view(module_name, authority.namespace_premise),
+                scan_view(module_name, premise),
                 authority.body_selection.roots,
                 authority.mode,
                 state.context_epochs[module_name],
             )
             if scan_receipts.get(job) == receipt:
+                if job.source is None:
+                    release_deferred_bodies(module_name)
                 continue
-            loaded = _load_module_import_scan(
+            # The memo names the scan's inputs: the context itself, not this
+            # state's epoch counter, so a replay reuses an equal scan; an
+            # entry scan of the same inputs shares the key.
+            memo_key = (
+                job,
+                path,
+                receipt[0],
+                authority.body_selection,
+                authority.mode,
+                source_context,
+                None,
+            )
+            loaded = None if scan_memo is None else scan_memo.get(memo_key)
+            previous_load = state.scan_loads.get(job)
+            previous_receipt = scan_receipts.get(job)
+            # Early cutoff: a unit whose every premise answer holds under the
+            # new view reads the same things and keeps its output, so it is
+            # neither scanned nor published again.
+            unchanged = (
+                loaded is None
+                and previous_load is not None
+                and previous_load.premise_reads is not None
+                and previous_receipt is not None
+                and previous_receipt[1:] == receipt[1:]
+                and previous_load.premise_reads.unchanged_under(premise)
+            )
+            if unchanged:
+                assert previous_load is not None
+                assert previous_load.premise_reads is not None
+                loaded = previous_load
+                if previous_load.premise_reads.publish is not None:
+                    previous_load.premise_reads.publish(premise)
+            loaded = loaded or _load_module_import_scan(
                 path,
                 module_name=module_name,
                 is_package=bool(authority.is_package),
@@ -1060,17 +1432,29 @@ def _discover_module_graph_from_paths(
                 stdlib_allowlist=set(source_context.stdlib_allowlist),
                 target_python=target_python,
                 runtime_import_custody=source_context.runtime_import_custody,
-                namespace_premise=authority.namespace_premise,
+                namespace_premise=premise,
                 native_support_function_roots=authority.body_selection.roots,
+                record_premise_reads=True,
             )
+            state.scan_loads[job] = loaded
+            if scan_memo is not None:
+                scan_memo[memo_key] = loaded
             if loaded.snapshot is not None:
                 scan_universes[module_name] = python_namespace_name_universe(
                     loaded.snapshot.text
                 )
-            scan_receipts[job] = (
-                scan_view(module_name, authority.namespace_premise),
-                *receipt[1:],
+            if job.source is None:
+                scan_premises[module_name] = premise
+            state.superseded_scans |= state.scan_outputs.get(job, loaded.scan) != (
+                loaded.scan
             )
+            state.scan_outputs[job] = loaded.scan
+            scan_receipts[job] = (scan_view(module_name, premise), *receipt[1:])
+            if scan_view(module_name, premise) != scan_view(
+                module_name, authority.namespace_premise
+            ):
+                # Read behind the latest premise: revise with the module.
+                scan_revisions.add(job)
             if job.source is not None:
                 scanned_bodies.setdefault(module_name, set()).add(
                     (job.source, job.arguments)
@@ -1082,14 +1466,17 @@ def _discover_module_graph_from_paths(
                 uses_runtime_import_protocol=authority.uses_runtime_import_protocol
                 or loaded.scan.source_requests.uses_runtime_import_protocol,
             )
-            accept_source_scan(
-                module_name,
-                path,
-                loaded.scan,
-                loaded.snapshot.sha256 if loaded.snapshot is not None else None,
-                loaded.snapshot,
-                source_owner=job.source,
-            )
+            if not unchanged:
+                accept_source_scan(
+                    module_name,
+                    path,
+                    loaded.scan,
+                    loaded.snapshot.sha256 if loaded.snapshot is not None else None,
+                    loaded.snapshot,
+                    source_owner=job.source,
+                )
+            if job.source is None:
+                release_deferred_bodies(module_name)
             continue
         path, forced_name, requested_context, full, precomputed = job
         entry_key = (resolution_cache.resolved_path(path), forced_name)
@@ -1232,8 +1619,19 @@ def _discover_module_graph_from_paths(
             or precomputed.authority.body_selection != authority.body_selection
         ):
             precomputed = None
+        entry_memo_key = (
+            _SourceScanJob(module_name, None),
+            path,
+            receipt[0],
+            authority.body_selection,
+            authority.mode,
+            source_context,
+            precomputed,
+        )
         try:
-            loaded = _load_module_import_scan(
+            loaded = (
+                None if scan_memo is None else scan_memo.get(entry_memo_key)
+            ) or _load_module_import_scan(
                 path,
                 module_name=module_name,
                 is_package=bool(authority.is_package),
@@ -1250,6 +1648,7 @@ def _discover_module_graph_from_paths(
                 namespace_premise=authority.namespace_premise,
                 native_support_function_roots=authority.body_selection.roots,
                 source_snapshot=source_generations.get(module_name, (None, None))[1],
+                record_premise_reads=True,
             )
         except (OSError, SyntaxError, UnicodeDecodeError):
             merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
@@ -1258,10 +1657,19 @@ def _discover_module_graph_from_paths(
                 scan_sources[module_name], uses_runtime_import_protocol=True
             )
             continue
+        state.scan_loads[_SourceScanJob(module_name, None)] = loaded
+        if scan_memo is not None:
+            scan_memo[entry_memo_key] = loaded
         if loaded.snapshot is not None:
             scan_universes[module_name] = python_namespace_name_universe(
                 loaded.snapshot.text
             )
+        scan_premises[module_name] = authority.namespace_premise
+        module_job = _SourceScanJob(module_name, None)
+        state.superseded_scans |= state.scan_outputs.get(module_job, loaded.scan) != (
+            loaded.scan
+        )
+        state.scan_outputs[module_job] = loaded.scan
         scan_receipts[_SourceScanJob(module_name, None)] = (
             scan_view(module_name, authority.namespace_premise),
             *receipt[1:],
@@ -1280,6 +1688,7 @@ def _discover_module_graph_from_paths(
             loaded.snapshot.sha256 if loaded.snapshot is not None else None,
             loaded.snapshot,
         )
+        release_deferred_bodies(module_name)
         if (
             previous is not None
             and previous.body_selection.roots != authority.body_selection.roots
@@ -1308,6 +1717,16 @@ def _discover_module_graph_from_paths(
                 authority,
                 namespace_premise=replace(premise, exact_receivers=exact_receivers),
             )
+    state.derived_premises = {
+        name: namespace_premise(
+            authority.source_path,
+            authority.package_paths,
+            state.contexts[name],
+            name,
+            settled=False,
+        )
+        for name, authority in scan_sources.items()
+    }
     result_graph = {name: graph[name] for name in sorted(touched) if name in graph}
     return _DiscoveredModuleGraph(
         result_graph,
@@ -1420,6 +1839,7 @@ def _load_module_import_scan(
     precomputed_scan: _PrecomputedModuleImportScan | None = None,
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
+    record_premise_reads: bool = False,
 ) -> _LoadedModuleImportScan:
     """Admit source-only requests, then resolve filesystem edges in this operation."""
     if type(purpose) is not _source_import_scan.SourceImportPurpose:
@@ -1609,6 +2029,112 @@ def _load_module_import_scan(
             target_python=target_python,
         )
         tree, ast_digest_admission = selected.tree, selected.admission
+    premise_reads = ScanPremiseReads() if record_premise_reads else None
+    reads_token = SCAN_PREMISE_READS.set(premise_reads)
+    try:
+        import_projection, requests = _collect_module_import_scan(
+            path,
+            tree,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
+            runtime_import_custody=runtime_import_custody,
+            ast_digest_admission=ast_digest_admission,
+            namespace_premise=namespace_premise,
+            purpose=purpose,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
+            source=source,
+        )
+    finally:
+        SCAN_PREMISE_READS.reset(reads_token)
+    if persist_scan and snapshot is not None:
+        with contextlib.suppress(OSError):
+            _module_graph_cache._write_persisted_import_scan(
+                path,
+                module_name=module_name,
+                is_package=is_package,
+                import_scan_mode=import_scan_mode,
+                purpose=purpose,
+                source_owner=source_owner,
+                source_arguments=source_arguments,
+                scan=requests,
+                snapshot=snapshot,
+                target_python=target_python,
+                namespace_premise=namespace_premise,
+                native_support_function_roots=native_support_function_roots,
+                runtime_catalog_owner=runtime_catalog_owner,
+                target_sys_platform=resolution_cache.target_sys_platform,
+            )
+    cutoff = None
+    if premise_reads is not None:
+        universe = None if source is None else python_namespace_name_universe(source)
+        scanned_view = namespace_premise
+
+        def view(
+            premise: PythonNamespacePremise | None,
+        ) -> PythonNamespacePremise | None:
+            return None if premise is None else premise.scan_view(universe)
+
+        publish = None
+        if persist_scan and snapshot is not None:
+            published_snapshot = snapshot
+
+            def publish(premise: PythonNamespacePremise | None) -> None:
+                new_view = view(premise)
+                if new_view == scanned_view:
+                    return
+                with contextlib.suppress(OSError):
+                    _module_graph_cache._write_persisted_import_scan_alias(
+                        path,
+                        module_name=module_name,
+                        is_package=is_package,
+                        import_scan_mode=import_scan_mode,
+                        purpose=purpose,
+                        source_owner=source_owner,
+                        source_arguments=source_arguments,
+                        namespace_premise=new_view,
+                        same_as_premise=scanned_view,
+                        native_support_function_roots=native_support_function_roots,
+                        snapshot=published_snapshot,
+                        target_python=target_python,
+                        runtime_catalog_owner=runtime_catalog_owner,
+                        target_sys_platform=resolution_cache.target_sys_platform,
+                    )
+
+        cutoff = _ScanCutoff(premise_reads, view, publish)
+    return _LoadedModuleImportScan(
+        complete(requests),
+        False,
+        source_parsed,
+        source,
+        tree,
+        snapshot,
+        source_pruned,
+        cutoff,
+    )
+
+
+def _collect_module_import_scan(
+    path: Path,
+    tree: ast.AST,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None,
+    source_arguments: tuple[str, ...],
+    runtime_import_custody: _RuntimeImportScanCustody | None,
+    ast_digest_admission: _PythonAstDigestAdmission,
+    namespace_premise: PythonNamespacePremise | None,
+    purpose: _source_import_scan.SourceImportPurpose,
+    resolution_cache: _module_resolution._ModuleResolutionCache,
+    target_python: TargetPythonVersion,
+    source: str | None,
+) -> tuple[_ImportDiscoveryProjection, _ImportScanRequests]:
+    """One source's graph projection and its requests under one premise view."""
     import_projection = resolution_cache.collect_graph_imports(
         path,
         tree,
@@ -1639,24 +2165,4 @@ def _load_module_import_scan(
         target_sys_platform=resolution_cache.target_sys_platform,
         purpose=purpose,
     )
-    if persist_scan and snapshot is not None:
-        with contextlib.suppress(OSError):
-            _module_graph_cache._write_persisted_import_scan(
-                path,
-                module_name=module_name,
-                is_package=is_package,
-                import_scan_mode=import_scan_mode,
-                purpose=purpose,
-                source_owner=source_owner,
-                source_arguments=source_arguments,
-                scan=requests,
-                snapshot=snapshot,
-                target_python=target_python,
-                namespace_premise=namespace_premise,
-                native_support_function_roots=native_support_function_roots,
-                runtime_catalog_owner=runtime_catalog_owner,
-                target_sys_platform=resolution_cache.target_sys_platform,
-            )
-    return _LoadedModuleImportScan(
-        complete(requests), False, source_parsed, source, tree, snapshot, source_pruned
-    )
+    return import_projection, requests

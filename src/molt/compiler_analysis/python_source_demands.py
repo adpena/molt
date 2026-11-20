@@ -94,6 +94,21 @@ class SourceCandidate(NamedTuple):
         return self.module, self.source
 
 
+def _candidate_order(value: object) -> tuple[object, ...]:
+    """A total order over candidates whose optional fields may be None: two
+    candidates of one value can differ in a source, receiver or identity that
+    one of them lacks, which plain tuple order cannot compare."""
+    if value is None:
+        return (0,)
+    if isinstance(value, tuple):
+        return (1, tuple(_candidate_order(item) for item in value))
+    if isinstance(value, str):
+        return (2, value)
+    if isinstance(value, int):
+        return (3, int(value))
+    raise TypeError(f"unordered candidate field: {value!r}")
+
+
 class SourceMember(NamedTuple):
     owner: SourceCandidate
     name: str
@@ -623,7 +638,9 @@ class PythonSourceDemands:
         while pending:
             current = pending.pop()
             for base in sorted(self.bases.get(current, ())):
-                for candidate in sorted(self.watch((current[0], base), user)):
+                for candidate in sorted(
+                    self.watch((current[0], base), user), key=_candidate_order
+                ):
                     if (
                         candidate.kind == "value"
                         and self._source_class_candidate(candidate)

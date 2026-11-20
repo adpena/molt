@@ -1262,9 +1262,14 @@ def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
             for module, owner, premise in loads
             if module == "api" and owner is None
         }
-        assert (
-            len({replace(p, opaque_activation_sources=()) for p in api_premises}) == 2
-        )
+        # ``api``'s module-level scan reads the written ``callback`` binding,
+        # so it reprojects; it never reads ``typing.TYPE_CHECKING`` (only
+        # ``run`` does), so a cold run's early cutoff keeps its one scan. A
+        # warm run, whose first scans came from records, reads the published
+        # alias for the second view (HF-926).
+        assert len(
+            {replace(p, opaque_activation_sources=()) for p in api_premises}
+        ) == (1 if write_kind == "canonical-member" and not warm else 2)
         assert len(api_premises) <= (3 if write_kind == "computed" else 2)
         body_premises = {
             premise
@@ -1765,7 +1770,11 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
                     if isinstance(node, ast.FunctionDef)
                 )
             )
-            assert body_loads[-1].opaque_activation_sources == expected_opaque
+            # The body's answers do not depend on its siblings' activation, so
+            # early cutoff keeps its scan while the premise gains them (HF-926).
+            writer_premise = result.scan_authority.by_module["writer"].namespace_premise
+            assert writer_premise is not None
+            assert writer_premise.opaque_activation_sources == expected_opaque
         else:
             assert premise.foreign_writes == ()
             assert "late_leaf" not in result.graph
@@ -2278,8 +2287,9 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
     loads = []
 
     def observe(path, **kwargs):
-        loads.append((kwargs["module_name"], kwargs.get("source_owner")))
-        return load(path, **kwargs)
+        loaded = load(path, **kwargs)
+        loads.append((kwargs["module_name"], kwargs.get("source_owner"), loaded))
+        return loaded
 
     monkeypatch.setattr(module_graph_discovery, "_load_module_import_scan", observe)
     for run in range(2 if warm else 1):
@@ -2324,8 +2334,14 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
         assert sources["hf226_pkg.sub"].namespace_premise.foreign_writes == ("handler",)
         assert prior.namespace_premise.foreign_writes == ()
         assert "hf226_pkg.sub" not in later.graph
-        assert any(name == "hf226_pkg.sub" for name, _ in loads)
-        assert not any(name in {"entry", "untouched"} for name, _ in loads)
+        # ``sub``'s scan reads nothing the writer changed: early cutoff keeps
+        # it while its premise gains ``handler`` (HF-926). A warm run, whose
+        # first scans came from records, reads the published alias instead.
+        assert not any(
+            name == "hf226_pkg.sub" and not loaded.cache_hit
+            for name, _, loaded in loads
+        )
+        assert not any(name in {"entry", "untouched"} for name, _, _ in loads)
         # Prior captures are reused, even when their namespace projection widens.
         assert cache.source_parse_count - parse_before <= 1
         solver = state.demands
@@ -2560,9 +2576,16 @@ def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
         full_scan_roots=False,
         discovery=state,
     )
-    assert 1 <= len(owner_jobs) <= 2
-    assert all((mode, owner) == ("full", None) for mode, owner, _ in owner_jobs)
-    premises = [premise for _, _, premise in owner_jobs]
+    # The writer supersedes owner's outputs, so the operation replays its
+    # history: the pre-custody call scans owner's body again, once, under the
+    # settled premise. Full custody still scans only the module (HF-926).
+    assert len(set(owner_jobs)) == len(owner_jobs)
+    full_jobs = [
+        (owner, premise) for mode, owner, premise in owner_jobs if mode == "full"
+    ]
+    assert 1 <= len(full_jobs) <= 2
+    assert all(owner is None for owner, _ in full_jobs)
+    premises = [premise for _, premise in full_jobs]
     assert len({replace(p, opaque_activation_sources=()) for p in premises}) == 1
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
@@ -2891,3 +2914,132 @@ def test_instance_attribute_access_keeps_its_class_definition_closed(
     assert premise is not None and premise.opaque_activation_sources is not None
     class_key = python_node_source_key(ast.parse(source).body[0])
     assert (class_key in premise.opaque_activation_sources) is exposed
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_superseded_scan_outputs_leave_the_graph(tmp_path: Path) -> None:
+    """HF-926: the graph is the union of each scan unit's current output.
+
+    `m` resolves `import_module(NAME)` while `NAME` is still its constant; the
+    writer it imports rebinds `NAME` first, so that early scan's edge to
+    `leaf` is superseded. CPython never imports `leaf`, and the discovered
+    graph omits it, although the first pass's accumulated scans reached it.
+    """
+    import json
+    import sys
+
+    sources = {
+        "entry": "import m\n",
+        "m": "import importlib\nNAME = 'leaf'\nimport w\nimportlib.import_module(NAME)\n",
+        "w": "import m\nm.NAME = 'other'\n",
+        "leaf": "VALUE = 1\n",
+        "other": "VALUE = 2\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    executed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n",
+            str(tmp_path),
+            json.dumps(sorted(sources)),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(executed.stdout) == ["entry", "m", "other", "w"]
+    arguments = (
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        tmp_path,
+        set(),
+    )
+    accumulated = module_graph_discovery._discovery_pass(
+        *arguments, full_scan_roots=True
+    )
+    assert "leaf" in accumulated.graph
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        *arguments, full_scan_roots=True
+    )
+    assert "leaf" not in result.graph
+    assert {"entry", "m", "w"} <= result.graph.keys()
+    premise = result.scan_authority.by_module["m"].namespace_premise
+    assert premise is not None and premise.foreign_writes is not None
+    assert "NAME" in premise.foreign_writes
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_early_cutoff_alias_serves_the_equal_scan_for_its_source_only(
+    tmp_path: Path,
+) -> None:
+    """HF-926: a scan whose premise answers hold under a new view publishes
+    a key row that aliases its stored result. A warm read of the new view
+    gets that result; a changed source refuses it; an alias never replaces a
+    stored scan of its own view."""
+    from molt.cli import module_resolution
+    from molt.cli import module_source
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        NO_INVALID_MEMBERS,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = "import os\ndef helper():\n    return 1\nVALUE = 1\n"
+    path = tmp_path / "mod.py"
+    path.write_text(source, encoding="utf-8")
+    snapshot = module_source.PythonSourceSnapshot.capture(path)
+    base = PythonNamespacePremise(
+        (), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS, (), opaque_activation_sources=()
+    )
+    # Unknown code may call ``helper``; the module's own code reads nothing
+    # that changes. A write of ``VALUE`` does change what it reads.
+    helper = python_node_source_key(ast.parse(source).body[1])
+    widened = replace(base, opaque_activation_sources=(helper,))
+    common = {
+        "module_name": "mod",
+        "is_package": False,
+        "import_scan_mode": "module_init",
+        "purpose": SourceImportPurpose.EXECUTION,
+    }
+    loaded = module_graph_discovery._load_module_import_scan(
+        path,
+        **common,
+        resolution_cache=module_resolution._ModuleResolutionCache(),
+        project_root=tmp_path,
+        source_snapshot=snapshot,
+        namespace_premise=base,
+        record_premise_reads=True,
+    )
+    cutoff = loaded.premise_reads
+    assert cutoff is not None and cutoff.publish is not None
+    assert cutoff.unchanged_under(widened)
+    assert not cutoff.unchanged_under(replace(base, foreign_writes=("VALUE",)))
+
+    def read(
+        premise: PythonNamespacePremise,
+        source_snapshot: module_source.PythonSourceSnapshot = snapshot,
+    ) -> object:
+        return module_graph_cache._read_persisted_import_scan_record(
+            path,
+            **common,
+            namespace_premise=cutoff.view(premise),
+            snapshot=source_snapshot,
+        )
+
+    assert read(widened) is None
+    cutoff.publish(widened)
+    assert read(widened) == loaded.scan.source_requests
+    # An alias for the scanned view itself is never written over its scan.
+    cutoff.publish(base)
+    assert read(base) == loaded.scan.source_requests
+    path.write_text(source.replace("VALUE = 1", "VALUE = 2"), encoding="utf-8")
+    changed = module_source.PythonSourceSnapshot.capture(path)
+    assert read(widened, changed) is None
