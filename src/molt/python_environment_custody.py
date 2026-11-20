@@ -137,11 +137,13 @@ class _CaseSensitiveConfigParser(configparser.ConfigParser):
 
 
 def virtualenv_site_bootstrap_relative_paths(root: Path) -> tuple[str, ...]:
-    """Discover the one coherent virtualenv import-hook pair, when present.
+    """Discover the virtualenv import-hook pair and the image no-bytecode hook.
 
-    ``uv`` and ``virtualenv`` create these files outside wheel ``RECORD``
-    ownership.  They are admissible only as a complete pair and remain sealed
-    as ordinary file nodes by :func:`capture_current_python_environment`.
+    ``uv`` and ``virtualenv`` create the pair outside wheel ``RECORD``
+    ownership; the managed-image publisher creates the no-bytecode hook.  The
+    pair is admissible only when complete, the hook only as its exact contract
+    bytes that site startup runs first.  All remain sealed as ordinary file
+    nodes by :func:`capture_current_python_environment`.
     """
 
     canonical_root = Path(root).resolve(strict=True)
@@ -171,7 +173,44 @@ def virtualenv_site_bootstrap_relative_paths(root: Path) -> tuple[str, ...]:
         raise PythonEnvironmentIdentityError(
             "virtualenv site bootstrap custody is ambiguous across site roots"
         )
-    return tuple(sorted(candidates[0])) if candidates else ()
+    hooks = [
+        f"{_relative_path(site_root, canonical_root, label='no-bytecode hook site root')}"
+        f"/{_contract.IMAGE_NO_BYTECODE_HOOK}"
+        for site_root in site_roots
+        if _admitted_no_bytecode_hook(site_root)
+    ]
+    if len(hooks) > 1:
+        raise PythonEnvironmentIdentityError(
+            "image no-bytecode hook is ambiguous across site roots"
+        )
+    return tuple(sorted([*(candidates[0] if candidates else ()), *hooks]))
+
+
+def _admitted_no_bytecode_hook(site_root: Path) -> bool:
+    """Admit the image hook only where site startup runs it first.
+
+    Its exact bytes are the reviewed startup capability ``molt-no-bytecode.v1``.
+    """
+
+    hook = site_root / _contract.IMAGE_NO_BYTECODE_HOOK
+    if not hook.is_symlink() and not hook.exists():
+        return False
+    if hook.is_symlink() or not hook.is_file():
+        raise PythonEnvironmentIdentityError(
+            f"image no-bytecode hook is not a regular file: {hook}"
+        )
+    # site.addsitedir() runs .pth files in sorted name order, skipping hidden
+    # names; an earlier hook could import and compile before this one runs.
+    first = min(
+        name
+        for name in os.listdir(site_root)
+        if name.endswith(".pth") and not name.startswith(".")
+    )
+    if first != _contract.IMAGE_NO_BYTECODE_HOOK:
+        raise PythonEnvironmentIdentityError(
+            f"site startup runs {first} before the image no-bytecode hook"
+        )
+    return True
 
 
 def _canonical_external_roots(
