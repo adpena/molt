@@ -1186,7 +1186,10 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
                         class_name_for_error(type_of_bits(_py, buffer_bits))
                     };
                     let type_name =
-                        String::from_utf8_lossy(&type_name.as_bytes()[..type_name.len().min(50)]);
+                        molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(
+                            type_name.as_bytes(),
+                            50,
+                        );
                     let argument = if (*handle_ptr).buffer_size == 0 && (*handle_ptr).mem_bits == 0
                     {
                         "argument 1"

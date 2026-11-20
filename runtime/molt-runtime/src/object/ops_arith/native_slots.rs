@@ -21,6 +21,9 @@ impl SequenceConcatKind {
         left: u64,
         right: u64,
     ) -> T {
+        let precision = |name: &str, limit: usize| {
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(name.as_bytes(), limit)
+        };
         let right_name = type_name(py, obj_from_bits(right));
         let message = match self {
             Self::String | Self::List | Self::Tuple => {
@@ -30,17 +33,15 @@ impl SequenceConcatKind {
                     Self::Tuple => "tuple",
                     Self::BytesLike => unreachable!(),
                 };
-                // CPython's %.Ns truncates bytes before replacement decoding.
-                let right_name =
-                    String::from_utf8_lossy(&right_name.as_bytes()[..right_name.len().min(200)]);
+                // CPython's %.Ns: the one precision authority (bytes, then the
+                // target's replacement decoding at a split final character).
+                let right_name = precision(&right_name, 200);
                 format!("can only concatenate {sequence} (not \"{right_name}\") to {sequence}")
             }
             Self::BytesLike => {
                 let left_name = type_name(py, obj_from_bits(left));
-                let left_name =
-                    String::from_utf8_lossy(&left_name.as_bytes()[..left_name.len().min(100)]);
-                let right_name =
-                    String::from_utf8_lossy(&right_name.as_bytes()[..right_name.len().min(100)]);
+                let left_name = precision(&left_name, 100);
+                let right_name = precision(&right_name, 100);
                 format!("can't concat {right_name} to {left_name}")
             }
         };

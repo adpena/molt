@@ -15,7 +15,8 @@ use num_traits::ToPrimitive;
 
 fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
     let name = type_name(py, object);
-    let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
+    let name =
+        molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(name.as_bytes(), 200);
     raise_exception(
         py,
         BuiltinExc::TypeError,

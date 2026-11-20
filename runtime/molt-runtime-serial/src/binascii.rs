@@ -40,7 +40,8 @@ impl<'py> AsciiInput<'py> {
 
     fn invalid(py: &PyToken, bits: u64, expected: &str) -> u64 {
         let label = type_name(py, obj_from_bits(bits));
-        let label = String::from_utf8_lossy(&label.as_bytes()[..label.len().min(100)]);
+        let label =
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(label.as_bytes(), 100);
         replace_exception(
             py,
             BuiltinExc::TypeError,
