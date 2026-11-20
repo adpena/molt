@@ -324,8 +324,10 @@ def _dataclass_init_factory(cls, fields_map, frozen, slots, has_post_init, globa
     parameter_fields = positional + keyword_only
     parameter_names = [receiver] + [f.name for f in parameter_fields]
     if receiver in parameter_names[1:]:
+        # CPython 3.15 renamed the symtable message "argument" to "parameter".
+        word = "parameter" if _sys.version_info >= (3, 15) else "argument"
         raise SyntaxError(
-            f"duplicate argument {receiver!r} in function definition",
+            f"duplicate {word} {receiver!r} in function definition",
             ("<string>", 2, 0, None),
         )
     parameter_indices = {name: i for i, name in enumerate(parameter_names)}

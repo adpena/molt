@@ -1747,17 +1747,13 @@ def _typing_eval_annotation_expr(expr: str, globalns: dict, localns: dict) -> ob
 
 
 def _eval_type(value: object, globalns: dict, localns: dict) -> object:
+    # The annotation evaluator is the only authority: compiled programs have
+    # no eval(), so its error (NameError for an unbound name, as CPython
+    # raises) is the answer, not a cue to retry another way.
     if isinstance(value, ForwardRef):
-        expr = value.__forward_arg__
-        try:
-            return _typing_eval_annotation_expr(expr, globalns, localns)
-        except Exception:
-            return eval(expr, globalns, localns)
+        return _typing_eval_annotation_expr(value.__forward_arg__, globalns, localns)
     if isinstance(value, str):
-        try:
-            return _typing_eval_annotation_expr(value, globalns, localns)
-        except Exception:
-            return eval(value, globalns, localns)
+        return _typing_eval_annotation_expr(value, globalns, localns)
     return value
 
 
