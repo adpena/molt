@@ -400,8 +400,9 @@ pub fn molt_datetime_isocalendar_attached_body(
 // 2. timedelta
 // ===========================================================================
 
-/// Normalize 7 timedelta components to canonical (days, seconds, microseconds).
-/// All inputs are i64 Molt integers.
+/// The timedelta constructor (CPython delta_new): each component, an int or a
+/// float, accumulates exactly into a microsecond count; float fractions below
+/// one microsecond collect in a leftover rounded once, half to even.
 #[allow(
     clippy::too_many_arguments,
     reason = "the body takes the intrinsic ABI's parameters one for one"
@@ -417,69 +418,92 @@ pub fn molt_datetime_td_normalize_attached_body(
     weeks_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
-        let days = match unpack_f64(_py, days_bits, "days") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let secs = match unpack_f64(_py, seconds_bits, "seconds") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let us = match unpack_f64(_py, us_bits, "microseconds") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let ms = match unpack_f64(_py, ms_bits, "milliseconds") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let minutes = match unpack_f64(_py, minutes_bits, "minutes") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let hours = match unpack_f64(_py, hours_bits, "hours") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let weeks = match unpack_f64(_py, weeks_bits, "weeks") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        // Match CPython timedelta construction by accepting ints/floats and
-        // rounding the aggregate duration to the nearest microsecond.
-        let total_us_f = us
-            + ms * 1_000.0
-            + secs * 1_000_000.0
-            + minutes * 60.0 * 1_000_000.0
-            + hours * 3_600.0 * 1_000_000.0
-            + (days + weeks * 7.0) * 86_400.0 * 1_000_000.0;
-        let mut total_us = total_us_f.round() as i128;
-
-        let us_per_day: i128 = 86_400 * 1_000_000;
-        let us_per_sec: i128 = 1_000_000;
-
-        let out_days = total_us.div_euclid(us_per_day);
-        total_us = total_us.rem_euclid(us_per_day);
-        let out_secs = total_us.div_euclid(us_per_sec);
-        let out_us = total_us.rem_euclid(us_per_sec);
-
-        // Check CPython bounds: timedelta.max.days = 999999999
-        if !(-999_999_999..=999_999_999).contains(&out_days) {
-            return raise_exception::<u64>(
-                _py,
-                BuiltinExc::OverflowError,
-                "timedelta # of days is too large: timedelta.max = timedelta(999999999, 86399, 999999)",
-            );
+        let mut total = num_bigint::BigInt::from(0);
+        let mut leftover = 0.0f64;
+        // CPython's order: microseconds, milliseconds, seconds, minutes,
+        // hours, days, weeks.
+        for (bits, tag, factor) in [
+            (us_bits, "microseconds", 1i64),
+            (ms_bits, "milliseconds", 1_000),
+            (seconds_bits, "seconds", 1_000_000),
+            (minutes_bits, "minutes", 60_000_000),
+            (hours_bits, "hours", 3_600_000_000),
+            (days_bits, "days", 86_400_000_000),
+            (weeks_bits, "weeks", 604_800_000_000),
+        ] {
+            if let Err(error) = timedelta_accum(_py, &mut total, &mut leftover, bits, tag, factor) {
+                return error;
+            }
         }
-
-        let elems = [
-            MoltObject::from_int(out_days as i64).bits(),
-            MoltObject::from_int(out_secs as i64).bits(),
-            MoltObject::from_int(out_us as i64).bits(),
-        ];
-        tuple_bits(_py, &elems)
+        if leftover != 0.0 {
+            let mut whole = leftover.round();
+            if (whole - leftover).abs() == 0.5 {
+                // Exactly halfway: round half to even on the running total.
+                let odd = if total.bit(0) { 1.0 } else { 0.0 };
+                whole = 2.0 * ((leftover + odd) * 0.5).round() - odd;
+            }
+            total += whole as i64;
+        }
+        timedelta_tuple_from_us(_py, &total)
     })
+}
+
+/// CPython's accum: add `value * factor` microseconds exactly. A float adds its
+/// integral part exactly and its fraction's whole microseconds, keeping the
+/// sub-microsecond rest in `leftover`.
+fn timedelta_accum(
+    py: &PyToken,
+    total: &mut num_bigint::BigInt,
+    leftover: &mut f64,
+    bits: u64,
+    tag: &str,
+    factor: i64,
+) -> Result<(), u64> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_bigint(obj) {
+        *total += value * factor;
+        return Ok(());
+    }
+    let Some(value) = to_f64(obj) else {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            &format!(
+                "unsupported type for timedelta {tag} component: {}",
+                type_name(py, obj)
+            ),
+        ));
+    };
+    if value.is_nan() {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::ValueError,
+            "cannot convert float NaN to integer",
+        ));
+    }
+    if value.is_infinite() {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::OverflowError,
+            "cannot convert float infinity to integer",
+        ));
+    }
+    let integral = value.trunc();
+    *total += bigint_from_integral_f64(integral) * factor;
+    let fraction = value - integral;
+    if fraction != 0.0 {
+        let scaled = factor as f64 * fraction;
+        let whole = scaled.trunc();
+        *total += whole as i64;
+        *leftover += scaled - whole;
+    }
+    Ok(())
+}
+
+/// An integral, finite f64 as an exact BigInt (PyLong_FromDouble).
+fn bigint_from_integral_f64(value: f64) -> num_bigint::BigInt {
+    let (numerator, denominator) = float_integer_ratio(value);
+    numerator / denominator
 }
 
 pub fn molt_datetime_td_total_seconds_attached_body(
@@ -2539,26 +2563,19 @@ pub fn molt_date_fromisocalendar_attached_body(
 // ─── timedelta arithmetic ───────────────────────────────────────────────────
 
 fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
-    let minor = if !molt_runtime_core::rt_target_at_least(py, 3, 12)
-        || molt_runtime_core::rt_target_at_least(py, 3, 15)
-    {
-        return raise_exception::<u64>(
+    // The target's minor is the newest one it reaches; the numeric policy table
+    // owns which minors have texts, so an unlisted target refuses loudly.
+    let minor = (12..)
+        .take_while(|&minor| molt_runtime_core::rt_target_at_least(py, 3, minor))
+        .last();
+    match minor.and_then(|minor| context.message(3, minor)) {
+        Some(message) => raise_exception::<u64>(py, context.error_kind(), message),
+        None => raise_exception::<u64>(
             py,
             BuiltinExc::RuntimeError,
             "unsupported numeric exception target version",
-        );
-    } else if molt_runtime_core::rt_target_at_least(py, 3, 14) {
-        14
-    } else if molt_runtime_core::rt_target_at_least(py, 3, 13) {
-        13
-    } else {
-        12
-    };
-    raise_exception::<u64>(
-        py,
-        context.error_kind(),
-        context.message(3, minor).expect("admitted target"),
-    )
+        ),
+    }
 }
 
 /// timedelta / scalar (int or float) -> timedelta (days, seconds, us) tuple
@@ -2582,14 +2599,37 @@ pub fn molt_timedelta_truediv_scalar_attached_body(
             Ok(v) => v,
             Err(e) => return e,
         };
-        let divisor = to_f64(obj_from_bits(divisor_bits)).unwrap_or(0.0);
-        if divisor == 0.0 {
+        let total_us = num_bigint::BigInt::from(
+            i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us),
+        );
+        // CPython truedivide_timedelta_int / _float: an int divides the
+        // microseconds exactly; a float through its exact integer ratio.
+        let (numerator, denominator) = if let Some(divisor) = to_bigint(obj_from_bits(divisor_bits))
+        {
+            (total_us, divisor)
+        } else {
+            let divisor = to_f64(obj_from_bits(divisor_bits)).unwrap_or(0.0);
+            if divisor.is_nan() {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "cannot convert NaN to integer ratio",
+                );
+            }
+            if divisor.is_infinite() {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "cannot convert Infinity to integer ratio",
+                );
+            }
+            let (ratio_num, ratio_den) = float_integer_ratio(divisor);
+            (total_us * ratio_den, ratio_num)
+        };
+        if denominator.is_zero() {
             return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
-        let total_us = (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
-        let result_us = (total_us / divisor).round() as i64;
-        let (rd, rs, ru) = normalize_timedelta_us(result_us);
-        timedelta_tuple(_py, rd, rs, ru)
+        timedelta_tuple_from_us(_py, &divide_and_round(&numerator, &denominator))
     })
 }
 
@@ -2604,12 +2644,31 @@ pub fn molt_timedelta_truediv_td_attached_body(
     b_us: u64,
 ) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
-        let a_total = td_total_us(a_days, a_secs, a_us);
-        let b_total = td_total_us(b_days, b_secs, b_us);
-        if b_total == 0.0 {
-            return raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, "division by zero");
+        let a_total = match td_total_us_exact(_py, a_days, a_secs, a_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let b_total = match td_total_us_exact(_py, b_days, b_secs, b_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        // CPython divides the two microsecond ints: one correctly rounded float.
+        match molt_runtime_core::numeric_ratio::ratio_to_f64(
+            &num_bigint::BigInt::from(a_total),
+            &num_bigint::BigInt::from(b_total),
+        ) {
+            Ok(quotient) => MoltObject::from_float(quotient).bits(),
+            Err(molt_runtime_core::numeric_ratio::RatioFloatError::ZeroDenominator) => {
+                numeric_zero_error(_py, NumericErrorContext::IntegerTrueDivision)
+            }
+            Err(molt_runtime_core::numeric_ratio::RatioFloatError::Overflow) => {
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "integer division result too large for a float",
+                )
+            }
         }
-        MoltObject::from_float(a_total / b_total).bits()
     })
 }
 
@@ -2669,14 +2728,7 @@ pub fn molt_timedelta_mod_td_attached_body(
         let rem = python_integer_divmod(a_total, b_total)
             .expect("timedelta totals fit i128")
             .1;
-        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(rem) else {
-            return raise_exception::<u64>(
-                _py,
-                BuiltinExc::OverflowError,
-                "timedelta days must have magnitude <= 999999999",
-            );
-        };
-        timedelta_tuple(_py, rd, rs, ru)
+        timedelta_tuple_from_us(_py, &num_bigint::BigInt::from(rem))
     })
 }
 
@@ -2721,17 +2773,7 @@ pub fn molt_timedelta_floordiv_scalar_attached_body(
         {
             result -= 1;
         }
-        let result_us = result
-            .to_i128()
-            .expect("division cannot enlarge timedelta beyond i128");
-        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(result_us) else {
-            return raise_exception::<u64>(
-                _py,
-                BuiltinExc::OverflowError,
-                "timedelta days must have magnitude <= 999999999",
-            );
-        };
-        timedelta_tuple(_py, rd, rs, ru)
+        timedelta_tuple_from_us(_py, &result)
     })
 }
 
@@ -2755,9 +2797,10 @@ pub fn molt_timedelta_abs_attached_body(
             Ok(v) => v,
             Err(e) => return e,
         };
-        let total_us = (days * 86_400_000_000 + secs * 1_000_000 + us).abs();
-        let (rd, rs, ru) = normalize_timedelta_us(total_us);
-        timedelta_tuple(_py, rd, rs, ru)
+        let total_us =
+            (i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us))
+                .abs();
+        timedelta_tuple_from_us(_py, &num_bigint::BigInt::from(total_us))
     })
 }
 
@@ -2775,34 +2818,86 @@ fn td_total_us_exact(
     Ok(i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us))
 }
 
-fn normalize_timedelta_us_exact(total_us: i128) -> Option<(i64, i64, i64)> {
-    const DAY_US: i128 = 86_400_000_000;
-    if !(-999_999_999 * DAY_US..=(1_000_000_000 * DAY_US - 1)).contains(&total_us) {
-        return None;
+/// Python floor division and modulo: the remainder takes the divisor's sign.
+fn floor_divmod(
+    numerator: &num_bigint::BigInt,
+    denominator: &num_bigint::BigInt,
+) -> (num_bigint::BigInt, num_bigint::BigInt) {
+    let mut quotient = numerator / denominator;
+    let mut remainder = numerator % denominator;
+    if !remainder.is_zero()
+        && (remainder.sign() == num_bigint::Sign::Minus)
+            != (denominator.sign() == num_bigint::Sign::Minus)
+    {
+        quotient -= 1;
+        remainder += denominator;
     }
-    let us = total_us.rem_euclid(1_000_000);
-    let total_secs = (total_us - us) / 1_000_000;
-    let secs = total_secs.rem_euclid(86_400);
-    let days = (total_secs - secs) / 86_400;
-    if !(-999_999_999..=999_999_999).contains(&days) {
-        return None;
-    }
-    Some((days as i64, secs as i64, us as i64))
+    (quotient, remainder)
 }
 
-fn td_total_us(days_bits: u64, secs_bits: u64, us_bits: u64) -> f64 {
-    let days = obj_from_bits(days_bits).as_int().unwrap_or(0);
-    let secs = obj_from_bits(secs_bits).as_int().unwrap_or(0);
-    let us = obj_from_bits(us_bits).as_int().unwrap_or(0);
-    (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64)
+/// CPython's divide_and_round: numerator / denominator rounded half to even.
+fn divide_and_round(
+    numerator: &num_bigint::BigInt,
+    denominator: &num_bigint::BigInt,
+) -> num_bigint::BigInt {
+    let (mut quotient, remainder) = floor_divmod(numerator, denominator);
+    let twice = remainder * 2;
+    let greater_than_half = if denominator.sign() == num_bigint::Sign::Minus {
+        &twice < denominator
+    } else {
+        &twice > denominator
+    };
+    if greater_than_half || (&twice == denominator && quotient.bit(0)) {
+        quotient += 1;
+    }
+    quotient
 }
 
-fn normalize_timedelta_us(total_us: i64) -> (i64, i64, i64) {
-    let us = total_us.rem_euclid(1_000_000);
-    let total_secs = (total_us - us) / 1_000_000;
-    let secs = total_secs.rem_euclid(86_400);
-    let days = (total_secs - secs) / 86_400;
-    (days, secs, us)
+/// float.as_integer_ratio for a finite value, unreduced: value == num / den.
+fn float_integer_ratio(value: f64) -> (num_bigint::BigInt, num_bigint::BigInt) {
+    let bits = value.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i64;
+    let fraction = bits & ((1u64 << 52) - 1);
+    let (mantissa, shift) = if exponent == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1u64 << 52), exponent - 1075)
+    };
+    let mut numerator = num_bigint::BigInt::from(mantissa);
+    let mut denominator = num_bigint::BigInt::from(1);
+    if shift >= 0 {
+        numerator <<= shift as usize;
+    } else {
+        denominator <<= (-shift) as usize;
+    }
+    if value.is_sign_negative() {
+        numerator = -numerator;
+    }
+    (numerator, denominator)
+}
+
+/// CPython's microseconds_to_delta: an exact microsecond count as the
+/// (days, seconds, microseconds) tuple. Days that fit a C int but leave the
+/// timedelta range raise new_delta's OverflowError; larger ones fail the C int
+/// conversion first, as in CPython.
+fn timedelta_tuple_from_us(py: &PyToken, total_us: &num_bigint::BigInt) -> u64 {
+    let (days, day_us) = floor_divmod(total_us, &num_bigint::BigInt::from(86_400_000_000i64));
+    let Some(days) = days.to_i32() else {
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::OverflowError,
+            "Python int too large to convert to C int",
+        );
+    };
+    if days.unsigned_abs() > 999_999_999 {
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::OverflowError,
+            &format!("days={days}; must have magnitude <= 999999999"),
+        );
+    }
+    let day_us = day_us.to_i64().expect("a remainder below one day fits i64");
+    timedelta_tuple(py, i64::from(days), day_us / 1_000_000, day_us % 1_000_000)
 }
 
 fn timedelta_tuple(_py: &PyToken, days: i64, secs: i64, us: i64) -> u64 {
@@ -3161,3 +3256,43 @@ pub fn molt_datetime_timetuple_attached_body(
 }
 
 include!("attached_exports_generated/datetime.rs");
+
+#[cfg(test)]
+mod exact_division_tests {
+    use super::{divide_and_round, float_integer_ratio, floor_divmod};
+    use num_bigint::BigInt;
+
+    /// Expected values are CPython 3.15.2's `n / d` rounding of timedelta
+    /// microseconds (`divide_and_round`) and `float.as_integer_ratio`.
+    #[test]
+    fn rounds_half_to_even_and_floors_like_python() {
+        let cases = [
+            (7, 2, 4),
+            (5, 2, 2),
+            (-5, 2, -2),
+            (-7, 2, -4),
+            (7, -3, -2),
+            (3, 2, 2),
+            (1, 2, 0),
+        ];
+        for (n, d, expected) in cases {
+            assert_eq!(
+                divide_and_round(&BigInt::from(n), &BigInt::from(d)),
+                BigInt::from(expected),
+                "{n} / {d}"
+            );
+        }
+        assert_eq!(
+            floor_divmod(&BigInt::from(-7), &BigInt::from(3)),
+            (BigInt::from(-3), BigInt::from(2))
+        );
+    }
+
+    #[test]
+    fn float_ratio_is_exact() {
+        for (value, num, den) in [(0.5, 1, 2), (-1.5, -12, 8), (3.0, 3, 1)] {
+            let (n, d) = float_integer_ratio(value);
+            assert_eq!(n * BigInt::from(den), BigInt::from(num) * d, "{value}");
+        }
+    }
+}
