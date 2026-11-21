@@ -3310,6 +3310,84 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     assert ran == [("gate", "1")]
 
 
+def test_postsubmit_keeps_going_and_names_every_failed_gate(
+    drv: ModuleType, tmp_path: Path
+) -> None:
+    # HF-937: a first-failure stop let one red static check hide every later
+    # gate on main for 20 days. Postsubmit runs them all and names each one.
+    ran: list[str] = []
+
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, ...] | None = None,
+    ) -> object:
+        name = next(
+            (str(part) for part in command if str(part).startswith("tests/")),
+            str(command[-1]),
+        )
+        ran.append(name)
+        if streams is not None:
+            for path in streams:
+                path.open("x").close()
+        failing = {"light-1", "light-3", "tests/test_heavy_1.py"}
+        return _gate_outcome(3 if name in failing else 0, "", "", None)
+
+    class Progress:
+        def emit(self, event: str, **details: object) -> None:
+            pass
+
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+    )
+    light = [
+        SelectedGate(command=("gate", f"light-{index}"), toolchains=("python",))
+        for index in (1, 2, 3)
+    ]
+    heavy = [
+        SelectedGate(
+            command=("python", "-m", "pytest", "-q", f"tests/test_heavy_{index}.py"),
+            toolchains=("python",),
+            pytest=True,
+        )
+        for index in (1, 2)
+    ]
+    with pytest.raises(CandidateFailure) as exc:
+        molt_dev_gates.run_selected_gates(
+            [*light, *heavy], runtime, [], host_limit=lambda: 1, keep_going=True
+        )
+    message = str(exc.value)
+    assert message.startswith("3 gate(s) failed:")
+    for name in ("light-1", "light-3", "tests/test_heavy_1.py"):
+        assert name in message
+    # Every gate ran after the first failure; the passing ones passed.
+    assert {"light-1", "light-2", "light-3"} <= set(ran)
+    assert "tests/test_heavy_2.py" in ran
+    passed = {gate.command[-1] for gate in runtime.passed}
+    assert passed == {"light-2", "tests/test_heavy_2.py"}
+
+
 @pytest.mark.parametrize("second_rc", [0, 3])
 def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, second_rc):
     # A heavy gate that fails beside others and passes alone failed on load or
@@ -7501,6 +7579,21 @@ def test_a_landed_unretired_lane_holds_no_dispatch_capacity(
     assert not landed(git, record("lane/landed", status="landed"), main)
 
 
+@pytest.fixture(autouse=True)
+def _postsubmit_starts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """A fast landing starts the queue runner (HF-937); a test records it
+    instead of spawning a runner against its scratch remote."""
+    from tools import molt_dev_land_fast
+
+    started: list[Path] = []
+    monkeypatch.setattr(
+        molt_dev_land_fast,
+        "_start_postsubmit",
+        lambda git, _args: started.append(git.worktree_paths()[0]),
+    )
+    return started
+
+
 def _land_fast(drv, lane: Path, *extra: str) -> int:
     args = drv.build_parser().parse_args(
         ["land", "--repo", str(lane), "--candidate-controller", "--fast", *extra]
@@ -7513,8 +7606,11 @@ def _remote_main(work: Path) -> str:
 
 
 def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
-    drv, origin_and_clone, tmp_path
-):
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    _postsubmit_starts: list[Path],
+) -> None:
     """The not-rocket-science rule: main advances to exactly the tested tree."""
     from tools import landing_receipt
 
@@ -7557,6 +7653,8 @@ def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
     assert message.rstrip().endswith(
         f"Receipt: landing-receipts/{receipt['tree']}.{late}.json"
     )
+    # The landing started postsubmit once, from the main checkout.
+    assert _postsubmit_starts == [work]
 
 
 def test_land_fast_runs_its_try_run_on_the_farm_host_when_set(
@@ -7768,8 +7866,11 @@ def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
 
 
 def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
-    drv, origin_and_clone, tmp_path
-):
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    _postsubmit_starts: list[Path],
+) -> None:
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
     _publish_policy(work, _try_run_policy(counter, try_gate="test ! -e broken.txt"))
@@ -7783,6 +7884,7 @@ def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
     assert _remote_main(work) == base
     receipts = drv._git_common_directory(lane) / "molt" / "landing-receipts"
     assert not receipts.exists() or not any(receipts.iterdir())
+    assert _postsubmit_starts == []
 
 
 def test_land_fast_retests_when_main_moves_before_publication(

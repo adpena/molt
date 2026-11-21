@@ -36,7 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, assert_never
 
 from tools import harness_memory_guard, proof_executor, proof_receipts
-from tools.driver_errors import DriverError, GateFailure  # noqa: E402
+from tools.driver_errors import CandidateFailure, DriverError, GateFailure  # noqa: E402
 from tools.molt_dev_common import _say, _warn  # noqa: E402
 
 if TYPE_CHECKING:
@@ -627,6 +627,7 @@ def run_selected_gates(
     gate_seconds: list[tuple[float, str]],
     *,
     host_limit: Callable[[], int] = concurrent_gate_limit,
+    keep_going: bool = False,
 ) -> None:
     """Read-only checks first; then the heavy gates overlap in one block.
 
@@ -637,6 +638,14 @@ def run_selected_gates(
     time while independent pytest sessions run beside them, each sized
     within the exported memory slice. The first observed failure within a
     phase halts the landing and cancels its remaining gates through their guards.
+
+    ``keep_going`` (postsubmit) runs every gate and raises one CandidateFailure
+    naming each failed gate at the end: postsubmit reports main's state, and a
+    first-failure stop hid every later gate (HF-937: no run since 2026-11-01
+    reached a Cargo gate past its first red static check). Read-only checks
+    then run one at a time, and the heavy block reruns the gates a failure
+    cancelled, without the failed ones. Runner, custody and cancellation
+    faults still stop at once.
     """
     for item in runtime.deferred:
         runtime.say(item.diagnostic())
@@ -676,15 +685,21 @@ def run_selected_gates(
         if gate_resource_class(gate) != GATE_RESOURCE_CLASS
     ]
     block = 0
-    while block < len(light) and light[block][1].concurrent:
+    while not keep_going and block < len(light) and light[block][1].concurrent:
         block += 1
     if block >= 2:
         _run_executor_block(light[:block], runtime, gate_seconds, host_limit())
     else:
         block = 0
+    failures: list[CandidateFailure] = []
     for ordinal, gate in light[block:]:
         _check_cancellation(runtime)
-        _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+        try:
+            _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+        except GateFailure as failure:
+            if not keep_going:
+                raise
+            failures.append(failure)
     _check_cancellation(runtime)
     if heavy:
         from molt import host_capacity
@@ -704,8 +719,39 @@ def run_selected_gates(
             ),
             say=runtime.say,
         ):
-            _run_heavy_gates(heavy, runtime, gate_seconds, host_limit)
+            remaining = heavy
+            while remaining:
+                try:
+                    _run_heavy_gates(remaining, runtime, gate_seconds, host_limit)
+                    break
+                except (GateFailure, GateMemoryPressure) as failure:
+                    if not keep_going or runtime.cancelled():
+                        raise
+                    failed = {
+                        display(gate.command)
+                        for _ordinal, gate in remaining
+                        if display(gate.command) in getattr(failure, "shown", ())
+                        or display(gate.command) in str(failure)
+                    }
+                    if not failed:
+                        raise
+                    failures.append(
+                        failure
+                        if isinstance(failure, CandidateFailure)
+                        else CandidateFailure(str(failure))
+                    )
+                    remaining = [
+                        (ordinal, gate)
+                        for ordinal, gate in remaining
+                        if gate not in runtime.passed
+                        and display(gate.command) not in failed
+                    ]
     _check_cancellation(runtime)
+    if failures:
+        raise CandidateFailure(
+            f"{len(failures)} gate(s) failed:\n"
+            + "\n".join(str(failure).splitlines()[0] for failure in failures)
+        )
 
 
 def _run_heavy_gates(
