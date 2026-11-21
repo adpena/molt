@@ -2848,15 +2848,11 @@ class _ObservedBindingTable[K, V](dict[K, V]):
         self.access: _BindingFactAccess | None = None
         self.prior = prior
 
-    def _access(self) -> _BindingFactAccess:
+    def _read(self, key: object) -> _BindingFactAccess:
         access = self.access
         if access is None:
             self.access = access = _BindingFactAccess()
-        return access
-
-    def _read(self, key: object) -> _BindingFactAccess:
-        access = self._access()
-        if key in access.writes:
+        if key in access.writes or key in access.reads:
             return access
         if self.prior is not None:
             table, old_access = self.prior
@@ -2869,7 +2865,9 @@ class _ObservedBindingTable[K, V](dict[K, V]):
     def _enumerate(self) -> None:
         if self.prior is not None:
             raise _BindingReplayRefused
-        self._access().enumerates = True
+        if self.access is None:
+            self.access = _BindingFactAccess()
+        self.access.enumerates = True
 
     def __getitem__(self, key: K) -> V:
         if self.observing:
@@ -10190,6 +10188,7 @@ class _BindingRevisions:
         self._recorded: dict[
             tuple[str, PythonBindingFlowPolicy], _RecordedBindingTransfer
         ] = {}
+        self._observed_sources: set[str] = set()
 
     def analyze(
         self,
@@ -10283,7 +10282,13 @@ class _BindingRevisions:
             and 1 < len(analyzer.function_jobs) <= 256
             and _binding_checkpoint_size(analyzer) <= 8192
         ):
-            recorder = _DeferredJobRecorder(analyzer)
+            # Recording is a one-time investment for each source. A later
+            # policy shape can reuse its exact prefix and need not rebuild a
+            # dependency log that can only serve that shape.
+            with self._lock:
+                if analyzer.source_digest not in self._observed_sources:
+                    self._observed_sources.add(analyzer.source_digest)
+                    recorder = _DeferredJobRecorder(analyzer)
         result = analyzer._finish_analysis(cursor, capture=capture, recorder=recorder)
         with self._lock:
             self._recent.pop(key, None)
