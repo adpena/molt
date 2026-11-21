@@ -9513,7 +9513,8 @@
       "python tools/check_perf_gate_wiring.py",
       "python tools/check_ratio_direction.py",
       "python tools/check_subagent_contract.py",
-      "python tools/check_public_source_boundary.py"
+      "python tools/check_public_source_boundary.py",
+      "python tools/perf_methodology.py --check"
     ],
     "always_command_ids": [
       "local.always.0",
@@ -9541,7 +9542,8 @@
       "local.always.22",
       "local.always.23",
       "local.always.24",
-      "local.always.25"
+      "local.always.25",
+      "local.always.26"
     ],
     "cargo_target_access": {
       "local.always.0": "none",
@@ -9563,6 +9565,7 @@
       "local.always.23": "none",
       "local.always.24": "none",
       "local.always.25": "none",
+      "local.always.26": "none",
       "local.always.3": "none",
       "local.always.4": "none",
       "local.always.5": "none",
@@ -9641,7 +9644,6 @@
       "local.op-kind-registry.0": "none",
       "local.op-kind-registry.pytest": "none",
       "local.pending-call-source-authority.0": "shared",
-      "local.performance-measurement.0": "none",
       "local.performance-measurement.pytest-select-0": "none",
       "local.phase-exit-manifest.0": "none",
       "local.phase-exit-manifest.pytest": "none",
@@ -9722,6 +9724,7 @@
       "local.always.23": "python tools/check_ratio_direction.py",
       "local.always.24": "python tools/check_subagent_contract.py",
       "local.always.25": "python tools/check_public_source_boundary.py",
+      "local.always.26": "python tools/perf_methodology.py --check",
       "local.always.3": "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
       "local.always.4": "python tools/check_typed_facts.py --changed --base {integration_upstream_commit}",
       "local.always.5": "python tools/generators.py check",
@@ -9800,7 +9803,6 @@
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.pending-call-source-authority.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority",
-      "local.performance-measurement.0": "python tools/perf_methodology.py --check",
       "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_bench_evidence.py tests/test_bench_suites.py tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_authority.py tests/tools/test_perf_instructions.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
@@ -11812,13 +11814,10 @@
       },
       {
         "command_ids": [
-          "local.performance-measurement.0",
           "local.performance-measurement.pytest-select-0"
         ],
         "description": "Typed sample transport, deployment selection and complete benchmark artifact lifetimes.",
-        "gates": [
-          "python tools/perf_methodology.py --check"
-        ],
+        "gates": [],
         "globs": [
           "tools/benchmark_applications.py",
           "tools/bench_evidence.py",
@@ -13033,6 +13032,13 @@
         "browser-acorn",
         "node"
       ],
+      "local.always.26": [
+        "python",
+        "git",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
       "local.always.3": [
         "python",
         "git",
@@ -13421,10 +13427,6 @@
         "rustc",
         "cargo",
         "git"
-      ],
-      "local.performance-measurement.0": [
-        "python",
-        "uv"
       ],
       "local.performance-measurement.pytest-select-0": [
         "python",

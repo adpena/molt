@@ -853,6 +853,29 @@ class PythonScopeFact:
     activation_namespace_stable: bool
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class EnclosingBindingDeclarations:
+    """The global and nonlocal declarations a source projection can publish."""
+
+    scopes: tuple[PythonScopeFact, ...]
+
+    def publishes(self, scope_id: int, name: str) -> bool:
+        scope = self.scopes[scope_id]
+        return name in scope.global_names or name in scope.nonlocal_names
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EnclosingBindingDeclarations):
+            return NotImplemented
+        return self.scopes is other.scopes or (
+            len(self.scopes) == len(other.scopes)
+            and all(
+                left.global_names == right.global_names
+                and left.nonlocal_names == right.nonlocal_names
+                for left, right in zip(self.scopes, other.scopes, strict=True)
+            )
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PythonBindingTelemetry:
     binding_lookups: int
@@ -1052,9 +1075,8 @@ class PythonBindingFacts:
         return self._statement_lookup.get(PythonNodeKey.from_node(node))
 
     @property
-    def enclosing_binding_declarations(self) -> tuple[tuple[str, ...], ...]:
-        """Explicit global and nonlocal declarations in source scope order."""
-        return tuple(scope.global_names + scope.nonlocal_names for scope in self.scopes)
+    def enclosing_binding_declarations(self) -> EnclosingBindingDeclarations:
+        return EnclosingBindingDeclarations(self.scopes)
 
     def iteration_fact(self, node: ast.AST) -> PythonIterationFact | None:
         """Return the canonical executed iterator/item fact for a loop clause."""

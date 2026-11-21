@@ -118,6 +118,11 @@ per premise revision.
    jobs identify the parameters that can have read an argument. A revision to a pending job
    leaves the prefix reusable. The checkpoint shares immutable state, copies the scope and
    history owners before resuming, and retains a bounded amount of recent work.
+   Small modules can retain the completed initializer and early deferred boundaries.
+   The initializer and deferred jobs keep their transfer state. Resolving deferred effects
+   projects immutable binding facts from that state, so a later premise can reuse the
+   transfer without inheriting a previously resolved effect. A deferred replay starts from
+   a boundary whose activation and argument reads still hold.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.

@@ -204,7 +204,7 @@ impl MemberList {
 
 impl Drop for MemberList {
     fn drop(&mut self) {
-        self.with_vec(|vec| std::mem::take(vec));
+        self.with_vec(std::mem::take);
     }
 }
 

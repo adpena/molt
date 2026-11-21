@@ -9,7 +9,8 @@ use molt_ir::backend_environment::{self, Carried};
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub(super) const MATERIALIZE_SYMBOL: &str = "__molt_jit_materialize";
 
@@ -243,6 +244,8 @@ impl ReadyCode {
             )
             .map_err(|error| JitCompileError::Lowering(vec![error]))
         })?;
+        let finalize_error =
+            |error| JitCompileError::Finalize(format!("`{}`: {error}", compiled.name));
         module
             .define_function_bytes(
                 body_id,
@@ -250,8 +253,8 @@ impl ReadyCode {
                 &compiled.code,
                 &compiled.relocs,
             )
-            .and_then(|()| module.finalize_definitions())
-            .map_err(|error| JitCompileError::Finalize(format!("`{}`: {error}", compiled.name)))?;
+            .map_err(finalize_error)?;
+        module.finalize_definitions().map_err(finalize_error)?;
         let address = module.get_finalized_function(body_id) as usize;
         // Publish after code and its relocations are executable on all cores.
         entry.address.store(address, Ordering::Release);

@@ -165,6 +165,11 @@ pub(crate) enum SiteBody {
     /// words `[bits]`; the miss is `molt_dec_ref_obj`. Only the backend's
     /// release refcount sites reach it, through their slow call.
     ReleaseTerminal,
+    /// Drop each field reference of a dying plain instance
+    /// (`object_lifecycle::generate_release_fields`), answering None; words
+    /// `[pointer, fields]`; a last reference is `molt_dec_ref_obj`'s. Only
+    /// the terminal release reaches it, out of line.
+    ReleaseFields,
     /// `type(value)`, owned (`object_lifecycle::generate_type_of`); words
     /// `[value]`; the miss is `molt_type_of`.
     TypeOf,

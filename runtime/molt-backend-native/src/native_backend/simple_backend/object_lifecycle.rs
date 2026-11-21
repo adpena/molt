@@ -7,7 +7,7 @@ use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
     LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
-    generate_release_terminal, generate_type_of,
+    generate_release_fields, generate_release_terminal, generate_type_of,
 };
 
 fn lifecycle_builder<'a, 'b>(
@@ -74,7 +74,8 @@ pub(crate) fn emit_builtin_type(
 }
 
 /// The release of `bits` after its count read 1. `free` is
-/// `molt_heap_free`; `cold(builder)` is `molt_dec_ref_obj`.
+/// `molt_heap_free`; `release_fields` is the program's field-release helper
+/// (`ReleaseFieldsBody`); `cold(builder)` is `molt_dec_ref_obj` of `bits`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_release_terminal(
     builder: &mut FunctionBuilder<'_>,
@@ -84,6 +85,7 @@ pub(crate) fn emit_release_terminal(
     words: LifecycleWords<Value>,
     terminal_release: Value,
     free: FuncRef,
+    release_fields: FuncRef,
     cold: impl FnOnce(&mut FunctionBuilder<'_>),
 ) {
     let mut b = lifecycle_builder(builder, sites);
@@ -98,6 +100,27 @@ pub(crate) fn emit_release_terminal(
         |b, object| {
             b.words.builder.ins().call(free, &[object]);
         },
+        |b, pointer, fields| {
+            b.words
+                .builder
+                .ins()
+                .call(release_fields, &[pointer, fields]);
+        },
         |b| cold(&mut *b.words.builder),
     );
+}
+
+/// Drop each field reference of the dying instance at `pointer`; `dec_ref`
+/// is `molt_dec_ref_obj`, which takes a last reference.
+pub(crate) fn emit_release_fields(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    pointer: Value,
+    fields: Value,
+    dec_ref: FuncRef,
+) {
+    let mut b = lifecycle_builder(builder, sites);
+    generate_release_fields(&mut b, pointer, fields, |b, child| {
+        b.words.builder.ins().call(dec_ref, &[child]);
+    });
 }

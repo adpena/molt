@@ -760,7 +760,7 @@ fn compile_with_provider(backend: &mut SimpleBackend, caller: FunctionIR, provid
 /// Complete the same deferred codegen used by production without rerunning
 /// preprocessing over the directly compiled test functions.
 pub(in crate::native_backend) fn emit_direct_object(mut backend: SimpleBackend) -> Vec<u8> {
-    backend.flush_deferred_defines();
+    backend.flush_deferred_defines(None);
     backend
         .module
         .into_object()
@@ -1052,7 +1052,7 @@ fn compile_final_to_clif_text(source: &FunctionIR) -> String {
     .to_string()
 }
 
-fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
+pub(super) fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     std::env::temp_dir().join(format!(
         "molt-tir-pipeline-cache-test-{}-{}",

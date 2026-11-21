@@ -728,6 +728,11 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             (SiteBody::ReleaseTerminal, &[bits, admission]) => {
                 let free = self.runtime_callee(RuntimeFn::HeapFree);
                 let cold = self.runtime_callee(RuntimeFn::DecRefObj);
+                let release_fields = self.define_helper(
+                    crate::codegen_ssa::RELEASE_FIELDS_HELPER,
+                    2,
+                    &crate::codegen_ssa::ReleaseFieldsBody,
+                );
                 let profile = self.profile_enabled();
                 let words = self.lifecycle_words(profile);
                 let record = self.thread_record_word();
@@ -745,10 +750,16 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     words,
                     terminal_release,
                     free,
+                    release_fields,
                     |builder| {
                         builder.ins().call(cold, &[bits]);
                     },
                 );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::ReleaseFields, &[pointer, fields, _]) => {
+                let dec_ref = self.runtime_callee(RuntimeFn::DecRefObj);
+                emit_release_fields(self.words.builder, sites, pointer, fields, dec_ref);
                 self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
             }
             (SiteBody::TypeOf, &[value, _]) => {
