@@ -170,8 +170,8 @@ def test_stdlib_family_locks_stay_where_the_backend_takes_them(
     )
 
 
-def test_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
-    from molt import dx
+def test_only_reusable_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
+    from molt import checkout_state, dx
 
     source = tmp_path / "source"
     source.mkdir()
@@ -188,11 +188,70 @@ def test_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
     session = dx.cargo_target_dir_for_artifact_root(
         artifact, "proof-1", source_root=source
     )
-    assert session.is_relative_to(placed)
+    assert session == outside / "sessions" / "proof-1"
+    env = {"MOLT_EXT_ROOT": str(artifact), "MOLT_SESSION_ID": "proof-1"}
+    assert dx.project_cargo_target_dir(source, env) == session
+    assert (
+        dx.project_cargo_target_dir(source, {**env, "MOLT_SESSION_ID_GENERATED": "1"})
+        == placed
+    )
+
+    displaced_session = placed / "sessions" / "old-proof"
+    for path in (session, displaced_session):
+        path.mkdir(parents=True)
+    assert {
+        state.path
+        for state in checkout_state.checkout_state_roots(source, env)
+        if state.kind == "cargo-target"
+    } == {outside, placed, session, displaced_session}
+    assert {
+        state.path
+        for state in checkout_state.stamp_checkout_state(source, env)
+        if state.kind == "cargo-target"
+    } == {outside, session}
+    assert not (displaced_session / checkout_state.LAST_USE_STAMP).exists()
     # A plain clone keeps Cargo's own target.
     assert dx.cargo_target_dir_for_artifact_root(source, None, source_root=source) == (
         source.resolve() / "target"
     )
+
+
+def test_daemon_sweep_reaches_sessions_on_both_target_volumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import dx
+    from molt.build_state_layout import build_state_root
+    from molt.cli import backend_execution
+
+    source = tmp_path / "source"
+    source.mkdir()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    _bind(artifact, hot)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(source / "target"))
+    component = dx.checkout_component(source.resolve())
+    stale = []
+    for location in (artifact, hot):
+        target = location / "target" / "checkouts" / component / "sessions" / "proof"
+        target.mkdir(parents=True)
+        path = (
+            build_state_root(
+                project_root=source,
+                cargo_target=target,
+                environment={"MOLT_EXT_ROOT": str(artifact)},
+            )
+            / "backend_daemon"
+            / "stale.pid"
+        )
+        path.parent.mkdir(parents=True)
+        path.write_text("0\n", encoding="utf-8")
+        stale.append(path)
+
+    assert backend_execution._sweep_orphaned_backend_daemon_locks(source) == 2
+    assert all(not path.exists() for path in stale)
 
 
 @pytest.mark.parametrize("operation", ["build", "scratch"])

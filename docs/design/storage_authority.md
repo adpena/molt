@@ -467,12 +467,17 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    scratch is transient and retained failures stay bounded (3 generations,
    2 GiB); `storage trim` retires terminal generations left on the former
    root. The integrator owns the Python build environments' placement.
-   Checkout Cargo targets move the same way
+   Reusable checkout Cargo targets move the same way
    (`dx.cargo_target_dir_for_artifact_root`), beside the kache store, so a
    restore clones instead of copying: a full molt-runtime dev-fast restore
    into a fresh target took 8.9-11.6 s on the internal disk and 73.8-200.1 s
    on the data volume (kache's no-copy total rose 1.9 GiB for the two
-   internal restores). The disk guard governs a root's hot mirror with the
+   internal restores). Explicitly pinned Cargo sessions stay on the artifact
+   volume. Generated run IDs keep the reusable target. Managed retirement and
+   orphan-daemon cleanup see the checkout's targets on both volumes, including
+   any previously placed sessions. Live stamps touch only the selected target,
+   its enclosing checkout target when pinned, and its control. The disk guard
+   governs a root's hot mirror with the
    root (`reclaim_roots`). A target's toolchain partitions
    (`.molt-toolchains/<digest>`, one per external-input identity) other than
    its newest retire after 7 idle days under the target's exclusive lock.
