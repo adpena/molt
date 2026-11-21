@@ -18,7 +18,7 @@ import shutil
 import stat
 import time
 import tempfile
-from typing import Literal
+from typing import Literal, cast
 
 from molt.checkout_state import (
     checkout_state_last_use,
@@ -612,6 +612,23 @@ def trim(
                 "action": "removed" if apply else "removable",
                 "count": removed,
                 "kept": kept,
+            }
+        )
+    # A hot binding moved guard scratch (HF-942). Generations left on the
+    # former root keep their receipts; the guard's own terminal sweep retires
+    # them, as each finishing guard does for its current root.
+    from molt import temporary_artifacts
+
+    former = temporary_artifacts.former_scratch_root(repo, environment)
+    if former is not None and former.is_dir():
+        sweep = temporary_artifacts.reclaim_terminal_scratch(former, dry_run=not apply)
+        result.append(
+            {
+                "class": "guard-scratch",
+                "path": str(former),
+                "action": "reclaimed" if apply else "reclaimable",
+                "count": len(cast(list[object], sweep["reclaimed"])),
+                "errors": sweep["errors"],
             }
         )
     # Repository preimages have one Git custody owner. Historical user-cache

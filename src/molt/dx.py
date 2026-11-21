@@ -2285,6 +2285,20 @@ def storage_write_check(
             for parent in claim.path.parents
             if parent == artifact or artifact in parent.parents
         )
+    from molt.default_paths import hot_state
+
+    if (hot := hot_state(artifact)) is not None:
+        # HF-942: the hot root mirrors the artifact root's relative paths, so
+        # each artifact claim holds at the same relative path below it.
+        claims.extend(
+            StorageWriteClaim(
+                claim.kind,
+                hot.root.joinpath(*claim.path.relative_to(artifact).parts),
+                claim.exact,
+            )
+            for claim in tuple(claims)
+            if claim.path == artifact or artifact in claim.path.parents
+        )
     from molt.cargo_execution_policy import sccache_server_temp_dir
 
     if server_temp := sccache_server_temp_dir(environment):
