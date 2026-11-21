@@ -1610,12 +1610,32 @@ def test_recording_does_not_delete_a_replacement_allocation(
     assert moved.is_dir()
 
 
-def test_a_hit_refreshes_its_record_for_trimming(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_products", [False, True])
+def test_a_hit_refreshes_its_record_for_trimming(
+    tmp_path: Path, with_products: bool
+) -> None:
     _source, _tool, output, record = _fixture(tmp_path)
+    products = [output]
+    if with_products:
+        manifest = output.with_suffix(".json")
+        manifest.write_bytes(b'{"module": "app"}')
+        ledger = _future_ledger()
+        ledger.build_products(
+            {
+                "consumer": str(output),
+                "products": {"wasm": str(output), "manifest": str(manifest)},
+            }
+        )
+        record, reason = _write(tmp_path, ledger, output)
+        assert reason is None
+        products.append(manifest)
+    published = [input_report.stat_token(product) for product in products]
     _age(record, 2 * 3600)
     aged = record.stat().st_mtime_ns
     assert _current(record, output)
     assert record.stat().st_mtime_ns > aged
+    assert [input_report.stat_token(product) for product in products] == published
+    assert _current(record, output), "retention refresh must preserve the next hit"
 
 
 def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
