@@ -2457,6 +2457,47 @@ def test_binding_core_reuses_only_unread_opaque_activation_inputs(
     assert flow.python_binding_core_computations() == 3
 
 
+def test_binding_core_reuses_equal_enclosing_activation_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import FunctionType
+
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "def outer():\n    def inner(): return len(())\n    return inner\n"
+    (outer,) = ast.parse(source).body
+    inner, _result = outer.body
+    read = inner.body[0].value.func
+    namespace = {}
+    exec(compile(source, "<opaque-enclosing-activation>", "exec"), namespace)
+    foreign_globals = {"len": lambda _: 42}
+    assert FunctionType(namespace["outer"].__code__, foreign_globals)()() == 42
+    assert FunctionType(namespace["outer"]().__code__, foreign_globals)() == 42
+    assert namespace["outer"]()() == 0
+
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        callback_member_writes=0,
+        opaque_activation_sources=(python_node_source_key(outer),),
+    )
+    outer_opaque = analyze_python_source_bindings(source, policy=policy)
+    inner_opaque = analyze_python_source_bindings(
+        source,
+        policy=replace(
+            policy, opaque_activation_sources=(python_node_source_key(inner),)
+        ),
+    )
+    assert outer_opaque == inner_opaque
+    assert inner_opaque.expression_fact(read).exact_builtin_name() is None
+    assert flow.python_binding_core_computations() == 1
+
+    precise = analyze_python_source_bindings(
+        source, policy=replace(policy, opaque_activation_sources=())
+    )
+    assert precise.expression_fact(read).exact_builtin_name() == "len"
+    assert flow.python_binding_core_computations() == 2
+
+
 def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
