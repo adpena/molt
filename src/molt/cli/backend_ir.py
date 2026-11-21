@@ -56,7 +56,10 @@ from molt.cli.models import (
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.closed_world_bindings import bind_closed_world_calls
 from molt.cli.static_module_cells import (
+    FunctionCells,
     StaticCellPlan,
+    apply_function_cells,
+    plan_function_cells,
     plan_static_module_cells,
     fold_init_once_constants,
     prove_init_once_calls,
@@ -2474,6 +2477,7 @@ def _prepare_backend_ir(
     binding_diagnostics.extend(integration_state.constructor_fallbacks)
     module_registry: ModuleRegistry | None = None
     static_cells = StaticCellPlan()
+    function_cells = FunctionCells()
     if catalog_lane:
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
         # molt_isolate_import string_eq dispatch chain.  Cold dispatch is the
@@ -2515,6 +2519,13 @@ def _prepare_backend_ir(
             dep_closures=integration_state.module_dep_closures,
             program_functions=functions,
         )
+        function_cells = plan_function_cells(
+            static_cells,
+            integration_state.module_functions,
+            integration_state.global_layouts,
+            functions,
+        )
+        binding_diagnostics.extend(function_cells.diagnostics)
         stamp_global_slots(
             functions,
             integration_state.module_functions,
@@ -2523,7 +2534,9 @@ def _prepare_backend_ir(
             static_cells.modules,
             static_cells.guard_masks,
             static_cells.init_dominated,
+            function_cells.counts(),
         )
+        apply_function_cells(functions, function_cells)
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
             if rewrite_issue is not None:
@@ -2609,7 +2622,9 @@ def _prepare_backend_ir(
         assert isinstance(registry_rows, list)
         for row in registry_rows:
             if row["name"] in static_cells.modules:
-                row["static_cells"] = len(integration_state.global_layouts[row["name"]])
+                row["static_cells"] = len(
+                    integration_state.global_layouts[row["name"]]
+                ) + function_cells.counts().get(row["name"], 0)
         ir["module_registry"] = registry_payload
     # ModuleRegistry init bodies are reached through relocation slots in
     # MODULE_INIT_TABLE, not through SimpleIR call edges.  They must therefore

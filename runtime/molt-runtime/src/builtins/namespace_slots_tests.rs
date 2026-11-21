@@ -169,6 +169,7 @@ fn retirement_stores_none_into_bound_cells_and_keeps_unbound_ones() {
             release(dict);
             let cells = Box::new(StaticCells {
                 names: Box::new([&b"a"[..], &b"b"[..], &b"c"[..]]),
+                function_cells: 0,
                 words: block,
             });
             dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);
@@ -213,6 +214,7 @@ fn namespace_exact_value_reads_cells_before_the_dictionary() {
             release(dict);
             let cells = Box::new(StaticCells {
                 names: Box::new([&b"bound"[..], &b"unbound"[..]]),
+                function_cells: 0,
                 words: block,
             });
             dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);

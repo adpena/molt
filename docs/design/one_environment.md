@@ -66,6 +66,12 @@ worktree ("Shouldn't there just be one?").
    0.62 s against 0.11 s for `import molt.dx, molt.frontend.generator` (2026-11-21).
 4. **Not checkout state**: a shared environment has no checkout owner, lease or retirement;
    `python-environment` left `CheckoutStateKind`, and retiring a worktree never touches one.
+   Retention is by last use instead (`uv_environment.retire_unused`, run by the disk guard's
+   daily collection): a use refreshes the record's mtime at most once a day; an environment
+   unused for 30 days retires, never one whose lock is held; bytecode whose source directory is
+   gone is pruned; and each per-checkout image the shared environments replaced retires once
+   its checkout is gone, or a day after the checkout gained `uv_environment.py`. Liveness reads
+   every worktree of the running checkout's family, and with none found nothing legacy retires.
 5. **Delete**: development-image generations, selection records, provisioning stamps and leases
    for Python environments (`checkout_state.py`, `custody_layout.py:280-291`), runtime-closure
    and bytecode attestation, `tools/venv_exec.py` (both modes), `tools/uv_project_env.py`'s

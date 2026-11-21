@@ -87,6 +87,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 rewritten.push(op);
                 continue;
             };
+            // A function cell (design 78, 5.9) arrives as its final cell op:
+            // it has no name, so no by-name form exists to rewrite from.
+            if matches!(op.opcode, OpCode::StaticCellLoad | OpCode::StaticCellSet) {
+                rewritten.push(op);
+                continue;
+            }
             let site_kind = if op.opcode == OpCode::ModuleGetGlobal {
                 Site::Read
             } else if is_store(&op) && op.results.iter().all(|result| !used.contains(result)) {
