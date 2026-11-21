@@ -2078,6 +2078,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _normalized_return_hint(self, returns: ast.expr | None) -> str | None: ...
 
+    def _object_new_bound_metadata(
+        self, node: ast.Call, class_id: ClassId, class_info: ClassView
+    ) -> dict[str, object]: ...
+
     def _parameter_value(
         self, public_name: str, *, type_hint: TypeHint
     ) -> MoltValue: ...

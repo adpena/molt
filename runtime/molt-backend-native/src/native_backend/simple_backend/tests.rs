@@ -193,14 +193,36 @@ fn attached_arguments(function: &Function, instruction: Inst) -> &[Value] {
 fn declared_import_ids(module: &dyn Module) -> BTreeMap<String, FuncId> {
     // Direct runtime calls and helper calls share the module's declarations;
     // the helper cache contains only calls made through import_runtime_func_ref.
+    // The program's terminal-release helper is local, and every release
+    // site's slow call reaches it.
     module
         .declarations()
         .get_functions()
-        .filter(|(_, declaration)| declaration.linkage == cranelift_module::Linkage::Import)
         .filter_map(|(id, declaration)| declaration.name.as_ref().map(|name| (
             name.strip_suffix(molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
-                .unwrap_or(name).to_owned(), id)))
+                .unwrap_or(name).to_owned(), id, declaration.linkage)))
+        .filter(|(name, _, linkage)| {
+            *linkage == cranelift_module::Linkage::Import
+                || name == crate::codegen_ssa::RELEASE_TERMINAL_HELPER
+        })
+        .map(|(name, id, _)| (name, id))
         .collect()
+}
+
+/// Every call that releases an owner: `molt_dec_ref_obj`, and the program's
+/// terminal-release helper, which each release site's slow call reaches (it
+/// frees an unobserved plain instance and calls `molt_dec_ref_obj` otherwise).
+fn release_call_sites(function: &Function, ids: &BTreeMap<String, FuncId>) -> Vec<(Block, Inst)> {
+    let mut sites: Vec<_> = [
+        molt_ir::runtime_fn_generated::RuntimeFn::DecRefObj.symbol(),
+        crate::codegen_ssa::RELEASE_TERMINAL_HELPER,
+    ]
+    .into_iter()
+    .filter_map(|name| ids.get(name))
+    .flat_map(|&id| call_sites_for_import(function, id))
+    .collect();
+    sites.sort();
+    sites
 }
 
 fn definition(func: &Function, value: Value) -> Option<Inst> {

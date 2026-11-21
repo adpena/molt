@@ -164,13 +164,17 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // attached-plain transition (`Plain`), as production code does since Cranelift
 // moved to the shared walker (5144080ca6). arm64, 2026-11-20 at 7584d01602:
 // debug 4,720 bytes (FNV 46b7b3fd84e0c9d9), release 6,352 bytes
-// (FNV ada08ea9e15b080e). Each profile keeps about 10% headroom. The Linux
-// x86_64 release ceiling scales the measured debug control by the arm64
-// release/debug ratio; it is unverified until a Linux release run measures it.
+// (FNV ada08ea9e15b080e). A release compiler's object also holds the
+// program's one terminal-release helper (object lifecycle S3, which every
+// release site's slow call reaches): arm64, 2026-11-21, release 7,232 bytes
+// (FNV c8b82a214fc2741c); a debug compiler emits no helper. Each profile keeps
+// about 10% headroom. The Linux x86_64 release ceiling scales the measured
+// debug control by the arm64 release/debug ratio; it is unverified until a
+// Linux release run measures it.
 #[cfg(all(target_arch = "x86_64", target_os = "linux", debug_assertions))]
 const ARITH_OBJECT_SIZE_CEILING: usize = 6_144;
 #[cfg(all(target_arch = "x86_64", target_os = "linux", not(debug_assertions)))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 8_272;
+const ARITH_OBJECT_SIZE_CEILING: usize = 9_424;
 #[cfg(all(
     not(all(target_arch = "x86_64", target_os = "linux")),
     debug_assertions
@@ -180,7 +184,7 @@ const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
     not(all(target_arch = "x86_64", target_os = "linux")),
     not(debug_assertions)
 ))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 6_992;
+const ARITH_OBJECT_SIZE_CEILING: usize = 7_952;
 
 /// One-shot capture probe: run with `--ignored --nocapture` to print the
 /// current `(len, digest)` when investigating a deliberate codegen change.

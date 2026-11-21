@@ -379,7 +379,13 @@ def _integrate_module_frontend_result_with_state(
         for symbol, row in metadata.items():
             if symbol in integration_state.function_metadata:
                 raise ValueError(f"Duplicate function metadata owner {symbol!r}")
-            inspect_source_module_publication(owned_functions[symbol], row)
+            if row.get("declaration_only"):
+                if symbol not in code_symbols:
+                    raise ValueError(
+                        f"Missing code slot for declaration-only owner {symbol!r}"
+                    )
+            else:
+                inspect_source_module_publication(owned_functions[symbol], row)
         if not isinstance(function_digest_seeds, Sequence):
             raise ValueError("Invalid module function digest evidence")
         if function_digest_seeds:
@@ -404,7 +410,9 @@ def _integrate_module_frontend_result_with_state(
         return str(exc)
     # Admission succeeded. Commit only this module's staged additions; copying
     # accumulated program state here would grow quadratically with modules.
-    for symbol in code_symbols:
+    # Publication and trace entry can both name a slot. Its order cannot
+    # depend on whether a published callable has a trace entry.
+    for symbol in sorted(code_symbols):
         _register_global_code_id_with_state(integration_state, symbol)
     for symbol in sorted(class_definitions):
         integration_state.class_definition_owners.setdefault(symbol, module_name)

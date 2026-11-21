@@ -99,6 +99,8 @@ mod method_site;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
+mod object_lifecycle;
+#[cfg(feature = "llvm")]
 mod op_dispatch;
 #[cfg(feature = "llvm")]
 mod refcount;

@@ -65,6 +65,11 @@ from molt.rust_source_scan import mask_rust_comments_and_strings  # noqa: E402
 # --- Source paths ---------------------------------------------------------
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
 TYPE_IDS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "type_ids.rs"
+# Compiled code reads the `object` tag inline, so its authority is the codegen
+# ABI's lifecycle module; the runtime re-exports it.
+OBJECT_LIFECYCLE_RS = (
+    ROOT / "runtime" / "molt-codegen-abi" / "src" / "object_lifecycle.rs"
+)
 STDLIB_UNION_PY = ROOT / "tools" / "stdlib_module_union.py"
 GEN_STDLIB_UNION_PY = ROOT / "tools" / "gen_stdlib_module_union.py"
 # CPython-ABI PyModuleDef_Slot token headers (two ABI homes: inline + standalone lib).
@@ -201,7 +206,9 @@ def check_type_tags() -> CategoryResult:
         )
         return result
 
-    rust_consts = _parse_rust_i64_consts(rs_text)
+    rust_consts = _parse_rust_i64_consts(rs_text) | _parse_rust_i64_consts(
+        _read(OBJECT_LIFECYCLE_RS)
+    )
     result.items.append(
         CheckItem(
             "sources",

@@ -763,6 +763,65 @@ def test_premise_read_log_cuts_off_only_unchanged_scans(
     assert kept and changed
 
 
+def test_unread_slots_keep_scans_with_an_explicit_global_writer() -> None:
+    import ast
+
+    from molt.compiler_analysis.python_import_scan import (
+        SCAN_PREMISE_READS,
+        ScanPremiseReads,
+        _collect_imports_for_graph,
+    )
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "def selected(): pass\n"
+        "def local_only(): pass\n"
+        "def subject():\n"
+        "    global exported\n"
+        "    exported = selected\n"
+        "    local = local_only\n"
+    )
+    tree = ast.parse(source)
+    selected, _, subject = map(python_node_source_key, tree.body)
+    base = PythonNamespacePremise(
+        (),
+        NO_INVALID_MEMBERS,
+        NO_INVALID_MEMBERS,
+        (),
+        opaque_activation_sources=(),
+        foreign_universe=frozenset(
+            {"independent", "exported", "selected", "local_only"}
+        ),
+    )
+    revised = replace(base, foreign_writes=("independent",))
+    log = ScanPremiseReads()
+    token = SCAN_PREMISE_READS.set(log)
+    try:
+        logged = _collect_imports_for_graph(
+            tree,
+            "provider",
+            False,
+            import_scan_mode="module_init",
+            source_owner=subject,
+            namespace_premise=base,
+        )
+    finally:
+        SCAN_PREMISE_READS.reset(token)
+    actual = _collect_imports_for_graph(
+        ast.parse(source),
+        "provider",
+        False,
+        import_scan_mode="module_init",
+        source_owner=subject,
+        namespace_premise=revised,
+    )
+    assert {
+        demand.source for demand in logged.source_demands if demand.phase == "expose"
+    } == {selected}
+    assert actual == logged
+    assert log.unchanged_under(revised)
+
+
 _ESCAPED_MODULE = "import sys\nkeep(sys.modules[__name__])\n"
 _DEFINITION_STORES = (
     "def deco(f):\n"

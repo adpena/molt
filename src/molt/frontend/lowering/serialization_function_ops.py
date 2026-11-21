@@ -155,6 +155,11 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
             _onb_size = _onb_md.get("class_size_bytes")
             if isinstance(_onb_size, int) and _onb_size > 0:
                 _onb_op["value"] = _onb_size
+            # The class's instance plan, when its layout proves one
+            # (``class_model.release_plan``): the field word count.
+            _onb_plan = _onb_md.get("release_plan")
+            if isinstance(_onb_plan, int) and not isinstance(_onb_plan, bool):
+                _onb_op["release_plan"] = _onb_plan
             # Positive finalizer metadata constrains lifetime transformations.
             # Its absence does not prove finalizer freedom: a mutable class
             # can acquire __del__ later. Owned allocation always retains RC.

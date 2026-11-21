@@ -468,6 +468,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         method_site: _,
         proven_target: _,
         direct_shape: _,
+        release_plan: _,
         callee: _,
         exception_edge: _,
         exception_source: _,

@@ -1294,6 +1294,7 @@ pub enum RuntimeCallable {
     molt_function_get_code = 0xFFFFFF5B65432BF8,
     molt_function_get_globals = 0xFFFFFF3C69EB7EDC,
     molt_function_init_metadata_packed = 0xFFFFFF241E9D1B2F,
+    molt_function_new_unreachable = 0xFFFFFFE1CE84EC17,
     molt_function_set_builtin = 0xFFFFFF297723021A,
     molt_function_set_defaults = 0xFFFFFFB43109487F,
     molt_function_set_fixed_builtin = 0xFFFFFFD9010B319F,
@@ -4472,6 +4473,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_function_get_code.key() == runtime_callable_key("molt_function_get_code"));
     assert!(RuntimeCallable::molt_function_get_globals.key() == runtime_callable_key("molt_function_get_globals"));
     assert!(RuntimeCallable::molt_function_init_metadata_packed.key() == runtime_callable_key("molt_function_init_metadata_packed"));
+    assert!(RuntimeCallable::molt_function_new_unreachable.key() == runtime_callable_key("molt_function_new_unreachable"));
     assert!(RuntimeCallable::molt_function_set_builtin.key() == runtime_callable_key("molt_function_set_builtin"));
     assert!(RuntimeCallable::molt_function_set_defaults.key() == runtime_callable_key("molt_function_set_defaults"));
     assert!(RuntimeCallable::molt_function_set_fixed_builtin.key() == runtime_callable_key("molt_function_set_fixed_builtin"));

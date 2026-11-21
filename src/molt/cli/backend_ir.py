@@ -5,7 +5,7 @@ from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
 from molt.compilation_target import ArtifactTarget, Target, TargetKind
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 from collections import Counter
 import hashlib
@@ -21,7 +21,10 @@ from molt.frontend.lowering.function_metadata import (
     MaterializedFunctionMetadata,
     emit_materialized_function_metadata,
 )
-from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FUNCTION_REFERENCE_KINDS,
+    SIMPLEIR_STRUCTURAL_KINDS,
+)
 from molt.frontend.module_publication import (
     CallableDeclaration,
     FunctionAssemblyMetadata,
@@ -39,6 +42,10 @@ from molt.native_callable_exports import NativeCallableExport
 
 from molt import file_publication
 from molt.cli.cache_keys import _json_ir_default
+from molt.cli.cache_fingerprints import (
+    _frontend_semantic_tooling_fingerprint,
+    _source_tree_fingerprint_transaction,
+)
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
     _register_global_code_id_with_state,
@@ -54,6 +61,10 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
+from molt.cli.module_graph_cache import _namespace_premise_cache_identity
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+from molt.compiler_analysis.python_body_materialization import BodyMaterializationMode
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.cli.closed_world_bindings import (
     bind_closed_world_calls,
     summarize_program_initializers,
@@ -91,6 +102,7 @@ class FrontendDeclarationTable:
     callables: Mapping[str, CallableDeclaration]
     classes: Mapping[ClassId, ClassModel]
     module_layouts: Mapping[str, tuple[str, ...]]
+    declaration_only: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,7 @@ class _PreparedBackendIR:
     # cells' InitOnce facts and why every other module keeps its dictionary.
     static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
     declarations: FrontendDeclarationTable | None = None
+    plan_seal: str | None = None
 
 
 def _build_version_info_ops(
@@ -1887,6 +1900,8 @@ def _append_static_native_module_init_functions(
         function_metadata, function_symbols=existing.keys()
     )
     for symbol, row in metadata.items():
+        if row.get("declaration_only"):
+            continue
         if len(existing[symbol]) != 1:
             raise ValueError(
                 f"multiple executable bodies own metadata symbol {symbol!r}"
@@ -2046,6 +2061,68 @@ def _write_emitted_ir(
     except (OSError, ValueError) as exc:
         return f"Failed to write IR: {exc}"
     return None
+
+
+def _bind_declaration_only_entries(
+    functions: list[dict[str, Any]],
+    declarations: Collection[str],
+) -> None:
+    """Bind each original constructor to the shared unreachable entry.
+
+    Planners have already consumed the constructor and its original identity.
+    The constructor's code object and code slot remain source-owned.
+    """
+    if not declarations:
+        return
+    published: set[str] = set()
+    for position, function in enumerate(functions):
+        original = function["ops"]
+        replacements: dict[int, tuple[SimpleIROp, SimpleIROp]] = {}
+        next_var: int | None = None
+        for index, operation in enumerate(original):
+            target = operation.get("s_value")
+            if not isinstance(target, str) or target not in declarations:
+                continue
+            kind = operation["kind"]
+            if kind == "func_new":
+                arity = operation.get("value")
+                if type(arity) is not int or arity < 0 or target in published:
+                    raise ValueError(
+                        f"invalid declaration-only constructor for {target!r}"
+                    )
+                published.add(target)
+                if next_var is None:
+                    next_var = _next_tir_var_index(original)
+                value = f"v{next_var}"
+                next_var += 1
+                replacements[index] = (
+                    {"kind": "const", "value": arity, "out": value},
+                    {
+                        "kind": "call",
+                        "s_value": "molt_function_new_unreachable",
+                        "args": [value],
+                        "out": operation["out"],
+                    },
+                )
+            elif (
+                kind in SIMPLEIR_FUNCTION_REFERENCE_KINDS or kind == "trace_enter_slot"
+            ):
+                raise ValueError(
+                    f"{function['name']} has a {kind} of declaration-only function {target!r}"
+                )
+        if replacements:
+            functions[position] = {
+                **function,
+                "ops": [
+                    replacement
+                    for index, operation in enumerate(original)
+                    for replacement in replacements.get(index, (operation,))
+                ],
+            }
+    if missing := set(declarations) - published:
+        raise ValueError(
+            f"missing declaration-only constructors for {', '.join(sorted(missing))}"
+        )
 
 
 def _static_backend_ir_compiled_call_closure_issue(
@@ -2223,6 +2300,109 @@ def _finalize_gpu_descriptors(
             }
 
 
+def _seal_frontend_body_plan(
+    frontend: _PreparedFrontendPipelineBundle,
+    *,
+    entry_module: str,
+    mode: BodyMaterializationMode,
+    target: Target,
+    target_python: TargetPythonVersion,
+    stdlib_profile: str | None,
+) -> str:
+    context = frontend.prepared_frontend_run_ticket.frontend_layer_execution_context
+    metadata = context.module_graph_metadata
+    scan_authority = metadata.scan_authority
+    authorities = scan_authority.by_module if scan_authority is not None else {}
+    redirects = frontend.integration_state.import_redirects
+    selections: dict[str, tuple[PythonSourceKey, ...]] = {}
+    premises = {}
+    for module, lease in sorted(frontend.module_source_catalog.leases.items()):
+        authority = authorities.get(module)
+        premise = authority.namespace_premise if authority is not None else None
+        premises[module] = _namespace_premise_cache_identity(premise)
+        names = frontend.namespace_declarations.get(module)
+        if (
+            mode != "demanded"
+            or names is None
+            or authority is None
+            or authority.source_sha256 != lease.source_sha256
+            or authority.body_selection.kind != "complete_source"
+            or authority.namespace_own_line != 0
+            or premise is None
+            or premise.foreign_writes is None
+            or premise.namespace_reflected
+            or premise.code_rebinding
+            or premise.opaque_activation_sources is None
+            or frontend.native_artifact_plan.artifacts
+            or module in frontend.runtime_import_dispatch_roots
+            or redirects.redirect(module)
+        ):
+            continue
+        read = (
+            authority.read_callables
+            | {key for key, _arguments in authority.deferred_owners}
+            | set(premise.opaque_activation_sources)
+        )
+        selection = tuple(
+            key
+            for key, name in names.callable_candidates
+            if key not in read
+            and (module != entry_module or name.startswith("_"))
+            and name not in premise.foreign_writes
+        )
+        if selection:
+            selections[module] = selection
+    seal = hashlib.sha256(
+        json.dumps(
+            {
+                "producer": _frontend_semantic_tooling_fingerprint(),
+                "target": str(target),
+                "python": asdict(target_python),
+                "platform": context.target_sys_platform,
+                "stdlib_profile": stdlib_profile,
+                "entry": entry_module,
+                "mode": mode,
+                "spawn": frontend.spawn_enabled,
+                "runtime_import_roots": sorted(frontend.runtime_import_dispatch_roots),
+                "import_redirects": asdict(redirects),
+                "native_artifacts": frontend.native_artifact_plan.digest_payload(),
+                "sources": {
+                    module: [
+                        lease.source_sha256,
+                        premises[module],
+                        metadata.logical_source_path_by_module.get(module),
+                        metadata.module_execution_kind_by_module.get(module),
+                        metadata.module_source_role_by_module.get(module),
+                        metadata.module_is_package_by_module.get(module),
+                        sorted(context.module_deps.get(module, ())),
+                        (
+                            authority.body_selection.payload()
+                            if (authority := authorities.get(module)) is not None
+                            else None
+                        ),
+                    ]
+                    for module, lease in frontend.module_source_catalog.leases.items()
+                },
+                "declaration_only": selections,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode(),
+    ).hexdigest()
+    if context.scoped_lowering_inputs is not None:
+        context.scoped_lowering_inputs.body_selections.update(
+            {
+                module: ModuleBodySelection(
+                    "complete_source", declaration_only=keys, plan_seal=seal
+                )
+                for module, keys in selections.items()
+            },
+        )
+    elif selections:
+        raise ValueError("sealed body selection requires scoped lowering inputs")
+    return seal
+
+
 def materialize_tir_closure(
     frontend: _PreparedFrontendPipelineBundle,
     *,
@@ -2234,10 +2414,87 @@ def materialize_tir_closure(
     runtime_feedback_summary: RuntimeFeedbackSummary | None,
     fail: Callable[..., _CliFailure],
     json_output: bool,
+    mode: BodyMaterializationMode = "eager",
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
-    """Integrate the frontend's admitted bodies before backend dispatch."""
-    metadata = frontend.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
-    return _prepare_backend_ir(
+    """Lower and integrate the source closure under a single sealed plan."""
+    state = frontend.materialization
+    request = (
+        entry_module,
+        target,
+        target_python,
+        stdlib_profile,
+        mode,
+        pgo_profile_summary,
+        runtime_feedback_summary,
+        json_output,
+    )
+    with state.lock:
+        producer = state.request is None
+        if producer:
+            state.request = request
+        elif state.request != request:
+            return None, fail(
+                "frontend source closure already has a materialization request",
+                json_output,
+                command="build",
+            )
+    if producer:
+        try:
+            outcome = _run_tir_materialization(
+                frontend,
+                entry_module=entry_module,
+                target=target,
+                target_python=target_python,
+                stdlib_profile=stdlib_profile,
+                pgo_profile_summary=pgo_profile_summary,
+                runtime_feedback_summary=runtime_feedback_summary,
+                fail=fail,
+                json_output=json_output,
+                mode=mode,
+            )
+        except BaseException as exc:
+            state.outcome.set_exception(exc)
+        else:
+            state.outcome.set_result(outcome)
+    return state.outcome.result()
+
+
+@_source_tree_fingerprint_transaction()
+def _run_tir_materialization(
+    frontend: _PreparedFrontendPipelineBundle,
+    *,
+    entry_module: str,
+    target: Target,
+    target_python: TargetPythonVersion,
+    stdlib_profile: str | None,
+    pgo_profile_summary: PgoProfileSummary | None,
+    runtime_feedback_summary: RuntimeFeedbackSummary | None,
+    fail: Callable[..., _CliFailure],
+    json_output: bool,
+    mode: BodyMaterializationMode,
+) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
+    from time import perf_counter
+
+    from molt.cli.frontend_execution import _run_frontend_pipeline
+
+    ticket = frontend.prepared_frontend_run_ticket
+    stages = ticket.frontend_parallel_details.setdefault("pipeline_stage_ms", {})
+    started = perf_counter()
+    seal = _seal_frontend_body_plan(
+        frontend,
+        entry_module=entry_module,
+        mode=mode,
+        target=target,
+        target_python=target_python,
+        stdlib_profile=stdlib_profile,
+    )
+    frontend_error = _run_frontend_pipeline(prepared_frontend_run_ticket=ticket)
+    stages["run_frontend_pipeline"] = round((perf_counter() - started) * 1000.0, 6)
+    if frontend_error is not None:
+        return None, frontend_error
+    started = perf_counter()
+    metadata = ticket.frontend_layer_execution_context.module_graph_metadata
+    prepared, issue = _prepare_backend_ir(
         entry_module=entry_module,
         module_graph=frontend.module_graph,
         logical_source_path_by_module=metadata.logical_source_path_by_module,
@@ -2261,6 +2518,8 @@ def materialize_tir_closure(
         facts_target=frontend.output_layout.facts_target,
         native_artifact_plan=frontend.native_artifact_plan,
     )
+    stages["prepare_backend_ir"] = round((perf_counter() - started) * 1000.0, 6)
+    return (replace(prepared, plan_seal=seal) if prepared is not None else None), issue
 
 
 def _prepare_backend_ir(
@@ -2615,6 +2874,15 @@ def _prepare_backend_ir(
         return None, fail(
             f"GPU metadata assembly failed: {exc}", json_output, command="build"
         )
+    declaration_only = frozenset(
+        symbol
+        for symbol, row in integration_state.function_metadata.items()
+        if row.get("declaration_only")
+    )
+    try:
+        _bind_declaration_only_entries(functions, declaration_only)
+    except ValueError as exc:
+        return None, fail(str(exc), json_output, command="build")
     ir = _finalize_backend_ir(
         functions=functions,
         pgo_profile_summary=pgo_profile_summary,
@@ -2691,6 +2959,7 @@ def _prepare_backend_ir(
             },
             classes=integration_state.known_classes,
             module_layouts=integration_state.global_layouts,
+            declaration_only=declaration_only,
         ),
         function_digest_seeds=surviving_seeds,
         function_metadata={

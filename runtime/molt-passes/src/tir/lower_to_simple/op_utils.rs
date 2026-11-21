@@ -50,6 +50,14 @@ pub(super) fn annotate_lowered_op(
     if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("class_definition") {
         opir.class_definition = Some(symbol.clone());
     }
+    // An allocation's proven instance plan rides with it across every
+    // relift (HF-202).
+    if let Some(&AttrValue::Int(words)) =
+        tir_op.attrs.get(molt_ir::class_identity::RELEASE_PLAN_ATTR)
+    {
+        opir.release_plan =
+            Some(u16::try_from(words).expect("a release plan's field words come from a u16"));
+    }
     // A class definition stamp's exact field slots ride with its class.
     if let Some(AttrValue::Bytes(bytes)) = tir_op
         .attrs

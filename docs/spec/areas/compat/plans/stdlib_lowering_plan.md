@@ -117,9 +117,16 @@ per premise revision.
    opaque-activation and argument answer read by that prefix still agrees. The completed
    jobs identify the parameters that can have read an argument. A revision to a pending job
    leaves the prefix reusable. The checkpoint shares immutable state, copies the scope and
-   history owners before resuming, and retains a bounded amount of recent work. A changed
-   foreign-write set or a changed answer before any saved boundary starts the analysis from
-   the source. The whole-graph transfer-summary solver remains open.
+   history owners before resuming, and retains a bounded amount of recent work.
+   A scan can reuse the transfer after adding a foreign writer for a module slot no executed
+   transfer looked up or allocated. The scan still projects the slot into the complete layout
+   and records its possible presence if a callback expired the namespace by module exit.
+   Reuse requires the same consumed activation answers, the same remaining policy and the same
+   module-wide expiry behavior. Other foreign-write changes and changed answers before any
+   saved boundary start analysis from the source. The whole-graph transfer-summary solver
+   remains open.
+   A body scan records the explicit global and nonlocal declarations it uses to recognize
+   publication. Changes to unrelated slot layout leave that declaration projection reusable.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
@@ -202,14 +209,24 @@ frontend host process. The current directly executable image contract requires t
 Discovery owns the demand plan and shared frontend entry. The JIT lane owns `jit_pipeline.py`,
 the image and runner. Measure launch and first-call latency separately.
 
-Native, WASM and MLIR AOT builds now assemble the closure from the same frontend bundle via
-`molt.cli.backend_ir.materialize_tir_closure`. The entry currently consumes eagerly lowered
-modules. A release fixture crossing a default argument, class method, closure and generator
-produced the same 94-function canonical backend input before and after the change. The
-entry also returns the module and class layouts and the callable declaration sidecar. The
-sidecar carries parameter kinds, default positions, execution kind and lexical closure shape
-from function publication. Definition-time values remain in their enclosing initializer.
-The plan seal and demand-driven source lowering are subsequent parts of this stage.
+Native, WASM and MLIR AOT builds lower and assemble the closure from the same frontend
+bundle through `molt.cli.backend_ir.materialize_tir_closure`. A prepared bundle owns one
+materialization request. Concurrent callers receive the same result or diagnostic.
+The entry returns the plan seal and the module, class and callable declarations.
+Definition-time values remain in their enclosing initializer.
+
+The first demand selection applies to flat, undecorated synchronous definitions whose
+bodies contain only plain bindings and returns. These bodies have no deferred declarations
+or source calls that affect another function's entry or function-cell plan. Unresolved
+namespace custody keeps the body, as do entry-module host exports. The omission leaves
+the source definition's code slot, signature, defaults and source writer facts in place.
+The late integration rewrite binds its function object to the runtime's shared unreachable
+entry after the planners consume the original publication. Operand and label identities
+are allocated per body and code slots are ordered by declaration identity.
+
+In a native release fixture with two unread functions, both guarded executables match
+CPython 3.12. The demanded build has two fewer materialized bodies. Cranelift's target-final
+TIR for the demanded `live` function matches the eager build byte for byte.
 
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).

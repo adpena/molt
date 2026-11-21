@@ -662,6 +662,9 @@ class SerializationMixin(
             and isinstance((target := op.get("s_value")), str)
             and target in self.func_symbol_names
             and target not in defined
+            and not (
+                target in self.declaration_only_symbols and op.get("kind") == "func_new"
+            )
         ]
         if missing:
             suffix = ", ..." if len(missing) > 8 else ""
@@ -782,6 +785,13 @@ class SerializationMixin(
             funcs_json.append(func_entry)
             if metadata:
                 function_metadata[func_entry["name"]] = metadata
+        if self.declaration_only_symbols and scope != "module":
+            raise ValueError("declaration-only bodies require integrated module scope")
+        for symbol in sorted(self.declaration_only_symbols):
+            function_metadata[symbol] = {
+                "callable_declaration": self.callable_declarations[symbol],
+                "declaration_only": True,
+            }
         self._reject_bodiless_local_references(funcs_json)
         from molt.frontend.lowering.frame_locations import publish_frame_locations
 
