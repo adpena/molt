@@ -3328,11 +3328,18 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(
             (str(part) for part in command if str(part).startswith("tests/")),
             str(command[-1]),
         )
+        if "--collect-only" in command:
+            name = f"collect:{name}"
         ran.append(name)
         if streams is not None:
             for path in streams:
                 path.open("x").close()
-        failing = {"light-1", "light-3", "tests/test_heavy_1.py"}
+        failing = {
+            "light-1",
+            "light-3",
+            "tests/test_heavy_1.py",
+            "collect:tests/test_uncollectable.py",
+        }
         return _gate_outcome(3 if name in failing else 0, "", "", None)
 
     class Progress:
@@ -3373,19 +3380,129 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(
         )
         for index in (1, 2)
     ]
+    uncollectable = SelectedGate(
+        command=("python", "-m", "pytest", "-q", "tests/test_uncollectable.py"),
+        toolchains=("python",),
+        pytest=True,
+        collection_command=(
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_uncollectable.py",
+            "--collect-only",
+        ),
+    )
     with pytest.raises(CandidateFailure) as exc:
         molt_dev_gates.run_selected_gates(
-            [*light, *heavy], runtime, [], host_limit=lambda: 1, keep_going=True
+            [uncollectable, *light, *heavy],
+            runtime,
+            [],
+            host_limit=lambda: 1,
+            keep_going=True,
         )
     message = str(exc.value)
-    assert message.startswith("3 gate(s) failed:")
-    for name in ("light-1", "light-3", "tests/test_heavy_1.py"):
+    assert message.startswith("4 gate(s) failed:")
+    for name in ("light-1", "light-3", "tests/test_heavy_1.py", "test_uncollectable"):
         assert name in message
+    # A gate that does not collect never executes; the others still run.
+    assert "tests/test_uncollectable.py" not in ran
     # Every gate ran after the first failure; the passing ones passed.
     assert {"light-1", "light-2", "light-3"} <= set(ran)
     assert "tests/test_heavy_2.py" in ran
     passed = {gate.command[-1] for gate in runtime.passed}
     assert passed == {"light-2", "tests/test_heavy_2.py"}
+
+
+@pytest.mark.parametrize("mode", ["presubmit", "postsubmit"])
+def test_postsubmit_takes_a_share_of_the_development_slot(
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    # HF-937: postsubmit runs after every landing; holding the whole class made
+    # every lane's consumer gate wait for its full run.
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    from molt import host_capacity
+    from tools.molt_dev_policy import LandingMode
+
+    requests: list[
+        tuple[host_capacity.HostWorkClass, host_capacity.HostWorkDemand | None]
+    ] = []
+
+    @contextmanager
+    def slot(
+        state_dir: Path,
+        *,
+        label: str,
+        work: host_capacity.HostWorkClass,
+        say: Callable[[str], None],
+        demand: host_capacity.HostWorkDemand | None = None,
+        **_kwargs: object,
+    ) -> Iterator[host_capacity.HostWorkAdmission]:
+        requests.append((work, demand))
+        grant = (
+            None
+            if demand is None
+            else host_capacity.HostWorkGrant(demand.workers, demand.workers)
+        )
+        yield host_capacity.HostWorkAdmission(0.0, grant)
+
+    monkeypatch.setattr(host_capacity, "host_work_slot", slot)
+
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, ...] | None = None,
+    ) -> object:
+        if streams is not None:
+            for path in streams:
+                path.open("x").close()
+        return _gate_outcome(0, "", "", None)
+
+    class Progress:
+        def emit(self, event: str, **details: object) -> None:
+            pass
+
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+        mode=LandingMode(mode),
+    )
+    heavy = SelectedGate(
+        command=("python", "-m", "pytest", "-q", "tests/test_heavy.py"),
+        toolchains=("python",),
+        pytest=True,
+    )
+    molt_dev_gates.run_selected_gates([heavy], runtime, [], host_limit=lambda: 4)
+    ((work, demand),) = requests
+    if mode == "postsubmit":
+        assert work is host_capacity.HostWorkClass.DEVELOPMENT
+        assert demand == molt_dev_gates.postsubmit_demand()
+        assert demand.workers <= max(1, host_capacity.cpu_count() // 2)
+    else:
+        assert work is host_capacity.HostWorkClass.INTEGRATION
+        assert demand is None
 
 
 @pytest.mark.parametrize("second_rc", [0, 3])
