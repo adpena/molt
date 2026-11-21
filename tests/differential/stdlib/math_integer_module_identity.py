@@ -9,8 +9,17 @@ import sys
 if sys.version_info >= (3, 15):
     import _math_integer
 
+    import math.integer as static_integer
+    from math import integer as attribute_integer
+
     integer = importlib.import_module("math.integer")
     print("integer module", integer is math.integer is _math_integer, integer.__name__)
+    print(
+        "import forms",
+        static_integer is integer,
+        attribute_integer is integer,
+        sys.modules["math.integer"] is integer,
+    )
     for name, args in (
         ("comb", (7, 3)),
         ("factorial", (7,)),

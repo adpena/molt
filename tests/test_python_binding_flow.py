@@ -6899,3 +6899,70 @@ def test_callback_exposes_locals_only_to_a_frame_locals_writer(
     assert fact is not None
     assert fact.binding_invalidated is invalidated
     assert (fact.static_value == 1) is not invalidated
+
+
+_TYPE_TEMPORARY_SOURCE = """
+class Plain:
+    pass
+
+
+value = Plain()
+held = type(value) is Plain
+temporary = type(Plain()) is Plain
+
+
+def held_in_function(value):
+    return type(value) is Plain
+"""
+
+
+def _metaclass_finalizer_events(release_while_bound: bool) -> list[str]:
+    """The CPython oracle: a class lives through each instance's class edge,
+    so dropping `type(value)` while `value` stays bound never releases it,
+    even under a metaclass with `__del__`; a temporary operand may."""
+    events: list[str] = []
+
+    class Meta(type):
+        def __del__(cls) -> None:
+            events.append("class released")
+
+    if release_while_bound:
+        instance = Meta("Dying", (), {})()
+        assert (type(instance) is Meta) is False
+    else:
+        assert (type(Meta("Dying", (), {})()) is Meta) is False
+    gc.collect()
+    return events
+
+
+def test_type_of_a_bound_value_releases_without_running_code() -> None:
+    # HF-971: the release of a `type(x)` temporary runs no code while `x`
+    # stays bound (its class edge holds the class).
+    assert _metaclass_finalizer_events(release_while_bound=True) == []
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[2])
+    assert fact is not None
+    assert not fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+def test_type_of_a_temporary_value_may_release_its_class() -> None:
+    assert _metaclass_finalizer_events(release_while_bound=False) == ["class released"]
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[3])
+    assert fact is not None
+    assert fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="HF-971: an activation scope's `type` is guarded builtin | OTHER "
+    "before the writer premise exists, so `type(value)` stays an unknown call",
+)
+def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[4].body[0])
+    assert fact is not None
+    assert not fact.effects & python_binding_flow.RUNS_FINALIZER

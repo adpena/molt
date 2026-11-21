@@ -1541,6 +1541,11 @@ def test_locked_native_eligibility_preserves_origin_order_and_error_classificati
 
     from tests.process_guard_common import current_thread_only
 
+    # Receipts land in this test's own build state: the default root is the
+    # checkout target every test on this checkout shares, where an earlier
+    # case's receipt for an equal output path read as already published.
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+
     target = "x86_64-unknown-linux-gnu"
     contract = BackendArtifactContract(BackendArtifactKind.NATIVE_OBJECT, target)
     module = tmp_path / "module.o"

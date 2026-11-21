@@ -978,10 +978,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
 
-            if "__slots__" in class_attrs:
-                # Runtime declarations may be computed, repeated, or shadow an
-                # ancestor slot. The runtime owns physical slot placement and
-                # admission; a name-keyed inferred-field table cannot encode it.
+            # `__slots__ = ()` on a class with no base but `object` declares
+            # no slot and no dictionary: its instance is the plain empty one
+            # (its words are the runtime's dictionary word alone), decided
+            # below once no method stores a field. Any other declaration may
+            # be computed, repeated, or shadow an ancestor slot; the runtime
+            # owns physical slot placement and admission, which a name-keyed
+            # inferred-field table cannot encode.
+            empty_slots = "__slots__" in class_attrs and _declares_no_slots(
+                class_attrs["__slots__"], bases
+            )
+            if "__slots__" in class_attrs and not empty_slots:
                 layout_refusal = layout_refusal or LayoutRefusal.SLOTS
 
             methods_in_body = [
@@ -1073,6 +1080,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     for stmt in method.body:
                         collector.visit(stmt)
 
+            if empty_slots and field_order:
+                # A method stores an attribute the class cannot hold: the
+                # runtime raises at the store.
+                layout_refusal = layout_refusal or LayoutRefusal.SLOTS
             min_layout = self._builtin_min_layout(mro)
             reserved_tail = self._class_reserved_tail_size(mro)
             base_size = (
@@ -1927,6 +1938,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self.classes[class_id] = draft.seal()
 
         return None
+
+
+def _declares_no_slots(value: ast.expr | None, bases: list[ClassRef]) -> bool:
+    """Whether a class body's `__slots__` value is a literal empty tuple or
+    list on a class whose only base is `object`."""
+    if bases != [OBJECT_CLASS]:
+        return False
+    return isinstance(value, (ast.Tuple, ast.List)) and not value.elts
 
 
 def _class_body_owns_annotation_scope(body: list[ast.stmt]) -> bool:
