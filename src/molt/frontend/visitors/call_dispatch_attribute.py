@@ -12,8 +12,17 @@ from typing import (
 )
 
 from molt.frontend._types import (
+    OBJECT_CLASS,
+    ClassId,
     MoltOp,
     MoltValue,
+)
+from molt.frontend.class_model import (
+    Member,
+    MemberKind,
+    Resolved,
+    namespace_closed,
+    resolve,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -85,6 +94,88 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             return None
         return receiver
 
+    def _proven_super_member(self, call: ast.Call, method_name: str) -> Member | None:
+        """The member zero-argument ``super().method_name(...)`` selects when the
+        compiler can decide it, or None (design 78, 5.10 step 4).
+
+        ``super()`` in a method of class ``C`` selects the member after ``C`` in
+        ``type(first).__mro__``, where ``C`` is the ``__class__`` cell's value.
+        The selection is a compile-time fact when:
+
+        - the cell holds ``C``: ``C`` has no custom metaclass (``type.__new__``
+          fills the cell before ``__set_name__`` or ``__init_subclass__`` runs),
+          its body holds no ``nonlocal __class__``, and no code in the graph
+          writes a cell by reflection (``cell_writer``);
+        - the first parameter holds exactly class ``E``, so the MRO is ``E``'s;
+        - every class on that MRO is namespace-closed with a proven binding,
+          and no builtin class but ``object`` sits after ``C`` (``resolve``
+          skips builtin namespaces, whose members no model describes);
+        - the selected member is a plain function (a classmethod, staticmethod
+          or property keeps the descriptor protocol) entered by an exact
+          positional call whose entry adopts its arguments, with no code object
+          reachable (``code_rebinding``).
+
+        The ``super`` name is the builtin (``_try_emit_guarded_super_method_call``
+        proves it before this runs, HF-955).
+        """
+        first = self.current_python_first_arg
+        defining = self.method_classes.get(self.current_func_name)
+        premise = self.namespace_premise
+        if (
+            defining is None
+            or not isinstance(first, str)
+            or premise is None
+            or premise.code_rebinding
+            or premise.cell_writer is not None
+            or defining in self.class_cell_rebound
+            or call.keywords
+            or any(isinstance(arg, ast.Starred) for arg in call.args)
+        ):
+            return None
+        defining_view = self.classes.get(defining)
+        if defining_view is None or defining_view.custom_metaclass:
+            return None
+        receiver = self._exact_class_for_name(first, fields=True)
+        if receiver is None:
+            return None
+        linearization = self._class_mro(receiver)
+        if defining not in linearization:
+            return None
+        after = linearization[linearization.index(defining) + 1 :]
+        for owner in linearization:
+            if not isinstance(owner, ClassId):
+                if owner in after and owner != OBJECT_CLASS:
+                    return None
+                continue
+            view = self.classes.get(owner)
+            if (
+                view is None
+                or view.custom_metaclass
+                or not namespace_closed(view)
+                or not view.binding_proven
+            ):
+                return None
+        found = resolve(linearization, method_name, self.classes.get, after=defining)
+        if not isinstance(found, Resolved):
+            return None
+        member = found.member
+        shape = member.shape
+        symbol = member.symbol
+        if (
+            member.kind is not MemberKind.FUNCTION
+            or shape is None
+            or shape.vararg
+            or shape.varkw
+            or shape.defaults
+            or shape.kwonly
+            or len(call.args) != shape.params - 1
+            or symbol is None
+            or symbol not in self.func_symbol_names
+            or not self._entry_adopts_symbol(symbol)
+        ):
+            return None
+        return member
+
     def _emit_super_method_call(self, node: ast.Call) -> Any:
         """CPython's LOAD_SUPER_ATTR in method form, then CALL.
 
@@ -107,15 +198,36 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
         class_cell = self._load_free_var_cell("__class__")
         if receiver is None or class_cell is None:
             return CALL_NOT_HANDLED
+        proven = self._proven_super_member(node, func.attr)
         pair = MoltValue(self.next_var())
+        metadata: dict[str, Any] = {"self_or_null": self.next_var()}
+        if proven is not None:
+            # The selection runs no code and cannot fail, so a load whose call
+            # reads its callable from a function cell is dead (5.9, 5.10).
+            metadata["proven_target"] = True
         load = MoltOp(
             kind="LOAD_SUPER_METHOD",
             args=[class_cell, receiver, func.attr],
             result=pair,
-            metadata={"self_or_null": self.next_var()},
+            metadata=metadata,
         )
         self.emit(load)
-        return self._emit_loaded_method_call(node, pair, load)
+        if proven is None:
+            return self._emit_loaded_method_call(node, pair, load)
+        # A proven call of the selected member: a static edge for the call
+        # graph, the type flow and the inliner (5.7), entered directly with
+        # the loaded function for its frame record.
+        call_args = self._emit_call_args(list(node.args))
+        res = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="CALL_GUARDED",
+                args=[pair, receiver, *call_args],
+                result=res,
+                metadata={"target": proven.symbol, "proven_target": True},
+            )
+        )
+        return res
 
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):

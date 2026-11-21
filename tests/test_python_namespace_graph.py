@@ -162,6 +162,7 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
         code_rebinding=True,
         instance_class_writer="an unknown graph",
         frame_locals_writer="an unknown graph",
+        cell_writer="an unknown graph",
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -396,6 +397,40 @@ def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
         is None
     )
     assert index.premise(second, frozenset()).instance_class_writer == "first:12"
+
+
+def test_cell_writers_reach_every_premise(tmp_path: Path) -> None:
+    """A method's `__class__` cell holds its class only while no code in the
+    graph can write a cell behind its owner: a named `cell_contents` store, a
+    computed attribute store, a frame-locals writer, or a native extension
+    (design 78, 5.10 step 4). A late writer changes every premise."""
+    first, second = tmp_path / "first.py", tmp_path / "second.py"
+    sources = {"first": first, "second": second}
+    index = PythonGraphNamespaceIndex()
+    quiet = PythonNamespaceWrite(None, "x", "member_store", 3)
+    index.merge(
+        graph_python_namespace_writes([quiet], sources.get, writer=("first", first))
+    )
+    assert index.premise(second, frozenset()).cell_writer is None
+    assert (
+        index.premise(second, frozenset(), native_code=True).cell_writer
+        == "a native extension module"
+    )
+    writer = PythonNamespaceWrite(None, "cell_contents", "member_store", 7)
+    batch = graph_python_namespace_writes(
+        [writer], sources.get, writer=("second", second)
+    )
+    assert index.merge(batch) is None, "a cell writer is a global change"
+    assert index.premise(first, frozenset()).cell_writer == "second:7"
+    # The scan view drops it: a scan never reads the cell writer.
+    assert index.premise(first, frozenset()).scan_view().cell_writer is None
+
+    index = PythonGraphNamespaceIndex()
+    computed = PythonNamespaceWrite(None, None, "computed_member_store", 5)
+    index.merge(
+        graph_python_namespace_writes([computed], sources.get, writer=("first", first))
+    )
+    assert index.premise(second, frozenset()).cell_writer == "first:5"
 
 
 def test_frame_locals_writer_reaches_every_premise(tmp_path: Path) -> None:

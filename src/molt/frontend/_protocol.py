@@ -129,6 +129,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     loop_guard_assumptions: list[dict[str, tuple[ClassId, bool, int]]]
     loop_layout_guards: list[dict[str, tuple[ClassId, MoltValue, int]]]
     loop_scopes: list[LoopScope]
+    method_classes: dict[str, ClassId]
     module_annotation_emitted: Any
     module_annotation_exec_counter: Any
     module_annotation_exec_map: MoltValue | None
@@ -2131,6 +2132,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _proven_builtin_name(self, node: ast.AST) -> str | None: ...
 
     def _proven_shape_builtin_call(self, node: ast.Call) -> str | None: ...
+
+    def _proven_super_member(
+        self, call: ast.Call, method_name: str
+    ) -> Member | None: ...
 
     def _prune_native_support_module_functions(
         self, node: ast.Module
