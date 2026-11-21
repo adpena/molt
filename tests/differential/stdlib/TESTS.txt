@@ -179,6 +179,7 @@ tests/differential/stdlib/bisect_custom_sequence.py
 tests/differential/stdlib/bisect_edge_cases.py
 tests/differential/stdlib/bisect_edge_semantics.py
 tests/differential/stdlib/bisect_key_basic.py
+tests/differential/stdlib/builtins_on_demand_init.py
 tests/differential/stdlib/bz2_basic.py
 tests/differential/stdlib/cached_runtime_class_mutability.py
 tests/differential/stdlib/cmath_basic.py

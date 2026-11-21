@@ -616,43 +616,6 @@ def shared_stdlib_publish_lock_path(archive: Path) -> Path:
     return archive.with_name(f"{archive.name}.publish.lock")
 
 
-def _is_shared_stdlib_store_entry(archive: Path) -> bool:
-    return (
-        archive.name == "stdlib.a"
-        and archive.parent.parent.name == SHARED_STDLIB_CACHE_DIRECTORY
-        and re.fullmatch(r"[0-9a-f]{64}", archive.parent.name) is not None
-    )
-
-
-def validate_required_stdlib_output(output: Path, source: Path | None = None) -> None:
-    """The archive a build links: a canonical shared-stdlib store entry, linked
-    in place (renewed on use, kept through the build by the eviction reader
-    grace), or a standalone path outside every cache entry (canonical home
-    excepted). A transfer's destination is never its own source."""
-    resolved = output.resolve()
-    if source is not None and source.resolve() == resolved:
-        raise ValueError(
-            "Required stdlib archive must differ from the archive it is transferred from"
-        )
-    if _is_shared_stdlib_store_entry(resolved):
-        return
-    invalid = shared_stdlib_publish_lock_path(resolved) != resolved.with_name(
-        f"{resolved.name}.publish.lock"
-    )
-    root = stdlib_archive_cache_root(source.resolve()) if source is not None else None
-    if root is None and os.environ.get("MOLT_CACHE"):
-        root = Path(os.environ["MOLT_CACHE"]).resolve()
-    if root is not None and resolved.is_relative_to(root):
-        # Canonical home is protected across every maintenance environment.
-        # A selected MOLT_HOME/MOLT_BIN alone cannot promise future retention.
-        home = cache_home_root(root).resolve()
-        invalid |= not resolved.is_relative_to(home)
-    if invalid:
-        raise ValueError(
-            "Required stdlib archive must be a canonical shared-stdlib store entry or lie outside cache entries (canonical home excepted)"
-        )
-
-
 def cache_home_root(cache_root: Path) -> Path:
     """The default durable user home, never an evictable cache entry."""
     return cache_root / "home"

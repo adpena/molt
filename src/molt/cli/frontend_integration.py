@@ -252,30 +252,64 @@ def stamp_global_slots(
             functions[position[id(func)]] = {**func, "ops": ops}
 
 
+def on_demand_initialized_modules(
+    dep_closures: Mapping[str, Collection[str]],
+) -> frozenset[str]:
+    """The modules whose bodies the runtime can run inside any other module's
+    initialization, with everything they import (HF-974).
+
+    No import statement orders them. The runtime builds the builtins
+    namespace when a frame first needs it (``frames.rs``), and an intrinsic
+    imports a runtime root by typed identity (``module_table::ensure_root``),
+    each from inside whatever body is running. So such a body can run while
+    any module ``M`` is partly initialized, and its import closure does not
+    put it after ``M``."""
+    from molt._intrinsic_symbols import RUNTIME_ROOTS
+    from molt.cli.module_registry import _RUNTIME_BUILTIN_MODULES
+
+    reach: set[str] = set()
+    for root in (*sorted(_RUNTIME_BUILTIN_MODULES), *RUNTIME_ROOTS):
+        reach.update(dep_closures.get(root, (root,)))
+    return frozenset(reach)
+
+
 def stamp_foreign_globals(
     functions: list[dict[str, Any]],
     global_layouts: Mapping[str, tuple[str, ...]],
     static_modules: Collection[str],
     init_once: Mapping[str, Mapping[str, Any]],
     ineligible: Mapping[str, str] | None = None,
+    *,
+    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
+    dep_closures: Mapping[str, Collection[str]],
 ) -> list[str]:
     """Read each proven foreign global ``m.f`` (HF-845) from module ``M``'s
     static cell, and consume every ``foreign_global`` record.
 
     ``closed_world_bindings`` records the read when the receiver is ``M``
     (F3) and ``M`` never rebinds ``f`` after initialization (F1). F3 also puts
-    the reading module outside ``M``'s import closure, so ``M``'s body has run
-    before the read: when ``M`` keeps ``f`` in an ``InitOnce`` cell, the read
-    is one load of that cell (the same stamp an init-dominated read in ``M``
-    gets). Any other read keeps its by-name attribute read; the returned
-    build diagnostics name why, one per such read."""
+    the reading module outside ``M``'s import closure. That orders the read
+    after ``M``'s body only when no runtime edge runs the reader first: a
+    reader in ``on_demand_initialized_modules`` can run inside ``M``'s
+    initialization and see an unbound cell (HF-974). Any other proven read of
+    an ``InitOnce`` cell is one load of that cell (the same stamp an
+    init-dominated read in ``M`` gets). Any other read keeps its by-name
+    attribute read; the returned build diagnostics name why, one per such
+    read."""
     from molt.cli.closed_world_bindings import FOREIGN_GLOBAL_FIELD
 
+    reader_of = {
+        func.get("name", ""): module
+        for module, funcs in module_functions.items()
+        for func in funcs
+    }
+    on_demand = on_demand_initialized_modules(dep_closures)
     diagnostics: list[str] = []
     for position, func in enumerate(functions):
         ops = func.get("ops", ())
         if not any(FOREIGN_GLOBAL_FIELD in op for op in ops):
             continue
+        reader = reader_of.get(func.get("name", ""))
         rewritten: list[dict[str, Any]] = []
         for op in ops:
             module = op.get(FOREIGN_GLOBAL_FIELD)
@@ -288,7 +322,15 @@ def stamp_foreign_globals(
             receiver = (op.get("args") or (None,))[0]
             out = op.get("out")
             reason = None
-            if module not in static_modules:
+            if reader is None or reader in on_demand:
+                reason = (
+                    f"{reader} can initialize on demand inside {module}'s "
+                    "initialization, so no import orders the read after "
+                    f"{module}'s body"
+                    if reader is not None
+                    else "the reading function belongs to no module"
+                )
+            elif module not in static_modules:
                 reason = (
                     f"{module} keeps a namespace dictionary: "
                     f"{(ineligible or {}).get(module, 'not cell-eligible')}"
