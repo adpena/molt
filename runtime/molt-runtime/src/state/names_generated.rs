@@ -557,6 +557,7 @@ pub(crate) enum NameId {
     Map,
     Match,
     Math,
+    MathInteger,
     Matmul,
     Max,
     Message,
@@ -843,7 +844,7 @@ pub(crate) enum NameId {
     Zipimporter,
 }
 impl NameId {
-    pub(crate) const ALL: [Self; 837] = [
+    pub(crate) const ALL: [Self; 838] = [
         Self::A2bBase64,
         Self::A2bHex,
         Self::A2bQp,
@@ -1397,6 +1398,7 @@ impl NameId {
         Self::Map,
         Self::Match,
         Self::Math,
+        Self::MathInteger,
         Self::Matmul,
         Self::Max,
         Self::Message,
@@ -2237,6 +2239,7 @@ impl NameId {
             Self::Map => "map",
             Self::Match => "match",
             Self::Math => "math",
+            Self::MathInteger => "math.integer",
             Self::Matmul => "matmul",
             Self::Max => "max",
             Self::Message => "message",
@@ -3078,6 +3081,7 @@ impl NameId {
             b"map" => Some(Self::Map),
             b"match" => Some(Self::Match),
             b"math" => Some(Self::Math),
+            b"math.integer" => Some(Self::MathInteger),
             b"matmul" => Some(Self::Matmul),
             b"max" => Some(Self::Max),
             b"message" => Some(Self::Message),

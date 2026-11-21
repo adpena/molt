@@ -956,7 +956,7 @@ fn alloc_intrinsic_func(
     {
         let defaults = materialize_intrinsic_defaults(_py, signature.defaults)?;
         let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
-            identity: Some(public.identity()),
+            identity: Some(public.identity_at(_py)),
             ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
         };
         let bits = crate::builtins::methods::alloc_builtin_function_with_signature(
@@ -975,7 +975,7 @@ fn alloc_intrinsic_func(
     let bits = build_runtime_function(_py, fn_ptr, arity, &defaults)?;
     if let Some(public) = public {
         let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
-            identity: Some(public.identity()),
+            identity: Some(public.identity_at(_py)),
             ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
         };
         let pointer = obj_from_bits(bits)
@@ -1069,7 +1069,7 @@ fn is_runtime_materialization(
                 )
             && public.is_none_or(|public| {
                 use crate::object::function_metadata::FunctionMetadataField as Field;
-                let identity = public.identity();
+                let identity = public.identity_at(py);
                 [
                     (Field::Name, identity.name.as_str()),
                     (Field::QualName, identity.qualname.as_str()),

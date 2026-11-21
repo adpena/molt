@@ -1672,6 +1672,24 @@ impl PublicObjectId {
             },
         }
     }
+    pub(crate) fn identity_at(self, py: &crate::PyToken<'_>) -> PublicObjectIdentity {
+        let mut identity = self.identity();
+        let relocated = match self {
+            Self::MathComb => Some(crate::NameId::MathInteger),
+            Self::MathFactorial => Some(crate::NameId::MathInteger),
+            Self::MathIsqrt => Some(crate::NameId::MathInteger),
+            Self::MathPerm => Some(crate::NameId::MathInteger),
+            Self::MathGcd => Some(crate::NameId::MathInteger),
+            Self::MathLcm => Some(crate::NameId::MathInteger),
+            _ => None,
+        };
+        if let Some(module) = relocated
+            && crate::object::ops_sys::runtime_target_minor(py) >= 15
+        {
+            identity.module = module;
+        }
+        identity
+    }
     pub(crate) const fn from_instance_shape(
         shape: molt_runtime_core::ObjectShapeId,
     ) -> Option<Self> {

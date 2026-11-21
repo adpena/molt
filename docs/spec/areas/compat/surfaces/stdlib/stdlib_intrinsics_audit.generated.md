@@ -17,8 +17,8 @@
 - Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.
 
 ## Progress Summary (Generated)
-- Total audited modules: `949`
-- `intrinsic-backed`: `38`
+- Total audited modules: `950`
+- `intrinsic-backed`: `39`
 - `intrinsic-partial`: `164`
 - `intrinsic-support`: `26`
 - `python-compiled`: `345`
@@ -78,6 +78,7 @@
 - `_collections`
 - `_collections_abc`
 - `_json`
+- `_math_integer`
 - `_opcode`
 - `_opcode_metadata`
 - `_operator`

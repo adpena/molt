@@ -907,6 +907,7 @@ stdlib:
       - tests/differential/stdlib/math_trig_hyperbolic_basic.py
       - tests/differential/stdlib/math_remaining_intrinsics_basic.py
       - tests/differential/stdlib/math_fma_remainder_basic.py
+      - tests/differential/stdlib/math_integer_module_identity.py
       - tests/differential/stdlib/math_predicates_basic.py
       - tests/differential/stdlib/math_floor_ceil_basic.py
       - tests/differential/stdlib/math_numeric_protocol.py

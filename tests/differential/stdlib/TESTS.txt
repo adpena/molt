@@ -1501,6 +1501,7 @@ tests/differential/stdlib/math_fma_remainder_basic.py
 tests/differential/stdlib/math_fsum_prod_basic.py
 tests/differential/stdlib/math_gamma_lgamma_errors.py
 tests/differential/stdlib/math_hypot_dist_basic.py
+tests/differential/stdlib/math_integer_module_identity.py
 tests/differential/stdlib/math_intrinsics_basic.py
 tests/differential/stdlib/math_intrinsics_full.py
 tests/differential/stdlib/math_intrinsics_more.py

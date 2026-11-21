@@ -165,6 +165,14 @@ class PublicObjectIdentity:
     publisher: str | None = None
     producer: PublicObjectProducer = PublicObjectProducer.INTRINSIC
     min_python_minor: int = 12
+    module_315: str | None = None
+    publisher_315: str | None = None
+
+    @property
+    def publication_bindings(self) -> tuple[str, ...]:
+        if self.publisher_315 is not None:
+            return (*self.bindings, self.publisher_315)
+        return self.bindings
 
 
 DECLARATIONS = (
@@ -198,6 +206,8 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             "publisher",
             "producer",
             "min_python_minor",
+            "module_315",
+            "publisher_315",
         }:
             raise ValueError(f"{runtime}: incomplete or unknown public identity field")
         if not runtime.isidentifier() or not runtime.startswith("molt_"):
@@ -222,9 +232,33 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             if binding in bindings:
                 raise ValueError(f"duplicate public binding {binding}")
             bindings.add(binding)
-        min_python_minor = row.get("min_python_minor", 12)
-        if type(min_python_minor) is not int or not 12 <= min_python_minor <= 15:
+        min_minor = row.get("min_python_minor", 12)
+        if type(min_minor) is not int or not 12 <= min_minor <= 15:
             raise ValueError(f"{runtime}: invalid minimum Python minor")
+        if "module_315" in row or "publisher_315" in row:
+            module = row.get("module_315")
+            publisher = row.get("publisher_315")
+            if (
+                not isinstance(module, str)
+                or module == row["module"]
+                or not all(
+                    part.isascii() and part.isidentifier() for part in module.split(".")
+                )
+                or not isinstance(publisher, str)
+                or not all(
+                    part.isascii() and part.isidentifier()
+                    for part in publisher.split(".")
+                )
+                or "." not in publisher
+                or publisher in bindings
+                or "publisher" in row
+                or row["kind"] != "builtin_function_or_method"
+                or row.get("producer", "intrinsic") != "intrinsic"
+            ):
+                raise ValueError(
+                    f"{runtime}: invalid Python 3.15 public object relocation"
+                )
+            bindings.add(publisher)
         identities[runtime] = PublicObjectIdentity(
             PublicObjectKind(row["kind"]),
             row["name"],
@@ -245,7 +279,9 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             _signature(row["call_before_314"]) if "call_before_314" in row else None,
             row.get("publisher"),
             PublicObjectProducer(row.get("producer", "intrinsic")),
-            min_python_minor,
+            min_minor,
+            row.get("module_315"),
+            row.get("publisher_315"),
         )
         if identities[runtime].producer is PublicObjectProducer.COMPILED and (
             identities[runtime].kind is not PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD
