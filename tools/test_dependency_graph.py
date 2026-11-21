@@ -73,8 +73,9 @@ _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # Bump when the extracted facts change shape or meaning; cached facts of an
 # older scanner are never reused.
-SCANNER_VERSION = 5
+SCANNER_VERSION = 6
 CACHE_SCHEMA = f"molt.test-dependency-facts.v{SCANNER_VERSION}"
+_DYNAMIC_FIXTURE = "<dynamic-fixture>"
 GENERATOR_MANIFEST = "tools/generator_manifest.toml"
 PYPROJECT = "pyproject.toml"
 PROOF_PLAN = "tools/proof_plan.toml"
@@ -943,6 +944,13 @@ class _FactCollector(ast.NodeVisitor):
             and isinstance(node.args[0].value, str)
         ):
             self._current()["imports"].append([0, node.args[0].value, []])
+        if name == "getfixturevalue" and not (
+            len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            self._current()["names"].append(_DYNAMIC_FIXTURE)
         self._fold(node)
         if (name in _PATH_CALLS or name in {"join", "joinpath"}) and _fold_path(
             node, self.env
@@ -1086,6 +1094,24 @@ class ModuleChange:
 
     definitions: frozenset[str]
     import_time: bool
+    opt_in_fixture_bodies_only: bool = False
+
+
+def _same_opt_in_fixture_signature(old: ast.stmt, new: ast.stmt) -> bool:
+    """Recognize an unchanged, explicitly opt-in pytest fixture declaration."""
+    for function in (old, new):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        if [ast.unparse(item) for item in function.decorator_list] != [
+            "pytest.fixture"
+        ]:
+            return False
+    assert isinstance(old, (ast.FunctionDef, ast.AsyncFunctionDef))
+    assert isinstance(new, (ast.FunctionDef, ast.AsyncFunctionDef))
+    # The ASTs belong to this diff. Their bodies were compared above.
+    old.body = []
+    new.body = []
+    return ast.dump(old) == ast.dump(new)
 
 
 def git_blob_reader(root: Path, revision: str) -> Callable[[str], bytes | None]:
@@ -1180,9 +1206,32 @@ def changed_module_nodes(
             }
             if used & changed_bindings:
                 touched.add(name)
+    fixture_bodies_only = (
+        PurePosixPath(path).name == "conftest.py"
+        and bool(touched)
+        and tuple(old[0]) == tuple(new[0])
+        and tuple(old_rest) == tuple(new_rest)
+        and all(
+            _same_opt_in_fixture_signature(old[0][name], new[0][name])
+            for name in touched
+        )
+        and [
+            ast.dump(node)
+            for node in sorted(
+                (*old[0].values(), *old[1]), key=lambda node: node.lineno
+            )
+        ]
+        == [
+            ast.dump(node)
+            for node in sorted(
+                (*new[0].values(), *new[1]), key=lambda node: node.lineno
+            )
+        ]
+    )
     return ModuleChange(
         frozenset(function_node(path, name) for name in touched),
         import_time=bool(old_rest.keys() ^ new_rest.keys()),
+        opt_in_fixture_bodies_only=fixture_bodies_only,
     )
 
 
@@ -1560,7 +1609,10 @@ class DependencyGraph:
                 if prior is not None
                 else None
             )
-            if change is None:
+            if change is None or (
+                PurePosixPath(path).name == "conftest.py"
+                and not change.opt_in_fixture_bodies_only
+            ):
                 whole.add(path)
                 continue
             if change.import_time:
@@ -1597,8 +1649,10 @@ class DependencyGraph:
         module selects only the tests whose first hop reaches a definition the
         change touches (``changed_nodes``): a module that a conftest uses for
         one fixture no longer selects every test below that conftest when an
-        unrelated function in it changes (HF-623). Without it, every changed
-        path is whole, as before.
+        unrelated function in it changes (HF-623). A body-only edit to a
+        plain opt-in fixture likewise selects its users. Other conftest edits
+        keep the whole harness in presubmit. Without ``before``, every changed
+        path is whole.
         """
         changed = frozenset(changed)
         touched_nodes, whole, import_time = (
@@ -1621,6 +1675,9 @@ class DependencyGraph:
         importers: list[str] = []
         data_readers: list[str] = []
         apparatus = self.apparatus_suites()
+        changed_conftests = {
+            path for path in changed if PurePosixPath(path).name == "conftest.py"
+        }
         for test in self.tests:
             inputs = self.inputs[test]
             own = self.nodes.get(test, Dependencies()).execs
@@ -1634,23 +1691,30 @@ class DependencyGraph:
                 for node in harness
             )
             sources = {node_path(node) for node in reached}
+            reached_changes = reached & touched_nodes
+            conftest_reader = any(
+                conftest in whole for conftest in self.conftests[test]
+            )
             if (
                 test in changed
                 or any(
                     not path.startswith("src/molt/stdlib/") for path in sources & whole
                 )
-                or bool(reached & touched_nodes)
+                or bool(reached_changes)
                 # Module-level code runs when a module is imported: the tests
                 # that import it themselves cover that; tests reaching it only
                 # through a conftest run it the same way, in postsubmit.
                 or bool({node_path(node) for node in own} & import_time)
-                or any(conftest in changed for conftest in self.conftests[test])
+                or conftest_reader
             ):
                 owns = apparatus.get(test)
                 if (
                     owns is None
                     or test in changed
-                    or any(conftest in changed for conftest in self.conftests[test])
+                    or conftest_reader
+                    or any(
+                        node_path(node) in changed_conftests for node in reached_changes
+                    )
                     or any(is_ignored(path, owns) for path in changed)
                 ):
                     importers.append(test)
@@ -1759,8 +1823,18 @@ def _conftest_scopes(
         }
         setup[conftest] = chosen
     requested = set(requested)
+    dynamic_expanded = False
     while True:
         grown = False
+        if _DYNAMIC_FIXTURE in requested:
+            requested.discard(_DYNAMIC_FIXTURE)
+            requested.update(
+                name
+                for conftest in chain
+                for name in facts[conftest].get("fixtures", {})
+            )
+            dynamic_expanded = True
+            grown = True
         for conftest in chain:
             record = facts[conftest]
             scopes = record.get("scopes", {})
@@ -1779,6 +1853,8 @@ def _conftest_scopes(
                             bucket.add(reference)
                             grown = True
                     new_names = set(scope.get("names", ())) - requested
+                    if dynamic_expanded:
+                        new_names.discard(_DYNAMIC_FIXTURE)
                     if new_names:
                         requested |= new_names
                         grown = True
@@ -1829,9 +1905,16 @@ def _test_inputs(
     directories = {
         path for node in readers for path in nodes.get(node, Dependencies()).directories
     }
+    fixture_sources = {node_path(path) for path in side}
+    fixture_sources.update(
+        node_path(path)
+        for plugin in plugins
+        for path in resolver.module_targets(plugin)
+    )
     requested = {
         name
-        for scope in facts[test].get("scopes", {}).values()
+        for path in fixture_sources
+        for scope in facts.get(path, {}).get("scopes", {}).values()
         for name in scope.get("names", ())
     }
     setup, used = _conftest_scopes(requested, chain, facts)
@@ -1839,6 +1922,11 @@ def _test_inputs(
     setup_roots: set[str] = set()
     for conftest in chain:
         scopes = facts[conftest].get("scopes", {})
+        roots.update(
+            function_node(conftest, name)
+            for name in setup[conftest] | used[conftest]
+            if name
+        )
         harness = _scope_dependencies(
             resolver,
             conftest,

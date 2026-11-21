@@ -10,6 +10,7 @@ import hashlib
 import json
 from collections import namedtuple
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -192,6 +193,52 @@ def test_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
     assert dx.cargo_target_dir_for_artifact_root(source, None, source_root=source) == (
         source.resolve() / "target"
     )
+
+
+@pytest.mark.parametrize("operation", ["build", "scratch"])
+def test_hot_outputs_require_raw_home_headroom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from molt import disk_capacity
+
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    _bind(artifact, hot)
+    env = {"MOLT_EXT_ROOT": str(artifact)}
+    admit = (
+        disk_capacity.require_build_capacity
+        if operation == "build"
+        else disk_capacity.require_scratch_capacity
+    )
+    floor = default_paths.HOT_STATE_MIN_FREE_BYTES
+    physical_free = {hot: floor - 1, artifact: 1}
+    estimates = []
+
+    def purgeable_estimate(path: Path) -> int:
+        estimates.append(path)
+        return floor
+
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", physical_free.__getitem__
+    )
+    monkeypatch.setattr(
+        disk_capacity, "_darwin_important_usage_bytes", purgeable_estimate
+    )
+
+    outputs = [artifact / "proof", hot / "warm"]
+    with pytest.raises(disk_capacity.DiskCapacityError) as failure:
+        admit(outputs, env=env)
+    external, internal = failure.value.diagnostic["probes"]
+    assert external["available_bytes"] == floor
+    assert internal["available_bytes"] == floor - 1
+    assert internal["required_bytes"] == floor
+    assert estimates == [artifact]
+    assert all(not path.exists() for path in outputs)
+
+    physical_free[hot] = floor
+    assert all(probe.ready for probe in admit(outputs, env=env).probes)
 
 
 def test_the_storage_write_check_admits_the_hot_mirror_and_nothing_else(

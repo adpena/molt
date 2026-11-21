@@ -16,7 +16,7 @@ when a capacity-selected output volume changes.
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
 | Native proof-supervisor store | Artifact root `proof-supervisor/<implementation-source-key>` | Thirty days since last use; existing checkout-state lifetime locks protect provisioning and readers |
 | Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
-| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Lock stripes (cache, checkout-state), the file-digest store, the frontend record files, guard scratch (`tmp/gs/v2`) and checkout Cargo targets (`target/checkouts/<checkout>`); cache retention trims hot entries by last use to the record's cap and keeps the home volume 50 GiB free |
+| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Build and scratch admission within the configured mirror require 50 GiB of raw free space. The record's byte budget governs hot compile-cache entries. Checkout Cargo and guard scratch use their existing retention rules. |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
 | Browser/Edgebox package environments | Existing checkout-provisioning paths | Lock-file producer admission, shared use through child closure, last-use budget |
@@ -488,9 +488,11 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    `free-space-floor`) and the regenerable classes `storage trim` sizes give up
    entries a day idle by last use, rechecked after each removal; the day keeps
    a volume shared with other data from making every lane rebuild cold. The
-   disk guard's absolute headroom stays the emergency trigger. The home volume
-   keeps 50 GiB free and the hot root stays under its cap, trimmed by last use
-   in the daily cache retention. Lane start only reports a volume below its
+   disk guard's absolute headroom stays the emergency trigger. Admission of
+   build and scratch output within the configured hot mirror requires 50 GiB
+   of raw free space. This checks current capacity before a run, and already
+   admitted writers can continue allocating. The compile-cache cap covers its
+   own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
    state carries no byte budget because sizing it walks hundreds of GB (the
    `target/checkouts` census did not finish in 10 minutes); the floor is its
