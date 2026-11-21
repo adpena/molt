@@ -250,11 +250,12 @@ class ClassModel:
 
 @dataclass(slots=True)
 class ClassDraft:
-    """A class statement's facts while its module lowers.
+    """A class statement's facts while its body lowers.
 
-    The statement fills everything but its methods' compiled summaries;
-    ``compile_member`` adds each as the module compiles the def, and ``seal``
-    returns the frozen model at publication.
+    The statement fixes everything but the members; the body's bindings run in
+    source order through ``compile_member``, ``bind_data`` and ``unbind``, and
+    ``seal`` returns the frozen model when the statement completes. Until a
+    binding runs, its name is pending, and a lookup that reaches it refuses.
     """
 
     class_id: ClassId
@@ -271,25 +272,38 @@ class ClassDraft:
     dataclass: DataclassSpec | None
     constructor: Constructor = ConstructorRefusal("the class statement has not run")
     members: dict[str, Member] = field(default_factory=dict)
-    # Defs the body binds whose summaries the module has not compiled yet.
+    # Names the body binds whose binding has not run yet.
     pending_members: set[str] = field(default_factory=set)
-    # Lowering-only: the defining module's SSA values. Never sealed.
-    member_values: dict[str, MoltValue] = field(default_factory=dict)
-    class_value_name: str | None = None
 
     def member(self, name: str) -> Member | None:
         return self.members.get(name)
 
     def pending(self, name: str) -> bool:
-        return name in self.pending_members and name not in self.members
+        return name in self.pending_members
 
-    def compile_member(
-        self, name: str, member: Member, value: MoltValue | None = None
-    ) -> None:
-        self.members[name] = member
+    def compile_member(self, name: str, member: Member) -> None:
+        """A def bound ``name``. A property setter or deleter updates the
+        property it extends, which keeps its member."""
+        previous = self.members.get(name)
+        if not (
+            member.kind is MemberKind.PROPERTY_UPDATE
+            and previous is not None
+            and previous.kind is MemberKind.PROPERTY
+        ):
+            self.members[name] = member
         self.pending_members.discard(name)
-        if value is not None:
-            self.member_values[name] = value
+
+    def bind_data(self, name: str, *, possible_data_descriptor: bool) -> None:
+        """A class-level store bound ``name`` to a value that is not a def."""
+        self.members[name] = Member(
+            MemberKind.DATA, possible_data_descriptor=possible_data_descriptor
+        )
+        self.pending_members.discard(name)
+
+    def unbind(self, name: str) -> None:
+        """``del name`` in the body: lookups continue to the bases."""
+        self.members.pop(name, None)
+        self.pending_members.discard(name)
 
     def seal(self) -> ClassModel:
         return ClassModel(

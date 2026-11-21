@@ -174,3 +174,119 @@ def test_a_sealed_model_is_immutable_and_hashable() -> None:
     with pytest.raises(AttributeError):
         model.binding_name = "Z"  # type: ignore[misc]
     assert hash(model) == hash(_model(_CLASSES["A"]))
+
+
+_OPERATIONS = ("def", "data", "property", "setter", "del")
+
+
+def _body_source(sequence: tuple[str, ...]) -> str:
+    lines = []
+    for operation in sequence:
+        if operation == "def":
+            lines.append("def m(self): return 1")
+        elif operation == "data":
+            lines.append("m = 2")
+        elif operation == "property":
+            lines.append("@property\ndef m(self): return 3")
+        elif operation == "setter":
+            # A setter extends the property `m` names; anything else raises.
+            lines.append(
+                "if isinstance(globals().get('m', locals().get('m')), property):\n"
+                "    @m.setter\n"
+                "    def m(self, value): pass"
+            )
+        else:
+            lines.append("if 'm' in locals():\n    del m")
+    return "\n".join(lines) or "pass"
+
+
+def _apply(draft, sequence: tuple[str, ...], namespace: dict) -> None:
+    # Mirror the body: each operation runs only when CPython's guard runs it.
+    for operation in sequence:
+        if operation == "def":
+            draft.compile_member("m", Member(MemberKind.FUNCTION, symbol="def"))
+            namespace["m"] = "function"
+        elif operation == "data":
+            draft.bind_data("m", possible_data_descriptor=False)
+            namespace["m"] = "data"
+        elif operation == "property":
+            draft.compile_member("m", Member(MemberKind.PROPERTY, symbol="prop"))
+            namespace["m"] = "property"
+        elif operation == "setter":
+            if namespace.get("m") == "property":
+                draft.compile_member(
+                    "m", Member(MemberKind.PROPERTY_UPDATE, symbol="setter")
+                )
+        elif "m" in namespace:
+            draft.unbind("m")
+            del namespace["m"]
+
+
+import itertools as _itertools  # noqa: E402
+
+_SEQUENCES = [
+    seq
+    for length in range(1, 4)
+    for seq in _itertools.product(_OPERATIONS, repeat=length)
+]
+
+
+@pytest.mark.parametrize("sequence", _SEQUENCES, ids=["-".join(s) for s in _SEQUENCES])
+def test_body_bindings_in_order_match_the_interpreter(sequence: tuple[str, ...]) -> None:
+    from molt.frontend.class_model import ClassDraft
+
+    class Base:
+        def m(self) -> int:
+            return 0
+
+    body = _body_source(sequence)
+    namespace: dict = {}
+    exec(body, {}, namespace)
+    cls = type("C", (Base,), namespace)
+    draft = ClassDraft(
+        class_id=ClassId("t", "C"),
+        binding_name="C",
+        bases=(ClassId("t", "Base"),),
+        linearization=(ClassId("t", "C"), ClassId("t", "Base")),
+        layout=InstanceLayout((), 0, None),
+        module_level=True,
+        definition_exposed=False,
+        custom_metaclass=False,
+        decorated=False,
+        layout_version=1,
+        field_defaults=(),
+        dataclass=None,
+        pending_members={"m"},
+    )
+    _apply(draft, sequence, {})
+    base = ClassModel(
+        class_id=ClassId("t", "Base"),
+        binding_name="Base",
+        bases=(),
+        linearization=(ClassId("t", "Base"),),
+        layout=InstanceLayout((), 0, None),
+        module_level=True,
+        definition_exposed=False,
+        custom_metaclass=False,
+        decorated=False,
+        layout_version=1,
+        members=(("m", Member(MemberKind.FUNCTION, symbol="base")),),
+        field_defaults=(),
+        dataclass=None,
+        constructor=ConstructorRefusal("test"),
+    )
+    lookup = {draft.class_id: draft, ClassId("t", "Base"): base}.get
+    draft.pending_members.clear()  # the statement has completed
+    result = resolve(draft.linearization, "m", lookup)
+    own = vars(cls).get("m")
+    if own is None:
+        assert isinstance(result, Resolved) and result.owner == ClassId("t", "Base")
+    elif isinstance(own, property):
+        assert isinstance(result, Resolved)
+        assert result.member.kind is MemberKind.PROPERTY
+        assert result.owner == draft.class_id
+    elif callable(own):
+        assert isinstance(result, Resolved)
+        assert result.member.kind is MemberKind.FUNCTION
+    else:
+        assert result == Unresolved(ResolveRefusal.SHADOWED_BY_DATA, draft.class_id)
