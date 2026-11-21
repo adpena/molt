@@ -23,6 +23,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import PythonIdent
 from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.class_model import (
+    Closure,
     Member,
     MemberKind,
     defines,
@@ -1109,6 +1110,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
             and class_info is not None
             and member is not None
             and member.kind is MemberKind.PROPERTY
+            # A getter holding cells (a `super()` in its body) takes its
+            # environment from the property's function object; only the
+            # runtime descriptor call passes it.
+            and member.closure is Closure.NONE
             and namespace_closed(class_info)
             and not receiver_is_class_object
         ):

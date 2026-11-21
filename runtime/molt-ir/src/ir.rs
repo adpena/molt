@@ -1080,10 +1080,12 @@ impl FunctionIR {
             }
             // Python binding owns defaults, surplus arguments and closure extraction.
             CompiledCallArguments::Guarded(_) => return Ok(()),
-            CompiledCallArguments::Direct(n) if n > 0 && !signature.has_closure => n - 1,
+            // The callable is handed off, not passed; a closure target's
+            // environment follows it as its first parameter (design 78 5.10).
+            CompiledCallArguments::Direct(n) if n > usize::from(signature.has_closure) => n - 1,
             CompiledCallArguments::Direct(_) => {
                 return Err(format!(
-                    "extern call ABI mismatch: direct caller `{caller}` requires a callable operand and a closure-free declaration `{target}`"
+                    "extern call ABI mismatch: direct caller `{caller}` requires a callable operand, and an environment operand for closure declaration `{target}`"
                 ));
             }
         };

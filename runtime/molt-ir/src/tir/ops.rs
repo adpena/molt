@@ -197,6 +197,10 @@ pub enum OpCode {
     BoxInlineInt,
     CodeIs,
     DirectCall,
+    /// The closure slot of a function object: the lexical environment a
+    /// direct call of a closure target passes (final TIR, design 78 5.10).
+    /// Operand: the function. Result: a borrowed view of its closure tuple.
+    FunctionClosure,
     RecursionAdmits,
     RecursionCount,
     RecursionRelease,

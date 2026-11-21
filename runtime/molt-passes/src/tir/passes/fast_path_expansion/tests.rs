@@ -1442,6 +1442,51 @@ fn a_proven_call_skips_admission_and_the_code_guard() {
     let _ = result;
 }
 
+/// A proven call of a closure target (design 78 5.10) passes the callee's own
+/// closure tuple, read live from the function object, after the callable:
+/// the place the target's entry takes its environment. An unproven closure
+/// call keeps the runtime lane (`a_closure_target_or_an_arity_mismatch_...`).
+#[test]
+fn a_proven_closure_call_passes_its_function_s_closure_tuple() {
+    use crate::ir::ParameterCustody::{Borrowed, Transferred};
+    let (mut func, _) = guarded_call(true);
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().ops[0].set_proven_target(true);
+    // Arity 2: the environment and the one Python argument.
+    assert_eq!(super::run(&mut func, &targets(2, true)).values_changed, 1);
+    assert_valid(&func);
+    let direct = ops(&func, OpCode::DirectCall);
+    assert_eq!(direct.len(), 1);
+    let (block, call) = &direct[0];
+    let body: Vec<OpCode> = func.blocks[block].ops.iter().map(|op| op.opcode).collect();
+    assert_eq!(
+        body,
+        [
+            OpCode::RecursionCount,
+            OpCode::FunctionClosure,
+            OpCode::DirectCall,
+            OpCode::RecursionRelease
+        ]
+    );
+    let closure = &func.blocks[block].ops[1];
+    assert_eq!(closure.operands, [ValueId(0)], "the callee's own closure");
+    assert_eq!(call.operands, [ValueId(0), closure.results[0], ValueId(1)]);
+    assert_eq!(
+        call.argument_custody().unwrap(),
+        [Borrowed, Borrowed, Transferred],
+        "the callable and its environment are borrowed; the argument keeps its custody"
+    );
+    // The tuple is the function's: nothing releases the view.
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(&func);
+    assert!(
+        !crate::tir::passes::ownership_lattice_min::OwnershipRootFacts::result_holds_own_reference(
+            closure,
+            closure.results[0],
+            &aliases
+        )
+    );
+}
+
 /// CPython's call protocol: the limit check guards the call (its false edge
 /// raises RecursionError), and the admitted frame is counted before the call
 /// and released after it in the same block, so no path leaks or skips a count.

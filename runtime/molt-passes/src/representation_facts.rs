@@ -672,6 +672,7 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::BoxInlineInt
         | OpCode::CodeIs
         | OpCode::DirectCall
+        | OpCode::FunctionClosure
         | OpCode::RecursionAdmits
         | OpCode::RecursionCount
         | OpCode::RecursionRelease

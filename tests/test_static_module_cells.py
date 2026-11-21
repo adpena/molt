@@ -12,7 +12,7 @@ follows it in the init chain, or when every reference to its function does.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, Unpack
+from typing import Any, Literal, TypedDict, Unpack
 
 import pytest
 
@@ -1184,11 +1184,12 @@ def _method_program(
     maker_in_loop: bool = False,
     run_first: bool = False,
     pair_read: bool = False,
+    maker_kind: Literal["func_new", "func_new_closure"] = "func_new",
 ) -> list[dict[str, Any]]:
     """``mod``'s init makes method ``mod__C_m`` (``makers`` times, optionally
     in a loop) and ``mod__run``, whose body loads ``m`` on an exact receiver
     and calls it through a proven call."""
-    maker = {"kind": "func_new", "s_value": "mod__C_m", "out": "method"}
+    maker = {"kind": maker_kind, "s_value": "mod__C_m", "out": "method"}
     run_maker = {"kind": "func_new", "s_value": "mod__run", "out": "runner"}
     ops: list[dict[str, Any]] = [
         {"kind": "const_str", "out": "nm", "s_value": "mod"},
@@ -1252,8 +1253,13 @@ def _function_cells(
     ), layouts
 
 
-def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell() -> None:
-    funcs = _method_program()
+@pytest.mark.parametrize("maker_kind", ["func_new", "func_new_closure"])
+def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
+    maker_kind: Literal["func_new", "func_new_closure"],
+) -> None:
+    # A closure method's object (a `__class__` cell, design 78 5.10) is one
+    # per process too: the proven call reads its environment from it.
+    funcs = _method_program(maker_kind=maker_kind)
     cells, layouts = _function_cells(funcs)
     index = len(layouts["mod"])
     assert cells.cells == {"mod": {"mod__C_m": index}}
@@ -1265,7 +1271,7 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell() -> No
     assert store["global_slot"] == {"module": "mod", "index": index, "cell": True}
     # The store follows the maker; the load becomes one cell read.
     assert [op["kind"] for op in init_ops[3:6]] == [
-        "func_new",
+        maker_kind,
         "static_cell_base",
         "static_cell_set",
     ]
@@ -1283,7 +1289,7 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell() -> No
 @pytest.mark.parametrize(
     ("program", "reason"),
     [
-        ({"makers": 2}, "2 func_new ops make mod__C_m"),
+        ({"makers": 2}, "2 function makers make mod__C_m"),
         ({"maker_in_loop": True}, "does not run once"),
         ({"run_first": True}, "may run before mod__C_m's func_new"),
         ({"pair_read": True}, "its bound pair is read"),
