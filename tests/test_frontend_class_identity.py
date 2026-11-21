@@ -825,3 +825,59 @@ def test_exact_receiver_premise_drops_the_field_guard(proven: bool) -> None:
     assert ("GETATTR" in bump) is proven
     rebind = _function_kinds(generator, "py.mod.Counter_rebind")
     assert "GETATTR" not in rebind
+
+
+_STATIC_SUPER = """\
+class Base:
+    def compute(self, x):
+        return x + 1
+class Leaf(Base):
+    def compute(self, x):
+        return super().compute(x) * 2
+"""
+
+
+@pytest.mark.parametrize(
+    "case", ["proven", "no_exact_receiver", "cell_writer", "rebound_cell"]
+)
+def test_static_super_needs_its_cell_and_an_exact_receiver(case: str) -> None:
+    """Zero-argument `super()` on an exact receiver selects its member at
+    compile time only while the `__class__` cell provably holds its class:
+    no reflective cell writer in the graph and no `nonlocal __class__` in the
+    class body (design 78, 5.10 step 4). Every other case keeps the runtime
+    `load_super_method` and its loaded call."""
+    source = _STATIC_SUPER
+    if case == "rebound_cell":
+        source += "    def rebind(self):\n        nonlocal __class__\n"
+        source += "        __class__ = Base\n"
+    tree = ast.parse(source)
+    leaf = tree.body[1]
+    assert isinstance(leaf, ast.ClassDef)
+    rows = (
+        ()
+        if case == "no_exact_receiver"
+        else ((python_node_source_key(leaf.body[0]), python_node_source_key(leaf)),)
+    )
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        0,
+        (),
+        (),
+        exact_receivers=rows,
+        cell_writer="other:3" if case == "cell_writer" else None,
+    )
+    generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+    generator.visit(tree)
+    ops = generator.funcs_map["py.mod.Leaf_compute"]["ops"]
+    (load,) = [op for op in ops if op.kind == "LOAD_SUPER_METHOD"]
+    proven = (load.metadata or {}).get("proven_target") is True
+    assert proven is (case == "proven")
+    calls = [op for op in ops if op.kind == "CALL_GUARDED"]
+    if proven:
+        (call,) = calls
+        assert call.metadata["target"] == "py.mod.Base_compute"
+        assert call.args[0] is load.result
+    else:
+        assert not calls
+        assert "CALL_LOADED_METHOD" in {op.kind for op in ops}

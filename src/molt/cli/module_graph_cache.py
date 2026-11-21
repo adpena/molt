@@ -535,6 +535,7 @@ def _namespace_premise_cache_identity(
         "escape_writes": [list(row) for row in premise.escape_writes],
         "instance_class_writer": premise.instance_class_writer,
         "frame_locals_writer": premise.frame_locals_writer,
+        "cell_writer": premise.cell_writer,
         "exact_receivers": [list(row) for row in premise.exact_receivers],
         "foreign_universe": (
             None
@@ -562,6 +563,7 @@ def _decode_namespace_premise_cache_identity(
             "escape_writes",
             "instance_class_writer",
             "frame_locals_writer",
+            "cell_writer",
             "exact_receivers",
             "foreign_universe",
         },
@@ -617,6 +619,9 @@ def _decode_namespace_premise_cache_identity(
     frame_writer = item["frame_locals_writer"]
     if frame_writer is not None and (type(frame_writer) is not str or not frame_writer):
         raise ValueError("invalid namespace premise frame locals writer")
+    cell_writer = item["cell_writer"]
+    if cell_writer is not None and (type(cell_writer) is not str or not cell_writer):
+        raise ValueError("invalid namespace premise cell writer")
     receiver_rows = []
     for row in _source_cache_list(item["exact_receivers"]):
         if not (isinstance(row, list) and len(row) == 2):
@@ -640,6 +645,7 @@ def _decode_namespace_premise_cache_identity(
         frame_writer,
         exact_receivers,
         universe,
+        cell_writer=cell_writer,
     )
 
 

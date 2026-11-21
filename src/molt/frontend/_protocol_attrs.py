@@ -91,6 +91,7 @@ class _GeneratorProtocolAttrs(Protocol):
     class_annotation_exec_counter: Any
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
+    class_cell_rebound: set[ClassId]
     class_definition_pending: set[ClassId]
     class_method_values: dict[ClassId, dict[str, MethodValues]]
     class_value_names: dict[ClassId, str]
