@@ -49,14 +49,9 @@ def test_build_env_creates_only_writable_artifact_paths(
     repo = tmp_path / "repo"
     repo.mkdir()
     artifacts = tmp_path / "artifacts"
-    # An address alone does not publish an image. No consumer may mkdir it.
-    image = (
-        artifacts
-        / "build-environments"
-        / "development"
-        / "selected-0123456789ab"
-        / ("a" * 64)
-    )
+    # An address alone does not make an environment. No consumer may mkdir
+    # it; uv creates it. Its shared bytecode cache is ordinary writable state.
+    image = artifacts / "python-environments" / f"3.12.16-dev-{'a' * 16}"
     base = {"MOLT_EXT_ROOT": str(artifacts), "MOLT_USE_SCCACHE": "0"}
     if managed_python:
         base["UV_PROJECT_ENVIRONMENT"] = str(image)
@@ -74,13 +69,12 @@ def test_build_env_creates_only_writable_artifact_paths(
         assert Path(env[key]).is_dir() is create_dirs, key
     if managed_python:
         assert env["UV_PROJECT_ENVIRONMENT"] == str(image)
-        assert env["PYTHONPYCACHEPREFIX"] == str(image / "bytecode")
-        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert env["PYTHONPYCACHEPREFIX"] == str(image.parent / ".bytecode")
+        assert "PYTHONDONTWRITEBYTECODE" not in env
     else:
         assert "UV_PROJECT_ENVIRONMENT" not in env
-        assert Path(env["PYTHONPYCACHEPREFIX"]).is_dir() is create_dirs
+    assert Path(env["PYTHONPYCACHEPREFIX"]).is_dir() is create_dirs
     assert not image.exists()
-    assert not (image / "bytecode").exists()
 
 
 def test_smoke_suite_manifest_preserves_order_and_ignores_comments(

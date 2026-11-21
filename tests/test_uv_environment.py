@@ -149,3 +149,30 @@ def test_an_exact_release_resolves_to_itself_without_uv(tmp_path: Path) -> None:
     )
     with pytest.raises(UvEnvironmentError, match="release or minor"):
         uv_environment.resolve_release("latest", tmp_path, {"PATH": ""})
+
+
+def test_the_installed_tree_refuses_new_files_and_a_retry_reopens_it(
+    tmp_path: Path, fake_uv: tuple[dict[str, str], Path]
+) -> None:
+    # Every worktree imports this tree: a -I child's __pycache__ or a pip
+    # install must not land in it. Files keep uv's modes (they are links
+    # into uv's cache); the directories refuse new entries.
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory write bits")
+    environ, log = fake_uv
+    checkout = _checkout(tmp_path / "c")
+    root = uv_environment.environment(checkout, KEY, environ=environ)
+    package = root / "lib" / "site-packages" / "dependency"
+    with pytest.raises(PermissionError):
+        (package / "__pycache__").mkdir()
+    with pytest.raises(PermissionError):
+        (root / "lib" / "site-packages" / "installed.py").write_text("")
+    # A crash after the seal and before the record: the next use reopens the
+    # tree for uv, then seals it again.
+    (root / uv_environment.RECORD).unlink()
+    assert uv_environment.environment(checkout, KEY, environ=environ) == root
+    assert len(_calls(log)) == 2
+    with pytest.raises(PermissionError):
+        (package / "__pycache__").mkdir()

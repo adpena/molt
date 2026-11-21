@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -346,6 +347,9 @@ def environment(
         if not uv:
             raise UvEnvironmentError("uv is not on PATH; install uv")
         env = _sync_environment(source, root)
+        # A crash after the seal and before the record leaves sealed
+        # directories; uv must be able to finish the environment.
+        _set_installation_writable(root, writable=True)
         _run(sync_argv(uv, key), checkout=checkout, env=env, what="uv sync")
         identity = json.loads(
             _run(
@@ -359,6 +363,7 @@ def environment(
             raise UvEnvironmentError(
                 f"uv selected CPython {identity.get('version')}, not {key.python}"
             )
+        _set_installation_writable(root, writable=False)
         write_exact(
             root / RECORD,
             {
@@ -372,6 +377,41 @@ def environment(
     finally:
         _release_file_lock(handle)
     return root
+
+
+# The installed namespace of a uv environment on every host layout.
+_INSTALLATION = ("bin", "Scripts", "lib", "lib64", "Lib", "include", "Include")
+_WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+def _set_installation_writable(root: Path, *, writable: bool) -> None:
+    """Seal or unseal the installed directories of ``root``.
+
+    Every worktree runs the same environment, so nothing may add to it: a
+    child started with ``-I`` ignores ``PYTHONPYCACHEPREFIX`` and would write
+    ``__pycache__`` beside the sources, and ``pip install`` would change what
+    every other worktree imports. Read-only directories refuse both. Files
+    keep their modes: uv links them from its cache, so a file mode is the
+    cache's too. ``file_deletion.delete_path`` restores owner-write when it
+    retires an environment.
+    """
+    for name in _INSTALLATION:
+        top = root / name
+        if top.is_symlink() or not top.is_dir():
+            continue  # lib64 -> lib on some hosts.
+        # Listing and chmod need no write permission on the parent.
+        for current, directories, _files in os.walk(top):
+            directories[:] = [
+                d for d in directories if not (Path(current) / d).is_symlink()
+            ]
+            _chmod_directory(Path(current), writable=writable)
+
+
+def _chmod_directory(path: Path, *, writable: bool) -> None:
+    mode = stat.S_IMODE(path.lstat().st_mode)
+    wanted = mode | stat.S_IWUSR if writable else mode & ~_WRITE
+    if wanted != mode:
+        path.chmod(wanted)
 
 
 def interpreter_identity(root: Path) -> dict[str, object]:

@@ -43,6 +43,8 @@ if os.environ.get("FAKE_UV_FAIL"):
     sys.exit(3)
 root = Path(os.environ["UV_PROJECT_ENVIRONMENT"])
 (root / "bin").mkdir(parents=True, exist_ok=True)
+(root / "lib" / "site-packages" / "dependency").mkdir(parents=True, exist_ok=True)
+(root / "lib" / "site-packages" / "dependency" / "__init__.py").write_text("", encoding="utf-8")
 (root / "pyvenv.cfg").write_text(
     "home = " + os.path.dirname({base!r}) + "\\ninclude-system-site-packages = false\\n",
     encoding="utf-8",

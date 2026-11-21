@@ -135,7 +135,8 @@ def resolve_command(
         alias = Path(resolved[0]).name
         if os.name == "nt" and not alias.lower().endswith(".exe"):
             alias += ".exe"
-        if Path(alias).stem.lower() == "python":
+        if not managed and Path(alias).stem.lower() == "python":
+            # A borrowed environment may lack `python`; take its entry.
             resolved[0] = str(venv_python(venv))
         else:
             executable = venv_bin_dir(venv) / alias

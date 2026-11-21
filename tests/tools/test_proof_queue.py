@@ -2547,26 +2547,11 @@ def test_python_selection_binds_the_base_selector_before_full_capture(tmp_path, 
 
 
 @pytest.mark.parametrize("kind", ["direct", "py-launcher", "uv", "uv-console-script"])
-@pytest.mark.parametrize("publication", ["unpublished", "manifest", "managed-missing"])
 def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, publication: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    from molt.dx import checkout_component
-
-    prefix = (
-        tmp_path
-        / "build-environments"
-        / "development"
-        / checkout_component(tmp_path.resolve(strict=True))
-        / ("a" * 64)
-        if publication == "managed-missing"
-        else tmp_path / "selected-environment"
-    )
+    prefix = tmp_path / "selected-environment"
     selection = _selected_python_capture_fixture(tmp_path, prefix=prefix)
-    if publication == "manifest":
-        (prefix / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
-            "{}", encoding="utf-8"
-        )
     project = tmp_path / "project"
     project.mkdir()
     python = {"kind": kind}
@@ -2618,11 +2603,6 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
                 "--hash-workers",
                 "4",
                 "--admit-virtualenv-bootstrap",
-                *(
-                    ["--admit-published-environment"]
-                    if publication != "unpublished"
-                    else []
-                ),
                 "--admit-external-root",
                 str(project.resolve()),
             ],
@@ -2657,570 +2637,6 @@ def test_full_python_capture_rejects_changed_selection_before_launch(
             selection=selection,
             hash_workers=1,
         )
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("development", [False, True])
-def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_bytes(
-    tmp_path: Path,
-    development: bool,
-) -> None:
-    """Exercise the real stdlib-only caller and a real offline published image."""
-    from importlib import metadata
-
-    import packaging
-
-    from molt import source_build_environment as publisher
-    from molt import source_build_environment_schema as image_schema
-    from molt.python_environment_location import environment_provisioning_record_path
-    from molt.python_uv_lock_identity import selected_uv_lock_group_closure
-
-    # Reuse the installed, project-locked pure Python dependency without a
-    # resolver, installation, network request, or synthetic live-byte identity.
-    distribution = metadata.distribution("packaging")
-    locked = [
-        row
-        for row in tomllib.loads((state.ROOT / "uv.lock").read_text(encoding="utf-8"))[
-            "package"
-        ]
-        if row["name"] == "packaging" and row["version"] == distribution.version
-    ]
-    assert len(locked) == 1, "the test interpreter must use project-locked packaging"
-    package_lock = locked[0]
-    source = tmp_path / "recipe"
-    source.mkdir()
-    if development:
-        from tests.integration_driver_fixture import clone_file
-        from molt.source_admission import repository_source_paths
-
-        # Real command admission validates the complete proof registry: test
-        # paths, workflow topology, setup evidence and tool metadata as well as
-        # the reader modules. Copy current Git-admitted source bytes, retaining
-        # WIP and symlinks but excluding ignored artifacts and Git control state.
-        def read_git(cwd: Path, arguments: list[str]) -> bytes:
-            return check_output_custody_subject_process(["git", *arguments], cwd=cwd)
-
-        for original in repository_source_paths(
-            state.ROOT, run_git=read_git, include_untracked=True
-        ):
-            destination = source / original.relative_to(state.ROOT)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if original.is_symlink():
-                destination.symlink_to(os.readlink(original))
-            else:
-                clone_file(original, destination)
-    reader_root = source if development else state.ROOT
-    if not development:
-        (source / "pyproject.toml").write_text(
-            "[project]\nname='published-capture-control'\nversion='1.0'\n"
-            "requires-python='>=3.12'\n"
-            f"dependencies=['packaging=={distribution.version}']\n"
-            "[dependency-groups]\n[tool.molt.dx]\ndependency_groups=[]\n",
-            encoding="utf-8",
-        )
-        (source / "uv.lock").write_text(
-            "version=1\nrevision=1\nrequires-python='>=3.12'\n"
-            "[[package]]\nname='published-capture-control'\nversion='1.0'\n"
-            f"source={{{'editable' if development else 'virtual'}='.'}}\n"
-            "dependencies=[{name='packaging'}]\n"
-            "[[package]]\nname='packaging'\n"
-            f"version={json.dumps(distribution.version)}\n"
-            f"source={{registry={json.dumps(package_lock['source']['registry'])}}}\n"
-            "wheels=[\n"
-            + "".join(
-                "{url="
-                + json.dumps(wheel["url"])
-                + ",hash="
-                + json.dumps(wheel["hash"])
-                + f",size={wheel['size']}}},\n"
-                for wheel in package_lock["wheels"]
-            )
-            + "]\n",
-            encoding="utf-8",
-        )
-    # Address and attest the private base this fixture actually launches.
-    # A copied installation can have a different closure from the shared donor.
-    bootstrap = create_test_venv(tmp_path / "bootstrap")
-    with publisher.PythonIdentityVerifier() as verifier:
-        runtime_capture = publisher._probe_source_build_python(
-            bootstrap, verifier=verifier, capture_wheel_target=True
-        )
-    runtime = runtime_capture["runtime"]
-    if not development:
-        (source / ".python-version").write_text(
-            str(runtime["version"]) + "\n", encoding="utf-8"
-        )
-    from molt.dx import DxProject
-
-    if development:
-        for filename in ("pyproject.toml", "uv.lock", ".python-version"):
-            assert (source / filename).read_bytes() == (
-                state.ROOT / filename
-            ).read_bytes()
-    groups = DxProject(source).dependency_groups() if development else ()
-    requirements = tuple(
-        requirement
-        for group in groups
-        for requirement in publisher._declared_dependency_group(source, group)
-    )
-    from molt.source_build_environment_selection import (
-        capture_source_build_inputs,
-        development_selection_record,
-        read_development_environment_selection,
-    )
-
-    inputs = capture_source_build_inputs(source, editable=development)
-    binding = inputs.editable_binding
-    closure = selected_uv_lock_group_closure(
-        source,
-        None,
-        requirements,
-        wheel_target=runtime_capture["wheel_target"],
-        marker_environment=image_schema.canonical_source_marker_environment(),
-        dependency_groups=groups,
-    )
-    recipe = {
-        "producer_contract": _contract.source_build_environment_contract(),
-        "declared_inputs": inputs.digests,
-        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
-        "dependency_groups": list(groups),
-        "dependency_group_requirements": list(requirements),
-        "editable_binding": binding,
-        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
-        "lock_closure": closure,
-        "python_runtime": runtime,
-        "uv": {
-            "executable": "fixture",
-            "version": "offline copy",
-            "sha256": "a" * 64,
-        },
-    }
-    from molt.dx import checkout_component
-
-    root = (
-        tmp_path / "build-environments" / "development" / checkout_component(source)
-        if development
-        else tmp_path / "published"
-    ) / canonical_json_sha256(recipe)
-    check_output_custody_subject_process(
-        [
-            str(bootstrap),
-            "-B",
-            "-m",
-            "venv",
-            "--without-pip",
-            "--copies" if os.name == "nt" else "--symlinks",
-            str(root),
-        ]
-    )
-    executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    site = root / (
-        "Lib/site-packages"
-        if os.name == "nt"
-        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
-    )
-    if not development:
-        metadata_root = next(
-            Path(distribution.locate_file(path)).parent
-            for path in distribution.files
-            if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
-        )
-        for selected in (Path(packaging.__file__).parent, metadata_root):
-            shutil.copytree(
-                selected,
-                site / selected.name,
-                ignore=shutil.ignore_patterns("__pycache__"),
-            )
-    else:
-        import csv
-        import io
-
-        from packaging.utils import canonicalize_name
-
-        assert binding is not None
-        # Keep genuine project/lock/workflow evidence coherent with the full
-        # registry. Reuse the selected interpreter's locked installed bytes,
-        # including native wheels and console scripts, without an installer.
-        donor_root = Path(sys.prefix).resolve()
-        donor_site = Path(packaging.__file__).resolve().parent.parent
-        installed = {}
-        for candidate in metadata.distributions(path=[str(donor_site)]):
-            name = canonicalize_name(candidate.metadata["Name"])
-            assert name not in installed, f"duplicate installed donor: {name}"
-            installed[name] = candidate
-        expected = {row["name"]: row["version"] for row in closure["packages"]}
-        expected[binding["project"]] = binding["version"]
-        missing = sorted(expected.keys() - installed.keys())
-        assert not missing, (
-            f"published-image donor must contain development groups {groups}: "
-            f"missing locked distributions {missing}"
-        )
-        for name, version in expected.items():
-            selected = installed[name]
-            assert selected.version == version, f"donor differs from lock: {name}"
-            assert selected.files, f"donor has no RECORD inventory: {name}"
-            for entry in selected.files:
-                original = Path(os.path.abspath(selected.locate_file(entry)))
-                destination = root / original.relative_to(donor_root)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if original.is_symlink():
-                    destination.symlink_to(os.readlink(original))
-                else:
-                    clone_file(original, destination)
-
-        # Rebind the real editable installation to B. Preserve every installed
-        # file and WHEEL claim; only the source URL/.pth and their RECORD hashes
-        # change. Every other donor byte still faces the original RECORD check.
-        project_distribution = installed[binding["project"]]
-        project_files = project_distribution.files
-        assert project_files is not None
-        metadata_entries = [
-            entry
-            for entry in project_files
-            if entry.name == "METADATA" and entry.parent.name.endswith(".dist-info")
-        ]
-        assert len(metadata_entries) == 1
-        project_metadata = site / metadata_entries[0].parent
-        declarations = [entry for entry in project_files if entry.suffix == ".pth"]
-        assert len(declarations) == 1
-        declaration = site / declarations[0]
-        assert declaration.read_text(encoding="utf-8").strip() == str(
-            state.ROOT / "src"
-        )
-        direct_url = project_metadata / "direct_url.json"
-        declared = json.loads(direct_url.read_text(encoding="utf-8"))
-        assert declared == {"url": state.ROOT.as_uri(), "dir_info": {"editable": True}}
-        declaration.chmod(declaration.stat().st_mode | 0o200)
-        declaration.write_text(str(source / "src") + "\n", encoding="utf-8")
-        direct_url.chmod(direct_url.stat().st_mode | 0o200)
-        direct_url.write_text(
-            json.dumps({"url": source.as_uri(), "dir_info": {"editable": True}}),
-            encoding="utf-8",
-        )
-        record = project_metadata / "RECORD"
-        rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
-        rebound = {
-            declaration.relative_to(site).as_posix(),
-            direct_url.relative_to(site).as_posix(),
-        }
-        updated = set()
-        for row in rows:
-            if row[0] in rebound:
-                data = (site / row[0]).read_bytes()
-                row[1] = "sha256=" + base64.urlsafe_b64encode(
-                    hashlib.sha256(data).digest()
-                ).rstrip(b"=").decode("ascii")
-                row[2] = str(len(data))
-                updated.add(row[0])
-        assert updated == rebound
-        stream = io.StringIO(newline="")
-        csv.writer(stream).writerows(rows)
-        record.chmod(record.stat().st_mode | 0o200)
-        record.write_text(stream.getvalue(), encoding="utf-8")
-    custody = {"environment_id": root.name, **recipe}
-    provisional = environment_provisioning_record_path(root)
-    provisional.parent.mkdir(parents=True)
-    provisional.write_text(
-        json.dumps({"state": "provisioning", "custody": custody}), encoding="utf-8"
-    )
-    # The source-only publisher captures the actual immutable installation.
-    # Its empty prefix is part of the exact tree; no eager cache writer exists.
-    (root / "bytecode").mkdir(exist_ok=True)
-    publisher._install_no_bytecode_hook(
-        executable, ProcessEnvironment(os.environ), root
-    )
-    if development:
-        (root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
-            json.dumps(development_selection_record(root, custody)), encoding="utf-8"
-        )
-    realized = publisher._probe_environment_identity(
-        executable,
-        root,
-        external_root=reader_root,
-        source_root=source if development else None,
-    )
-    assert realized["runtime"] == runtime
-    manifest = publisher._attested_environment(custody, realized)
-    manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-    manifest_bytes = json.dumps(manifest).encode()
-    manifest_path.write_bytes(manifest_bytes)
-    provisional.unlink()
-
-    wrapper_command = (
-        [
-            sys.executable,
-            str(source / "tools/uv_project_env.py"),
-            "--python",
-            str(runtime["version"]),
-            "--venv",
-            str(root),
-            "--",
-            str(executable),
-            "-c",
-            "pass",
-        ]
-        if development
-        else [str(executable), "-c", "pass"]
-    )
-    expected_distributions = sorted(
-        [row["name"] for row in closure["packages"]]
-        + ([binding["project"]] if binding is not None else [])
-    )
-    driver = tmp_path / "isolated_queue_reader.py"
-    driver.write_text(
-        "import json,os,sys\nfrom pathlib import Path\n"
-        f"sys.path.insert(0,{str(reader_root)!r})\n"
-        "from tools.import_file import bind_repository_imports\n"
-        f"bind_repository_imports({str(reader_root / 'tools/proof_queue_pkg/guarded_execution.py')!r})\n"
-        "from tools.proof_queue_pkg import command_admission,command_identity,execution_environment,state\n"
-        "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
-        f"command={wrapper_command!r}\n"
-        f"if {development!r} and len(sys.argv)>1:\n"
-        "    if sys.argv[1]=='native': command[command.index('--')+1:]=['git','status','--short']\n"
-        "    else: command[command.index('--python')+1]=sys.argv[1]\n"
-        "envelope=command_admission.envelope_for_command(command)\n"
-        "from tools.proof_queue_pkg import execution_custody\n"
-        "execution_custody.require_enforceable_process_closure(envelope)\n"
-        "environment=execution_environment._wrapper_execution_environment(envelope,os.environ)\n"
-        "assert not any(n=='packaging' or n.startswith('packaging.') for n in sys.modules)\n"
-        "command=envelope['argv']\n"
-        # The native envelope must declare its real Python dependency. Exercise
-        # that dependency's image locator/capture here; native process-image
-        # inventory and execution belong to the native-supervisor proof cells.
-        "if len(sys.argv)>1 and sys.argv[1]=='native':\n"
-        "    assert envelope.get('python') is None and 'python' in envelope['toolchains']\n"
-        "    payload=list(command)\n"
-        "    original=envelope\n"
-        "    envelope,command=execution_environment._python_capture_envelope(envelope,command,environment)\n"
-        f"    assert command[0]=={str(executable)!r}\n"
-        "    assert original['argv']==payload\n"
-        "_,selections,_,_=execution_environment._locate_toolchain_watch_roots("
-        "envelope,command,cwd=state.ROOT,env=environment,"
-        f"supervisor_binary=Path({str(executable)!r}))\n"
-        "assert 'packaging.requirements' not in sys.modules\n"
-        "captured,_=execution_environment._capture_toolchains(envelope,command,cwd=state.ROOT,"
-        "env=environment,source_root=state.ROOT,located_toolchains=selections,hash_workers=1)\n"
-        "assert 'packaging.requirements' not in sys.modules\n"
-        f"assert [row['name'] for row in captured['environment']['distributions']]=={expected_distributions!r}\n"
-        "print(json.dumps({'runtime':captured['environment']['runtime']['runtime_closure_sha256']}))\n",
-        encoding="utf-8",
-    )
-
-    environment = dict(os.environ)
-    environment.pop("MOLT_VENV", None)
-    environment["MOLT_EXT_ROOT"] = str(tmp_path)
-    environment["UV_PROJECT_ENVIRONMENT"] = str(root)
-
-    def read(*arguments):
-        with python_environment_identity.PythonIdentityVerifier() as verifier:
-            prefix = verifier.prefix
-            return verifier.run(
-                [
-                    sys.executable,
-                    *python_environment_identity.python_identity_verifier_arguments(
-                        prefix
-                    ),
-                    "-S",
-                    str(driver),
-                    *arguments,
-                ],
-                cwd=tmp_path,
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-                memory_guard_prefix="MOLT_PYTEST",
-                encoding="utf-8",
-            )
-
-    accepted = read()
-    assert accepted.returncode == 0, accepted.stderr
-    assert json.loads(accepted.stdout) == {"runtime": runtime["runtime_closure_sha256"]}
-
-    def direct_wrapper(*payload):
-        if not payload:
-            payload = (
-                "python",
-                "-I",
-                "-c",
-                "import json,sys; print(json.dumps([sys.prefix,sys.dont_write_bytecode,sys.pycache_prefix]))",
-            )
-        with python_environment_identity.PythonIdentityVerifier() as verifier:
-            prefix = verifier.prefix
-            return verifier.run(
-                [
-                    sys.executable,
-                    *python_environment_identity.python_identity_verifier_arguments(
-                        prefix
-                    ),
-                    "-S",
-                    str(source / "tools/venv_exec.py"),
-                    "--",
-                    *payload,
-                ],
-                cwd=tmp_path,
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-                memory_guard_prefix="MOLT_PYTEST",
-                encoding="utf-8",
-            )
-
-    if development:
-        # A controller imported from checkout A explicitly admits image B
-        # through B's selected reader, with a separate external-source grant.
-        assert (
-            read_development_environment_selection(
-                root, repo_root=source, groups=groups
-            ).root
-            == root
-        )
-        from tests.python_environment_test_support import copy_python_capture_authority
-
-        foreign = tmp_path / "foreign-reader"
-        copy_python_capture_authority(foreign)
-        selected_reader = source / "src/molt/python_environment_identity.py"
-        foreign_reader = foreign / "src/molt/python_environment_identity.py"
-        assert selected_reader.read_bytes() == foreign_reader.read_bytes()
-        original_declaration = declaration.read_bytes()
-        # Publication sealed the image; a same-user tamper reopens the bit.
-        declaration_mode = declaration.stat().st_mode
-        declaration.chmod(declaration_mode | 0o200)
-        declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
-        # Ordinary selection does not inspect installed .pth bytes. The real
-        # proof consumer must independently refuse their changed source binding.
-        assert (
-            read_development_environment_selection(
-                root, repo_root=source, groups=groups
-            ).root
-            == root
-        )
-        refused_home = read()
-        assert refused_home.returncode != 0
-        assert "package source admission failed" in refused_home.stderr
-        assert str(source / "src/molt") in refused_home.stderr
-        assert str(foreign / "src/molt") in refused_home.stderr
-        declaration.write_bytes(original_declaration)
-        declaration.chmod(declaration_mode)
-        selected_reader_bytes = selected_reader.read_bytes()
-        selected_reader.unlink()
-        try:
-            assert (
-                read_development_environment_selection(
-                    root, repo_root=source, groups=groups
-                ).root
-                == root
-            )
-            missing_reader = read()
-            assert missing_reader.returncode != 0
-            assert (
-                "No module named 'molt.python_environment_identity'"
-                in missing_reader.stderr
-            )
-        finally:
-            selected_reader.write_bytes(selected_reader_bytes)
-        native = read("native")
-        assert native.returncode == 0, native.stderr
-        assert json.loads(native.stdout) == {
-            "runtime": runtime["runtime_closure_sha256"]
-        }
-        launched = direct_wrapper()
-        assert launched.returncode == 0, launched.stderr
-        assert json.loads(launched.stdout) == [str(root), True, str(root / "bytecode")]
-        # Ordinary selection validates recipe metadata and startup policy.
-        # Exact proof admission independently rejects changed installed bytes.
-        unrelated = site / "idna" / "core.py"
-        original_unrelated = unrelated.read_bytes()
-        stamp = unrelated.stat()
-        changed_unrelated = original_unrelated.replace(b"\n", b" ", 1)
-        assert changed_unrelated != original_unrelated
-        assert len(changed_unrelated) == len(original_unrelated)
-        try:
-            unrelated.chmod(stamp.st_mode | 0o200)
-            unrelated.write_bytes(changed_unrelated)
-            os.utime(unrelated, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            ordinary = direct_wrapper()
-            assert ordinary.returncode == 0, ordinary.stderr
-            assert json.loads(ordinary.stdout) == [
-                str(root),
-                True,
-                str(root / "bytecode"),
-            ]
-            native_ordinary = direct_wrapper("git", "--version")
-            assert native_ordinary.returncode == 0, native_ordinary.stderr
-            assert native_ordinary.stdout.startswith("git version ")
-            exact = read()
-            assert exact.returncode != 0 and not exact.stdout
-            assert "installed distribution RECORD mismatch" in exact.stderr
-        finally:
-            # Admission of a legacy attestation reseals the image in between.
-            unrelated.chmod(stamp.st_mode | 0o200)
-            unrelated.write_bytes(original_unrelated)
-            os.utime(unrelated, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            unrelated.chmod(stamp.st_mode)
-        refused = read("99.0")
-        assert refused.returncode != 0 and not refused.stdout
-        assert "different requested Python" in refused.stderr
-        project_path = source / "pyproject.toml"
-        original_project = project_path.read_bytes()
-        assert groups
-        changed_project = re.sub(
-            rb"(?m)^dependency_groups\s*=\s*\[[^\n]*\]",
-            b"dependency_groups = []",
-            original_project,
-            count=1,
-        )
-        assert changed_project != original_project
-        project_path.write_bytes(changed_project)
-        refused = read()
-        assert refused.returncode != 0 and not refused.stdout
-        assert "different requested groups" in refused.stderr
-        project_path.write_bytes(original_project)
-        lock_path = source / "uv.lock"
-        original_lock = lock_path.read_bytes()
-        lock_path.write_bytes(original_lock.replace(b">=3.12", b">=99"))
-        refused = direct_wrapper()
-        assert refused.returncode != 0 and not refused.stdout
-        assert (
-            "development selection record differs from current intent/inputs"
-            in refused.stderr
-        )
-        lock_path.write_bytes(original_lock)
-
-    # This receipt mutation is excluded from the image's ordinary byte scan.
-    # It must reach the canonical published-image check in the capture child.
-    changed = copy.deepcopy(manifest)
-    if development:
-        projected = changed["realized_image"]["image"]
-        projected["tree"]["file_nodes"][0]["sha256"] = "0" * 64
-        changed["realized_image"]["image_sha256"] = canonical_json_sha256(projected)
-    else:
-        changed["realized_environment"]["distributions"][0]["version"] = "0.0"
-    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
-    refused = read()
-    assert refused.returncode != 0
-    assert not refused.stdout
-    assert (
-        "published environment image differs from captured live bytes" in refused.stderr
-    )
-    manifest_path.write_bytes(manifest_bytes)
-
-    selected_source = site / "packaging" / "requirements.py"
-    before = selected_source.stat()
-    contents = selected_source.read_bytes()
-    selected_source.chmod(before.st_mode | 0o200)
-    changed_source = contents.replace(b"Requirement", b"requirement", 1)
-    assert changed_source != contents and len(changed_source) == len(contents)
-    selected_source.write_bytes(changed_source)
-    os.utime(selected_source, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert selected_source.stat().st_size == before.st_size
-    refused = read()
-    assert refused.returncode != 0
-    assert not refused.stdout
-    assert "installed distribution RECORD mismatch" in refused.stderr
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -4329,7 +3745,6 @@ def _capture_probe_command(
         executable,
         verifier_bytecode_prefix=verifier_prefix,
         source_root=source_root,
-        admit_published_environment=False,
         hash_workers=hash_workers,
     )
 
@@ -6060,40 +5475,40 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
     )
     # Both read selection and no-write policy precede interpreter startup:
     # -E/-I ignore their environment-variable projections.
-    policy = ["-B", "-X", f"pycache_prefix={Path(sys.prefix) / 'bytecode'}"]
-    assert rewritten[:7] == [sys.executable, *policy, "-S", "-E", "-I"]
-    assert Path(rewritten[7]).name == "python_custody_bootstrap.py"
-    assert rewritten[8:] == ["command", "0", "pass", "argument"]
+    policy = ["-X", f"pycache_prefix={Path(sys.prefix).parent / '.bytecode'}"]
+    assert rewritten[:6] == [sys.executable, *policy, "-S", "-E", "-I"]
+    assert Path(rewritten[6]).name == "python_custody_bootstrap.py"
+    assert rewritten[7:] == ["command", "0", "pass", "argument"]
     grouped = command_admission._python_bootstrap_command(
         envelope,
         [sys.executable, "-IB", "-c", "pass"],
         environment_root=Path(sys.prefix),
     )
-    assert grouped[:5] == [sys.executable, *policy, "-IB"]
-    assert Path(grouped[5]).name == "python_custody_bootstrap.py"
+    assert grouped[:4] == [sys.executable, *policy, "-IB"]
+    assert Path(grouped[4]).name == "python_custody_bootstrap.py"
     assert command_admission._python_bootstrap_command(
         envelope,
         [sys.executable, "-Wignore::BytesWarning", "-c", "pass"],
         environment_root=Path(sys.prefix),
-    )[:5] == [sys.executable, *policy, "-Wignore::BytesWarning"]
+    )[:4] == [sys.executable, *policy, "-Wignore::BytesWarning"]
 
     py_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "py-launcher", "selector": "-3.12"}},
         ["py.exe", "-3.12", "-I", "-m", "sample_package", "argument"],
         environment_root=Path(sys.prefix),
     )
-    assert py_rewritten[:6] == ["py.exe", "-3.12", *policy, "-I"]
-    assert Path(py_rewritten[6]).name == "python_custody_bootstrap.py"
-    assert py_rewritten[7:] == ["module", "0", "sample_package", "argument"]
+    assert py_rewritten[:5] == ["py.exe", "-3.12", *policy, "-I"]
+    assert Path(py_rewritten[5]).name == "python_custody_bootstrap.py"
+    assert py_rewritten[6:] == ["module", "0", "sample_package", "argument"]
 
     uv_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
         ["uv.exe", "run", "python", "-S", "-c", "pass", "argument"],
         environment_root=Path(sys.prefix),
     )
-    assert uv_rewritten[:7] == ["uv.exe", "run", "python", *policy, "-S"]
-    assert Path(uv_rewritten[7]).name == "python_custody_bootstrap.py"
-    assert uv_rewritten[8:] == ["command", "0", "pass", "argument"]
+    assert uv_rewritten[:6] == ["uv.exe", "run", "python", *policy, "-S"]
+    assert Path(uv_rewritten[6]).name == "python_custody_bootstrap.py"
+    assert uv_rewritten[7:] == ["command", "0", "pass", "argument"]
 
 
 @pytest.mark.parametrize(
@@ -6159,14 +5574,13 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
         [sys.executable, "-S", "-m", "sample_package", "payload"],
         environment_root=Path(sys.prefix),
     )
-    assert module_argv[:5] == [
+    assert module_argv[:4] == [
         sys.executable,
-        "-B",
         "-X",
-        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        f"pycache_prefix={Path(sys.prefix).parent / '.bytecode'}",
         "-S",
     ]
-    assert module_argv[5] == str(bootstrap)
+    assert module_argv[4] == str(bootstrap)
     module = run_custody_subject_process(
         module_argv,
         cwd=tmp_path,
@@ -6188,14 +5602,13 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
         [sys.executable, "-I", str(script), "payload"],
         environment_root=Path(sys.prefix),
     )
-    assert script_argv[:5] == [
+    assert script_argv[:4] == [
         sys.executable,
-        "-B",
         "-X",
-        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        f"pycache_prefix={Path(sys.prefix).parent / '.bytecode'}",
         "-I",
     ]
-    assert script_argv[5] == str(bootstrap)
+    assert script_argv[4] == str(bootstrap)
     script_result = run_custody_subject_process(
         script_argv,
         cwd=tmp_path,
@@ -6254,27 +5667,25 @@ def test_cached_python_authorities_recapture_once_under_the_execution_patch(
 def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startup(
     tmp_path: Path,
 ) -> None:
-    """An admitted -I payload cannot drop the queue's no-bytecode input.
+    """An admitted -I payload cannot drop the queue's bytecode cache.
 
-    -I implies -E, so the interpreter ignores PYTHONDONTWRITEBYTECODE while
-    site still imports the repository startup adapter; without -B that
-    adapter rewrote bytecode caches inside custody-inventoried source and
-    turned the row into non-evidence.
+    -I implies -E, so the interpreter ignores PYTHONPYCACHEPREFIX while site
+    still imports the repository startup adapter; without the option that
+    adapter wrote bytecode caches inside custody-inventoried source and
+    turned the row into non-evidence. The option sends them to the shared
+    cache beside the environments, outside every inventoried tree.
     """
-    probe = (
-        "import json,sys; print(json.dumps({'flag': sys.flags.dont_write_bytecode,"
-        "'dont_write': sys.dont_write_bytecode,"
-        "'adapter': 'molt.pytest_memory_guard_bootstrap' in sys.modules}))"
-    )
+    from molt.uv_environment import bytecode_prefix
+
+    probe = "import json,sys; print(json.dumps({'prefix': sys.pycache_prefix}))"
     rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "direct"}},
         [sys.executable, "-I", "-c", probe],
         environment_root=Path(sys.prefix),
     )
-    assert rewritten[1:5] == [
-        "-B",
+    assert rewritten[1:4] == [
         "-X",
-        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        f"pycache_prefix={bytecode_prefix(Path(sys.prefix))}",
         "-I",
     ]
     env = {
@@ -6294,10 +5705,7 @@ def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startu
     )
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
-    assert payload["flag"] == 1
-    assert payload["dont_write"] is True
-    # The repository adapter still ran under -I; it just could not write.
-    assert payload["adapter"] is True
+    assert payload["prefix"] == str(bytecode_prefix(Path(sys.prefix)))
 
 
 def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
@@ -21388,8 +20796,10 @@ def test_python_option_values_never_become_interpreter_flags(flag, option):
         environment_root=Path(sys.prefix),
     )
     assert rewritten[-3:] == ["command", "0", "pass"]
-    if not option.startswith("-B"):
-        assert rewritten[1] == "-B"
+    # The environment's shared cache is selected first; no -B is added.
+    from molt.uv_environment import bytecode_arguments
+
+    assert rewritten[1:3] == list(bytecode_arguments(Path(sys.prefix)))
 
 
 @pytest.mark.parametrize(
