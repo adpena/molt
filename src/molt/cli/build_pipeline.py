@@ -184,48 +184,20 @@ def _run_build_pipeline(
             )
         )
     if output_layout.is_mlir_emit:
-        module_graph = prepared_frontend_pipeline_bundle.module_graph
-        runtime_import_dispatch_roots = (
-            prepared_frontend_pipeline_bundle.runtime_import_dispatch_roots
-        )
-        stdlib_allowlist = prepared_frontend_pipeline_bundle.stdlib_allowlist
-        spawn_enabled = prepared_frontend_pipeline_bundle.spawn_enabled
-        known_modules = prepared_frontend_pipeline_bundle.known_modules
-        module_order = prepared_frontend_pipeline_bundle.module_order
-        integration_state = prepared_frontend_pipeline_bundle.integration_state
         record_binary_image_analysis = (
             prepared_frontend_pipeline_bundle.record_binary_image_analysis
         )
         prepared_backend_ir, prepared_backend_ir_error = (
-            _backend_ir._prepare_backend_ir(
+            _backend_ir.materialize_tir_closure(
+                prepared_frontend_pipeline_bundle,
                 entry_module=resolved_build_entry.entry_module,
-                module_graph=module_graph,
-                logical_source_path_by_module=(
-                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
-                ),
-                namespace_portions_by_module=(
-                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.namespace_portions_by_module
-                ),
-                module_source_role_by_module=(
-                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.module_source_role_by_module
-                ),
-                known_modules=known_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                integration_state=integration_state,
                 fail=_fail,
                 json_output=json_output,
-                module_order=module_order,
-                runtime_import_dispatch_roots=runtime_import_dispatch_roots,
-                spawn_enabled=spawn_enabled,
                 pgo_profile_summary=prepared_build_config.pgo_profile_summary,
                 runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-                emit_ir_path=output_layout.emit_ir_path,
-                validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
                 target_python=prepared_build_config.target_python,
                 stdlib_profile=stdlib_profile,
                 target=target,
-                facts_target=output_layout.facts_target,
-                native_artifact_plan=native_artifact_plan,
             )
         )
         if prepared_backend_ir_error is not None:
