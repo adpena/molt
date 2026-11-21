@@ -9,6 +9,7 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import os
+import time
 import sqlite3
 import json
 from pathlib import Path
@@ -16,6 +17,11 @@ from pathlib import Path
 import pytest
 
 from molt.cli import module_cache as MC
+from molt.cli.frontend_record_files import (
+    FrontendRecordFiles,
+    FrontendRecordKind,
+    frontend_record_files,
+)
 from molt.frontend import SimpleTIRGenerator
 from molt.cli.source_record_store import (
     SourceRecord,
@@ -224,10 +230,19 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
         import_scan_mode="module_init",
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    before = _age_record("module-analysis", key)
+    # Module analyses are immutable record files (cache frontier step 2): a
+    # hit in another session reads the same blob, republishes nothing and
+    # renews the blob's mtime once it is an hour stale.
+    files = frontend_record_files()
+    assert files.save()
+    digest = FrontendRecordFiles(files.cache_root).addresses()[("module-analysis", key)]
+    blob = files.blob_path(digest)
+    payload = blob.read_bytes()
+    stale = time.time() - 2 * 3600
+    os.utime(blob, (stale, stale))
     _use_session(monkeypatch, "B")
     monkeypatch.setattr(
-        SourceRecordStore,
+        FrontendRecordFiles,
         "put",
         lambda *_a, **_k: pytest.fail("cache hit republished a record"),
     )
@@ -237,11 +252,8 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     assert result is not None
     defaults, kinds = result
     assert kinds == {"f": "sync"} and defaults["f"]["defaults"] == [2]
-    # The owning operation already flushed its partial advisory batch.
-    assert shared_source_records().save_renewals() == 0
-    after = _record("module-analysis", key)
-    assert after.revision == before.revision and after.payload == before.payload
-    assert after.used_ns > before.used_ns
+    assert blob.read_bytes() == payload
+    assert blob.stat().st_mtime > stale + 3600
 
 
 def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
@@ -921,12 +933,20 @@ def test_module_cache_publishes_once_without_file_hydration(tmp_path, monkeypatc
     path = _write_module(tmp_path, "m", "pass\n")
     calls = []
     put = SourceRecordStore.put
+    put_file = FrontendRecordFiles.put
 
     def publish(store, kind, key, payload, *, generation):
         calls.append((kind, key))
         return put(store, kind, key, payload, generation=generation)
 
+    def publish_file(
+        files: FrontendRecordFiles, kind: FrontendRecordKind, key: str, payload: bytes
+    ) -> bool:
+        calls.append((kind, key))
+        return put_file(files, kind, key, payload)
+
     monkeypatch.setattr(SourceRecordStore, "put", publish)
+    monkeypatch.setattr(FrontendRecordFiles, "put", publish_file)
     MC._write_persisted_module_analysis(
         path,
         module_name="m",

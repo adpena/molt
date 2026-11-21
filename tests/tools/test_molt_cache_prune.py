@@ -1360,14 +1360,14 @@ def test_global_budget_combines_all_source_record_kinds_and_file_entries(
     store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    kinds: tuple[records.RecordKind, ...] = (
-        "import-scan",
-        "intrinsic-facts",
-        "module-analysis",
-        "module-lowering",
+    rows: tuple[tuple[records.RecordKind, str, int], ...] = (
+        ("intrinsic-facts", "first", 40),
+        ("module-lowering", "first", 30),
+        ("intrinsic-facts", "second", 20),
+        ("module-lowering", "second", 10),
     )
-    for kind, size in zip(kinds, (40, 30, 20, 10), strict=True):
-        assert store.put(kind, "shared-key", b"x" * size, generation="g")
+    for kind, key, size in rows:
+        assert store.put(kind, key, b"x" * size, generation="g")
         clock[0] += 1_000_000_000
     entry = _cache_entry(cache, "old-file")
     with _locked_wasm_link_cache_entry(entry):
@@ -1395,9 +1395,9 @@ def test_global_budget_combines_all_source_record_kinds_and_file_entries(
     assert not result["source_record_maintenance_failed"]
     assert store.path.stat().st_ino == database_identity
     assert not entry.root.exists()
-    for kind in kinds:
-        observed = store.get(kind, "shared-key", generation="g", max_bytes=None)
-        assert (observed is None) == (kind == "import-scan")
+    for kind, key, _size in rows:
+        observed = store.get(kind, key, generation="g", max_bytes=None)
+        assert (observed is None) == ((kind, key) == ("intrinsic-facts", "first"))
 
 
 def test_source_record_dry_run_and_age_policy_preserve_database_owner(
@@ -1441,8 +1441,8 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
     store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    assert store.put("module-analysis", "k", b"observed", generation="g")
-    candidate = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    assert store.put("module-lowering", "k", b"observed", generation="g")
+    candidate = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert candidate is not None
     if future_timestamp:
         clock[0] += 100 * 86400 * 1_000_000_000
@@ -1462,7 +1462,7 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
             assert candidate.refresh()
             assert store.save_renewals() == 1
         else:
-            assert store.put("module-analysis", "k", b"replacement", generation="g")
+            assert store.put("module-lowering", "k", b"replacement", generation="g")
         return remove(maintenance, observed)
 
     monkeypatch.setattr(records.SourceRecordMaintenance, "remove", racing_remove)
@@ -1472,7 +1472,7 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
     assert result["source_records_removed"] == int(future_timestamp)
     assert result["entries_busy"] == 1
     assert result["entries_failed"] == 0
-    remaining = store.get("module-analysis", "k", generation="g", max_bytes=None)
+    remaining = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert remaining is not None
     assert remaining.payload == (b"replacement" if change == "replace" else b"observed")
 
@@ -1826,13 +1826,13 @@ def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkey
     store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
+    kinds = ("intrinsic-facts", "module-lowering")
     for index in range(8):
         assert store.put(
-            kinds[index % 4], str(index), b"x" * 100, generation=f"g{index}"
+            kinds[index % len(kinds)], str(index), b"x" * 100, generation=f"g{index}"
         )
         clock[0] += 2 * 3600 * 1_000_000_000
-    refreshed = store.get("import-scan", "0", generation="g0", max_bytes=None)
+    refreshed = store.get("intrinsic-facts", "0", generation="g0", max_bytes=None)
     assert refreshed is not None and refreshed.refresh()
     assert store.save_renewals() == 1
     module = _load_molt_cache_prune()

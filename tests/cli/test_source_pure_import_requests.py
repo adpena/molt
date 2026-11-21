@@ -11,7 +11,6 @@ import copy
 import ntpath
 import os
 import posixpath
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -2172,44 +2171,44 @@ def test_shared_requests_complete_against_each_projects_roots(tmp_path):
     assert scan(first).scan.imports == cold.scan.imports
 
 
-def test_source_request_recency_requires_complete_admission(tmp_path):
-    from molt.cli.source_record_store import shared_source_records
+def test_source_request_recency_requires_complete_admission(tmp_path: Path) -> None:
+    """An import scan is a record file (cache frontier step 2): only a record
+    its consumer admits renews its blob; a refused one keeps its age."""
+    import os
+    import time
+
+    from molt.cli.frontend_record_files import (
+        FrontendRecordFiles,
+        frontend_record_files,
+    )
 
     source = write(tmp_path / "entry.py", "import math\n")
     load(source)
     options = dict(module_name="entry", is_package=False, import_scan_mode="full")
     key = records._import_scan_cache_key(source, **options)
     payload = source_records("import-scan")[key]
-    store = shared_source_records()
+    files = frontend_record_files()
 
-    def age_record():
-        with sqlite3.connect(store.path) as connection:
-            connection.execute(
-                "UPDATE recency SET used_ns = 0 WHERE kind = ? AND key = ?",
-                ("import-scan", key),
-            )
-
-    def used_ns():
-        candidate = store.get("import-scan", key, generation="requests", max_bytes=None)
-        assert candidate is not None
-        return candidate.used_ns
+    def aged_blob() -> tuple[Path, float]:
+        assert files.save()
+        digest = FrontendRecordFiles(files.cache_root).addresses()[("import-scan", key)]
+        blob = files.blob_path(digest)
+        stale = time.time() - 2 * 3600
+        os.utime(blob, (stale, stale))
+        return blob, stale
 
     malformed = copy.deepcopy(payload)
     # This failure is reached only after identity and source admission.
     malformed["source_values"]["invented"] = []
     replace_source_record("import-scan", key, malformed)
-    age_record()
+    blob, stale = aged_blob()
     assert records._read_persisted_import_scan_record(source, **options) is None
-    # A refused record queues no renewal.
-    assert store.save_renewals() == 0
-    assert used_ns() == 0
+    assert blob.stat().st_mtime == pytest.approx(stale, abs=1)
 
     replace_source_record("import-scan", key, payload)
-    age_record()
+    blob, stale = aged_blob()
     assert records._read_persisted_import_scan_record(source, **options) is not None
-    # Successful admission persisted recency at its operation boundary.
-    assert store.save_renewals() == 0
-    assert used_ns() > 0
+    assert blob.stat().st_mtime > stale + 3600
 
 
 @pytest.mark.parametrize(

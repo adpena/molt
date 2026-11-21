@@ -1,22 +1,46 @@
-"""Inspect and damage stored per-source records through the real shared store."""
+"""Inspect and damage stored per-source records through their real stores.
+
+Import scans and module analyses are immutable record files
+(``molt.cli.frontend_record_files``); intrinsic facts and lowerings are rows in
+the shared SQLite store."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from contextlib import closing
-from typing import Any
+from typing import Any, cast
 
-from molt.cli.source_record_store import (
-    RecordKind,
-    SourceRecordStore,
-    shared_source_records,
-)
 from molt.cli.function_records import (
     decode_function_records,
     decode_lowering_record,
     encode_lowering_record,
 )
+from molt.cli.frontend_record_files import (
+    FrontendRecordFiles,
+    FrontendRecordKind,
+    frontend_record_files,
+)
+from molt.cli.source_record_store import (
+    RecordKind,
+    SourceRecordStore,
+    shared_source_records,
+)
+
+_FILE_KINDS: frozenset[str] = frozenset(("import-scan", "module-analysis"))
+
+
+def _saved_files() -> FrontendRecordFiles:
+    """This process's record files after it published its queued index."""
+    files = frontend_record_files()
+    assert files.save()
+    return files
+
+
+def _file_digests(kind: str) -> dict[str, str]:
+    """``kind``'s keys and digests as a fresh reader of the files sees them."""
+    fresh = FrontendRecordFiles(_saved_files().cache_root)
+    return {key: digest for (k, key), digest in fresh.addresses().items() if k == kind}
 
 
 def _saved_store() -> SourceRecordStore:
@@ -30,8 +54,16 @@ def _saved_store() -> SourceRecordStore:
     return store
 
 
-def source_records(kind: RecordKind) -> dict[str, dict[str, Any]]:
+def source_records(
+    kind: RecordKind | FrontendRecordKind,
+) -> dict[str, dict[str, Any]]:
     """Every stored ``kind`` record in the caller's isolated shared cache."""
+    if kind in _FILE_KINDS:
+        files = _saved_files()
+        return {
+            key: json.loads(files.blob_path(digest).read_bytes())
+            for key, digest in _file_digests(kind).items()
+        }
     path = _saved_store().path
     if not path.exists():
         return {}
@@ -52,8 +84,17 @@ def source_records(kind: RecordKind) -> dict[str, dict[str, Any]]:
     return result
 
 
-def replace_source_record(kind: RecordKind, key: str, payload: dict[str, Any]) -> None:
+def replace_source_record(
+    kind: RecordKind | FrontendRecordKind, key: str, payload: dict[str, Any]
+) -> None:
     """Replace one record through its producer, preserving its generation."""
+    if kind in _FILE_KINDS:
+        assert key in _file_digests(kind), f"no stored {kind} record {key}"
+        files = _saved_files()
+        file_kind = cast(FrontendRecordKind, kind)
+        assert files.put(file_kind, key, json.dumps(payload).encode())
+        assert files.save()
+        return
     store = _saved_store()
     with closing(sqlite3.connect(store.path)) as connection:
         row = connection.execute(
@@ -76,8 +117,13 @@ def replace_source_record(kind: RecordKind, key: str, payload: dict[str, Any]) -
     assert store.put(kind, key, encoded, generation=row[0])
 
 
-def delete_source_record(kind: RecordKind, key: str) -> None:
+def delete_source_record(kind: RecordKind | FrontendRecordKind, key: str) -> None:
     """Remove one stored record, as an evicted or never-published one."""
+    if kind in _FILE_KINDS:
+        digests = _file_digests(kind)
+        assert key in digests, f"no stored {kind} record {key}"
+        _saved_files().blob_path(digests[key]).unlink()
+        return
     with (
         closing(sqlite3.connect(_saved_store().path)) as connection,
         connection,

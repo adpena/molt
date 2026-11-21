@@ -56,6 +56,7 @@ from molt.cli.models import (
 )
 from molt.cli.module_dependencies import _module_dependency_closure
 from molt.cli.module_graph_discovery import _load_module_import_scan
+from molt.cli.frontend_record_files import frontend_record_files
 from molt.cli.source_record_store import shared_source_records
 from molt.cli.function_records import (
     FunctionDigestSeed,
@@ -842,11 +843,8 @@ def _read_persisted_module_analysis(
         target_python=target_python,
         native_support_function_roots=native_support_function_roots,
     )
-    record = shared_source_records().get(
-        "module-analysis",
-        key,
-        generation=_frontend_semantic_tooling_fingerprint(),
-        max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES,
+    record = frontend_record_files().get(
+        "module-analysis", key, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
     )
     if record is None:
         return None
@@ -913,13 +911,12 @@ def _write_persisted_module_analysis(
         "func_defaults": func_defaults,
         "func_kinds": func_kinds,
     }
-    shared_source_records().put(
+    frontend_record_files().put(
         "module-analysis",
         key,
         json.dumps(
             _cache_json_value(payload), separators=(",", ":"), default=_json_ir_default
         ).encode(),
-        generation=_frontend_semantic_tooling_fingerprint(),
     )
 
 
