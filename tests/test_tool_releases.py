@@ -324,7 +324,7 @@ def test_warm_discovery_reuses_the_executable_digest_and_sees_a_rewrite(
 
 def _counted_discoveries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Any, Path, Any, list[Path]]:
+) -> tuple[tool_releases.ToolRelease, Path, tool_releases.ToolDiscovery, list[Path]]:
     """A provisioned demo tool and the executables each discovery hashes."""
     release, archive = _pinned_release(tmp_path, b"demo binary")
     downloads = tmp_path / "downloads"

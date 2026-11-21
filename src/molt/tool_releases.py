@@ -584,17 +584,14 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
         and before is not None
         and before == _stat_signature(*inputs)
         and all(
-            ctime_ns < started_ns - DIGEST_RACY_WINDOW_NS
-            for *_, ctime_ns in before
+            ctime_ns < started_ns - DIGEST_RACY_WINDOW_NS for *_, ctime_ns in before
         )
     ):
         _VERIFIED_DISCOVERIES[key] = (before, discovery)
     return discovery
 
 
-def _discover_tool_verified(
-    release: ToolRelease, prefix: Path
-) -> ToolDiscovery | None:
+def _discover_tool_verified(release: ToolRelease, prefix: Path) -> ToolDiscovery | None:
     """Verify the installation under ``prefix`` byte for byte."""
     from molt.checkout_state import toolchain_state_use
 
