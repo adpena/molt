@@ -332,3 +332,48 @@ fn an_init_dominated_cell_read_is_one_load_without_operands() {
     assert_eq!(ops[2].operands, [ops[1].results[0], ValueId(0), ValueId(1)]);
     assert_eq!(ops[2].results, [checked]);
 }
+
+/// A function cell (design 78, 5.9) arrives as its final cell ops: the store
+/// after its callee's maker and the init-dominated read. Neither has a name,
+/// so both keep their slot and shape; stripping the slot would leave the
+/// backend a cell op with no cell.
+#[test]
+fn function_cell_ops_arrive_final_and_keep_their_slots() {
+    let mut func = function();
+    let (base, read) = (func.fresh_value(), func.fresh_value());
+    func.value_types.insert(base, TirType::I64);
+    func.value_types.insert(read, TirType::DynBox);
+    let store_slot = cell(7);
+    let read_slot = GlobalSlotRef {
+        init_once: true,
+        ..cell(7)
+    };
+    let mut block_op = TirOp::new(OpCode::StaticCellBase, vec![], vec![base]);
+    block_op
+        .attrs
+        .insert("s_value".into(), AttrValue::Str(store_slot.module.clone()));
+    let mut store = TirOp::new(OpCode::StaticCellSet, vec![base, ValueId(1)], vec![]);
+    store.set_global_slot(Some(&store_slot));
+    let mut load = TirOp::new(OpCode::StaticCellLoad, vec![], vec![read]);
+    load.set_global_slot(Some(&read_slot));
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.extend([block_op, store, load]);
+    block.terminator = Terminator::Return { values: vec![read] };
+
+    super::run(&mut func);
+    verify(&func);
+    let ops = entry_ops(&func);
+    let kinds: Vec<_> = ops.iter().map(|op| op.opcode).collect();
+    assert_eq!(
+        kinds,
+        [
+            OpCode::StaticCellBase,
+            OpCode::StaticCellSet,
+            OpCode::StaticCellLoad
+        ]
+    );
+    assert_eq!(ops[1].global_slot(), Some(store_slot));
+    assert_eq!(ops[1].operands, [base, ValueId(1)]);
+    assert_eq!(ops[2].global_slot(), Some(read_slot));
+}

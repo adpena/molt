@@ -93,8 +93,13 @@ def venv_env(
     venv: Path,
     env: Mapping[str, str] | None = None,
     managed: bool = False,
-    repo_root: Path = ROOT,
+    repo_root: Path | None = None,
 ) -> ProcessEnvironment:
+    """``env`` activating ``venv``. A managed environment also selects its
+    bytecode cache, and puts ``repo_root``'s ``src`` first on ``PYTHONPATH``
+    when the caller names the checkout whose code it runs. Nothing defaults
+    to this module's checkout: a pinned controller that imports this module
+    builds gates for another checkout (HF-969)."""
     merged = ProcessEnvironmentBuilder(os.environ if env is None else env)
     bin_dir = venv_bin_dir(venv)
     old_path = merged.get("PATH", "")
@@ -108,13 +113,14 @@ def venv_env(
         str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
     )
     if managed:
-        from molt.dx import ensure_repo_src_pythonpath
-
         merged["UV_PROJECT_ENVIRONMENT"] = str(venv)
         merged["UV_NO_SYNC"] = "1"
         merged["PYTHONPYCACHEPREFIX"] = str(uv_environment.bytecode_prefix(venv))
         merged.pop("PYTHONDONTWRITEBYTECODE", None)
-        ensure_repo_src_pythonpath(repo_root, merged)
+        if repo_root is not None:
+            from molt.dx import ensure_repo_src_pythonpath
+
+            ensure_repo_src_pythonpath(repo_root, merged)
     return ProcessEnvironment(merged)
 
 
@@ -176,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
         venv = resolve_venv(explicit=args.venv)
-        env = venv_env(venv=venv, managed=managed)
+        env = venv_env(venv=venv, managed=managed, repo_root=ROOT)
         return forward_command(
             resolve_command(command, venv=venv, managed=managed), env=env
         )

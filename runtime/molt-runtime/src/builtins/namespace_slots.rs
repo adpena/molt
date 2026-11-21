@@ -183,6 +183,10 @@ unsafe fn ready_clear_all(ready: *mut ReadyWords) {
 pub(crate) struct StaticCells {
     /// Slices of the installed registry blob, in strictly sorted order.
     names: Box<[&'static [u8]]>,
+    /// The function cells after the layout's words (design 78, 5.9): each
+    /// holds the one function object of a callee whose proven calls read it.
+    /// No name reaches them; shutdown retirement releases them.
+    function_cells: usize,
     words: *mut u64,
 }
 
@@ -192,7 +196,7 @@ impl StaticCells {
     }
 
     fn cell(&self, k: usize) -> &'static std::sync::atomic::AtomicU64 {
-        debug_assert!(k < self.names.len());
+        debug_assert!(k < self.names.len() + self.function_cells);
         unsafe { std::sync::atomic::AtomicU64::from_ptr(self.words.add(k)) }
     }
 }
@@ -674,7 +678,7 @@ pub(crate) fn retire_static_cells(py: &PyToken<'_>, dict: *mut u8) -> bool {
     };
     let none = MoltObject::none().bits();
     let mut cleared = false;
-    for k in 0..cells.names.len() {
+    for k in 0..cells.names.len() + cells.function_cells {
         let cell = cells.cell(k);
         let word = cell.load(std::sync::atomic::Ordering::Acquire);
         if word == UNBOUND || word == none {
@@ -696,8 +700,9 @@ pub(crate) fn retire_static_cells(py: &PyToken<'_>, dict: *mut u8) -> bool {
 /// bits (HF-79) of the layout names some code may store: a cell store never
 /// reaches the dictionary's guard state, so they are recorded now, before the
 /// first store. The registry row named like the module supplies
-/// the layout; the slot table that module creation attached is released (it
-/// mirrors nothing yet). Never raises: a module without a matching row keeps
+/// the layout; `function_cells` counts the words after it, which hold proven
+/// callees' function objects (design 78, 5.9). The slot table that module
+/// creation attached is released (it mirrors nothing yet). Never raises: a module without a matching row keeps
 /// its dictionary namespace, which only costs speed, and the compiler emits
 /// the call only where the row exists.
 pub(crate) fn molt_static_cells_bind_attached_body(
@@ -705,8 +710,15 @@ pub(crate) fn molt_static_cells_bind_attached_body(
     module_bits: u64,
     base_bits: u64,
     guard_mask_bits: u64,
+    function_cells_bits: u64,
 ) -> u64 {
     let none = MoltObject::none().bits();
+    let Some(function_cells) = obj_from_bits(function_cells_bits)
+        .as_int()
+        .and_then(|count| usize::try_from(count).ok())
+    else {
+        return none;
+    };
     let Some(module) = obj_from_bits(module_bits)
         .as_ptr()
         .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_MODULE)
@@ -743,7 +755,11 @@ pub(crate) fn molt_static_cells_bind_attached_body(
     unsafe {
         crate::builtins::binding_guards::note_namespace_cell_bindings(dict, guard_mask);
         release(dict);
-        let cells = Box::new(StaticCells { names, words });
+        let cells = Box::new(StaticCells {
+            names,
+            function_cells,
+            words,
+        });
         dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);
     }
     none

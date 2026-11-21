@@ -15,6 +15,7 @@ import copy
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -86,13 +87,20 @@ def _executable_ir_record(ir: dict) -> dict:
     }
 
 
+_FINALLY_TRANSFER_WARNING = re.compile(
+    r"<string>:\d+: SyntaxWarning: '(break|continue|return)' in a 'finally' block"
+)
+
+
 def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
     assert result.returncode == 0, (
         f"compilation process failed ({result.returncode}): {result.stderr[:2000]}"
     )
-    assert not result.stderr.strip(), (
-        f"unexpected compiler stderr: {result.stderr[:2000]}"
-    )
+    if result.stderr.strip():
+        assert allow_unsupported and all(
+            _FINALLY_TRANSFER_WARNING.fullmatch(line)
+            for line in result.stderr.splitlines()
+        ), f"unexpected compiler stderr: {result.stderr[:2000]}"
     assert result.stdout.strip(), "compilation process produced no record"
     record = json.loads(result.stdout)
     assert isinstance(record, dict), "compilation record must be an object"
@@ -152,6 +160,9 @@ def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
             == record["cache_digest"]
         )
         assert isinstance(record["cache_key"], str) and len(record["cache_key"]) == 64
+    if allow_unsupported:
+        # The outcome comparison includes exact diagnostics for every seed.
+        return json.dumps([result.stdout, result.stderr])
     return result.stdout
 
 

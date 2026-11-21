@@ -40,6 +40,7 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.module_publication import CallableDeclaration
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.class_model import ClassView
     from molt.frontend.lowering.builtin_guards import GuardArmKind
@@ -86,6 +87,7 @@ class _GeneratorProtocolAttrs(Protocol):
     boxed_local_hints: dict[str, TypeHint]
     boxed_locals: dict[str, MoltValue]
     bytearray_len_hints: dict[str, int]
+    callable_declarations: dict[str, CallableDeclaration]
     class_annotation_exec_counter: Any
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
@@ -143,4 +145,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    imported_attr_names: dict[str, str]

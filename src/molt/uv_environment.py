@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import stat
+import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +32,10 @@ RECORD = "molt-environment.json"
 SCHEMA = "molt.uv-environment.v1"
 _MAX_RECORD_BYTES = 64 * 1024
 SYNC_TIMEOUT_S = 1800.0
+# The record's mtime is the environment's last use, refreshed at most daily.
+LAST_USE_REFRESH_S = 86400.0
+# An environment no command selected for this long is retired.
+IDLE_RETIREMENT_S = 30 * 86400.0
 _LOCK_TIMEOUT_S = 3600.0
 _RELEASE = re.compile(r"\d+\.\d+\.\d+")
 _GROUP = re.compile(r"[a-z0-9][a-z0-9._-]*")
@@ -333,7 +338,7 @@ def environment(
     source = os.environ if environ is None else environ
     key = key or default_key(checkout, source)
     root = environment_root(checkout, key, source)
-    if (root / RECORD).is_file():
+    if _note_use(root / RECORD):
         return root
     root.parent.mkdir(parents=True, exist_ok=True)
     lock = root.with_name(f"{root.name}.lock")
@@ -417,6 +422,148 @@ def _chmod_directory(path: Path, *, writable: bool) -> None:
     wanted = mode | stat.S_IWUSR if writable else mode & ~_WRITE
     if wanted != mode:
         path.chmod(wanted)
+
+
+def _note_use(record: Path) -> bool:
+    """Whether ``record`` exists; refresh its mtime, the environment's last
+    use, when it is more than a day old (one write per day of use)."""
+    try:
+        used = record.stat().st_mtime
+    except OSError:
+        return False
+    if time.time() - used > LAST_USE_REFRESH_S:
+        try:
+            os.utime(record)
+        except OSError:
+            pass  # A read-only record keeps its age; retirement then sees it idle.
+    return True
+
+
+def _source_of(prefix: Path, cache: Path) -> Path:
+    """The source directory a bytecode cache directory mirrors."""
+    return Path("/").joinpath(*cache.relative_to(prefix).parts)
+
+
+def _prune_bytecode(prefix: Path, apply: bool) -> list[dict[str, str]]:
+    """Delete each cache subtree whose mirrored source directory is gone (a
+    retired worktree's, a deleted package's). CPython names cache files by
+    absolute source path, so the mirror is exact on POSIX; Windows prefixes
+    differ by drive and are left alone."""
+    from molt.file_deletion import delete_path
+
+    pruned: list[dict[str, str]] = []
+    if os.name == "nt" or not prefix.is_dir():
+        return pruned
+    pending = [prefix]
+    while pending:
+        directory = pending.pop()
+        for child in sorted(directory.iterdir()):
+            if child.is_symlink() or not child.is_dir():
+                continue
+            if _source_of(prefix, child).is_dir():
+                pending.append(child)
+                continue
+            if apply:
+                delete_path(child, owning_root=prefix)
+            pruned.append(
+                {"path": str(child), "reason": "its source directory is gone"}
+            )
+    return pruned
+
+
+def retire_unused(
+    artifact_root: Path,
+    *,
+    checkouts: Sequence[Path],
+    now: float | None = None,
+    apply: bool = True,
+) -> list[dict[str, str]]:
+    """Retire what no checkout uses: shared environments idle past
+    ``IDLE_RETIREMENT_S`` (never one whose lock is held, so never one being
+    synced), bytecode of sources that are gone, and the per-checkout images
+    the shared environments replaced (design one_environment.md) once their
+    checkout is gone or runs the shared mechanism. ``checkouts`` are the live
+    worktrees of the artifact root's family."""
+    from molt.custody_layout import storage_rule
+    from molt.default_paths import hot_path
+    from molt.dx import checkout_component
+    from molt.file_deletion import delete_path
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    moment = time.time() if now is None else now
+    retired: list[dict[str, str]] = []
+    root = hot_path(artifact_root, *storage_rule("python-environment").relative)
+    if root.is_dir():
+        for environment_dir in sorted(root.iterdir()):
+            if (
+                environment_dir.name.startswith(".")
+                or environment_dir.is_symlink()
+                or not environment_dir.is_dir()
+            ):
+                continue
+            record = environment_dir / RECORD
+            try:
+                used = (record if record.exists() else environment_dir).stat().st_mtime
+            except OSError:
+                continue
+            if moment - used < IDLE_RETIREMENT_S:
+                continue
+            handle = _try_acquire_file_lock(
+                environment_dir.with_name(f"{environment_dir.name}.lock")
+            )
+            if handle is None:
+                continue
+            try:
+                if apply:
+                    delete_path(environment_dir, owning_root=root)
+            finally:
+                _release_file_lock(handle)
+            retired.append(
+                {"path": str(environment_dir), "reason": "unused for 30 days"}
+            )
+        retired.extend(_prune_bytecode(root / ".bytecode", apply))
+    # The images the shared environments replaced: one directory per checkout.
+    live = {checkout_component(path): path for path in checkouts}
+    legacy = artifact_root / "build-environments" / "development"
+    # No live checkout found: liveness is unknown, so nothing legacy retires.
+    if legacy.is_dir() and live:
+        for owner in sorted(legacy.iterdir()):
+            if owner.name.startswith(".") or owner.is_symlink() or not owner.is_dir():
+                continue
+            checkout = live.get(owner.name)
+            if checkout is not None:
+                # A live checkout gives up its image a day after it gained the
+                # shared mechanism (the module's mtime dates the merge), so a
+                # gate started before the merge keeps the image it runs in.
+                try:
+                    adopted = (checkout / "src" / "molt" / "uv_environment.py").stat()
+                except OSError:
+                    continue  # That checkout still runs the image mechanism.
+                if moment - adopted.st_mtime < LAST_USE_REFRESH_S:
+                    continue
+            if apply:
+                delete_path(owner, owning_root=legacy)
+            retired.append(
+                {
+                    "path": str(owner),
+                    "reason": "replaced by the shared environments",
+                }
+            )
+    # The mutable per-checkout environments before the images: no code reads
+    # them; a day of quiet rules out a process caught mid-write.
+    oldest = artifact_root / "uv-project-envs"
+    if oldest.is_dir():
+        for stale in sorted(oldest.iterdir()):
+            try:
+                quiet = moment - stale.lstat().st_mtime >= LAST_USE_REFRESH_S
+            except OSError:
+                continue
+            if not quiet or stale.is_symlink():
+                continue
+            if apply:
+                delete_path(stale, owning_root=oldest)
+            retired.append({"path": str(stale), "reason": "no code reads it"})
+    return retired
 
 
 def interpreter_identity(root: Path) -> dict[str, object]:

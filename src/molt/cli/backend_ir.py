@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
-from molt.frontend._types import SimpleIROp
+from molt.frontend._types import ClassId, SimpleIROp
+from molt.frontend.class_model import ClassModel
 from molt.frontend.lowering.op_kinds_generated import WireOpKind
 from molt.frontend.lowering.function_metadata import (
     FunctionMetadataEmitter,
@@ -22,6 +23,7 @@ from molt.frontend.lowering.function_metadata import (
 )
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
 from molt.frontend.module_publication import (
+    CallableDeclaration,
     FunctionAssemblyMetadata,
     inspect_source_module_publication,
     parse_function_metadata,
@@ -54,7 +56,10 @@ from molt.cli.models import (
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.closed_world_bindings import bind_closed_world_calls
 from molt.cli.static_module_cells import (
+    FunctionCells,
     StaticCellPlan,
+    apply_function_cells,
+    plan_function_cells,
     plan_static_module_cells,
     fold_init_once_constants,
     prove_init_once_calls,
@@ -74,6 +79,15 @@ from molt.target_python import TargetPythonVersion
 
 if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
+    from molt.cli.frontend_pipeline import _PreparedFrontendPipelineBundle
+    from molt.cli.models import PgoProfileSummary, RuntimeFeedbackSummary
+
+
+@dataclass(frozen=True)
+class FrontendDeclarationTable:
+    callables: Mapping[str, CallableDeclaration]
+    classes: Mapping[ClassId, ClassModel]
+    module_layouts: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,7 @@ class _PreparedBackendIR:
     # Static module cells (call_anatomy.md 4.5a): eligible modules, their
     # cells' InitOnce facts and why every other module keeps its dictionary.
     static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
+    declarations: FrontendDeclarationTable | None = None
 
 
 def _build_version_info_ops(
@@ -2205,6 +2220,46 @@ def _finalize_gpu_descriptors(
             }
 
 
+def materialize_tir_closure(
+    frontend: _PreparedFrontendPipelineBundle,
+    *,
+    entry_module: str,
+    target: Target,
+    target_python: TargetPythonVersion,
+    stdlib_profile: str | None,
+    pgo_profile_summary: PgoProfileSummary | None,
+    runtime_feedback_summary: RuntimeFeedbackSummary | None,
+    fail: Callable[..., _CliFailure],
+    json_output: bool,
+) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
+    """Integrate the frontend's admitted bodies before backend dispatch."""
+    metadata = frontend.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
+    return _prepare_backend_ir(
+        entry_module=entry_module,
+        module_graph=frontend.module_graph,
+        logical_source_path_by_module=metadata.logical_source_path_by_module,
+        namespace_portions_by_module=metadata.namespace_portions_by_module,
+        module_source_role_by_module=metadata.module_source_role_by_module,
+        known_modules=frontend.known_modules,
+        stdlib_allowlist=frontend.stdlib_allowlist,
+        integration_state=frontend.integration_state,
+        fail=fail,
+        json_output=json_output,
+        module_order=frontend.module_order,
+        runtime_import_dispatch_roots=frontend.runtime_import_dispatch_roots,
+        spawn_enabled=frontend.spawn_enabled,
+        pgo_profile_summary=pgo_profile_summary,
+        runtime_feedback_summary=runtime_feedback_summary,
+        emit_ir_path=frontend.output_layout.emit_ir_path,
+        validate_inputs=frontend.module_source_catalog.validate,
+        target_python=target_python,
+        stdlib_profile=stdlib_profile,
+        target=target,
+        facts_target=frontend.output_layout.facts_target,
+        native_artifact_plan=frontend.native_artifact_plan,
+    )
+
+
 def _prepare_backend_ir(
     *,
     entry_module: str,
@@ -2422,6 +2477,7 @@ def _prepare_backend_ir(
     binding_diagnostics.extend(integration_state.constructor_fallbacks)
     module_registry: ModuleRegistry | None = None
     static_cells = StaticCellPlan()
+    function_cells = FunctionCells()
     if catalog_lane:
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
         # molt_isolate_import string_eq dispatch chain.  Cold dispatch is the
@@ -2463,6 +2519,13 @@ def _prepare_backend_ir(
             dep_closures=integration_state.module_dep_closures,
             program_functions=functions,
         )
+        function_cells = plan_function_cells(
+            static_cells,
+            integration_state.module_functions,
+            integration_state.global_layouts,
+            functions,
+        )
+        binding_diagnostics.extend(function_cells.diagnostics)
         stamp_global_slots(
             functions,
             integration_state.module_functions,
@@ -2471,7 +2534,9 @@ def _prepare_backend_ir(
             static_cells.modules,
             static_cells.guard_masks,
             static_cells.init_dominated,
+            function_cells.counts(),
         )
+        apply_function_cells(functions, function_cells)
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
             if rewrite_issue is not None:
@@ -2557,7 +2622,9 @@ def _prepare_backend_ir(
         assert isinstance(registry_rows, list)
         for row in registry_rows:
             if row["name"] in static_cells.modules:
-                row["static_cells"] = len(integration_state.global_layouts[row["name"]])
+                row["static_cells"] = len(
+                    integration_state.global_layouts[row["name"]]
+                ) + function_cells.counts().get(row["name"], 0)
         ir["module_registry"] = registry_payload
     # ModuleRegistry init bodies are reached through relocation slots in
     # MODULE_INIT_TABLE, not through SimpleIR call edges.  They must therefore
@@ -2609,6 +2676,15 @@ def _prepare_backend_ir(
     )
     return _PreparedBackendIR(
         ir=ir,
+        declarations=FrontendDeclarationTable(
+            callables={
+                symbol: row["callable_declaration"]
+                for symbol, row in integration_state.function_metadata.items()
+                if "callable_declaration" in row
+            },
+            classes=integration_state.known_classes,
+            module_layouts=integration_state.global_layouts,
+        ),
         function_digest_seeds=surviving_seeds,
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}

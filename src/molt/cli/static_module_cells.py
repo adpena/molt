@@ -984,3 +984,190 @@ def fold_init_once_constants(
                 }
     _write_back(functions, module_functions, position, rewritten)
     return folded
+
+
+# Function cells (design 78, 5.9).
+
+
+@dataclass(frozen=True)
+class FunctionCells:
+    """Each cell-eligible module's function cells: the words after its layout
+    that hold a proven callee's one function object, and the sites that store
+    and read them. Sites are named by value, so op insertions keep them."""
+
+    # module -> callee symbol -> word index in the module's cell block.
+    cells: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    # function name -> `func_new` result -> (module, callee symbol).
+    stores: Mapping[str, Mapping[str, tuple[str, str]]] = field(default_factory=dict)
+    # function name -> proven `load_method` callable -> (module, callee symbol).
+    reads: Mapping[str, Mapping[str, tuple[str, str]]] = field(default_factory=dict)
+    # Why each other proven method load keeps `load_method`.
+    diagnostics: tuple[str, ...] = ()
+
+    def counts(self) -> dict[str, int]:
+        return {module: len(rows) for module, rows in self.cells.items()}
+
+
+def _consuming_proven_call(
+    ops: Sequence[Mapping[str, Any]], start: int, callable_var: str
+) -> Mapping[str, Any] | None:
+    """The proven ``call_guarded`` whose callable is ``callable_var``."""
+    for op in ops[start + 1 :]:
+        if (
+            op.get("kind") == "call_guarded"
+            and op.get("proven_target")
+            and (op.get("args") or (None,))[0] == callable_var
+        ):
+            return op
+    return None
+
+
+def plan_function_cells(
+    plan: StaticCellPlan,
+    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
+    global_layouts: Mapping[str, tuple[str, ...]],
+    program_functions: Sequence[Mapping[str, Any]],
+) -> FunctionCells:
+    """Give each callee a function cell when its object is one per process
+    and a proven method load in its module's own code runs only after the
+    object is made.
+
+    A symbol whose one ``func_new`` runs once in a cell-eligible module's
+    init chain (``InitChain.runs_once``) has one function object per process;
+    ``proven_target`` already proved the method resolves to it. A proven
+    ``load_method`` of it in that module, which the ``func_new`` dominates
+    (``init_dominance``'s rule for a cell's store), becomes one cell load."""
+    references = _symbol_references(program_functions)
+    cells: dict[str, dict[str, int]] = {}
+    stores: dict[str, dict[str, tuple[str, str]]] = {}
+    reads: dict[str, dict[str, tuple[str, str]]] = {}
+    diagnostics: list[str] = []
+    for module in sorted(plan.modules):
+        funcs = module_functions.get(module, ())
+        chain: InitChain | None = None
+        entries: dict[str, tuple[frozenset[_Entry] | None, str]] = {}
+        body: set[str] = set()
+        by_name = {func.get("name", ""): func for func in funcs}
+        for func in funcs:
+            name = func.get("name", "")
+            ops = func.get("ops", ())
+            for index, op in enumerate(ops):
+                if op.get("kind") != "load_method" or not op.get("proven_target"):
+                    continue
+                callable_var = op.get("var")
+                call = (
+                    _consuming_proven_call(ops, index, callable_var)
+                    if isinstance(callable_var, str)
+                    else None
+                )
+                symbol = call.get("s_value") if call is not None else None
+                if not isinstance(callable_var, str) or not isinstance(symbol, str):
+                    continue
+                pair = op.get("out")
+                if any(pair in (other.get("args") or ()) for other in ops):
+                    diagnostics.append(
+                        f"{module}:{op.get('source_line')} {symbol}: method load kept: "
+                        "its bound pair is read"
+                    )
+                    continue
+                if chain is None:
+                    chain = InitChain(module, funcs)
+                    entries = _function_entries(module, funcs, chain, references)
+                    body = {
+                        f.get("name", "") for f in _module_body_functions(module, funcs)
+                    }
+                makers = [
+                    ref for ref in references.get(symbol, ()) if ref[3] == "func_new"
+                ]
+                reason = None
+                store: tuple[str, int] | None = None
+                if len(makers) != 1:
+                    reason = f"{len(makers)} func_new ops make {symbol}"
+                else:
+                    store = (makers[0][0], makers[0][1])
+                    if store[0] not in chain.functions or not chain.runs_once(store):
+                        reason = (
+                            f"{symbol}'s func_new does not run once in {module}'s init"
+                        )
+                if reason is None and store is not None:
+                    point = (name, index)
+                    if name in body:
+                        dominated = chain.dominates(store, point)
+                    else:
+                        starts, _witness = entries.get(name, (None, ""))
+                        dominated = starts is not None and all(
+                            chain.dominates(store, start) and (after or start != store)
+                            for start, after in starts
+                        )
+                    if not dominated:
+                        reason = f"{name} may run before {symbol}'s func_new"
+                if reason is not None or store is None:
+                    diagnostics.append(
+                        f"{module}:{op.get('source_line')} {symbol}: method load kept: {reason}"
+                    )
+                    continue
+                maker = by_name[store[0]]["ops"][store[1]]
+                made = maker.get("out")
+                if not isinstance(made, str):
+                    continue
+                rows = cells.setdefault(module, {})
+                if symbol not in rows:
+                    rows[symbol] = len(global_layouts[module]) + len(rows)
+                    stores.setdefault(store[0], {})[made] = (module, symbol)
+                reads.setdefault(name, {})[callable_var] = (module, symbol)
+    return FunctionCells(cells, stores, reads, tuple(diagnostics))
+
+
+def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -> None:
+    """Store each planned callee's object into its cell after its
+    ``func_new``, and read it at each planned site in place of its method
+    load. A rewritten function is a copy-on-write replacement."""
+    if not plan.cells:
+        return
+    for position, func in enumerate(functions):
+        name = func.get("name", "")
+        stores = plan.stores.get(name, {})
+        reads = plan.reads.get(name, {})
+        if not stores and not reads:
+            continue
+        ops: list[dict[str, Any]] = []
+        for op in func.get("ops", ()):
+            callable_var = op.get("var")
+            if (
+                op.get("kind") == "load_method"
+                and op.get("proven_target")
+                and callable_var in reads
+            ):
+                module, symbol = reads[callable_var]
+                ops.append(
+                    {
+                        "kind": "static_cell_load",
+                        "out": callable_var,
+                        "global_slot": {
+                            "module": module,
+                            "index": plan.cells[module][symbol],
+                            "cell": True,
+                            "init_once": True,
+                        },
+                        **{k: op[k] for k in ("source_line",) if k in op},
+                    }
+                )
+                continue
+            ops.append(op)
+            made = op.get("out")
+            if op.get("kind") == "func_new" and made in stores:
+                module, symbol = stores[made]
+                base = f"function_cells_base_{made}"
+                ops.append({"kind": "static_cell_base", "s_value": module, "out": base})
+                ops.append(
+                    {
+                        "kind": "static_cell_set",
+                        "args": [base, made],
+                        "global_slot": {
+                            "module": module,
+                            "index": plan.cells[module][symbol],
+                            "cell": True,
+                        },
+                    }
+                )
+        functions[position] = {**func, "ops": ops}

@@ -9692,7 +9692,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_static_cells_bind",
         symbol: "molt_static_cells_bind",
-        arity: 3,
+        arity: 4,
         defaults: &[],
         public: None,
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_static_cells_bind),
@@ -18851,4 +18851,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x4055381ee16944f7;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xf38312691143e4a7;

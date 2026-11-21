@@ -193,6 +193,15 @@ frontend host process. The current directly executable image contract requires t
 Discovery owns the demand plan and shared frontend entry. The JIT lane owns `jit_pipeline.py`,
 the image and runner. Measure launch and first-call latency separately.
 
+Native, WASM and MLIR AOT builds now assemble the closure from the same frontend bundle via
+`molt.cli.backend_ir.materialize_tir_closure`. The entry currently consumes eagerly lowered
+modules. A release fixture crossing a default argument, class method, closure and generator
+produced the same 94-function canonical backend input before and after the change. The
+entry also returns the module and class layouts and the callable declaration sidecar. The
+sidecar carries parameter kinds, default positions, execution kind and lexical closure shape
+from function publication. Definition-time values remain in their enclosing initializer.
+The plan seal and demand-driven source lowering are subsequent parts of this stage.
+
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).
 - The global solve reaches the same fixpoint as today's replay: differential results and the

@@ -178,3 +178,117 @@ def test_the_installed_tree_refuses_new_files_and_a_retry_reopens_it(
     assert len(_calls(log)) == 2
     with pytest.raises(PermissionError):
         (package / "__pycache__").mkdir()
+
+
+DAY = 86400.0
+
+
+def _age(path: Path, seconds: float) -> None:
+    import os
+    import time
+
+    moment = time.time() - seconds
+    os.utime(path, (moment, moment))
+
+
+def test_a_use_refreshes_the_record_at_most_once_a_day(
+    tmp_path: Path, fake_uv: tuple[dict[str, str], Path]
+) -> None:
+    environ, _log = fake_uv
+    checkout = _checkout(tmp_path / "c")
+    root = uv_environment.environment(checkout, KEY, environ=environ)
+    record = root / uv_environment.RECORD
+    _age(record, 2 * DAY)
+    uv_environment.environment(checkout, KEY, environ=environ)
+    refreshed = record.stat().st_mtime
+    assert refreshed > _now() - DAY / 2
+    _age(record, DAY / 2)
+    before = record.stat().st_mtime
+    uv_environment.environment(checkout, KEY, environ=environ)
+    assert record.stat().st_mtime == before, "a fresh record is not rewritten"
+
+
+def _now() -> float:
+    import time
+
+    return time.time()
+
+
+def test_retirement_keeps_what_live_checkouts_use_and_retires_the_rest(
+    tmp_path: Path,
+) -> None:
+    from molt.dx import checkout_component
+
+    artifacts = tmp_path / "artifacts"
+    shared = artifacts / "python-environments"
+    idle, recent, locked = (shared / name for name in ("idle", "recent", "locked"))
+    for root in (idle, recent, locked):
+        root.mkdir(parents=True)
+        (root / uv_environment.RECORD).write_text("{}", encoding="utf-8")
+    _age(idle / uv_environment.RECORD, 31 * DAY)
+    _age(locked / uv_environment.RECORD, 31 * DAY)
+    # Bytecode mirrors absolute source paths: one source exists, one is gone.
+    present = tmp_path / "present-src"
+    present.mkdir()
+    cache = shared / ".bytecode"
+    live_cache = cache.joinpath(*present.parts[1:])
+    gone_cache = cache.joinpath(*(tmp_path / "gone-src").parts[1:])
+    for directory in (live_cache, gone_cache):
+        directory.mkdir(parents=True)
+        (directory / "m.cpython-312.pyc").write_bytes(b"pyc")
+    # Legacy images, one directory per checkout.
+    old_code, adopted, adopted_today = (
+        tmp_path / name for name in ("old-code", "adopted", "adopted-today")
+    )
+    for checkout in (old_code, adopted, adopted_today):
+        (checkout / "src" / "molt").mkdir(parents=True)
+    for checkout in (adopted, adopted_today):
+        (checkout / "src" / "molt" / "uv_environment.py").write_text(
+            "", encoding="utf-8"
+        )
+    _age(adopted / "src" / "molt" / "uv_environment.py", 2 * DAY)
+    legacy = artifacts / "build-environments" / "development"
+    images = {
+        name: legacy / component / ("a" * 64)
+        for name, component in (
+            ("removed", "removed-checkout-0123456789ab"),
+            ("old-code", checkout_component(old_code)),
+            ("adopted", checkout_component(adopted)),
+            ("adopted-today", checkout_component(adopted_today)),
+        )
+    }
+    for image in images.values():
+        image.mkdir(parents=True)
+    quiet = artifacts / "uv-project-envs" / "dx__py3.12__src-x"
+    quiet.mkdir(parents=True)
+    _age(quiet, 2 * DAY)
+
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    handle = _try_acquire_file_lock(locked.with_name("locked.lock"))
+    assert handle is not None
+    try:
+        retired = uv_environment.retire_unused(
+            artifacts, checkouts=(old_code, adopted, adopted_today)
+        )
+    finally:
+        _release_file_lock(handle)
+    gone = {Path(row["path"]) for row in retired}
+    assert gone == {
+        idle,
+        gone_cache,
+        images["removed"].parent,
+        images["adopted"].parent,
+        quiet,
+    }
+    assert recent.is_dir() and locked.is_dir() and live_cache.is_dir()
+    assert images["old-code"].is_dir() and images["adopted-today"].is_dir()
+    assert not idle.exists() and not images["removed"].exists()
+
+
+def test_with_no_live_checkout_found_no_legacy_image_retires(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    image = artifacts / "build-environments" / "development" / "x-0123456789ab" / "i"
+    image.mkdir(parents=True)
+    assert uv_environment.retire_unused(artifacts, checkouts=()) == []
+    assert image.is_dir()
