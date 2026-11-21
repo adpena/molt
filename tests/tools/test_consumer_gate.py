@@ -119,7 +119,9 @@ def test_an_unmarked_slow_importer_test_is_named_and_recorded(
     assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
     assert "unmarked slow test" in capsys.readouterr().err
     receipt = json.loads(
-        next(consumer_gate.receipt_path(repo, "x").parent.glob("*.json")).read_text()
+        next(consumer_gate.receipt_path(repo, "x").parent.glob("*.json")).read_text(
+            encoding="utf-8"
+        )
     )
     assert [name for name, _seconds in receipt["slow_unmarked"]] == [
         "tests.test_lib::test_value"
