@@ -588,6 +588,27 @@ def test_a_hung_base_rerun_is_stopped_and_proves_no_main_defect(
     assert len(_git(repo, "worktree", "list").splitlines()) == 1
 
 
+def test_retry_budget_counts_each_failing_junit_node_once(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_lib.py").touch()
+    report = tmp_path / "importers.xml"
+    names = [f"test_value_{index}" for index in range(11)]
+    cases = [
+        f'<testcase classname="tests.test_lib" name="{name}"><failure/></testcase>'
+        for name in names
+    ]
+    cases.insert(
+        1,
+        '<testcase classname="tests.test_lib" name="test_value_0"><error/></testcase>',
+    )
+    report.write_text("<testsuite>" + "".join(cases) + "</testsuite>", encoding="utf-8")
+
+    assert consumer_gate._failed_node_ids(tmp_path, report) == [
+        f"tests/test_lib.py::{name}" for name in names
+    ]
+    assert consumer_gate._rerun_failures_alone(tmp_path, report, {}) == (None, [])
+
+
 def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

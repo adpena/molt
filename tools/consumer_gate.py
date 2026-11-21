@@ -544,8 +544,9 @@ def run(
         print("consumer-gate: the change moved while its tests ran", file=sys.stderr)
         return 1
     exact = exact and checkout_matches(root, tree)
+    from molt.file_publication import PublicationDurability, atomic_write_bytes
+
     path = receipt_path(root, tree)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": SCHEMA,
         "tree": tree,
@@ -574,7 +575,12 @@ def run(
         # such a receipt (proven_gates(exact=True)).
         "exact": exact,
     }
-    path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=1) + "\n").encode("utf-8"),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
+        purpose="consumer-receipt",
+    )
     print(f"consumer-gate: receipt {path}")
     return 0
 
@@ -633,7 +639,7 @@ def _slow_cases(report: Path) -> list[tuple[str, float]]:
 
 
 def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
-    """The pytest node ids that failed or errored in a JUnit report, or None
+    """Distinct pytest node ids by first failure in a JUnit report, or None
     when the report is missing or names a case no test file owns."""
     import xml.etree.ElementTree as ElementTree
 
@@ -641,7 +647,7 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
         cases = ElementTree.parse(report).getroot().iter("testcase")
     except (OSError, ElementTree.ParseError):
         return None
-    ids: list[str] = []
+    ids: dict[str, None] = {}
     for case in cases:
         if case.find("failure") is None and case.find("error") is None:
             continue
@@ -649,11 +655,11 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
         for split in range(len(parts), 0, -1):
             path = "/".join(parts[:split]) + ".py"
             if (root / path).is_file():
-                ids.append("::".join([path, *parts[split:], case.get("name", "")]))
+                ids["::".join([path, *parts[split:], case.get("name", "")])] = None
                 break
         else:
             return None
-    return ids
+    return list(ids)
 
 
 def _rerun_failures_alone(
@@ -665,12 +671,8 @@ def _rerun_failures_alone(
     unreadable report or more failures than RERUN_LIMIT still fail as a whole
     (no ids, no base retry)."""
     ids = _failed_node_ids(root, report)
-    if ids is None:
+    if not ids or len(ids) > RERUN_LIMIT:
         return None, []
-    if not ids:
-        return None, []
-    if len(ids) > RERUN_LIMIT:
-        return None, ids
     print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
     alone = report.with_name("alone.junit.xml")
     rerun = [sys.executable, "-m", "pytest", "-q", *ids, f"--junitxml={alone}"]
