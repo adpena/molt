@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
@@ -932,7 +932,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     observed = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             "import sys,json; sys.path.insert(0,sys.argv[1]); import consumer; "
@@ -1876,7 +1876,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
     reference = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             "import sys,json; sys.path[:0] = json.loads(sys.argv[1]); "

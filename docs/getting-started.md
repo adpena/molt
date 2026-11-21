@@ -245,10 +245,9 @@ uv run python -m molt.cli run examples/hello.py
 - WASM linked builds need the [WASM toolchain](spec/areas/tooling/0001-toolchains.md).
   `molt run --target wasm` uses the bundled linked-module runner on Node.js,
   not Wasmtime. A native build does not verify the WASM cell.
-- After changing `pyproject.toml` or dependency groups, update a source bootstrap
-  with `uv sync`. For a managed development image, use
-  [checkout provisioning](ops/INTEGRATION.md#checkout-provisioning) to select a
-  new generation; never sync or repair the published image in place.
+- After changing `uv.lock` or dependency groups, run any command through
+  `tools/venv_exec.py`: it syncs the shared environment of the new lock once,
+  for every worktree ([checkout provisioning](ops/INTEGRATION.md#checkout-provisioning)).
 
 ## Where To Go Next
 

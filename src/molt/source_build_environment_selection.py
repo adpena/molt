@@ -10,13 +10,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import stat
 import tomllib
 from typing import TypedDict
 
 from molt import python_environment_contract as _contract
-from molt.exact_json import canonical_json_bytes, read_exact
-from molt.file_publication import metadata_is_link_like
+from molt.exact_json import canonical_json_bytes
 from molt.python_identity_common import _canonicalize_name, _valid_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -225,14 +223,6 @@ def development_selection_record(
     return record
 
 
-@dataclass(frozen=True)
-class DevelopmentEnvironmentSelection:
-    root: Path
-    python_executable: Path
-    python_version: _contract.CanonicalPythonRuntimeVersion
-    groups: tuple[str, ...]
-
-
 def development_coordinates(root: Path, repo_root: Path) -> tuple[Path, Path]:
     from molt.dx import checkout_component
 
@@ -252,88 +242,3 @@ def development_coordinates(root: Path, repo_root: Path) -> tuple[Path, Path]:
             "development image is outside its checkout generation namespace"
         )
     return lexical, repo_root
-
-
-def read_development_environment_selection(
-    root: Path,
-    *,
-    repo_root: Path,
-    python: str | None = None,
-    groups: tuple[str, ...] | None = None,
-) -> DevelopmentEnvironmentSelection:
-    """Select without a subprocess, image scan, write or full-manifest read."""
-    from molt.python_environment_location import (
-        environment_provisioning_record_path,
-        environment_python_path,
-        validate_managed_bytecode_prefix,
-    )
-    from molt.python_interpreter import (
-        PythonInterpreterRequest,
-        parse_python_interpreter_request,
-    )
-
-    try:
-        root, repo_root = development_coordinates(root, repo_root)
-        if os.path.lexists(environment_provisioning_record_path(root)):
-            raise ValueError("development image publication is incomplete")
-        manifest = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-        metadata = manifest.lstat()
-        if not stat.S_ISREG(metadata.st_mode) or metadata_is_link_like(metadata):
-            raise ValueError("development image has no physical final manifest")
-        inputs = capture_source_build_inputs(repo_root, editable=True)
-        description = {
-            "schema": _contract.DEVELOPMENT_ENVIRONMENT_SELECTION_SCHEMA,
-            "producer_contract": _contract.source_build_environment_contract(),
-            "environment_id": root.name,
-            "checkout": str(repo_root),
-            "python_version": "",
-            "groups": list(inputs.dependency_groups),
-            "declared_inputs": inputs.digests,
-            "editable_binding": inputs.editable_binding,
-        }
-        payload = read_exact(
-            root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION,
-            max_bytes=_selection_record_limit(description),
-            label="development selection record",
-        )
-        if (
-            not isinstance(payload, dict)
-            or set(payload) != set(DevelopmentSelectionRecord.__annotations__)
-            or payload["schema"] != _contract.DEVELOPMENT_ENVIRONMENT_SELECTION_SCHEMA
-            or not _contract.source_build_environment_contract_matches(
-                payload["producer_contract"]
-            )
-            or payload["environment_id"] != root.name
-            or payload["checkout"] != str(repo_root)
-            or payload["declared_inputs"] != inputs.digests
-            or payload["editable_binding"] != inputs.editable_binding
-            or not isinstance(payload["groups"], list)
-            or not all(isinstance(group, str) for group in payload["groups"])
-            or payload["groups"] != sorted(set(payload["groups"]))
-            or not set(payload["groups"]).issubset(inputs.dependency_groups)
-            or (groups is not None and payload["groups"] != sorted(set(groups)))
-        ):
-            raise ValueError(
-                "development selection record differs from current intent/inputs"
-            )
-        version = _contract.parse_canonical_python_runtime_version(
-            payload["python_version"]
-        )
-        # The interpreter request type owns the supported physical-version
-        # domain; the record parser separately preserves prerelease identity.
-        PythonInterpreterRequest(*version.release)
-        if python is not None:
-            request = parse_python_interpreter_request(python)
-            if version.is_prerelease or not request.matches_release(version.release):
-                raise ValueError(
-                    "selected development image has a different requested Python"
-                )
-        validate_managed_bytecode_prefix(root)
-        inputs.verify()
-        return DevelopmentEnvironmentSelection(
-            root, environment_python_path(root), version, tuple(payload["groups"])
-        )
-    except (OSError, ValueError) as exc:
-        raise _contract.SourceBuildEnvironmentError(
-            f"cannot select published development image: {exc}; run canonical ensure"
-        ) from exc

@@ -499,12 +499,12 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
 
     from tests.process_guard_common import run_guarded_test_process
 
-    from molt.python_environment_location import environment_bytecode_arguments
+    from molt.python_interpreter import readonly_bytecode_arguments
 
     source_root = Path(custody.__file__).resolve().parents[1]
     # Isolation ignores PYTHONPYCACHEPREFIX, so the probe takes the image's
     # bytecode arguments; without them it rewrote .pyc files in the source tree.
-    bytecode = environment_bytecode_arguments(Path(sys.prefix))
+    bytecode = readonly_bytecode_arguments(Path(sys.prefix))
     result = run_guarded_test_process(
         [
             sys.executable,

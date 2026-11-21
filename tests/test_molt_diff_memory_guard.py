@@ -649,7 +649,7 @@ def test_compiler_frontend_is_the_harness_when_it_is_the_oracle_release(
 
 def test_compiler_frontend_selects_the_image_of_a_newer_release(tmp_path, monkeypatch):
     from molt import checkout_provisioning
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
     from molt.python_interpreter import PythonInterpreterRequest
 
     module = _load_diff_module()
@@ -694,7 +694,7 @@ def test_compiler_frontend_refuses_an_oracle_off_the_selected_release(
 
 
 def test_compiler_environment_projects_the_image_only(tmp_path):
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     module = _load_diff_module()
     image = tmp_path / "image"
@@ -724,7 +724,7 @@ def test_compiler_environment_projects_the_image_only(tmp_path):
     assert projected["UV_PROJECT_ENVIRONMENT"] == str(image)
     assert projected["VIRTUAL_ENV"] == str(image)
     assert projected["PYTHONPYCACHEPREFIX"] == str(environment_bytecode_prefix(image))
-    assert projected["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "PYTHONDONTWRITEBYTECODE" not in projected
     assert projected["UV_NO_SYNC"] == "1"
     assert projected["MOLT_CAPABILITY_TIER"] == "none"
     with pytest.raises(TypeError, match="absolute path"):
@@ -1646,7 +1646,7 @@ def test_native_build_runs_inside_the_frontend_image_and_the_guest_does_not(
     tmp_path, monkeypatch
 ):
     """HF-726: the compiler child takes the image; the compiled program never."""
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     module = _load_diff_module()
     layout = SimpleNamespace(

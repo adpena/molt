@@ -24,7 +24,6 @@ from molt import source_build_environment as authority
 from molt import python_environment_location as location
 from molt.process_environment import ProcessEnvironment
 from molt import source_build_environment_selection as selection
-from molt import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
     copy_python_capture_authority,
     create_test_venv,
@@ -199,36 +198,6 @@ def test_legacy_attestation_admits_with_uv_lock_absent() -> None:
     original = copy.deepcopy(legacy)
     assert authority._admit_attestation(legacy, custody, live) == expected
     assert legacy == original
-
-
-def test_legacy_development_image_admits_with_uv_lock_absent(tmp_path: Path) -> None:
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    checkout = tmp_path / "checkout"
-    # Use a synthetic selector for a different CPython patch. Its independent
-    # receipts still include the editable binding, startup and distribution rows.
-    python = "3.13.0" if sys.version_info[:3] != (3, 13, 0) else "3.12.0"
-    legacy = materialize_development_environment(
-        checkout, tmp_path / "old", python=python, legacy_uv_lock=True
-    )
-    current = materialize_development_environment(
-        checkout, tmp_path / "new", python=python
-    )
-    before = legacy.manifest_path.read_bytes()
-    lock = legacy.root / ".lock"
-    assert lock.read_bytes() == b""
-    lock.unlink()
-    admitted = authority.admit_published_environment(
-        legacy.root,
-        current.custody["realized_image"]["image"],
-        development_admission=_contract.DevelopmentEnvironmentRequest(
-            checkout, python, ()
-        ),
-    )
-    assert admitted == legacy.custody
-    assert legacy.manifest_path.read_bytes() == before
 
 
 def test_installation_seal_preserves_external_links_and_image_alias_topology(tmp_path):
@@ -407,7 +376,6 @@ def test_sealed_attestation_skips_the_seal_and_refuses_reopened_write_bits(
     assert module.stat().st_mode & stat.S_IWUSR  # Admission did not reseal it.
 
 
-@pytest.mark.parametrize("development", [False, True])
 @pytest.mark.parametrize(
     "fault",
     [
@@ -425,25 +393,13 @@ def test_sealed_attestation_skips_the_seal_and_refuses_reopened_write_bits(
     ],
 )
 def test_admission_accepts_only_one_way_installed_permission_transition(
-    tmp_path, development, fault
-):
+    tmp_path: Path, fault: str
+) -> None:
     from molt.exact_json import canonical_json_sha256
-    from tests.python_environment_test_support import (
-        build_environment_manifest,
-        materialize_development_environment,
-    )
+    from tests.python_environment_test_support import build_environment_manifest
 
-    if development:
-        image = materialize_development_environment(
-            tmp_path / "checkout", tmp_path / "artifacts"
-        )
-        manifest = copy.deepcopy(image.custody)
-        realized = copy.deepcopy(manifest["realized_image"]["image"])
-    else:
-        manifest = copy.deepcopy(
-            build_environment_manifest(["ninja==1.13.0"])["custody"]
-        )
-        realized = copy.deepcopy(manifest["realized_environment"])
+    manifest = copy.deepcopy(build_environment_manifest(["ninja==1.13.0"])["custody"])
+    realized = copy.deepcopy(manifest["realized_environment"])
     tree = realized["tree"]
     rows = tree["entries"]
     installed = [
@@ -458,7 +414,7 @@ def test_admission_accepts_only_one_way_installed_permission_transition(
     for row in installed:
         row["access"]["writable"] = True
     tree["manifest_sha256"] = canonical_json_sha256(rows)
-    field = "realized_image" if development else "realized_environment"
+    field = "realized_environment"
     custody = {key: value for key, value in manifest.items() if key != field}
     realized["environment_closure_sha256"] = canonical_json_sha256(
         {
@@ -484,27 +440,17 @@ def test_admission_accepts_only_one_way_installed_permission_transition(
     elif fault == "execute":
         target["access"]["executable"] = not target["access"]["executable"]
     elif fault == "write-up":
-        old = (
-            manifest["realized_image"]["image"]
-            if development
-            else manifest["realized_environment"]
-        )
+        old = manifest["realized_environment"]
         old["tree"]["entries"][0]["access"]["writable"] = False
         live_rows[0]["access"]["writable"] = True
         old["tree"]["manifest_sha256"] = canonical_json_sha256(old["tree"]["entries"])
-        if development:
-            manifest["realized_image"] = {
-                "image": old,
-                "image_sha256": canonical_json_sha256(old),
+        old["environment_closure_sha256"] = canonical_json_sha256(
+            {
+                key: value
+                for key, value in old.items()
+                if key != "environment_closure_sha256"
             }
-        else:
-            old["environment_closure_sha256"] = canonical_json_sha256(
-                {
-                    key: value
-                    for key, value in old.items()
-                    if key != "environment_closure_sha256"
-                }
-            )
+        )
     elif fault == "content":
         live["tree"]["file_nodes"][0]["sha256"] = "f" * 64
     elif fault == "added":
@@ -526,16 +472,10 @@ def test_admission_accepts_only_one_way_installed_permission_transition(
         )
         outside["access"]["writable"] = not outside["access"]["writable"]
     elif fault == "checksum":
-        old = (
-            manifest["realized_image"]["image"]
-            if development
-            else manifest["realized_environment"]
-        )
+        old = manifest["realized_environment"]
         old["tree"]["manifest_sha256"] = "f" * 64
     elif fault == "shape":
-        manifest["realized_image" if development else "realized_environment"] = (
-            "malformed"
-        )
+        manifest["realized_environment"] = "malformed"
     live["tree"]["manifest_sha256"] = canonical_json_sha256(live_rows)
     live["environment_closure_sha256"] = canonical_json_sha256(
         {
@@ -546,232 +486,12 @@ def test_admission_accepts_only_one_way_installed_permission_transition(
     )
     original = copy.deepcopy(manifest)
     if fault in {"none", "partial"}:
-        if not development:
-            authority.validate_python_environment_identity(live)
+        authority.validate_python_environment_identity(live)
         authority._admit_attestation(manifest, custody, live)
     else:
         with pytest.raises(_contract.SourceBuildEnvironmentError, match="differs"):
             authority._admit_attestation(manifest, custody, live)
     assert manifest == original
-
-
-@pytest.fixture
-def selection_image(tmp_path):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo = tmp_path / "checkout"
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", groups=("dev",)
-    )
-    return repo, image
-
-
-@pytest.mark.parametrize(
-    "fault",
-    [
-        None,
-        "schema",
-        "contract",
-        "contract-type",
-        "environment_id",
-        "checkout",
-        "groups",
-        "inputs",
-        "binding",
-        "extra",
-        "missing-key",
-        "missing-file",
-        "duplicate",
-        "oversized",
-    ],
-)
-def test_selection_projection_rejects_raw_record_corruption(selection_image, fault):
-    repo, image = selection_image
-    path = image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION
-    raw = path.read_text(encoding="utf-8")
-    payload = json.loads(raw)
-    if fault == "missing-file":
-        path.unlink()
-    elif fault == "duplicate":
-        path.write_text('{"schema":"duplicate",' + raw.lstrip()[1:], encoding="utf-8")
-    elif fault == "oversized":
-        path.write_bytes(b" " * (1024 * 1024 + 1))
-    elif fault is not None:
-        if fault == "contract":
-            payload["producer_contract"]["source_build"] = -1
-        elif fault == "contract-type":
-            payload["producer_contract"]["source_build"] = float(
-                payload["producer_contract"]["source_build"]
-            )
-        elif fault == "inputs":
-            payload["declared_inputs"]["uv.lock"] = "0" * 64
-        elif fault == "binding":
-            payload["editable_binding"]["source_root"] = str(repo / "foreign")
-        elif fault == "extra":
-            payload["extra"] = True
-        elif fault == "missing-key":
-            del payload["python_version"]
-        else:
-            payload[fault] = ["other"] if fault == "groups" else "wrong"
-        path.write_text(json.dumps(payload), encoding="utf-8")
-    if fault is None:
-        selected = selection.read_development_environment_selection(
-            image.root, repo_root=repo, groups=("dev",)
-        )
-        assert selected.root == image.root
-        assert selected.groups == ("dev",)
-        assert selected.python_version.text == payload["python_version"]
-    else:
-        with pytest.raises(_contract.SourceBuildEnvironmentError):
-            selection.read_development_environment_selection(image.root, repo_root=repo)
-
-
-@pytest.mark.parametrize("fault", ["python", "empty-groups", "checkout", "address"])
-def test_selection_projection_binds_actual_requested_coordinates(
-    selection_image, tmp_path, fault
-):
-    repo, image = selection_image
-    root = image.root
-    kwargs = {"repo_root": repo, "groups": ("dev",)}
-    if fault == "python":
-        kwargs["python"] = "99.1"
-    elif fault == "empty-groups":
-        kwargs["groups"] = ()
-    elif fault == "checkout":
-        foreign = tmp_path / "foreign"
-        foreign.mkdir()
-        kwargs["repo_root"] = foreign
-    else:
-        root = image.root.with_name("0" * 64)
-        image.root.rename(root)
-    with pytest.raises(_contract.SourceBuildEnvironmentError):
-        selection.read_development_environment_selection(root, **kwargs)
-
-
-@pytest.mark.parametrize(
-    "fault",
-    [
-        "provisional",
-        "manifest-missing",
-        "manifest-directory",
-        "manifest-link",
-        "prefix-missing",
-        "prefix-populated",
-        "prefix-link",
-    ],
-)
-def test_selection_requires_completed_physical_publication(
-    selection_image, tmp_path, fault
-):
-    from molt.python_environment_location import environment_provisioning_record_path
-
-    repo, image = selection_image
-    prefix = image.root / "bytecode"
-    if fault == "provisional":
-        marker = environment_provisioning_record_path(image.root)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("{}", encoding="utf-8")
-    elif fault.startswith("manifest"):
-        image.manifest_path.unlink()
-        if fault == "manifest-directory":
-            image.manifest_path.mkdir()
-        elif fault == "manifest-link":
-            target = tmp_path / "manifest"
-            target.write_text("{}", encoding="utf-8")
-            try:
-                image.manifest_path.symlink_to(target)
-            except OSError:
-                pytest.skip("file symlinks unavailable")
-    elif fault == "prefix-populated":
-        (prefix / "late.pyc").write_bytes(b"executable cache")
-    else:
-        prefix.rmdir()
-        if fault == "prefix-link":
-            target = tmp_path / "empty"
-            target.mkdir()
-            try:
-                prefix.symlink_to(target, target_is_directory=True)
-            except OSError:
-                pytest.skip("directory symlinks unavailable")
-    with pytest.raises(_contract.SourceBuildEnvironmentError):
-        selection.read_development_environment_selection(image.root, repo_root=repo)
-
-
-@pytest.mark.parametrize("version", ["3.15.0a1", "3.15.0b2", "3.15.0rc1"])
-def test_selection_preserves_prerelease_identity(selection_image, version):
-    repo, image = selection_image
-    path = image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["python_version"] = version
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    selected = selection.read_development_environment_selection(
-        image.root, repo_root=repo
-    )
-    assert selected.python_version.text == version
-    assert selected.python_version.is_prerelease
-    with pytest.raises(_contract.SourceBuildEnvironmentError, match="requested Python"):
-        selection.read_development_environment_selection(
-            image.root, repo_root=repo, python="3.15"
-        )
-
-
-@pytest.mark.slow
-def test_selection_runs_without_site_capture_subprocess_or_full_manifest(
-    selection_image,
-):
-    from tests.process_guard_common import run_guarded_test_process
-
-    repo, image = selection_image
-    # A final manifest must exist, but ordinary selection must not decode it.
-    image.manifest_path.write_bytes(b"not a full manifest; proof must reject this")
-    code = r"""
-import builtins,io,json,os,sys,subprocess
-from pathlib import Path
-sys.path.insert(0,sys.argv[1])
-blocked=('packaging','molt.python_environment_custody','molt.python_environment_identity',
-         'molt.python_capture','molt.source_build_environment')
-class NoHeavyImports:
-    def find_spec(self,fullname,path=None,target=None):
-        if any(fullname==name or fullname.startswith(name+'.') for name in blocked):
-            raise AssertionError('selection imported '+fullname)
-sys.meta_path.insert(0,NoHeavyImports())
-def no_spawn(*args,**kwargs):
-    raise AssertionError('selection spawned a child')
-subprocess.Popen=no_spawn
-manifest=Path(sys.argv[3])/'molt-source-build-environment.json'
-def guarded_open(original):
-    def opened(file,*args,**kwargs):
-        if isinstance(file,(str,bytes,Path)) and Path(os.fsdecode(file)).resolve()==manifest.resolve():
-            raise AssertionError('selection read the full manifest')
-        return original(file,*args,**kwargs)
-    return opened
-builtins.open=guarded_open(builtins.open)
-io.open=guarded_open(io.open)
-from molt.source_build_environment_selection import read_development_environment_selection
-selected=read_development_environment_selection(Path(sys.argv[3]),repo_root=Path(sys.argv[2]),groups=('dev',))
-assert not any(name=='packaging' or name.startswith('packaging.') for name in sys.modules)
-print(json.dumps({'root':str(selected.root),'groups':selected.groups}))
-"""
-    result = run_guarded_test_process(
-        [
-            sys.executable,
-            "-B",
-            "-I",
-            "-S",
-            "-c",
-            code,
-            str(Path(__file__).resolve().parents[2] / "src"),
-            str(repo),
-            str(image.root),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"root": str(image.root), "groups": ["dev"]}
 
 
 def _metadata_project(repo, readme):
@@ -808,37 +528,6 @@ def test_declared_readme_alias_retarget_rejects_same_bytes(tmp_path):
         before.verify()
 
 
-def test_selection_rejects_same_byte_readme_alias_rebinding(selection_image, tmp_path):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo, _image = selection_image
-    project = repo / "pyproject.toml"
-    project.write_text(
-        project.read_text(encoding="utf-8").replace(
-            "[project]\n", "[project]\nreadme='README.md'\n", 1
-        ),
-        encoding="utf-8",
-    )
-    for name in ("A.md", "B.md"):
-        (repo / name).write_bytes(b"same installed description\n")
-    alias = repo / "README.md"
-    try:
-        alias.symlink_to("A.md")
-    except OSError:
-        pytest.skip("file symlinks unavailable")
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", groups=("dev",)
-    )
-    assert selection.read_development_environment_selection(image.root, repo_root=repo)
-    alias.unlink()
-    alias.symlink_to("B.md")
-    assert (repo / "A.md").read_bytes() == alias.read_bytes()
-    with pytest.raises(_contract.SourceBuildEnvironmentError):
-        selection.read_development_environment_selection(image.root, repo_root=repo)
-
-
 def test_declared_metadata_symlink_then_parent_matches_backend_open(tmp_path):
     repo = tmp_path / "checkout"
     _metadata_project(repo, "alias/../README.md")
@@ -872,65 +561,6 @@ def test_optional_python_pin_absence_and_raw_bytes_are_inputs(tmp_path):
     assert first.digests[".python-version"] == hashlib.sha256(b"3.12\n").hexdigest()
     assert second.digests[".python-version"] == hashlib.sha256(b"3.12\n\n").hexdigest()
     assert first.digests != second.digests
-
-
-def test_raw_python_pin_spelling_changes_published_address(selection_image, tmp_path):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo, image = selection_image
-    pin = repo / ".python-version"
-    pin.write_bytes(pin.read_bytes() + b"\n")
-    with pytest.raises(_contract.SourceBuildEnvironmentError):
-        selection.read_development_environment_selection(image.root, repo_root=repo)
-    changed = materialize_development_environment(
-        repo, tmp_path / "artifacts", groups=("dev",)
-    )
-    assert changed.root != image.root
-
-
-def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
-    tmp_path, monkeypatch
-):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo = tmp_path / "checkout"
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", groups=("dev",)
-    )
-    realized = image.custody["realized_image"]["image"]
-    reads = []
-    read = authority._read_attestation
-
-    def observed(path):
-        reads.append(path)
-        return read(path)
-
-    monkeypatch.setattr(authority, "_read_attestation", observed)
-    request = _contract.DevelopmentEnvironmentRequest(repo.resolve(), None, ("dev",))
-    admitted = authority.admit_published_environment(
-        image.root, realized, development_admission=request
-    )
-    assert admitted == image.custody
-    assert reads == [image.manifest_path]
-    # An unconstrained metadata read is distinct from exact empty admission.
-    assert authority.load_development_environment(
-        image.root, repo_root=repo, groups=None
-    )
-    with pytest.raises(_contract.SourceBuildEnvironmentError, match="requested groups"):
-        authority.admit_published_environment(
-            image.root,
-            realized,
-            development_admission=_contract.DevelopmentEnvironmentRequest(
-                repo, None, ()
-            ),
-        )
-    (image.root / "bytecode" / "late.pyc").write_bytes(b"unselected cache")
-    with pytest.raises(_contract.SourceBuildEnvironmentError, match="physical empty"):
-        authority.load_development_environment(image.root, repo_root=repo)
 
 
 @pytest.mark.slow
@@ -1009,238 +639,6 @@ def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreig
         )
     assert str(foreign / "src/molt") in str(caught.value)
     assert str(selected / "src/molt") in str(caught.value)
-
-
-@pytest.mark.parametrize("failure", [None, "resolve", "identity", "runtime", "markers"])
-def test_selected_recipe_keeps_one_empty_prefix_through_all_probes(
-    tmp_path, monkeypatch, failure
-):
-    from molt import python_interpreter, temporary_artifacts
-
-    executable = tmp_path / "selected-python"
-    runtime = runtime_identity_manifest()
-    version = str(runtime["version"])
-    (tmp_path / ".python-version").write_text(version + "\n", encoding="utf-8")
-    markers = authority_schema.canonical_source_marker_environment()
-    prefixes = []
-    prefix_identity = None
-    stages = []
-    original = RuntimeError("independent selected recipe failure")
-
-    def observe(stage, prefix):
-        nonlocal prefix_identity
-        if prefix_identity is None:
-            prefix_identity = temporary_artifacts._live_identity(prefix)
-        assert prefix.is_dir() and not list(prefix.iterdir())
-        prefixes.append(prefix)
-        stages.append(stage)
-        assert all(value == prefix for value in prefixes)
-        if failure == stage:
-            raise original
-
-    def resolve(selector, *, env, cwd, verifier):
-        assert selector == version and cwd == tmp_path
-        assert env["UV_PYTHON_DOWNLOADS"] == "never"
-        observe("resolve", verifier.prefix)
-        return ("selected-python-command",)
-
-    def identity(command, *, env, cwd, verifier):
-        assert command == ("selected-python-command",)
-        observe("identity", verifier.prefix)
-        return python_interpreter.PythonInterpreter(
-            command, str(executable), version, "CPython"
-        )
-
-    def capture(selected, *, verifier, capture_wheel_target):
-        assert selected == executable
-        assert capture_wheel_target
-        observe("runtime", verifier.prefix)
-        return {"runtime": runtime, "wheel_target": wheel_target_manifest(runtime)}
-
-    def marker_probe(command, **_kwargs):
-        prefix = prefixes[0]
-        assert command[:8] == [
-            str(executable),
-            "-B",
-            "-I",
-            "-X",
-            f"pycache_prefix={prefix}",
-            "-S",
-            "-c",
-            command[7],
-        ]
-        observe("markers", prefix)
-        return guard_result_for_test(
-            command, 0, json.dumps(markers), "", descendants_closed=True
-        )
-
-    monkeypatch.setattr(python_interpreter, "resolve_python_selector", resolve)
-    monkeypatch.setattr(python_interpreter, "probe_python_command", identity)
-    monkeypatch.setattr(authority, "_probe_source_build_python", capture)
-    monkeypatch.setattr(authority.process_guard, "run_completed_command", marker_probe)
-    try:
-        if failure is None:
-            assert authority._selected_python_recipe(tmp_path, None, {}) == (
-                executable,
-                runtime,
-                markers,
-                wheel_target_manifest(runtime),
-            )
-            assert stages == ["resolve", "identity", "runtime", "markers"]
-        else:
-            with pytest.raises(RuntimeError) as caught:
-                authority._selected_python_recipe(tmp_path, None, {})
-            assert caught.value is original
-            assert stages[-1] == failure
-        assert prefixes
-        if failure == "markers":
-            # This guarded-launch seam supplies no closure receipt. Retention
-            # is required even though the fixture never starts a real child.
-            assert not hasattr(original, "guarded_result")
-            assert prefixes[0].is_dir()
-            assert any(str(prefixes[0]) in note for note in original.__notes__)
-        else:
-            # The earlier stubs fail before a guarded launch; successful marker
-            # results explicitly prove closure through guard_result_for_test.
-            assert not prefixes[0].exists()
-
-    finally:
-        # Synthetic core only: retire any retained fixture allocation using
-        # its captured inode authority, never a newly resolved owner.
-        if prefixes and prefixes[0].exists():
-            assert prefix_identity is not None
-            temporary_artifacts._cleanup_temporary_directory(
-                prefixes[0], prefix_identity
-            )
-
-
-@pytest.mark.parametrize(
-    "selector,identity_version,runtime_version,marker_version,error",
-    [
-        ("3.15.1", "3.15.1", "3.15.1", "3.15.1", None),
-        ("3.15", "3.15.10", "3.15.10", "3.15.10", None),
-        ("command", "3.15.1", "3.15.1", "3.15.1", None),
-        (
-            "3.15.1",
-            "3.15.1",
-            "3.15.10",
-            "3.15.10",
-            "requested CPython 3.15.1 differs from captured runtime 3.15.10",
-        ),
-        (
-            "3.15.1",
-            "3.15.10",
-            "3.15.1",
-            "3.15.1",
-            "selected interpreter identity differs from captured runtime",
-        ),
-        (
-            "3.15.1",
-            "3.15.1",
-            "3.15.1",
-            "3.15.10",
-            "dependency markers differ from selected Python runtime",
-        ),
-        (
-            "command",
-            "3.15.1",
-            "3.15.10",
-            "3.15.10",
-            "selected interpreter identity differs from captured runtime",
-        ),
-        (
-            "command",
-            "3.15.1",
-            "3.15.1",
-            "3.15.10",
-            "dependency markers differ from selected Python runtime",
-        ),
-    ],
-)
-def test_selected_recipe_joins_request_identity_runtime_and_markers_before_publication(
-    tmp_path,
-    monkeypatch,
-    selector,
-    identity_version,
-    runtime_version,
-    marker_version,
-    error,
-):
-    from molt import python_interpreter
-
-    executable = tmp_path / "selected-python"
-    requested = str(executable) if selector == "command" else selector
-    runtime = runtime_identity_manifest(python=runtime_version)
-    markers = authority_schema.canonical_source_marker_environment()
-    markers.update(
-        python_full_version=marker_version,
-        python_version=".".join(marker_version.split(".")[:2]),
-        implementation_version=marker_version,
-    )
-    stages = []
-    prefixes = []
-
-    def observe(stage, prefix):
-        stages.append(stage)
-        assert prefix.is_dir() and not list(prefix.iterdir())
-        prefixes.append(prefix)
-
-    def resolve(value, **kwargs):
-        assert value == requested
-        assert kwargs["env"]["UV_PYTHON_DOWNLOADS"] == "never"
-        observe("discovery", kwargs["verifier"].prefix)
-        return ("selected-command",)
-
-    def identity(command, **kwargs):
-        assert command == ("selected-command",)
-        observe("identity", kwargs["verifier"].prefix)
-        return python_interpreter.PythonInterpreter(
-            command, str(executable), identity_version, "CPython"
-        )
-
-    def capture(selected, **kwargs):
-        assert selected == executable and kwargs["capture_wheel_target"] is True
-        observe("runtime", kwargs["verifier"].prefix)
-        return {"runtime": runtime, "wheel_target": wheel_target_manifest(runtime)}
-
-    def marker_probe(command, **kwargs):
-        assert command[0] == str(executable)
-        observe("markers", prefixes[-1])
-        return guard_result_for_test(
-            command, 0, json.dumps(markers), "", descendants_closed=True
-        )
-
-    monkeypatch.setattr(python_interpreter, "resolve_python_selector", resolve)
-    monkeypatch.setattr(python_interpreter, "probe_python_command", identity)
-    monkeypatch.setattr(authority, "_probe_source_build_python", capture)
-    monkeypatch.setattr(authority.process_guard, "run_completed_command", marker_probe)
-    monkeypatch.setattr(
-        authority,
-        "_environment_spec",
-        lambda *_a, **_k: pytest.fail(
-            "incoherent capture reached recipe/provisioning/publication"
-        ),
-    )
-    if error is None:
-        assert authority._selected_python_recipe(tmp_path, requested, {}) == (
-            executable,
-            runtime,
-            markers,
-            wheel_target_manifest(runtime),
-        )
-    else:
-        with pytest.raises(_contract.SourceBuildEnvironmentError, match=error):
-            authority.development_environment(
-                tmp_path,
-                python=requested,
-                groups=("dev",),
-                provision=True,
-                environ={},
-            )
-    assert stages == ["discovery", "identity", "runtime", "markers"]
-    assert prefixes and all(prefix == prefixes[0] for prefix in prefixes)
-    assert not prefixes[0].exists()
-    assert not list(tmp_path.iterdir())
 
 
 def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path):
@@ -1548,167 +946,6 @@ def test_editable_binding_keeps_mutable_code_out_of_image_address(tmp_path):
     assert "demo.py" not in binding["metadata_inputs"]
 
 
-@pytest.mark.parametrize("fault", ["none", "python", "groups", "editable-root"])
-def test_development_loader_binds_requested_intent_and_editable_image(tmp_path, fault):
-    from molt.exact_json import canonical_json_sha256
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo = tmp_path / "checkout"
-    image = materialize_development_environment(repo, tmp_path / "artifacts")
-    version = str(image.custody["python_runtime"]["version"])
-    groups = ()
-    if fault == "python":
-        version = "99.99"
-    elif fault == "groups":
-        groups = ("other",)
-    elif fault == "editable-root":
-        manifest = json.loads(image.manifest_path.read_text(encoding="utf-8"))
-        projection = manifest["realized_image"]
-        # A self-consistent checksum cannot give a different checkout ownership
-        # of this generation. Keep the exact recipe/path unchanged.
-        projection["image"]["external_roots"][0]["path"] = str(tmp_path / "foreign")
-        projection["image_sha256"] = canonical_json_sha256(projection["image"])
-        image.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    if fault == "none":
-        selected = authority.load_development_environment(
-            image.root, repo_root=repo, python=version, groups=groups
-        )
-        assert (
-            selected.root == image.root
-            and selected.bytecode_prefix == image.bytecode_prefix
-        )
-    else:
-        with pytest.raises(_contract.SourceBuildEnvironmentError):
-            authority.load_development_environment(
-                image.root, repo_root=repo, python=version, groups=groups
-            )
-
-
-@pytest.mark.parametrize("coordinate", ["dot", "leaf-link", "ancestor-link"])
-def test_development_loader_normalizes_coordinates_without_admitting_aliases(
-    tmp_path, coordinate
-):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo = tmp_path / "project"
-    image = materialize_development_environment(repo, tmp_path / "artifacts")
-    before = image.manifest_path.read_bytes()
-    if coordinate == "dot":
-        step = image.root.parent / "coordinate"
-        step.mkdir()
-        requested = step / ".." / image.root.name
-        assert (
-            authority.load_development_environment(requested, repo_root=repo).root
-            == image.root
-        )
-    else:
-        alias = tmp_path / "alias"
-        target = image.root if coordinate == "leaf-link" else image.root.parent
-        try:
-            alias.symlink_to(target, target_is_directory=True)
-        except OSError:
-            pytest.skip("directory symlinks unavailable")
-        requested = alias if coordinate == "leaf-link" else alias / image.root.name
-        with pytest.raises(
-            _contract.SourceBuildEnvironmentError, match="physical root"
-        ):
-            authority.load_development_environment(requested, repo_root=repo)
-    assert image.manifest_path.read_bytes() == before
-
-
-@pytest.mark.parametrize("python", ["3.13", "3.15.1"])
-def test_cross_minor_development_reader_uses_recorded_wheel_target(
-    tmp_path, monkeypatch, python
-):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-
-    repo = tmp_path / "project"
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", python=python, groups=("dev",)
-    )
-    monkeypatch.setattr(
-        "packaging.tags.sys_tags",
-        lambda: (_ for _ in ()).throw(AssertionError("reader host tags used")),
-    )
-    monkeypatch.setattr(
-        authority,
-        "_probe_source_build_python",
-        lambda *_a, **_k: pytest.fail("cheap reader spawned target probe"),
-    )
-    assert (
-        authority.load_development_environment(image.root, repo_root=repo).custody
-        == image.custody
-    )
-
-
-@pytest.mark.parametrize("mode", ["read", "explicit-reuse"])
-@pytest.mark.parametrize(
-    "requested,error",
-    [
-        ("3.15", None),
-        ("3.15.1", None),
-        ("3.15.0", "different requested Python"),
-        ("3.15.10", "different requested Python"),
-        ("3", "invalid Python interpreter request"),
-        ("3.15.1.0", "invalid Python interpreter request"),
-        ("py315", "invalid Python interpreter request"),
-    ],
-)
-def test_development_image_reuse_preserves_exact_host_request(
-    tmp_path, monkeypatch, mode, requested, error
-):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-    from molt.python_interpreter import parse_target_python_version
-
-    repo = tmp_path / "project"
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", python="3.15.1", groups=("dev",)
-    )
-    before = image.manifest_path.read_bytes()
-    monkeypatch.setattr(
-        authority,
-        "_selected_python_recipe",
-        lambda *_a, **_k: pytest.fail(
-            "image-reuse request spawned another runtime probe"
-        ),
-    )
-
-    def read():
-        if mode == "read":
-            return authority.load_development_environment(
-                image.root, repo_root=repo, python=requested, groups=("dev",)
-            )
-        return authority.development_environment(
-            repo,
-            python=requested,
-            groups=("dev",),
-            environ={"UV_PROJECT_ENVIRONMENT": str(image.root)},
-        )
-
-    if error is None:
-        assert read().root == image.root
-    else:
-        with pytest.raises(_contract.SourceBuildEnvironmentError, match=error):
-            read()
-    assert image.manifest_path.read_bytes() == before
-    # The host request is not a target spelling. The target authority admits
-    # every 3.15 spelling at its one pinned patch (3.15 is a Tier 1 target since
-    # 5988850385), so it cannot tell apart the requests image reuse refuses.
-    assert (
-        parse_target_python_version("3.15.0")
-        == parse_target_python_version("3.15.1")
-        == parse_target_python_version("3.15.10")
-    )
-
-
 @pytest.mark.slow
 def test_real_tag_capture_keeps_exact_runtime_identity(
     verifier,
@@ -1730,97 +967,3 @@ def test_real_tag_capture_keeps_exact_runtime_identity(
 def verifier():
     with PythonIdentityVerifier() as owner:
         yield owner
-
-
-@pytest.mark.parametrize("stage", ["discovery", "identity", "runtime", "markers"])
-@pytest.mark.parametrize("closed", [False, True])
-def test_selected_recipe_guard_failure_retains_original_whole_probe_lifetime(
-    tmp_path, monkeypatch, stage, closed
-):
-    import gc
-    import subprocess
-    import weakref
-    from types import SimpleNamespace
-    from molt import temporary_artifacts, toolchain_identity, python_interpreter
-
-    runtime = runtime_identity_manifest()
-    version = str(runtime["version"])
-    executable = tmp_path / "selected-python"
-    executable.write_bytes(b"never executed by this core-guard fixture")
-    markers = authority_schema.canonical_source_marker_environment()
-    phases = ["discovery", "identity", "runtime", "markers"]
-    calls = []
-    owners = []
-    identities = []
-    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
-
-    def allocate(**kwargs):
-        allocation = original_allocation(dir=tmp_path, **kwargs)
-        owners.append(allocation)
-        identities.append(allocation._identity)
-        return allocation
-
-    receipt = SimpleNamespace(descendants_closed=closed)
-    failure = subprocess.TimeoutExpired([stage], 120)
-    failure.guarded_result = receipt
-
-    def run(command, **kwargs):
-        phase = phases[len(calls)]
-        calls.append(phase)
-        assert kwargs["memory_guard_prefix"] in {"MOLT_PYTHON_IDENTITY", "MOLT_CLI"}
-        prefix = Path(command[command.index("-X") + 1].removeprefix("pycache_prefix="))
-        assert prefix == Path(owners[0].name) and prefix.is_dir()
-        if phase == stage:
-            raise failure
-        if phase in {"discovery", "identity"}:
-            payload = {
-                "implementation": "CPython",
-                "version": version,
-                "executable": str(executable),
-            }
-        elif phase == "runtime":
-            payload = {
-                "runtime": runtime,
-                "wheel_target": wheel_target_manifest(runtime),
-            }
-        else:
-            payload = markers
-        return guard_result_for_test(
-            command, 0, json.dumps(payload), "", descendants_closed=True
-        )
-
-    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
-    monkeypatch.setattr(
-        toolchain_identity,
-        "find_executable",
-        lambda name, **_k: None if name == "uv" else executable,
-    )
-    monkeypatch.setattr(
-        python_interpreter,
-        "python_command_candidates",
-        lambda *_a, **_k: [[str(executable)], ["must-not-run"]],
-    )
-    monkeypatch.setattr(authority.process_guard, "run_completed_command", run)
-    monkeypatch.setattr(
-        authority,
-        "_provision_source_build_environment",
-        lambda *_a, **_k: pytest.fail("failed probe reached publication"),
-    )
-    with pytest.raises(subprocess.TimeoutExpired) as caught:
-        authority.development_environment(
-            tmp_path, python=version, groups=("dev",), provision=True, environ={}
-        )
-    assert caught.value is failure and caught.value.guarded_result is receipt
-    assert calls == phases[: phases.index(stage) + 1]
-    assert len(owners) == 1
-    path = Path(owners[0].name)
-    allocation_ref = weakref.ref(owners[0])
-    assert path.exists() is (not closed)
-    failure.__traceback__ = None
-    del caught
-    owners.clear()
-    gc.collect()
-    assert allocation_ref() is None
-    assert path.exists() is (not closed)
-    if not closed:
-        temporary_artifacts._cleanup_temporary_directory(path, identities[0])

@@ -1097,20 +1097,15 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
 def test_cli_pytest_uses_shared_uv_project_python_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from molt.dx import DxProject
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
+    from tools.venv_exec import venv_python
 
-    image = materialize_development_environment(
-        ROOT,
-        tmp_path / "artifacts",
-        groups=DxProject(ROOT).dependency_groups(),
-        runnable=True,
-    )
+    shared = shared_environment(tmp_path, ROOT, tmp_path / "artifacts")
+    python = str(venv_python(shared))
+    cache = str(shared.parent / ".bytecode")
     monkeypatch.delenv("MOLT_VENV", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(shared))
     calls: list[dict[str, object]] = []
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
@@ -1120,17 +1115,9 @@ def test_cli_pytest_uses_shared_uv_project_python_authority(
     monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)
     monkeypatch.setattr(quality_commands, "_run_command", fake_run_command)
     assert quality_commands.test("pytest", None, None, []) == 0
-    assert calls[0]["cmd"] == [
-        str(image.python_executable),
-        "-B",
-        "-X",
-        f"pycache_prefix={image.root / 'bytecode'}",
-        "-m",
-        "pytest",
-        "-q",
-    ]
-    assert calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(image.root)
-    assert calls[0]["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    assert calls[0]["cmd"] == [python, "-m", "pytest", "-q"]
+    assert calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(shared)
+    assert calls[0]["env"]["PYTHONPYCACHEPREFIX"] == cache
     assert calls[0]["memory_guard_prefix"] == "MOLT_TEST_SUITE"
 
 
@@ -1316,19 +1303,15 @@ def test_cli_lint_uses_shared_dx_planner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from molt.dx import DxProject
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
+    from tools.venv_exec import venv_python
 
-    image = materialize_development_environment(
-        ROOT,
-        tmp_path / "artifacts",
-        groups=DxProject(ROOT).dependency_groups(),
-        runnable=True,
-    )
+    shared = shared_environment(tmp_path, ROOT, tmp_path / "artifacts")
+    python = str(venv_python(shared))
+    cache = str(shared.parent / ".bytecode")
     monkeypatch.delenv("MOLT_VENV", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(shared))
     # This module clears hosted custody. Artifact placement does not select
     # durable tools, so give this real DX writer its own toolchain root too.
     toolchain_root = tmp_path / "toolchain-root"
@@ -1347,7 +1330,7 @@ def test_cli_lint_uses_shared_dx_planner(
         assert kwargs["cwd"] == ROOT
         assert kwargs["capture_output"] is False
         assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
-        assert kwargs["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+        assert kwargs["env"]["PYTHONPYCACHEPREFIX"] == cache
         assert kwargs["env"]["MOLT_TARGET_ROOT"] == str(toolchain_root)
         assert toolchain_root.is_dir()
         return subprocess.CompletedProcess(cmd, 0)
@@ -1357,10 +1340,9 @@ def test_cli_lint_uses_shared_dx_planner(
     assert quality_commands.lint(json_output=False, verbose=False) == 0
     assert calls == [
         [
-            str(image.python_executable),
-            "-B",
+            python,
             "-X",
-            f"pycache_prefix={image.root / 'bytecode'}",
+            f"pycache_prefix={cache}",
             "-I",
             "-m",
             "ruff",

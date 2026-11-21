@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +11,7 @@ from molt import custody_layout
 from molt.checkout_state import scratch_state_root
 from molt import dx as molt_dx
 from tools import dev
-from tests.python_environment_test_support import materialize_development_environment
+from tests.uv_environment_test_support import shared_environment
 
 
 def _fake_dx_env(module):
@@ -586,13 +585,13 @@ def test_dev_py_maintenance_borrows_without_selecting_a_managed_image(
     with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
         dev.main()
     monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "test"])
-    with pytest.raises(RuntimeError, match="version matrix requires managed"):
+    with pytest.raises(RuntimeError, match="version matrix requires the shared"):
         dev.main()
     with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
         dev._run_repo_cmd(["python", "-c", "pass"], environment, tty=False)
     # An absent explicit borrower cannot turn into a managed selection or PATH run.
     monkeypatch.setenv("MOLT_VENV", str(clone / "missing"))
-    with pytest.raises(VenvExecError, match="virtualenv Python not found"):
+    with pytest.raises(VenvExecError, match="environment Python not found"):
         dev.run_uv(["python", "--version"])
     assert len(calls) == 1
 
@@ -600,12 +599,9 @@ def test_dev_py_maintenance_borrows_without_selecting_a_managed_image(
 def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> None:
     module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
-    image = materialize_development_environment(
-        clone,
-        clone,
-        python=".".join(map(str, module.sys.version_info[:3])),
-        select=True,
-    )
+    shared = shared_environment(tmp_path, clone, clone)
+    python = str(shared / "bin" / "python")
+    cache = f"pycache_prefix={shared.parent / '.bytecode'}"
     calls: list[tuple[list[str], dict[str, str], object | None]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
@@ -631,24 +627,9 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
 
     assert len(calls) == 1
     cmd, env, limits = calls[0]
-    assert cmd == [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        str(module.ROOT),
-        "--python",
-        str(image.python_executable),
-        "--no-sync",
-        "--no-config",
-        "--",
-        str(image.python_executable),
-        "-B",
-        "-X",
-        f"pycache_prefix={image.root / 'bytecode'}",
-        "-c",
-        "print('ok')",
-    ]
+    # The environment's interpreter runs directly; the shared cache is an
+    # interpreter option, which -I cannot drop.
+    assert cmd == [python, "-X", cache, "-c", "print('ok')"]
     assert limits is fake_limits
     assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
     # A generated dev session id is custody metadata, not a request for a cold
@@ -658,15 +639,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
     module._run_repo_cmd(["python", "-IE", "-c", "pass"], env, tty=False)
-    assert calls[1][0] == [
-        str(image.python_executable),
-        "-B",
-        "-X",
-        f"pycache_prefix={image.root / 'bytecode'}",
-        "-IE",
-        "-c",
-        "pass",
-    ]
+    assert calls[1][0] == [python, "-X", cache, "-IE", "-c", "pass"]
     with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
         module._run_repo_cmd(
             ["python", "-c", "pass"],
@@ -684,9 +657,9 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(image.root)
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(shared)
     assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
-    assert env["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    assert env["PYTHONPYCACHEPREFIX"] == str(shared.parent / ".bytecode")
     assert env["TMPDIR"] == str(scratch)
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
@@ -702,17 +675,16 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     calls: list[tuple[list[str], dict[str, str]]] = []
     explicit_root = tmp_path / "external-root"
     explicit_cache = tmp_path / "cache"
-    image = materialize_development_environment(clone, explicit_root, select=True)
-    # Alias preservation is part of dispatch. Replace the venv's alias itself,
-    # never write through a link into the shared base interpreter installation.
-    alias = image.python_executable.with_name(
-        "python3.exe" if os.name == "nt" else "python3"
-    )
-    alias.unlink(missing_ok=True)
-    if os.name == "nt":
-        alias.write_bytes(image.python_executable.read_bytes())
-    else:
-        alias.symlink_to(image.python_executable.name)
+    shared = shared_environment(tmp_path, clone, explicit_root)
+    # Alias preservation is part of dispatch: `python3` runs the environment's
+    # own `python3` entry (a link to its `python`, which uv makes before the
+    # environment's directories are sealed).
+    scripts = shared / "bin"
+    mode = scripts.stat().st_mode
+    scripts.chmod(mode | 0o200)
+    alias = scripts / "python3"
+    alias.symlink_to("python")
+    scripts.chmod(mode)
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
         del limits
@@ -739,13 +711,10 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
 
     assert len(calls) == 1
     command, env = calls[0]
-    assert command[:2] == ["uv", "run"]
-    assert "--no-sync" in command
-    assert command[-6:] == [
+    assert command == [
         str(alias),
-        "-B",
         "-X",
-        f"pycache_prefix={image.root / 'bytecode'}",
+        f"pycache_prefix={shared.parent / '.bytecode'}",
         "-c",
         "print('ok')",
     ]
@@ -794,67 +763,3 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
     )
 
     assert calls == [("guarded", ["pytest", "-q"])]
-
-
-def test_dev_py_uv_no_sync_uses_exact_projection_without_republication(
-    monkeypatch, tmp_path
-) -> None:
-    from molt import source_build_environment as publisher
-    from molt.checkout_provisioning import ProvisioningError
-
-    clone = _isolated_checkout(dev, monkeypatch, tmp_path)
-    python = ".".join(map(str, sys.version_info[:3]))
-    foreign_python = "3.13" if sys.version_info[:2] != (3, 13) else "3.12"
-    image = materialize_development_environment(
-        clone, clone, python=python, select=True
-    )
-    next_image = materialize_development_environment(
-        clone, clone, python=foreign_python, select=True
-    )
-    calls = []
-    monkeypatch.setattr(
-        dev, "_check_call_guarded", lambda cmd, env, **kwargs: calls.append(cmd)
-    )
-
-    def forbid_republication(*args, **kwargs):
-        raise AssertionError("a current selector must not recapture or publish")
-
-    monkeypatch.setattr(publisher, "development_environment", forbid_republication)
-    env = {"MOLT_EXT_ROOT": str(clone), "UV_PROJECT_ENVIRONMENT": str(image.root)}
-    dev.run_uv(["python", "--version"], python=python, env=env)
-    assert len(calls) == 1 and "--no-sync" in calls[0] and "--no-config" in calls[0]
-    with pytest.raises(ProvisioningError, match="different requested Python"):
-        dev.run_uv(["python", "--version"], python=foreign_python, env=env)
-    assert len(calls) == 1, "a conflicting exact request must never launch or resync"
-    # Installation reaches the existing ensure owner directly. It must not
-    # require another managed Python child to select the first image.
-    monkeypatch.setattr(dev, "_canonical_env", lambda: env)
-    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "install"])
-    dev.main()
-    assert len(calls) == 1
-    # A requested matrix intent is bound before DX can rediscover the default
-    # image. A foreign-version selector fixture has synthetic runtime custody;
-    # supply that observation at its interpreter boundary. The host-image
-    # operations above exercise the actual fresh interpreter observation.
-    from molt import python_interpreter as interpreter
-
-    observe = interpreter.observe_python_interpreter
-    foreign = interpreter.RealizedPythonInterpreter(
-        Path(sys._base_executable).resolve(),
-        str(next_image.custody["python_runtime"]["version"]),
-    )
-
-    def observed(executable, *args, **kwargs):
-        if executable == next_image.python_executable:
-            return foreign
-        return observe(executable, *args, **kwargs)
-
-    monkeypatch.setattr(interpreter, "observe_python_interpreter", observed)
-    dev.run_uv(
-        ["python", "--version"],
-        python=foreign_python,
-        env={"MOLT_EXT_ROOT": str(clone)},
-    )
-    assert calls[-1][calls[-1].index("--python") + 1] == str(
-        next_image.python_executable
-    )

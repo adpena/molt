@@ -6940,22 +6940,12 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "dx",
-      "kind": "string",
-      "name": "MOLT_UV_PROJECT_PURPOSE",
-      "output_neutral": false,
-      "owner": "src/molt/checkout_provisioning.py",
-      "summary": "Purpose label for immutable managed development-image selection; tools/uv_project_env.py sets it; default dx.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "3.12",
+      "default": "",
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PYTHON",
       "output_neutral": false,
       "owner": "src/molt/checkout_provisioning.py",
-      "summary": "Python version selection for the immutable managed development image, unless the caller supplies an explicit Python selection; tools/uv_project_env.py sets it; unset uses the checkout .python-version pin.",
+      "summary": "CPython release or minor of the shared development environment, unless the caller supplies an explicit Python selection; tools/dev.py sets it for the version matrix; unset uses the checkout .python-version pin.",
       "values": []
     },
     {
