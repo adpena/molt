@@ -1204,6 +1204,41 @@ def test_nested_writer_revisions_hold_receivers_until_the_outer_exit(
     assert not state.scan_revisions
 
 
+@pytest.mark.parametrize("active", [False, True])
+def test_writer_with_unknown_receiver_orders_revisions(
+    tmp_path: Path, active: bool
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    for module in ("first", "second", "writer"):
+        state.graph[module] = tmp_path / f"{module}.py"
+        state.scan_revisions.add(discovery._SourceScanJob(module, None))
+    state.namespace_writes["writer"] = {
+        PythonNamespaceWrite(None, "member", "namespace", 1)
+    }
+    if active:
+        state.active_owners["writer"] = {None}
+
+    ready = discovery._ready_namespace_revisions(state)
+    if active:
+        assert {job.module_name for job in ready} == {"writer"}
+        state.scan_revisions.difference_update(ready)
+        assert {
+            job.module_name for job in discovery._ready_namespace_revisions(state)
+        } == {
+            "first",
+            "second",
+        }
+    else:
+        assert ready == state.scan_revisions
+
+
 def test_opaque_activation_revision_follows_the_escaping_consumer(
     tmp_path: Path,
 ) -> None:
