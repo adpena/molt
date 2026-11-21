@@ -162,6 +162,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from tests.class_model_support import class_model
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     NativeArchiveFixtureCatalog,
@@ -14842,6 +14843,9 @@ def test_discover_module_graph_reconstructs_on_pure_scan_miss(
 def test_warm_source_requests_resolve_new_higher_priority_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from unittest.mock import Mock
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     entry = tmp_path / "main.py"
     entry.write_text("import dependency\n", encoding="utf-8")
     higher = tmp_path / "higher"
@@ -14862,24 +14866,23 @@ def test_warm_source_requests_resolve_new_higher_priority_module(
     assert first.graph["dependency"] == old_dependency
     new_dependency = higher / "dependency.py"
     new_dependency.write_text("VALUE = 2\n", encoding="utf-8")
-    requested: list[Path] = []
-    collect = _source_import_scan._collect_import_scan_requests
-
-    def record(*args: Any, **kwargs: Any):
-        requested.append(kwargs["source_path"])
-        return collect(*args, **kwargs)
-
-    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", record)
+    requests = Mock(wraps=_source_import_scan._collect_import_scan_requests)
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", requests)
     second = discover()
     assert second.graph["dependency"] == new_dependency
     assert "dependency" in second.explicit_imports
-    assert entry not in requested
-    assert new_dependency in requested
+    assert all(call.kwargs["module_name"] != "main" for call in requests.call_args_list)
+    assert any(
+        call.kwargs["module_name"] == "dependency"
+        and ast.unparse(call.args[1]) == "VALUE = 2"
+        for call in requests.call_args_list
+    )
 
 
 def test_discover_module_graph_reuses_precomputed_entry_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     entry = tmp_path / "main.py"
     entry.write_text("import pkg.helper\n", encoding="utf-8")
     package = tmp_path / "pkg"
@@ -18031,9 +18034,12 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             ),
             project_root=tmp_path,
             known_classes_snapshot={
-                ClassId("main", "MainClass"): {"fields": {}},
-                ClassId("alpha", "DepClass"): {"fields": {}},
-                ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
+                class_id: class_model(class_id)
+                for class_id in (
+                    ClassId("main", "MainClass"),
+                    ClassId("alpha", "DepClass"),
+                    ClassId("unrelated", "UnrelatedClass"),
+                )
             },
             type_hint_policy="ignore",
             type_facts=None,
