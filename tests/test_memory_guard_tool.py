@@ -863,7 +863,7 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
             "reused_publisher_legacy_foreign",
             "pending_foreign",
             "legacy_foreign",
-            # HF-972: an unknown relationship whose record the snapshot judges
+            # HF-973: an unknown relationship whose record the snapshot judges
             # closed holds nothing open.
             "unknown_publisher_birth",
             "unknown_birth",
@@ -901,7 +901,7 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
 def test_a_descendant_without_a_birth_does_not_bind_an_old_guards_pid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_child_live: bool
 ) -> None:
-    # HF-972: `clang++ --print-search-dirs` exits before any sample reads its
+    # HF-973: `clang++ --print-search-dirs` exits before any sample reads its
     # birth. An old guard once held its pid and left a retired record. That
     # record's custody decides closure: closed when its child is gone, refused
     # while the child lives.
