@@ -104,6 +104,43 @@ def test_a_failing_importer_test_leaves_no_receipt(repo, monkeypatch):
     assert consumer_gate.check(repo, paths) == 1
 
 
+def test_an_unmarked_slow_importer_test_is_named_and_recorded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 2026-11-20: five unmarked tests at 127-466 s set a 969 s landing gate's
+    # wall time. Presubmit skips `slow` tests, so a long one here is unmarked.
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "tests/test_lib.py").write_text(
+        "import time\n\ndef test_value():\n    time.sleep(0.3)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_S", 0.2)
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_REFUSE_S", 30.0)
+    paths = ["tests/test_lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    assert "unmarked slow test" in capsys.readouterr().err
+    receipt = json.loads(
+        next(consumer_gate.receipt_path(repo, "x").parent.glob("*.json")).read_text()
+    )
+    assert [name for name, _seconds in receipt["slow_unmarked"]] == [
+        "tests.test_lib::test_value"
+    ]
+
+
+def test_an_unmarked_test_past_the_refusal_limit_leaves_no_receipt(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "tests/test_lib.py").write_text(
+        "import time\n\ndef test_value():\n    time.sleep(0.3)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_S", 0.1)
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_REFUSE_S", 0.2)
+    paths = ["tests/test_lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 1
+    assert "ran 0 s or more; no receipt" in capsys.readouterr().err
+    assert consumer_gate.check(repo, paths) == 1
+
+
 def test_a_hung_importer_run_is_stopped_and_leaves_no_receipt(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
