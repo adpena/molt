@@ -81,6 +81,16 @@ per premise revision.
    Source request records address the captured bytes, parser, target, package role and premise.
    Relative source requests stay symbolic in the record. Graph completion resolves them against
    the current package and filesystem, so byte-identical source can reuse requests after relocation.
+   Release staging now builds the namespace syntax portion for each supported Python target from
+   the sealed stdlib sources. The installed compiler manifest binds the artifact's bytes. Each
+   row is selected by source digest, target, and package; its canonical AST digest and producer
+   identity must match before it can supply the syntax-only namespace summary. The proof still
+   refines those writes against binding facts for the importing program.
+   The same archive carries source requests for stdlib initializers under a closed premise
+   that allows package child bindings. It uses the same key and codec as the writable scan
+   cache, including the exact parser, target plan and namespace premise. The importing program
+   completes admitted requests against its own topology. A revised premise or a demanded body
+   can still require binding analysis.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
@@ -102,8 +112,14 @@ per premise revision.
    can supply the same proof of a foreign activation namespace. Its import projections use
    that core's facts, the module context and the
    discovery mode, so equivalent flow inputs also share strict and discovery projections. A
-   missing activation set keeps its own cache key. Changed answers and foreign writes still
-   require flow analysis until the global solver can evaluate transfer summaries.
+   missing activation set keeps its own cache key. Within one discovery operation, a revision
+   can resume from a deferred-job boundary if the source and other flow inputs match and every
+   opaque-activation and argument answer read by that prefix still agrees. The completed
+   jobs identify the parameters that can have read an argument. A revision to a pending job
+   leaves the prefix reusable. The checkpoint shares immutable state, copies the scope and
+   history owners before resuming, and retains a bounded amount of recent work. A changed
+   foreign-write set or a changed answer before any saved boundary starts the analysis from
+   the source. The whole-graph transfer-summary solver remains open.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
@@ -118,8 +134,13 @@ per premise revision.
    Revision waves now group known active writers and receivers by component. A component
    waits while an ancestor component has pending revisions. A new admission or demand can
    change the order before the next wave. Unrelated components keep the same batch, and the
-   convergence check still covers writes through unknown receivers. Nested convergence
-   boundaries and the summary solver remain open.
+   convergence check still covers writes through unknown receivers. For revisions within a
+   cycle, remove its already evaluated head and settle its nested components before revisiting
+   the head. Dependent components wait for the outer exit. A consumer known to escape a callable
+   is also an opaque-activation premise producer for the defining module. The revision order
+   includes that dependency. An active writer with an unknown receiver can affect every module,
+   so a pending revision for that writer participates in the order for all admitted receivers.
+   The summary solver remains open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
@@ -131,6 +152,55 @@ per premise revision.
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.
+
+#### Development source-to-TIR materialization
+
+The frontend exposes one operation that returns a sealed TIR closure and its declaration table.
+The compilation plan seals source bytes, target, settled namespace facts, declaration identities
+and body selection. Declaration collection is eager, including class layouts, member tables,
+MROs, signatures, defaults, closure shapes and module layouts. The entry and module initializers
+seed demand. Calls, value escapes, import custody and observable metadata add demands through the
+source-value graph. An unresolved selection demands every eligible body in its conservative set.
+
+When a class or instance reaches runtime, demand every body the runtime can enter implicitly.
+This includes protocol methods for equality, hashing, iteration, context exit and finalization,
+as well as `__init_subclass__`, `__set_name__`, `__class_getitem__`, and descriptor `__get__` and
+`__set__`. Follow decorator wrappers and callables passed to runtime intrinsics or registered as
+callbacks. Apply the rule through inheritance and the reachable wrapper and descriptor values.
+The source solver uses class-subscription demand to select `__class_getitem__` through the
+receiver's class family. Instance operations use their own protocol demand.
+
+Produce the body, frame layout and existing function digest per demanded definition. Cache keys
+include the plan seal. Concurrent requests share the result or diagnostic. Publish the closure
+after validating declarations, demanded frame layouts, referenced definitions and runtime symbols
+against the sealed plan. Release compilation and whole-program diagnostics select every body
+through the same frontend operation.
+
+Integration's static module cell planner, function cell planner (design 78 §5.9) and proven-call
+planner treat the demanded set as the whole program. That is sound only when every
+body the runtime can enter is demanded. Qualify the closure by comparing every demanded function's
+final TIR byte for byte with the eager build, along with its diagnostics. Exercise implicit entry
+through each of the rules above, escaped and import-selected callables, closures, resumable frames
+and concurrent first calls. Verify an unreachable body stays unanalyzed.
+
+The first integration settles source demands during compilation and passes the sealed TIR closure
+to the existing JIT image and first-call code owner. Every runtime-visible function and launch
+descriptor must have custody before publication. The runner keeps stable entries, launch
+metadata and first-call native compilation. Deferring source-to-TIR work beyond launch would
+require a runner-owned materializer for sealed inputs that can execute independently of the
+frontend host process. The current directly executable image contract requires that independence.
+
+Discovery owns the demand plan and shared frontend entry. The JIT lane owns `jit_pipeline.py`,
+the image and runner. Measure launch and first-call latency separately.
+
+Native, WASM and MLIR AOT builds now assemble the closure from the same frontend bundle via
+`molt.cli.backend_ir.materialize_tir_closure`. The entry currently consumes eagerly lowered
+modules. A release fixture crossing a default argument, class method, closure and generator
+produced the same 94-function canonical backend input before and after the change. The
+entry also returns the module and class layouts and the callable declaration sidecar. The
+sidecar carries parameter kinds, default positions, execution kind and lexical closure shape
+from function publication. Definition-time values remain in their enclosing initializer.
+The plan seal and demand-driven source lowering are subsequent parts of this stage.
 
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).

@@ -28,6 +28,7 @@ from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
 from molt.frontend._types import (
+    FunctionDefaults,
     IMPLICIT_CLASSMETHOD_NAMES,
     IMPLICIT_STATICMETHOD_NAMES,
     MethodValues,
@@ -294,7 +295,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self,
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
     ) -> MethodInfo:
         method_name = item.name
         method_qualname = self._definition_qualname(item)
@@ -474,7 +475,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self,
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
         *,
         bind_receiver: bool = True,
     ) -> MethodInfo:
@@ -700,7 +701,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self,
         class_node: ast.ClassDef,
         item: ast.AsyncFunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
     ) -> MethodInfo:
         method_name = item.name
         method_qualname = self._definition_qualname(item)

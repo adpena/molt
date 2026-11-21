@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 15 |
-| Hashed executable authority inputs | 1 | 415 |
+| Hashed executable authority inputs | 1 | 416 |
 | Local path rules | 35 | 84 |
 | Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -47,7 +47,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2520 s | 120 s | 960 s | `repository-policy` | none | `docs-gates` needs none | 35 |
-| `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 208 |
+| `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 209 |
 | `repository_dev_tests` | pre-push, pr, main | yes | `github-job` | 30 min | 900 s | 120 s | 780 s | `repository-tests` | none | `repository-dev-tests` needs `classify-changes` | 3 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 57 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |

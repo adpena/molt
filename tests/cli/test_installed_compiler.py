@@ -16,6 +16,7 @@ from molt import compiler_distribution as distribution
 from molt.cli import backend_binary, backend_execution, cargo_profiles
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from tests.release_lane_fixtures import stage_stdlib_source_summaries_fixture
 
 # The bootstrap's own declaration selects the source modules a test bundle
 # ships. Isolated execution, not this projection, proves the closure complete.
@@ -67,6 +68,7 @@ def installation(tmp_path: Path, monkeypatch) -> Path:
     facts.write_bytes(b"facts")
     payload = {
         "schema": distribution.MANIFEST_SCHEMA,
+        "stdlib_source_summaries": stage_stdlib_source_summaries_fixture(tmp_path),
         "git": {"object_format": "sha1", "commit": "a" * 40, "tree": "b" * 40},
         "files": files,
         "compiler": {
@@ -208,6 +210,116 @@ def test_installed_source_closure_fails_closed(installation, damage):
         (installation / "Cargo.toml").unlink()
     with pytest.raises(ValueError):
         installed.verify_sources()
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_installed_stdlib_summary_binds_source_package_and_target(
+    installation: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import stdlib_source_summaries
+    from molt.cli.module_graph_discovery import _load_module_import_scan
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.cli.stdlib_source_summaries import (
+        InstalledStdlibSourceSummaries,
+        encode_stdlib_source_summaries,
+    )
+    from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+    from molt.target_python import (
+        _DEFAULT_TARGET_PYTHON_VERSION,
+        _parse_source_for_target,
+    )
+
+    stdlib = installation / "src/molt/stdlib"
+    module = stdlib / "parent" / "writer.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "from . import receiver\nreceiver.inserted = 'value'\n"
+        "def writer():\n    globals()['local'] = 1\n",
+        "utf-8",
+    )
+    platform_probe = module.with_name("platform_probe.py")
+    platform_probe.write_text(
+        "import sys\n"
+        "if sys.platform == 'wasi':\n"
+        "    import wasm_leaf\n"
+        "else:\n"
+        "    import native_leaf\n",
+        "utf-8",
+    )
+    contents = encode_stdlib_source_summaries(stdlib)
+    record = stage_stdlib_source_summaries_fixture(installation.parent, contents)
+    metadata = installation / distribution.MANIFEST_NAME
+    manifest = json.loads(metadata.read_text("utf-8"))
+    manifest["stdlib_source_summaries"] = record
+    metadata.write_text(json.dumps(manifest), "utf-8")
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    syntax = InstalledStdlibSourceSummaries(compiler)
+    snapshot = PythonSourceSnapshot.capture(module)
+    target = _DEFAULT_TARGET_PYTHON_VERSION
+    tree = _parse_source_for_target(snapshot.content, target_python=target)
+    admission = _PythonAstDigestAdmission(tree)
+
+    syntax.seed(snapshot, package="unrelated", target=target, admission=admission)
+    assert not admission.namespace_summaries
+    syntax.seed(snapshot, package="parent", target=target, admission=admission)
+    summary = admission.namespace_summaries[target.feature_version, "parent"]
+    assert summary.own_names == frozenset({"local"})
+    assert [(write.module, write.name) for write in summary.foreign_writes] == [
+        ("parent.receiver", "inserted")
+    ]
+
+    monkeypatch.setattr(
+        stdlib_source_summaries, "compiler_source_root", lambda: installation
+    )
+    for foreign_writes, from_release in (((), True), (("receiver",), False)):
+        loaded = _load_module_import_scan(
+            module,
+            module_name="parent.writer",
+            is_package=False,
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.EXECUTION,
+            resolution_cache=_ModuleResolutionCache(),
+            project_root=None,
+            roots=[stdlib],
+            stdlib_root=stdlib,
+            stdlib_allowlist={"parent"},
+            namespace_premise=PythonNamespacePremise(foreign_writes, 0, 0, (), ()),
+        )
+        assert loaded.cache_hit is from_release
+        assert loaded.source_parsed is not from_release
+
+    for platform, expected in ((sys.platform, "native_leaf"), ("wasi", "wasm_leaf")):
+        loaded = _load_module_import_scan(
+            platform_probe,
+            module_name="parent.platform_probe",
+            is_package=False,
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.EXECUTION,
+            resolution_cache=_ModuleResolutionCache(target_sys_platform=platform),
+            project_root=None,
+            roots=[stdlib],
+            stdlib_root=stdlib,
+            stdlib_allowlist={"parent"},
+            namespace_premise=PythonNamespacePremise((), 0, 0, (), ()),
+        )
+        assert loaded.cache_hit
+        assert loaded.scan.source_requests.imports == ("sys", expected)
+
+    module.write_text("print('edited')\n", "utf-8")
+    edited = PythonSourceSnapshot.capture(module)
+    admission = _PythonAstDigestAdmission(
+        _parse_source_for_target(edited.content, target_python=target)
+    )
+    syntax.seed(edited, package="parent", target=target, admission=admission)
+    assert not admission.namespace_summaries
+
+    stage_stdlib_source_summaries_fixture(installation.parent, contents + b"\n")
+    with pytest.raises(ValueError, match="differ from their manifest"):
+        InstalledStdlibSourceSummaries(compiler)
 
 
 @pytest.mark.parametrize(

@@ -129,7 +129,15 @@ with `refs/molt/last-green`; when that ref is absent it selects all tracked sour
 inputs rather than inventing a passing baseline. Rule tokens that require a Git
 base bind to the selected head for this initial full-source run.
 
-`_run_postsubmit_gates` uses the ordinary gate preparation and executor. Pytest
+A queued landing starts the runner, and since HF-937 a fast landing does too,
+after its push is confirmed (`molt_dev_land_fast._start_postsubmit`): main took
+hundreds of fast landings while postsubmit last ran on 2026-11-16.
+
+`_run_postsubmit_gates` uses the ordinary gate preparation and executor with
+`keep_going`: every selected gate runs, read-only checks one at a time, and one
+`CandidateFailure` names each failed gate. A first-failure stop let a red static
+check hide every later gate; no run from 2026-11-01 to 2026-11-16 reached a
+Cargo gate (HF-937). Runner, custody and cancellation faults still stop at once. Pytest
 writes JUnit beside each gate's logs, using its built-in `--junitxml` and xunit1
 file attributes. The aggregate `<head>.<run>.postsubmit-result.json` receipt records
 the outcome, test node IDs, prior green, suspect commits, exact restoration
@@ -710,8 +718,12 @@ Steps:
 6. **Select** with `select_landing_gates(H, base=B)`. The affected set is
    every selected gate with `gate.precheck`: the static gates, and the try run
    (direct-reader pytest cohorts and `precheck = true` rule gates, which now
-   include `rust-test-changed`, 4.2). Every other selected gate is **waived**
-   to the queue batch and named in the receipt and the commit message.
+   include `rust-test-changed` and `runtime-lib`, 4.2). Every other selected
+   gate is **waived** to postsubmit and named in the receipt and the commit
+   message: a fast landing pushes directly, so no queue batch runs it. Before
+   HF-937 the commit message said "Waived to the queue batch", and
+   `runtime-lib` was waived that way, so no molt-runtime lib test ran on any
+   path to main.
    The try run used to drop a direct reader that a matched rule's pytest list
    also ran, leaving it to the batch: a lane that changed `tools/molt_dev.py`
    never ran `tests/test_molt_dev.py` before the queue. In presubmit a rule
@@ -952,7 +964,7 @@ Landed by molt_dev.py land --fast: tree <T> passed on base <B> (tested commit <H
 Static gates: <n> passed.
 Python readers: <k> pytest cohorts, <p> passed, <s> skipped.        (omitted when k = 0)
 Rust lib tests: <crate> [<cell>]: <p> passed; ...                   (omitted when none)
-Waived to the queue batch: <command>; ...                           ("none" when empty)
+Waived to postsubmit: <command>; ...                                ("none" when empty)
 Unverified here: <text>; ...                                        (omitted when empty)
 Receipt: landing-receipts/<T>.<B>.json
 ```

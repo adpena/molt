@@ -52,22 +52,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--uv-project-python",
-        default="3.12",
-        help=(
-            "Python version for the stable DX UV_PROJECT_ENVIRONMENT emitted by "
-            "--dx when no explicit UV_PROJECT_ENVIRONMENT is set."
-        ),
-    )
-    parser.add_argument(
-        "--uv-project-purpose",
-        default="dx",
-        help=(
-            "Purpose name for the stable DX UV_PROJECT_ENVIRONMENT emitted by "
-            "--dx when no explicit UV_PROJECT_ENVIRONMENT is set."
-        ),
-    )
-    parser.add_argument(
         "--prefer-external-artifacts",
         action="store_true",
         help="Prefer a healthy external artifact root when MOLT_EXT_ROOT is unset.",
@@ -93,9 +77,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     base_env = ProcessEnvironmentBuilder(os.environ)
     if args.session_id:
         base_env["MOLT_SESSION_ID"] = args.session_id
-    if args.dx:
-        base_env.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
-        base_env.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
     env = ProcessEnvironmentBuilder(
         context.dx_env(base_env, create_dirs=False)
         if args.dx

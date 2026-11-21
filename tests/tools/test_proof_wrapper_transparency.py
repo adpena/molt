@@ -397,13 +397,11 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
     import os
     from tools import uv_project_env
     from tools.proof_queue_pkg import execution_environment
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import make_checkout
 
     root, artifacts = tmp_path / "project", tmp_path / "artifacts"
-    image = materialize_development_environment(root, artifacts, python="3.14")
-    explicit = image.root
+    make_checkout(root)
+    explicit = tmp_path / "explicit environment"
     # Keep parsing and pure selection real; operation capture owns recipe
     # admission. This test explicitly selects managed ownership.
     monkeypatch.delenv("MOLT_VENV", raising=False)
@@ -417,8 +415,6 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
         *spelling,
         "--python",
         "3.14",
-        "--purpose",
-        "wrapper-test",
         "--venv",
         str(explicit),
         "--",
@@ -435,11 +431,10 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
             "MOLT_EXT_ROOT": str(artifacts),
         },
     )
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
-    assert env["MOLT_UV_PROJECT_PYTHON"] == "3.14"
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit)
     assert env["UV_NO_SYNC"] == "1"
-    assert env["PYTHONPYCACHEPREFIX"] == str(image.bytecode_prefix)
-    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["PYTHONPYCACHEPREFIX"] == str(explicit.parent / ".bytecode")
+    assert "PYTHONDONTWRITEBYTECODE" not in env
     assert envelope["python"]["kind"] == "direct"
     assert (
         "version" not in envelope["python"]
@@ -553,7 +548,7 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     import os
     import sys
     from pathlib import Path
-    from molt.python_environment_location import environment_bytecode_arguments
+    from molt.python_interpreter import readonly_bytecode_arguments
     from tests.process_guard_common import run_custody_subject_process
     from tools.proof_queue_pkg import command_identity, execution_environment
 
@@ -584,7 +579,7 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     # when the hash-policy subject deliberately ignores environment variables.
     reference_command = [
         exact[0],
-        *environment_bytecode_arguments(Path(sys.prefix)),
+        *readonly_bytecode_arguments(Path(sys.prefix)),
         *exact[1:],
     ]
     reference = run_custody_subject_process(
@@ -658,7 +653,7 @@ def test_native_wrapper_capture_selects_published_entrypoint_or_explicit_borrow(
     tmp_path, ownership
 ):
     import os
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
     from tools.proof_queue_pkg import execution_environment
 
     root = tmp_path / "selected"
@@ -708,7 +703,7 @@ def test_modeled_venv_python_matches_direct_wrapper_selection_and_startup(
     tmp_path, borrowed
 ):
     import os
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
     from tools.proof_queue_pkg import command_identity
 
     root = tmp_path / "selected"
@@ -730,7 +725,7 @@ def test_modeled_venv_python_matches_direct_wrapper_selection_and_startup(
     )
 
     expected = alias if borrowed and os.name != "nt" else canonical
-    startup = [] if borrowed else ["-B", "-X", f"pycache_prefix={root / 'bytecode'}"]
+    startup = [] if borrowed else ["-X", f"pycache_prefix={root.parent / '.bytecode'}"]
     assert exact == [str(expected), *startup, *payload[1:]]
     assert exact == venv_exec.resolve_command(payload, venv=root, managed=not borrowed)
 
@@ -777,66 +772,6 @@ _release_file_lock(exclusive)
     result = run_custody_subject_process(
         [sys.executable, "-B", "-c", code, str(tmp_path), str(explicit_handoff)],
         cwd=Path(__file__).resolve().parents[2],
-        env=dict(os.environ),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_no_site_detached_ack_retains_selected_image_without_activation(tmp_path):
-    import os
-    from pathlib import Path
-    from tests.process_guard_common import run_custody_subject_process
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-    from molt.checkout_state import record_checkout_owner
-    from molt.python_environment_location import environment_python_path
-
-    owner = tmp_path / "source-owner"
-    image = materialize_development_environment(
-        owner, tmp_path / "artifacts", runnable=True
-    )
-    record_checkout_owner(image.root, owner=owner, kind="python-environment")
-    root = Path(__file__).resolve().parents[2]
-    code = f"""
-import sys
-from pathlib import Path
-sys.path[:0] = [{str(root / "src")!r}, {str(root)!r}]
-from tools.command_execution import detached_command_use
-from molt.checkout_state import checkout_state_retirement
-image = Path(sys.argv[1])
-ready = Path(sys.argv[2])
-assert sys.flags.no_site
-# CPython 3.12 actually exposes the base prefix with -S. Preserve that
-# adversarial coordinate on newer CPython too, without changing its executable.
-sys.prefix = sys.base_prefix
-assert Path(sys.prefix) != image
-assert Path(sys.executable).parent.parent == image
-with checkout_state_retirement(image) as available:
-    assert available
-with detached_command_use(Path.cwd(), {{}}, cwd=Path.cwd(),
-                          ready_path=ready, use_token='a' * 32):
-    assert ready.exists()
-    with checkout_state_retirement(image) as available:
-        assert not available, 'acknowledged worker lost its selected image'
-with checkout_state_retirement(image) as available:
-    assert available
-"""
-    result = run_custody_subject_process(
-        [
-            str(environment_python_path(image.root)),
-            "-I",
-            "-S",
-            "-B",
-            "-c",
-            code,
-            str(image.root),
-            str(tmp_path / "ready.json"),
-        ],
-        cwd=root,
         env=dict(os.environ),
         capture_output=True,
         text=True,

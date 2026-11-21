@@ -248,11 +248,6 @@ def validate_managed_bytecode_prefix(root: Path) -> Path:
     return prefix
 
 
-def environment_bytecode_arguments(root: Path) -> tuple[str, ...]:
-    """Select the image's read namespace before CPython/site startup."""
-    return ("-B", "-X", f"pycache_prefix={environment_bytecode_prefix(root)}")
-
-
 def environment_provisioning_record_path(root: Path) -> Path:
     """The existing publisher's sibling record, outside the immutable image."""
     return root.parent / ".provisioning" / f"{root.name}.json"

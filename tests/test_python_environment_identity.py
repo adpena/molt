@@ -49,197 +49,6 @@ _PORTABLE_PATH_ALIASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["--capture-runtime"],
-        ["--runtime-selection"],
-        ["--locate-active-environment"],
-        ["--editable-project", "environment", "project"],
-    ],
-)
-def test_published_admission_requires_read_only_environment_capture(
-    monkeypatch, capsys, arguments
-):
-    monkeypatch.setattr(
-        sys, "argv", ["identity", *arguments, "--admit-published-environment"]
-    )
-    with pytest.raises(SystemExit) as caught:
-        identity._parse_arguments()
-    assert caught.value.code == 2
-    assert "published admission requires a read-only environment capture" in (
-        capsys.readouterr().err
-    )
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["--development-checkout", "checkout"],
-        ["--admit-published-environment", "--development-python", "3.12"],
-        ["--admit-published-environment", "--development-group", "dev"],
-    ],
-)
-def test_development_admission_requires_complete_operation_intent(
-    monkeypatch, capsys, arguments
-):
-    monkeypatch.setattr(
-        sys, "argv", ["identity", "--capture-active-environment", *arguments]
-    )
-    with pytest.raises(SystemExit) as caught:
-        identity._parse_arguments()
-    assert caught.value.code == 2
-    assert "development intent requires admission and a checkout" in (
-        capsys.readouterr().err
-    )
-
-
-@pytest.mark.parametrize("attested", ["legacy", "sealed"])
-@pytest.mark.parametrize("development", [False, True])
-@pytest.mark.parametrize("with_custody", [False, True])
-@pytest.mark.parametrize("failure", [None, "verify", "close"])
-def test_published_admission_keeps_capture_context_until_final_verification(
-    tmp_path, monkeypatch, capsys, with_custody, failure, development, attested
-):
-    from molt import source_build_environment
-    from molt import input_report
-
-    events = []
-    realized = {"environment": "independent captured bytes"}
-    payload = {"identity": realized} if with_custody else realized
-    (tmp_path / "checkout").mkdir()
-    installed = tmp_path / "lib" / "site-packages"
-    installed.mkdir(parents=True)
-    module = installed / "proof.py"
-    module.write_bytes(b"VALUE = 529\n")
-    from molt import python_environment_contract as contract
-    from molt.exact_json import write_exact
-
-    # Only a legacy attestation (writable installed entries) is sealed.
-    write_exact(
-        tmp_path / contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-        {
-            "realized_environment": {
-                "tree": {
-                    "entries": [
-                        {
-                            "path": "lib/site-packages/proof.py",
-                            "kind": "file",
-                            "access": {
-                                "readable": True,
-                                "writable": attested == "legacy",
-                                "executable": False,
-                            },
-                        }
-                    ]
-                }
-            }
-        },
-    )
-    seal = location.seal_environment_installation
-    sealed = ["sealed"] if attested == "legacy" else []
-
-    def seal_before_fence(root):
-        assert not events
-        seal(root)
-        assert not module.stat().st_mode & stat.S_IWUSR
-        events.append("sealed")
-
-    class Context:
-        def __init__(self, *, hash_workers, digest_cache):
-            assert hash_workers == 1
-            assert isinstance(digest_cache, files.FileDigestCache)
-
-        def protect_tree(self, root):
-            assert isinstance(root, Path)
-
-        def __enter__(self):
-            events.append("context-open")
-            return self
-
-        def __exit__(self, *args):
-            events.append("context-closed")
-            if failure == "close":
-                raise PythonEnvironmentIdentityError("context close failed")
-
-        def verify(self):
-            events.append("verified")
-            if failure == "verify":
-                raise PythonEnvironmentIdentityError("captured input changed")
-
-    def capture(root, *, capture_context, final_checks, **_kwargs):
-        assert root == tmp_path and isinstance(capture_context, Context)
-        events.append("captured")
-        final_checks(realized)
-        capture_context.verify()
-        return payload
-
-    def admit(root, observed, *, development_admission):
-        assert root == tmp_path and observed is realized
-        assert events == [*sealed, "context-open", "captured"]
-        if development:
-            assert development_admission.repo_root == tmp_path / "checkout"
-            assert development_admission.python == "3.14"
-            assert development_admission.groups == ("bench", "dev")
-            events.append("intent")
-        else:
-            assert development_admission is None
-        events.append("admitted")
-
-    arguments = [
-        "identity",
-        "--capture-environment",
-        str(tmp_path),
-        "--admit-published-environment",
-        *(["--with-custody"] if with_custody else []),
-        *(
-            [
-                "--development-checkout",
-                str(tmp_path / "checkout"),
-                "--development-python",
-                "3.14",
-                "--development-group",
-                "bench",
-                "--development-group",
-                "dev",
-            ]
-            if development
-            else []
-        ),
-    ]
-    monkeypatch.setattr(sys, "argv", arguments)
-    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
-    monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
-    monkeypatch.setattr(location, "seal_environment_installation", seal_before_fence)
-    monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
-    monkeypatch.setattr(identity, "capture_current_python_environment", capture)
-    monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
-    if failure is not None:
-        with pytest.raises(
-            PythonEnvironmentIdentityError,
-            match=(
-                "captured input changed"
-                if failure == "verify"
-                else "context close failed"
-            ),
-        ):
-            identity._main()
-        assert not capsys.readouterr().out
-    else:
-        identity._main()
-        assert json.loads(capsys.readouterr().out) == payload
-    assert bool(module.stat().st_mode & stat.S_IWUSR) is (attested == "sealed")
-    assert events == [
-        *sealed,
-        "context-open",
-        "captured",
-        *(["intent"] if development else []),
-        "admitted",
-        "verified",
-        "context-closed",
-    ]
-
-
 def test_retired_development_selection_mode_is_rejected(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
@@ -255,32 +64,6 @@ def test_retired_development_selection_mode_is_rejected(monkeypatch, capsys):
         identity._parse_arguments()
     assert caught.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
-
-
-def test_development_request_keeps_proof_role_explicit(monkeypatch):
-    from molt.python_environment_contract import DevelopmentEnvironmentRequest
-
-    request = DevelopmentEnvironmentRequest(Path("checkout"), "3.14", ("dev",))
-    arguments = request.intent_arguments()
-    assert "--admit-published-environment" not in arguments
-    assert "--with-custody" not in arguments
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "identity",
-            "--capture-active-environment",
-            "--with-custody",
-            "--admit-published-environment",
-            *arguments,
-        ],
-    )
-    parsed = identity._parse_arguments()
-    assert parsed.capture_active_environment and parsed.with_custody
-    assert parsed.admit_published_environment
-    assert parsed.development_checkout == Path("checkout")
-    assert parsed.development_python == "3.14"
-    assert parsed.development_group == ["dev"]
 
 
 @pytest.mark.parametrize("with_custody", [False, True])
@@ -2875,11 +2658,11 @@ def test_standalone_probe_admits_selected_package_without_repository_tools(
         monkeypatch.setitem(sys.modules, "molt.plugins", namespace)
         prior_path, prior_spec = namespace.__path__, namespace.__spec__
     imports = []
-    # The facade's first package import is ``from molt import
-    # python_environment_contract``; it reaches __import__ as plain "molt".
-    with pytest.raises(_CustodyImportReached, match=r"^molt$"):
+    # The facade's first package import is ``from molt.guard_stems_generated
+    # import GuardStem``; it reaches __import__ under that dotted name.
+    with pytest.raises(_CustodyImportReached, match=r"^molt\.guard_stems_generated$"):
         _execute_probe_to_package_import(source, imports)
-    assert imports == ["molt"]
+    assert imports == ["molt.guard_stems_generated"]
     assert sys.path[0] == str(selected.parent)
     authority = sys.modules["_molt_package_import_custody"]
     assert authority.__file__ == str(selected / "package_import_custody.py")

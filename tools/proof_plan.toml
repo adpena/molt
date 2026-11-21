@@ -305,6 +305,7 @@ authority_inputs = [
   "src/molt/package_import_custody.py",
   "src/molt/python_environment_identity.py",
   "src/molt/python_environment_location.py",
+  "src/molt/uv_environment.py",
   "src/molt/python_environment_custody.py",
   "src/molt/python_bytecode.py",
   "src/molt/python_external_custody.py",
@@ -2756,7 +2757,7 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-p", "tools.pytest_profile", "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"]
 evidence_outputs = ["proof-receipts/evidence/repository-docs-tests"]
-pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_runtime_names.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_committed_gate_policy.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_instructions.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
+pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_runtime_names.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_committed_gate_policy.py", "tests/test_checkout_provisioning.py", "tests/test_uv_environment.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_instructions.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustc", "rustfmt"]
 
@@ -6112,10 +6113,12 @@ gates = [
 # declared member that runs 0 tests fails. Lane tests reuse the target, so `land` runs it in the lane before
 # it queues and `land --fast` before it pushes (docs/design/landing_queue.md,
 # section 9).
+# The consumer gate runs it before each commit (`commit = true`, HF-937).
 [[rule]]
 name = "rust-test-changed"
 toolchains = ["python", "rustc", "cargo"]
 precheck = true
+commit = true
 description = "Whole-crate lib tests, in every declared profile and feature cell, for every Cargo package a change reaches."
 globs = [
   "runtime/**",
@@ -6365,9 +6368,16 @@ pytest = [
   "tests/test_browser_vfs.py",
 ]
 
+# Every path to main runs it (HF-937): `land --fast` and the lane precheck run
+# it in the try run, and the consumer gate runs it before each commit. Before,
+# a fast landing waived it to a queue batch that a direct landing never runs,
+# and rust-test-changed left molt-runtime to it, so no molt-runtime lib test
+# ran on any path to main. Warm dev-fast: 188 s on a loaded host (cold 380 s).
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
+precheck = true
+commit = true
 description = "Runtime/object-model Rust: one dev-fast Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed; release-output qualification remains in CI."
 globs = [
   "runtime/molt-runtime/**/*.rs",

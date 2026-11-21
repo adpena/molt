@@ -133,6 +133,7 @@ _TYPING_NAMES = {
 # runtime cost): identifier -> ``from`` module.
 _TYPE_CHECKING_IMPORTS = {
     "CallForm": "molt.compiler_analysis.python_call_arguments",
+    "CallableDeclaration": "molt.frontend.module_publication",
     "FunctionKind": "molt.compiler_analysis.python_function_kind",
     "StatefulFunctionFramePlan": "molt.frontend.sema.funcmeta",
     "StatefulLocalsLayout": "molt.frontend.sema.funcmeta",

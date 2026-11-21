@@ -137,19 +137,14 @@ def _selected_python_prefix(prefixes: tuple[str, ...], expected: str) -> None:
     if len(prefixes) > 1:
         raise ValueError("Python cache prefix must be selected exactly once")
     if prefixes and prefixes != (expected,):
-        raise ValueError(
-            "Python cache prefix conflicts with the selected development image"
-        )
+        raise ValueError("Python cache prefix conflicts with the selected environment")
 
 
 def python_environment_command(
     argv: Sequence[str], *, environment_root: Path
 ) -> list[str]:
-    """Bind a selected image's cache read namespace before Python starts."""
-    from molt.python_environment_location import (
-        environment_bytecode_arguments,
-        environment_bytecode_prefix,
-    )
+    """Bind the environment's shared bytecode cache before Python starts."""
+    from molt.uv_environment import bytecode_arguments, bytecode_prefix
 
     invocation = python_interpreter.parse_python_invocation(argv)
     if invocation.mode == "terminal":
@@ -157,11 +152,9 @@ def python_environment_command(
     _ignored, _no_bytecode, prefixes = python_interpreter.python_environment_options(
         invocation
     )
-    _selected_python_prefix(
-        prefixes, str(environment_bytecode_prefix(environment_root))
-    )
-    policy = environment_bytecode_arguments(environment_root)
-    return [str(argv[0]), *(policy[:1] if prefixes else policy), *argv[1:]]
+    _selected_python_prefix(prefixes, str(bytecode_prefix(environment_root)))
+    policy = () if prefixes else bytecode_arguments(environment_root)
+    return [str(argv[0]), *policy, *argv[1:]]
 
 
 def validate_python_environment_command(
@@ -170,25 +163,21 @@ def validate_python_environment_command(
     environment_root: Path,
     environment: Mapping[str, str],
 ) -> None:
-    """Validate an already assembled child at the existing launch boundary."""
-    from molt.python_environment_location import environment_bytecode_prefix
+    """Require an assembled child to select the environment's bytecode cache."""
+    from molt.uv_environment import bytecode_prefix
 
     invocation = python_interpreter.parse_python_invocation(argv)
     if invocation.mode == "terminal":
         return
-    ignored, no_bytecode, prefixes = python_interpreter.python_environment_options(
+    ignored, _no_bytecode, prefixes = python_interpreter.python_environment_options(
         invocation
     )
-    expected = str(environment_bytecode_prefix(environment_root))
+    expected = str(bytecode_prefix(environment_root))
     _selected_python_prefix(prefixes, expected)
     if not prefixes and (ignored or environment.get("PYTHONPYCACHEPREFIX") != expected):
         raise ValueError(
-            "Python child does not select the development image cache prefix"
+            "Python child does not select the environment's bytecode cache"
         )
-    if not no_bytecode and (
-        ignored or environment.get("PYTHONDONTWRITEBYTECODE") != "1"
-    ):
-        raise ValueError("Python child must disable bytecode writes before startup")
 
 
 _PYTHON_CONSOLE_MODULES = {
@@ -369,7 +358,7 @@ def uv_environment_command(
     python_selector: str | None = None,
 ) -> list[str]:
     """Run UV against one selected image without replacing its environment."""
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
 
     prefix, payload = _uv_prefix_and_payload(argv)
     selected_python = str(environment_python_path(environment_root))
@@ -536,7 +525,6 @@ def _command_wrapper(
         else {
             "kind": name,
             "python": options.python,
-            "purpose": options.purpose,
             "venv": options.venv,
         }
     )

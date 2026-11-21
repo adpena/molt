@@ -725,6 +725,8 @@ class SerializationMixin(
                 if "transferred" in custody:
                     func_entry["parameter_custody"] = custody
             metadata: FunctionAssemblyMetadata = {}
+            if declaration := self.callable_declarations.get(name):
+                metadata["callable_declaration"] = declaration
             if "gpu_body_origin" in data:
                 metadata["gpu_body_origin"] = dict(data["gpu_body_origin"])
             if "source_module_publication" in data:

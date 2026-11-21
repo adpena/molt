@@ -52,6 +52,7 @@ from tests.release_lane_fixtures import (
     EXPECTED_LANES,
     LANE_FIELDS,
     stage_release_lane_authorities,
+    stage_stdlib_source_summaries_fixture,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1086,6 +1087,11 @@ def _prepare_release_source(
     monkeypatch.setattr(build_bundle, "audit_wheel", _fixture_compatibility)
     monkeypatch.setattr(
         build_bundle, "_verify_runtime_cell_semantics", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        compiler_payload,
+        "_stage_stdlib_source_summaries",
+        lambda bundle, _source: stage_stdlib_source_summaries_fixture(bundle),
     )
 
     return snapshot

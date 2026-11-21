@@ -475,113 +475,31 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 
 `molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
-hand from an existing bootstrap interpreter. Managed Python uses the existing
-source-build publisher and schema 9 recipe at
-`<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
-The recipe binds the selected interpreter, lock closure, dependency groups,
-complete producer contract, raw declared-input digests (including an absent
-Python pin), and editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
-currently selects `dev` and `bench`, together with root dependencies.
+hand from an existing bootstrap interpreter. Managed Python is one uv environment per key, shared by every checkout
+(`molt.uv_environment`; owning design: [one environment](../design/one_environment.md)).
+A key is an exact CPython release and sorted dependency groups; the default key is
+`.python-version` with `[tool.molt.dx].dependency_groups` (`dev` and `bench`). The
+directory `<python-environments>/<release>-<groups>-<lock digest>` sits under the
+artifact root's hot-state root when it has one (HF-942). The digest covers `uv.lock`
+and the pyproject entries that decide contents, so worktrees on one lock share one
+environment and a lock change selects a new directory. `ensure uv-environment` (and
+`tools/venv_exec.py`, which every documented command runs through) syncs a missing
+environment once under the directory's lock with
+`uv sync --locked --no-install-project --managed-python`, records the interpreter's
+identity, and publishes `molt-environment.json` last; the record makes the warm path
+one `stat`. The project is not installed: each checkout's `src` comes first on
+`PYTHONPATH`. Explicit `UV_PROJECT_ENVIRONMENT` names an environment; `MOLT_VENV`
+(or `venv_exec --venv`) borrows an external one. There is no implicit checkout
+`.venv`. The `tools/dev.py` maintenance commands (`doctor`, `setup`, `update`,
+`validate`) honor a borrowed environment without selecting a managed one.
 
-Selection metadata lives in the checkout's Git control directory, outside the
-image, keyed by interpreter/group intent and the canonical producer contract.
-A producer contract upgrade selects a new record and image without opening or
-repairing a retired generation. An explicit image remains an exact selection
-and must satisfy the current contract. Reading that bounded projection does
-not admit executable bytes. `ensure uv-environment` publishes a missing
-generation under the existing address lock and records the selection only after
-success. When an implicit selection outlives its retired physical generation,
-`status` reports it absent and `ensure` republishes through that same owner.
-An explicit missing image, indirect path, or present invalid image remains a
-refusal. Changed declared inputs select a new recipe; published images are never
-synced or repaired in place. Explicit `UV_PROJECT_ENVIRONMENT` must identify a
-matching published image at managed operation boundaries. `MOLT_VENV` (or
-`venv_exec --venv`) explicitly borrows an external environment without converting
-it to managed ownership. There is no implicit checkout `.venv`, active-venv or
-main-worktree fallback. Ordinary source bootstrap `uv sync` remains separate.
-The `tools/dev.py` maintenance commands (`doctor`, `setup`, `update`, and
-`validate`) honor an explicit borrowed environment without selecting or syncing
-a managed image. Installation, the Python version matrix, and managed repository
-gates continue to require managed ownership.
+Bytecode goes to one writable cache beside the environments
+(`<python-environments>/.bytecode`), selected by `PYTHONPYCACHEPREFIX` and, for a
+managed Python command, by `-X pycache_prefix=`, which `-I` cannot drop. CPython
+names each cache file by its source's absolute path and its cache tag, so checkouts
+and interpreters never collide. A shared environment is not checkout state: it has no
+owner record or lease, and retiring a worktree never removes it.
 
-Borrowing a published image preserves its physical lifetime custody without
-admitting it as the caller checkout's image. Launch owners retain declared
-`VIRTUAL_ENV` state and existing bound images containing lexical executable or
-native search coordinates through observed child closure. Search membership is
-conservative and does not establish interpreter identity; absent, unowned or
-unavailable optional coordinates do not change native executable search errors.
-
-Managed image publication uses the schema-v9 `cpython-source-only.v2` policy.
-The publisher disables uv bytecode generation, creates the physical empty
-`bytecode` read namespace under its existing address lock, and captures the
-installed source/runtime/native closure once. Admission requires that same
-captured directory to have no descendants; later writes invalidate its retained
-membership fence. Python compiles only source modules actually imported by the
-command at its selected optimization level. The eager 012 publisher and private
-derivation table are retired, together with their schema-v7 addresses. Generic
-borrowed active/pytest/inert caches retain their existing validation. See the
-[cost model and measured tradeoff](../design/foundation/56_dx_buildspeed_tooling.md#managed-python-images).
-The verifier starts with `-B -I -X pycache_prefix=<fresh-empty-owned-prefix>` through
-the shared `python_identity_verifier_arguments` authority and retains that
-scratch owner through child closure. It validates the image namespace by
-explicit path without changing `sys.pycache_prefix`. After admission, payloads
-select `-B -X pycache_prefix=<image>/bytecode` before interpreter startup;
-environment variables alone cannot establish this policy under `-I` or `-E`.
-RunContext's serialized environments retain `PYTHONDONTWRITEBYTECODE` alongside
-the selected cache prefix: this includes CLI and developer exports, setup
-defaults, and coordination JSON, shell and PowerShell records. Ordinary Python
-children consume that no-write policy at startup; isolated children still require
-the explicit argv policy above.
-The filesystem backs that policy. Before its one capture, the publisher removes
-every write bit from installed files and directories (`lib`, `lib64`, `Lib`,
-`bin`, `Scripts`). Read and execute bits, the `bytecode` namespace, image
-records and sibling locks keep their modes. A child started with `-I` and no
-`-B` therefore cannot write bytecode beside the sources. An image published
-before this rule (its attestation records writable installed entries) is sealed
-before its capture: source-build admission seals in the parent, so the capture
-child imports nothing from the image; proof-queue admission seals in the capture
-child before its fence. `attestation_records_writable_installation` in
-`molt.python_environment_location` makes that decision for both. Admission never
-rewrites an attestation: it accepts only the one-way writable-to-read-only change
-of installed entries and names up to six other differences in its refusal. An
-image attested sealed skips the walk, and a write bit that reappears fails
-admission.
-The base interpreter's runtime closure (`molt.python-runtime-closure.v8`)
-excludes every `__pycache__` directory, as it excludes `site-packages`. Managed
-payloads read bytecode only from their image prefix, CPython reads a PEP 3147
-cache only together with its attested source, and the base install is shared:
-any process on the host may write caches there (HF-536 found 28 `.opt-2.pyc`
-written in one afternoon, which failed every admission). A sourceless legacy
-`.pyc` beside the sources stays attested. The seal walk costs one metadata pass (77 ms for 9,260 entries, warm)
-per legacy admission; the proof-queue child also parses the attestation first
-(14 ms for 7.3 MB). Deletion restores directory owner-write only under an explicit owning
-root (`disk_guard` retirement, unpublished provisioning recovery and guard
-scratch reclamation) and never changes file modes, so external hardlinks keep
-their attributes. Windows keeps its read-only leaf deletion. This is a mode
-seal, not an ACL or a privileged-user sandbox.
-Existing process-state leases retain the selected generation until observed
-process closure, even when a newer generation is selected. Owner/use metadata
-stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
-retirement. Selection or publication alone is not release qualification.
-Ordinary launches use the stdlib-only image-local reader for
-`molt-development-selection.json`. Default Git selection is a coordinate index;
-explicit images and copied/nongit checkouts use the same image-local boundary.
-The reader validates physical checkout/image coordinates, exact producer contract,
-requested Python/groups, current raw declared inputs and resolved editable
-metadata binding, plus a physical empty bytecode prefix. It requires a physical
-final-manifest file and no sibling provisioning marker. It never decodes that
-full manifest, launches a selection interpreter, captures installed/runtime
-bytes, writes state or acquires a publication lock. Its bounded JSON allowance
-scales with actual coordinates and input/group descriptions. Publication writes
-the projection before full image capture, then publishes the final manifest last.
-Schema-v8 images remain immutable and require canonical ensure; no old-format
-fallback or in-place repair exists.
-
-Ordinary selection does not claim detection of arbitrary full-manifest content
-changes or current installed-byte identity. Proof and release ingress retain
-independent full live execution capture, including the projection file, and exact
-published-image comparison. Their neutral checkout/Python/group intent remains;
-the old selection child mode and receipt protocol are retired.
 Environment capture places read-only published-image checks before
 one mandatory closing file/membership fence. Plain identities and full custody
 envelopes pass that fence before returning; schema validation retains its

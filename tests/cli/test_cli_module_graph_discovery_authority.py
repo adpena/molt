@@ -22,6 +22,7 @@ from molt.cli import module_graph
 from molt.cli import module_graph_discovery
 from molt.cli import module_graph_cache
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 
 _MODULE_GRAPH_DISCOVERY_NAMES = (
     "PLATFORM_EXCLUDED_SUBMODULES",
@@ -499,11 +500,18 @@ def test_module_getattr_demands_lazy_returned_class(
 @pytest.mark.parametrize(
     ("source", "required", "excluded"),
     [
-        ("import unittest\n", {"unittest"}, {"unittest.async_case", "asyncio"}),
-        (
+        # Only the two unittest closures exceed the presubmit median (HF-938).
+        pytest.param(
+            "import unittest\n",
+            {"unittest"},
+            {"unittest.async_case", "asyncio"},
+            marks=pytest.mark.slow,
+        ),
+        pytest.param(
             "import unittest\nunittest.IsolatedAsyncioTestCase\n",
             {"unittest.async_case", "asyncio"},
             set(),
+            marks=pytest.mark.slow,
         ),
         (
             "from collections import Counter\nCounter([1, 2]).most_common(1)\n",
@@ -548,9 +556,6 @@ def test_module_getattr_demands_lazy_returned_class(
         ),
     ],
 )
-# A cold whole-stdlib module-graph discovery (157-466 s per case in the 2026-11-20
-# landing gate); postsubmit runs it until HF-938 makes discovery fast.
-@pytest.mark.slow
 def test_public_stdlib_deferred_demand_graph(
     tmp_path: Path, source: str, required: set[str], excluded: set[str]
 ) -> None:
@@ -916,6 +921,130 @@ def test_class_creation_demands_hooks_without_instantiation(tmp_path, declaratio
 
 
 @pytest.mark.parametrize(
+    ("body", "invocation", "hook"),
+    [
+        (
+            "def __eq__(self, other): import reached; return True",
+            "Value() == Value()",
+            "__eq__",
+        ),
+        ("def __hash__(self): import reached; return 42", "hash(Value())", "__hash__"),
+        (
+            "def __iter__(self): import reached; return iter(())",
+            "list(Value())",
+            "__iter__",
+        ),
+        (
+            "def __enter__(self): return self\n"
+            "    def __exit__(self, *args): import reached",
+            "with Value(): pass",
+            "__exit__",
+        ),
+        ("def __del__(self): import reached", "value = Value()\ndel value", "__del__"),
+        (
+            "def __init_subclass__(cls): import reached",
+            "class Child(Value): pass",
+            "__init_subclass__",
+        ),
+        (
+            "def __set_name__(self, owner, name): import reached",
+            "class Owner: item = Value()",
+            "__set_name__",
+        ),
+        (
+            "def __class_getitem__(cls, item): import reached",
+            "Value[int]",
+            "__class_getitem__",
+        ),
+        (
+            "def __class_getitem__(cls, item): import reached",
+            "class Child(Value): pass\nChild[int]",
+            "__class_getitem__",
+        ),
+        (
+            "def __get__(self, instance, owner): import reached",
+            "class Owner: item = Value()\nOwner().item",
+            "__get__",
+        ),
+        (
+            "def __set__(self, instance, value): import reached",
+            "class Owner: item = Value()\nOwner().item = 1",
+            "__set__",
+        ),
+        (
+            "def decorate(fn):\n"
+            "        def wrapper(*args):\n"
+            "            import reached\n"
+            "            return fn(*args)\n"
+            "        return wrapper\n"
+            "    @decorate\n"
+            "    def __eq__(self, other): return True",
+            "Value() == Value()",
+            "wrapper",
+        ),
+        (
+            "def key(self, item): import reached; return item",
+            "sorted([2, 1], key=Value().key)",
+            "key",
+        ),
+    ],
+)
+def test_implicit_source_body_custody(
+    tmp_path: Path, body: str, invocation: str, hook: str
+) -> None:
+    import sys
+
+    sources = {
+        "entry": "from provider import Value\n" + invocation + "\n",
+        "provider": "class Value:\n    "
+        + body
+        + "\n\ndef unused(): import untouched\n",
+        "reached": "pass\n",
+        "untouched": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import entry; "
+            "assert 'reached' in sys.modules and 'untouched' not in sys.modules",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert "reached" in result.graph
+    assert "untouched" not in result.graph
+    owners = {
+        owner
+        for owner, _ in result.scan_authority.by_module["provider"].deferred_owners
+    }
+    provider = ast.parse(sources["provider"])
+    hook_node = next(
+        node
+        for node in ast.walk(provider)
+        if isinstance(node, ast.FunctionDef) and node.name == hook
+    )
+    assert python_node_source_key(hook_node) in owners
+
+
+@pytest.mark.parametrize(
     "publication",
     [
         "def callback():\n        import dependency",
@@ -1163,6 +1292,116 @@ def test_generator_source_demand_is_resumed_not_its_creation(tmp_path, consume):
     assert (package in result.graph) is consume
     owners = result.scan_authority.by_module["entry"].deferred_owners
     assert any(key[-1] == "GeneratorExp" for key, _args in owners) is consume
+
+
+def test_nested_writer_revisions_hold_receivers_until_the_outer_exit(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    # a ↔ b contains the b ↔ c cycle after its head a is removed. The
+    # receiver d follows both exits. e has no dependency on this component.
+    for writer, receivers in (
+        ("a", ("b",)),
+        ("b", ("a", "c")),
+        ("c", ("b", "d")),
+        ("d", ()),
+        ("e", ()),
+    ):
+        path = state.graph[writer] = tmp_path / f"{writer}.py"
+        state.modules_by_source[path] = {writer}
+        state.active_owners[writer] = {None}
+        state.namespace_writes[writer] = {
+            PythonNamespaceWrite(receiver, "value", "attribute", 1)
+            for receiver in receivers
+        }
+        state.scan_revisions.add(discovery._SourceScanJob(writer, None))
+
+    for expected in ({"c", "e"}, {"b"}, {"c"}, {"a"}, {"d"}):
+        ready = discovery._ready_namespace_revisions(state)
+        assert {job.module_name for job in ready} == expected
+        state.scan_revisions.difference_update(ready)
+        if expected == {"b"}:
+            # Revising the inner head can make its child dirty again.
+            state.scan_revisions.add(discovery._SourceScanJob("c", None))
+    assert not state.scan_revisions
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_writer_with_unknown_receiver_orders_revisions(
+    tmp_path: Path, active: bool
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    for module in ("first", "second", "writer"):
+        state.graph[module] = tmp_path / f"{module}.py"
+        state.scan_revisions.add(discovery._SourceScanJob(module, None))
+    state.namespace_writes["writer"] = {
+        PythonNamespaceWrite(None, "member", "namespace", 1)
+    }
+    if active:
+        state.active_owners["writer"] = {None}
+
+    ready = discovery._ready_namespace_revisions(state)
+    if active:
+        assert {job.module_name for job in ready} == {"writer"}
+        state.scan_revisions.difference_update(ready)
+        assert {
+            job.module_name for job in discovery._ready_namespace_revisions(state)
+        } == {
+            "first",
+            "second",
+        }
+    else:
+        assert ready == state.scan_revisions
+
+
+def test_opaque_activation_revision_follows_the_escaping_consumer(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+    )
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    state.demands = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    for module in ("consumer", "provider", "unrelated"):
+        state.graph[module] = tmp_path / f"{module}.py"
+        state.scan_revisions.add(discovery._SourceScanJob(module, None))
+    state.demands.activate(
+        SourceCandidate("provider", (1, 0, 2, 8, "FunctionDef")),
+        "escape",
+        consumer="consumer",
+    )
+
+    first = discovery._ready_namespace_revisions(state)
+    assert {job.module_name for job in first} == {"consumer", "unrelated"}
+    state.scan_revisions.difference_update(first)
+    assert discovery._ready_namespace_revisions(state) == {
+        discovery._SourceScanJob("provider", None)
+    }
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
