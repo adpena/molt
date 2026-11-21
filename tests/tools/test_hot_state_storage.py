@@ -119,6 +119,34 @@ def test_the_floor_takes_day_idle_entries_only_while_the_volume_is_low(
     )
 
 
+def test_guard_scratch_follows_the_hot_record_and_names_the_former_root(
+    tmp_path: Path,
+) -> None:
+    from molt import temporary_artifacts as scratch
+
+    lane = tmp_path / "source"
+    lane.mkdir()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    env = {"MOLT_EXT_ROOT": str(artifact)}
+    former = artifact.resolve() / "tmp" / "gs" / "v2"
+    # No record: the generation namespace stays on the artifact volume.
+    assert scratch.scratch_root(lane, env) == former
+    assert scratch.former_scratch_root(lane, env) is None
+    hot = tmp_path / "home" / "hot"
+    _bind(artifact, hot)
+    default_paths._HOT_STATES.clear()
+    assert scratch.scratch_root(lane, env) == hot.resolve() / "tmp" / "gs" / "v2"
+    assert scratch.former_scratch_root(lane, env) == former
+    # An explicit scratch storage root outranks the binding.
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    selected = {**env, "MOLT_SCRATCH_STORAGE": f"disk:{ram}"}
+    root = scratch.scratch_root(lane, selected)
+    assert root.is_relative_to(ram.resolve()) and root.parts[-2:] == ("gs", "v2")
+    assert scratch.former_scratch_root(lane, selected) is None
+
+
 def test_cache_retention_trims_the_hot_root_when_its_volume_is_low(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
