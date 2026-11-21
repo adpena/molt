@@ -36,7 +36,9 @@ pub(crate) use builder::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, HelperBody, IntBinary,
     IntComparison, MachineKind, RecursionCharge, SiteBody,
 };
-pub(crate) use object::{RELEASE_TERMINAL_HELPER, ReleaseTerminalBody};
+pub(crate) use object::{
+    RELEASE_FIELDS_HELPER, RELEASE_TERMINAL_HELPER, ReleaseFieldsBody, ReleaseTerminalBody,
+};
 pub(crate) use value_table::HeldCarrier;
 // Only the LLVM builder keeps a value table of backend values.
 #[cfg(feature = "llvm")]
