@@ -965,18 +965,23 @@ def test_release_plan_requires_exact_project_tag_and_source(
         release_authority.resolve_source("0.0.001", "a" * 40)
 
 
+@pytest.mark.parametrize("version", ["0.0.1", "1.0.0"])
 def test_every_release_requires_green_h0_phase_exit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str
 ) -> None:
     from tools import phase_exit_manifest as pem
 
     monkeypatch.setattr(
-        release_evidence, "verify_release_exit_manifest", lambda *_a, **_k: None
+        release_evidence,
+        "verify_release_exit_manifest",
+        lambda *_a, **_k: release_exit_gate.ReleaseGateReport(
+            "a" * 40, "PASS", True, (), (), version
+        ),
     )
     bundle = tmp_path / "release-exit.json"
     bundle.touch()
     with pytest.raises(ValueError, match="requires a green H0 phase-exit manifest"):
-        release_evidence.verify_evidence(bundle, version="1.0.0", source_sha="a" * 40)
+        release_evidence.verify_evidence(bundle, version=version, source_sha="a" * 40)
 
     phase = tmp_path / "H0.json"
     phase.write_text(
@@ -1000,7 +1005,7 @@ def test_every_release_requires_green_h0_phase_exit(
         ValueError, match="H0 phase exit is not green.*legacy_count is 5"
     ):
         release_evidence.verify_evidence(
-            bundle, version="1.0.0", source_sha="a" * 40, phase_manifest=phase
+            bundle, version=version, source_sha="a" * 40, phase_manifest=phase
         )
 
     monkeypatch.setattr(
@@ -1010,12 +1015,47 @@ def test_every_release_requires_green_h0_phase_exit(
     )
     with pytest.raises(ValueError, match="full v1 release acceptance is incomplete"):
         release_evidence.verify_evidence(
-            bundle, version="1.0.0", source_sha="a" * 40, phase_manifest=phase
+            bundle, version=version, source_sha="a" * 40, phase_manifest=phase
         )
 
-    # The first release (v0.0.1) is held to the same v1.0 quality contract.
-    with pytest.raises(ValueError, match="requires a green H0 phase-exit manifest"):
-        release_evidence.verify_evidence(bundle, version="0.0.1", source_sha="a" * 40)
+
+@pytest.mark.parametrize(
+    ("source_version", "requested_version", "expected"),
+    [
+        ("0.0.1", "0.0.1", "requires a green H0 phase-exit manifest"),
+        ("0.0.1", " v0.0.1 ", "requires a green H0 phase-exit manifest"),
+        ("1.0.0", "v1.0.0", "requires a green H0 phase-exit manifest"),
+        ("0.0.1", "1.0.0", "expected '1.0.0', got '0.0.1'"),
+        ("1.0.0", "0.0.1", "expected '0.0.1', got '1.0.0'"),
+        ("0.0.001", "0.0.1", "expected '0.0.1', got '0.0.001'"),
+        (None, "0.0.1", "expected '0.0.1', got None"),
+    ],
+)
+def test_evidence_version_binding_precedes_phase_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_version: str | None,
+    requested_version: str,
+    expected: str,
+) -> None:
+    """Source-version substitution refuses before H0 or provider admission."""
+    report = release_exit_gate.ReleaseGateReport(
+        source_sha="a" * 40,
+        status="PASS",
+        passed=True,
+        problems=(),
+        open_findings=(),
+        version=source_version,
+    )
+    monkeypatch.setattr(
+        release_exit_gate, "verify_release_bundle", lambda *_a, **_k: report
+    )
+    with pytest.raises(ValueError, match=re.escape(expected)):
+        release_evidence.verify_evidence(
+            tmp_path / "release-exit.json",
+            source_sha="a" * 40,
+            version=requested_version,
+        )
 
 
 def test_release_input_selection_requires_exact_cardinality(tmp_path: Path) -> None:
@@ -1642,7 +1682,7 @@ def release_evidence_inputs(
             True,
             (),
             (),
-            "0.0.1",
+            "0.0.001",
         ),
     )
     monkeypatch.setattr(
