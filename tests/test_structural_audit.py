@@ -1064,7 +1064,10 @@ def test_rust_cfg_multiline_test_function_parameters_remain_excluded():
 
 @pytest.mark.parametrize(
     "relative",
-    ["runtime/molt-runtime/src/abi.rs", "runtime/molt-backend-native/src/codegen_ssa/abi.rs"],
+    [
+        "runtime/molt-runtime/src/abi.rs",
+        "runtime/molt-backend-native/src/codegen_ssa/abi.rs",
+    ],
 )
 def test_cfg_test_member_cannot_hide_production_abi_stub_sibling(
     tmp_path: Path, relative: str
