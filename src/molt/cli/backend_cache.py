@@ -20,7 +20,6 @@ from molt.cache_eviction import refresh_cache_entry_recency
 from molt.default_paths import (
     _default_molt_cache,
     is_backend_cache_artifact_name,
-    validate_required_stdlib_output,
     backend_cache_artifact_filename,
     backend_cache_sync_receipt_path,
     backend_cache_publication_lock_name,
@@ -1371,10 +1370,7 @@ def _validate_shared_stdlib_output_for_link(
     stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> None:
-    try:
-        validate_required_stdlib_output(path)
-    except ValueError as error:
-        raise OSError(str(error)) from error
+    # The backend applied the location rule when it wrote the archive.
     if not _shared_stdlib_cache_matches_key_locked(
         path,
         stdlib_object_cache_key,
