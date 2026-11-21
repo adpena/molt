@@ -1,6 +1,7 @@
 """Unknown decorators cannot manufacture an implicit receiver type fact."""
 
 import ast
+from pathlib import Path
 
 import pytest
 
@@ -100,8 +101,8 @@ def test_every_method_execution_kind_consumes_receiver_authority(
     ids=["implicit-classmethod-alias", "property-result"],
 )
 def test_a_selection_that_does_not_pass_the_instance_binds_no_receiver(
-    tmp_path, source, false_receiver
-):
+    tmp_path: Path, source: str, false_receiver: str
+) -> None:
     # HF-956: an exact-receiver row is a proof that the first parameter holds
     # the instance; a false row compiles unguarded field loads on a class
     # object or an int.
