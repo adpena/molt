@@ -455,7 +455,9 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    (`storage migrate` writes it when home is another volume). Lock
    directories, the file-digest store and the frontend record files resolve
    below it under their artifact-relative paths (`hot_path`), so placement
-   changes a prefix and never a name. Without a record (tests, plain clones,
+   changes a prefix and never a name. The development write check
+   (`dx.storage_write_check`) admits each artifact claim at the same relative
+   path below the hot root. Without a record (tests, plain clones,
    one volume) nothing moves. Guard scratch (`tmp/gs/v2`: each guarded run's
    receipts and its TMPDIR lease target) moves the same way
    (`temporary_artifacts.scratch_root`). A guarded no-op's finalization took

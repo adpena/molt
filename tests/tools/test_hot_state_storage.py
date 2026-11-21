@@ -147,6 +147,33 @@ def test_guard_scratch_follows_the_hot_record_and_names_the_former_root(
     assert scratch.former_scratch_root(lane, selected) is None
 
 
+def test_the_storage_write_check_admits_the_hot_mirror_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    from molt import dx
+    from molt import temporary_artifacts as scratch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "home" / "hot"
+    _bind(artifact, hot)
+    env = {"MOLT_EXT_ROOT": str(artifact)}
+    admitted = (
+        scratch.scratch_root(repo, env) / ("0" * 32) / "lock",
+        default_paths.hot_path(artifact, "target", ".disk_guard", "x", "a.lock"),
+    )
+    with dx.storage_write_check(repo, env, molt_only=False):
+        for path in admitted:
+            assert path.is_relative_to(hot)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"")
+    with pytest.raises(dx.StorageWriteError, match="outside the storage authority"):
+        with dx.storage_write_check(repo, env, molt_only=False):
+            (hot / "undeclared").write_bytes(b"refused")
+
+
 def test_cache_retention_trims_the_hot_root_when_its_volume_is_low(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
