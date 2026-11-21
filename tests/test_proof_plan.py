@@ -2008,9 +2008,11 @@ def test_host_tool_identity_changes_select_measurement_consumers(changed) -> Non
     rule = next(r for r in config.rules if r.name == "performance-measurement")
     gates, matched = _rule_only(config, rule).select([changed])
     assert [r.name for r in matched] == [rule.name]
-    assert len(gates) == 2
-    assert gates[0].command == "python tools/perf_methodology.py --check"
-    command = gates[1].command
+    # The lock check is an always gate: the lane that edits any locked file,
+    # which no rule's globs name, runs it.
+    assert "python tools/perf_methodology.py --check" in config.always
+    assert len(gates) == 1
+    command = gates[0].command
     argv = shlex.split(command) if isinstance(command, str) else command
     assert {
         "tests/tools/test_perf_scoreboard.py",

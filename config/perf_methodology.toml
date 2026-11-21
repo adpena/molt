@@ -69,8 +69,11 @@ schema = "molt-perf-methodology-v1"
 # and publication declarations are tracked apart from slot layout (a1214dd2ed),
 # so admitted facts and instruction counts can move; they landed without the
 # lock (2026-11-21). Earlier reports retain their recorded class.
-version = 46
-content_sha256 = "f1cc9f988b6ad8f610e1c86a68ee171a91e52f429a82c94918bfd1d5772da681"
+# v47: binding flow retains precise initializer and deferred binding
+# boundaries (fd913b5589), so admitted facts can move; it landed without the
+# lock (2026-11-21). Earlier reports retain their recorded class.
+version = 47
+content_sha256 = "e1c1c7f728641265ded83067d6efd289f7e422ee47a859c2a6393a62540ed91b"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -419,6 +422,10 @@ role = "canonical source/import analysis used to admit benchmark workload depend
 [[methodology]]
 path = "src/molt/compiler_analysis/python_namespace_graph.py"
 role = "canonical source/import analysis used to admit benchmark workload dependencies"
+
+[[methodology]]
+path = "src/molt/compiler_analysis/python_body_materialization.py"
+role = "body materialization the namespace graph imports to admit workload dependencies"
 
 [[methodology]]
 path = "src/molt/compiler_analysis/python_namespace_writes.py"
