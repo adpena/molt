@@ -29,7 +29,7 @@ from molt.frontend._types import BuiltinClass, ClassId, ClassRef, TypeHint
 from molt.frontend.dataclass_init import DataclassInitField
 
 if TYPE_CHECKING:
-    from molt.frontend._types import MethodInfo, MoltValue
+    from molt.frontend._types import MethodInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +82,8 @@ class InlineBody:
 
     params: tuple[str, ...]
     returns: ast.expr | None = None
-    init_assigns: tuple[tuple[str, ast.expr], ...] = ()
+    # None: no field-store summary; empty: an ``__init__`` that stores none.
+    init_assigns: tuple[tuple[str, ast.expr], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +309,9 @@ class ClassDraft:
     # ``__new__``, or a binding the body makes some other way).
     possible_data_descriptors: frozenset[str]
     dataclass: DataclassSpec | None
-    constructor: Constructor = ConstructorRefusal("the class statement has not run")
+    constructor: Constructor = ConstructorRefusal(
+        "the class statement has not finished (a call in its own body)"
+    )
     members: dict[str, Member] = field(default_factory=dict)
     # Names the body binds whose binding has not run yet.
     pending_members: set[str] = field(default_factory=set)
@@ -441,7 +444,11 @@ def member_from_method_info(info: MethodInfo) -> Member:
         InlineBody(
             params=tuple(inline_params),
             returns=info.get("inline_return"),
-            init_assigns=tuple(info.get("inline_init_assigns") or ()),
+            init_assigns=(
+                tuple(assigns)
+                if (assigns := info.get("inline_init_assigns")) is not None
+                else None
+            ),
         )
         if inline_params is not None
         else None

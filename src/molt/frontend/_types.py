@@ -25,7 +25,6 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    Required,
     TypedDict,
 )
 
@@ -36,7 +35,6 @@ from molt.compat import CompatibilityError, CompatibilityReporter
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_NAMES
 from molt.frontend.module_publication import SourceModulePublication
-from molt.frontend.dataclass_init import DataclassInitField
 from molt.type_facts import normalize_type_hint
 
 _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -774,55 +772,6 @@ class MethodInfo(TypedDict):
     returns_none: NotRequired[bool]
 
 
-class ClassInfo(TypedDict, total=False):
-    """Facts for one class statement, keyed by its :class:`ClassId`.
-
-    ``visit_ClassDef`` builds it and nothing writes it afterwards: lowering-time
-    derived facts live in typed side tables on the generator.
-    """
-
-    # The namespace binding the statement writes (a mangled private name
-    # inside a class body). The Python-visible names come from the ClassId.
-    binding_name: str
-    fields: dict[str, int]
-    field_hints: dict[str, TypeHint]
-    size: int
-    field_order: list[str]
-    defaults: dict[str, ast.expr]
-    class_attrs: dict[str, ast.expr]
-    # Class attributes whose value the defining module cannot prove is not a
-    # data descriptor: anything but a literal display, a builtin non-descriptor
-    # constructor, or an instance of a class whose MRO defines no ``__set__``,
-    # ``__delete__`` or ``__new__``. Decided where the class is defined, so a
-    # consumer in another module never resolves the defining module's names.
-    possible_data_descriptor_attrs: frozenset[str]
-    bases: tuple[ClassRef, ...]
-    mro: tuple[ClassRef, ...]
-    # The layout fact: True when the statement has no static instance layout
-    # (a metaclass call, several bases, ``__slots__``, attribute hooks, a
-    # visible class mutation) or a base is not namespace-closed. A static
-    # statement publishes inferred field offsets with ``CLASS_DEF``.
-    dynamic: Required[bool]
-    # The identity fact (family B): code the program cannot see may hold the
-    # class statement's value or one of its methods. It never changes the
-    # layout; see :func:`class_namespace_closed`.
-    definition_exposed: Required[bool]
-    static: bool
-    dataclass: bool
-    dataclass_params: dict[str, bool]
-    dataclass_init_projection: tuple[DataclassInitField, ...] | None
-    methods: dict[str, MethodInfo]
-    pending_methods: set[str]
-    layout_version: int
-    needs_classcell: bool
-    custom_metaclass: bool
-    class_value_name: str
-    # Why ``C(args)`` keeps the runtime class call; None: inline allocation.
-    constructor_refusal: str | None
-    constructor_binding_proven: bool
-    decorated: bool
-
-
 def layout_definition_symbol(class_id: ClassId, view: ClassView) -> str | None:
     """The class statement identity a layout guard may trust, or None (HF-220).
 
@@ -876,7 +825,6 @@ __all__ = [
     "_intrinsic_arity_exact",
     "TryScope",
     "MethodInfo",
-    "ClassInfo",
     "layout_definition_symbol",
     "FuncInfo",
     "CompatibilityError",

@@ -82,9 +82,9 @@ class SerializationMixin(
     ) -> int | None:
         """The field offset of the class the op was emitted for (frozen facts)."""
         class_info = self.classes.get(expected_class)
-        if not class_info:
+        if class_info is None:
             return None
-        return class_info.get("fields", {}).get(attr)
+        return class_info.layout.offset(attr)
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int:

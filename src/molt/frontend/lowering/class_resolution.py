@@ -28,6 +28,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.class_model import (
+    ClassModel,
     Member,
     Resolved,
     namespace_closed,
@@ -526,6 +527,20 @@ class ClassResolutionMixin(GeneratorMixinBase):
         if isinstance(result, Resolved):
             return result.member, result.owner
         return None, result.owner
+
+    def local_class_models(self) -> dict[ClassId, ClassModel]:
+        """This module's class statements, each sealed when its statement
+        completed; what the module publishes."""
+        models: dict[ClassId, ClassModel] = {}
+        for class_id in self.local_class_ids:
+            view = self.classes[class_id]
+            if not isinstance(view, ClassModel):
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"class {class_id.qualname} was published before it sealed",
+                )
+            models[class_id] = view
+        return models
 
     def _member_values(self, owner: ClassId, name: str) -> MethodValues | None:
         """A method's SSA values, for a class this module defines."""

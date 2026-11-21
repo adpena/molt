@@ -22,6 +22,7 @@ from typing import (
 # ``from molt.frontend import <name>`` surface is preserved exactly. This single
 # source also covers the compat / cfg_analysis / type_facts names the assembly
 # class uses (they are re-exported from _types).
+from molt.frontend.class_model import ClassModel
 from molt.frontend._types import (
     BoundMethodHint,
     BuiltinClass,
@@ -52,7 +53,6 @@ from molt.frontend._types import (
     _intrinsic_arity_exact,
     TryScope,
     MethodInfo,
-    ClassInfo,
     layout_definition_symbol,
     FuncInfo,
     CompatibilityError,
@@ -148,7 +148,7 @@ __all__ = [
     "_intrinsic_arity_exact",
     "TryScope",
     "MethodInfo",
-    "ClassInfo",
+    "ClassModel",
     "layout_definition_symbol",
     "FuncInfo",
     "CompatibilityError",

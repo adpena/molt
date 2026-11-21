@@ -19,7 +19,7 @@ from typing import Any, Collection, Mapping, cast
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.lowering.exception_lowering import MoltSyntaxError
-from molt.frontend import ClassId, ClassInfo
+from molt.frontend import ClassId, ClassModel
 from molt.type_facts import TypeFacts
 
 from molt.cli.build_request import TypeHintPolicy
@@ -248,9 +248,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "function_metadata": ir["function_metadata"],
         "function_digest_seeds": (),
         "func_code_ids": ir["code_slots"],
-        "local_classes": {
-            class_id: gen.classes[class_id] for class_id in gen.local_class_ids
-        },
+        "local_classes": gen.local_class_models(),
         "timings": {
             "visit_s": visit_s,
             "lower_s": lower_s,
@@ -280,9 +278,7 @@ def _module_frontend_payload(
         "function_metadata": ir["function_metadata"],
         "function_digest_seeds": (),
         "func_code_ids": ir["code_slots"],
-        "local_classes": {
-            class_id: gen.classes[class_id] for class_id in gen.local_class_ids
-        },
+        "local_classes": gen.local_class_models(),
         "timings": {
             "visit_s": visit_s,
             "lower_s": lower_s,
@@ -306,7 +302,7 @@ def _module_frontend_generator(
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
-    scoped_known_classes: dict[ClassId, ClassInfo],
+    scoped_known_classes: dict[ClassId, ClassModel],
 ) -> SimpleTIRGenerator:
     return SimpleTIRGenerator(
         type_hint_policy=type_hint_policy,
@@ -609,7 +605,7 @@ def _prepare_frontend_parallel_batch(
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
-    known_classes_snapshot: dict[ClassId, ClassInfo],
+    known_classes_snapshot: dict[ClassId, ClassModel],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -628,7 +624,7 @@ def _prepare_frontend_parallel_batch(
     module_graph_metadata: _ModuleGraphMetadata,
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,

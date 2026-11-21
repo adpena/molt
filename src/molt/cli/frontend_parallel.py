@@ -19,7 +19,7 @@ from molt import host_capacity
 
 if TYPE_CHECKING:
     from molt.cli.models import ModuleSyntaxErrorInfo
-    from molt.frontend import ClassId, ClassInfo
+    from molt.frontend import ClassId, ClassModel
 
 
 @dataclass(frozen=True)
@@ -71,8 +71,8 @@ def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
 
 
 def _known_classes_snapshot_copy(
-    known_classes: Mapping[ClassId, ClassInfo],
-) -> dict[ClassId, ClassInfo]:
+    known_classes: Mapping[ClassId, ClassModel],
+) -> dict[ClassId, ClassModel]:
     if not known_classes:
         return {}
     return dict(known_classes)

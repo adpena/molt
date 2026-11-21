@@ -15,11 +15,20 @@ from typing import (
     Any,
 )
 
+from molt.frontend.class_model import (
+    ClassView,
+    Closure,
+    ConstructorPlan,
+    MemberKind,
+    Resolved,
+    ResolveRefusal,
+    Unresolved,
+    resolve,
+)
 from molt.frontend._types import (
     BoundMethodHint,
     BuiltinLayout,
     ClassId,
-    ClassInfo,
     DeclaredClass,
     MoltOp,
     MoltValue,
@@ -462,11 +471,10 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     else None
                 )
                 if name_lit and receiver_exact_class is not None:
-                    exact_info = self.classes.get(receiver_exact_class)
-                    if exact_info and not exact_info.get("dynamic"):
-                        field_map = exact_info.get("fields", {})
-                        if name_lit in field_map:
-                            if not exact_info.get("dataclass"):
+                    exact_view = self.classes.get(receiver_exact_class)
+                    if exact_view is not None and exact_view.layout.static:
+                        if exact_view.layout.field(name_lit) is not None:
+                            if exact_view.dataclass is None:
                                 return self._emit_guarded_getattr(
                                     obj,
                                     name_lit,
@@ -481,17 +489,22 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     if lookup_class is None or lookup_class not in self.classes:
                         lookup_class = self._class_reference(node.args[0])
                     if lookup_class is not None and lookup_class in self.classes:
-                        method_info, method_class = self._resolve_method_info(
+                        member, method_class = self._resolve_member(
                             lookup_class, name_lit
                         )
-                        if method_info:
-                            descriptor = method_info["descriptor"]
-                            if descriptor in {"function", "classmethod"}:
+                        if member is not None:
+                            if member.kind in (
+                                MemberKind.FUNCTION,
+                                MemberKind.CLASSMETHOD,
+                            ):
                                 res_hint = BoundMethodHint(
                                     method_class or lookup_class, name_lit
                                 )
-                            elif descriptor == "staticmethod":
-                                res_hint = method_info["func"].type_hint
+                            elif (
+                                member.kind is MemberKind.STATICMETHOD
+                                and member.symbol is not None
+                            ):
+                                res_hint = f"Func:{member.symbol}"
                 res = MoltValue(self.next_var(), type_hint=res_hint)
                 if default is not None:
                     receiver_exact_class = self._exact_class_for_value(
@@ -815,8 +828,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     static_class_ref = self._current_module_static_class_ref(class_id)
                     if (
                         static_class_ref is not None
-                        and "constructor_refusal" in class_info
-                        and class_info["constructor_refusal"] is None
+                        and isinstance(class_info.constructor, ConstructorPlan)
                     ):
                         class_ref = static_class_ref
                     else:
@@ -847,9 +859,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         )
                     )
                     return res
-                refusal = class_info.get(
-                    "constructor_refusal",
-                    "the class statement has not finished (a call in its own body)",
+                constructor = class_info.constructor
+                refusal = (
+                    None
+                    if isinstance(constructor, ConstructorPlan)
+                    else constructor.reason
                 )
                 if refusal is None:
                     constructed = self._emit_inline_construction(
@@ -859,7 +873,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         return constructed
                     refusal = constructed
                 self._record_constructor_fallback(node, class_id, refusal)
-                if class_info.get("dataclass"):
+                if class_info.dataclass is not None:
                     # Allocation and the generated method use the ordinary class
                     # protocol. A positional call passes its operands directly,
                     # as the unresolved-callee path does: binding an argument
@@ -1141,7 +1155,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         self,
         node: ast.Call,
         class_id: ClassId,
-        class_info: ClassInfo,
+        class_info: ClassView,
         class_ref: MoltValue,
     ) -> MoltValue | str:
         """Allocate and initialize a proven class inline, or say why not.
@@ -1165,9 +1179,18 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             return "the call passes keywords or unpacked arguments"
         if self._class_layout_definition(class_id) is None:
             return "no class statement stamps the class identity"
-        init_info, init_owner = self._resolve_method_info(class_id, "__init__")
-        class_size_bytes = class_info.get("size", 0)
-        if init_info is None:
+        init_lookup = resolve(
+            self._class_mro(class_id), "__init__", self.classes.get
+        )
+        if (
+            isinstance(init_lookup, Unresolved)
+            and init_lookup.reason is not ResolveRefusal.NOT_FOUND
+        ):
+            return f"__init__ cannot be resolved: {init_lookup.reason.value}"
+        init_member = init_lookup.member if isinstance(init_lookup, Resolved) else None
+        init_owner = init_lookup.owner
+        class_size_bytes = class_info.layout.size
+        if init_member is None:
             if node.args:
                 # object.__init__ raises for extra arguments.
                 return "object.__init__ receives arguments"
@@ -1188,33 +1211,24 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             self._stamp_exact_class(res, class_id)
             return res
-        if init_info.get("descriptor") != "function":
+        if init_member.kind is not MemberKind.FUNCTION:
             return "__init__ is not a plain function"
-        if init_info.get("has_closure"):
+        if init_member.closure is not Closure.NONE:
             return "__init__ is a closure (zero-argument super() or a free variable)"
-        if (
-            init_info.get("has_vararg")
-            or init_info.get("has_varkw")
-            or init_info.get("kwonly_count")
-        ):
+        shape = init_member.shape
+        if shape is None or shape.vararg or shape.varkw or shape.kwonly:
             return "__init__ takes *args, **kwargs or keyword-only parameters"
-        if not init_info.get("returns_none"):
+        if not init_member.returns_none:
             return "__init__ may return a value other than None"
-        getattribute_info, _ = self._resolve_method_info(class_id, "__getattribute__")
-        if getattribute_info is not None:
+        getattribute_member, _ = self._resolve_member(class_id, "__getattribute__")
+        if getattribute_member is not None:
             return "the class defines __getattribute__"
         if (init_owner or class_id) not in self.classes:
             return "__init__ is inherited from a class outside this module"
-        init_func_val = init_info.get("func")
-        init_func_hint = init_func_val.type_hint if init_func_val is not None else None
-        init_symbol = (
-            init_func_hint.split(":", 1)[1]
-            if isinstance(init_func_hint, str) and init_func_hint.startswith("Func:")
-            else None
-        )
+        init_symbol = init_member.symbol
         if init_symbol is None or init_symbol not in self.func_symbol_names:
             return "__init__ has no compiled entry"
-        expected_positional = init_info["param_count"] - 1
+        expected_positional = shape.params - 1
         if len(node.args) != expected_positional:
             return (
                 f"the call passes {len(node.args)} positional arguments and "
@@ -1236,8 +1250,13 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         )
         self._stamp_exact_class(res, class_id)
         allocation_token = self.exact_class_token
-        init_assigns = init_info.get("inline_init_assigns")
-        inline_params = init_info.get("inline_params")
+        inline = init_member.inline
+        init_assigns = (
+            list(inline.init_assigns)
+            if inline is not None and inline.init_assigns is not None
+            else None
+        )
+        inline_params = list(inline.params) if inline is not None else None
         if (
             init_assigns is not None
             and inline_params is not None

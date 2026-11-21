@@ -39,21 +39,33 @@ from molt.compiler_analysis.python_lexical_scope import (
     definition_lexical_regions,
     python_scope_declarations,
 )
+from molt.frontend.class_model import (
+    ClassDraft,
+    ClassView,
+    ConstructorPlan,
+    ConstructorRefusal,
+    DataclassSpec,
+    Field,
+    InstanceLayout,
+    LayoutRefusal,
+    MemberKind,
+    Resolved,
+    ResolveRefusal,
+    namespace_closed,
+    resolve,
+)
 from molt.frontend._types import (
     BUILTIN_LAYOUT_MIN,
     BUILTIN_TYPE_TAGS,
     OBJECT_CLASS,
     BuiltinClass,
     ClassId,
-    ClassInfo,
     ClassRef,
-    MethodInfo,
     MoltOp,
     MoltValue,
     TypeHint,
     _ClassNsScope,
     _function_is_instance_method,
-    class_namespace_closed,
     layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -790,7 +802,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # Exposure is an identity fact, not a layout fact (HF-812): a mutation of
         # the class or of a base advances the class's layout version, so an
         # exposed statement keeps its inferred field offsets behind its guard.
-        # Consumers of unguarded facts check ``class_namespace_closed``. A
+        # Consumers of unguarded facts check ``namespace_closed``. A
         # subclass inherits its bases' members, so a base that is not closed
         # makes the subclass dynamic.
         for base_ref in bases:

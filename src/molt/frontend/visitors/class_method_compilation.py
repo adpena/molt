@@ -39,9 +39,12 @@ from molt.frontend._types import (
     ReceiverKind,
     _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
-    class_namespace_closed,
 )
-from molt.frontend.class_model import MemberKind, member_from_method_info
+from molt.frontend.class_model import (
+    MemberKind,
+    member_from_method_info,
+    namespace_closed,
+)
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
@@ -258,7 +261,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if item.name == "__new__":
                 return "staticmethod", None
             return "function", None
-        if len(item.decorator_list) != 1 or not class_namespace_closed(
+        if len(item.decorator_list) != 1 or not namespace_closed(
             self.classes[self._class_id_for_definition(class_node)]
         ):
             return "decorated", None
