@@ -550,6 +550,7 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
         if outcome is Publication.LANDED:
             _ok(f"landed in {time.monotonic() - started:.0f} s")
             _sync_main_worktree(git, remote=args.remote, branch=args.branch)
+            _start_postsubmit(git, args)
             if lane.startswith("lane/"):
                 _install_hooks(repo)
                 _say(
@@ -560,6 +561,20 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
         head = git.head_sha()
     _fail(f"main moved during each of {MAX_ATTEMPTS} attempts; nothing was published")
     return EXIT_FAIL
+
+
+def _start_postsubmit(git, args: argparse.Namespace) -> None:
+    """Start the queue runner, which qualifies main in postsubmit when no
+    request waits. A queued landing starts it; a fast landing did not, so
+    postsubmit last ran on 2026-11-16 while main took hundreds of fast
+    landings (HF-937). A runner already active takes main's new head."""
+    from tools.molt_dev_queue import _start_queue_runner, queue_paths
+
+    main = git.worktree_paths()[0]
+    try:
+        _start_queue_runner(queue_paths(main), main, args)
+    except DriverError as exc:
+        _warn(f"postsubmit was not started: {exc}")
 
 
 def _sync_main_worktree(git, *, remote: str, branch: str) -> None:
