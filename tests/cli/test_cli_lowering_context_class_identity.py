@@ -254,7 +254,7 @@ def test_dataclass_projection_reads_each_marker_as_the_decorator_does(
     classvar: str,
     kw_only: str,
 ) -> None:
-    # HF-949: a marker's subscription must not expire the facts of the
+    # HF-962: a marker's subscription must not expire the facts of the
     # annotations after it, and a deferred (3.14+) or string annotation is
     # classified by the value @dataclass reads when the decorator runs.
     source = prelude + (

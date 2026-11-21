@@ -9,7 +9,8 @@ live in the ``molt.frontend._types`` leaf.
 
 from __future__ import annotations
 
-import importlib
+from collections.abc import Callable
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,60 +65,87 @@ if TYPE_CHECKING:
         analyze_module as analyze_module,
     )
 
-# Each public name and the module that owns it.
-_EXPORTS: dict[str, str] = {
-    "BoundMethodHint": "molt.frontend._types",
-    "BuiltinClass": "molt.frontend._types",
-    "ClassId": "molt.frontend._types",
-    "DeclaredClass": "molt.frontend._types",
-    "ReceiverKind": "molt.frontend._types",
-    "MoltValue": "molt.frontend._types",
-    "MoltOp": "molt.frontend._types",
-    "_INLINE_INT_MIN": "molt.frontend._types",
-    "_INLINE_INT_MAX": "molt.frontend._types",
-    "ActiveException": "molt.frontend._types",
-    "GEN_SEND_OFFSET": "molt.frontend._types",
-    "GEN_THROW_OFFSET": "molt.frontend._types",
-    "GEN_RESUME_RETURNED": "molt.frontend._types",
-    "GEN_YIELD_FROM_OFFSET": "molt.frontend._types",
-    "GEN_CONTROL_SIZE": "molt.frontend._types",
-    "BUILTIN_TYPE_TAGS": "molt.frontend._types",
-    "BUILTIN_LAYOUT_MIN": "molt.frontend._types",
-    "IMPLICIT_CLASSMETHOD_NAMES": "molt.frontend._types",
-    "IMPLICIT_STATICMETHOD_NAMES": "molt.frontend._types",
-    "_function_is_instance_method": "molt.frontend._types",
-    "_BUILTIN_FAST_METHODS": "molt.frontend._types",
-    "BUILTIN_EXCEPTION_NAMES": "molt.frontend._types",
-    "_MOLT_CLOSURE_PARAM": "molt.frontend._types",
-    "_MOLT_MODULE_CHUNK_PARAM": "molt.frontend._types",
-    "_MOLT_MODULE_CHUNK_PREFIX": "molt.frontend._types",
-    "_builtin_func_abi_arity": "molt.frontend._types",
-    "_intrinsic_arity_exact": "molt.frontend._types",
-    "TryScope": "molt.frontend._types",
-    "MethodInfo": "molt.frontend._types",
-    "ClassModel": "molt.frontend.class_model",
-    "layout_definition_symbol": "molt.frontend._types",
-    "FuncInfo": "molt.frontend._types",
-    "CompatibilityError": "molt.frontend._types",
-    "CompatibilityReporter": "molt.frontend._types",
-    "CFGGraph": "molt.frontend._types",
-    "ControlMaps": "molt.frontend._types",
-    "build_cfg": "molt.frontend._types",
-    "normalize_type_hint": "molt.frontend._types",
-    "SimpleTIRGenerator": "molt.frontend.generator",
-    "compile_to_tir": "molt.frontend.generator",
-    "SemaResult": "molt.frontend.sema",
-    "analyze_module": "molt.frontend.sema",
+
+# Each owner loads on first use through a static import, so the import graph
+# and the lowering cache key see every edge (no computed-name import).
+def _types_module() -> ModuleType:
+    from molt.frontend import _types as owner
+
+    return owner
+
+
+def _class_model_module() -> ModuleType:
+    from molt.frontend import class_model as owner
+
+    return owner
+
+
+def _generator_module() -> ModuleType:
+    from molt.frontend import generator as owner
+
+    return owner
+
+
+def _sema_module() -> ModuleType:
+    from molt.frontend import sema as owner
+
+    return owner
+
+
+# Each public name and the loader of the module that owns it.
+_EXPORTS: dict[str, Callable[[], ModuleType]] = {
+    "BoundMethodHint": _types_module,
+    "BuiltinClass": _types_module,
+    "ClassId": _types_module,
+    "DeclaredClass": _types_module,
+    "ReceiverKind": _types_module,
+    "MoltValue": _types_module,
+    "MoltOp": _types_module,
+    "_INLINE_INT_MIN": _types_module,
+    "_INLINE_INT_MAX": _types_module,
+    "ActiveException": _types_module,
+    "GEN_SEND_OFFSET": _types_module,
+    "GEN_THROW_OFFSET": _types_module,
+    "GEN_RESUME_RETURNED": _types_module,
+    "GEN_YIELD_FROM_OFFSET": _types_module,
+    "GEN_CONTROL_SIZE": _types_module,
+    "BUILTIN_TYPE_TAGS": _types_module,
+    "BUILTIN_LAYOUT_MIN": _types_module,
+    "IMPLICIT_CLASSMETHOD_NAMES": _types_module,
+    "IMPLICIT_STATICMETHOD_NAMES": _types_module,
+    "_function_is_instance_method": _types_module,
+    "_BUILTIN_FAST_METHODS": _types_module,
+    "BUILTIN_EXCEPTION_NAMES": _types_module,
+    "_MOLT_CLOSURE_PARAM": _types_module,
+    "_MOLT_MODULE_CHUNK_PARAM": _types_module,
+    "_MOLT_MODULE_CHUNK_PREFIX": _types_module,
+    "_builtin_func_abi_arity": _types_module,
+    "_intrinsic_arity_exact": _types_module,
+    "TryScope": _types_module,
+    "MethodInfo": _types_module,
+    "ClassModel": _class_model_module,
+    "layout_definition_symbol": _types_module,
+    "FuncInfo": _types_module,
+    "CompatibilityError": _types_module,
+    "CompatibilityReporter": _types_module,
+    "CFGGraph": _types_module,
+    "ControlMaps": _types_module,
+    "build_cfg": _types_module,
+    "normalize_type_hint": _types_module,
+    "SimpleTIRGenerator": _generator_module,
+    "compile_to_tir": _generator_module,
+    "SemaResult": _sema_module,
+    "analyze_module": _sema_module,
 }
 
 __all__ = list(_EXPORTS)
 
 
 def __getattr__(name: str) -> object:
-    module = _EXPORTS.get(name)
-    if module is None:
+    loader = _EXPORTS.get(name)
+    if loader is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(importlib.import_module(module), name)
+    value = getattr(loader(), name)
     globals()[name] = value
     return value
 
