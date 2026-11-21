@@ -110,6 +110,11 @@ per premise revision.
    Use the write graph for scheduling once its edges are known. A convergence boundary belongs
    at each cyclic component exit, including nested components. A graph revision can add a writer
    edge and require scheduling that component again. [Deterministic Parallel Fixpoint Computation, §§4–7](https://arxiv.org/abs/1909.05951)
+   Revision waves now group known active writers and receivers by component. A component
+   waits while an ancestor component has pending revisions. A new admission or demand can
+   change the order before the next wave. Unrelated components keep the same batch, and the
+   convergence check still covers writes through unknown receivers. Nested convergence
+   boundaries and the summary solver remain open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
