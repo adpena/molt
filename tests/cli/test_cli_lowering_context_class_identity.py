@@ -6,10 +6,10 @@ Two contracts keep the per-module lowering cache correct and stable (HF-203):
   qualname, occurrence) to the facts of one class statement. Two modules that
   both define ``P``, or one module that defines ``P`` twice, keep separate
   entries, and the context digest sees every one of them.
-* **Frozen facts.** ``visit_ClassDef`` builds a ``ClassInfo`` and nothing writes
+* **Frozen facts.** ``visit_ClassDef`` seals a ``ClassModel`` and nothing writes
   it afterwards; lowering-time derived facts (such as exception-subclass status)
   live in generator side tables. A dependent module therefore cannot change a
-  shared ``ClassInfo``, so a fresh-lowered and a cache-hydrated snapshot hash
+  shared ``ClassModel``, so a fresh-lowered and a cache-hydrated snapshot hash
   identically without any digest-only projection.
 
 The digest must also be deterministic over ``ClassId`` keys (written in
@@ -126,7 +126,9 @@ def test_real_class_change_still_changes_digest() -> None:
     _generator, classes = _lowered_classes("pkg.base", _BASE_SOURCE)
     point = ClassId("pkg.base", "Point")
     changed = copy.deepcopy(classes)
-    changed[point]["mro"] = (point, BuiltinClass("dict"))
+    changed[point] = dataclasses.replace(
+        changed[point], linearization=(point, BuiltinClass("dict"))
+    )
     assert _digest(changed) != _digest(classes)
 
 
@@ -147,7 +149,7 @@ def test_lowering_a_dependent_module_leaves_known_class_info_frozen() -> None:
     )
     # The consumer derived exception-subclass facts in its own side table.
     assert consumer._exception_subclass_memo
-    assert _snapshot(known) == before, "a dependent module mutated a shared ClassInfo"
+    assert _snapshot(known) == before, "a dependent module mutated a shared ClassModel"
     assert _digest(known) == digest_before
 
 
@@ -192,7 +194,7 @@ class Base:
     # Keep the only helper call last: a callback can expire binding facts
     # for subsequent fields, whose projection is deliberately conservative.
     _generator, classes = _lowered_classes("pkg.base", source)
-    projection = classes[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+    projection = classes[ClassId("pkg.base", "Base")].dataclass.init_projection
     assert projection is not None
     assert tuple(field.schema() for field in projection) == expected(namespace["Base"])
     hydrated = _round_trip(classes)
@@ -206,7 +208,7 @@ class Child(Base):
     child_definition = ast.parse(child_source).body[-1]
     assert isinstance(child_definition, ast.ClassDef)
     for known in (classes, hydrated):
-        inherited = known[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+        inherited = known[ClassId("pkg.base", "Base")].dataclass.init_projection
         child = project_initializer_fields(child_definition, (inherited,), False, None)
         assert child is not None
         assert tuple(field.schema() for field in child) == expected(namespace["Child"])
@@ -259,12 +261,12 @@ def test_dataclass_initializer_projection_round_trips_through_the_cache_codec() 
     context digest off and crashes the persisted module-lowering write."""
     _generator, classes = _lowered_classes("pkg.records", _DATACLASS_SOURCE)
     record_id = ClassId("pkg.records", "Record")
-    projection = classes[record_id]["dataclass_init_projection"]
+    projection = classes[record_id].dataclass.init_projection
     assert projection, "the dataclass transform recorded no initializer projection"
     fresh = _digest(classes)
     assert fresh is not None, "an unencodable projection would switch the cache off"
     hydrated = _round_trip(classes)
-    assert hydrated[record_id]["dataclass_init_projection"] == projection
+    assert hydrated[record_id].dataclass.init_projection == projection
     assert _digest(hydrated) == fresh
 
 
@@ -294,7 +296,7 @@ def test_dataclass_initializer_projection_survives_class_cache_round_trip() -> N
         "    seed: int = 0\n",
     )
     record = ClassId("pkg.records", "Record")
-    fields = classes[record]["dataclass_init_projection"]
+    fields = classes[record].dataclass.init_projection
     assert fields is not None
     assert [field.schema() for field in fields] == [
         ("x", True, False, False, 0),
@@ -303,7 +305,7 @@ def test_dataclass_initializer_projection_survives_class_cache_round_trip() -> N
     ]
     hydrated = _round_trip(classes)
     assert isinstance(hydrated, dict)
-    restored = hydrated[record]["dataclass_init_projection"]
+    restored = hydrated[record].dataclass.init_projection
     assert restored == fields
     assert all(type(field) is DataclassInitField for field in restored)
     assert _digest(hydrated) == _digest(classes)

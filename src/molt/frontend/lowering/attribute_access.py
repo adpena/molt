@@ -577,7 +577,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="CONST",
-                    args=[self.classes[expected_class].get("layout_version", 0)],
+                    args=[self.classes[expected_class].layout_version],
                     result=expected_version,
                 )
             )
@@ -722,7 +722,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="CONST",
-                    args=[self.classes[expected_class].get("layout_version", 0)],
+                    args=[self.classes[expected_class].layout_version],
                     result=expected_version,
                 )
             )

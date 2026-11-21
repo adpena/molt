@@ -64,7 +64,7 @@ PUBLIC_SURFACE = [
     "MoltOp",
     "SimpleTIRGenerator",
     "compile_to_tir",
-    "ClassInfo",
+    "ClassModel",
     "FuncInfo",
     "MethodInfo",
     "ActiveException",
@@ -263,7 +263,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_annotation_class")
     assert hasattr(SimpleTIRGenerator, "_build_class_definition_index")
     assert not hasattr(SimpleTIRGenerator, "_class_mro_names")
-    assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
+    assert hasattr(SimpleTIRGenerator, "_resolve_member")
     # class method compilation
     assert hasattr(SimpleTIRGenerator, "_compile_class_method")
     assert hasattr(SimpleTIRGenerator, "_compile_class_generator_method")

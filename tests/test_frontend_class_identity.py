@@ -24,7 +24,7 @@ from molt.frontend import (
     ReceiverKind,
     SimpleTIRGenerator,
 )
-from molt.frontend._types import class_namespace_closed
+from molt.frontend.class_model import namespace_closed
 
 _REGISTERED_CLASSES = """\
 REGISTRY = []
@@ -75,13 +75,13 @@ def test_builtin_base_identity_requires_the_binding_proof(base: str) -> None:
     )
     generator = _lower(source)
     info = generator.classes[ClassId("mod", "Child")]
-    assert BuiltinClass(base) not in info["mro"]
+    assert BuiltinClass(base) not in info.linearization
     assert not generator._class_is_exception_subclass(ClassId("mod", "Child"))
 
 
 def test_implicit_object_base_is_not_a_source_builtin_read() -> None:
     generator = _lower("import builtins\nbuiltins.object = int\nclass Child: pass\n")
-    assert generator.classes[ClassId("mod", "Child")]["bases"] == (
+    assert generator.classes[ClassId("mod", "Child")].bases == (
         BuiltinClass("object"),
     )
 
@@ -106,9 +106,9 @@ def test_method_code_mutation_rejects_class_body_folding(method):
     generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
     generator.visit(tree)
     info = generator.classes[ClassId("mod", "C")]
-    assert info["definition_exposed"]
-    assert not class_namespace_closed(info)
-    assert not info["constructor_binding_proven"]
+    assert info.definition_exposed
+    assert not namespace_closed(info)
+    assert not info.binding_proven
 
 
 _EXPOSED_LAYOUT = """\
@@ -151,7 +151,7 @@ def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
 
     tree = ast.parse(_EXPOSED_LAYOUT)
     closed = lower(())
-    assert class_namespace_closed(closed.classes[ClassId("mod", "Point")])
+    assert namespace_closed(closed.classes[ClassId("mod", "Point")])
     assert offset_tables(closed) == 2
     # No `__class__` writer: the constructor's result is exact for its life.
     assert {"SETATTR", "GETATTR"} <= use_kinds(closed)
@@ -160,9 +160,9 @@ def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
     exposed = lower((python_node_source_key(tree.body[0]),))
     point = exposed.classes[ClassId("mod", "Point")]
     child = exposed.classes[ClassId("mod", "Child")]
-    assert point["definition_exposed"] and not point["dynamic"]
-    assert not class_namespace_closed(point)
-    assert child["dynamic"] and not child["definition_exposed"]
+    assert point.definition_exposed and point.layout.static
+    assert not namespace_closed(point)
+    assert not child.layout.static and not child.definition_exposed
     assert offset_tables(exposed) == 1
     kinds = use_kinds(exposed)
     assert {"SETATTR_GENERIC_OBJ", "GETATTR_GENERIC_OBJ"} <= kinds
@@ -211,8 +211,8 @@ def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
     """
     generator = _lower_exposing_first_class(_EXPOSURE_CONSUMERS, exposed)
     point = generator.classes[ClassId("mod", "Point")]
-    assert not point["dynamic"]
-    assert point["definition_exposed"] is exposed
+    assert point.layout.static
+    assert point.definition_exposed is exposed
     assert "GUARDED_SETATTR" in _function_kinds(generator, "py.mod.Point___init__")
     assert "GUARDED_GETATTR" in _function_kinds(generator, "py.mod.Point_get")
     assert any(op.kind == "CLASS_SET_DEFINITION" for op in _ops(generator))
@@ -242,7 +242,7 @@ def test_exposure_withdraws_the_instance_data_descriptor_proof(exposed: bool) ->
     )
     generator = _lower_exposing_first_class(source, exposed)
     holder = generator.classes[ClassId("mod", "Holder")]
-    assert ("point" in holder["possible_data_descriptor_attrs"]) is exposed
+    assert ("point" in holder.possible_data_descriptors) is exposed
 
 
 @pytest.mark.parametrize("exposed", [False, True])
@@ -257,8 +257,8 @@ def test_exposure_leaves_decorator_descriptor_kinds_unproved(exposed: bool) -> N
     )
     generator = _lower_exposing_first_class(source, exposed)
     point = generator.classes[ClassId("mod", "Point")]
-    assert not point["dynamic"]
-    assert point["methods"]["make"]["descriptor"] == (
+    assert point.layout.static
+    assert point.member("make").kind.value == (
         "decorated" if exposed else "staticmethod"
     )
 
@@ -288,7 +288,7 @@ def test_unknown_foreign_namespace_cannot_certify_constructor_identity():
         ),
     )
     generator.visit(ast.parse(source))
-    assert not generator.classes[ClassId("mod", "C")]["constructor_binding_proven"]
+    assert not generator.classes[ClassId("mod", "C")].binding_proven
     assert not any(op.kind == "OBJECT_NEW_BOUND" for op in _ops(generator))
 
 
@@ -316,7 +316,7 @@ def test_user_decorator_spelling_never_supplies_dataclass_identity(prefix, decor
     exec(compile(source, "<decorator-binding>", "exec"), namespace)
     assert not hasattr(namespace["C"], "__dataclass_fields__")
     generator = _lower(source)
-    assert not generator.classes[ClassId("mod", "C")].get("dataclass", False)
+    assert generator.classes[ClassId("mod", "C")].dataclass is None
 
 
 @pytest.mark.parametrize(
@@ -333,7 +333,7 @@ def test_dataclass_identity_survives_import_and_value_aliases(prefix, decorator)
     exec(compile(source, "<decorator-binding>", "exec"), namespace)
     assert namespace["C"](7).x == 7
     generator = _lower(source)
-    assert generator.classes[ClassId("mod", "C")]["dataclass"]
+    assert generator.classes[ClassId("mod", "C")].dataclass is not None
 
 
 @pytest.mark.parametrize("name", ["overload", "kernel"])
@@ -497,7 +497,7 @@ def test_each_field_op_carries_the_class_statement_that_emitted_it() -> None:
         "        self.a = 2\n"
     )
     first, second = generator.local_class_ids
-    assert generator.classes[first]["fields"] != generator.classes[second]["fields"]
+    assert generator.classes[first].layout.fields != generator.classes[second].layout.fields
     for class_id, symbol_suffix in ((first, 0), (second, 1)):
         init_symbols = sorted(
             name for name in generator.funcs_map if name.startswith("py.mod.P___init__")
@@ -591,7 +591,7 @@ def test_dynamic_classes_stamp_no_identity_and_take_the_generic_path() -> None:
         "        return self.x\n"
     )
     class_c = next(cid for cid in generator.local_class_ids if cid.name == "C")
-    assert generator.classes[class_c]["dynamic"]
+    assert not generator.classes[class_c].layout.static
     stamped = {
         (op.metadata or {})["class_definition"]
         for op in _ops(generator)
@@ -614,8 +614,8 @@ def test_instance_attribute_store_does_not_mutate_its_class() -> None:
     # A mutated class object builds dynamically; an instance store leaves the
     # class's static layout intact.
     class_id = ClassId("mod", "C")
-    assert not instance_store.classes[class_id]["dynamic"]
-    assert class_store.classes[class_id]["dynamic"]
+    assert instance_store.classes[class_id].layout.static
+    assert not class_store.classes[class_id].layout.static
 
 
 @pytest.mark.parametrize(
@@ -632,7 +632,7 @@ def test_rebound_class_statement_is_not_a_static_base(rebuilt_base: str) -> None
     # subclass cannot inherit the statement's static layout.
     generator = _lower(rebuilt_base + "class Child(Base):\n    y: int\n")
     child = ClassId("mod", "Child")
-    assert generator.classes[child]["dynamic"]
+    assert not generator.classes[child].layout.static
 
 
 def test_alias_reads_do_not_inherit_class_binding_custody() -> None:
@@ -644,7 +644,7 @@ def test_alias_reads_do_not_inherit_class_binding_custody() -> None:
         "class Child(Alias):\n"
         "    pass\n"
     )
-    assert generator.classes[ClassId("mod", "Child")]["dynamic"]
+    assert not generator.classes[ClassId("mod", "Child")].layout.static
 
 
 def test_method_receivers_are_declared_by_kind() -> None:

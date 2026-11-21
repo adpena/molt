@@ -44,6 +44,7 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
     WireOpKind,
 )
+from tests.class_model_support import class_model
 
 
 # A closed program with no PEP 667 frame-locals writer, as a whole-program
@@ -1547,13 +1548,7 @@ overridden = Overridden(4)
 def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
     gen = SimpleTIRGenerator()
     point = ClassId("__main__", "Point")
-    gen.classes[point] = {
-        "binding_name": "Point",
-        "fields": {"x": 24},
-        "layout_version": 7,
-        "dynamic": False,
-        "definition_exposed": False,
-    }
+    gen.classes[point] = class_model(point, fields={"x": 24}, layout_version=7)
 
     lowered = gen.map_ops_to_json(
         [

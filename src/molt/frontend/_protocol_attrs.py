@@ -23,7 +23,6 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from molt.frontend.class_model import ClassView
 from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
@@ -33,6 +32,7 @@ from molt.frontend._types import (
     ExactClassFact,
     FrontendOpKind,
     FuncInfo,
+    MethodValues,
     MoltOp,
     MoltValue,
     TypeHint,
@@ -89,6 +89,8 @@ class _GeneratorProtocolAttrs(Protocol):
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
     class_definition_pending: set[ClassId]
+    class_method_values: dict[ClassId, dict[str, MethodValues]]
+    class_value_names: dict[ClassId, str]
     classes: dict[ClassId, ClassView]
     closure_locals: set[str]
     code_slots_emitted: Any
@@ -141,4 +143,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: Any

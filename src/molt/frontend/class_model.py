@@ -77,13 +77,20 @@ class MemberKind(Enum):
 @dataclass(frozen=True, slots=True)
 class InlineBody:
     """A body small enough to splice at a call: ``return <expr>`` over its
-    parameters, or field stores for ``__init__``. A source summary, so another
-    module can inline the method."""
+    parameters, or field stores for ``__init__``.
+
+    ``source`` (the unparsed body) is its identity. The AST nodes exist only in
+    the process that lowered the method: a model decoded from the cache keeps
+    the source and no AST, so it is not inlined (the cache codec never carried
+    source positions)."""
 
     params: tuple[str, ...]
-    returns: ast.expr | None = None
+    source: str
+    returns: ast.expr | None = field(default=None, compare=False, hash=False)
     # None: no field-store summary; empty: an ``__init__`` that stores none.
-    init_assigns: tuple[tuple[str, ast.expr], ...] | None = None
+    init_assigns: tuple[tuple[str, ast.expr], ...] | None = field(
+        default=None, compare=False, hash=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,8 +208,6 @@ class ClassView(Protocol):
     @property
     def layout_version(self) -> int: ...
     @property
-    def field_defaults(self) -> tuple[tuple[str, ast.expr], ...]: ...
-    @property
     def possible_data_descriptors(self) -> frozenset[str]: ...
     @property
     def dataclass(self) -> DataclassSpec | None: ...
@@ -237,7 +242,6 @@ class ClassModel:
     # The layout version the runtime computes for the class; guards compare it.
     layout_version: int
     members: tuple[tuple[str, Member], ...]
-    field_defaults: tuple[tuple[str, ast.expr], ...]
     # Class-level names the defining module cannot prove are not data
     # descriptors (a value that may define ``__set__``, ``__delete__`` or
     # ``__new__``, or a binding the body makes some other way).
@@ -254,30 +258,126 @@ class ClassModel:
     def pending(self, name: str) -> bool:
         return False
 
-    def cache_payload(self) -> object:
-        """The model as plain data for cache identity: enum values by name, AST
-        nodes by ``ast.dump``; class references and type hints stay objects,
-        which the cache's canonical encoder owns."""
-        return _payload(self)
-
-
-def _payload(value: object) -> object:
-    # Class references and type hints stay objects: the cache's canonical
-    # encoder owns their encoding.
-    if isinstance(value, (ClassId, BuiltinClass)):
-        return value
-    if isinstance(value, Enum):
-        return value.name
-    if isinstance(value, ast.AST):
-        return {"ast": ast.dump(value, include_attributes=False)}
-    if isinstance(value, tuple | list):
-        return [_payload(item) for item in value]
-    if hasattr(value, "__dataclass_fields__"):
+    def cache_record(self) -> dict[str, object]:
+        """The model as a cache record: primitives, tuples, class references
+        and type hints (which the cache codec owns), and expressions as their
+        source text, so ``from_cache_record`` rebuilds an equal model."""
         return {
-            name: _payload(getattr(value, name))
-            for name in value.__dataclass_fields__  # type: ignore[attr-defined]
+            "class_id": self.class_id,
+            "binding_name": self.binding_name,
+            "bases": self.bases,
+            "linearization": self.linearization,
+            "layout": (
+                tuple((f.name, f.offset, f.hint) for f in self.layout.fields),
+                self.layout.size,
+                None if self.layout.refusal is None else self.layout.refusal.name,
+            ),
+            "module_level": self.module_level,
+            "definition_exposed": self.definition_exposed,
+            "binding_proven": self.binding_proven,
+            "custom_metaclass": self.custom_metaclass,
+            "decorated": self.decorated,
+            "layout_version": self.layout_version,
+            "members": tuple(
+                (name, _member_record(member)) for name, member in self.members
+            ),
+            "possible_data_descriptors": tuple(sorted(self.possible_data_descriptors)),
+            "dataclass": None
+            if self.dataclass is None
+            else (
+                self.dataclass.params,
+                None
+                if self.dataclass.init_projection is None
+                else tuple(f.schema() for f in self.dataclass.init_projection),
+            ),
+            "constructor": None
+            if isinstance(self.constructor, ConstructorPlan)
+            else self.constructor.reason,
         }
-    return value
+
+    @classmethod
+    def from_cache_record(cls, record: dict[str, object]) -> ClassModel:
+        """The inverse of ``cache_record``; a malformed record raises."""
+        fields, size, refusal = record["layout"]  # type: ignore[misc]
+        dataclass_record = record["dataclass"]
+        constructor = record["constructor"]
+        return cls(
+            class_id=record["class_id"],  # type: ignore[arg-type]
+            binding_name=record["binding_name"],  # type: ignore[arg-type]
+            bases=tuple(record["bases"]),  # type: ignore[arg-type]
+            linearization=tuple(record["linearization"]),  # type: ignore[arg-type]
+            layout=InstanceLayout(
+                tuple(Field(name, offset, hint) for name, offset, hint in fields),
+                size,
+                None if refusal is None else LayoutRefusal[refusal],
+            ),
+            module_level=record["module_level"],  # type: ignore[arg-type]
+            definition_exposed=record["definition_exposed"],  # type: ignore[arg-type]
+            binding_proven=record["binding_proven"],  # type: ignore[arg-type]
+            custom_metaclass=record["custom_metaclass"],  # type: ignore[arg-type]
+            decorated=record["decorated"],  # type: ignore[arg-type]
+            layout_version=record["layout_version"],  # type: ignore[arg-type]
+            members=tuple(
+                (name, _member_from_record(member))
+                for name, member in record["members"]  # type: ignore[union-attr]
+            ),
+            possible_data_descriptors=frozenset(record["possible_data_descriptors"]),  # type: ignore[arg-type]
+            dataclass=None
+            if dataclass_record is None
+            else DataclassSpec(
+                params=tuple(tuple(item) for item in dataclass_record[0]),  # type: ignore[index]
+                init_projection=None
+                if dataclass_record[1] is None  # type: ignore[index]
+                else tuple(
+                    DataclassInitField.from_schema(schema)
+                    for schema in dataclass_record[1]  # type: ignore[index]
+                ),
+            ),
+            constructor=ConstructorPlan()
+            if constructor is None
+            else ConstructorRefusal(constructor),  # type: ignore[arg-type]
+        )
+
+
+
+def _member_record(member: Member) -> tuple[object, ...]:
+    shape = member.shape
+    inline = member.inline
+    return (
+        member.kind.name,
+        member.symbol,
+        None
+        if shape is None
+        else (
+            shape.params,
+            shape.posonly,
+            shape.kwonly,
+            shape.defaults,
+            shape.vararg,
+            shape.varkw,
+        ),
+        member.closure.name,
+        member.returns_none,
+        None if inline is None else (inline.params, inline.source),
+        member.property_field,
+        member.property_update,
+    )
+
+
+def _member_from_record(record: tuple[object, ...]) -> Member:
+    kind, symbol, shape, closure, returns_none, inline, field_name, update = record
+    return Member(
+        kind=MemberKind[kind],  # type: ignore[index]
+        symbol=symbol,  # type: ignore[arg-type]
+        shape=None if shape is None else Shape(*shape),  # type: ignore[misc]
+        closure=Closure[closure],  # type: ignore[index]
+        returns_none=returns_none,  # type: ignore[arg-type]
+        inline=None
+        if inline is None
+        else InlineBody(params=tuple(inline[0]), source=inline[1]),  # type: ignore[index]
+        property_field=field_name,  # type: ignore[arg-type]
+        property_update=update,  # type: ignore[arg-type]
+    )
 
 
 @dataclass(slots=True)
@@ -303,7 +403,6 @@ class ClassDraft:
     custom_metaclass: bool
     decorated: bool
     layout_version: int
-    field_defaults: tuple[tuple[str, ast.expr], ...]
     # Class-level names the defining module cannot prove are not data
     # descriptors (a value that may define ``__set__``, ``__delete__`` or
     # ``__new__``, or a binding the body makes some other way).
@@ -352,7 +451,6 @@ class ClassDraft:
             decorated=self.decorated,
             layout_version=self.layout_version,
             members=tuple(sorted(self.members.items())),
-            field_defaults=self.field_defaults,
             possible_data_descriptors=self.possible_data_descriptors,
             dataclass=self.dataclass,
             constructor=self.constructor,
@@ -440,19 +538,24 @@ def member_from_method_info(info: MethodInfo) -> Member:
         else None
     )
     inline_params = info.get("inline_params")
-    inline = (
-        InlineBody(
+    inline = None
+    if inline_params is not None:
+        returns = info.get("inline_return")
+        assigns = info.get("inline_init_assigns")
+        init_assigns = tuple(assigns) if assigns is not None else None
+        inline = InlineBody(
             params=tuple(inline_params),
-            returns=info.get("inline_return"),
-            init_assigns=(
-                tuple(assigns)
-                if (assigns := info.get("inline_init_assigns")) is not None
-                else None
+            source=repr(
+                (
+                    None if returns is None else ast.unparse(returns),
+                    None
+                    if init_assigns is None
+                    else tuple((name, ast.unparse(expr)) for name, expr in init_assigns),
+                )
             ),
+            returns=returns,
+            init_assigns=init_assigns,
         )
-        if inline_params is not None
-        else None
-    )
     return Member(
         kind=MemberKind(info["descriptor"]),
         symbol=symbol,

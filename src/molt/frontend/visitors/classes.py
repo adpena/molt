@@ -920,7 +920,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     class_attr_count=len(class_attrs),
                     method_count=len(pending_methods),
                 ),
-                field_defaults=(),
                 dataclass=DataclassSpec(
                     params=tuple(sorted(dataclass_opts.items())),
                     init_projection=init_candidate_fields,
@@ -933,7 +932,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         else:
             fields: dict[str, int] = {}
             field_order: list[str] = []
-            field_defaults: dict[str, ast.expr] = {}
             field_hints: dict[str, TypeHint] = {}
             for mro_entry in mro[1:]:
                 base_view = (
@@ -949,9 +947,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         field_order.append(base_field.name)
                     if base_field.hint is not None and base_field.name not in field_hints:
                         field_hints[base_field.name] = base_field.hint
-                for name, expr in base_view.field_defaults:
-                    if name not in field_defaults:
-                        field_defaults[name] = expr
 
             def add_field(name: str) -> None:
                 if name in fields:
@@ -974,7 +969,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     add_field(item.target.id)
                     add_field_hint(item.target.id, item.annotation)
                     if item.value is not None:
-                        field_defaults[item.target.id] = item.value
                         class_attrs[item.target.id] = item.value
                 if isinstance(item, ast.Assign):
                     for target in item.targets:
@@ -1114,7 +1108,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     class_attr_count=len(class_attrs),
                     method_count=len(pending_methods),
                 ),
-                field_defaults=tuple(field_defaults.items()),
                 dataclass=None,
                 possible_data_descriptors=self._possible_data_descriptor_attrs(
                     node, class_attrs

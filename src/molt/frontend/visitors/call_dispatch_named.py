@@ -781,7 +781,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
                 return res
             if class_id is not None and target_info is not None:
-                class_value_name = self.classes[class_id].get("class_value_name")
+                class_value_name = self.class_value_names.get(class_id)
                 if (
                     class_value_name is not None
                     and target_info.name != class_value_name

@@ -725,7 +725,7 @@ def _frontend_lowering_cache_disabled() -> bool:
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 15
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 12
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 13
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -992,6 +992,14 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
             real_imag = value["__complex__"]
             if len(real_imag) == 2:
                 return complex(real_imag[0], real_imag[1])
+        if "__class_model__" in value and len(value) == 1:
+            record = _decode_cached_json_value_inner(value["__class_model__"])
+            if not isinstance(record, dict):
+                raise ValueError("invalid cached class model")
+            try:
+                return ClassModel.from_cache_record(record)
+            except (KeyError, ValueError, SyntaxError) as exc:
+                raise ValueError("invalid cached class model") from exc
         if "__tuple__" in value and isinstance(value["__tuple__"], list):
             return tuple(
                 _decode_cached_json_value_inner(item) for item in value["__tuple__"]
@@ -1397,7 +1405,7 @@ def _class_info_digest(model: ClassModel) -> bytes:
     cached = _CLASS_INFO_DIGESTS.get(model)
     if cached is not None:
         return cached
-    digest = hashlib.sha256(_canonical_json_bytes(model.cache_payload())).digest()
+    digest = hashlib.sha256(_canonical_json_bytes(model.cache_record())).digest()
     _bounded_put(_CLASS_INFO_DIGESTS, model, digest)
     return digest
 

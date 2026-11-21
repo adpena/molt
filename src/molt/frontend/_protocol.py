@@ -33,8 +33,6 @@ from typing import (
 from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs
 from contextlib import contextmanager
 
-from collections.abc import Mapping
-from molt.frontend.class_model import ClassModel, ClassView, Member
 from molt.frontend._types import (
     ActiveException,
     AsyncContextExit,
@@ -44,7 +42,6 @@ from molt.frontend._types import (
     BuiltinLayout,
     CallableId,
     ClassId,
-    MethodValues,
     ClassRef,
     CodeSlotDeclaration,
     CompilerLocalHome,
@@ -58,6 +55,7 @@ from molt.frontend._types import (
     LoopScope,
     MethodDescriptor,
     MethodInfo,
+    MethodValues,
     MoltOp,
     MoltValue,
     PythonIdentity,
@@ -105,6 +103,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -113,8 +112,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     instance_attr_mutations: dict[ClassId, set[str]]
     is_entry_module: bool
     known_classes: dict[ClassId, ClassModel]
-    class_method_values: dict[ClassId, dict[str, MethodValues]]
-    class_value_names: dict[ClassId, str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -471,7 +468,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue | None: ...
 
     def _class_ns_store(
-        self, scope: "_ClassNsScope", name: str, value: MoltValue
+        self,
+        scope: "_ClassNsScope",
+        name: str,
+        value: MoltValue,
+        member: "Member | None" = ...,
     ) -> None: ...
 
     def _class_reference(self, node: ast.expr) -> ClassId | None: ...
@@ -1213,7 +1214,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.Call,
         class_id: ClassId,
-        view: ClassView,
+        class_info: ClassView,
         class_ref: MoltValue,
     ) -> MoltValue | str: ...
 
@@ -2006,6 +2007,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
 
+    def _member_values(self, owner: ClassId, name: str) -> MethodValues | None: ...
+
     def _module_can_defer_attrs(self, node: ast.Module) -> bool: ...
 
     def _module_chunk_param_value(self) -> MoltValue: ...
@@ -2269,8 +2272,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _resolve_member(
         self, class_id: ClassId, name: str
     ) -> tuple[Member | None, ClassId | None]: ...
-
-    def _member_values(self, owner: ClassId, name: str) -> MethodValues | None: ...
 
     def _restore_class_import_state(
         self,
@@ -2630,6 +2631,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def generic_visit(self, node): ...
 
     def is_async(self) -> bool: ...
+
+    def local_class_models(self) -> dict[ClassId, ClassModel]: ...
 
     def map_ops_to_json(
         self,
