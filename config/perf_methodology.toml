@@ -58,8 +58,13 @@ schema = "molt-perf-methodology-v1"
 # v43: classes with properties stay provable and properties on exact receivers
 # are read directly (5125aeef58), so admitted facts and instruction counts can
 # move; it landed without the lock. Earlier reports retain their recorded class.
-version = 44
-content_sha256 = "cc4b44fe873ad7c3c0f79d0aaac61b13f183849489a520264b7af7ce4225a02a"
+# v45: implicit classmethod and staticmethod names and property results no longer
+# get an exact receiver (5faae65606, HF-968), and binding flow resumes proven
+# prefixes across activation revisions (HF-938), so admitted callable facts and
+# instruction counts can move; it landed without the lock (postsubmit
+# 2026-11-21). Earlier reports retain their recorded class.
+version = 45
+content_sha256 = "caf5b286f2fefeb51a716225e01e8b9b968f63093d7aa81cde880a3bf3172d6a"
 
 [[methodology]]
 path = "tools/safe_run.py"
