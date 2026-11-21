@@ -23036,6 +23036,20 @@ def _install_fake_wasm_link_runner(
         "resolve_wasm_linker",
         lambda: linker_identity,
     )
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    sdk_archives = tuple(
+        stable_regular_file_identity(
+            fixture_root.native_executable(f"mock-tools/{archive}"),
+            label="fixture WASI SDK archive",
+        )
+        for archive in ("libc.a", "libclang_rt.builtins.a")
+    )
+    monkeypatch.setattr(
+        cli_non_native_output.wasm_link_inputs,
+        "wasm_side_module_sdk_archives",
+        lambda: sdk_archives,
+    )
     optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
     monkeypatch.setattr(
         cli_non_native_output, "wasm_optimizer_cache_fact", lambda: optimizer_fact
@@ -23067,6 +23081,10 @@ def _install_fake_wasm_link_runner(
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
         assert (linker.resolve(), linker_identity.sha256) in expected_inputs
         assert allowlist.resolve() in {path for path, _digest in expected_inputs}
+        for archive in sdk_archives:
+            assert ((archive.path, archive.sha256) in expected_inputs) == (
+                "--split-runtime" in command
+            )
         for path, digest in expected_inputs:
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:

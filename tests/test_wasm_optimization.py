@@ -165,11 +165,13 @@ def _staged_output_from_command(cmd: list[str]) -> Path:
     return Path(cmd[cmd.index("-o") + 1])
 
 
-def _active_data_module(payload: bytes) -> bytes:
+def _active_data_module(payload: bytes, *, offset_expr: bytes = b"\x41\x10") -> bytes:
     import_payload = (
         b"\x01" + _wasm_string("env") + _wasm_string("memory") + b"\x02\x00\x01"
     )
-    data_payload = b"\x01\x00\x41\x10\x0b" + _varuint(len(payload)) + payload
+    data_payload = (
+        b"\x01\x00" + offset_expr + b"\x0b" + _varuint(len(payload)) + payload
+    )
     data = bytearray(b"\x00asm\x01\x00\x00\x00")
     for section_id, section_payload in ((2, import_payload), (11, data_payload)):
         data.append(section_id)
@@ -178,9 +180,12 @@ def _active_data_module(payload: bytes) -> bytes:
     return bytes(data)
 
 
-def test_wasm_metrics_profiles_active_data_payload_and_zeros(tmp_path: Path) -> None:
+@pytest.mark.parametrize("offset_expr", [b"\x41\x10", b"\x41\x00\x41\x10\x6a"])
+def test_wasm_metrics_profiles_active_data_payload_and_zeros(
+    tmp_path: Path, offset_expr: bytes
+) -> None:
     wasm_path = tmp_path / "data.wasm"
-    wasm_path.write_bytes(_active_data_module(b"a\x00\x00b"))
+    wasm_path.write_bytes(_active_data_module(b"a\x00\x00b", offset_expr=offset_expr))
 
     metrics = wasm_metrics(wasm_path)
 

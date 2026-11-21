@@ -38,7 +38,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
     SourceExtensionLinkRequirements,
     read_source_extension_link_plan,
 )
-from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli import wasm_link_inputs, wasm_toolchain  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 
@@ -95,6 +95,7 @@ def _link_admitted_standard_object(
     linked: Path,
     native_link_requirements: SourceExtensionLinkRequirements | None,
     input_versions: Sequence[StableRegularFileIdentity],
+    side_sdk_archives: Sequence[Path],
     deploy_runtime: Path,
 ) -> int:
     """Link an admitted LLVM wasm32 application object with wasm-ld.
@@ -156,6 +157,7 @@ def _link_admitted_standard_object(
                 app=split_dir / "app.wasm",
                 app_export_contract=args.app_export_contract,
                 native_link_requirements=native.requirements,
+                sdk_archives=side_sdk_archives,
                 selection_roles=selection_roles,
                 preserve_debug=args.preserve_debug_sections,
                 phase_timings_ms=phase_timings_ms,
@@ -279,7 +281,13 @@ def main() -> int:
     linked = args.output
     try:
         expected_inputs: dict[Path, str] = {}
-        input_versions = []
+        side_sdk_archives = (
+            wasm_link_inputs.wasm_side_module_sdk_archives()
+            if args.split_runtime
+            else ()
+        )
+        sdk_versions = {identity.path: identity for identity in side_sdk_archives}
+        input_versions = list(side_sdk_archives)
         for name, digest in args.expected_input:
             path = Path(name).resolve(strict=True)
             if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
@@ -287,12 +295,16 @@ def main() -> int:
             if path in expected_inputs:
                 raise ValueError(f"duplicate expected input identity: {name}")
             expected_inputs[path] = digest
-            identity = stable_regular_file_identity(
-                path, label="producer-bound WASM input"
-            )
+            identity = sdk_versions.get(path)
+            if identity is None:
+                identity = stable_regular_file_identity(
+                    path, label="producer-bound WASM input"
+                )
+                input_versions.append(identity)
             if identity.sha256 != digest:
                 raise ValueError(f"WASM input changed after producer admission: {path}")
-            input_versions.append(identity)
+        if expected_inputs and sdk_versions.keys() - expected_inputs.keys():
+            raise ValueError("selected side-module SDK differs from producer admission")
     except (OSError, ValueError) as exc:
         print(f"Invalid producer-bound WASM input: {exc}", file=sys.stderr)
         return 1
@@ -351,6 +363,7 @@ def main() -> int:
         linked=linked,
         native_link_requirements=native_link_requirements,
         input_versions=input_versions,
+        side_sdk_archives=tuple(sdk_versions),
         deploy_runtime=generation.shared,
     )
 

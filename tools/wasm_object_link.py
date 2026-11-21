@@ -31,7 +31,10 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     render_source_extension_link_arguments,
 )
-from molt.wasm_artifact import _collect_wasm_export_names
+from molt.wasm_artifact import (
+    _collect_wasm_export_names,
+    strip_wasm_publication_sections,
+)
 from molt.wasm_optimizer_identity import (
     build_wasm_optimizer_attestation,
     encode_wasm_optimizer_attestation,
@@ -213,11 +216,16 @@ def publish_app_export_names(data: bytes, app_export_contract: Path) -> bytes:
     return _build_sections(rebuilt)
 
 
-def _publish_app_exports(staged: Path, app_export_contract: Path) -> bool:
+def _publish_app_exports(
+    staged: Path, app_export_contract: Path, *, strip_debug: bool = False
+) -> bool:
     try:
-        staged.write_bytes(
-            publish_app_export_names(staged.read_bytes(), app_export_contract)
-        )
+        data = publish_app_export_names(staged.read_bytes(), app_export_contract)
+        if strip_debug:
+            data = strip_wasm_publication_sections(
+                data, final_artifact=True, preserve_debug=False
+            )
+        staged.write_bytes(data)
     except ValueError as exc:
         print(f"wasm app exports: {exc}", file=sys.stderr)
         staged.unlink(missing_ok=True)
@@ -398,36 +406,21 @@ _SIDE_MODULE_ENV_IMPORTS = frozenset(
 _SIDE_MODULE_IMPORT_MODULES = frozenset({"molt_runtime", "GOT.mem", "GOT.func"})
 
 
-def compiler_builtins_archive(wasm_ld: str) -> Path:
-    """The wasi-sdk compiler-rt builtins archive beside the selected wasm-ld.
-
-    A side module links the builtins it calls (`__multi3` and kin) itself:
-    the runtime module does not export compiler-rt.
-    """
-    sdk = Path(wasm_ld).resolve().parent.parent
-    found = sorted(
-        sdk.glob("lib/clang/*/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a")
-    )
-    if len(found) != 1:
-        raise ValueError(
-            f"expected exactly one wasm32-wasip1 compiler-rt builtins archive under {sdk}, "
-            f"found {len(found)}"
-        )
-    return found[0]
-
-
 def side_module_link_command(
     *,
     wasm_ld: str,
     app_object: Path,
     stdlib_archive: Path | None,
-    builtins: Path,
+    sdk_archives: Sequence[Path],
     output: Path,
     exports: Sequence[str],
     native_link_requirements: SourceExtensionLinkRequirements,
     preserve_debug: bool,
 ) -> tuple[str, ...]:
     main = compiled_execution_symbol("molt_main")
+    native_paths = {
+        Path(item.path).resolve() for item in native_link_requirements.inputs
+    }
     return (
         wasm_ld,
         "-shared",
@@ -437,7 +430,9 @@ def side_module_link_command(
         "--no-export-dynamic",
         "--gc-sections",
         "--error-limit=0",
-        *(() if preserve_debug else ("--strip-debug",)),
+        # Shorten the relocated LEBs. Relocation compression changes code
+        # offsets and requires the linker to discard DWARF.
+        *(() if preserve_debug else ("--strip-debug", "--compress-relocations")),
         f"--export={main}",
         *(f"--export-if-defined={name}" for name in exports if name != main),
         "-o",
@@ -451,7 +446,9 @@ def side_module_link_command(
         # Extension objects belong to the application; the side module links
         # them, as the linked module does.
         *render_source_extension_link_arguments(native_link_requirements),
-        str(builtins),
+        # LLVM can emit C library calls as well as compiler-rt builtins. Extract
+        # only demanded members of the selected SDK archives.
+        *(str(path) for path in sdk_archives if path not in native_paths),
     )
 
 
@@ -482,6 +479,7 @@ def link_side_module(
     app: Path,
     app_export_contract: Path,
     native_link_requirements: SourceExtensionLinkRequirements,
+    sdk_archives: Sequence[Path],
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
     selection_roles: MutableMapping[str, Mapping[str, object]],
@@ -498,7 +496,7 @@ def link_side_module(
         wasm_ld=wasm_ld,
         app_object=app_object,
         stdlib_archive=stdlib_archive,
-        builtins=compiler_builtins_archive(wasm_ld),
+        sdk_archives=sdk_archives,
         output=staged,
         exports=exports,
         native_link_requirements=native_link_requirements,
@@ -518,7 +516,9 @@ def link_side_module(
         print("wasm-ld failed to link the side module", file=sys.stderr)
         staged.unlink(missing_ok=True)
         return 1
-    if not _publish_app_exports(staged, app_export_contract):
+    if not _publish_app_exports(
+        staged, app_export_contract, strip_debug=not preserve_debug
+    ):
         return 1
     error = side_module_import_error(staged)
     if error is not None:
