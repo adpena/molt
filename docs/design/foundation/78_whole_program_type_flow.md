@@ -719,7 +719,81 @@ iterations, best of 3; main fdfb075361 against the slice). A `method_call`-shape
 16.02 G -> 16.05 G, Cranelift 18.16 G -> 18.17 G): its `compute` methods use zero-argument
 `super()`, so each holds the `__class__` cell, 5.7 refuses the closure target, and no call in it
 is proven. That benchmark moves only after S4's static `super()` and class-cell targets (the
-revised order in the S4 design), which then read their callees from these cells.
+revised order in 5.10), which then read their callees from these cells.
+
+### 5.10 `super()` and closure targets (HF-847 S4; design 2026-11-20, revised 2026-11-21)
+
+**The cost.** `bench_class_hierarchy` (in-process PC sampler, release, 2026-11-20, 648 samples):
+89% of samples sit under `call_loaded_method`, and compiled method bodies hold about 23% of
+self samples. About 64% is call machinery: `invoke_function_trampoline` 12.8%, frame-scope
+`validate` plus `enter` 17.9%, method load and call 13.1%, `molt_load_super_method` 15.9%
+inclusive, binding and copying about 13%. Molt runs it at 3,204 instructions per iteration
+(LLVM) against CPython 3.15's 2,528 and C's 2. Two refusals cause it. Zero-argument `super()`
+gives a method the implicit `__class__` cell, and 5.7 refused every closure target, so
+`obj.compute(i)` stays a runtime call. And `super().m(args)` has no static path.
+
+**Design review (2026-11-20, Codex, read-only; findings verified against the code).**
+- *Defects on main*, both fixed: `super = len` passed the `super` fast path (HF-955), and
+  `exact_receivers` named false receivers for implicit classmethods, `__new__` and a property
+  getter's returned function (HF-968).
+- *Subclass receivers need class facts before method lowering.* A row (function, building
+  class) can name a subclass of the defining class (`self` is exactly `Leaf` in `Mid.compute`
+  when only `Leaf` instances reach it through `super()`), but when `Mid`'s method lowers, the
+  later `Leaf` has no class model, so its MRO and layout checks refuse. The source graph also
+  walks every strict ancestor for `super()` and discards the lexical start class, so a row does
+  not establish the selected edge.
+- *Static `super()` needs more premises.* The `super` binding is the builtin identity. The
+  live `__class__` cell must hold `C`: it starts empty, `nonlocal __class__; del __class__`
+  empties it, a metaclass can intercept `__classcell__`, and an inherited `__init_subclass__`
+  can run Python before the class statement returns. Cell and argument errors keep their order.
+  Every namespace in the C3 suffix must be modeled (`resolve` skips builtin entries; the static
+  path must refuse them). A classmethod, staticmethod or property target keeps the generic path.
+- *Closure targets are sound with the live closure tuple*, not with a constant cell: cells stay
+  writable through `nonlocal` and `f.__closure__[i].cell_contents`. The environment goes after
+  the callable handoff and before `self`. Type flow drops closure sites by physical arity and
+  the inliner refuses closures; both must admit them before they inline or clone.
+- *Removing the load needs the member cell*: shared lowering emits `molt_load_super_method`
+  for a surviving proven load, so only a static cell (5.9) removes it on every backend.
+
+**Order and status.**
+1. HF-955, HF-968: landed.
+2. Function cells (5.9): landed (d93fea9125).
+3. Class facts before method lowering. A class model needs its members, and a member exists
+   only after its method compiles, so this is a split of model building from emission in
+   `classes.py`. It serves only a `super()` whose receiver is a *later* subclass (`Mid.compute`
+   below `Leaf`), so it follows 4 and 5.
+4. Static `super()` with the premises above, in a method whose receiver is its own class or an
+   earlier one (`Leaf.compute`), reading the selected callee from its function cell.
+5. Closure targets: (a) direct calls, below; (b) type flow clones and inlining.
+
+**5a. Direct calls of closure targets (as built, 2026-11-21).** A compiled closure takes its
+environment as its first physical parameter (`_MOLT_CLOSURE_PARAM`). The runtime writes a
+function object's closure slot (`molt_codegen_abi::FUNCTION_CLOSURE_OFFSET`, word 3, the one
+constant `object/layout.rs` reads and writes through) only when it creates the function, and the
+binding protocol passes that tuple. So a proven call needs no closure proof of its own: the
+frontend admits a closure member in a proven method call (5.7), and the final lowering stage
+expands the proven `call_guarded` of a closure target into `FunctionClosure %f` (one load) and
+`DirectCall %f, %env, args...`. The tuple is read live, so a write to one of its cells is seen,
+as the review requires. `%env` is a *held view* (`ownership_lattice_min`): the function owns
+the tuple and outlives the direct call that borrows both, so nothing releases it. Function cells
+(5.9) now cover `func_new_closure` makers, so a top-level method's object is one cell load.
+`validate_extern_call` accepts `Direct(n)` for a closure declaration with `n - 1` physical
+parameters. Unproven guarded calls of closures keep the runtime lane.
+
+A closure member now carries its symbol (`member_from_method_info` reads `ClosureFunc:` hints
+as well as `Func:`). Two readers had used "has a symbol" to mean "takes no environment": the
+exact-receiver property getter (a plain `call` with no environment) and the staticmethod
+result hint. Both now require `Closure.NONE`. A property getter that uses `super()` keeps the
+descriptor call.
+
+**Measured** (2026-11-21, release, macOS arm64, instructions retired, interleaved, best of 3;
+main 7348a56b6b against the slice; outputs identical). `bench_class_hierarchy` (5M iterations)
+LLVM 16.02 G -> 13.02 G (-18.7%; 3,204 -> 2,605 per iteration, CPython 3.15 2,528, C 2): the
+outer `obj.compute(i)` is now a direct call; both `super()` calls below it still run
+`molt_load_super_method` and `call_loaded_method` (step 4). A probe with an exact `Leaf`
+receiver whose `compute` names `__class__` (2M iterations): LLVM 2.32 G -> 1.145 G (-50.7%).
+Cranelift: `bench_class_hierarchy` 18.15 G -> 15.02 G (-17.2%), the probe 2.82 G -> 1.565 G
+(-44.6%).
 
 ## 6. Expected effect, stated as removed runtime calls
 

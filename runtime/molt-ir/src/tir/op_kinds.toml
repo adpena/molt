@@ -1542,6 +1542,7 @@ final_tir_opcodes = [
     "BoxInlineInt",
     "CodeIs",
     "DirectCall",
+    "FunctionClosure",
     "RecursionAdmits",
     "RecursionCount",
     "RecursionRelease",
@@ -3452,6 +3453,23 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The lexical environment a proven call of a closure target passes (design 78,
+# 5.10): one load of the function object's closure slot. The runtime writes the
+# slot only when it creates the function, so the read is pure; the result is a
+# view, valid while its function object lives, with no reference of its own.
+# Produced only by the final lowering stage, for the direct call that follows.
+[[opcode]]
+name = "FunctionClosure"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

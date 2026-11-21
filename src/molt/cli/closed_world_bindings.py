@@ -379,6 +379,11 @@ class InitChain:
         return self._done_after_return(point)
 
 
+# The ops that create a function's object. A closure's object holds its
+# environment, which a proven call reads from it (design 78, 5.10).
+FUNCTION_MAKERS = frozenset({"func_new", "func_new_closure"})
+
+
 @dataclass(frozen=True)
 class CallablePublication:
     point: tuple[str, int]
@@ -431,7 +436,7 @@ def summarize_module_initializer(
                 if imported := imported_module_of(op):
                     imports[(name_of_function, out)] = imported
                 symbol = op.get("s_value")
-                if kind == "func_new" and isinstance(symbol, str):
+                if kind in FUNCTION_MAKERS and isinstance(symbol, str):
                     point = (name_of_function, index)
                     callable_publications.setdefault(symbol, []).append(
                         CallablePublication(point, out, chain.runs_once(point))

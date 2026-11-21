@@ -67,6 +67,7 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
 )
 from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.cli.closed_world_bindings import (
+    FUNCTION_MAKERS,
     ModuleInitializerFacts,
     ModuleNamespaceFacts,
     _module_body_functions,
@@ -1048,7 +1049,7 @@ def plan_function_cells(
                 reason = None
                 maker = None
                 if len(makers) != 1:
-                    reason = f"{len(makers)} func_new ops make {symbol}"
+                    reason = f"{len(makers)} function makers make {symbol}"
                 else:
                     (maker,) = makers
                     if not maker.runs_once:
@@ -1121,7 +1122,7 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
                 continue
             ops.append(op)
             made = op.get("out")
-            if op.get("kind") == "func_new" and made in stores:
+            if op.get("kind") in FUNCTION_MAKERS and made in stores:
                 module, symbol = stores[made]
                 base = f"function_cells_base_{made}"
                 ops.append({"kind": "static_cell_base", "s_value": module, "out": base})

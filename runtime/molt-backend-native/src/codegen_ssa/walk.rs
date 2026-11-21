@@ -203,6 +203,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::BoxInlineInt => self.operator_op(b, op),
             OpCode::CodeIs => self.code_is_op(b, op),
             OpCode::DirectCall => self.guarded_direct_call_op(b, op),
+            OpCode::FunctionClosure => self.function_closure_op(b, op),
             OpCode::CallRuntime => {
                 let runtime = op
                     .runtime
