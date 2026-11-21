@@ -5218,9 +5218,19 @@ class _Analyzer:
                     static_value = cast(str | int, result_override.value)
                 if shape.invokes_python:
                     member_effects |= EXECUTES_ARBITRARY_PYTHON
+                    subscription_owner = assignment_target.owner_result
+                    deferred_execution |= frozenset(
+                        DeferredExecution(source, "class_subscription")
+                        for source in subscription_owner.source_origins
+                        | frozenset(
+                            ref.source
+                            for ref in subscription_owner.deferred
+                            if ref.phase in {"class", "escape"}
+                        )
+                    )
                     deferred_execution |= _operand_dispatch_deferred(
                         EXECUTES_ARBITRARY_PYTHON,
-                        assignment_target.owner_result,
+                        subscription_owner,
                         *(
                             assignment_target.slice_parts
                             or (assignment_target.index_result,)
