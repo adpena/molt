@@ -16,6 +16,7 @@ from molt import compiler_distribution as distribution
 from molt.cli import backend_binary, backend_execution, cargo_profiles
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from tests.release_lane_fixtures import stage_stdlib_namespace_syntax_fixture
 
 # The bootstrap's own declaration selects the source modules a test bundle
 # ships. Isolated execution, not this projection, proves the closure complete.
@@ -67,6 +68,7 @@ def installation(tmp_path: Path, monkeypatch) -> Path:
     facts.write_bytes(b"facts")
     payload = {
         "schema": distribution.MANIFEST_SCHEMA,
+        "stdlib_namespace_syntax": stage_stdlib_namespace_syntax_fixture(tmp_path),
         "git": {"object_format": "sha1", "commit": "a" * 40, "tree": "b" * 40},
         "files": files,
         "compiler": {
@@ -208,6 +210,65 @@ def test_installed_source_closure_fails_closed(installation, damage):
         (installation / "Cargo.toml").unlink()
     with pytest.raises(ValueError):
         installed.verify_sources()
+
+
+def test_installed_stdlib_syntax_binds_source_package_and_target(
+    installation: Path,
+) -> None:
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.cli.stdlib_namespace_syntax import (
+        InstalledStdlibNamespaceSyntax,
+        stdlib_namespace_syntax_document,
+    )
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+    from molt.exact_json import canonical_json_bytes
+    from molt.target_python import (
+        _DEFAULT_TARGET_PYTHON_VERSION,
+        _parse_source_for_target,
+    )
+
+    stdlib = installation / "src/molt/stdlib"
+    module = stdlib / "parent" / "writer.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "from . import receiver\nreceiver.inserted = 'value'\n"
+        "def writer():\n    globals()['local'] = 1\n",
+        "utf-8",
+    )
+    contents = canonical_json_bytes(stdlib_namespace_syntax_document(stdlib))
+    record = stage_stdlib_namespace_syntax_fixture(installation.parent, contents)
+    metadata = installation / distribution.MANIFEST_NAME
+    manifest = json.loads(metadata.read_text("utf-8"))
+    manifest["stdlib_namespace_syntax"] = record
+    metadata.write_text(json.dumps(manifest), "utf-8")
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    syntax = InstalledStdlibNamespaceSyntax(compiler)
+    snapshot = PythonSourceSnapshot.capture(module)
+    target = _DEFAULT_TARGET_PYTHON_VERSION
+    tree = _parse_source_for_target(snapshot.content, target_python=target)
+    admission = _PythonAstDigestAdmission(tree)
+
+    syntax.seed(snapshot, package="unrelated", target=target, admission=admission)
+    assert not admission.namespace_summaries
+    syntax.seed(snapshot, package="parent", target=target, admission=admission)
+    summary = admission.namespace_summaries[target.feature_version, "parent"]
+    assert summary.own_names == frozenset({"local"})
+    assert [(write.module, write.name) for write in summary.foreign_writes] == [
+        ("parent.receiver", "inserted")
+    ]
+
+    module.write_text("print('edited')\n", "utf-8")
+    edited = PythonSourceSnapshot.capture(module)
+    admission = _PythonAstDigestAdmission(
+        _parse_source_for_target(edited.content, target_python=target)
+    )
+    syntax.seed(edited, package="parent", target=target, admission=admission)
+    assert not admission.namespace_summaries
+
+    stage_stdlib_namespace_syntax_fixture(installation.parent, contents + b"\n")
+    with pytest.raises(ValueError, match="differs from its manifest"):
+        InstalledStdlibNamespaceSyntax(compiler)
 
 
 @pytest.mark.parametrize(

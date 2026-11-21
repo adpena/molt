@@ -814,7 +814,12 @@ def stage_compilation_inputs(
         stage(compiler.source_root / entry["path"], entry)
     manifest = compiler.source_root / MANIFEST_NAME
     stage(manifest, file_identity(manifest))
-    for entry in (compiler.record, compiler.launcher, compiler.wasm_facts):
+    for entry in (
+        compiler.record,
+        compiler.launcher,
+        compiler.wasm_facts,
+        compiler.stdlib_namespace_syntax,
+    ):
         stage(compiler.source_root.parent / entry["path"], entry)
     for cell in runtime["cells"]:
         for entry in cell["files"]:

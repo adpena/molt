@@ -6,7 +6,7 @@ public_schemas = [
   "molt.release-candidate.v7",
   "molt.release-manifest.v5",
   "molt.release-consumer-proof.v12",
-  "molt.release-compiler-source.v6",
+  "molt.release-compiler-source.v7",
   "molt.installed-runtime.v3",
   "molt.release-targets.v2",
   "molt-release-exit/4",

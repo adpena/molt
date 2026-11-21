@@ -81,6 +81,11 @@ per premise revision.
    Source request records address the captured bytes, parser, target, package role and premise.
    Relative source requests stay symbolic in the record. Graph completion resolves them against
    the current package and filesystem, so byte-identical source can reuse requests after relocation.
+   Release staging now builds the namespace syntax portion for each supported Python target from
+   the sealed stdlib sources. The installed compiler manifest binds the artifact's bytes. Each
+   row is selected by source digest, target, and package; its canonical AST digest and producer
+   identity must match before it can supply the syntax-only namespace summary. The proof still
+   refines those writes against binding facts for the importing program.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
@@ -120,7 +125,9 @@ per premise revision.
    change the order before the next wave. Unrelated components keep the same batch, and the
    convergence check still covers writes through unknown receivers. For revisions within a
    cycle, remove its already evaluated head and settle its nested components before revisiting
-   the head. Dependent components wait for the outer exit. The summary solver remains open.
+   the head. Dependent components wait for the outer exit. A consumer known to escape a callable
+   is also an opaque-activation premise producer for the defining module. The revision order
+   includes that dependency. The summary solver remains open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.

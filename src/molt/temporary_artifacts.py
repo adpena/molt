@@ -67,9 +67,12 @@ from molt.file_publication import (
     namespace_publish_directory_exclusive,
     resolve_owned_path,
 )
+from molt.custody_layout import SCRATCH_DIRNAME
+from molt.default_paths import hot_path
 from molt.disk_capacity import require_scratch_capacity
 from molt.dx import (
     PROOF_SCRATCH_ROOT_ENV,
+    artifact_root,
     proof_scratch_root,
     scratch_dir,
     scratch_storage,
@@ -224,7 +227,31 @@ def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
         return resolve_owned_path(
             memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME / "v2"
         )
-    return resolve_owned_path(scratch_dir(repo_root, _ROOT_DIRNAME, environ) / "v2")
+    return resolve_owned_path(_selected_root(repo_root, environ) / "v2")
+
+
+def _selected_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
+    """The generation namespace: on the hot volume when the artifact root binds one.
+
+    Every guarded run publishes its receipts here, and its lease target is
+    the run's TMPDIR. On a bound host the namespace sits on the home volume
+    (HF-942, ``default_paths.hot_path``): a guarded no-op's finalization took
+    a median 20.9 ms (max 89.9) on the shared data volume and 9.4 ms (max
+    12.4) on the internal disk. An explicit scratch storage root and the
+    out-of-tree fallback keep their own placement.
+    """
+    selected = scratch_dir(repo_root, _ROOT_DIRNAME, environ)
+    artifact = artifact_root(repo_root, environ)
+    if selected.parent == artifact / SCRATCH_DIRNAME:
+        return hot_path(artifact, SCRATCH_DIRNAME, _ROOT_DIRNAME)
+    return selected
+
+
+def former_scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path | None:
+    """The artifact-volume namespace a hot binding replaced, for retention only."""
+    selected = scratch_dir(repo_root, _ROOT_DIRNAME, environ)
+    current = _selected_root(repo_root, environ)
+    return None if current == selected else resolve_owned_path(selected / "v2")
 
 
 def _generation(root: Path, token: str) -> Path:

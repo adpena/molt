@@ -17,9 +17,9 @@ from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TypedDict
 
-from molt.exact_json import canonical_json_sha256, read_exact
+from molt.exact_json import canonical_json_sha256, capture_exact, read_exact
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.host_tool_products import HostToolProduct
 from molt.portable_paths import (
@@ -36,7 +36,9 @@ from molt.toolchain_identity import (
 )
 from molt.verified_subset import current_host_coordinate
 
-MANIFEST_SCHEMA = "molt.release-compiler-source.v6"
+MANIFEST_SCHEMA = "molt.release-compiler-source.v7"
+STDLIB_NAMESPACE_SYNTAX_PATH = "share/molt/stdlib-namespace-syntax.json"
+MAX_STDLIB_NAMESPACE_SYNTAX_BYTES = 16 * 1024 * 1024
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
@@ -44,6 +46,12 @@ PRODUCTION_COMPILER_FEATURES = (
 )
 MAX_SOURCE_FILES = 25_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+class StdlibNamespaceSyntaxRecord(TypedDict):
+    path: str
+    size: int
+    sha256: str
 
 
 def _source_mode_matches_git(actual: int, recorded: int) -> bool:
@@ -434,6 +442,7 @@ class InstalledCompiler:
     wasm_facts: dict[str, Any]
     files: tuple[dict[str, Any], ...]
     runtime: dict[str, Any]
+    stdlib_namespace_syntax: StdlibNamespaceSyntaxRecord
 
     @property
     def binary(self) -> Path:
@@ -504,6 +513,36 @@ class InstalledCompiler:
         verify_source_inventory(
             self.source_root, self.files, manifest_name=MANIFEST_NAME
         )
+        identity = stable_regular_file_identity(
+            self._stdlib_namespace_syntax_path(),
+            label="installed stdlib namespace syntax",
+        )
+        self._verify_stdlib_namespace_syntax_identity(identity)
+
+    def _stdlib_namespace_syntax_path(self) -> Path:
+        return resolve_owned_path(
+            self.source_root.parent / STDLIB_NAMESPACE_SYNTAX_PATH
+        )
+
+    def capture_stdlib_namespace_syntax(self) -> object:
+        identity, value = capture_exact(
+            self._stdlib_namespace_syntax_path(),
+            max_bytes=MAX_STDLIB_NAMESPACE_SYNTAX_BYTES,
+            label="installed stdlib namespace syntax",
+        )
+        self._verify_stdlib_namespace_syntax_identity(identity)
+        return value
+
+    def _verify_stdlib_namespace_syntax_identity(
+        self, identity: StableRegularFileIdentity
+    ) -> None:
+        if (
+            identity.sha256 != self.stdlib_namespace_syntax["sha256"]
+            or identity.size != self.stdlib_namespace_syntax["size"]
+        ):
+            raise ValueError(
+                "Installed stdlib namespace syntax differs from its manifest"
+            )
 
     @property
     def runtime_root(self) -> Path:
@@ -569,7 +608,16 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     if (
         not isinstance(payload, dict)
         or set(payload)
-        != {"schema", "git", "files", "compiler", "launcher", "wasm_facts", "runtime"}
+        != {
+            "schema",
+            "git",
+            "files",
+            "compiler",
+            "launcher",
+            "wasm_facts",
+            "runtime",
+            "stdlib_namespace_syntax",
+        }
         or payload["schema"] != MANIFEST_SCHEMA
     ):
         raise ValueError("Invalid installed compiler manifest")
@@ -631,6 +679,16 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     )
     if runtime["source"] != git:
         raise ValueError("Installed runtime cells come from different source")
+    syntax = payload["stdlib_namespace_syntax"]
+    if (
+        not isinstance(syntax, dict)
+        or set(syntax) != {"path", "size", "sha256"}
+        or syntax["path"] != STDLIB_NAMESPACE_SYNTAX_PATH
+        or type(syntax["size"]) is not int
+        or not 0 < syntax["size"] <= MAX_STDLIB_NAMESPACE_SYNTAX_BYTES
+        or not _digest(syntax["sha256"])
+    ):
+        raise ValueError("Invalid installed stdlib namespace syntax manifest record")
     return InstalledCompiler(
         source_root,
         git["commit"],
@@ -639,4 +697,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         wasm_facts,
         tuple(files),
         runtime,
+        StdlibNamespaceSyntaxRecord(
+            path=syntax["path"], size=syntax["size"], sha256=syntax["sha256"]
+        ),
     )

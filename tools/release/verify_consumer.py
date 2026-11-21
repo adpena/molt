@@ -888,6 +888,7 @@ def _verify_pip_distribution(
         or pip_compiler.record != compiler.record
         or pip_compiler.wasm_facts != compiler.wasm_facts
         or pip_compiler.runtime != compiler.runtime
+        or pip_compiler.stdlib_namespace_syntax != compiler.stdlib_namespace_syntax
     ):
         raise ValueError("pip consumer did not install the candidate compiler/runtime")
     pip_compiler.verify_sources()

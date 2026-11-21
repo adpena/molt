@@ -21,6 +21,7 @@ from molt.cli import toolchain_validation, wasm_toolchain
 from molt.cli.installation_diagnostics import installation_checks
 from tests.cli.test_installed_runtime import bundle as bundle
 from tests.process_guard_common import current_thread_only
+from tests.release_lane_fixtures import stage_stdlib_namespace_syntax_fixture
 
 # These cases build synthetic projects and assert developer-host roots;
 # hosted custody has its own cases in tests/test_dx_run_context.py.
@@ -252,6 +253,7 @@ def test_installed_cli_never_adopts_a_nearby_checkout(
 
 
 def _installed_with_package(tmp_path: Path, files: dict[str, bytes]):
+    bundle = tmp_path / "prefix" / "share" / "molt" / "distribution"
     inventory = tuple(
         {
             "path": f"src/molt/{name}",
@@ -263,13 +265,14 @@ def _installed_with_package(tmp_path: Path, files: dict[str, bytes]):
         for name, data in sorted(files.items())
     )
     return distribution.InstalledCompiler(
-        tmp_path / "prefix" / "share" / "molt" / "distribution" / "source",
+        bundle / "source",
         "a" * 40,
         {},
         {},
         {},
         inventory,
         {},
+        stage_stdlib_namespace_syntax_fixture(bundle),
     )
 
 
