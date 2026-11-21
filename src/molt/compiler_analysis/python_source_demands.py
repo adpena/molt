@@ -1523,17 +1523,12 @@ class PythonSourceDemands:
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
             return
-        candidates = (
-            {
-                SourceCandidate(
-                    module_name, cast(PythonSourceKey, source), identity=identity
-                )
-                for identity in PythonIdentity
-                if self.callables.get(value, 0) & int(identity)
-            }
-            if isinstance(source, tuple)
-            else set()
-        )
+        candidates: set[SourceCandidate] = set()
+        if isinstance(source, tuple) and (identities := self.callables.get(value)):
+            candidates.update(
+                SourceCandidate(module_name, source, identity=identity)
+                for identity in PythonIdentity(identities)
+            )
         if isinstance(source, SourceCacheItem):
             for origin, contained in tuple(self.cache_origins.get(source, ())):
                 candidates.update(
@@ -1758,10 +1753,9 @@ class PythonSourceDemands:
                                 SourceCandidate(
                                     module_name, call.owner, identity=identity
                                 )
-                                for identity in PythonIdentity
-                                if int(identity)
-                                & call.intrinsic_result
-                                & SOURCE_CALLABLE_IDENTITIES
+                                for identity in PythonIdentity(
+                                    call.intrinsic_result & SOURCE_CALLABLE_IDENTITIES
+                                )
                             )
                         continue
                     if candidate.source is None:
