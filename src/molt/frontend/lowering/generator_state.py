@@ -39,6 +39,7 @@ from molt.frontend._types import (
 from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
 from molt.logical_source_paths import is_stdlib_logical_path
 from molt.frontend.sema import SemaResult
+from molt.frontend.module_publication import CallableDeclaration
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.native_callable_exports import (
     NativeCallableExportError,
@@ -395,6 +396,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.module_chunk_globals: set[str] = set()
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}
+        self.callable_declarations: dict[str, CallableDeclaration] = {}
         self.source_callable_symbols: dict[CallableId, str] = {}
         self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()

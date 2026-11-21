@@ -280,7 +280,7 @@ def capture_observations(target: str, executable: Path) -> dict[str, object]:
     """Capture one pinned interpreter; do not admit a target or edit policy."""
     from packaging.version import Version
     from molt.toolchain_identity import capture_stable_regular_file
-    from molt.python_environment_location import environment_bytecode_arguments
+    from molt.python_interpreter import readonly_bytecode_arguments
     from tools.command_execution import CommandExecutor
     from tools.cpython_regrtest import CPYTHON_SOURCES, load_cpython_sources
     from tools.gen_stdlib_module_union import SNAPSHOT_PATH, pinned_snapshots
@@ -299,7 +299,7 @@ def capture_observations(target: str, executable: Path) -> dict[str, object]:
     completed = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR").run(
         [
             str(executable),
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             OBSERVATION_PROGRAM,

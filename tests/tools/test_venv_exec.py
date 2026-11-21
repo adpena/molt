@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
-from molt.python_environment_location import environment_bytecode_arguments
 from molt.process_spawn import forward_command
+from molt.python_interpreter import readonly_bytecode_arguments
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools import venv_exec
 
@@ -30,7 +30,7 @@ def test_resolve_venv_uses_repo_default(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
 
-    with pytest.raises(venv_exec.VenvExecError, match="development image not selected"):
+    with pytest.raises(venv_exec.VenvExecError, match="interpreter pin"):
         venv_exec.resolve_venv(repo_root=root, env={})
 
 
@@ -62,7 +62,7 @@ def test_resolve_venv_ignores_unrelated_active_virtualenv(tmp_path: Path) -> Non
     root.mkdir()
     unrelated = tmp_path / "other-venv"
 
-    with pytest.raises(venv_exec.VenvExecError, match="development image not selected"):
+    with pytest.raises(venv_exec.VenvExecError, match="interpreter pin"):
         venv_exec.resolve_venv(repo_root=root, env={"VIRTUAL_ENV": str(unrelated)})
 
 
@@ -121,9 +121,7 @@ def test_venv_selector_uses_the_callers_name_rule(tmp_path, name_rule):
     selected = tmp_path / "selected"
     environment = ProcessEnvironment({"molt_venv": str(selected)}, rule=name_rule)
     if name_rule is NameRule.EXACT:
-        with pytest.raises(
-            venv_exec.VenvExecError, match="development image not selected"
-        ):
+        with pytest.raises(venv_exec.VenvExecError, match="interpreter pin"):
             venv_exec.resolve_venv(repo_root=root, env=environment)
     else:
         assert venv_exec.resolve_venv(repo_root=root, env=environment) == selected
@@ -145,8 +143,10 @@ def test_resolve_command_rewrites_python_to_venv_python(
     command = venv_exec.resolve_command(
         ["python3", "-I", "-E", "-m", "pytest"], venv=venv, managed=managed
     )
+    # A managed command selects the shared bytecode cache as an option, which
+    # -I cannot drop; it writes bytecode there instead of beside the sources.
     expected_prefix = (
-        ["-B", "-X", f"pycache_prefix={venv / 'bytecode'}"] if managed else []
+        ["-X", f"pycache_prefix={venv.parent / '.bytecode'}"] if managed else []
     )
     assert command == [str(python), *expected_prefix, "-I", "-E", "-m", "pytest"]
     with pytest.raises(venv_exec.VenvExecError, match="alias.*absent"):
@@ -164,7 +164,7 @@ def test_resolve_command_reports_missing_venv_python(tmp_path: Path) -> None:
     alias = "python3.exe" if os.name == "nt" else "python3"
     assert (
         str(error.value)
-        == f"Python executable alias {alias!r} is absent from the selected environment"
+        == f"Python executable alias {alias!r} is absent from {missing}"
     )
     assert not missing.exists()
 
@@ -182,7 +182,7 @@ def test_wrapped_command_exit_status_propagates(status: int, borrow: str) -> Non
     # still report the wrapped gate's own status on every platform.
     # --venv borrows the runner's environment, so both interpreter starts
     # carry its read-only cache policy explicitly, including under -I.
-    startup = environment_bytecode_arguments(Path(sys.prefix))
+    startup = readonly_bytecode_arguments(Path(sys.prefix))
     result = run_guarded_test_process(
         [
             sys.executable,
@@ -242,7 +242,7 @@ else:
     result = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-c",
             code,
             str(child_cwd),
@@ -262,3 +262,25 @@ def test_forward_command_rejects_shell_text(command: str | bytes) -> None:
 def test_forward_command_rejects_empty_argv() -> None:
     with pytest.raises(ValueError, match="command is required"):
         forward_command([], env={})
+
+
+def test_a_managed_environment_puts_only_the_named_checkout_on_the_path(
+    tmp_path: Path,
+) -> None:
+    # HF-969: a pinned controller imports this module and builds gates for
+    # the landing sandbox; defaulting to this module's checkout put the
+    # controller's src first, so every gate imported the controller's tools.
+    venv = tmp_path / "environment"
+    sandbox = tmp_path / "sandbox"
+    unnamed = venv_exec.venv_env(
+        venv=venv, env={"PYTHONPATH": "inherited"}, managed=True
+    )
+    assert unnamed["PYTHONPATH"] == "inherited"
+    named = venv_exec.venv_env(
+        venv=venv, env={"PYTHONPATH": "inherited"}, managed=True, repo_root=sandbox
+    )
+    assert named["PYTHONPATH"].split(os.pathsep) == [
+        str(sandbox.resolve() / "src"),
+        "inherited",
+    ]
+    assert str(ROOT / "src") not in named["PYTHONPATH"].split(os.pathsep)

@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
-from molt.frontend._types import SimpleIROp
+from molt.frontend._types import ClassId, SimpleIROp
+from molt.frontend.class_model import ClassModel
 from molt.frontend.lowering.op_kinds_generated import WireOpKind
 from molt.frontend.lowering.function_metadata import (
     FunctionMetadataEmitter,
@@ -22,6 +23,7 @@ from molt.frontend.lowering.function_metadata import (
 )
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
 from molt.frontend.module_publication import (
+    CallableDeclaration,
     FunctionAssemblyMetadata,
     inspect_source_module_publication,
     parse_function_metadata,
@@ -77,6 +79,15 @@ from molt.target_python import TargetPythonVersion
 
 if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
+    from molt.cli.frontend_pipeline import _PreparedFrontendPipelineBundle
+    from molt.cli.models import PgoProfileSummary, RuntimeFeedbackSummary
+
+
+@dataclass(frozen=True)
+class FrontendDeclarationTable:
+    callables: Mapping[str, CallableDeclaration]
+    classes: Mapping[ClassId, ClassModel]
+    module_layouts: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -94,6 +105,7 @@ class _PreparedBackendIR:
     # Static module cells (call_anatomy.md 4.5a): eligible modules, their
     # cells' InitOnce facts and why every other module keeps its dictionary.
     static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
+    declarations: FrontendDeclarationTable | None = None
 
 
 def _build_version_info_ops(
@@ -2208,6 +2220,46 @@ def _finalize_gpu_descriptors(
             }
 
 
+def materialize_tir_closure(
+    frontend: _PreparedFrontendPipelineBundle,
+    *,
+    entry_module: str,
+    target: Target,
+    target_python: TargetPythonVersion,
+    stdlib_profile: str | None,
+    pgo_profile_summary: PgoProfileSummary | None,
+    runtime_feedback_summary: RuntimeFeedbackSummary | None,
+    fail: Callable[..., _CliFailure],
+    json_output: bool,
+) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
+    """Integrate the frontend's admitted bodies before backend dispatch."""
+    metadata = frontend.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
+    return _prepare_backend_ir(
+        entry_module=entry_module,
+        module_graph=frontend.module_graph,
+        logical_source_path_by_module=metadata.logical_source_path_by_module,
+        namespace_portions_by_module=metadata.namespace_portions_by_module,
+        module_source_role_by_module=metadata.module_source_role_by_module,
+        known_modules=frontend.known_modules,
+        stdlib_allowlist=frontend.stdlib_allowlist,
+        integration_state=frontend.integration_state,
+        fail=fail,
+        json_output=json_output,
+        module_order=frontend.module_order,
+        runtime_import_dispatch_roots=frontend.runtime_import_dispatch_roots,
+        spawn_enabled=frontend.spawn_enabled,
+        pgo_profile_summary=pgo_profile_summary,
+        runtime_feedback_summary=runtime_feedback_summary,
+        emit_ir_path=frontend.output_layout.emit_ir_path,
+        validate_inputs=frontend.module_source_catalog.validate,
+        target_python=target_python,
+        stdlib_profile=stdlib_profile,
+        target=target,
+        facts_target=frontend.output_layout.facts_target,
+        native_artifact_plan=frontend.native_artifact_plan,
+    )
+
+
 def _prepare_backend_ir(
     *,
     entry_module: str,
@@ -2624,6 +2676,15 @@ def _prepare_backend_ir(
     )
     return _PreparedBackendIR(
         ir=ir,
+        declarations=FrontendDeclarationTable(
+            callables={
+                symbol: row["callable_declaration"]
+                for symbol, row in integration_state.function_metadata.items()
+                if "callable_declaration" in row
+            },
+            classes=integration_state.known_classes,
+            module_layouts=integration_state.global_layouts,
+        ),
         function_digest_seeds=surviving_seeds,
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}

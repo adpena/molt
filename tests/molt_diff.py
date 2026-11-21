@@ -243,7 +243,7 @@ def _compiler_frontend(
             f"{release.selector}; select the oracle with --python-version"
         )
     from molt.checkout_provisioning import ensure_python_release
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
 
     root = ensure_python_release(_repo_root(), os.environ, release).environment_root
     assert root is not None
@@ -252,29 +252,11 @@ def _compiler_frontend(
     )
 
 
-def _hold_compiler_frontend(
-    stack: contextlib.ExitStack, frontend: compat_backends.CompilerFrontend
-) -> None:
-    """Hold the frontend's image for the run, then prove it still exists.
-
-    Each compiler child leases the image too, but only while it runs; this
-    shared lease keeps drift retirement off the image between items.
-    """
-    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
-
-    assert frontend.environment_root is not None
-    stack.enter_context(
-        checkout_state_use(
-            checkout_state_environment_roots(
-                _repo_root(),
-                {"UV_PROJECT_ENVIRONMENT": str(frontend.environment_root)},
-                include_current_process=False,
-            )
-        )
-    )
+def _require_compiler_frontend(frontend: compat_backends.CompilerFrontend) -> None:
+    """Prove the selected frontend environment still has its interpreter."""
     if not Path(frontend.python).is_file():
         raise python_interpreter.PythonInterpreterError(
-            f"compiler image {frontend.environment_root} lost its interpreter "
+            f"compiler environment {frontend.environment_root} lost its interpreter "
             "after selection; rerun to select it again"
         )
 
@@ -4397,13 +4379,12 @@ def run_diff(
             else:
                 os.environ[sentinel_env_key] = sentinel_env_previous
 
-    frontend_lease = contextlib.ExitStack()
     try:
         if (
             compiler_frontend is not None
             and compiler_frontend.environment_root is not None
         ):
-            _hold_compiler_frontend(frontend_lease, compiler_frontend)
+            _require_compiler_frontend(compiler_frontend)
         # A command guard temporarily owns these handlers while closing its
         # children. Between commands and while waiting for parallel cases, defer
         # the suite's stop until already-admitted cases have returned receipts.
@@ -4828,7 +4809,6 @@ def run_diff(
             compat_backends.bind_suite_stop(None)
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
-            frontend_lease.close()
 
 
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:

@@ -22,6 +22,7 @@ from molt.cli import module_graph
 from molt.cli import module_graph_discovery
 from molt.cli import module_graph_cache
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 
 _MODULE_GRAPH_DISCOVERY_NAMES = (
     "PLATFORM_EXCLUDED_SUBMODULES",
@@ -917,6 +918,130 @@ def test_class_creation_demands_hooks_without_instantiation(tmp_path, declaratio
         full_scan_roots=True,
     )
     assert set(result.graph) == {"entry", "bases", "dependency"}
+
+
+@pytest.mark.parametrize(
+    ("body", "invocation", "hook"),
+    [
+        (
+            "def __eq__(self, other): import reached; return True",
+            "Value() == Value()",
+            "__eq__",
+        ),
+        ("def __hash__(self): import reached; return 42", "hash(Value())", "__hash__"),
+        (
+            "def __iter__(self): import reached; return iter(())",
+            "list(Value())",
+            "__iter__",
+        ),
+        (
+            "def __enter__(self): return self\n"
+            "    def __exit__(self, *args): import reached",
+            "with Value(): pass",
+            "__exit__",
+        ),
+        ("def __del__(self): import reached", "value = Value()\ndel value", "__del__"),
+        (
+            "def __init_subclass__(cls): import reached",
+            "class Child(Value): pass",
+            "__init_subclass__",
+        ),
+        (
+            "def __set_name__(self, owner, name): import reached",
+            "class Owner: item = Value()",
+            "__set_name__",
+        ),
+        (
+            "def __class_getitem__(cls, item): import reached",
+            "Value[int]",
+            "__class_getitem__",
+        ),
+        (
+            "def __class_getitem__(cls, item): import reached",
+            "class Child(Value): pass\nChild[int]",
+            "__class_getitem__",
+        ),
+        (
+            "def __get__(self, instance, owner): import reached",
+            "class Owner: item = Value()\nOwner().item",
+            "__get__",
+        ),
+        (
+            "def __set__(self, instance, value): import reached",
+            "class Owner: item = Value()\nOwner().item = 1",
+            "__set__",
+        ),
+        (
+            "def decorate(fn):\n"
+            "        def wrapper(*args):\n"
+            "            import reached\n"
+            "            return fn(*args)\n"
+            "        return wrapper\n"
+            "    @decorate\n"
+            "    def __eq__(self, other): return True",
+            "Value() == Value()",
+            "wrapper",
+        ),
+        (
+            "def key(self, item): import reached; return item",
+            "sorted([2, 1], key=Value().key)",
+            "key",
+        ),
+    ],
+)
+def test_implicit_source_body_custody(
+    tmp_path: Path, body: str, invocation: str, hook: str
+) -> None:
+    import sys
+
+    sources = {
+        "entry": "from provider import Value\n" + invocation + "\n",
+        "provider": "class Value:\n    "
+        + body
+        + "\n\ndef unused(): import untouched\n",
+        "reached": "pass\n",
+        "untouched": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import entry; "
+            "assert 'reached' in sys.modules and 'untouched' not in sys.modules",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert "reached" in result.graph
+    assert "untouched" not in result.graph
+    owners = {
+        owner
+        for owner, _ in result.scan_authority.by_module["provider"].deferred_owners
+    }
+    provider = ast.parse(sources["provider"])
+    hook_node = next(
+        node
+        for node in ast.walk(provider)
+        if isinstance(node, ast.FunctionDef) and node.name == hook
+    )
+    assert python_node_source_key(hook_node) in owners
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 import sys
 
@@ -14,99 +15,62 @@ from tests.process_guard_common import (
 
 from molt import dx, process_spawn
 from molt.process_environment import NameRule, ProcessEnvironment
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 from tools import uv_project_env
-from tests.python_environment_test_support import materialize_development_environment
-from tests.integration_driver_fixture import copy_driver_trees
+from tests.uv_environment_test_support import fake_uv_environ, make_checkout, uv_calls
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_project_environment_path_uses_dx_root_and_interpreter_identity(
+def test_project_environment_path_syncs_the_release_shared_environment(
     tmp_path: Path,
 ) -> None:
-    artifacts = tmp_path / "external"
-    image = materialize_development_environment(
-        tmp_path, artifacts, python="3.14", purpose="output startup/size", select=True
+    environ, log = fake_uv_environ(tmp_path)
+    first = make_checkout(tmp_path / "first")
+    second = make_checkout(tmp_path / "second")
+    release = platform.python_version()
+    root = uv_project_env.project_environment_path(
+        python=release, repo_root=first, env=environ
     )
+    assert root.is_relative_to(tmp_path / "artifacts")
     assert (
         uv_project_env.project_environment_path(
-            python="3.14",
-            purpose="output startup/size",
-            repo_root=tmp_path,
-            env={"MOLT_EXT_ROOT": str(artifacts)},
+            python=release, repo_root=second, env=environ
         )
-        == image.root
+        == root
     )
+    assert len(uv_calls(log)) == 1
+    assert not (first / ".venv").exists()
 
 
-def test_uv_project_env_sets_project_environment(tmp_path: Path) -> None:
-    image = materialize_development_environment(
-        tmp_path, tmp_path, python="3.14", purpose="audit", select=True
-    )
+def test_uv_project_env_selects_the_environment_and_its_shared_cache(
+    tmp_path: Path,
+) -> None:
+    environ, _log = fake_uv_environ(tmp_path)
+    repo = make_checkout(tmp_path / "repo")
     env = uv_project_env.uv_project_env(
-        python="3.14",
-        purpose="audit",
-        repo_root=tmp_path,
-        env={"PATH": "x", "MOLT_EXT_ROOT": str(tmp_path)},
+        python=platform.python_version(), repo_root=repo, env={**environ, "PATH": "x"}
     )
-    assert env["PATH"] == "x"
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(image.root)
-    assert env["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    root = Path(env["UV_PROJECT_ENVIRONMENT"])
+    assert env["VIRTUAL_ENV"] == str(root)
+    assert env["PATH"].split(os.pathsep) == [str(root / "bin"), "x"]
+    assert env["PYTHONPYCACHEPREFIX"] == str(root.parent / ".bytecode")
+    assert "PYTHONDONTWRITEBYTECODE" not in env
     assert env["UV_NO_SYNC"] == "1"
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(repo.resolve() / "src")
 
 
-def test_uv_project_env_uses_external_artifact_root(tmp_path: Path) -> None:
-    artifacts, repo = tmp_path / "external", tmp_path / "repo"
-    image = materialize_development_environment(
-        repo, artifacts, python="3.14", purpose="audit", select=True
-    )
+def test_uv_project_env_takes_an_explicit_environment_without_syncing(
+    tmp_path: Path,
+) -> None:
+    environ, log = fake_uv_environ(tmp_path)
+    repo = make_checkout(tmp_path / "repo")
     env = uv_project_env.uv_project_env(
-        python="3.14",
-        purpose="audit",
-        repo_root=repo,
-        env={"MOLT_EXT_ROOT": str(artifacts)},
+        python="3.14", repo_root=repo, env=environ, explicit="elsewhere/venv"
     )
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(image.root)
-    assert image.root.is_relative_to(artifacts)
-    assert not (repo / ".venv").exists()
-
-
-def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
-    image = materialize_development_environment(tmp_path, tmp_path, python="3.14")
-    env = uv_project_env.uv_project_env(
-        python="3.14",
-        purpose="ignored",
-        repo_root=tmp_path,
-        env={"MOLT_EXT_ROOT": str(tmp_path)},
-        explicit=str(image.root.relative_to(tmp_path)),
-    )
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(image.root)
-    manifest = image.manifest_path.read_bytes()
-    dotted = uv_project_env.uv_project_env(
-        python="3.14",
-        purpose="ignored",
-        repo_root=tmp_path,
-        env={"MOLT_EXT_ROOT": str(tmp_path)},
-        explicit=str(image.root / ".." / image.root.name),
-    )
-    assert dotted["UV_PROJECT_ENVIRONMENT"] == str(image.root)
-    assert dotted["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
-    assert dotted["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert dotted["UV_NO_SYNC"] == "1"
-    assert image.manifest_path.read_bytes() == manifest
-    with pytest.raises(dx.DxConfigError, match="different requested Python"):
-        dx.DxProject(tmp_path).normalized_uv_run_env(
-            uv_project_env.uv_project_env(
-                python="3.13",
-                purpose="ignored",
-                repo_root=tmp_path,
-                env={"MOLT_EXT_ROOT": str(tmp_path)},
-                explicit=str(image.root),
-            ),
-            python="3.13",
-        )
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(repo / "elsewhere" / "venv")
+    assert uv_calls(log) == []
 
 
 @pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
@@ -115,11 +79,16 @@ def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
 def test_uv_wrapper_selectors_keep_the_captured_environment_rule(
     tmp_path, name_rule, session, override_target
 ):
-    root, artifacts = tmp_path / "repo", tmp_path / "artifacts"
-    first_image = materialize_development_environment(root, artifacts, python="3.14")
+    # Under the Windows rule a lower-case `uv_project_environment` is the
+    # explicit selector; under the exact rule it is another variable, and
+    # the shared environment of the release is selected instead.
+    environ, _log = fake_uv_environ(tmp_path)
+    root, artifacts = make_checkout(tmp_path / "repo"), Path(environ["MOLT_EXT_ROOT"])
+    borrowed = tmp_path / "borrowed"
+    # The fake uv is named by UV; PATH would alias `Path` under the Windows rule.
     values = {
-        "MOLT_EXT_ROOT": str(artifacts),
-        "uv_project_environment": str(first_image.root),
+        **{key: value for key, value in environ.items() if key != "PATH"},
+        "uv_project_environment": str(borrowed),
         "Path": "retained path",
     }
     if session != "default":
@@ -138,53 +107,40 @@ def test_uv_wrapper_selectors_keep_the_captured_environment_rule(
             source_root=root,
         )
     )
-    selected_environments = []
-    for python, purpose in (("3.14", "audit"), ("3.13", "public-records")):
-        image = materialize_development_environment(
-            root, artifacts, python=python, purpose=purpose, select=True
+    release = platform.python_version()
+    expected = (
+        borrowed
+        if name_rule is NameRule.WINDOWS
+        else uv_project_env.project_environment_path(
+            python=release, repo_root=root, env=environ
         )
-        expected = image.root if name_rule is NameRule.EXACT else first_image.root
-        assert (
-            uv_project_env.project_environment_path(
-                python=python, purpose=purpose, repo_root=root, env=environment
-            )
-            == expected
+    )
+    assert (
+        uv_project_env.project_environment_path(
+            python=release, repo_root=root, env=environment
         )
-        if name_rule is NameRule.WINDOWS and python == "3.13":
-            with pytest.raises(dx.DxConfigError, match="different requested Python"):
-                dx.DxProject(root).normalized_uv_run_env(
-                    uv_project_env.uv_project_env(
-                        python=python,
-                        purpose=purpose,
-                        repo_root=root,
-                        env=environment,
-                        create_dirs=False,
-                    ),
-                    python=python,
-                )
-            continue
-        selected = uv_project_env.uv_project_env(
-            python=python,
-            purpose=purpose,
-            repo_root=root,
-            env=environment,
-            create_dirs=False,
-        )
-        selected_environments.append(selected["UV_PROJECT_ENVIRONMENT"])
-        assert selected.rule is name_rule
-        assert selected["UV_PROJECT_ENVIRONMENT"] == str(expected)
-        assert selected["MOLT_UV_PROJECT_PURPOSE"] == purpose
-        assert selected["MOLT_UV_PROJECT_PYTHON"] == python
-        assert selected["Path"] == "retained path"
-        assert selected["CARGO_TARGET_DIR"] == str(expected_target)
-        assert selected["MOLT_DIFF_CARGO_TARGET_DIR"] == str(expected_target)
-        if session == "explicit":
-            assert selected["MOLT_SESSION_ID"] == "caller-session"
-            assert "MOLT_SESSION_ID_GENERATED" not in selected
-        else:
-            assert selected["MOLT_SESSION_ID_GENERATED"] == "1"
-        assert dict(environment) == values
-    assert len(selected_environments) == (2 if name_rule is NameRule.EXACT else 1)
+        == expected
+    )
+    selected = uv_project_env.uv_project_env(
+        python=release, repo_root=root, env=environment, create_dirs=False
+    )
+    assert selected.rule is name_rule
+    assert selected["UV_PROJECT_ENVIRONMENT"] == str(expected)
+    # Activation puts the environment's scripts first on PATH, which the
+    # Windows rule spells `Path`; the exact rule keeps `Path` as given.
+    assert selected["Path"] == (
+        f"{expected / 'bin'}{os.pathsep}retained path"
+        if name_rule is NameRule.WINDOWS
+        else "retained path"
+    )
+    assert selected["CARGO_TARGET_DIR"] == str(expected_target)
+    assert selected["MOLT_DIFF_CARGO_TARGET_DIR"] == str(expected_target)
+    if session == "explicit":
+        assert selected["MOLT_SESSION_ID"] == "caller-session"
+        assert "MOLT_SESSION_ID_GENERATED" not in selected
+    else:
+        assert selected["MOLT_SESSION_ID_GENERATED"] == "1"
+    assert dict(environment) == values
 
 
 def test_managed_model_and_operation_refuse_explicit_borrower(
@@ -193,11 +149,7 @@ def test_managed_model_and_operation_refuse_explicit_borrower(
     borrowed = str(tmp_path / "external-bootstrap")
     with pytest.raises(dx.DxConfigError, match="explicitly borrowed MOLT_VENV"):
         uv_project_env.uv_project_env(
-            python="3.12",
-            purpose="audit",
-            repo_root=tmp_path,
-            env={"MOLT_VENV": borrowed},
-            create_dirs=False,
+            python="3.12", repo_root=tmp_path, env={"MOLT_VENV": borrowed}
         )
     monkeypatch.setenv("MOLT_VENV", borrowed)
     with pytest.raises(SystemExit) as caught:
@@ -239,54 +191,31 @@ def test_forward_command_waits_for_child_on_windows(monkeypatch, cwd) -> None:
 
 @pytest.mark.parametrize("status", [0, 7])
 def test_uv_project_env_real_command_exit_status_propagates(
-    tmp_path: Path, status: int, driver_seed: Path
+    tmp_path: Path, status: int
 ) -> None:
-    project = tmp_path / "project"
-    copy_driver_trees(project, seed=driver_seed)
-    (project / "README.md").write_text("wrapper fixture\n", encoding="utf-8")
-    image = materialize_development_environment(
-        project,
-        tmp_path / "artifacts",
-        python=".".join(map(str, sys.version_info[:3])),
-        groups=dx.DxProject(project).dependency_groups(),
-        runnable=True,
-    )
-    # The bootstrap interpreter's sitecustomize imports Molt before the copied
-    # script binds repository imports. Select the copied source at startup so
-    # that strict binder sees the same owner; retain the outer guard custody.
-    env = (
-        ProcessEnvironment(os.environ)
-        .without(("MOLT_VENV", "VIRTUAL_ENV"))
-        .updated(
-            {
-                "PYTHONPATH": os.pathsep.join((str(project / "src"), str(project))),
-                "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
-                "UV_PROJECT_ENVIRONMENT": str(image.root),
-            }
-        )
-    )
+    # The wrapper replaces itself with the payload, whose status is the
+    # wrapper's; a managed payload selects the shared cache even under -I.
+    root = Path(sys.prefix)
     result = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
-            str(project / "tools/uv_project_env.py"),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
+            str(ROOT / "tools/uv_project_env.py"),
             "--python",
-            f"{sys.version_info.major}.{sys.version_info.minor}",
-            "--purpose",
-            "forwarding-test",
+            platform.python_version(),
+            "--venv",
+            str(root),
             "--",
             "python",
             "-I",
-            "-E",
             "-c",
-            "import sys; assert sys.dont_write_bytecode; "
-            "assert sys.pycache_prefix == sys.argv[1]; "
+            "import sys; assert sys.pycache_prefix == sys.argv[1]; "
             "raise SystemExit(int(sys.argv[2]))",
-            str(image.root / "bytecode"),
+            str(root.parent / ".bytecode"),
             str(status),
         ],
-        cwd=project,
-        env=env,
+        cwd=ROOT,
+        env=ProcessEnvironment(os.environ).without(("MOLT_VENV",)),
         timeout=60,
     )
     assert result.returncode == status, result.stderr
@@ -368,7 +297,7 @@ def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path
         "assert context.__enter__() is False; context.__exit__(None,None,None); "
         "print('exec-reader-kept-without-registry')"
     )
-    startup = environment_bytecode_arguments(Path(sys.prefix))
+    startup = readonly_bytecode_arguments(Path(sys.prefix))
     before_exec = (
         "import os,sys; from molt.process_spawn import forward_command; "
         "env=dict(os.environ); env['CARGO_TARGET_DIR']=sys.argv[1]; "
@@ -384,187 +313,6 @@ def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "exec-reader-kept-without-registry"
-
-
-@pytest.mark.parametrize(
-    "selection",
-    [
-        "argument",
-        "environment",
-        "absolute",
-        "relative",
-        "path",
-        "empty-path",
-        "traversal",
-    ],
-)
-def test_forwarded_borrowed_image_retains_foreign_owner_until_child_closes(
-    tmp_path, selection
-):
-    _assert_forwarded_image_lifetime(tmp_path, selection, omit_command=False)
-
-
-def test_forwarded_image_retirement_oracle_detects_an_omitted_command(tmp_path):
-    _assert_forwarded_image_lifetime(tmp_path, "absolute", omit_command=True)
-
-
-def _assert_forwarded_image_lifetime(tmp_path, selection, *, omit_command):
-    from molt import checkout_state
-
-    # Lifetime custody is independent of live-byte admission: the existing
-    # runnable fixture supplies a real venv and the canonical state owner.
-    owner = tmp_path / "foreign-checkout"
-    artifact = tmp_path / "artifacts"
-    image = materialize_development_environment(owner, artifact, runnable=True)
-    selected = image.root
-    if selection == "traversal":
-        from tests.python_environment_test_support import create_test_venv
-
-        selected = image.root.parent / ("b" * 64)
-        create_test_venv(selected)
-        checkout_state.record_checkout_owner(
-            selected, owner=owner, kind="python-environment"
-        )
-    scripts = selected / ("Scripts" if os.name == "nt" else "bin")
-    if selection not in {"argument", "environment"}:
-        import shutil
-
-        alias = scripts / ("lease-runtime.exe" if os.name == "nt" else "lease-runtime")
-        python = scripts / ("python.exe" if os.name == "nt" else "python")
-        if os.name == "nt":
-            shutil.copyfile(python, alias)
-        else:
-            # A launcher, not a symlink: CPython on Linux finds itself from a
-            # bare argv[0] only through PATH, so under the empty PATH case a
-            # symlinked interpreter loses its venv (sys.executable == '').
-            # The launcher execs the image's python by path, with shell
-            # builtins only, so every case still runs the image interpreter.
-            alias.write_text(
-                '#!/bin/sh\nd=${0%/*}\n[ "$d" = "$0" ] && d=.\nexec "$d/python" "$@"\n',
-                encoding="utf-8",
-            )
-            alias.chmod(0o755)
-    checkout_state.record_checkout_owner(
-        image.root, owner=owner, kind="python-environment"
-    )
-    expected_owner = checkout_state.CheckoutOwner(owner, "python-environment")
-    assert checkout_state.bound_checkout_owner(image.root, artifact) == expected_owner
-    assert Path(sys.prefix) != image.root
-    child = (
-        "import sys; from pathlib import Path; "
-        "assert Path(sys.prefix)==Path(sys.argv[1]); "
-        "sys.path.insert(0,sys.argv[2]); "
-        "from molt.checkout_state import checkout_state_retirement; "
-        "holds=[checkout_state_retirement(Path(root)) for root in dict.fromkeys((sys.argv[1],sys.argv[4]))]; "
-        "admitted=[hold.__enter__() for hold in holds]; "
-        "assert admitted==[sys.argv[3]=='True']*len(holds), (admitted,sys.prefix); "
-        "[hold.__exit__(None,None,None) for hold in reversed(holds)]; "
-        "print('live-child-retirement-observed')"
-    )
-    payload = [
-        "-B",
-        "-I",
-        "-c",
-        child,
-        str(selected),
-        str(ROOT / "src"),
-        str(omit_command),
-        str(image.root),
-    ]
-    environment = ProcessEnvironment(os.environ).without(
-        (
-            "MOLT_VENV",
-            "VIRTUAL_ENV",
-            "UV_PROJECT_ENVIRONMENT",
-            "PYTHONPYCACHEPREFIX",
-            "PYTHONDONTWRITEBYTECODE",
-            "PYTHONPATH",
-        )
-    )
-    if selection in {"argument", "environment"}:
-        command = [
-            sys.executable,
-            "-B",
-            "-I",
-            "-S",
-            str(ROOT / "tools/venv_exec.py"),
-            *(["--venv", str(image.root)] if selection == "argument" else []),
-            "python",
-            *payload,
-        ]
-        # A conflicting MOLT selector must not replace an explicit --venv.
-        environment = environment.updated(
-            {
-                "MOLT_VENV": str(
-                    image.root if selection == "environment" else tmp_path / "unused"
-                )
-            }
-        )
-    else:
-        # The outer guard sees only its bootstrap outside the image. Actual
-        # PATH/cwd selection happens inside that process, at forward_command.
-        before = """
-import os, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from molt import checkout_state
-from molt.process_spawn import forward_command
-image, mode = Path(sys.argv[2]), sys.argv[3]
-scripts = image / ('Scripts' if os.name == 'nt' else 'bin')
-python = scripts / ('lease-runtime.exe' if os.name == 'nt' else 'lease-runtime')
-env = dict(os.environ)
-working = Path.cwd()
-if mode == 'relative':
-    executable = os.path.relpath(python, working)
-elif mode == 'traversal':
-    working = scripts
-    sibling = image.parent / ('b'*64) / scripts.name / python.name
-    executable = os.path.relpath(sibling, working)
-elif mode in {'path', 'empty-path'}:
-    executable = python.name
-    env['PATH'] = str(scripts) if mode == 'path' else ''
-    if os.name == 'nt':
-        # CreateProcess searches its calling process's native PATH.
-        os.environ['PATH'] = env['PATH']
-        os.environ.pop('NoDefaultCurrentDirectoryInExePath', None)
-    if mode == 'empty-path':
-        working = scripts
-        # Windows searches its parent process cwd, not child's cwd.
-        os.chdir(working)
-else:
-    executable = str(python)
-if sys.argv[4] == 'True':
-    # Controlled original defect: omit argv resources while keeping the real
-    # lease/retirement authorities and actual forwarded child unchanged.
-    checkout_state.checkout_state_command_roots = (
-        lambda source, environment, command, **kw:
-        checkout_state.checkout_state_environment_roots(source, environment, **kw)
-    )
-forward_command([executable, *sys.argv[5:]], env=env, cwd=working)
-"""
-        command = [
-            sys.executable,
-            "-B",
-            "-I",
-            "-S",
-            "-c",
-            before,
-            str(ROOT / "src"),
-            str(image.root),
-            selection,
-            str(omit_command),
-            *payload,
-        ]
-    result = run_guarded_test_process(
-        command, cwd=tmp_path, env=environment, timeout=30
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "live-child-retirement-observed"
-    with checkout_state.checkout_state_retirement(image.root) as admitted:
-        assert admitted is True
-    with checkout_state.checkout_state_retirement(selected) as admitted:
-        assert admitted is True
-    assert checkout_state.bound_checkout_owner(image.root, artifact) == expected_owner
 
 
 def test_command_resource_projection_preserves_native_posix_path_semantics(tmp_path):
@@ -740,7 +488,7 @@ def test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc(
     )
     command = [
         sys.executable,
-        *environment_bytecode_arguments(Path(sys.prefix)),
+        *readonly_bytecode_arguments(Path(sys.prefix)),
         "-I",
         "-S",
         "-c",

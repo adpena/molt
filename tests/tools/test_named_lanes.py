@@ -839,7 +839,7 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
 ) -> None:
     import sys
 
-    from molt.python_environment_location import environment_bytecode_arguments
+    from molt.uv_environment import bytecode_arguments, bytecode_prefix
     from tools.proof_queue_pkg import execution_custody, process_image_capture
 
     captured = tmp_path / "captured" / "python.exe"
@@ -874,7 +874,7 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     assert grant["python_launch"] == "interpreter"
     assert grant["python_bytecode"] == {
         "environment_root": str(captured.parent),
-        "pycache_prefix": str(captured.parent / "bytecode"),
+        "pycache_prefix": str(bytecode_prefix(captured.parent)),
     }
 
     def intent(path):
@@ -882,7 +882,7 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
             "requested": str(path),
             "argv": [
                 str(path),
-                *environment_bytecode_arguments(captured.parent),
+                *bytecode_arguments(captured.parent),
                 "-I",
                 "-c",
                 "pass",

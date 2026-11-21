@@ -61,6 +61,7 @@ SourceDemandPhase = Literal[
     "release",
     "release_contents",
     "protocol",
+    "class_subscription",
     "descriptor",
     "mutate",
     # A method call through an attribute of the value: the attribute

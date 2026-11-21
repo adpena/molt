@@ -1,15 +1,67 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from collections import UserDict
 from types import MappingProxyType
 
 import pytest
 
+from molt.frontend import SimpleTIRGenerator
 from molt.frontend.module_publication import (
     inspect_source_module_publication,
     parse_source_module_publication,
     project_frontend_tir_to_executable,
 )
+
+
+def test_callable_declaration_matches_cpython_signature_and_closure() -> None:
+    source = """\
+def make(captured):
+    def callback(a=1, /, b=2, *args, needed, option=3, **kwargs):
+        yield captured, a, b, args, needed, option, kwargs
+    return callback
+"""
+    reference = {}
+    exec(compile(source, "<declaration-oracle>", "exec"), reference)
+    callback = reference["make"](42)
+    signature = inspect.signature(callback)
+    generator = SimpleTIRGenerator(module_name="unit", target_python=(3, 12))
+    generator.visit(ast.parse(source))
+    document = generator.to_json(scope="module")
+    declarations = {
+        symbol: row["callable_declaration"]
+        for symbol, row in document["function_metadata"].items()
+        if "callable_declaration" in row
+    }
+    (callback_symbol,) = (
+        symbol
+        for symbol, declaration in declarations.items()
+        if declaration["freevars"] == ["captured"]
+    )
+    declaration = declarations[callback_symbol]
+    assert declaration == {
+        "execution_kind": "gen" if inspect.isgeneratorfunction(callback) else "sync",
+        "positional_only": [
+            p.name for p in signature.parameters.values() if p.kind is p.POSITIONAL_ONLY
+        ],
+        "positional_or_keyword": [
+            p.name
+            for p in signature.parameters.values()
+            if p.kind is p.POSITIONAL_OR_KEYWORD
+        ],
+        "keyword_only": [
+            p.name for p in signature.parameters.values() if p.kind is p.KEYWORD_ONLY
+        ],
+        "vararg": "args",
+        "varkw": "kwargs",
+        "positional_default_count": len(callback.__defaults__),
+        "keyword_defaults": list(callback.__kwdefaults__),
+        "freevars": list(callback.__code__.co_freevars),
+        "cellvars": list(callback.__code__.co_cellvars),
+    }
+    executable = project_frontend_tir_to_executable(document)
+    assert all("callable_declaration" not in body for body in executable["functions"])
 
 
 def _publication() -> dict[str, object]:

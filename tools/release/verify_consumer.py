@@ -463,7 +463,6 @@ def _compilation_captures(
                                 interpreter,
                                 verifier_bytecode_prefix=verifier.prefix,
                                 source_root=compiler.source_root,
-                                admit_published_environment=False,
                             ),
                             cwd=cwd,
                             env=env,
