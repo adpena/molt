@@ -470,6 +470,10 @@ always = [
   "python tools/check_ratio_direction.py",
   "python tools/check_subagent_contract.py",
   "python tools/check_public_source_boundary.py",
+  # The methodology lock covers compiler files no rule's globs name, so the
+  # lane that edits one runs it (2026-11-21: five landings changed locked
+  # binding-flow files without the lock and the next lane's gate paid).
+  "python tools/perf_methodology.py --check",
 ]
 
 # Mechanical repairs the read-only gates above ask for. `land` applies them in
@@ -5783,9 +5787,8 @@ globs = [
   "tools/perf_instructions.py", "tools/perf_primitives.py",
   "tests/tools/test_perf_instructions.py",
 ]
-gates = [
-  "python tools/perf_methodology.py --check",
-]
+# The methodology lock check is an `always` gate.
+gates = []
 pytest_select = [
   { m = "not slow", targets = [
     "tests/test_bench_evidence.py",
