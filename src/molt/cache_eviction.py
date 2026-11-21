@@ -125,6 +125,11 @@ def _background_disk_priority() -> Generator[None]:
             restore()
 
 
+def _hot_volume_free(root: Path) -> int:
+    """Free bytes on the hot-state root's volume."""
+    return shutil.disk_usage(root).free
+
+
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -986,7 +991,7 @@ def _prune_locked(
             if hot_bytes > hot.budget_bytes:
                 return True
             try:
-                return shutil.disk_usage(hot.root).free < HOT_STATE_MIN_FREE_BYTES
+                return _hot_volume_free(hot.root) < HOT_STATE_MIN_FREE_BYTES
             except OSError:
                 return False
 

@@ -16,7 +16,7 @@ import shutil
 import stat
 import sys
 import threading
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     import ctypes
@@ -701,10 +701,19 @@ FREE_SPACE_FLOOR = 0.20
 FLOOR_MIN_IDLE_S = 86400.0
 
 
-def below_free_space_floor(path: Path) -> bool:
+class _VolumeUsage(Protocol):
+    @property
+    def free(self) -> int: ...
+    @property
+    def total(self) -> int: ...
+
+
+def below_free_space_floor(
+    path: Path, *, usage: Callable[[Path], _VolumeUsage] = shutil.disk_usage
+) -> bool:
     """Whether ``path``'s volume holds less than ``FREE_SPACE_FLOOR`` free."""
     try:
-        usage = shutil.disk_usage(path)
+        observed = usage(path)
     except OSError:
         return False
-    return usage.free < FREE_SPACE_FLOOR * usage.total
+    return observed.free < FREE_SPACE_FLOOR * observed.total

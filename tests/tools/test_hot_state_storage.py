@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections import namedtuple
 from pathlib import Path
 
@@ -80,40 +79,26 @@ def test_a_malformed_record_is_an_error_not_a_silent_fallback(
         default_paths.hot_state(tmp_path)
 
 
-def test_provisioning_binds_only_another_volume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_provisioning_binds_only_another_volume(tmp_path: Path) -> None:
     from tools import molt_dev_storage as storage
 
     artifact = tmp_path / "artifact"
     home = tmp_path / "home"
     artifact.mkdir()
     home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     # One volume: no record.
-    (row,) = storage.provision_hot_state(artifact, apply=True)
+    (row,) = storage.provision_hot_state(artifact, apply=True, home=home)
     assert row["action"] == "same-volume"
     assert not (artifact / default_paths.HOT_STATE_RECORD).exists()
-    real_stat = os.stat
-
-    def stat(
-        path: os.PathLike[str] | str,
-        *,
-        dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> os.stat_result:
-        result = real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
-        if Path(path) == home:
-            fields = list(result)
-            fields[2] = result.st_dev + 1  # st_dev
-            return os.stat_result(fields)
-        return result
-
-    monkeypatch.setattr(storage.os, "stat", stat)
-    (row,) = storage.provision_hot_state(artifact, apply=False)
+    devices = {home: 1, artifact: 2}
+    (row,) = storage.provision_hot_state(
+        artifact, apply=False, home=home, device_of=devices.__getitem__
+    )
     assert row["action"] == "bindable"
     assert not (artifact / default_paths.HOT_STATE_RECORD).exists()
-    (row,) = storage.provision_hot_state(artifact, apply=True)
+    (row,) = storage.provision_hot_state(
+        artifact, apply=True, home=home, device_of=devices.__getitem__
+    )
     assert row["action"] == "bound"
     state = default_paths.hot_state(artifact)
     assert state is not None and state.root.parent == home / ".molt" / "hot-state"
@@ -126,15 +111,12 @@ def test_the_floor_takes_day_idle_entries_only_while_the_volume_is_low(
     from molt import disk_capacity
 
     Usage = namedtuple("Usage", "total used free")
-    free = [5]
-    monkeypatch.setattr(
-        disk_capacity.shutil,
-        "disk_usage",
-        lambda _path: Usage(100, 100 - free[0], free[0]),
+    assert disk_capacity.below_free_space_floor(
+        tmp_path, usage=lambda _path: Usage(100, 95, 5)
     )
-    assert disk_capacity.below_free_space_floor(tmp_path)
-    free[0] = 25
-    assert not disk_capacity.below_free_space_floor(tmp_path)
+    assert not disk_capacity.below_free_space_floor(
+        tmp_path, usage=lambda _path: Usage(100, 75, 25)
+    )
 
 
 def test_cache_retention_trims_the_hot_root_when_its_volume_is_low(
@@ -154,11 +136,8 @@ def test_cache_retention_trims_the_hot_root_when_its_volume_is_low(
     assert blob.is_relative_to(hot)
     outside = cache / "unrelated.bin"
     outside.write_bytes(b"x" * 10)
-    Usage = namedtuple("Usage", "total used free")
     free = [default_paths.HOT_STATE_MIN_FREE_BYTES * 2]
-    monkeypatch.setattr(
-        cache_eviction.shutil, "disk_usage", lambda _path: Usage(1 << 50, 0, free[0])
-    )
+    monkeypatch.setattr(cache_eviction, "_hot_volume_free", lambda _root: free[0])
     kwargs = dict(max_bytes=1 << 40, max_age_days=None, dry_run=False)
     cache_eviction._prune_locked(cache, **kwargs)
     assert blob.exists()

@@ -1406,7 +1406,13 @@ def _legacy_temp_plan(
 HOT_STATE_BUDGET_BYTES = 40 * 1024**3
 
 
-def provision_hot_state(artifact: Path, *, apply: bool) -> list[dict[str, object]]:
+def provision_hot_state(
+    artifact: Path,
+    *,
+    apply: bool,
+    home: Path | None = None,
+    device_of: Callable[[Path], int] = lambda path: os.stat(path).st_dev,
+) -> list[dict[str, object]]:
     """Bind ``artifact``'s hot state to the home volume when it is another one.
 
     Lock stripes and the file digest store move there (``default_paths.hot_state``).
@@ -1430,9 +1436,9 @@ def provision_hot_state(artifact: Path, *, apply: bool) -> list[dict[str, object
                 "budget_bytes": state.budget_bytes,
             }
         ]
-    home = Path.home()
+    home = Path.home() if home is None else home
     try:
-        same_volume = os.stat(home).st_dev == os.stat(artifact).st_dev
+        same_volume = device_of(home) == device_of(artifact)
     except OSError:
         return [{"class": "hot-state", "path": str(home), "action": "no-home"}]
     if same_volume:
