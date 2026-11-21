@@ -98,6 +98,20 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
     }
 }
 
+/// Project the retained dictionary observation into its final list allocation.
+///
+/// # Safety
+/// `dict` must point to a live native dictionary under the caller's runtime token.
+pub(crate) unsafe fn dict_snapshot_list(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    kind: DictSnapshotKind,
+) -> Option<u64> {
+    let snapshot = unsafe { dict_snapshot(py, dict, kind) }?;
+    let list = super::builders::alloc_list_from_snapshot(py, snapshot);
+    (!list.is_null()).then(|| MoltObject::from_ptr(list).bits())
+}
+
 pub(crate) fn molt_dict_update_missing_attached_body(
     _py: &crate::PyToken<'_>,
     dict_bits: u64,

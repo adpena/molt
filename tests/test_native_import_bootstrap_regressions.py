@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from molt.cli.extension_manifest import _default_molt_c_api_version
-from molt.dx import artifact_root, scratch_root
-from molt.source_root import compiler_source_root
+from molt.dx import RunContext, artifact_root, scratch_root
 
-import hashlib
+from collections.abc import Mapping
 import json
 import os
 import shutil
@@ -283,56 +281,86 @@ def _build_and_run_with_env(
 def _write_external_static_native_package_fixture(
     tmp_path: Path,
     *,
-    shim_source: str,
-    init_source: str,
-) -> Path:
+    env: Mapping[str, str],
+) -> tuple[Path, Path]:
     external_root = tmp_path / "external_site"
-    package_dir = external_root / "nativepkg"
+    project_root = tmp_path / "extension_source"
+    package_dir = project_root / "nativepkg"
     package_dir.mkdir(parents=True)
-    (package_dir / "__init__.py").write_text(init_source, encoding="utf-8")
-    artifact_bytes = b"native-extension"
-    artifact_path = package_dir / "_native.so"
-    artifact_path.write_bytes(artifact_bytes)
-    manifest = {
-        "schema_version": 1,
-        "module": "nativepkg._native",
-        "molt_c_api_version": _default_molt_c_api_version(compiler_source_root()),
-        "abi_tag": f"molt_abi{_default_molt_c_api_version(compiler_source_root())}",
-        "python_tag": "py3",
-        "target_triple": "x86_64-unknown-linux-gnu",
-        "platform_tag": "x86_64_unknown_linux_gnu",
-        "capabilities": ["module.extension.exec"],
-        "extension": "_native.so",
-        "extension_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
-    }
-    (package_dir / "extension_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n",
+    (package_dir / "__init__.py").write_text(
+        "import nativepkg._native\nVALUE = nativepkg._native.VALUE\n",
         encoding="utf-8",
     )
-    (package_dir / "_native.so.molt.py").write_text(
-        shim_source,
+    (package_dir / "_native.c").write_text(
+        "#include <Python.h>\n"
+        "static PyModuleDef module = {\n"
+        '    PyModuleDef_HEAD_INIT, "nativepkg._native", NULL, -1, NULL\n'
+        "};\n"
+        "PyMODINIT_FUNC PyInit__native(void) {\n"
+        "    PyObject *result = PyModule_Create(&module);\n"
+        "    if (result == NULL) return NULL;\n"
+        '    if (PyModule_AddIntConstant(result, "VALUE", 911) < 0) {\n'
+        "        Py_DECREF(result);\n"
+        "        return NULL;\n"
+        "    }\n"
+        "    return result;\n"
+        "}\n",
         encoding="utf-8",
     )
-    return external_root
+    (project_root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "native-bootstrap-fixture"\n'
+        'version = "0.1.0"\n'
+        "[tool.molt.extension]\n"
+        'module = "nativepkg._native"\n'
+        'sources = ["nativepkg/_native.c"]\n'
+        'abi_tier = "cpython-abi"\n'
+        'python_exports = ["nativepkg"]\n'
+        'capabilities = ["module.extension.exec"]\n',
+        encoding="utf-8",
+    )
+    build_env = dict(env)
+    build_env["PYTHONPATH"] = str(SRC_DIR)
+    build = run_native_test_process(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "extension",
+            "build",
+            "--project",
+            str(project_root),
+            "--out-dir",
+            str(external_root),
+            "--target",
+            "native",
+        ],
+        cwd=ROOT,
+        env=build_env,
+        capture_output=True,
+        text=True,
+        default_timeout=NATIVE_BUILD_TIMEOUT_SECS,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    return external_root, project_root
 
 
 def test_native_external_static_package_import_uses_staged_runtime_root_after_source_root_removed(
     tmp_path: Path,
 ) -> None:
-    external_root = _write_external_static_native_package_fixture(
-        tmp_path,
-        shim_source="VALUE = 911\n",
-        init_source="import nativepkg._native\nVALUE = nativepkg._native.VALUE\n",
+    env = RunContext(ROOT, prefer_external_artifacts=True).dx_env(os.environ)
+    external_root, extension_source = _write_external_static_native_package_fixture(
+        tmp_path, env=env
     )
 
     out_path, build_env = _build_native_binary_with_env(
         tmp_path,
         "import nativepkg\nprint(nativepkg.VALUE)\n",
         "external_static_runtime_root",
-        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-external-static-runtime-root",
-        cache_dir=ARTIFACT_ROOT / ".molt_cache-external-static-runtime-root",
+        session_id=env["MOLT_SESSION_ID"],
+        cache_dir=Path(env["MOLT_CACHE"]),
         backend="cranelift",
-        extra_env={"MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg"},
+        extra_env=env.updated({"MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg"}),
         extra_build_args=[
             "--no-trusted",
             "--capabilities",
@@ -344,6 +372,7 @@ def test_native_external_static_package_import_uses_staged_runtime_root_after_so
     )
 
     shutil.rmtree(external_root)
+    shutil.rmtree(extension_source)
     run_env = build_env.copy()
     for key in (
         "MOLT_MODULE_ROOTS",
@@ -813,12 +842,37 @@ def test_native_types_bootstrap_descriptor_types_match_runtime_carriers(
             "    data['WrapperDescriptorType'] is type(object.__init__),\n"
             "    data['MethodWrapperType'] is type(object().__str__),\n"
             "    data['MethodDescriptorType'] is type(str.join),\n"
-            "    data['ClassMethodDescriptorType'] is type(dict.fromkeys),\n"
+            "    data['ClassMethodDescriptorType'] is type(dict.__dict__['fromkeys']),\n"
             "    data['GetSetDescriptorType'] is type(type.__getattribute__(type(lambda: None), '__code__')),\n"
             "    data['MemberDescriptorType'] is type(type.__getattribute__(type(lambda: None), '__globals__')),\n"
             "]\n"
             "for item in checks:\n"
             "    print(item)\n"
+            "def first():\n"
+            "    return 1\n"
+            "def second():\n"
+            "    return 2\n"
+            "function_type = type(first)\n"
+            "code = function_type.__dict__['__code__']\n"
+            "namespace = function_type.__dict__['__globals__']\n"
+            "print(code is type(lambda: None).__dict__['__code__'])\n"
+            "print(namespace.__get__(first, function_type) is globals())\n"
+            "print(code.__get__(first, function_type) is first.__code__)\n"
+            "code.__set__(first, second.__code__)\n"
+            "print(first.__code__ is second.__code__)\n"
+            "print(not hasattr(len, '__code__') and '__code__' not in dir(len))\n"
+            "print(not hasattr(len, '__globals__') and '__globals__' not in dir(len))\n"
+            "for operation in (\n"
+            "    lambda: code.__set__(first, 123),\n"
+            "    lambda: namespace.__set__(first, {}),\n"
+            "    lambda: code.__get__(len, type(len)),\n"
+            "):\n"
+            "    try:\n"
+            "        operation()\n"
+            "    except (TypeError, AttributeError) as exc:\n"
+            "        print(type(exc).__name__)\n"
+            "    else:\n"
+            "        raise AssertionError('descriptor accepted invalid operation')\n"
         ),
         "types_bootstrap_descriptor_types",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-types-bootstrap-descriptors",
@@ -827,7 +881,11 @@ def test_native_types_bootstrap_descriptor_types_match_runtime_carriers(
         run_timeout_secs=20,
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip().splitlines() == ["True"] * 6
+    assert run.stdout.strip().splitlines() == ["True"] * 12 + [
+        "TypeError",
+        "AttributeError",
+        "TypeError",
+    ]
 
 
 def test_native_importlib_import_module_tkinter_after_find_spec_is_clean(
@@ -1444,8 +1502,10 @@ def test_native_from_import_auto_imports_child_module_and_binds_parent_attr(
     ]
 
 
+@pytest.mark.parametrize("allow_read", [True, False], ids=["read", "denied"])
 def test_native_from_import_missing_child_reports_import_from_error(
     tmp_path: Path,
+    allow_read: bool,
 ) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -1463,15 +1523,28 @@ def test_native_from_import_missing_child_reports_import_from_error(
         source_relpath="main.py",
         extra_files={"pkg/__init__.py": "VALUE = 1\n"},
         extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+        extra_build_args=[
+            "--no-trusted",
+            "--capabilities",
+            "fs.read" if allow_read else "",
+        ],
     )
     assert run.returncode == 0, run.stdout + run.stderr
     lines = run.stdout.strip().splitlines()
-    assert lines[0] == "ImportError"
-    assert "cannot import name 'missing_child' from 'pkg'" in lines[1]
+    if allow_read:
+        assert lines[0] == "ImportError"
+        assert "cannot import name 'missing_child' from 'pkg'" in lines[1]
+    else:
+        assert lines == [
+            "PermissionError",
+            "missing [fs.read] capabilities for 'os.stat'",
+        ]
 
 
+@pytest.mark.parametrize("allow_read", [True, False], ids=["read", "denied"])
 def test_native_from_import_child_dependency_error_propagates(
     tmp_path: Path,
+    allow_read: bool,
 ) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -1492,12 +1565,18 @@ def test_native_from_import_child_dependency_error_propagates(
             "pkg/child.py": "import definitely_missing_dependency\n",
         },
         extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+        extra_build_args=[
+            "--no-trusted",
+            "--capabilities",
+            "fs.read" if allow_read else "",
+        ],
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip().splitlines() == [
-        "ModuleNotFoundError",
-        "No module named 'definitely_missing_dependency'",
-    ]
+    assert run.stdout.strip().splitlines() == (
+        ["ModuleNotFoundError", "No module named 'definitely_missing_dependency'"]
+        if allow_read
+        else ["PermissionError", "missing [fs.read] capabilities for 'os.stat'"]
+    )
 
 
 def test_native_package_entry_alias_imports_and_sys_modules_identity_are_resolved(
@@ -1537,6 +1616,7 @@ def test_native_import_transaction_unifies_public_import_surfaces(
         (
             "import builtins\n"
             "import importlib\n"
+            "import importlib.util\n"
             "import sys\n"
             "import pkg.helper as helper\n"
             "leaf_from_importlib = importlib.import_module('pkg.helper')\n"

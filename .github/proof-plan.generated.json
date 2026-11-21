@@ -800,6 +800,7 @@
         "drivers/falcon/browser_webgpu/*.py",
         "drivers/falcon/browser_webgpu/*.js",
         "drivers/cloudflare/thin_adapter/verify.py",
+        "demos/tinygrad/examples/falcon_ocr.py",
         "tests/fixtures/falcon_ocr/**",
         "tools/gen_browser_asset_graph.py",
         "drivers/_shared/artifacts.py",
@@ -9904,6 +9905,7 @@
           "tests/test_driver_cloudflare_verify.py",
           "tests/test_driver_cloudflare_worker.py",
           "tests/test_falcon_ocr_prompt_contract.py",
+          "demos/tinygrad/examples/falcon_ocr.py",
           "tests/fixtures/falcon_ocr/**"
         ],
         "name": "browser-loader-deployment",

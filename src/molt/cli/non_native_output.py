@@ -1053,6 +1053,12 @@ def _prepare_non_native_build_result_in_generation(
             if resolved_linked_output is None:
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
             try:
+                side_sdk_archives = (
+                    wasm_link_inputs.wasm_side_module_sdk_archives()
+                    if _split_runtime
+                    else ()
+                )
+                side_sdk_paths = tuple(identity.path for identity in side_sdk_archives)
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
                     external_selection=bool(wasm_link_requirements.items),
@@ -1063,6 +1069,7 @@ def _prepare_non_native_build_result_in_generation(
                         *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
                         *((runtime_wasm,) if runtime_wasm is not None else ()),
+                        *side_sdk_paths,
                         *external_native_fingerprint_inputs,
                         *(
                             path
@@ -1149,7 +1156,7 @@ def _prepare_non_native_build_result_in_generation(
                 # producer-bound input it keys the final link and the build
                 # record, and the tool verifies its bytes before linking.
                 link_allowlist = tool.with_name("wasm_allowed_imports.txt")
-                admitted_link_inputs = tuple(
+                admitted_link_inputs = side_sdk_archives + tuple(
                     stable_regular_file_identity(
                         path.resolve(), label="WASM link input"
                     )
@@ -1164,6 +1171,7 @@ def _prepare_non_native_build_result_in_generation(
                             *external_native_fingerprint_inputs,
                         )
                     )
+                    if path.resolve() not in side_sdk_paths
                 )
                 expected_input_args = [
                     argument

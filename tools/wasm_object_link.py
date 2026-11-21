@@ -406,36 +406,21 @@ _SIDE_MODULE_ENV_IMPORTS = frozenset(
 _SIDE_MODULE_IMPORT_MODULES = frozenset({"molt_runtime", "GOT.mem", "GOT.func"})
 
 
-def compiler_builtins_archive(wasm_ld: str) -> Path:
-    """The wasi-sdk compiler-rt builtins archive beside the selected wasm-ld.
-
-    A side module links the builtins it calls (`__multi3` and kin) itself:
-    the runtime module does not export compiler-rt.
-    """
-    sdk = Path(wasm_ld).resolve().parent.parent
-    found = sorted(
-        sdk.glob("lib/clang/*/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a")
-    )
-    if len(found) != 1:
-        raise ValueError(
-            f"expected exactly one wasm32-wasip1 compiler-rt builtins archive under {sdk}, "
-            f"found {len(found)}"
-        )
-    return found[0]
-
-
 def side_module_link_command(
     *,
     wasm_ld: str,
     app_object: Path,
     stdlib_archive: Path | None,
-    builtins: Path,
+    sdk_archives: Sequence[Path],
     output: Path,
     exports: Sequence[str],
     native_link_requirements: SourceExtensionLinkRequirements,
     preserve_debug: bool,
 ) -> tuple[str, ...]:
     main = compiled_execution_symbol("molt_main")
+    native_paths = {
+        Path(item.path).resolve() for item in native_link_requirements.inputs
+    }
     return (
         wasm_ld,
         "-shared",
@@ -461,7 +446,9 @@ def side_module_link_command(
         # Extension objects belong to the application; the side module links
         # them, as the linked module does.
         *render_source_extension_link_arguments(native_link_requirements),
-        str(builtins),
+        # LLVM can emit C library calls as well as compiler-rt builtins. Extract
+        # only demanded members of the selected SDK archives.
+        *(str(path) for path in sdk_archives if path not in native_paths),
     )
 
 
@@ -492,6 +479,7 @@ def link_side_module(
     app: Path,
     app_export_contract: Path,
     native_link_requirements: SourceExtensionLinkRequirements,
+    sdk_archives: Sequence[Path],
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
     selection_roles: MutableMapping[str, Mapping[str, object]],
@@ -508,7 +496,7 @@ def link_side_module(
         wasm_ld=wasm_ld,
         app_object=app_object,
         stdlib_archive=stdlib_archive,
-        builtins=compiler_builtins_archive(wasm_ld),
+        sdk_archives=sdk_archives,
         output=staged,
         exports=exports,
         native_link_requirements=native_link_requirements,

@@ -809,9 +809,13 @@ def require_cargo_build_capacity(
     refusal raises ``DiskCapacityError`` and no Cargo process starts.
     """
 
+    from molt.dx import configured_artifact_root
+
+    outputs = cargo_output_paths(command, cwd=cwd, env=env)
     return require_build_capacity(
-        cargo_output_paths(command, cwd=cwd, env=env),
+        outputs,
         env=env,
+        artifact_root=configured_artifact_root(env, relative_to=cwd),
         measure_free_bytes=measure_free_bytes,
     )
 

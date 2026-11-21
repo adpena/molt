@@ -589,9 +589,10 @@ def reclaim_roots(root: Path) -> tuple[Path, ...]:
     return tuple(sorted((path for path in roots if path.is_dir()), key=_norm))
 
 
-def stale_toolchain_partitions(target: Path, *, now: float) -> list[Path]:
-    """The toolchain partitions of ``target`` other than its newest, idle past
-    ``TOOLCHAIN_PARTITION_IDLE_S``."""
+def stale_toolchain_partitions(
+    target: Path, *, now: float, idle_s: float = TOOLCHAIN_PARTITION_IDLE_S
+) -> dict[Path, float]:
+    """Last activity of idle partitions, excluding the target's newest."""
     partitions = [
         path
         for path in _iter_dir(target / _TOOLCHAIN_PARTITIONS)
@@ -600,14 +601,22 @@ def stale_toolchain_partitions(target: Path, *, now: float) -> list[Path]:
         and not path.is_symlink()
     ]
     if len(partitions) < 2:
-        return []
+        return {}
     activity = {path: _newest_activity_mtime(path) for path in partitions}
     newest = max(partitions, key=lambda path: activity[path])
-    return [
-        path
-        for path in partitions
-        if path != newest and now - activity[path] >= TOOLCHAIN_PARTITION_IDLE_S
-    ]
+    return {
+        path: used
+        for path, used in activity.items()
+        if path != newest and now - used >= idle_s
+    }
+
+
+def _toolchain_partition_idle_s(root: Path, limits: RetentionLimits) -> float:
+    from molt.disk_capacity import FLOOR_MIN_IDLE_S
+
+    if limits.free_space_low is not None and limits.free_space_low(root):
+        return FLOOR_MIN_IDLE_S
+    return TOOLCHAIN_PARTITION_IDLE_S
 
 
 def _is_reclaimable(
@@ -1088,7 +1097,7 @@ def discover_candidates(
             ):
                 add(child, "lane", owner_root)
         # cargo-incremental quarantine dirs
-        for qdir in _iter_quarantine_dirs(owner_root):
+        for qdir in _iter_quarantine_dirs(_cargo_target_roots(owner_root)):
             add(qdir, "quarantine", owner_root)
         # flat legacy cargo-target-*
         for child in _iter_dir(owner_root):
@@ -1157,8 +1166,8 @@ def _cargo_target_roots(root: Path) -> list[Path]:
     return list(dict.fromkeys(roots))
 
 
-def _iter_quarantine_dirs(root: Path) -> list[Path]:
-    """Each quarantined incremental state of every Cargo target under ``root``.
+def _iter_quarantine_dirs(targets: Iterable[Path]) -> list[Path]:
+    """Each quarantined incremental state of the discovered Cargo targets.
 
     A build quarantines beside the target it built, which since HF-313 is a
     checkout target below ``target/checkouts``; scanning only ``target`` and
@@ -1168,7 +1177,7 @@ def _iter_quarantine_dirs(root: Path) -> list[Path]:
     from tools.memory_guard_core.cargo_quarantine import cargo_quarantine_parent
 
     out: list[Path] = []
-    for target in _cargo_target_roots(root):
+    for target in targets:
         qroot = cargo_quarantine_parent(target)
         if qroot.is_dir():
             out.extend(child for child in _iter_dir(qroot) if child.is_dir())
@@ -1538,6 +1547,16 @@ def gc(
                 def still_gc_eligible(
                     current: Candidate, current_now: float
                 ) -> str | None:
+                    if (
+                        current.kind == "toolchain-partition"
+                        and current.path
+                        not in stale_toolchain_partitions(
+                            current.path.parent.parent,
+                            now=current_now,
+                            idle_s=_toolchain_partition_idle_s(owner_root, limits),
+                        )
+                    ):
+                        return "toolchain-partition-policy-changed"
                     if (
                         current.kind in _LAST_USE_KINDS
                         and checkout_state_decision(
@@ -2662,14 +2681,18 @@ def _retention_candidates(
         is not None
     ]
     if not build_control:
-        for target in _cargo_target_roots(owner_root):
-            for partition in stale_toolchain_partitions(target, now=now):
+        idle_s = _toolchain_partition_idle_s(owner_root, limits)
+        targets = _cargo_target_roots(owner_root)
+        for target in targets:
+            for partition, used in stale_toolchain_partitions(
+                target, now=now, idle_s=idle_s
+            ).items():
                 candidates.append(
                     Candidate(
                         path=partition,
                         kind="toolchain-partition",
                         guard_active=guards.protects(partition, owner_root),
-                        mtime=_newest_activity_mtime(partition),
+                        mtime=used,
                         lock_held=_lock_held(partition),
                         owner_root=owner_root,
                     )
@@ -2677,7 +2700,7 @@ def _retention_candidates(
         # An interrupted build's quarantined incremental state is never used
         # again, and its receipt keeps the evidence: it retires once idle past
         # the session limit, as a pinned session's transient target does.
-        for quarantine in _iter_quarantine_dirs(owner_root):
+        for quarantine in _iter_quarantine_dirs(targets):
             mtime = _newest_activity_mtime(quarantine)
             if now - mtime >= limits.session_idle_s:
                 candidates.append(

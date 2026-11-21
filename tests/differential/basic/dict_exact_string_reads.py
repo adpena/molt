@@ -1,4 +1,4 @@
-"""Exact-str read admission must preserve live Python hash/equality protocols."""
+"""Exact-str lookup admission must preserve live Python hash/equality protocols."""
 
 events = []
 
@@ -16,6 +16,9 @@ def lookup(operation, mapping, key):
         return mapping.setdefault(key, 91)
     if operation == "setdefault-list":
         return mapping.setdefault(key, [])
+    if operation == "store":
+        mapping[key] = 91
+        return list(mapping.values())[-2:]
     if operation == "pop":
         return mapping.pop(key, -1)
     if operation == "delete":
@@ -26,7 +29,7 @@ def lookup(operation, mapping, key):
 
 operations = (
     "item", "contains", "contains-method", "get", "setdefault",
-    "setdefault-list", "pop", "delete",
+    "setdefault-list", "store", "pop", "delete",
 )
 
 

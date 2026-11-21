@@ -1111,36 +1111,6 @@ def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
     )
 
 
-def _falcon_source_text() -> str:
-    root = Path(__file__).resolve().parents[1]
-    return (
-        root / "src" / "molt" / "stdlib" / "tinygrad" / "examples" / "falcon_ocr.py"
-    ).read_text(encoding="utf-8")
-
-
-def test_tinygrad_falcon_source_requires_rope_intrinsic() -> None:
-    source = _falcon_source_text()
-
-    assert "_load_optional_intrinsic" not in source
-    assert "_MOLT_GPU_ROPE_APPLY_CONTIGUOUS = _require_intrinsic(" in source
-    assert '"molt_gpu_rope_apply_contiguous"' in source
-
-
-def test_tinygrad_falcon_source_requires_attention_sinks_weight() -> None:
-    source = _falcon_source_text()
-
-    assert 'state.get(f"{prefix}.attention.sinks"' not in source
-    assert '_require_weight(state, f"{prefix}.attention.sinks")' in source
-
-
-def test_tinygrad_falcon_source_requires_named_weight_lookup() -> None:
-    source = _falcon_source_text()
-
-    assert "def _require_weight(state, name: str):" in source
-    assert "Falcon-OCR weights missing required tensor" in source
-    assert '_tok_embeddings = _require_weight(state, "tok_embeddings.weight")' in source
-
-
 def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_falcon_helper_probe.py"

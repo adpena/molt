@@ -16,7 +16,7 @@ when a capacity-selected output volume changes.
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
 | Native proof-supervisor store | Artifact root `proof-supervisor/<implementation-source-key>` | Thirty days since last use; existing checkout-state lifetime locks protect provisioning and readers |
 | Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
-| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Lock stripes (cache, checkout-state), the file-digest store, the frontend record files, guard scratch (`tmp/gs/v2`) and checkout Cargo targets (`target/checkouts/<checkout>`); cache retention trims hot entries by last use to the record's cap and keeps the home volume 50 GiB free |
+| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Build and scratch admission within the configured mirror require 50 GiB of raw free space. The record's byte budget governs hot compile-cache entries. Checkout Cargo and guard scratch use their existing retention rules. |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
 | Browser/Edgebox package environments | Existing checkout-provisioning paths | Lock-file producer admission, shared use through child closure, last-use budget |
@@ -467,16 +467,25 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    scratch is transient and retained failures stay bounded (3 generations,
    2 GiB); `storage trim` retires terminal generations left on the former
    root. The integrator owns the Python build environments' placement.
-   Checkout Cargo targets move the same way
+   Reusable checkout Cargo targets move the same way
    (`dx.cargo_target_dir_for_artifact_root`), beside the kache store, so a
    restore clones instead of copying: a full molt-runtime dev-fast restore
    into a fresh target took 8.9-11.6 s on the internal disk and 73.8-200.1 s
    on the data volume (kache's no-copy total rose 1.9 GiB for the two
-   internal restores). The disk guard governs a root's hot mirror with the
+   internal restores). Explicitly pinned Cargo sessions stay on the artifact
+   volume. Generated run IDs keep the reusable target. Managed retirement and
+   orphan-daemon cleanup see the checkout's targets on both volumes, including
+   any previously placed sessions. Live stamps touch only the selected target,
+   its enclosing checkout target when pinned, and its control. The disk guard
+   governs a root's hot mirror with the
    root (`reclaim_roots`). A target's toolchain partitions
    (`.molt-toolchains/<digest>`, one per external-input identity) other than
-   its newest retire after 7 idle days under the target's exclusive lock
-   (`stale_toolchain_partitions`): slot-07's target held 9 partitions, 22.9
+   its newest retire after 7 idle days under the target's exclusive lock.
+   Under the standing volume free-space floor, the existing collector uses
+   the one-day idle window. It refreshes partition activity and volume pressure
+   under that lock before removal. Partition and quarantine planning share one
+   Cargo target inventory and reuse partition activity for candidate ordering.
+   Slot-07's target held 9 partitions, 22.9
    GiB of its 32.0 GiB. The product store (97.1 GiB) stays on the data volume
    until it has a byte bound on the hot volume.
 3. Capacity: every Molt volume keeps 20% free (`disk_capacity.FREE_SPACE_FLOOR`).
@@ -484,9 +493,14 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    `free-space-floor`) and the regenerable classes `storage trim` sizes give up
    entries a day idle by last use, rechecked after each removal; the day keeps
    a volume shared with other data from making every lane rebuild cold. The
-   disk guard's absolute headroom stays the emergency trigger. The home volume
-   keeps 50 GiB free and the hot root stays under its cap, trimmed by last use
-   in the daily cache retention. Lane start only reports a volume below its
+   disk guard's absolute headroom stays the emergency trigger. Admission of
+   build and scratch output within the configured hot mirror requires 50 GiB
+   of raw free space. Cargo resolves the artifact binding from its working
+   directory, including direct builds without an exported artifact root.
+   Guard scratch carries its selected artifact root from placement into
+   admission, using one binding lookup. This checks current capacity before a
+   run, and already admitted writers can continue allocating. The compile-cache
+   cap covers its own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
    state carries no byte budget because sizing it walks hundreds of GB (the
    `target/checkouts` census did not finish in 10 minutes); the floor is its

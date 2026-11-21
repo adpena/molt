@@ -1685,6 +1685,56 @@ def test_presubmit_selects_tests_that_reach_the_changed_definition(
     )
 
 
+def test_presubmit_selects_users_of_an_opt_in_fixture_body(tmp_path: Path) -> None:
+    from tools.test_dependency_graph import git_blob_reader
+
+    conftest = "tests/conftest.py"
+    root = _repository(
+        tmp_path / "repo",
+        {
+            "tools/proof_plan.toml": '[[apparatus_suite]]\ntest = "tests/test_build.py"\nowns = ["tools/owned.py"]\n',
+            conftest: """
+                import pytest
+
+                @pytest.fixture
+                def capacity():
+                    return 25
+
+                @pytest.fixture
+                def build(capacity):
+                    return capacity
+            """,
+            "tests/test_build.py": "def test_build(build):\n    assert build > 0\n",
+            "tests/test_dynamic.py": """
+                def test_dynamic(request):
+                    name = 'cap' + 'acity'
+                    assert request.getfixturevalue(name) > 0
+            """,
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        },
+    )
+    previous = git_blob_reader(root, "HEAD")
+    path = root / conftest
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("25", "50"), encoding="utf-8"
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    assert graph.direct_readers([conftest], before=previous).importers == (
+        "tests/test_build.py",
+        "tests/test_dynamic.py",
+    )
+
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "@pytest.fixture\ndef capacity",
+            "@pytest.fixture(autouse=True)\ndef capacity",
+        ),
+        encoding="utf-8",
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    assert graph.direct_readers([conftest], before=previous).importers == graph.tests
+
+
 def test_an_apparatus_suite_runs_in_presubmit_only_when_a_path_it_owns_changes(
     tmp_path: Path,
 ) -> None:

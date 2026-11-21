@@ -2074,13 +2074,21 @@ def test_llvm_split_runtime_side_module_matches_cpython_on_node_and_wasmtime(
     from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 
     source = tmp_path / "program.py"
-    source.write_text(PROGRAM_A + PROGRAM_B, encoding="utf-8")
+    # LLVM lowers a floating remainder to the SDK's fmod on wasm32.
+    remainder = """\
+def remainder(a: float, b: float) -> float:
+    return a % b
+
+print(remainder(float("-5.5"), float("2.0")))
+print(remainder(float("5.5"), float("-2.0")))
+"""
+    source.write_text(PROGRAM_A + PROGRAM_B + remainder, encoding="utf-8")
     out_dir = tmp_path / "split"
     build = _build_split(source, out_dir, extra_args=["--backend", "llvm"])
     assert build.returncode == 0, build.stdout + build.stderr
     app = (out_dir / "app.wasm").read_bytes()
     assert b"dylink.0" in app
-    expected = "42\n" + "".join(f"{n}\n" for n in (0, 1, 1, 2, 3, 5, 8, 13, 21, 34))
+    expected = "42\n0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n0.5\n-0.5\n"
     node = _run_split_direct(out_dir)
     assert node.returncode == 0, node.stderr
     assert node.stdout == expected

@@ -289,6 +289,8 @@ def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
         "molt_compile_builtin",
         "molt_input_builtin",
         "molt_function_set_builtin",
+        # The facade reads the target version without recursively importing sys.
+        "molt_sys_version_info",
     } == stdlib_intrinsic_policy.module_required_intrinsic_names(path)
     # builtins.py uses no syntax newer than any admitted frontend, so every
     # target classifies it, whatever the frontend's own minor.

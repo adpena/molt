@@ -93,7 +93,7 @@ class DiskCapacityProbe:
 
 @dataclass(frozen=True, slots=True)
 class DiskCapacityReceipt:
-    """Successful admission receipt for all requested build output paths."""
+    """Successful admission with a base requirement and per-path observations."""
 
     required_bytes: int
     probes: tuple[DiskCapacityProbe, ...]
@@ -454,13 +454,28 @@ _SCRATCH_REMEDY = (
 )
 
 
+def _hot_headroom_root(
+    env: Mapping[str, str] | None, artifact_root: Path | None
+) -> Path | None:
+    from molt.default_paths import configured_artifact_root_text, hot_state
+
+    if artifact_root is None:
+        configured = configured_artifact_root_text(env)
+        if configured is None:
+            return None
+        artifact_root = Path(configured).expanduser().resolve()
+    hot = hot_state(artifact_root)
+    return hot.root.resolve() if hot is not None else None
+
+
 def require_build_capacity(
     paths: Iterable[Path],
     *,
     env: Mapping[str, str] | None = None,
+    artifact_root: Path | None = None,
     measure_free_bytes: FreeSpaceMeasurement | None = None,
 ) -> DiskCapacityReceipt:
-    """Require sufficient free capacity for every requested build output."""
+    """Require capacity on each output volume, preserving raw hot headroom."""
 
     return _require_capacity(
         paths,
@@ -468,6 +483,7 @@ def require_build_capacity(
         purpose="build",
         remedy=_BUILD_REMEDY,
         measure_free_bytes=measure_free_bytes,
+        raw_headroom_root=_hot_headroom_root(env, artifact_root),
     )
 
 
@@ -475,6 +491,7 @@ def require_scratch_capacity(
     paths: Iterable[Path],
     *,
     env: Mapping[str, str] | None = None,
+    artifact_root: Path | None = None,
     measure_free_bytes: FreeSpaceMeasurement | None = None,
 ) -> DiskCapacityReceipt:
     """Require the scratch budget free on every scratch volume before a run.
@@ -490,6 +507,7 @@ def require_scratch_capacity(
         purpose="scratch",
         remedy=_SCRATCH_REMEDY,
         measure_free_bytes=measure_free_bytes,
+        raw_headroom_root=_hot_headroom_root(env, artifact_root),
     )
 
 
@@ -550,6 +568,8 @@ def _measure_capacity(
     resolved: Path,
     required_bytes: int,
     measure_free_bytes: FreeSpaceMeasurement | None,
+    *,
+    allow_purgeable: bool = True,
 ) -> DiskCapacityProbe:
     try:
         measured_path = _nearest_existing_directory(resolved)
@@ -593,7 +613,8 @@ def _measure_capacity(
             )
     important_usage_bytes = None
     if (
-        measure_free_bytes is None
+        allow_purgeable
+        and measure_free_bytes is None
         and sys.platform == "darwin"
         and free_bytes < required_bytes
     ):
@@ -634,6 +655,7 @@ def _require_capacity(
     purpose: str,
     remedy: str,
     measure_free_bytes: FreeSpaceMeasurement | None,
+    raw_headroom_root: Path | None = None,
 ) -> DiskCapacityReceipt:
     """Require ``required_bytes`` free on the filesystem of every path.
 
@@ -670,10 +692,22 @@ def _require_capacity(
         resolution_failures,
         key=lambda probe: _path_sort_key(probe.requested_path),
     )
-    probes.extend(
-        _measure_capacity(resolved, required_bytes, measure_free_bytes)
-        for resolved in sorted(resolved_paths.values(), key=_path_sort_key)
-    )
+    from molt.default_paths import HOT_STATE_MIN_FREE_BYTES
+
+    for resolved in sorted(resolved_paths.values(), key=_path_sort_key):
+        on_hot_root = raw_headroom_root is not None and resolved.is_relative_to(
+            raw_headroom_root
+        )
+        probes.append(
+            _measure_capacity(
+                resolved,
+                max(required_bytes, HOT_STATE_MIN_FREE_BYTES)
+                if on_hot_root
+                else required_bytes,
+                measure_free_bytes,
+                allow_purgeable=not on_hot_root,
+            )
+        )
 
     probes.sort(key=lambda probe: _path_sort_key(probe.requested_path))
     rejected = tuple(probe for probe in probes if not probe.ready)

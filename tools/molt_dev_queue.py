@@ -57,6 +57,7 @@ from tools.driver_errors import (
     EXIT_USAGE,
     CandidateFailure,
     DriverError,
+    GateFailure,
     PublicationRace,
     RebaseConflict,
 )  # noqa: E402
@@ -186,11 +187,17 @@ def _postsubmit_failures(output: Path) -> tuple[str, ...]:
     """Failing tests of this run's first attempts, minus the tests a retry
     passed alone (``molt_dev_gates.recorded_flaky_tests``)."""
     from molt.pytest_junit import PytestOutcome, junit_outcomes
-    from tools.molt_dev_gates import recorded_flaky_tests
+    from tools.molt_dev_gates import gate_evidence_directories, recorded_flaky_tests
 
-    flaky = recorded_flaky_tests(output)
+    directories = gate_evidence_directories(output)
+    flaky = recorded_flaky_tests(output, directories=directories)
     failures: dict[str, None] = {}
-    for path in sorted(output.glob("*.junit.xml")):
+    reports = (
+        path
+        for directory in directories
+        for path in sorted(directory.glob("gate-*.junit.xml"))
+    )
+    for path in reports:
         try:
             outcomes = junit_outcomes(path)
         except ValueError as exc:
@@ -309,10 +316,12 @@ def _run_postsubmit_gates(
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
     run_selected_gates(gates, runtime, [], keep_going=True)
+    from tools.molt_dev_gates import display, junit_path
+
     for ordinal, gate in enumerate(gates, start=1):
-        if (
-            gate_runs_pytest(gate, repo=repo)
-            and not (output / f"gate-{ordinal:03d}.junit.xml").is_file()
+        passed_log = runtime.passed_logs.get(display(gate.command))
+        if gate_runs_pytest(gate, repo=repo) and (
+            passed_log is None or not junit_path(passed_log.parent, ordinal).is_file()
         ):
             raise DriverError(
                 f"passing pytest omitted its JUnit receipt: gate {ordinal}"
@@ -386,6 +395,15 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             state = PostsubmitStatus.GREEN
     except GateCancellation as exc:
         state, error = PostsubmitStatus.CANCELLED, str(exc)
+    except GateFailure as exc:
+        state = (
+            PostsubmitStatus.RED if exc.clean_closure else PostsubmitStatus.INCONCLUSIVE
+        )
+        error = (
+            str(exc)
+            if exc.clean_closure
+            else f"gate failure without clean runner closure: {exc}"
+        )
     except CandidateFailure as exc:
         # Main's own commits decided this failure (a gate failed for its own
         # reason, or main's gate policy is invalid).

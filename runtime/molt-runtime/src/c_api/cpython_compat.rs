@@ -306,17 +306,7 @@ fn dict_output_as_list(dict: u64, kind: crate::object::ops_dict::DictSnapshotKin
         let Some(storage) = c_dict_pointer(_py, dict) else {
             return 0;
         };
-        let Some(snapshot) =
-            (unsafe { crate::object::ops_dict::dict_snapshot(_py, storage, kind) })
-        else {
-            return 0;
-        };
-        let list = crate::object::builders::alloc_list_from_snapshot(_py, snapshot);
-        if list.is_null() {
-            0
-        } else {
-            MoltObject::from_ptr(list).bits()
-        }
+        unsafe { crate::object::ops_dict::dict_snapshot_list(_py, storage, kind) }.unwrap_or(0)
     })
 }
 

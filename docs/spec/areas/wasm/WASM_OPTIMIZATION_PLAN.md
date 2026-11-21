@@ -550,6 +550,9 @@ Final publication removes any remaining debug/name sections under the default
 policy; optimization without preservation may discard them earlier.
 The debug-stripped side-module link also compresses relocated instruction
 operands. Its placement and target metadata travel with the app.
+The side link binds the selected WASI SDK's libc and compiler-rt archives by
+digest. It extracts only members demanded by the app, including `fmod` for
+LLVM's floating remainder. App imports still pass the split host ABI check.
 
 **Final link results are content-addressed.** A final link (`tools/wasm_link.py`:
 wasm-ld, post-link transforms, wasm-opt and split-runtime processing) is keyed by

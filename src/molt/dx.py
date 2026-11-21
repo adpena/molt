@@ -695,6 +695,32 @@ def session_targets_dir(target_root: Path) -> Path:
     return target_root / "sessions"
 
 
+def _checkout_cargo_target(artifact: Path, source: Path, *, reusable: bool) -> Path:
+    if artifact == source:
+        return artifact / "target"
+    relative = ("target", "checkouts", checkout_component(source))
+    if reusable:
+        from molt.default_paths import hot_path
+
+        return hot_path(artifact, *relative)
+    return artifact.joinpath(*relative)
+
+
+def checkout_cargo_target_roots(
+    artifact_root: Path, *, source_root: Path
+) -> tuple[Path, ...]:
+    """Physical checkout roots for retirement on the artifact and hot volumes."""
+
+    artifact = artifact_root.expanduser().resolve()
+    source = source_root.expanduser().resolve()
+    return tuple(
+        dict.fromkeys(
+            _checkout_cargo_target(artifact, source, reusable=reusable)
+            for reusable in (False, True)
+        )
+    )
+
+
 def cargo_target_dir_for_artifact_root(
     artifact_root: Path,
     session_id: str | None,
@@ -704,21 +730,14 @@ def cargo_target_dir_for_artifact_root(
     """Select persistent Cargo intermediates for one source checkout.
 
     Local targets already belong to their checkout. Shared artifact roots need
-    the same stable checkout identity used by uv environments; a session alone
-    cannot distinguish divergent worktrees. Explicit target overrides bypass
-    this default selector and remain caller-owned.
+    the same stable checkout identity used by uv environments. Reusable
+    targets benefit from the hot volume's compiler cache. Pinned graphs use
+    the artifact volume so each session cannot grow the hot mirror. Explicit
+    target overrides bypass this default selector and remain caller-owned.
     """
     artifact = artifact_root.expanduser().resolve()
     source = source_root.expanduser().resolve()
-    target = artifact / "target"
-    if artifact != source:
-        from molt.default_paths import hot_path
-
-        # HF-942: on the hot volume when the artifact root binds one, beside
-        # the kache store, so a restore clones instead of copying: a full
-        # molt-runtime dev-fast restore took 8.9-11.6 s there and 73.8-200.1 s
-        # on the shared data volume.
-        target = hot_path(artifact, "target", "checkouts", checkout_component(source))
+    target = _checkout_cargo_target(artifact, source, reusable=not session_id)
     return session_scoped_target_dir(target, session_id)
 
 
@@ -2543,7 +2562,11 @@ def _purpose_parts(purpose: str) -> tuple[str, ...]:
 
 
 def scratch_dir(
-    repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
+    repo_root: Path,
+    purpose: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    artifact: Path | None = None,
 ) -> Path:
     """Return the scratch directory for one purpose, such as ``"bench"``.
 
@@ -2551,12 +2574,21 @@ def scratch_dir(
     the selected scratch storage. Its lane-owned root is created, bound and
     stamped; the purpose directory itself is not created. Existing control
     namespaces retain their own placement and retirement protocols.
+    A caller that already resolved its artifact root may reuse that selection.
     """
 
     from .checkout_state import scratch_control_names, scratch_state_root
 
     parts = _purpose_parts(purpose)
-    root = scratch_root(repo_root, env)
+    root = (
+        scratch_root(repo_root, env)
+        if artifact is None
+        else _scratch_root_for(
+            artifact,
+            repo_root.expanduser().resolve(),
+            os.environ if env is None else env,
+        )
+    )
     if parts[0] in scratch_control_names():
         return root.parent.joinpath(*parts)
     return scratch_state_root(root.parent, owner=repo_root).joinpath(*parts)
@@ -2883,7 +2915,7 @@ class RunContext:
         # MOLT_SESSION_ID (perf/bench/test-shard isolation, e.g. perf_scoreboard,
         # bench_*, molt_dev difftest, development_artifact_env(session_id=...)). The
         # common interactive/CI build path leaves it unset -> a STABLE persistent
-        # target dir for this checkout on the external volume, so compilation
+        # target dir for this checkout, so compilation
         # artifacts SURVIVE across sessions/processes instead of paying a full cold
         # compile every invocation. Cargo's own build lock plus the compiler-build
         # resource mutex serialize concurrent writers safely. This is the

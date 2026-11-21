@@ -1096,36 +1096,49 @@ def target_build_control_dirs(
 
 
 def checkout_state_roots(
-    source_root: Path, environment: Mapping[str, str]
+    source_root: Path,
+    environment: Mapping[str, str],
+    *,
+    selected_target: Path | None = None,
 ) -> tuple[CheckoutStateRoot, ...]:
     """The existing state roots of ``source_root`` under its shared artifact root.
 
-    They include the build-control roots of its checkout target and of the
-    pinned sessions below it. A plain clone keeps its target inside the
-    checkout and its scratch in the host temporary folder, so it has none.
+    Retirement inventories the checkout's Cargo targets and build control on
+    both volumes. A live stamp selects only its Cargo target, that session's
+    enclosing target, and its own build control. A plain clone keeps its
+    target inside the checkout and its scratch in the host temporary folder.
     """
     from .build_state_layout import build_state_address
-    from .dx import artifact_root, cargo_target_dir_for_artifact_root
+    from .dx import artifact_root, checkout_cargo_target_roots, session_targets_dir
 
     source = source_root.expanduser().resolve()
     artifact = artifact_root(source, environment)
     if artifact == source or source in artifact.parents:
         return ()
     roots: list[CheckoutStateRoot] = []
-    target = cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
-    sessions = _directories(target / "sessions")
+    targets: list[Path] = []
+    for root in checkout_cargo_target_roots(artifact, source_root=source):
+        if selected_target is None:
+            targets.extend((root, *_directories(session_targets_dir(root))))
+        elif selected_target == root:
+            targets.append(root)
+        elif selected_target.parent == session_targets_dir(root):
+            targets.extend((root, selected_target))
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
         parent = artifact.joinpath(*container)
         if kind == "build-control":
-            for owner in (target, *sessions):
-                path = parent / build_state_address(owner)
+            for owner in targets:
+                if selected_target is not None and owner != selected_target:
+                    continue
+                try:
+                    path = parent / build_state_address(owner)
+                except ValueError:
+                    continue
                 if path.is_dir() and not path.is_symlink():
                     roots.append(CheckoutStateRoot(path, kind, owner))
             continue
         candidates = (
-            [target, *sessions]
-            if kind == "cargo-target"
-            else [parent / _owner_key(kind, source)]
+            targets if kind == "cargo-target" else [parent / _owner_key(kind, source)]
         )
         roots.extend(
             CheckoutStateRoot(path, kind, source)
@@ -1160,17 +1173,12 @@ def stamp_checkout_state(
             source_root=source_root,
         )
     )
-    targets = {selected}
-    if os.path.normcase(selected.parent.name) == "sessions":
-        targets.add(selected.parent.parent)
     if target_use_artifact_root(selected) is not None:
         record_checkout_target_use(selected, checkout=source_root)
     stamped: list[CheckoutStateRoot] = []
-    for root in checkout_state_roots(source_root, environment):
-        if root.kind == "cargo-target" and root.path not in targets:
-            continue
-        if root.kind == "build-control" and root.owner != selected:
-            continue
+    for root in checkout_state_roots(
+        source_root, environment, selected_target=selected
+    ):
         with checkout_state_use(((root.path, CheckoutOwner(root.owner, root.kind)),)):
             stamped.append(root)
     return tuple(stamped)

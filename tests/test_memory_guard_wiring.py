@@ -74,7 +74,12 @@ def _own_host_records(root: Path) -> set[str]:
     prefix = f"guard-{os.getpid()}-"
     return {
         path.name
-        for directory in (root / "active", root / "retired")
+        for directory in (
+            root / "active",
+            memory_guard_paths.retired_guard_marker_pid_dir(
+                root / "active", str(os.getpid())
+            ),
+        )
         if directory.is_dir()
         for path in directory.iterdir()
         if path.name.startswith(prefix)
@@ -89,7 +94,7 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
     assert os.environ[memory_guard_paths.STATE_ROOT_ENV] == str(roots.state_root)
     assert roots.state_root != roots.host_state_root
     retired = roots.state_root / "retired"
-    before = set(retired.glob("guard-*.json")) if retired.is_dir() else set()
+    before = set(retired.glob("*/guard-*.json"))
     own_before = _own_host_records(roots.host_state_root)
 
     # One guard in this process, then a guard started as a child process.
@@ -106,13 +111,20 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
         check=True,
     )
 
-    created = set(retired.glob("guard-*.json")) - before
+    created = set(retired.glob("*/guard-*.json")) - before
     pids = {int(path.name.split("-")[1]) for path in created}
     assert os.getpid() in pids and len(pids) >= 2, sorted(created)
     for marker in created:
+        pid = marker.name.split("-")[1]
+        assert marker.parent.name == pid
         token = marker.stem.rsplit("-", 1)[1]
         assert not (roots.host_state_root / "active" / marker.name).exists()
-        assert not (roots.host_state_root / "retired" / marker.name).exists()
+        assert not (
+            memory_guard_paths.retired_guard_marker_pid_dir(
+                roots.host_state_root / "active", pid
+            )
+            / marker.name
+        ).exists()
         assert not (roots.host_scratch_root / token).exists()
     assert _own_host_records(roots.host_state_root) == own_before
     # Their scratch generations lived and ended in the session root.
@@ -999,13 +1011,12 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             Path(captured["env"]["MOLT_PYTEST_CURRENT_TEST_FILE"]).parent
             == summary.parent
         )
-    # The guard and every test process start inside the run context (HF-114):
-    # Cargo builds go to the artifact root's target, under this checkout's
-    # stable component when the root is shared (HF-45).
+    # The guard and every test process start inside the run context (HF-114).
+    # Cargo keeps the reusable checkout target selected by DX, including its
+    # placement on a bound hot mirror.
     child_env = captured["env"]
     assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
     child_target = Path(child_env["CARGO_TARGET_DIR"])
-    assert child_target.is_relative_to(Path(child_env["MOLT_EXT_ROOT"]) / "target")
     assert child_target == dx.cargo_target_dir_for_artifact_root(
         Path(child_env["MOLT_EXT_ROOT"]), None, source_root=REPO_ROOT
     )
