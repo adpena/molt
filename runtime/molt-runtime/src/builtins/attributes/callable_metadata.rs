@@ -19,10 +19,14 @@ pub(crate) unsafe fn read(
                 }
                 let function = MoltObject::from_ptr(public).bits();
                 let value = if declared == CallableMetadata::Code {
-                    crate::builtins::functions::molt_function_get_code_attached_body(py, function)
+                    crate::builtins::functions::molt_function_get_code(
+                        py.attached_context(),
+                        function,
+                    )
                 } else {
-                    crate::builtins::functions::molt_function_get_globals_attached_body(
-                        py, function,
+                    crate::builtins::functions::molt_function_get_globals(
+                        py.attached_context(),
+                        function,
                     )
                 };
                 return if exception_pending(py) {

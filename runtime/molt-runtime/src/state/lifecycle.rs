@@ -1469,8 +1469,8 @@ pub(crate) mod shutdown_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{THREAD_LOCAL_DROP_TEST_TRACE, clear_special_cache, clear_worker_thread_state};
-    use crate::{MoltObject, alloc_string, runtime_state};
+    use super::{THREAD_LOCAL_DROP_TEST_TRACE, clear_worker_thread_state};
+    use crate::{MoltObject, runtime_state};
     use std::sync::atomic::Ordering;
 
     #[test]

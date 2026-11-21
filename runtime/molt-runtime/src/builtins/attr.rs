@@ -18,20 +18,19 @@ use crate::builtins::exceptions::{
     molt_exception_last_pending_attached_body,
 };
 use crate::{
-    ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
-    TYPE_ID_CLASSMETHOD, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER,
-    TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
-    TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
-    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, builtin_class_method_bits, builtin_classes, builtin_func_bits,
-    call_callable0, call_callable1, call_callable2, call_callable3, class_bases_bits,
-    class_bases_vec, class_dict_bits, class_layout_version_bits, class_mro_pinned, class_mro_view,
-    class_name_bits, clear_exception, dec_ref_bits, dict_get_in_place, dict_set_in_place,
-    exception_last_bits_noinc, exception_pending, inc_ref_bits, init_atomic_bits,
-    is_builtin_class_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_bound_method_new_attached_body, obj_from_bits, object_class_bits, object_type_id,
-    profile_hit_unchecked, raise_exception, runtime_state, string_bytes, string_len,
-    string_obj_to_owned, type_name, type_of_bits,
+    FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
+    TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FOREIGN,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_MAP,
+    TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs, alloc_string, alloc_tuple,
+    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable0, call_callable1,
+    call_callable2, call_callable3, class_bases_bits, class_bases_vec, class_dict_bits,
+    class_layout_version_bits, class_mro_pinned, class_mro_view, class_name_bits, clear_exception,
+    dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_last_bits_noinc,
+    exception_pending, inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_bound_method_new_attached_body, obj_from_bits, object_class_bits,
+    object_type_id, profile_hit_unchecked, raise_exception, runtime_state, string_bytes,
+    string_len, string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
