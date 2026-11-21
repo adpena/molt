@@ -193,32 +193,30 @@ impl<'ctx> LlvmBackend<'ctx> {
         builder.build_return(None).unwrap();
         if let Some(block) = emitter.slow_block {
             builder.position_at_end(block);
-            match operation {
-                RefcountOperation::Retain => {
-                    builder
-                        .build_execution_call(
-                            slow,
-                            &[function.get_nth_param(1).unwrap().into()],
-                            "",
-                        )
-                        .unwrap();
-                }
-                // A release whose count read 1 reaches the module's terminal
-                // release, which frees an unobserved plain instance inline
-                // (`object_lifecycle`) and calls `molt_dec_ref_obj` otherwise.
-                RefcountOperation::Release => {
-                    let terminal = self.release_terminal_helper();
-                    builder
-                        .build_execution_call(
-                            terminal,
-                            &[
-                                function.get_nth_param(1).unwrap().into(),
-                                function.get_nth_param(2).unwrap().into(),
-                            ],
-                            "",
-                        )
-                        .unwrap();
-                }
+            let plain =
+                RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC) == RefcountStorage::Plain;
+            if operation == RefcountOperation::Retain || !plain {
+                // A retain, and every release of a hardened or atomic build,
+                // which never frees inline, call the runtime directly.
+                builder
+                    .build_execution_call(slow, &[function.get_nth_param(1).unwrap().into()], "")
+                    .unwrap();
+            } else {
+                // With plain storage, a release's slow call reaches the
+                // module's terminal release, which frees an unobserved plain
+                // instance inline (`object_lifecycle`) and calls
+                // `molt_dec_ref_obj` otherwise.
+                let terminal = self.release_terminal_helper();
+                builder
+                    .build_execution_call(
+                        terminal,
+                        &[
+                            function.get_nth_param(1).unwrap().into(),
+                            function.get_nth_param(2).unwrap().into(),
+                        ],
+                        "",
+                    )
+                    .unwrap();
             }
             builder.build_return(None).unwrap();
         }

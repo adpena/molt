@@ -602,15 +602,21 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
 
     fn refcount_site(&mut self, operation: RefcountOperation) -> NativeRefcountSite {
-        // A release whose count read 1 reaches the program's terminal-release
-        // helper, which frees an unobserved plain instance inline.
+        // With plain refcount storage, a release's slow call reaches the
+        // program's terminal-release helper, which frees an unobserved plain
+        // instance inline. A hardened or atomic build never frees inline, so
+        // its releases call the runtime directly.
+        let plain = molt_codegen_abi::inline_refcount::RefcountStorage::for_build(
+            molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
+        ) == molt_codegen_abi::inline_refcount::RefcountStorage::Plain;
         let slow = match operation {
             RefcountOperation::Retain => self.runtime_callee(RuntimeFn::IncRefObj),
-            RefcountOperation::Release => self.define_helper(
+            RefcountOperation::Release if plain => self.define_helper(
                 crate::codegen_ssa::RELEASE_TERMINAL_HELPER,
                 1,
                 &crate::codegen_ssa::ReleaseTerminalBody,
             ),
+            RefcountOperation::Release => self.runtime_callee(RuntimeFn::DecRefObj),
         };
         NativeRefcountSite {
             slow,

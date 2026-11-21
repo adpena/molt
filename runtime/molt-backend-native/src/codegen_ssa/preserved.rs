@@ -617,14 +617,17 @@ mod tests {
             "borrowed operands: {:?}",
             run.refcounts
         );
-        let run = lower(preserved(Some(OpKind::TypeOf), 1), &[OBJECT]);
+        // `type(value)` of an immediate takes its site's miss, the runtime
+        // entry, and borrows its operand.
+        let run = lower(preserved(Some(OpKind::TypeOf), 1), &[inline(5)]);
         assert_eq!(
             run.results,
             [Value::Word(literal_word(
                 RuntimeFn::TypeOf,
-                &key(&[OBJECT])
+                &key(&[inline(5)])
             ))]
         );
+        assert!(run.refcounts.is_empty(), "{:?}", run.refcounts);
         // `send` takes two operands: one is refused before any call.
         let run = lower(preserved(Some(OpKind::GenSend), 1), &[OBJECT]);
         assert_eq!(run.fact, (false, None));

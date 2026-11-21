@@ -429,6 +429,19 @@ pub(crate) mod tests {
         fn site(&mut self, body: crate::codegen_ssa::SiteBody, args: &[Value]) -> Value {
             use crate::codegen_ssa::SiteBody;
             let words: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            // The model has no allocator: an allocation, whose first word is
+            // its class, takes its miss, the runtime constructor.
+            if let SiteBody::ObjectAlloc { root, .. } = body {
+                let (entry, operands) = if root {
+                    (RuntimeFn::ObjectNew, &words[..0])
+                } else {
+                    (RuntimeFn::ObjectNewBound, &words[..1])
+                };
+                return Value::Word(
+                    self.run_runtime(entry, operands)
+                        .expect("an allocation's miss answers a word"),
+                );
+            }
             assert!(
                 words[0] & (QUIET_NAN | (7 << 48)) != QUIET_NAN | (4 << 48),
                 "the model has no objects for {body:?}"
@@ -459,10 +472,14 @@ pub(crate) mod tests {
                 SiteBody::TypeOf => self
                     .run_runtime(RuntimeFn::TypeOf, &words[..1])
                     .expect("type(value)'s miss answers a word"),
-                SiteBody::ObjectAlloc { .. }
-                | SiteBody::ReleaseTerminal
-                | SiteBody::BuiltinType => {
-                    panic!("the model has no classes for {body:?}")
+                // `BUILTIN_TYPE(tag)` of a tag the thread record lends no
+                // class for.
+                SiteBody::BuiltinType => self
+                    .run_runtime(RuntimeFn::BuiltinType, &words[..1])
+                    .expect("a builtin type's miss answers a word"),
+                SiteBody::ObjectAlloc { .. } => unreachable!("taken above"),
+                SiteBody::ReleaseTerminal => {
+                    panic!("the model has no plans for {body:?}")
                 }
             })
         }
@@ -1135,6 +1152,8 @@ pub(crate) mod tests {
                 | RuntimeFn::LenList
                 | RuntimeFn::LocalsBuiltin
                 | RuntimeFn::ObjectNewBound
+                | RuntimeFn::ObjectNew
+                | RuntimeFn::BuiltinType
                 | RuntimeFn::ModuleGetAttr
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure

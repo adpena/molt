@@ -651,15 +651,23 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
 
 #[test]
 fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
-    // (kind, operands, raw tag attr, runtime symbol, expected arguments)
+    // (kind, operands, raw tag attr, runtime symbol, expected arguments).
+    // `type(value)` and `BUILTIN_TYPE(tag)` call their shared site bodies
+    // (`object_lifecycle`), whose miss is the runtime entry.
     let cases: &[(OpKind, usize, Option<i64>, &str, &str)] = &[
-        (OpKind::TypeOf, 1, None, "molt_type_of", "(i64 %boxed_int)"),
+        (
+            OpKind::TypeOf,
+            1,
+            None,
+            "__molt_type_of",
+            "(i64 %boxed_int, i64 %rc_admission)",
+        ),
         (
             OpKind::BuiltinType,
             1,
             None,
-            "molt_builtin_type",
-            "(i64 %boxed_int)",
+            "__molt_builtin_type",
+            "(i64 %boxed_int, i64 %rc_admission)",
         ),
         (
             OpKind::GetAttrNameDefault,
@@ -760,6 +768,18 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
             .verify()
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         let call = format!("call i64 @{symbol}{arguments}");
+        let miss = match kind {
+            OpKind::TypeOf => Some("molt_type_of"),
+            OpKind::BuiltinType => Some("molt_builtin_type"),
+            _ => None,
+        };
+        if let Some(miss) = miss {
+            let module = backend.module.print_to_string().to_string();
+            assert!(
+                module.contains(&format!("call i64 @{miss}")),
+                "{kind}: the site body's miss is the runtime entry: {module}"
+            );
+        }
         let release =
             format!("call void @__molt_inline_release(i64 %{kind}_owner_bits, i64 %rc_admission)");
         assert!(
