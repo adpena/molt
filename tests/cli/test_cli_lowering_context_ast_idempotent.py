@@ -198,7 +198,12 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
         sys.set_int_max_str_digits(640)
         for raw in [valid, *invalid]:
             analysis = {
-                **source_metadata,
+                "size": source_metadata["size"],
+                "source_sha256": source_metadata["source_sha256"],
+                "parser": [sys.implementation.name, sys.version],
+                "module_name": "mod",
+                "is_package": False,
+                "target_python": MC._DEFAULT_TARGET_PYTHON_VERSION.tag,
                 "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
                 "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
                 "import_scan_mode": "module_init",
@@ -231,8 +236,14 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
             analysis_result = MC._validate_persisted_module_analysis_payload(
                 json.loads(json.dumps(analysis)),
                 source,
-                import_scan_mode="module_init",
-                path_stat=source.stat(),
+                identity=MC._module_analysis_record_identity(
+                    MC.PythonSourceSnapshot.capture(source),
+                    module_name="mod",
+                    is_package=False,
+                    import_scan_mode="module_init",
+                    target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
+                ),
+                snapshot=None,
             )
             lowering_result = MC._validate_persisted_module_lowering_payload(
                 json.loads(json.dumps(lowering)),
@@ -294,7 +305,12 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             {"const": False},
         ]
         analysis = {
-            **source_metadata,
+            "size": source_metadata["size"],
+            "source_sha256": source_metadata["source_sha256"],
+            "parser": [sys.implementation.name, sys.version],
+            "module_name": "mod",
+            "is_package": False,
+            "target_python": MC._DEFAULT_TARGET_PYTHON_VERSION.tag,
             "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
             "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
             "import_scan_mode": "module_init",
@@ -337,8 +353,14 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         analysis_result = MC._validate_persisted_module_analysis_payload(
             persisted(analysis),
             source,
-            import_scan_mode="module_init",
-            path_stat=source.stat(),
+            identity=MC._module_analysis_record_identity(
+                MC.PythonSourceSnapshot.capture(source),
+                module_name="mod",
+                is_package=False,
+                import_scan_mode="module_init",
+                target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
+            ),
+            snapshot=None,
         )
         assert analysis_result == (defaults, kinds)
         lowering_result = MC._validate_persisted_module_lowering_payload(

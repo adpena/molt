@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import sys
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -65,7 +66,6 @@ from molt.cli.function_records import (
     decode_function_records,
 )
 from molt.cli.module_graph_cache import (
-    _resolved_module_cache_key,
     _namespace_premise_cache_identity,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
@@ -729,7 +729,8 @@ def _frontend_lowering_cache_disabled() -> bool:
 # The typed dataclass projection reserves a new JSON tag. Old name maps did not
 # escape it, so do not decode those records under the extended codec.
 # 15: module function defaults carry their definer's symbol base.
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 15
+# 16: portable source/request identity; no host-path timestamps in the record.
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 16
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 13
@@ -738,54 +739,64 @@ _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 13
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
 
-def _module_analysis_record_key(
-    path: Path,
+def _module_analysis_record_identity(
+    snapshot: PythonSourceSnapshot,
     *,
     module_name: str,
     is_package: bool | None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
     native_support_function_roots: tuple[str, ...] = (),
-) -> str:
-    """Source/request identity; source bytes are qualified by the reader."""
-    package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
-    key_parts = [
-        module_name,
-        package_kind,
-        import_scan_mode,
-        repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
-        "module-analysis",
-        target_python.tag,
-        _frontend_semantic_tooling_fingerprint(),
-    ]
-    return _resolved_module_cache_key(
-        os.fspath(path),
-        *key_parts,
+) -> dict[str, object]:
+    """Portable analysis identity, separate from live source-path admission."""
+    return {
+        "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+        "parser": [sys.implementation.name, sys.version],
+        "source_sha256": snapshot.sha256,
+        "size": len(snapshot.content),
+        "module_name": module_name,
+        "is_package": is_package,
+        "import_scan_mode": import_scan_mode,
+        "body_selection": ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
+        "target_python": target_python.tag,
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+    }
+
+
+def _module_analysis_record_key(identity: Mapping[str, object]) -> str:
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
     )
+    return hashlib.sha256(encoded).hexdigest()[:24]
 
 
 def _validate_persisted_module_analysis_payload(
     payload: Mapping[str, Any] | None,
     path: Path,
     *,
-    import_scan_mode: ImportScanMode,
-    path_stat: os.stat_result | None,
+    identity: Mapping[str, object],
     snapshot: PythonSourceSnapshot | None = None,
-    native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     """Admit analysis only after schema, semantic and source checks pass."""
     if payload is None:
         return None
+    if snapshot is None:
+        try:
+            snapshot = PythonSourceSnapshot.capture(path)
+        except OSError:
+            return None
+    if snapshot.path.resolve() != path.resolve():
+        return None
     if (
-        payload.get("version") != _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint")
-        != _frontend_semantic_tooling_fingerprint()
-        or payload.get("import_scan_mode") != import_scan_mode
-        or payload.get("body_selection")
-        != ModuleBodySelection.from_requested_roots(
-            native_support_function_roots
-        ).payload()
-        or "imports" in payload
+        set(payload) != set(identity) | {"func_defaults", "func_kinds"}
+        or identity.get("source_sha256") != snapshot.sha256
+        or identity.get("size") != len(snapshot.content)
+        or any(
+            type(payload.get(name)) is not type(value) or payload.get(name) != value
+            for name, value in identity.items()
+        )
     ):
         return None
     try:
@@ -802,21 +813,6 @@ def _validate_persisted_module_analysis_payload(
         for name, kind in raw_kinds.items()
     ):
         return None
-    if snapshot is not None:
-        if (
-            snapshot.path.resolve() != path.resolve()
-            or payload.get("size") != len(snapshot.content)
-            or payload.get("source_sha256") != snapshot.sha256
-        ):
-            return None
-    else:
-        if path_stat is None:
-            try:
-                path_stat = path.stat()
-            except OSError:
-                return None
-        if not _payload_source_matches(payload, path, path_stat):
-            return None
     normalized: dict[str, dict[str, Any]] = {}
     for func_name, func_payload in raw_defaults.items():
         if not isinstance(func_name, str) or not isinstance(func_payload, dict):
@@ -834,21 +830,26 @@ def _read_persisted_module_analysis(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
-    path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     snapshot: PythonSourceSnapshot | None = None,
     native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     if _frontend_lowering_cache_disabled():
         return None
-    key = _module_analysis_record_key(
-        path,
+    if snapshot is None:
+        try:
+            snapshot = PythonSourceSnapshot.capture(path)
+        except OSError:
+            return None
+    identity = _module_analysis_record_identity(
+        snapshot,
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
         native_support_function_roots=native_support_function_roots,
     )
+    key = _module_analysis_record_key(identity)
     record = frontend_record_files().get(
         "module-analysis", key, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
     )
@@ -861,12 +862,7 @@ def _read_persisted_module_analysis(
     if not isinstance(payload, dict):
         return None
     result = _validate_persisted_module_analysis_payload(
-        payload,
-        path,
-        import_scan_mode=import_scan_mode,
-        path_stat=path_stat,
-        snapshot=snapshot,
-        native_support_function_roots=native_support_function_roots,
+        payload, path, identity=identity, snapshot=snapshot
     )
     if result is not None:
         record.refresh()
@@ -893,27 +889,17 @@ def _write_persisted_module_analysis(
         {"size": len(snapshot.content), "source_sha256": snapshot.sha256}, path, stat
     ):
         return
-    key = _module_analysis_record_key(
-        path,
+    identity = _module_analysis_record_identity(
+        snapshot,
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
         native_support_function_roots=native_support_function_roots,
     )
+    key = _module_analysis_record_key(identity)
     payload = {
-        "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
-        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
-        "module_name": module_name,
-        "is_package": is_package,
-        "import_scan_mode": import_scan_mode,
-        "body_selection": ModuleBodySelection.from_requested_roots(
-            native_support_function_roots
-        ).payload(),
-        "target_python": target_python.tag,
-        "size": len(snapshot.content),
-        "mtime_ns": stat.st_mtime_ns,
-        "source_sha256": snapshot.sha256,
+        **identity,
         "func_defaults": func_defaults,
         "func_kinds": func_kinds,
     }
@@ -921,7 +907,10 @@ def _write_persisted_module_analysis(
         "module-analysis",
         key,
         json.dumps(
-            _cache_json_value(payload), separators=(",", ":"), default=_json_ir_default
+            _cache_json_value(payload),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=_json_ir_default,
         ).encode(),
     )
 
@@ -1137,7 +1126,6 @@ def _load_module_analysis(
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
-            path_stat=path_stat,
             target_python=target_python,
             snapshot=snapshot,
             native_support_function_roots=native_support_function_roots,
