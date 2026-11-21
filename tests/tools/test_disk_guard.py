@@ -1268,10 +1268,6 @@ def _checkout_state(ext: Path, checkout: Path) -> dict[str, Path]:
         "cargo-target": dx.cargo_target_dir_for_artifact_root(
             ext, None, source_root=checkout
         ),
-        # Retired mutable layout remains covered by the retirement authority.
-        "uv-environment": ext
-        / "uv-project-envs"
-        / (f"dx__py3.12__src-{dx.checkout_component(checkout)}"),
         "pytest-cache": checkout_state.checkout_scratch_state_dir(
             "pytest-cache", checkout, env
         ),
@@ -1289,7 +1285,6 @@ def _checkout_state(ext: Path, checkout: Path) -> dict[str, Path]:
     for root in roots.values():
         root.mkdir(parents=True)
         (root / "payload.bin").write_bytes(b"\0" * 64)
-    (roots["uv-environment"] / "pyvenv.cfg").write_text("home = /x\n", "utf-8")
     return roots
 
 
@@ -1360,7 +1355,7 @@ def test_a_removed_checkouts_state_retires_after_the_protection_window(tmp_path)
     unrecorded = _checkout_state(ext, projects / "never-stamped")
     for checkout in (gone, recent, live):
         stamped = checkout_state.stamp_checkout_state(checkout, env)
-        assert len(stamped) == 5
+        assert len(stamped) == len(gone_roots)
     gone.rmdir()
     recent.rmdir()
     now = time.time()
@@ -1394,7 +1389,7 @@ def test_a_checkout_removed_with_its_parent_retires_after_the_protection_window(
     gone = basetemp / "test_case0" / "project"
     gone.mkdir(parents=True)
     roots = _checkout_state(ext, gone)
-    assert len(checkout_state.stamp_checkout_state(gone, env)) == 5
+    assert len(checkout_state.stamp_checkout_state(gone, env)) == len(roots)
     shutil.rmtree(basetemp)
     now = time.time()
     _last_used(roots.values(), 1 * HOUR, now)
@@ -1838,7 +1833,9 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path, monkeypa
     _guard_marker(markers, 4242, "child_running")
 
     dry = dg.reclaim_checkout_state(retired, root=ext, env=env, apply=False)
-    assert len(dry.reclaimed) == 5 and all(p.is_dir() for p in retired_roots.values())
+    assert len(dry.reclaimed) == len(retired_roots) and all(
+        p.is_dir() for p in retired_roots.values()
+    )
     result = dg.reclaim_checkout_state(retired, root=ext, env=env)
     assert _reclaimed(result) == _resolved(retired_roots.values())
     assert not any(path.exists() for path in retired_roots.values())
@@ -1846,43 +1843,6 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path, monkeypa
     assert all(path.is_dir() for path in earlier_roots.values())
     assert forged.is_dir(), "selection must not replace target-address binding"
     assert retired_roots["cargo-target"] in resolved_owners
-
-
-def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):
-    import venv
-
-    from molt import checkout_state
-    from tests.process_guard_common import run_guarded_test_process
-
-    ext, projects, env = _checkout_family(tmp_path)
-    gone = projects / "gone"
-    gone.mkdir()
-    roots = _checkout_state(ext, gone)
-    # The retiring process may run from the uv environment of its checkout.
-    venv.create(roots["uv-environment"], with_pip=False, symlinks=os.name != "nt")
-    checkout_state.stamp_checkout_state(gone, env)
-    gone.rmdir()
-    python = roots["uv-environment"] / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
-    code = (
-        "import json, sys; from pathlib import Path\n"
-        f"sys.path.insert(0, {str(ROOT)!r})\n"
-        "import tools.disk_guard as dg\n"
-        "r = dg.reclaim_checkout_state(Path(sys.argv[1]), root=sys.argv[2], env={})\n"
-        "print(json.dumps([sys.prefix, r.skipped, r.reclaimed]))\n"
-    )
-    completed = run_guarded_test_process(
-        [str(python), "-c", code, str(gone), str(ext)], cwd=tmp_path, timeout=120
-    )
-    assert completed.returncode == 0, completed.stderr
-    prefix, skipped, reclaimed = json.loads(completed.stdout.splitlines()[-1])
-    assert Path(prefix).resolve() == roots["uv-environment"].resolve()
-    assert {row["path"]: row["reason"] for row in skipped} == {
-        str(roots["uv-environment"].resolve()): "protected"
-    }
-    assert roots["uv-environment"].is_dir()
-    assert len(reclaimed) == 4 and not roots["cargo-target"].exists()
 
 
 def test_dx_completion_dispatches_idle_state_without_collecting_its_environment(
@@ -3042,9 +3002,7 @@ def test_checkout_session_foreign_record_and_name_do_not_grant_orphan_custody(tm
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure", "retirement"])
-@pytest.mark.parametrize(
-    "selected", ["session", "control", "uv-environment", "python-environment"]
-)
+@pytest.mark.parametrize("selected", ["session", "control"])
 def test_managed_shared_use_retains_idle_root_through_actual_operation(
     tmp_path, operation, selected
 ):
@@ -3057,36 +3015,7 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     roots = _checkout_state(ext, source)
     checkout_state.stamp_checkout_state(source, env)
     child, control = _session(ext, source, "long-reader")
-    if selected == "python-environment":
-        image = (
-            ext
-            / "build-environments"
-            / "development"
-            / dx.checkout_component(source)
-            / ("a" * 64)
-        )
-        image.mkdir(parents=True)
-        (image / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
-        (image / "payload.bin").write_bytes(b"immutable generation")
-        checkout_state.record_checkout_owner(
-            image, owner=source, kind="python-environment"
-        )
-        roots[selected] = image
-    chosen = {
-        "session": child,
-        "control": control,
-        "uv-environment": roots["uv-environment"],
-        **(
-            {"python-environment": roots[selected]}
-            if selected == "python-environment"
-            else {}
-        ),
-    }[selected]
-    image_bytes = {
-        path.relative_to(chosen): path.read_bytes()
-        for path in chosen.rglob("*")
-        if path.is_file()
-    }
+    chosen = {"session": child, "control": control}[selected]
     owner = checkout_state.bound_checkout_owner(chosen, ext)
     now = time.time()
     with checkout_state.checkout_state_use(((chosen, owner),)):
@@ -3108,15 +3037,7 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
             result = dg.reclaim_checkout_state(source, root=ext, env=env)
         assert chosen.is_dir()
         assert str(chosen.resolve()) not in _reclaimed(result)
-        if selected in ("session", "control"):
-            assert roots["cargo-target"].is_dir()
-        if selected == "python-environment":
-            assert checkout_state.read_checkout_owner(chosen) == owner
-            assert {
-                path.relative_to(chosen): path.read_bytes()
-                for path in chosen.rglob("*")
-                if path.is_file()
-            } == image_bytes
+        assert roots["cargo-target"].is_dir()
     # Ordinary eviction is allowed again once use ends and policy ages it.
     _last_used(
         [root for root in (*roots.values(), child, control) if root.exists()],
@@ -3126,11 +3047,6 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     reclaimed = {Path(path) for path in _reclaimed(_gc(ext, env, now))}
     assert not chosen.exists()
     assert any(path == chosen or path in chosen.parents for path in reclaimed)
-    if selected == "python-environment":
-        # Physical reclamation releases external use/owner metadata in the
-        # same collection; no retained rename generation needs it afterward.
-        assert checkout_state.read_checkout_owner(chosen) is None
-        assert not checkout_state._state_metadata_root(chosen).exists()
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure"])

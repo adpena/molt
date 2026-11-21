@@ -244,44 +244,50 @@ def test_read_git_identity_preserves_command_failure_as_unknown(
     assert agent_coordination.read_git_identity(tmp_path) == ("unknown", "unknown")
 
 
-def test_agent_coordination_exports_managed_bytecode_write_policy(
+def test_agent_coordination_exports_the_shared_bytecode_cache(
     monkeypatch, tmp_path: Path
 ) -> None:
     from tests.process_guard_common import run_custody_subject_process
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
 
     repo = tmp_path / "repo"
     artifacts = tmp_path / "artifacts"
-    # The checkout's selection record names its image; a caller's
+    # The checkout's lock names the shared environment; a caller's
     # UV_PROJECT_ENVIRONMENT is not consulted (HF-756).
-    materialize_development_environment(repo, artifacts, select=True)
+    shared = shared_environment(tmp_path, repo, artifacts)
+    cache = str(shared.parent / ".bytecode")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
-    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.delenv("MOLT_VENV", raising=False)
     agent_coordination.create_task(
         registry_root=repo, source_root=repo, task="managed-environment"
     )
     task = repo / "logs" / "agents" / "managed-environment"
     record = json.loads((task / "coordination.json").read_text(encoding="utf-8"))
+    shell = (task / "env.sh").read_text(encoding="utf-8").splitlines()
+    assert f'export PYTHONPYCACHEPREFIX="{cache}"' in shell
+    assert not any("PYTHONDONTWRITEBYTECODE" in line for line in shell)
     assert (
-        'export PYTHONDONTWRITEBYTECODE="1"'
-        in (task / "env.sh").read_text(encoding="utf-8").splitlines()
-    )
-    assert (
-        "$env:PYTHONDONTWRITEBYTECODE = '1'"
+        f"$env:PYTHONPYCACHEPREFIX = '{cache}'"
         in (task / "env.ps1").read_text(encoding="utf-8").splitlines()
     )
     completed = run_custody_subject_process(
-        [sys.executable, "-S", "-c", "import sys; print(int(sys.dont_write_bytecode))"],
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **record["dx_env"]},
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import sys; print(int(sys.dont_write_bytecode), sys.pycache_prefix)",
+        ],
+        env={
+            **{k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"},
+            **record["dx_env"],
+        },
         capture_output=True,
         text=True,
         check=True,
     )
-    assert completed.stdout == "1\n"
+    assert completed.stdout == f"0 {cache}\n"
 
 
 def test_agent_coordination_init_writes_report_and_json(

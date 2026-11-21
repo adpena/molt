@@ -29,32 +29,30 @@ import sys
 import time
 from typing import TYPE_CHECKING, Literal, assert_never, get_args
 
-from molt import python_environment_contract as _contract
 from molt import process_guard
 from molt.custody_layout import git_directories
 from molt.custody_layout import storage_rule
 from molt.exact_json import (
     ExactJsonError,
-    canonical_json_sha256,
     read_exact,
     write_exact,
 )
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
-from molt.toolchain_identity import StableRegularFileError
 
 if TYPE_CHECKING:
     from molt.python_interpreter import PythonInterpreterRequest
+    from molt.uv_environment import EnvironmentKey
 
 SCHEMA = "molt.checkout-provisioning.v1"
 STAMP_NAME = ".molt-provisioned.json"
 GUARD_PREFIX = "MOLT_CHECKOUT_PROVISIONING"
 PROVISION_TIMEOUT_S = 900.0
-# What a person runs when a checkout has no development image: venv_exec
-# provisions one itself (`bootstrap_argv`), so any command through it works.
+# What a person runs when a checkout has no development environment:
+# venv_exec syncs the shared one itself, so any command through it works.
 PROVISION_HINT = (
     "run `uv run --no-project python tools/venv_exec.py python -V`, "
-    "which provisions the development image"
+    "which syncs the shared development environment"
 )
 # A waiter outlasts the holder's whole provisioner budget.
 LOCK_TIMEOUT_S = PROVISION_TIMEOUT_S + 60.0
@@ -367,21 +365,8 @@ def _run(
         ) from exc
 
 
-def _lock_digests(spec: LockedTree | DevelopmentEnvironment) -> dict[str, str]:
+def _lock_digests(spec: LockedTree) -> dict[str, str]:
     digests: dict[str, str] = {}
-    if isinstance(spec, DevelopmentEnvironment):
-        from molt.source_build_environment_selection import capture_source_build_inputs
-
-        try:
-            return {
-                key: value
-                for key, value in capture_source_build_inputs(
-                    spec.checkout, editable=True
-                ).digests.items()
-                if value is not None
-            }
-        except (OSError, ValueError) as exc:
-            raise ProvisioningError(f"uv-environment: {exc}") from exc
     for relative in spec.lock_files:
         if relative in digests:
             continue
@@ -452,46 +437,25 @@ def _lock_path(spec: CheckoutInput) -> Path:
     return base / "molt" / "checkout-provisioning" / f"{spec.name}.lock"
 
 
-def _development_intent(spec: DevelopmentEnvironment) -> dict:
+def _development_key(spec: DevelopmentEnvironment) -> EnvironmentKey:
+    """The shared environment ``spec`` names (``molt.uv_environment``)."""
+    from molt import uv_environment
 
     try:
         groups = spec.groups
         if groups is None:
-            from molt.dx import DxConfigError, DxProject
-
-            try:
-                groups = DxProject(spec.checkout).dependency_groups()
-            except DxConfigError as exc:
-                raise ProvisioningError(str(exc)) from exc
-        python = (
-            spec.python or spec.environment.get("MOLT_UV_PROJECT_PYTHON", "").strip()
+            groups = uv_environment.default_groups(spec.checkout)
+        selector = (
+            spec.python
+            or spec.environment.get("MOLT_UV_PROJECT_PYTHON", "").strip()
+            or uv_environment.pinned_python(spec.checkout)
         )
-        if not python:
-            python = (
-                (spec.checkout / ".python-version").read_text(encoding="utf-8").strip()
-            )
-        if not python:
-            raise ProvisioningError("uv-environment: empty Python selection")
-        from molt.dx import DEFAULT_UV_PROJECT_PURPOSE, artifact_root
-
-        return {
-            "producer_contract": _contract.source_build_environment_contract(),
-            "python": python,
-            "groups": sorted(set(groups)),
-            "purpose": spec.environment.get(
-                "MOLT_UV_PROJECT_PURPOSE", DEFAULT_UV_PROJECT_PURPOSE
-            ),
-            "artifact_root": str(artifact_root(spec.checkout, spec.environment)),
-        }
-    except (OSError, ValueError) as exc:
-        raise ProvisioningError(
-            f"uv-environment: cannot read selection inputs: {exc}"
-        ) from exc
-
-
-def _development_selection_path(spec: DevelopmentEnvironment, intent: Mapping) -> Path:
-    control = _lock_path(spec).parent
-    return control / f"uv-environment.{canonical_json_sha256(intent)}.{STAMP_NAME}"
+        release = uv_environment.resolve_release(
+            selector, spec.checkout, spec.environment
+        )
+        return uv_environment.EnvironmentKey(release, tuple(sorted(set(groups))))
+    except uv_environment.UvEnvironmentError as exc:
+        raise ProvisioningError(f"uv-environment: {exc}") from exc
 
 
 def selected_development_environment(
@@ -501,124 +465,18 @@ def selected_development_environment(
     python: str | None = None,
     groups: tuple[str, ...] | None = None,
 ) -> Path | None:
-    """Read a bounded generation projection, never an admitted image or bytes.
+    """The finished shared environment of the selection, if any; never syncs."""
+    from molt import uv_environment
 
-    Path getters use this coordinate only. Operation boundaries load the real
-    published recipe before calling an input current or launching its Python.
-    """
     checkout = checkout.expanduser().resolve()
     spec = DevelopmentEnvironment(
         "uv-environment", checkout, ProcessEnvironment(environ), python, groups
     )
     if not declares(spec):
         return None
-    explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
-    if explicit:
-        selected = Path(explicit).expanduser()
-        if not selected.is_absolute():
-            selected = checkout / selected
-        return selected.absolute()
-    if git_directories(checkout) is None:
-        return None
-    # Only a recorded selection needs the intent. An explicit environment and
-    # a root that is no Git checkout (an installed bundle's source) select
-    # without it, so neither reads `.python-version` nor resolves the
-    # artifact root; operation boundaries still validate the selected recipe.
-    intent = _development_intent(spec)
-    path = _development_selection_path(spec, intent)
     try:
-        record = read_exact(
-            path, max_bytes=_MAX_STAMP_BYTES, label="development selection"
-        )
-    except (OSError, ExactJsonError, ValueError) as exc:
-        # The stable reader wraps an absent opening path. A changed or
-        # malformed existing record remains a refusal, never fresh intent.
-        if type(exc) is StableRegularFileError and isinstance(
-            exc.__cause__, FileNotFoundError
-        ):
-            return None
-        raise ProvisioningError(
-            f"uv-environment: invalid selection {path}: {exc}"
-        ) from exc
-    if (
-        not isinstance(record, dict)
-        or set(record)
-        != {"schema", "input", "checkout", "intent", "locks", "generation"}
-        or record["schema"] != SCHEMA
-        or record["input"] != spec.name
-        or record["checkout"] != str(checkout)
-        or record["intent"] != intent
-        or not isinstance(record["generation"], str)
-        or not Path(record["generation"]).is_absolute()
-    ):
-        raise ProvisioningError(f"uv-environment: invalid selection {path}")
-    if record["locks"] != _lock_digests(spec):
-        return None
-    return Path(record["generation"])
-
-
-class _StaleDevelopmentInterpreter(ProvisioningError):
-    def __init__(self, root: Path, reason: str) -> None:
-        super().__init__(f"uv-environment: stale interpreter at {root}: {reason}")
-        self.root = root
-
-
-def _current_development_environment(spec: DevelopmentEnvironment) -> Path | None:
-    """Validate a selection's published recipe at an operation boundary."""
-    from molt.source_build_environment_selection import (
-        read_development_environment_selection,
-    )
-
-    selected = selected_development_environment(
-        spec.checkout, spec.environment, python=spec.python, groups=spec.groups
-    )
-    if selected is None:
-        return None
-    intent = _development_intent(spec)
-    try:
-        if not spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
-            try:
-                selected.lstat()
-            except FileNotFoundError:
-                # Selection records outlive reconstructible image payloads.
-                # Only a missing physical generation is a miss: a dangling
-                # root/ancestor or a foreign coordinate remains a refusal.
-                from molt.checkout_state import checkout_state_kind_of
-                from molt.dx import artifact_root, checkout_component
-                from molt.file_publication import resolve_owned_path
-
-                physical = resolve_owned_path(selected)
-                if (
-                    physical != selected
-                    or selected.parent.name != checkout_component(spec.checkout)
-                    or checkout_state_kind_of(
-                        selected, artifact_root(spec.checkout, spec.environment)
-                    )
-                    != "python-environment"
-                ):
-                    raise ProvisioningError(
-                        "uv-environment: selected development image is outside "
-                        "its physical checkout generation namespace"
-                    )
-                return None
-        from molt.python_interpreter import is_python_version_selector
-        from molt.python_interpreter import development_interpreter_problem
-
-        image = read_development_environment_selection(
-            selected,
-            repo_root=spec.checkout,
-            python=intent["python"]
-            if is_python_version_selector(intent["python"])
-            else None,
-            groups=tuple(intent["groups"]),
-        )
-        problem = development_interpreter_problem(
-            image.root, image.python_version.text, spec.environment, cwd=spec.checkout
-        )
-        if problem is not None:
-            raise _StaleDevelopmentInterpreter(image.root, problem)
-        return image.root
-    except (OSError, ValueError, _contract.SourceBuildEnvironmentError) as exc:
+        return uv_environment.selected(checkout, environ, _development_key(spec))
+    except uv_environment.UvEnvironmentError as exc:
         raise ProvisioningError(f"uv-environment: {exc}") from exc
 
 
@@ -837,11 +695,11 @@ def _owner_argv(spec: OwnedInstallation, *arguments: str) -> list[str]:
     # A repository tool imports only the standard library and its own
     # checkout. `-I -S` keeps this interpreter's site-packages, whose editable
     # install and sitecustomize name another checkout's molt, out of it.
-    from molt.python_environment_location import environment_bytecode_arguments
+    from molt.python_interpreter import readonly_bytecode_arguments
 
     return [
         sys.executable,
-        *environment_bytecode_arguments(Path(sys.prefix)),
+        *readonly_bytecode_arguments(Path(sys.prefix)),
         "-I",
         "-S",
         str(spec.checkout / spec.owner),
@@ -919,95 +777,38 @@ def _provision_owned(spec: OwnedInstallation) -> bool:
 def input_state(spec: CheckoutInput) -> InputState:
     """Whether ``spec`` is current, without provisioning it."""
     if isinstance(spec, DevelopmentEnvironment):
-        try:
-            return (
-                "current"
-                if _current_development_environment(spec) is not None
-                else "absent"
-            )
-        except _StaleDevelopmentInterpreter:
-            return "stale"
+        selected = selected_development_environment(
+            spec.checkout, spec.environment, python=spec.python, groups=spec.groups
+        )
+        return "current" if selected is not None else "absent"
     if isinstance(spec, LockedTree):
         return _locked_state(spec)
     return _owned_state(spec)
 
 
-def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensured:
-    """Make ``spec`` current; optionally recapture its development runtime recipe."""
-    if refresh_runtime:
-        if not isinstance(spec, DevelopmentEnvironment):
-            raise ProvisioningError("runtime refresh requires uv-environment")
-        if spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
-            raise ProvisioningError(
-                "runtime refresh cannot replace explicit UV_PROJECT_ENVIRONMENT"
-            )
+def ensure_input(spec: CheckoutInput) -> Ensured:
+    """Make ``spec`` current."""
     from molt.dx import provision_artifact_root_binding
 
     provision_artifact_root_binding(spec.checkout, spec.environment)
     started = time.monotonic()
     if isinstance(spec, DevelopmentEnvironment):
-        from molt.python_interpreter import is_python_version_selector
-        from molt.source_build_environment import development_environment
+        from molt import uv_environment
 
+        explicit = spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip()
+        if explicit:
+            selected = uv_environment.selected(spec.checkout, spec.environment)
+            assert selected is not None
+            return Ensured(spec.name, False, time.monotonic() - started, selected)
+        key = _development_key(spec)
         try:
-            intent = _development_intent(spec)
-            # A command/path selector or explicit refresh needs the publisher's
-            # exact runtime probe; bounded metadata cannot certify current bytes.
-            try:
-                selected = _current_development_environment(spec)
-            except _StaleDevelopmentInterpreter:
-                selected = None
-            if (
-                selected is not None
-                and not refresh_runtime
-                and is_python_version_selector(intent["python"])
-            ):
-                return Ensured(spec.name, False, time.monotonic() - started, selected)
-            with _ProvisioningLock(spec):
-                intent = _development_intent(spec)
-                locks = _lock_digests(spec)
-                try:
-                    _current_development_environment(spec)
-                except _StaleDevelopmentInterpreter as drift:
-                    if spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
-                        raise ProvisioningError(
-                            f"{drift}; cannot replace explicit UV_PROJECT_ENVIRONMENT; "
-                            "unset it and run canonical ensure"
-                        ) from drift
-                    from molt.source_build_environment import (
-                        retire_drifted_development_environment,
-                    )
-
-                    retire_drifted_development_environment(
-                        drift.root, spec.checkout, spec.environment
-                    )
-                image = development_environment(
-                    spec.checkout,
-                    python=intent["python"],
-                    groups=tuple(intent["groups"]),
-                    environ=spec.environment,
-                    provision=True,
-                )
-                if _lock_digests(spec) != locks:
-                    raise ProvisioningError(
-                        "uv-environment: declared inputs changed during publication"
-                    )
-                write_exact(
-                    _development_selection_path(spec, intent),
-                    {
-                        "schema": SCHEMA,
-                        "input": spec.name,
-                        "checkout": str(spec.checkout),
-                        "intent": intent,
-                        "locks": locks,
-                        "generation": str(image.root),
-                    },
-                )
-            return Ensured(
-                spec.name, image.provisioned, time.monotonic() - started, image.root
+            ready = uv_environment.selected(spec.checkout, spec.environment, key)
+            root = ready or uv_environment.environment(
+                spec.checkout, key, environ=spec.environment
             )
-        except (_contract.SourceBuildEnvironmentError, OSError, ValueError) as exc:
+        except uv_environment.UvEnvironmentError as exc:
             raise ProvisioningError(f"uv-environment: {exc}") from exc
+        return Ensured(spec.name, ready is None, time.monotonic() - started, root)
     if isinstance(spec, LockedTree):
         provisioned = _provision_locked(spec)
     else:
@@ -1023,9 +824,8 @@ def ensure(
     guard_source_root: Path | None = None,
     python: str | None = None,
     groups: tuple[str, ...] | None = None,
-    refresh_runtime: bool = False,
 ) -> Ensured:
-    """Publish/select the declared input through its existing owner."""
+    """Make the declared input current through its owner."""
     return ensure_input(
         checkout_input(
             name,
@@ -1034,8 +834,7 @@ def ensure(
             guard_source_root=guard_source_root,
             python=python,
             groups=groups,
-        ),
-        refresh_runtime=refresh_runtime,
+        )
     )
 
 
@@ -1046,10 +845,10 @@ def ensure_python_release(
     *,
     guard_source_root: Path | None = None,
 ) -> Ensured:
-    """Select the image whose interpreter is exactly ``request``'s release.
+    """Select the environment whose interpreter is exactly ``request``'s release.
 
-    The caller's own image selectors name the caller's image, not this
-    release, so they do not take part. The image holds the project's locked
+    The caller's own environment selectors name the caller's environment, not
+    this release, so they do not take part. It holds the project's locked
     runtime dependencies only: a compiler frontend needs no dependency group.
     """
     if request.micro is None:
@@ -1057,7 +856,7 @@ def ensure_python_release(
             f"uv-environment: CPython {request.selector} names no patch release"
         )
     environment = ProcessEnvironment(environ).without(
-        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PURPOSE")
+        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PYTHON")
     )
     return ensure(
         "uv-environment",
@@ -1075,7 +874,6 @@ def ensure_all(
     names: Iterable[CheckoutInputName] = DEFAULT_CHECKOUT_INPUT_NAMES,
     *,
     guard_source_root: Path | None = None,
-    refresh_runtime: bool = False,
 ) -> tuple[Ensured, ...]:
     """Provision every named input; report every failure together.
 
@@ -1083,26 +881,12 @@ def ensure_all(
     inputs that did succeed.
     """
     names = tuple(names)
-    if refresh_runtime:
-        if "uv-environment" not in names:
-            raise ProvisioningError("runtime refresh requires uv-environment")
-        environment = ProcessEnvironment(os.environ if environ is None else environ)
-        if environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
-            raise ProvisioningError(
-                "runtime refresh cannot replace explicit UV_PROJECT_ENVIRONMENT"
-            )
     done: list[Ensured] = []
     failures: list[str] = []
     for name in names:
         try:
             done.append(
-                ensure(
-                    name,
-                    checkout,
-                    environ,
-                    guard_source_root=guard_source_root,
-                    refresh_runtime=refresh_runtime and name == "uv-environment",
-                )
+                ensure(name, checkout, environ, guard_source_root=guard_source_root)
             )
         except ProvisioningError as exc:
             failures.append(str(exc))
@@ -1114,45 +898,6 @@ def ensure_all(
 def provisioning_command(name: CheckoutInputName) -> str:
     """The command a person or a setup step runs to provision ``name``."""
     return f"python -m molt.checkout_provisioning ensure {name}"
-
-
-def bootstrap_argv(name: CheckoutInputName, *, uv: str, checkout: Path) -> list[str]:
-    """Provision ``name`` from a bare uv interpreter, before any image exists.
-
-    The provisioning code's one third-party import is ``packaging``; uv
-    supplies it at the version ``uv.lock`` pins, so a fresh or moved checkout
-    needs no installed environment to make its first one. Run it with
-    ``src`` on ``PYTHONPATH`` (``bootstrap_env``).
-    """
-    import tomllib
-
-    lock = tomllib.loads((checkout / "uv.lock").read_text(encoding="utf-8"))
-    (version,) = {
-        package["version"]
-        for package in lock.get("package", ())
-        if package.get("name") == "packaging"
-    }
-    return [
-        uv,
-        "run",
-        "--no-project",
-        "--with",
-        f"packaging=={version}",
-        "python",
-        "-m",
-        "molt.checkout_provisioning",
-        "ensure",
-        name,
-    ]
-
-
-def bootstrap_env(env: Mapping[str, str], *, checkout: Path) -> dict[str, str]:
-    """``env`` with the checkout's ``src`` first on ``PYTHONPATH``."""
-    merged = dict(env)
-    prior = merged.get("PYTHONPATH")
-    source = str(checkout / "src")
-    merged["PYTHONPATH"] = source if not prior else os.pathsep.join((source, prior))
-    return merged
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1180,15 +925,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     binding.add_argument(
         "--clear", action="store_true", help="Clear the family's artifact-root binding."
     )
-    parser.add_argument(
-        "--refresh-runtime",
-        action="store_true",
-        help="Recapture the current Python runtime through the uv-environment publisher.",
-    )
     args = parser.parse_args(argv)
     if args.action == "artifact-root":
-        if args.inputs or args.refresh_runtime:
-            parser.error("artifact-root accepts no inputs or --refresh-runtime")
+        if args.inputs:
+            parser.error("artifact-root accepts no inputs")
         from molt.dx import (
             DxConfigError,
             artifact_root_binding_path,
@@ -1234,10 +974,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.inputs
         else DEFAULT_CHECKOUT_INPUT_NAMES
     )
-    if args.refresh_runtime and args.action != "ensure":
-        parser.error("--refresh-runtime requires ensure")
-    if args.refresh_runtime and "uv-environment" not in names:
-        parser.error("--refresh-runtime requires uv-environment")
     if args.action == "status":
         try:
             states = {
@@ -1253,9 +989,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{name}: {state}")
         return 0 if all(state == "current" for state in states.values()) else 1
     try:
-        done = ensure_all(
-            args.checkout, names=names, refresh_runtime=args.refresh_runtime
-        )
+        done = ensure_all(args.checkout, names=names)
     except ProvisioningError as exc:
         print(exc, file=sys.stderr)
         return 1

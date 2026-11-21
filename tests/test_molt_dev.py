@@ -44,7 +44,7 @@ Hazard -> proving test(s):
 """
 
 from __future__ import annotations
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 
 import argparse
@@ -858,9 +858,7 @@ def _gate_caller_env(hostile: Path) -> ProcessEnvironmentBuilder:
     ],
 )
 def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
 
     repo = tmp_path / "main"
     repo.mkdir()
@@ -875,7 +873,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
     env = _gate_caller_env(hostile)
     if selection == "worktree-main":
         _make_gate_venv(main_repo / ".venv", "main must not run")
-        with pytest.raises(DriverError, match="development image not selected"):
+        with pytest.raises(DriverError, match="development environment not selected"):
             drv.run_gate(
                 "python -c 'raise SystemExit(0)'",
                 repo,
@@ -886,10 +884,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         return
     managed = selection != "MOLT_VENV"
     if managed:
-        image = materialize_development_environment(
-            repo, tmp_path / "artifacts", runnable=True, select=True
-        )
-        selected = image.root
+        selected = shared_environment(tmp_path, repo, tmp_path / "artifacts")
         env["MOLT_EXT_ROOT"] = str(tmp_path / "artifacts")
         if selection == "UV_PROJECT_ENVIRONMENT":
             env["UV_PROJECT_ENVIRONMENT"] = os.path.relpath(selected, repo)
@@ -959,8 +954,9 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
                     "-I",
                     "-E",
                     "-c",
-                    "import sys; assert sys.pycache_prefix == sys.argv[1]; assert sys.dont_write_bytecode",
-                    str(selected / "bytecode"),
+                    "import sys; assert sys.pycache_prefix == sys.argv[1]; "
+                    "assert not sys.dont_write_bytecode",
+                    str(selected.parent / ".bytecode"),
                 ),
                 repo,
                 drv.prepare_gate_environment(
@@ -1002,15 +998,11 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
 def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     drv, tmp_path, wrapper, short_cargo_cache
 ):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
 
     repo = tmp_path / "source"
     repo.mkdir()
-    image = materialize_development_environment(
-        repo, tmp_path / "artifacts", runnable=True, select=True
-    )
+    shared = shared_environment(tmp_path, repo, tmp_path / "artifacts")
     env = _gate_caller_env(tmp_path / "hostile")
     env["MOLT_EXT_ROOT"] = str(tmp_path / "artifacts")
     for key in (
@@ -1063,9 +1055,9 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     assert dict(env) == before
     first, second = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
     assert first == second
-    assert first["prefix"] == str(image.root)
-    assert first["cache"] == str(image.root / "bytecode")
-    assert first["no_write"] is True
+    assert first["prefix"] == str(shared)
+    assert first["cache"] == str(shared.parent / ".bytecode")
+    assert first["no_write"] is False
     assert first[wrapper] == env[wrapper]
     assert first["SCCACHE_SERVER_PORT"] == "49971"
     # sccache refuses an explicit nonzero CARGO_INCREMENTAL; the profile decides.
@@ -1088,7 +1080,7 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
         env["UV_PROJECT_ENVIRONMENT"] = str(repo / ".venv")
     before = dict(env)
     message = (
-        "virtualenv Python not found"
+        "environment Python not found"
         if selector == "MOLT_VENV"
         else "managed development image refused"
     )
@@ -1112,7 +1104,7 @@ def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path
     work = tmp_path / "work"
     _git(main, "worktree", "add", "-q", "-b", "gate-test", str(work))
     (work / ".venv").mkdir()
-    with pytest.raises(DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development environment not selected"):
         drv.run_gate(
             ("python", "-c", "raise SystemExit(0)"),
             work,
@@ -1129,7 +1121,7 @@ def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
     drv, tmp_path
 ):
     env = _gate_caller_env(tmp_path / "absent")
-    with pytest.raises(DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development environment not selected"):
         drv.run_gate(
             'python -c "raise SystemExit(0)"',
             tmp_path,
@@ -1191,7 +1183,7 @@ def test_run_gate_quoted_windows_python_requires_project_environment(
         "_run_live_gate",
         lambda *args, **kwargs: pytest.fail("host shell launched"),
     )
-    with pytest.raises(DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development environment not selected"):
         drv.run_gate(
             f'{head} -c "raise SystemExit(0)"',
             tmp_path,
@@ -1618,7 +1610,7 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
         str(selected),
         literal,
     ]
-    with pytest.raises(DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development environment not selected"):
         drv.run_gate(
             command,
             tmp_path,
@@ -1628,43 +1620,6 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
                 requires_python=True,
             ),
         )
-
-
-@pytest.mark.parametrize("consumer", ["gate", "generated-merge"])
-def test_landing_consumers_refuse_a_drifted_explicit_managed_image(
-    drv, tmp_path, monkeypatch, consumer
-):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
-    from molt.python_interpreter import INTERPRETER_RECORD
-    from tools import generated_merge
-
-    root, artifacts = tmp_path / "landing-sandbox", tmp_path / "artifacts"
-    _init_repo(root)
-    image = materialize_development_environment(root, artifacts, select=True)
-    record_path = image.root / INTERPRETER_RECORD
-    record = json.loads(record_path.read_text(encoding="utf-8"))
-    parts = list(map(int, record["version"].split(".")))
-    parts[-1] += 1
-    record["version"] = ".".join(map(str, parts))
-    record_path.write_text(json.dumps(record), encoding="utf-8")
-    monkeypatch.delenv("MOLT_VENV", raising=False)
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
-    before = image.manifest_path.read_bytes()
-    with pytest.raises(
-        (DriverError, generated_merge.GeneratedMergeError),
-        match="stale interpreter.*explicit UV_PROJECT_ENVIRONMENT",
-    ):
-        if consumer == "gate":
-            drv.prepare_gate_environment(
-                root, ProcessEnvironment(os.environ), requires_python=True
-            )
-        else:
-            generated_merge.regenerate(root, ())
-    assert image.manifest_path.read_bytes() == before
-    assert not list((artifacts / "retired").glob("*/*.retirement.json"))
 
 
 def _write_gates(tmp_path: Path) -> Path:
@@ -2016,22 +1971,17 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
 
 
 def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
-    """A checkout's Cargo target and Python generation state under a shared root."""
+    """A checkout's Cargo target and the Python environment every checkout
+    shares under the same artifact root (not checkout state)."""
     from molt import dx
 
     target = dx.cargo_target_dir_for_artifact_root(ext, None, source_root=checkout)
-    uv_environment = (
-        ext
-        / "build-environments"
-        / "development"
-        / dx.checkout_component(checkout)
-        / ("a" * 64)
-    )
-    for root in (target, uv_environment):
-        root.mkdir(parents=True)
-        (root / "payload.bin").write_bytes(b"\0" * 64)
-    (uv_environment / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
-    return target, uv_environment
+    shared = ext / "python-environments" / f"3.12.16-dev-{'a' * 16}"
+    target.mkdir(parents=True)
+    (target / "payload.bin").write_bytes(b"\0" * 64)
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+    return target, shared
 
 
 def test_cleanup_retires_the_checkouts_state_with_it(
@@ -2047,7 +1997,7 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     )
     assert rc == EXIT_OK
     assert not wt.exists()
-    assert not target.exists() and not uv_environment.exists()
+    assert not target.exists() and uv_environment.is_dir()
     assert sibling_target.is_dir() and sibling_uv.is_dir()
 
 
@@ -2114,7 +2064,7 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert completed.returncode == 0, completed.stderr
     assert "were not reclaimed" not in completed.stderr
     assert not wt.exists()
-    assert not target.exists() and not uv_environment.exists()
+    assert not target.exists() and uv_environment.is_dir()
 
 
 @pytest.mark.parametrize("release_timing", ["before", "omitted", "after"])
@@ -2387,7 +2337,6 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     with checkout_state.checkout_state_use(
         (
             (foreign_target, checkout_state.CheckoutOwner(main, "cargo-target")),
-            (foreign_uv, checkout_state.CheckoutOwner(main, "python-environment")),
             (
                 foreign_control,
                 checkout_state.CheckoutOwner(foreign_target, "build-control"),
@@ -2477,32 +2426,28 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     roots = {
         target: (str(wt.resolve()), "cargo-target"),
         session: (str(wt.resolve()), "cargo-target"),
-        uv_environment: (str(wt.resolve()), "python-environment"),
         target_control: (str(target.resolve()), "build-control"),
         session_control: (str(session.resolve()), "build-control"),
     }
     for root, (owner, kind) in roots.items():
         assert root.exists() is not removal_succeeds
         if not removal_succeeds:
-            if kind == "python-environment":
-                assert checkout_state.read_checkout_owner(root) == (
-                    checkout_state.CheckoutOwner(Path(owner), kind)
-                )
-                assert not (root / checkout_state.OWNER_RECORD).exists()
-            else:
-                assert json.loads(
-                    (root / checkout_state.OWNER_RECORD).read_text(encoding="utf-8")
-                ) == {
-                    "schema": "molt.state-root-owner.v1",
-                    "owner": owner,
-                    "kind": kind,
-                }
+            assert json.loads(
+                (root / checkout_state.OWNER_RECORD).read_text(encoding="utf-8")
+            ) == {
+                "schema": "molt.state-root-owner.v1",
+                "owner": owner,
+                "kind": kind,
+            }
+    # The shared environment is the same directory for both checkouts; its
+    # bytes are among the foreign ones that stay unchanged.
+    assert uv_environment == foreign_uv and uv_environment.is_dir()
     assert foreign_bytes() == before
     # Linux VMs release their pins of the checkout and its state roots once,
     # just before the removal, while they still exist (HF-463).
     [(released, checkout_present)] = guest_releases
     assert checkout_present
-    assert {wt, target, uv_environment} <= set(released)
+    assert {wt, target} <= set(released)
     assert foreign_target not in released
 
 
@@ -12167,7 +12112,7 @@ raise SystemExit(0)
     completed = run_guarded_test_process(
         [
             str(venv_python(cache / ".venv")),
-            *environment_bytecode_arguments(cache / ".venv"),
+            *readonly_bytecode_arguments(cache / ".venv"),
             "-I",
             "-c",
             code,
@@ -12260,7 +12205,7 @@ print("lazy-temporary-state")
     completed = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             code,
@@ -12748,16 +12693,13 @@ def test_empty_gate_demand_preserves_explicit_selection_refusal(
 def test_transitive_gate_environment_binds_fingerprint_and_rechecks_image(
     drv, tmp_path
 ):
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
+    from tests.uv_environment_test_support import shared_environment
+    from tools.venv_exec import venv_python
 
     repo = tmp_path / "source"
     repo.mkdir()
     artifacts = tmp_path / "artifacts"
-    image = materialize_development_environment(
-        repo, artifacts, runnable=True, select=True
-    )
+    shared = shared_environment(tmp_path, repo, artifacts)
     environment = _gate_caller_env(tmp_path / "host")
     environment["MOLT_EXT_ROOT"] = str(artifacts)
     policy = """
@@ -12782,8 +12724,8 @@ version_pattern = '^Python 3\\.'
         ),
     )
     context = prepared.environments[("transitive",)]
-    assert context.python_root == image.root and context.managed is True
-    expected = image.root / ("Scripts/python.exe" if os.name == "nt" else "bin/python3")
+    assert context.python_root == shared and context.managed is True
+    expected = venv_python(shared)
     assert prepared.fingerprints["source-interpreter"]["path"] == str(expected)
     assert prepared.fingerprints["source-interpreter"]["path"] != str(
         Path(sys.executable)
@@ -12797,18 +12739,18 @@ version_pattern = '^Python 3\\.'
     )
     assert drv.run_gate(command, repo, context) == 0
     assert json.loads(output.read_text(encoding="utf-8")) == [
-        str(image.root),
-        str(image.root / "bytecode"),
+        str(shared),
+        str(shared.parent / ".bytecode"),
     ]
-    # The context is a plan. Corrupt its actual ordinary selection record after
-    # preparation: the next child must refuse before overwriting output.
-    from molt import python_environment_contract as contract
-
-    (image.root / contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
-        "{}\n", encoding="utf-8"
-    )
+    # The context is a plan. Remove the environment's interpreter after
+    # preparation: the next child must refuse before overwriting output. The
+    # environment's directories are sealed; open its scripts directory first.
+    mode = expected.parent.stat().st_mode
+    expected.parent.chmod(mode | 0o200)
+    expected.unlink()
+    expected.parent.chmod(mode)
     output.write_text("must survive", encoding="utf-8")
-    with pytest.raises(DriverError, match="managed development image refused"):
+    with pytest.raises(DriverError, match="environment Python not found"):
         drv.run_gate(command, repo, context)
     assert output.read_text(encoding="utf-8") == "must survive"
 
@@ -12866,27 +12808,15 @@ def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
 
 @pytest.mark.slow  # 91 s on an 18-core host (2026-11-13)
 @pytest.mark.skipif(os.name != "posix", reason="same-PID exec source and image custody")
-def test_controller_repins_release_previous_sources_and_command_images(tmp_path):
+def test_controller_repins_release_previous_sources(tmp_path: Path) -> None:
     from molt.checkout_state import record_checkout_owner
     from molt.dx import cargo_target_dir_for_artifact_root
-    from molt.python_environment_location import environment_python_path
-    from tests.python_environment_test_support import (
-        materialize_development_environment,
-    )
     from tests.process_guard_common import run_custody_subject_process
 
     selected = [
         _controller_source_fixture(tmp_path / "common", key=str(index) * 32)
         for index in range(1, 4)
     ]
-    images = []
-    for index in range(4):
-        owner = tmp_path / f"image-owner-{index}"
-        image = materialize_development_environment(
-            owner, tmp_path / "artifacts", runnable=index < 3
-        )
-        record_checkout_owner(image.root, owner=owner, kind="python-environment")
-        images.append(image.root)
     target_owner = tmp_path / "target-owner"
     target_owner.mkdir()
     target = cargo_target_dir_for_artifact_root(
@@ -12896,7 +12826,9 @@ def test_controller_repins_release_previous_sources_and_command_images(tmp_path)
     record_checkout_owner(target, owner=target_owner, kind="cargo-target")
     report = tmp_path / "stages.jsonl"
     roots = [str(item.root) for item in selected]
-    interpreters = [str(environment_python_path(root)) for root in images[:3]]
+    # Shared Python environments are not checkout state; each stage execs the
+    # test interpreter and only controller sources and the target carry custody.
+    interpreters = [sys.executable] * 3
     script = f"""
 import argparse, json, os, sys, time
 from pathlib import Path
@@ -12905,7 +12837,6 @@ from tools import controller_source, molt_dev_controller as controller
 from tools import molt_dev_storage as storage
 from molt.checkout_state import checkout_state_retirement
 roots = [Path(item) for item in {roots!r}]
-images = [Path(item) for item in {[str(root) for root in images]!r}]
 interpreters = {interpreters!r}
 parser = argparse.ArgumentParser()
 parser.add_argument('stage', type=int)
@@ -12925,14 +12856,11 @@ if args.stage < 3:
     controller.run_controller(controller_source.Controller(next_root.name, next_root),
                               [str(args.stage + 1)], repo=Path(args.repo))
     raise AssertionError('POSIX exec returned')
-# These independent exclusive admissions catch retained historical command
-# resources even when source locks alone would look correct.
-for old in images[:2]:
-    with checkout_state_retirement(old) as available:
-        assert available, ('old command image retained', old)
-for live in [images[2], images[3], Path({str(target)!r})]:
-    with checkout_state_retirement(live) as available:
-        assert not available, ('current or declared input custody lost', live)
+# An independent exclusive admission catches a lost declared input even when
+# source locks alone would look correct.
+with checkout_state_retirement(Path({str(target)!r})) as available:
+    assert not available, 'declared input custody lost'
+
 storage.CONTROLLER_KEEP = 1
 storage.CONTROLLER_IDLE_S = 0
 storage.retire_idle_controllers(roots[0].parent, current=Path({str(tmp_path)!r}),
@@ -12956,7 +12884,6 @@ controller.run_controller(controller_source.Controller({selected[0].key!r}, Path
     env = dict(os.environ)
     env.update(
         CARGO_TARGET_DIR=str(target),
-        VIRTUAL_ENV=str(images[3]),
         MOLT_EXT_ROOT=str(tmp_path / "common/artifacts"),
     )
     result = run_custody_subject_process(

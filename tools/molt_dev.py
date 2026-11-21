@@ -635,7 +635,7 @@ def prepare_gate_environment(
         if requires_python:
             from molt.checkout_provisioning import PROVISION_HINT
 
-            raise DriverError(f"development image not selected; {PROVISION_HINT}")
+            raise DriverError(f"development environment not selected; {PROVISION_HINT}")
         return GateEnvironment(env, None, False)
     managed = not bool(env.get("MOLT_VENV"))
     try:
@@ -656,25 +656,6 @@ def _validate_gate_image(repo: Path, context: GateEnvironment) -> None:
     """
     if context.python_root is None:
         return
-    if context.managed:
-        from molt.dx import DxConfigError, DxProject
-        from molt.source_build_environment_selection import (
-            read_development_environment_selection,
-        )
-
-        try:
-            read_development_environment_selection(
-                context.python_root,
-                repo_root=repo,
-                groups=DxProject(repo).dependency_groups(),
-            )
-        except (
-            DxConfigError,
-            _contract.SourceBuildEnvironmentError,
-            OSError,
-            ValueError,
-        ) as exc:
-            raise DriverError(f"managed development image refused: {exc}") from exc
     try:
         venv_exec.venv_python(context.python_root)
     except (venv_exec.VenvExecError, ValueError) as exc:
@@ -795,7 +776,7 @@ def _gate_environment(
         if python_gate or shell_python:
             from molt.checkout_provisioning import PROVISION_HINT
 
-            raise DriverError(f"development image not selected; {PROVISION_HINT}")
+            raise DriverError(f"development environment not selected; {PROVISION_HINT}")
         return cmd, env
     managed = context.managed
     try:

@@ -32,7 +32,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.default_paths import _default_molt_cache
-from molt.python_environment_location import environment_python_path
+from molt.uv_environment import python_path as environment_python_path
 
 MOLT_VENV_DIR = ".molt-venv"
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX

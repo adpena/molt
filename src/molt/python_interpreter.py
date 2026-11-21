@@ -388,6 +388,12 @@ def _validate_python_command_options(command: tuple[str, ...], *, purpose: str) 
         )
 
 
+def readonly_bytecode_arguments(root: Path) -> tuple[str, str, str]:
+    """``-B`` and a cache prefix below ``root``: the child neither reads the
+    base install's bytecode nor writes any (a hermetic, no-write namespace)."""
+    return ("-B", "-X", f"pycache_prefix={root.absolute() / 'bytecode'}")
+
+
 def readonly_python_command(
     command: Sequence[str], *, environment_root: Path
 ) -> tuple[str, ...]:
@@ -398,11 +404,9 @@ def readonly_python_command(
     Payload and launcher semantics, including environment and site policy, stay
     explicit in the original command.
     """
-    from molt.python_environment_location import environment_bytecode_arguments
-
     normalized = tuple(str(part) for part in command)
     _validate_python_command_options(normalized, purpose="read-only")
-    return (*normalized, *environment_bytecode_arguments(environment_root))
+    return (*normalized, *readonly_bytecode_arguments(environment_root))
 
 
 def _verifier_python_command(
@@ -860,7 +864,7 @@ def development_interpreter_problem(
 ) -> str | None:
     """Return drift, leaving malformed records and failed observations loud."""
     from molt.exact_json import read_exact
-    from molt.python_environment_location import environment_python_path
+    from molt.uv_environment import python_path as environment_python_path
     from molt.process_environment import ProcessEnvironment
 
     environment = ProcessEnvironment(environ)

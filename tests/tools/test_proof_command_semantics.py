@@ -290,9 +290,8 @@ def test_selected_image_python_prefix_precedes_startup_and_preserves_payload(
     command = ["python", *arguments]
     assert python_environment_command(command, environment_root=root) == [
         "python",
-        "-B",
         "-X",
-        f"pycache_prefix={root / 'bytecode'}",
+        f"pycache_prefix={tmp_path / '.bytecode'}",
         *arguments,
     ]
     assert not root.exists(), "launch projection must create no state"
@@ -303,14 +302,10 @@ def test_selected_image_python_prefix_admits_one_exact_prefix(tmp_path, attached
     from tools.proof_command_argv import python_environment_command
 
     root = tmp_path / "image"
-    value = f"pycache_prefix={root / 'bytecode'}"
+    value = f"pycache_prefix={tmp_path / '.bytecode'}"
     prefix = [f"-IX{value}"] if attached else ["-I", "-X", value]
     command = ["python", *prefix, "-m", "pytest", "-X", "payload"]
-    assert python_environment_command(command, environment_root=root) == [
-        "python",
-        "-B",
-        *command[1:],
-    ]
+    assert python_environment_command(command, environment_root=root) == command
     with pytest.raises(ValueError, match="selected exactly once"):
         python_environment_command(
             ["python", *prefix, "-X", value, "-m", "pytest"], environment_root=root
@@ -369,7 +364,7 @@ def test_windows_python_argv_doubled_quotes_do_not_invent_startup_flags(tmp_path
     invocation = parse_python_invocation(argv)
     assert invocation.mode == "command"
     assert invocation.target == "print(1)"
-    with pytest.raises(ValueError, match="cache prefix"):
+    with pytest.raises(ValueError, match="bytecode cache"):
         validate_python_environment_command(argv, environment_root=root, environment={})
 
 
@@ -435,13 +430,12 @@ def test_selected_image_child_validation_uses_only_honored_startup_inputs(
     from tools.proof_command_argv import validate_python_environment_command
 
     root = tmp_path / "image"
-    env = {
-        "PYTHONPYCACHEPREFIX": str(root / "bytecode"),
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
+    cache = str(tmp_path / ".bytecode")
+    env = {"PYTHONPYCACHEPREFIX": cache}
     command = ["python", *(["-IE"] if isolated else []), "-c", "pass"]
     if isolated:
-        with pytest.raises(ValueError, match="cache prefix"):
+        # -I and -E ignore the environment: only an option selects the cache.
+        with pytest.raises(ValueError, match="bytecode cache"):
             validate_python_environment_command(
                 command, environment_root=root, environment=env
             )
@@ -449,23 +443,11 @@ def test_selected_image_child_validation_uses_only_honored_startup_inputs(
         validate_python_environment_command(
             command, environment_root=root, environment=env
         )
-        with pytest.raises(ValueError, match="disable bytecode writes"):
-            validate_python_environment_command(
-                command,
-                environment_root=root,
-                environment={"PYTHONPYCACHEPREFIX": env["PYTHONPYCACHEPREFIX"]},
-            )
-    explicit = [
-        "python",
-        "-B",
-        "-X",
-        f"pycache_prefix={root / 'bytecode'}",
-        *command[1:],
-    ]
+    explicit = ["python", "-X", f"pycache_prefix={cache}", *command[1:]]
     validate_python_environment_command(explicit, environment_root=root, environment={})
     with pytest.raises(ValueError, match="selected exactly once"):
         validate_python_environment_command(
-            [*explicit[:4], "-X", f"pycache_prefix={root / 'bytecode'}", *explicit[4:]],
+            [*explicit[:3], "-X", f"pycache_prefix={cache}", *explicit[3:]],
             environment_root=root,
             environment=env,
         )
