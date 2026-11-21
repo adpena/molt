@@ -64,8 +64,13 @@ schema = "molt-perf-methodology-v1"
 # deferred read (f6ee8b630a), so admitted callable facts and
 # instruction counts can move; it landed without the lock (postsubmit
 # 2026-11-21). Earlier reports retain their recorded class.
-version = 45
-content_sha256 = "f33b4c1ac86fff2ad0b984db087b9bb15355128f5bdb73dd359ef831ee3641ba"
+# v46: binding flow projects unread foreign writers (9fe1a0954e), sealed
+# development TIR is materialized with unread callables published (a6256d7add),
+# and publication declarations are tracked apart from slot layout (a1214dd2ed),
+# so admitted facts and instruction counts can move; they landed without the
+# lock (2026-11-21). Earlier reports retain their recorded class.
+version = 46
+content_sha256 = "f1cc9f988b6ad8f610e1c86a68ee171a91e52f429a82c94918bfd1d5772da681"
 
 [[methodology]]
 path = "tools/safe_run.py"

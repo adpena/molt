@@ -498,6 +498,18 @@ def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
     return cache_control_root(cache_root) / f"{name}.lock"
 
 
+def backend_shared_lock_path(cache_root: Path, name: str) -> Path:
+    """A stdlib-family lock the Rust backend also takes, at its fixed path.
+
+    The backend names ``<cache_root>/locks/<family>.<xx>.lock``
+    (``shared_stdlib_cache/publish/paths.rs``); it does not read the hot-state
+    record, so these stay below the cache root (HF-970: after HF-942 moved
+    ``cache_control_root`` to the hot volume, Python and the backend took
+    different files for one stdlib entry and no longer excluded each other).
+    """
+    return cache_root / "locks" / f"{name}.lock"
+
+
 def runtime_wasm_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
     """One retired runtime WASM cache family and its publication/use stripe.
 
@@ -539,7 +551,7 @@ def shared_stdlib_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
         raise ValueError("shared stdlib entry key must be a lowercase SHA-256")
     return (
         cache_root / SHARED_STDLIB_CACHE_DIRECTORY / key,
-        shared_cache_lock_path(cache_root, f"shared-stdlib.{key[:2]}"),
+        backend_shared_lock_path(cache_root, f"shared-stdlib.{key[:2]}"),
     )
 
 
@@ -549,7 +561,7 @@ def native_stdlib_archive_cache_entry(cache_root: Path, key: str) -> tuple[Path,
         raise ValueError("native stdlib archive key must be a lowercase SHA-256")
     return (
         cache_root / NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY / key,
-        shared_cache_lock_path(cache_root, f"native-stdlib-archive.{key[:2]}"),
+        backend_shared_lock_path(cache_root, f"native-stdlib-archive.{key[:2]}"),
     )
 
 
@@ -574,7 +586,7 @@ def native_stdlib_object_cache_entry(cache_root: Path, key: str) -> tuple[Path, 
         raise ValueError("native stdlib object key must be a lowercase SHA-256")
     return (
         cache_root / NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY / key,
-        shared_cache_lock_path(cache_root, f"native-stdlib-object.{key[:2]}"),
+        backend_shared_lock_path(cache_root, f"native-stdlib-object.{key[:2]}"),
     )
 
 
