@@ -3115,6 +3115,7 @@ class _InitializerPremiseReads:
         default_factory=dict
     )
     frame_borrows: bool = False
+    deferred_names: set[str] = field(default_factory=set)
 
 
 class _Analyzer:
@@ -3232,12 +3233,19 @@ class _Analyzer:
         if self._replaying_deferred:
             raise _BindingReplayRefused
         self._deferred_queue_generation += 1
-        module_bindings, lexical_bindings = self._activation_slot_bindings(
-            node,
-            scope,
-            state_id,
-            annotation_scope=annotation_scope,
-        )
+        reads = self._initializer_premise_reads
+        source_reads = self._foreign_reads
+        if reads is not None and source_reads is not None:
+            self._foreign_reads = reads.deferred_names
+        try:
+            module_bindings, lexical_bindings = self._activation_slot_bindings(
+                node,
+                scope,
+                state_id,
+                annotation_scope=annotation_scope,
+            )
+        finally:
+            self._foreign_reads = source_reads
         lexical_history = self._active_lexical_history if lexical_bindings else None
         job = _FunctionJob(
             node,
@@ -9764,6 +9772,7 @@ class _Analyzer:
         ):
             self._initializer_premise_reads.names = frozenset(self._foreign_reads)
             self._foreign_reads.update(_METADATA_NAMES)
+            self._foreign_reads.update(self._initializer_premise_reads.deferred_names)
 
     def _run_deferred_job(
         self, job: _FunctionJob, recorder: _DeferredJobRecorder | None
@@ -10296,24 +10305,31 @@ class _RebasableInitializer:
             )
         ):
             return None
-        if not frozenset(former).issubset(current):
-            return None
         additions = frozenset(current).difference(former)
-        if not additions.isdisjoint(self.reads.names) or (
-            additions and prefix._has_empty_module_expiry
-        ):
-            return None
-        assert prefix.module_scope is not None
-        existing = additions.intersection(prefix.module_scope.slots)
-        if existing and any(state.taint_epoch for state in prefix.states._states):
-            return None
+        if prefix._callback_module_names is None:
+            # Both premises supply concrete foreign writes, so source-owned
+            # reflection kept the callback domain open. The explicit
+            # __builtins__ writer still participates in pristine lookup.
+            if ("__builtins__" in former) != ("__builtins__" in current):
+                return None
+        else:
+            if not frozenset(former).issubset(current):
+                return None
+            if not additions.isdisjoint(self.reads.names) or (
+                additions and prefix._has_empty_module_expiry
+            ):
+                return None
+            assert prefix.module_scope is not None
+            existing = additions.intersection(prefix.module_scope.slots)
+            if existing and any(state.taint_epoch for state in prefix.states._states):
+                return None
         work = prefix._fork_at_deferred_boundary()
-        assert (
-            work._foreign_reads is not None and work._callback_module_names is not None
-        )
         work.policy = policy
         work._opaque_activation_sources = active
         work._activation_argument_values = requested._activation_argument_values.copy()
+        if work._callback_module_names is None:
+            return work
+        assert work._foreign_reads is not None
         work._callback_module_names |= additions
         appended_start = len(work.slot_names)
         for name in sorted(additions):
@@ -10327,6 +10343,26 @@ class _RebasableInitializer:
             ):
                 return None
         appended_end = len(work.slot_names)
+        if not additions.isdisjoint(self.reads.deferred_names):
+            if prefix._deferred_queue_generation != len(prefix.function_jobs):
+                return None
+            for job in work.function_jobs:
+                module, lexical = work._activation_slot_bindings(
+                    job.node,
+                    job.parent_scope,
+                    job.outer_state_id,
+                    annotation_scope=job.annotation_scope,
+                )
+                if lexical != job.lexical_base_bindings:
+                    return None
+                job.module_base_bindings = module
+            if (
+                len(work.slot_names) != appended_end
+                or work.callback_slot_mask != prefix.callback_slot_mask
+                or work.states._callback_deletion_mask
+                != prefix.states._callback_deletion_mask
+            ):
+                return None
         if appended_end != appended_start:
             # Body histories keep their physical slot coordinates. The final
             # immutable layout puts newly named slots back in callback order.
@@ -10446,7 +10482,7 @@ class _BindingRevisions:
                     )
                 finally:
                     analyzer._initializer_premise_reads = None
-                if reads is not None and analyzer._foreign_reads is not None:
+                if reads is not None:
                     size = _binding_checkpoint_size(analyzer) + len(reads.metadata)
                     if size <= 8192:
                         captured = _RebasableInitializer(
