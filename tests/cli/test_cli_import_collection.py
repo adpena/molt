@@ -109,7 +109,6 @@ from molt.cli.backend_artifact_contract import (
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
-    ImportScanMode,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -126,6 +125,7 @@ from molt.cli.external_native import (
 )
 from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     ModuleSourceRole,
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
@@ -12197,7 +12197,7 @@ def test_collect_static_source_execution_preserves_loader_name_and_path(
     )
 
     requests = _source_import_scan._collect_static_source_execution_requests(
-        tree, source_path=entry
+        tree, is_package=False
     )
     assert requests == (_StaticSourceExecutionRequest("loaded_name", str(target)),)
     completed = cli_module_import_scanner._complete_import_scan(

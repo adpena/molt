@@ -11,7 +11,6 @@ import pytest
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.models import (
-    ImportScanMode,
     _ModuleGraphScanAuthority,
     _RuntimeImportScanCustody,
 )
@@ -34,6 +33,7 @@ from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 # Runtime import custody compares a module's canonical digest (HF-888).
 from molt.python_canonical_ast import canonical_module_digest
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     ModuleImportContext,
     ModuleImportState,
     StaticImportRequest,
@@ -752,7 +752,7 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
         return _collect_import_scan_requests(
             _collect_imports_for_graph(tree, "pkg.entry", runtime_catalog_owner=True),
             tree,
-            source_path=owner,
+            is_package=owner.name == "__init__.py",
             module_name="pkg.entry",
             import_scan_mode="full",
             target_python=_DEFAULT_TARGET_PYTHON_VERSION,
@@ -1124,7 +1124,7 @@ def test_call_star_uses_live_all_expansion_without_promoting_discovery(
     requests = _collect_import_scan_requests(
         projection,
         tree,
-        source_path=owner,
+        is_package=owner.name == "__init__.py",
         module_name="pkg.entry",
         import_scan_mode=mode,
         target_python=target,

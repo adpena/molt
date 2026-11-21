@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 from molt.cli import module_source as _module_source
 from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
-from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+from molt.compiler_analysis.python_imports import ImportScanMode
+from molt.cli.models import _RuntimeImportScanCustody
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise

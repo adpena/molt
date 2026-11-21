@@ -78,11 +78,17 @@ per premise revision.
    by source digest, target plan and analysis schema. A user's cold build then analyzes only user
    modules. This is item 3 above applied to discovery, and GraalVM Native Image's build-time
    initialization applied to analysis.
+   Source request records address the captured bytes, parser, target, package role and premise.
+   Relative source requests stay symbolic in the record. Graph completion resolves them against
+   the current package and filesystem, so byte-identical source can reuse requests after relocation.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
    runs once per module, under its settled premise, where lowering needs it. This is the shape of
    the Go, Zig and rustc module graphs.
+   Entry-driven demand can identify the callable and argument facts an analysis needs before visiting
+   its transitive library bodies. The transfer still needs Molt's existing custody for writes and
+   unresolved calls. [JARVIS, §III](https://arxiv.org/abs/2305.05949)
 3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
    foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
    fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
@@ -91,9 +97,17 @@ per premise revision.
    concrete set can reuse that core when every consumed answer holds and the source and all other
    flow inputs match. A missing activation set keeps its own cache key. Changed answers and foreign
    writes still require flow analysis until the global solver can evaluate transfer summaries.
+   Transfer outputs include namespace writes and source demands because callers can observe either
+   before a body returns. On an input revision, a stable output can preserve dependent results.
+   From-scratch graph and scan equality is the acceptance check for demand-driven execution.
+   [Demanded Abstract Interpretation, §§4–6](https://arxiv.org/abs/2104.01270),
+   [Interactive Abstract Interpretation, §3](https://arxiv.org/abs/2209.10445)
 4. *Iteration order.* Premise propagation visits writers before the modules they write, in a
    weak topological order of the write graph (Bourdoncle 1993). Revisions then reach a module
    once per strongly connected component, not once per discovered writer.
+   Use the write graph for scheduling once its edges are known. A convergence boundary belongs
+   at each cyclic component exit, including nested components. A graph revision can add a writer
+   edge and require scheduling that component again. [Deterministic Parallel Fixpoint Computation, §§4–7](https://arxiv.org/abs/1909.05951)
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.

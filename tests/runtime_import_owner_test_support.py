@@ -9,7 +9,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+from molt.compiler_analysis.python_imports import ImportScanMode
+from molt.cli.models import _RuntimeImportScanCustody
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.compiler_analysis.python_import_scan import (
     _collect_import_scan_requests,
@@ -43,7 +44,7 @@ def scan_as_runtime_owner(
     requests = _collect_import_scan_requests(
         projection,
         tree,
-        source_path=source_path,
+        is_package=source_path.name == "__init__.py",
         module_name=module_name,
         import_scan_mode=import_scan_mode,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,

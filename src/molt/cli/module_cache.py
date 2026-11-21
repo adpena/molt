@@ -45,9 +45,9 @@ from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
 )
 from molt.cli.build_request import TypeHintPolicy
+from molt.compiler_analysis.python_imports import ImportScanMode
 from molt.cli.models import (
     _RuntimeImportScanCustody,
-    ImportScanMode,
     ModuleExecutionKind,
     ModuleSourceRole,
     _ModuleGraphMetadata,

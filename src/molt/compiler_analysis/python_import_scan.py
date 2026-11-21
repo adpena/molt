@@ -12,8 +12,7 @@ from molt.python_private_names import (
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from pathlib import Path
-from typing import Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, cast, get_args
 
 from molt.compiler_analysis.python_lexical_scope import (
     python_execution_regions,
@@ -22,16 +21,13 @@ from molt.compiler_analysis.python_lexical_scope import (
     module_annotation_execution,
 )
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     is_compiler_intrinsics_module,
     SourceImportSite,
     SourceImportCall,
     static_import_call_result_modules,
     SourceAllExports,
 )
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_imports import (
     ModuleImportFlow,
     RuntimeCatalogDeferral,
@@ -111,7 +107,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_IMPORT_SCAN_MODES = frozenset({"full", "module_init"})
+_IMPORT_SCAN_MODES = frozenset(get_args(ImportScanMode))
 
 
 class SourceImportPurpose(Enum):
@@ -478,7 +474,7 @@ def _source_may_use_static_source_execution(source: str) -> bool:
 def _collect_static_source_execution_requests(
     tree: ast.AST,
     *,
-    source_path: Path,
+    is_package: bool,
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
@@ -509,7 +505,7 @@ def _collect_static_source_execution_requests(
                 target_sys_platform=target_sys_platform,
                 target_python=target_python,
                 module_name=module_name,
-                is_package=source_path.name == "__init__.py",
+                is_package=is_package,
                 namespace_premise=premise,
                 activation_argument_values=_source_argument_values(
                     admission, source_owner, source_arguments
@@ -2847,7 +2843,7 @@ def _collect_import_scan_requests(
     projection: _ImportDiscoveryProjection,
     tree: ast.AST,
     *,
-    source_path: Path,
+    is_package: bool,
     module_name: str,
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
@@ -2864,7 +2860,7 @@ def _collect_import_scan_requests(
         if source is not None and not _source_may_use_static_source_execution(source)
         else _collect_static_source_execution_requests(
             tree,
-            source_path=source_path,
+            is_package=is_package,
             import_scan_mode=(
                 "module_init"
                 if purpose is SourceImportPurpose.EXECUTION

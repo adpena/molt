@@ -22,6 +22,7 @@ import os
 import sys
 from dataclasses import asdict
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     RuntimeCatalogDeferral,
     SourceImportSite,
     SourceImportCall,
@@ -67,7 +68,6 @@ from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
     python_package_name,
 )
-from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
     _SourceValueDemand,
@@ -680,6 +680,7 @@ def _stdlib_intrinsic_namespace_summary(
         module_name=module_name,
         is_package=path.name == "__init__.py",
         import_scan_mode="full",
+        snapshot=snapshot,
         target_python=target_python,
     )
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
@@ -753,6 +754,7 @@ def _stdlib_intrinsic_source_facts(
         module_name=module_name,
         is_package=path.name == "__init__.py",
         import_scan_mode="full",
+        snapshot=snapshot,
         target_python=target_python,
     )
     identity = _intrinsic_source_identity(
@@ -913,8 +915,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-# 51: a scan row no longer copies its key's premise view; the key alone names it.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 52
+# 53: source-only requests address their source bytes independently of location.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 53
 
 
 def _import_scan_cache_key(
@@ -927,6 +929,7 @@ def _import_scan_cache_key(
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
+    snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
@@ -934,21 +937,33 @@ def _import_scan_cache_key(
 ) -> str:
     if type(purpose) is not SourceImportPurpose:
         raise TypeError("source import scan cache requires a typed purpose")
-    key_parts = [
+    captured = snapshot or _module_source.PythonSourceSnapshot.capture(path)
+    if captured.path != path:
+        raise ValueError("source scan snapshot path mismatch")
+    identity = (
+        _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
+        (sys.implementation.name, sys.version),
+        captured.sha256,
         module_name,
-        "pkg" if is_package else "mod",
+        is_package,
+        # Execution requests still use the lexical initializer role. It can
+        # differ from the graph's package role for an explicitly supplied AST.
+        path.name == "__init__.py",
         import_scan_mode,
         purpose.value,
-        "runtime-owner" if runtime_catalog_owner else "strict",
-        repr(source_owner),
-        repr(source_arguments),
-        repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
-        repr(_namespace_premise_cache_identity(namespace_premise)),
+        runtime_catalog_owner,
+        source_owner,
+        source_arguments,
+        ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
+        _namespace_premise_cache_identity(namespace_premise),
         target_python.tag,
-        repr(target_sys_platform),
+        target_sys_platform,
         _frontend_semantic_tooling_fingerprint(),
-    ]
-    return _resolved_module_cache_key(os.fspath(path), *key_parts)
+    )
+    encoded = json.dumps(identity, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
 
 
 def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | None:
@@ -1054,6 +1069,7 @@ def _write_persisted_import_scan_alias(
             source_arguments=source_arguments,
             namespace_premise=premise,
             native_support_function_roots=native_support_function_roots,
+            snapshot=snapshot,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
             runtime_catalog_owner=runtime_catalog_owner,
@@ -1077,13 +1093,19 @@ def _read_persisted_import_scan_record(
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
-    path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportScanRequests | None:
+    if snapshot is None:
+        try:
+            snapshot = _module_source.PythonSourceSnapshot.capture(path)
+        except OSError:
+            return None
+    if snapshot.path != path:
+        return None
     record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
@@ -1093,6 +1115,7 @@ def _read_persisted_import_scan_record(
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
+        snapshot=snapshot,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
@@ -1172,21 +1195,11 @@ def _read_persisted_import_scan_record(
         or payload.get("source_arguments") != list(source_arguments)
     ):
         return None
-    if snapshot is not None:
-        if (
-            snapshot.path != path
-            or payload.get("size") != len(snapshot.content)
-            or payload.get("source_sha256") != snapshot.sha256
-        ):
-            return None
-    else:
-        try:
-            if path_stat is None:
-                path_stat = path.stat()
-        except OSError:
-            return None
-        if not _module_source._payload_source_matches(payload, path, path_stat):
-            return None
+    if (
+        payload.get("size") != len(snapshot.content)
+        or payload.get("source_sha256") != snapshot.sha256
+    ):
+        return None
     fields = (
         "imports",
         "star_modules",
@@ -1815,6 +1828,7 @@ def _write_persisted_import_scan(
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
+        snapshot=snapshot,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,

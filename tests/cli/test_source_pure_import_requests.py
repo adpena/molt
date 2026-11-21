@@ -124,6 +124,29 @@ def test_loader_existence_is_live(tmp_path, expression):
     assert absent.cache_hit and absent.scan.source_executions == ()
 
 
+def test_relocated_source_reuses_requests_and_resolves_its_own_edges(
+    tmp_path: Path,
+) -> None:
+    text = "import runpy\nrunpy.run_path('loaded.py')\n"
+    original = write(tmp_path / "original/entry.py", text)
+    original_child = write(original.with_name("loaded.py"), "VALUE = 1\n")
+    cold = load(original)
+    assert not cold.cache_hit
+    assert cold.scan.source_executions == ((None, original_child),)
+
+    relocated = write(tmp_path / "relocated/entry.py", text)
+    relocated_child = write(relocated.with_name("loaded.py"), "VALUE = 2\n")
+    warm = load(relocated)
+    assert warm.cache_hit
+    assert warm.scan.source_requests == cold.scan.source_requests
+    assert warm.scan.source_executions == ((None, relocated_child),)
+
+    write(relocated, "import runpy\nrunpy.run_path('absent.py')\n")
+    changed = load(relocated)
+    assert not changed.cache_hit
+    assert changed.scan.source_executions == ()
+
+
 def test_run_path_directory_main_creation_and_deletion(tmp_path):
     source = write(tmp_path / "entry.py", "import runpy\nrunpy.run_path('site')\n")
     assert load(source).scan.source_executions == ()
@@ -133,8 +156,9 @@ def test_run_path_directory_main_creation_and_deletion(tmp_path):
     assert load(source).scan.source_executions == ()
 
 
-def test_path_request_extraction_never_reads_filesystem(tmp_path, monkeypatch):
-    source = tmp_path / "entry.py"
+def test_path_request_extraction_never_reads_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tree = ast.parse(
         "from pathlib import Path\nimport runpy\n"
         "ROOT = Path('link').resolve() / '..'\nrunpy.run_path(ROOT / 'loaded.py')\n"
@@ -147,7 +171,7 @@ def test_path_request_extraction_never_reads_filesystem(tmp_path, monkeypatch):
         for operation in ("resolve", "absolute", "is_file", "is_dir"):
             local.setattr(Path, operation, forbidden)
         requests = _source_import_scan._collect_static_source_execution_requests(
-            tree, source_path=source
+            tree, is_package=False
         )
     assert requests
 
@@ -287,7 +311,7 @@ def test_explicit_join_flavor_matches_host_python(tmp_path, module, joiner, part
     )
     source = tmp_path / "entry.py"
     requests = _source_import_scan._collect_static_source_execution_requests(
-        tree, source_path=source
+        tree, is_package=source.name == "__init__.py"
     )
     assert len(requests) == 1
     from molt.cli.python_import_topology import PythonImportTopology

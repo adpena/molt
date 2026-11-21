@@ -4,6 +4,7 @@ from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
 )
@@ -33,7 +34,6 @@ from molt.cli.frontend_record_files import FrontendRecordFiles
 from tests.source_record_test_support import replace_source_record, source_records
 from tests.cli.test_installed_compiler import installation as installation
 from molt.cli.models import (
-    ImportScanMode,
     _CompleteImportScan,
     _ImportAdmissionPolicy,
     _ModuleGraphScanAuthority,

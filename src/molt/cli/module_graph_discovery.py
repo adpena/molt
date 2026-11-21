@@ -30,7 +30,6 @@ from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ModuleReason,
     UnresolvedRoot,
-    ImportScanMode,
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
@@ -39,6 +38,7 @@ from molt.cli.models import (
     _RuntimeImportScanCustody,
 )
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     _ImportDiscoveryProjection,
     _ImportScanRequests,
 )
@@ -2207,7 +2207,7 @@ def _collect_module_import_scan(
     requests = _source_import_scan._collect_import_scan_requests(
         import_projection,
         tree,
-        source_path=path,
+        is_package=path.name == "__init__.py",
         module_name=module_name,
         import_scan_mode=import_scan_mode,
         source_owner=source_owner,
