@@ -196,6 +196,18 @@ impl CompilationCache {
         cache
     }
 
+    /// Open artifacts keyed by a shared producer contract and an optional
+    /// explicit root. The namespace participates in ordinary cache retention.
+    pub fn open_shared_backend_namespace(
+        root: Option<PathBuf>,
+        identity: CompilationCacheKey,
+    ) -> Option<Self> {
+        let root = root.or_else(backend_cache_root)?;
+        let mut cache = Self::open(root.join(identity.finish_hex()));
+        cache.namespace_root = Some(root);
+        Some(cache)
+    }
+
     /// Open a compilation cache with an explicit in-memory cap.
     pub fn open_with_memory_limit(cache_dir: PathBuf, max_memory_bytes: usize) -> Self {
         Self::open_with_limits(

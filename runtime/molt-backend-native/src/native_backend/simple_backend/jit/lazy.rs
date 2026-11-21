@@ -9,7 +9,8 @@ use molt_ir::backend_environment::{self, Carried};
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub(super) const MATERIALIZE_SYMBOL: &str = "__molt_jit_materialize";
 
