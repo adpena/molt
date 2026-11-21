@@ -27,7 +27,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values"); a generator, coroutine or async-generator resume links its task's persistent record inline and its suspension unlinks it, from one generator (`generate_stateful_frame_link`), and a stateful frame publishes no context: `gen_for` -24.1% instructions on LLVM, -23.0% on Cranelift (section 4.3, "Slice 2") | per-resume exception state and poll scaffolding (section 4.3, "Slice 2", what remains); no record for a leaf no observer can reach | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2); the per-thread exception state (handler and active stacks, baseline, last exception, raise flags) lives in the thread record, and activation enter/exit, depth alignment and the exception-stack ABI entries reach it through the execution context with no thread-local read (generator profile: `_tlv_get_addr` 67 samples, almost all exception state, before) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM; a proven pair loop steps and unpacks in one call with no new tuple: an `enumerate` loop -31.0%, phase C of `bench_dict_comprehension` -20.1% instructions on LLVM (section 4.5a, "Pair loops") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties"); a method call binds its receiver, and a method whose every entry binds an instance of one class compiles with an exact `self`, whose field accesses need no guard (`method_call` -79.1% instructions on LLVM, -70.0% on Cranelift; `78_whole_program_type_flow.md` 5.6); each sealed class carries a lifecycle plan, a plain instance holding no pointer frees outside the bounded-release frame, and an exact `object()` is never GC-tracked (`bench_struct` -39.3% instructions on LLVM, -37.7% on Cranelift; section 4.5, "Implementation (object lifecycle)", S1); a plain class allocates from its plan with no re-validation (`bench_struct` a further -54.2% on LLVM, -52.3% on Cranelift; S2) | direct calls of methods resolved at compile time and inlining them (closed-world objects lane, HF-847; `GuardedFieldGet/Set` stay runtime calls where `self` is not exact); object lifecycle S3-S6: inline allocate and free, GC record, `type(x)`, pointer fields (lane object-lifecycle) | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties"); a method call binds its receiver, and a method whose every entry binds an instance of one class compiles with an exact `self`, whose field accesses need no guard (`method_call` -79.1% instructions on LLVM, -70.0% on Cranelift; `78_whole_program_type_flow.md` 5.6); each sealed class carries a lifecycle plan, a plain instance holding no pointer frees outside the bounded-release frame, and an exact `object()` is never GC-tracked (`bench_struct` -39.3% instructions on LLVM, -37.7% on Cranelift; section 4.5, "Implementation (object lifecycle)", S1); a plain class allocates from its plan with no re-validation (`bench_struct` a further -54.2% on LLVM, -52.3% on Cranelift; S2); compiled code allocates and frees a plain instance inline and tracks a heap-class instance through the runtime's GC record (`bench_struct` a further -39.2% on LLVM; S3, S4); a proven `C()` compiles its plan in, and `type(x)` and the `object` reference are header and thread-record loads (`object()` probe -28.2% on LLVM, `bench_struct` -13.1%; S4b, S5) | direct calls of methods resolved at compile time and inlining them (closed-world objects lane, HF-847; `GuardedFieldGet/Set` stay runtime calls where `self` is not exact); object lifecycle: the pointer-field release, `__slots__` classes on the plan (lane object-lifecycle) | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6); `str()` of a builtin exception renders through its slot (38dd361449); a handler naming builtin classes matches by class code (stage 5, "A raise caught in its own function", S0) | local transfer, lazy state, scalar replacement (S1-S3); handler-entry push (I2) | HF-561, HF-207, HF-906 |
 | 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G); exact-int accumulators in any loop body are full-range raw carriers through loop versioning with exact transfer (`checked_int_loops`, HF-857 slice 1: the same loop 2.09G -> 1.72G, no tag guard or reference count left in the fast loop); an innermost loop writes its frame homes and location word only where a reader can run, home stores that box nothing are nothrow and lose their checks (`frame_home_placement`, section 4.7: `while_counter` 32.0 -> 17.0 instructions per iteration on LLVM) | - | HF-229, HF-857, HF-866 |
 | 7 TIR inlining | partial | proven guarded calls are static call-graph edges, and a body no observer can reach links no frame record, so the inliner splices a nothrow type-flow clone on LLVM (`78_whole_program_type_flow.md` 5.5) | inline frames for callees that can raise (HF-824); Cranelift (late stage, HF-821) | HF-773, HF-824 |
@@ -1884,7 +1884,87 @@ interleaved runs against 5971a85b67, output identical):
 
 What remains of the `object()` iteration (sampled, LLVM): `type(value)` (`molt_type_of`,
 `real_type_bits`) and the `object` load (`molt_builtin_type`) about a third, the generic `+=` of a
-bool about a fifth, and the runtime entries for allocation and release; S3 and S5 own them. Rejected: lazy instance admission (diverges from CPython, step 2); a
+bool about a fifth, and the runtime entries for allocation and release; S3 and S5 own them.
+
+S3 and S4 landed together (2026-11-21): compiled code allocates and frees a plain instance inline
+through `molt_codegen_abi::object_lifecycle`, which the shared walker lowers on Cranelift and LLVM
+(`SiteBody::ObjectAlloc`; LLVM places it in an always-inlined body, Cranelift inline).
+- Allocation (`object()` and a proven `C()`): the plan word (for `object()` the constant
+  `ROOT_OBJECT_PLAN`, since the builtin class is immutable and the runtime asserts the constant when
+  it seals), one call of the allocator entry `molt_heap_alloc` (mimalloc, with the resource
+  tracker's charge), the header words of `planned_header_words` (the runtime's own planned
+  allocation writes the same words, checked in debug builds), the missing word in each field, the
+  class retain and, for a heap class, generation-0 admission through the GC record. The size-class
+  table moved to `molt-codegen-abi`, its one home.
+- The GC record (step 6) is the head of `GcRuntimeState`, now `#[repr(C)]`: the thresholds, the
+  counts and the membership, whose member lists are fixed-layout vectors (`MemberList`) with the
+  ordinal counter and a watch word after them. Each runtime's binding lends its own record through
+  the thread record (`THREAD_RECORD_GC_RECORD_OFFSET`), so isolates keep the inline path; a
+  free-threaded binding lends none, and neither does a target whose pointers are not 64 bits (the
+  record's layout is the 64-bit one), so wasm32 tracks through the runtime. Admission takes the runtime when generation 0 has no room, when
+  count 0 reaches threshold 0 (the runtime schedules the collection) or when a retirement watch is
+  armed.
+- Release: every release refcount site's slow call reaches the program's one terminal-release
+  helper (`molt_release_terminal`, a walker helper body on Cranelift, a `noinline` body on LLVM).
+  The slow call carries every release the site does not decide inline: a count of 1, but also
+  runtime admission and a hardened or atomic build. So the helper first requires plain storage, the
+  invocation's plain admission and a count of exactly 1. It then frees a plain instance that nothing
+  observes: no weak reference, C view, scheduler retain, scoped storage, pointer field or
+  finalizer, no terminal release active on the thread (`THREAD_RECORD_TERMINAL_RELEASE_OFFSET`) and no profile counters. A GC member leaves its
+  list as the runtime's untrack does, and `molt_heap_free` returns the storage. Everything else calls
+  `molt_dec_ref_obj`.
+
+Measured (release, macOS arm64, instructions retired, median of three interleaved runs against S2,
+output identical):
+
+| program | LLVM | Cranelift |
+|---|---|---|
+| `object()` probe, 1M | 1.15 G -> 0.89 G (-23.1%; 1,079 -> 813 per iteration) | 1.19 G -> 0.95 G (-20.4%) |
+| `Point(i, 1)` probe, 1M | 0.84 G -> 0.51 G (-39.1%) | 0.95 G -> 0.66 G (-30.2%) |
+| `bench_struct` | 0.83 G -> 0.50 G (-39.2%) | 0.91 G -> 0.62 G (-31.3%) |
+| `bench_object_class_lifecycle` | 8.08 G -> 7.80 G (-3.5%) | 8.19 G -> 7.93 G (-3.2%) |
+| `bench_gc_pressure` | 8.54 G -> 8.59 G (+0.6%, the noise band) | 8.51 G -> 8.60 G (+1.1%) |
+
+A release that reaches the helper but not the inline free (a list, a string, an instance holding a
+pointer) pays one extra call before `molt_dec_ref_obj`: `bench_gc_pressure`, which frees dicts and
+lists, rises 0.6% on LLVM (inside the noise band) and 1.1% on Cranelift.
+`bench_object_class_lifecycle` moves little because its `Plain()` (`__slots__ = ()`) still
+constructs through the runtime class call.
+
+S4b and S5 (2026-11-21):
+- Proven plans (step 7). The class model derives each class's instance plan from its sealed layout
+  (`class_model.release_plan`: fields as contiguous words from offset 0, then the dictionary word,
+  no metaclass). A proven `C()` carries the field word count (`OpIR::release_plan`, TIR attribute
+  `release_plan`), and its allocation compiles in the plan word of the one formula,
+  `object_lifecycle::plain_instance_plan`, which the runtime also publishes at seal. No plan load,
+  no type test, no plan test. The layout fixes everything allocation reads when the class is
+  created; a later `__del__` changes only the finalizer bit, which allocation never reads and the
+  release reads from the class at run time, so a missed writer cannot make the constant wrong. A
+  layout that proves no plan keeps the guarded load and names why in the constructor diagnostics
+  ("guarded allocation: ...").
+- `type(x)` (S5) is `object_lifecycle::generate_type_of`: the inline class word of a non-native
+  object whose word names a class, retained; anything else calls `molt_type_of`. The builtin
+  `object` reference (`BUILTIN_TYPE` with the `object` tag) is the thread record's `ObjectClass`
+  word (`generate_builtin_type`); other tags call `molt_builtin_type`.
+
+Measured (release, macOS arm64, instructions retired, the lowest of three interleaved runs against
+S4, since the first runs of fresh binaries paid a launch scan of up to 25 M; output identical):
+
+| program | LLVM | Cranelift |
+|---|---|---|
+| `object()` probe, 1M | 884 M -> 634 M (-28.3%; 810 -> 562 per iteration) | 948 M -> 727 M (-23.3%) |
+| `Point(i, 1)` probe, 1M | 510 M -> 450 M (-11.9%) | 663 M -> 634 M (-4.5%) |
+| `bench_struct` | 503 M -> 435 M (-13.5%) | 627 M -> 599 M (-4.4%) |
+| `bench_object_class_lifecycle` | 7.79 G -> 7.37 G (-5.3%) | 7.93 G -> 7.59 G (-4.3%) |
+| `bench_gc_pressure` | 8.58 G -> 8.58 G (0.0%) | 8.63 G -> 8.63 G (-0.1%) |
+
+These numbers include the terminal free's count and admission test (one load and two compares).
+
+What remains of the `object()` iteration (LLVM disassembly): the generic `range` iteration and `+=`
+(`molt_operator_index`, `molt_operator_lt`, `molt_operator_iadd`, `molt_add`) on untyped
+operands, and the allocator call. Neither lifecycle entry runs on the hot path.
+
+Rejected: lazy instance admission (diverges from CPython, step 2); a
 per-release MRO walk or version-validated cache (the bump already visits every affected class);
 inlining mimalloc's thread-local page pop (couples compiled code to allocator internals for about
 five instructions over the call).

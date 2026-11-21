@@ -110,6 +110,7 @@ class _GeneratorProtocolAttrs(Protocol):
     current_method_first_param: str | None
     current_ops: list[MoltOp]
     current_python_first_arg: str | MoltValue | None
+    declaration_only_symbols: set[str]
     defer_module_attrs: Any
     deferred_module_attrs: set[str]
     del_targets: set[str]

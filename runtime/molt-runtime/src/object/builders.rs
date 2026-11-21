@@ -52,6 +52,56 @@ pub(crate) fn molt_alloc_class_attached_body(
     })
 }
 
+/// The allocator behind compiled inline allocation (call_anatomy.md 4.5,
+/// "Implementation (object lifecycle)"): `bytes` of storage aligned for a
+/// header, or 0 when the resource tracker refuses the charge or the allocator
+/// fails. Compiled code then takes the runtime allocation, which raises. A C
+/// program pays the same allocator call.
+pub(crate) fn molt_heap_alloc_attached_body(_py: &crate::PyToken<'_>, bytes: u64) -> u64 {
+    let Ok(bytes) = usize::try_from(bytes) else {
+        return 0;
+    };
+    if crate::resource::charge_allocation(bytes).is_err() {
+        return 0;
+    }
+    let Ok(layout) =
+        std::alloc::Layout::from_size_align(bytes, molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES)
+    else {
+        crate::resource::release_allocation(bytes);
+        return 0;
+    };
+    // SAFETY: a planned allocation is never zero-sized.
+    let base = unsafe { std::alloc::alloc(layout) };
+    if base.is_null() {
+        crate::resource::release_allocation(bytes);
+    }
+    base as u64
+}
+
+/// Free a planned plain instance after an inline terminal release proved
+/// nothing can observe its death (`molt_codegen_abi::object_lifecycle`). The
+/// header still names the allocation's size class and GC head; the collector
+/// state is already retired. A C program pays the same `free`.
+pub(crate) fn molt_heap_free_attached_body(_py: &crate::PyToken<'_>, object: u64) {
+    let data = object as *mut u8;
+    unsafe {
+        let header = super::header_from_obj_ptr(data);
+        let flags = (*header).load_metadata_flags();
+        let head = super::gc_head_bytes_for_flags(flags);
+        let bytes = super::SIZE_CLASS_TABLE[usize::from((*header).size_class)] + head;
+        #[cfg(debug_assertions)]
+        molt_obj_model::release_ptr(data);
+        crate::resource::release_allocation(bytes);
+        std::alloc::dealloc(
+            header.cast::<u8>().sub(head),
+            std::alloc::Layout::from_size_align_unchecked(
+                bytes,
+                molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES,
+            ),
+        );
+    }
+}
+
 pub(crate) fn molt_object_publish_initialized_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -131,6 +181,20 @@ pub(crate) unsafe fn alloc_planned_instance(
             MoltAuxWord::new(super::class_word(class_bits, ClassEdgeOwnership::Owned)),
         );
         (*header).aux_kind = super::HEADER_AUX_KIND_CLASS_INLINE;
+        // The header image compiled allocation writes inline is this one
+        // (`molt_codegen_abi::object_lifecycle::planned_header_words`).
+        #[cfg(debug_assertions)]
+        {
+            let flags = super::HEADER_FLAG_GC_UNPUBLISHED
+                | if gc_head {
+                    super::HEADER_FLAG_GC_HEAD
+                } else {
+                    0
+                };
+            let image = molt_codegen_abi::object_lifecycle::planned_header_words(size_class, flags);
+            assert_eq!(header.cast::<u64>().read(), image[0]);
+            assert_eq!(header.cast::<u64>().add(1).read(), image[1]);
+        }
         // Fields hold the immortal missing word (no retain, no HAS_PTRS);
         // the size-class tail, whose last word is the dictionary, is empty.
         let data = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
@@ -1352,6 +1416,12 @@ pub(crate) struct CanonicalObjectCache {
 }
 
 impl CanonicalObjectCache {
+    /// The address of the missing singleton's slot, which compiled allocation
+    /// reads through the thread record (`THREAD_RECORD_MISSING_SLOT_OFFSET`).
+    pub(crate) fn missing_slot_address(&self) -> u64 {
+        std::ptr::from_ref(&self.missing) as u64
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             singleton_init: std::sync::Mutex::new(()),

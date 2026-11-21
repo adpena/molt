@@ -70,8 +70,11 @@ fn inline_async_work_poll_enters_service_only_for_a_notified_word() {
     let provider = format!(
         r#"#![no_std]
 use core::sync::atomic::{{AtomicU32,AtomicU64,Ordering::SeqCst}};
-#[repr(C)] struct Record {{ pending:u8, invocation:u64, work:u64 }}
-static mut RECORD:Record=Record{{pending:0,invocation:0,work:0}};
+// The thread record prefix compiled code addresses (molt_codegen_abi
+// THREAD_RECORD_*): every word past `work` is zero, so refcount admission is
+// the runtime's.
+#[repr(C)] struct Record {{ pending:u8, invocation:u64, work:u64, rest:[u64; 11] }}
+static mut RECORD:Record=Record{{pending:0,invocation:0,work:0,rest:[0; 11]}};
 static WORK:AtomicU32=AtomicU32::new(0);
 static CALLS:AtomicU64=AtomicU64::new(0);
 static PASSIVES:AtomicU64=AtomicU64::new(0);
@@ -105,6 +108,17 @@ pub extern "C" fn attached_molt_exception_last_pending(_context: u64) ->u64 {{
     molt_exception_last_pending()
 }}
 pub fn molt_exception_last_pending() ->u64 {{assert!(unsafe{{RECORD.pending!=0}},"empty exception state entered passive capture");PASSIVES.fetch_add(1,SeqCst);0x7ff9_0000_0000_0007}}
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {{
+    0
+}}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {{
+    unreachable!("a fixture object is never freed inline")
+}}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -343,15 +357,29 @@ fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
         r#"#![no_std]
 #[export_name = "{generated_object_abi_symbol}"]
 pub static GENERATED_OBJECT_ABI: u8 = 0;
-#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64 }}
+// The thread record prefix compiled code addresses (molt_codegen_abi
+// THREAD_RECORD_*): every word past `work` is zero, so refcount admission is
+// the runtime's.
+#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64, rest: [u64; 11] }}
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0 }};
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0, rest: [0; 11] }};
 #[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_dec_ref(_arg0)
 }}
 pub fn molt_dec_ref(_: u64)  {{}}
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {{
+    0
+}}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {{
+    unreachable!("a fixture object is never freed inline")
+}}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -1529,10 +1557,10 @@ static INC_REFS: AtomicU64 = AtomicU64::new(0);
 static DEC_REFS: AtomicU64 = AtomicU64::new(0);
 static LIVE_REFS: AtomicU64 = AtomicU64::new(0);
 // The thread record prefix compiled code addresses (molt_codegen_abi THREAD_RECORD_*).
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64 }
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64, terminal_release: u64, object_class: u64, gc_record: u64, missing_slot: u64 }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static LIMIT: AtomicU64 = AtomicU64::new(1000);
-static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0 };
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0, terminal_release: 0, object_class: 0, gc_record: 0, missing_slot: 0 };
 static HASH_FAIL_ALLOC: AtomicU64 = AtomicU64::new(0);
 static HASH_FAIL_INSERT: AtomicU64 = AtomicU64::new(0);
 static HASH_INSERTS: AtomicU64 = AtomicU64::new(0);
@@ -1627,6 +1655,17 @@ pub fn molt_inc_ref_obj(value: u64)  {
     LIVE_REFS.fetch_add(1, Ordering::SeqCst);
 }
 
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {
+    0
+}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {
+    unreachable!("a fixture object is never freed inline")
+}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -2512,9 +2551,12 @@ fn native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transa
 use core::sync::atomic::{{AtomicU64, Ordering}};
 #[export_name = "{generated_object_abi_symbol}"]
 pub static GENERATED_OBJECT_ABI: u8 = 0;
-#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64 }}
+// The thread record prefix compiled code addresses (molt_codegen_abi
+// THREAD_RECORD_*): every word past `work` is zero, so refcount admission is
+// the runtime's.
+#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64, rest: [u64; 11] }}
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0 }};
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0, rest: [0; 11] }};
 static INIT_CALLS: AtomicU64 = AtomicU64::new(0);
 static TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
 static MODULE_RELEASES: AtomicU64 = AtomicU64::new(0);
@@ -2525,6 +2567,17 @@ pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {{
     molt_dec_ref(_arg0)
 }}
 pub fn molt_dec_ref(bits: u64)  {{ molt_dec_ref_obj(bits) }}
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {{
+    0
+}}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {{
+    unreachable!("a fixture object is never freed inline")
+}}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -2786,9 +2839,12 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 #[export_name = "@ABI@"] pub static ABI: u8 = 0;
 const NONE: u64 = @NONE@;
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+// The thread record prefix compiled code addresses (molt_codegen_abi
+// THREAD_RECORD_*): every word past `work` is zero, so refcount admission is
+// the runtime's.
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, rest: [u64; 11] }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, rest: [0; 11] };
 static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static FAIL: AtomicU64 = AtomicU64::new(0);
 static CTOR_FAIL: AtomicU64 = AtomicU64::new(0);
@@ -2820,6 +2876,17 @@ pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {
 pub fn molt_inc_ref_obj(value: u64)  {
     let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return};
     assert!(refs.fetch_add(1, SeqCst) > 0, "retain after free");
+}
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {
+    0
+}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {
+    unreachable!("a fixture object is never freed inline")
 }
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {

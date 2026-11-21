@@ -33,6 +33,7 @@ from molt.frontend.lowering.gpu_kernel_descriptor import (
 )
 from molt.frontend.sema import stateful_function_frame_plan
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.frontend._mixin_base import GeneratorMixinBase
 
@@ -111,8 +112,13 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             # module_get_global and see the mutation.
             for gname in new_globals:
                 self.locals.pop(gname, None)
+        declaration_only = (
+            bool(self.module_body_selection.declaration_only)
+            and python_node_source_key(node)
+            in self.module_body_selection.declaration_only
+        )
         is_generator = function_contains_yield(node)
-        has_return = self._function_contains_return(node)
+        has_return = not declaration_only and self._function_contains_return(node)
         func_name = node.name
         qualname = self._definition_qualname(node)
         if is_generator:
@@ -295,15 +301,20 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         func_name = node.name
         func_symbol = self._source_definition_symbol(node)
         self._record_func_default_specs(func_symbol, node.args)
-        self.funcs_map.setdefault(
-            func_symbol,
-            FuncInfo(
-                params=[], param_types=[], return_abi="value", return_hint=None, ops=[]
-            ),
-        )
-        self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
-            node.returns
-        )
+        if not declaration_only:
+            self.funcs_map.setdefault(
+                func_symbol,
+                FuncInfo(
+                    params=[],
+                    param_types=[],
+                    return_abi="value",
+                    return_hint=None,
+                    ops=[],
+                ),
+            )
+            self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
+                node.returns
+            )
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
         pos_or_kw_names = [arg.arg for arg in pos_or_kw]
@@ -380,11 +391,25 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
         self._emit_function_annotate(func_val, node, definition.type_params)
 
-        func_params, parameter_bindings = self._function_transport_params(
-            params,
-            has_closure=has_closure,
-        )
+        if declaration_only:
+            if node.decorator_list or has_closure or is_gpu_kernel:
+                raise ValueError(f"invalid declaration-only function {func_symbol!r}")
+            self.declaration_only_symbols.add(func_symbol)
+            self._publish_definition_binding(func_name, func_val)
+            self._record_source_app_callable(
+                func_name,
+                kind=FunctionKind.SYNC,
+                symbol=func_symbol,
+                decorated=False,
+                has_closure=False,
+            )
+            return
+
         with self._function_state_scope() as prev_state:
+            func_params, parameter_bindings = self._function_transport_params(
+                params,
+                has_closure=has_closure,
+            )
             # Extract type hints from parameter annotations for fast-path codegen.
             _param_type_hints: list[str] = []
             if self._hints_enabled():
@@ -744,11 +769,11 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             cellvars=cell_vars,
         )
 
-        func_params, parameter_bindings = self._function_transport_params(
-            params,
-            has_closure=has_closure,
-        )
         with self._function_state_scope() as prev_state:
+            func_params, parameter_bindings = self._function_transport_params(
+                params,
+                has_closure=has_closure,
+            )
             self.start_function(
                 func_symbol,
                 python_first_arg=self._python_first_positional_arg(node.args),

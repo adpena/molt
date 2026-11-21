@@ -1529,8 +1529,36 @@ pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
         .set(state.map_or(0, |state| state.pending_work.word_ptr() as u64));
     tls.recursion_limit_ptr
         .set(state.map_or(0, |state| state.recursion_limit.as_ptr() as u64));
+    tls.object_class
+        .set(state.map_or(0, builtin_object_class_bits));
+    // A free-threaded build tracks through the runtime only, and so does a
+    // target whose pointers are not 64 bits: the GC record's layout
+    // (`molt_codegen_abi::object_lifecycle`) is the 64-bit one.
+    tls.gc_record.set(
+        if cfg!(feature = "free-threaded") || !cfg!(target_pointer_width = "64") {
+            0
+        } else {
+            state.map_or(0, |state| std::ptr::from_ref(&state.gc) as u64)
+        },
+    );
+    tls.missing_slot
+        .set(state.map_or(0, |state| state.canonical_objects.missing_slot_address()));
     tls.profile_enabled
         .set(u64::from(crate::state::metrics::profile_enabled_unchecked()));
+}
+
+/// The builtin `object` class of `state`, boxed, or zero before the builtin
+/// classes initialize (which then publish it for their own thread).
+fn builtin_object_class_bits(state: &RuntimeState) -> u64 {
+    let classes = state
+        .builtin_classes
+        .load(std::sync::atomic::Ordering::Acquire);
+    if classes.is_null() {
+        0
+    } else {
+        // SAFETY: a published builtin class family lives as long as its state.
+        unsafe { (*classes).object }
+    }
 }
 
 /// Reset the binding once this thread holds neither a lease nor drain custody.
@@ -1546,6 +1574,9 @@ pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
     tls.bound_state.set(std::ptr::null());
     tls.pending_work_ptr.set(0);
     tls.recursion_limit_ptr.set(0);
+    tls.object_class.set(0);
+    tls.gc_record.set(0);
+    tls.missing_slot.set(0);
     tls.profile_enabled.set(0);
 }
 

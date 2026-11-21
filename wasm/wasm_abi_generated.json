@@ -8262,6 +8262,10 @@
       "context": "Attached",
       "physical_symbol": "molt_function_is_generator__molt_context_d1086a27578cda22"
     },
+    "molt_function_new_unreachable": {
+      "context": "Attached",
+      "physical_symbol": "molt_function_new_unreachable__molt_context_d1086a27578cda22"
+    },
     "molt_function_set_builtin": {
       "context": "Attached",
       "physical_symbol": "molt_function_set_builtin__molt_context_d1086a27578cda22"
@@ -9073,6 +9077,14 @@
     "molt_header_size": {
       "context": "Attached",
       "physical_symbol": "molt_header_size__molt_context_d1086a27578cda22"
+    },
+    "molt_heap_alloc": {
+      "context": "Attached",
+      "physical_symbol": "molt_heap_alloc__molt_context_d1086a27578cda22"
+    },
+    "molt_heap_free": {
+      "context": "Attached",
+      "physical_symbol": "molt_heap_free__molt_context_d1086a27578cda22"
     },
     "molt_heapq_heapify": {
       "context": "Attached",
@@ -19470,6 +19482,7 @@
     "function_init_metadata_packed": "molt_function_init_metadata_packed__molt_context_d1086a27578cda22",
     "function_is_coroutine": "molt_function_is_coroutine__molt_context_d1086a27578cda22",
     "function_is_generator": "molt_function_is_generator__molt_context_d1086a27578cda22",
+    "function_new_unreachable": "molt_function_new_unreachable__molt_context_d1086a27578cda22",
     "function_set_builtin": "molt_function_set_builtin__molt_context_d1086a27578cda22",
     "function_set_defaults": "molt_function_set_defaults__molt_context_d1086a27578cda22",
     "function_set_fixed_builtin": "molt_function_set_fixed_builtin__molt_context_d1086a27578cda22",
@@ -19603,6 +19616,8 @@
     "hash_digest": "molt_hash_digest__molt_context_d1086a27578cda22",
     "hash_new": "molt_hash_new__molt_context_d1086a27578cda22",
     "hash_update": "molt_hash_update__molt_context_d1086a27578cda22",
+    "heap_alloc": "molt_heap_alloc__molt_context_d1086a27578cda22",
+    "heap_free": "molt_heap_free__molt_context_d1086a27578cda22",
     "heapq_heapify": "molt_heapq_heapify__molt_context_d1086a27578cda22",
     "heapq_heappop": "molt_heapq_heappop__molt_context_d1086a27578cda22",
     "heapq_heappush": "molt_heapq_heappush__molt_context_d1086a27578cda22",
@@ -22267,6 +22282,7 @@
     "molt_function_init_metadata_packed__molt_context_d1086a27578cda22": "molt_function_init_metadata_packed__molt_context_d1086a27578cda22",
     "molt_function_is_coroutine__molt_context_d1086a27578cda22": "molt_function_is_coroutine__molt_context_d1086a27578cda22",
     "molt_function_is_generator__molt_context_d1086a27578cda22": "molt_function_is_generator__molt_context_d1086a27578cda22",
+    "molt_function_new_unreachable__molt_context_d1086a27578cda22": "molt_function_new_unreachable__molt_context_d1086a27578cda22",
     "molt_function_set_builtin__molt_context_d1086a27578cda22": "molt_function_set_builtin__molt_context_d1086a27578cda22",
     "molt_function_set_defaults__molt_context_d1086a27578cda22": "molt_function_set_defaults__molt_context_d1086a27578cda22",
     "molt_function_set_fixed_builtin__molt_context_d1086a27578cda22": "molt_function_set_fixed_builtin__molt_context_d1086a27578cda22",
@@ -22495,6 +22511,8 @@
     "molt_hash_update__molt_context_d1086a27578cda22": "molt_hash_update__molt_context_d1086a27578cda22",
     "molt_header_size": "molt_header_size__molt_context_d1086a27578cda22",
     "molt_header_size__molt_context_d1086a27578cda22": "molt_header_size__molt_context_d1086a27578cda22",
+    "molt_heap_alloc__molt_context_d1086a27578cda22": "molt_heap_alloc__molt_context_d1086a27578cda22",
+    "molt_heap_free__molt_context_d1086a27578cda22": "molt_heap_free__molt_context_d1086a27578cda22",
     "molt_heapq_heapify__molt_context_d1086a27578cda22": "molt_heapq_heapify__molt_context_d1086a27578cda22",
     "molt_heapq_heappop__molt_context_d1086a27578cda22": "molt_heapq_heappop__molt_context_d1086a27578cda22",
     "molt_heapq_heappush__molt_context_d1086a27578cda22": "molt_heapq_heappush__molt_context_d1086a27578cda22",

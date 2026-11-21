@@ -273,7 +273,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
 
     // Loading a slot acquired its word. Each exit transfers the exact
     // poll word. The pending arm releases the separately loaded future.
-    let releases = calls("molt_dec_ref_obj");
+    let releases = release_call_sites(function, &compiled.import_ids);
     assert!(
         releases.iter().any(|&(_, site)| value_originates_only_from(
             function,

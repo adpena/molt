@@ -790,6 +790,13 @@ pub struct OpIR {
     /// generator call's `alloc_task`; backends ignore it.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub direct_shape: bool,
+    /// An `object_new_bound` whose class layout proves the instance plan
+    /// (frontend `class_model.release_plan`, HF-202): the field word count.
+    /// The allocation compiles the plan word in
+    /// (`molt_codegen_abi::object_lifecycle::plain_instance_plan`) and
+    /// neither loads nor tests the class's plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_plan: Option<u16>,
     /// The compiled function a function-reference op names (HF-847 slice 1):
     /// an index into its document's `functions`. Decode moves the wire
     /// `s_value` here (`function_table::resolve_function_references`); after
@@ -889,6 +896,7 @@ impl OpIR {
             method_site: None,
             proven_target: false,
             direct_shape: false,
+            release_plan: None,
             callee: None,
         }
     }
@@ -2391,6 +2399,7 @@ mod json_parse_tests {
             passes_execution_context: true,
             proven_target: true,
             direct_shape: true,
+            release_plan: Some(2),
             callee: Some(crate::FunctionId(3)),
             runtime: None,
             async_work_poll: true,

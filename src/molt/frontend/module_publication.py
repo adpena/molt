@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 from molt.compiler_analysis.python_function_kind import normalize_function_kind
 
@@ -40,6 +40,7 @@ class CallableDeclaration(TypedDict):
 class FunctionAssemblyMetadata(TypedDict, total=False):
     source_module_publication: SourceModulePublicationData
     callable_declaration: CallableDeclaration
+    declaration_only: Literal[True]
     gpu_body_origin: dict[str, Any]
     app_callable_bindings: list[dict[str, Any]]
     constructor_fallbacks: list[str]
@@ -134,10 +135,21 @@ def parse_function_metadata(
     if not isinstance(payload, dict):
         raise ValueError("missing canonical function_metadata sidecar")
     for symbol, row in payload.items():
-        if not isinstance(symbol, str) or symbol not in function_symbols:
-            raise ValueError(f"function metadata has no executable owner {symbol!r}")
-        if not isinstance(row, dict) or set(row) - _FUNCTION_METADATA_FIELDS:
+        if (
+            not isinstance(symbol, str)
+            or not isinstance(row, dict)
+            or set(row) - _FUNCTION_METADATA_FIELDS
+        ):
             raise ValueError(f"invalid assembly metadata for function {symbol!r}")
+        if "declaration_only" in row:
+            if (
+                row["declaration_only"] is not True
+                or symbol in function_symbols
+                or set(row) != {"callable_declaration", "declaration_only"}
+            ):
+                raise ValueError(f"invalid declaration-only owner {symbol!r}")
+        elif symbol not in function_symbols:
+            raise ValueError(f"function metadata has no executable owner {symbol!r}")
         if "callable_declaration" in row:
             _validate_callable_declaration(row["callable_declaration"], symbol=symbol)
         if "source_module_publication" in row:
@@ -221,6 +233,8 @@ def project_frontend_tir_to_executable(tir: Mapping[str, Any]) -> dict[str, Any]
     metadata = parse_function_metadata(
         tir.get("function_metadata"), function_symbols=symbols
     )
+    if any(row.get("declaration_only") for row in metadata.values()):
+        raise ValueError("declaration-only callables require program integration")
     for function in functions:
         inspect_source_module_publication(function, metadata.get(function["name"], {}))
     return {key: value for key, value in tir.items() if key != "function_metadata"}

@@ -18,6 +18,8 @@ mod frame_record;
 pub(crate) use frame_record::*;
 mod field_slot;
 pub(crate) use field_slot::*;
+mod object_lifecycle;
+pub(crate) use object_lifecycle::*;
 mod task_site;
 pub(crate) use task_site::*;
 mod list_item;

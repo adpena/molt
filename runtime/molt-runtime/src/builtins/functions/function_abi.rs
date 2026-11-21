@@ -276,6 +276,24 @@ pub(crate) fn molt_func_new_builtin_attached_body(
     })
 }
 
+/// Shared entry for a function whose published declaration has no readers.
+extern "C" fn unreachable_callable_entry(_: u64, _: u64, _: u64, _: u64) -> i64 {
+    std::process::abort()
+}
+
+pub(crate) fn molt_function_new_unreachable_attached_body(
+    py: &crate::PyToken<'_>,
+    arity_bits: u64,
+) -> u64 {
+    let Some(arity) = to_i64(obj_from_bits(arity_bits)).and_then(|arity| u64::try_from(arity).ok())
+    else {
+        return raise_exception::<_>(py, BuiltinExc::SystemError, "invalid callable arity");
+    };
+    let entry =
+        crate::provenance::abi::expose_function_address(unreachable_callable_entry as *const ());
+    molt_func_new_attached_body(py, entry, entry, arity, 0)
+}
+
 /// A compiled `builtin_func`: the object names the runtime callable's key and
 /// its executable target together, as `fn_ref!` does in the runtime.
 fn molt_func_new_builtin_raw_impl(
@@ -2208,6 +2226,31 @@ mod function_type_execution_kind_tests {
         let __py = unsafe { crate::PyToken::from_attached_context(__context) };
 
         MoltObject::none().bits()
+    }
+
+    #[test]
+    fn unread_callable_objects_share_entry_and_preserve_their_arities() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let one =
+                molt_function_new_unreachable_attached_body(py, MoltObject::from_int(1).bits());
+            let three =
+                molt_function_new_unreachable_attached_body(py, MoltObject::from_int(3).bits());
+            assert_ne!(one, three);
+            let one_ptr = obj_from_bits(one).as_ptr().unwrap();
+            let three_ptr = obj_from_bits(three).as_ptr().unwrap();
+            unsafe {
+                assert_eq!(crate::function_arity(one_ptr), 1);
+                assert_eq!(crate::function_arity(three_ptr), 3);
+                let entry = function_fn_ptr(one_ptr);
+                assert_ne!(entry, 0);
+                assert_eq!(entry, function_fn_ptr(three_ptr));
+                assert_eq!(entry, function_trampoline_ptr(one_ptr));
+                assert_eq!(entry, function_trampoline_ptr(three_ptr));
+            }
+            dec_ref_bits(py, one);
+            dec_ref_bits(py, three);
+        });
     }
 
     #[test]

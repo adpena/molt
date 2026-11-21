@@ -393,6 +393,22 @@ extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
 extern "C" fn object_new_bound(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::ObjectNewBound, &[a])
 }
+extern "C" fn object_new(_: u64) -> u64 {
+    runtime(RuntimeFn::ObjectNew, &[])
+}
+extern "C" fn builtin_type(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::BuiltinType, &[a])
+}
+// The model has no allocator: a lifecycle allocation takes its miss, the
+// runtime constructor.
+extern "C" fn heap_alloc(_: u64, _bytes: u64) -> u64 {
+    0
+}
+// The model's objects carry no lifecycle plan, so no release frees one
+// inline; reaching this is a defect in the terminal-release admission.
+extern "C" fn heap_free(_: u64, object: u64) {
+    panic!("the model's object {object:#x} cannot be freed inline")
+}
 extern "C" fn module_get_attr(_: u64, a: u64, b: u64) -> u64 {
     two(RuntimeFn::ModuleGetAttr, a, b)
 }
@@ -567,6 +583,10 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::FrameLocalsSet => frame_locals_set as *const u8,
         RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
         RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
+        RuntimeFn::ObjectNew => object_new as *const u8,
+        RuntimeFn::BuiltinType => builtin_type as *const u8,
+        RuntimeFn::HeapAlloc => heap_alloc as *const u8,
+        RuntimeFn::HeapFree => heap_free as *const u8,
         RuntimeFn::ModuleGetAttr => module_get_attr as *const u8,
         RuntimeFn::ClosureStore => closure_store as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,

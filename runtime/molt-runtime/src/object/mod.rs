@@ -1191,7 +1191,7 @@ pub(crate) const HEADER_FLAG_REVIVAL_WINDOW: u32 = 1 << 1;
 pub(crate) const HEADER_FLAG_CORO_RUNNING: u32 = 1 << 2;
 /// A native coroutine's body has run at least once.
 pub(crate) const HEADER_FLAG_CORO_STARTED: u32 = 1 << 3;
-pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
+pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = molt_codegen_abi::HEADER_FLAG_SPAWN_RETAIN;
 pub(crate) const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
 pub(crate) const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
 pub(crate) const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
@@ -1201,7 +1201,7 @@ pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
 /// The allocation reserved a GC head (`gc::GC_HEAD_BYTES`) before this header: the
 /// word that records the object's collector membership. Set once, before
 /// publication, by the allocator, and read by tracking and by deallocation.
-pub(crate) const HEADER_FLAG_GC_HEAD: u32 = 1 << 11;
+pub(crate) const HEADER_FLAG_GC_HEAD: u32 = molt_codegen_abi::HEADER_FLAG_GC_HEAD;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
 /// Runtime-owned storage whose identity must never escape through public heap
 /// introspection. Set while unpublished and retained for the object's lifetime;
@@ -1217,7 +1217,7 @@ pub(crate) unsafe fn object_is_internal_owner(ptr: *mut u8) -> bool {
 /// This allocation contributes to generation-0 allocation accounting. Membership
 /// may change and payload/class edges may be cleared while this lifetime claim
 /// remains set; terminal retirement consumes it exactly once.
-pub(crate) const HEADER_FLAG_GC_ACCOUNTED: u32 = 1 << 14;
+pub(crate) const HEADER_FLAG_GC_ACCOUNTED: u32 = molt_codegen_abi::HEADER_FLAG_GC_ACCOUNTED;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
 pub(crate) const HEADER_FLAG_IMMORTAL: u32 = molt_codegen_abi::HEADER_FLAG_IMMORTAL;
@@ -1243,7 +1243,7 @@ pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
 /// refcounts and terminal edge destruction still apply; only backing storage
 /// reclamation/accounting belongs to the scope. Every owner must be released
 /// before the scope ends. Scoped storage is not an immortal Python lifetime.
-pub(crate) const HEADER_FLAG_SCOPED: u32 = 1 << 21;
+pub(crate) const HEADER_FLAG_SCOPED: u32 = molt_codegen_abi::HEADER_FLAG_SCOPED;
 
 /// `TYPE_ID_TYPE` metadata bit: this class's own namespace declares `__del__`.
 /// Inherited eligibility is projected from current MRO declaration bits.
@@ -1289,7 +1289,7 @@ pub(crate) use molt_codegen_abi::HEADER_FLAG_DEALLOCATING;
 /// weakrefs are cleared: callbacks observe a dead referent and cannot reopen
 /// ownership. The sticky bit preserves a zero-lock negative path for objects
 /// that never participated in weakref state.
-pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
+pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = molt_codegen_abi::HEADER_FLAG_HAS_WEAKREF;
 /// Marks weak-reference objects themselves, distinct from referents whose
 /// sticky `HAS_WEAKREF` bit opens the finalization window.
 pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
@@ -4497,12 +4497,8 @@ unsafe fn free_plain_leaf(
     header_size_class: u16,
     header_aux: ObjectAuxSnapshot,
 ) -> bool {
-    const OBSERVED: u32 = HEADER_FLAG_HAS_WEAKREF
-        | HEADER_FLAG_HAS_ABI_VIEW
-        | crate::HEADER_FLAG_SPAWN_RETAIN
-        | HEADER_FLAG_SCOPED
-        | HEADER_FLAG_HAS_PTRS
-        | HEADER_FLAG_DEALLOCATING;
+    // Compiled inline frees test the same flags.
+    const OBSERVED: u32 = molt_codegen_abi::object_lifecycle::OBSERVED_DEATH_FLAGS;
     unsafe {
         if header_flags & OBSERVED != 0
             || header_aux.kind != HEADER_AUX_KIND_CLASS_INLINE
