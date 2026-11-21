@@ -89,6 +89,9 @@ per premise revision.
    Entry-driven demand can identify the callable and argument facts an analysis needs before visiting
    its transitive library bodies. The transfer still needs Molt's existing custody for writes and
    unresolved calls. [JARVIS, §III](https://arxiv.org/abs/2305.05949)
+   A module scan now captures syntax-only namespace writes before binding analysis. The binding
+   core reads the package-independent own names from this capture, and discovery refines the
+   package-relative foreign writes against the binding results. Both use the same admitted AST.
 3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
    foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
    fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
@@ -110,10 +113,19 @@ per premise revision.
    Use the write graph for scheduling once its edges are known. A convergence boundary belongs
    at each cyclic component exit, including nested components. A graph revision can add a writer
    edge and require scheduling that component again. [Deterministic Parallel Fixpoint Computation, §§4–7](https://arxiv.org/abs/1909.05951)
+   Revision waves now group known active writers and receivers by component. A component
+   waits while an ancestor component has pending revisions. A new admission or demand can
+   change the order before the next wave. Unrelated components keep the same batch, and the
+   convergence check still covers writes through unknown receivers. Nested convergence
+   boundaries and the summary solver remain open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
-   This is the rustc red-green and salsa model, with the existing content-addressed store.
+   The import-scan fingerprint now covers the scan producer's 32 Python source dependencies,
+   the source decoder and the record codec. The import walk includes function-local imports
+   and rejects dependencies on CLI or frontend code. A real store test keeps a scan after
+   changing frontend bytes and invalidates it after changing a binding producer. See
+   [Frontend semantic fingerprint](../../../../design/frontend_semantic_fingerprint.md).
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.

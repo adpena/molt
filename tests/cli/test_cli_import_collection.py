@@ -14460,7 +14460,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-a",
     )
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
@@ -14493,7 +14493,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-b",
     )
     assert (
@@ -14518,7 +14518,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-a",
     )
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)

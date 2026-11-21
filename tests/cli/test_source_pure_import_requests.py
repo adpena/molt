@@ -34,9 +34,7 @@ WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
 
 @pytest.fixture(autouse=True)
 def tooling_identity(monkeypatch, isolated_molt_cache):
-    monkeypatch.setattr(
-        records, "_frontend_semantic_tooling_fingerprint", lambda: "requests"
-    )
+    monkeypatch.setattr(records, "_import_scan_tooling_fingerprint", lambda: "requests")
 
 
 def write(path: Path, text: str = "pass\n") -> Path:
@@ -83,6 +81,22 @@ def test_warm_inventory_and_execution_requests_stay_disjoint(tmp_path, inventory
         "inventory",
         "execution",
     }
+
+
+def test_intrinsic_evidence_only_warms_inventory_requests(tmp_path: Path) -> None:
+    source = write(tmp_path / "entry.py", "def deferred():\n    import leaf\n")
+    write(tmp_path / "leaf.py")
+    target = TargetPythonVersion(3, 12, 0)
+    records._stdlib_intrinsic_source_facts("entry", source, target_python=target)
+
+    inventory = load(
+        source, purpose=SourceImportPurpose.INVENTORY, target_python=target
+    )
+    assert inventory.cache_hit and inventory.scan.imports == ("leaf",)
+
+    execution = load(source, target_python=target)
+    assert not execution.cache_hit
+    assert execution.scan.imports == ()
 
 
 def test_warm_star_exports_and_child_presence_are_live(tmp_path):
@@ -2459,7 +2473,19 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
         )
     # Resolving foreign relative imports needs a package; own callback names do
     # not. Neither syntax fact depends on owners, arguments or graph premises.
-    assert sorted(collected, key=lambda package: package or "") == [None, "pkg"]
+    assert collected == ["pkg"]
+    relocated = _source_import_scan._collect_imports_for_graph(
+        parsed.tree,
+        "other.entry",
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+        target_python=target,
+        ast_digest_admission=parsed.admission,
+    )
+    assert relocated.namespace_summary.own_names == {"namespace_marker"}
+    assert {write.module for write in relocated.namespace_summary.foreign_writes} == {
+        "other.target"
+    }
+    assert collected == ["pkg", "other"]
 
 
 def test_module_export_fact_qualifies_target_and_namespace_premise():

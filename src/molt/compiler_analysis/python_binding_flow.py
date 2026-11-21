@@ -67,7 +67,7 @@ from molt.compiler_analysis.python_parameter_classes import (
     parameter_literal_classes,
 )
 from molt.compiler_analysis.python_namespace_writes import (
-    _resolved_python_namespace_summary,
+    _own_namespace_names,
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
@@ -3150,11 +3150,11 @@ class _Analyzer:
         """
         foreign = self.policy.foreign_namespace_writes
         own = (
-            _resolved_python_namespace_summary(
+            _own_namespace_names(
                 tree,
                 target_python=self.policy.target_python,
                 ast_digest_admission=ast_digest_admission,
-            ).own_names
+            )
             if foreign is not None
             else None
         )

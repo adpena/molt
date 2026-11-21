@@ -359,6 +359,25 @@ def python_namespace_summary(
     )
 
 
+def _own_namespace_names(
+    tree: ast.Module,
+    *,
+    target_python: tuple[int, int],
+    ast_digest_admission: _PythonAstDigestAdmission | None,
+) -> frozenset[str] | None:
+    """Use the source syntax fact; its own namespace has no package input."""
+    if ast_digest_admission is not None:
+        for (
+            version,
+            _package,
+        ), summary in ast_digest_admission.namespace_summaries.items():
+            if version == target_python:
+                return summary.own_names
+    return _resolved_python_namespace_summary(
+        tree, target_python=target_python, ast_digest_admission=ast_digest_admission
+    ).own_names
+
+
 def _resolved_python_namespace_summary(
     tree: ast.Module,
     *,
