@@ -106,10 +106,42 @@ pub(crate) fn resolved_archive_path(path: &Path) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
-/// The archive a build links: a canonical shared-stdlib store entry
-/// (`<root>/shared-stdlib/<key>/stdlib.a`), which the build links in place,
-/// or a standalone path outside every cache entry (canonical home excepted).
-/// A transfer's destination is never its own source.
+/// `<root>/build/<entry>-<16 hex>/…`: one build configuration's intermediates
+/// (`molt.default_paths.build_artifacts_entry`). Its build holds the lock
+/// beside the root, and the pruner takes the same lock, so the root outlives
+/// the build that writes into it.
+fn in_build_artifacts_root(cache_root: &Path, output: &Path) -> bool {
+    let Ok(rest) = output.strip_prefix(cache_root.join(BUILD_ARTIFACTS_DIRECTORY)) else {
+        return false;
+    };
+    let mut components = rest.components();
+    let Some(name) = components.next().and_then(|c| c.as_os_str().to_str()) else {
+        return false;
+    };
+    if components.next().is_none() {
+        return false;
+    }
+    let Some((stem, identity)) = name.rsplit_once('-') else {
+        return false;
+    };
+    let mut stem_bytes = stem.bytes();
+    identity.len() == 16
+        && identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && stem_bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && stem_bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+const BUILD_ARTIFACTS_DIRECTORY: &str = "build";
+
+/// The one rule for the archive a build links (the CLI holds no twin): a
+/// canonical shared-stdlib store entry (`<root>/shared-stdlib/<key>/stdlib.a`),
+/// which the build links in place; a path in a build-artifacts root, which its
+/// build's claim keeps; or a standalone path outside every cache entry
+/// (canonical home excepted). A transfer's destination is never its own source.
 pub(crate) fn validate_required_stdlib_output(
     output: &Path,
     source: Option<&Path>,
@@ -118,7 +150,7 @@ pub(crate) fn validate_required_stdlib_output(
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "required stdlib archive must be a canonical shared-stdlib store entry or lie outside cache entries (canonical home excepted), and differ from its source",
+            "required stdlib archive must be a canonical shared-stdlib store entry, lie in a build-artifacts root or lie outside cache entries (canonical home excepted), and differ from its source",
         )
     };
     let source = source.map(resolved_archive_path).transpose()?;
@@ -152,7 +184,10 @@ pub(crate) fn validate_required_stdlib_output(
         // Canonical home is durable across maintenance environments; a selected
         // MOLT_HOME/MOLT_BIN exception alone is not future output custody.
         let home = resolved_archive_path(&root.join("home"))?;
-        if output.starts_with(&root) && !output.starts_with(&home) {
+        if output.starts_with(&root)
+            && !output.starts_with(&home)
+            && !in_build_artifacts_root(&root, &output)
+        {
             return Err(invalid());
         }
     }
@@ -332,10 +367,28 @@ mod tests {
         let root = Path::new("cache");
         validate_required_stdlib_output(&root.join("home/build/app/stdlib.a"), Some(&source))
             .unwrap();
+        // HF-970: a --no-cache build keeps its archive in its own claimed
+        // build-artifacts root (<root>/build/<entry>-<identity>, HF-923).
+        validate_required_stdlib_output(
+            &root.join(format!(
+                "build/app-{}/shared-stdlib-link/{}/stdlib.a",
+                "0123456789abcdef",
+                "c".repeat(64)
+            )),
+            Some(&source),
+        )
+        .unwrap();
         for relative in [
             "wasm_link/schema/key/owned.a",
             "module_lowering/entry.json",
             "unclassified/owned.a",
+            // Not an artifacts root: the lock file's directory, a bare file,
+            // a name without its 16-hex identity.
+            "build/owned.a",
+            "build/app/stdlib.a",
+            "build/app-0123456789ABCDEF/stdlib.a",
+            // A closed-content generation is not a shared-stdlib store entry.
+            "native-stdlib-archives-v1/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/stdlib.a",
         ] {
             assert_eq!(
                 validate_required_stdlib_output(&root.join(relative), Some(&source))
@@ -344,6 +397,36 @@ mod tests {
                 io::ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_archive_follows_the_physical_target_of_canonical_home() {
+        // Home is protected by where it resolves; a symlinked home admits its
+        // real target, and nothing else under the cache root.
+        let root = std::env::temp_dir().join(format!(
+            "molt-required-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let target = root.join("module_lowering");
+        std::fs::create_dir_all(&target).expect("create home target");
+        std::os::unix::fs::symlink(&target, root.join("home")).expect("link home");
+        let source = root
+            .join("shared-stdlib")
+            .join("a".repeat(64))
+            .join("stdlib.a");
+        validate_required_stdlib_output(&target.join("required.a"), Some(&source)).unwrap();
+        assert_eq!(
+            validate_required_stdlib_output(&root.join("other/required.a"), Some(&source))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        std::fs::remove_dir_all(&root).expect("remove test root");
     }
 
     #[test]

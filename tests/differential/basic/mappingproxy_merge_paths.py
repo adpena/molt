@@ -73,3 +73,20 @@ plain = types.MappingProxyType({"p": 1, "q": 2})
 out = {"q": 0}
 out.update(plain)
 print("plain", out)
+
+# A str subclass key needs its hash hook for source lookup and target insertion.
+hashes: list[str] = []
+
+
+class TrackedKey(str):
+    def __hash__(self) -> int:
+        hashes.append("hash")
+        return super().__hash__()
+
+
+key = TrackedKey("tracked")
+proxy = types.MappingProxyType({key: 7})
+hashes.clear()
+target = {}
+target.update(proxy)
+print("str-subclass key", hashes, next(iter(target)) is key, list(target.values()))

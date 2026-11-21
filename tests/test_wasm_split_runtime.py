@@ -815,6 +815,9 @@ class TestSplitRuntimeArtifacts:
         executed = _run_split_direct(out)
         assert executed.returncode == 0, executed.stderr
         assert executed.stdout.strip() == "42"
+        assert not wasm_artifact.wasm_publication_policy_violations(
+            (out / "app.wasm").read_bytes(), final_artifact=True, preserve_debug=False
+        )
 
     def test_build_succeeds(self, split_build_a):
         out_dir, result = split_build_a

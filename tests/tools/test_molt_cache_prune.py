@@ -1080,38 +1080,10 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
     assert not source.exists()  # Producer cleanup happens only after both transfers.
 
 
-@pytest.mark.parametrize(
-    "relative,allowed",
-    [
-        ("home/build/app/shared-stdlib-link/key/stdlib.a", True),
-        ("wasm_link/schema/key/owned.a", False),
-        ("module_lowering/entry.json", False),
-        ("unclassified/owned.a", False),
-    ],
-)
-def test_required_archive_custody_uses_durable_home_not_eligibility_registry(
-    tmp_path, relative, allowed
-):
-    from molt.default_paths import validate_required_stdlib_output
-
-    root = tmp_path / "cache"
-    source = root / "shared-stdlib" / ("a" * 64) / "stdlib.a"
-    output = root / relative
-    if allowed:
-        validate_required_stdlib_output(output, source)
-    else:
-        with pytest.raises(ValueError, match="canonical shared-stdlib store entry"):
-            validate_required_stdlib_output(output, source)
-    validate_required_stdlib_output(tmp_path / "outside" / "owned.a", source)
-
-
 def test_canonical_home_physical_target_remains_protected_when_selected_home_changes(
     tmp_path, monkeypatch
 ):
-    from molt.default_paths import (
-        protected_cache_roots,
-        validate_required_stdlib_output,
-    )
+    from molt.default_paths import protected_cache_roots
 
     root = tmp_path / "cache"
     target = root / "module_lowering"
@@ -1120,8 +1092,6 @@ def test_canonical_home_physical_target_remains_protected_when_selected_home_cha
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "different-home"))
     owned = target / "required.json"
     owned.write_bytes(b"required output")
-    source = root / "shared-stdlib" / ("a" * 64) / "stdlib.a"
-    validate_required_stdlib_output(owned, source)
     assert root / "module_lowering" in protected_cache_roots(root)
     _load_molt_cache_prune()._prune(root, max_bytes=0, max_age_days=0, dry_run=False)
     assert owned.read_bytes() == b"required output"
@@ -1139,13 +1109,14 @@ def test_canonical_home_physical_target_remains_protected_when_selected_home_cha
         ("native-stdlib-archives-v1", "native-stdlib-archive"),
     ],
 )
-def test_archive_families_share_the_producer_stripe_and_required_output_rule(
-    tmp_path, namespace, lock_stem
-):
+def test_archive_families_share_the_producer_stripe(
+    tmp_path: Path, namespace: str, lock_stem: str
+) -> None:
+    # The location rule for the linked archive has one authority, the backend's
+    # validate_required_stdlib_output (shared_stdlib_cache/publish/paths.rs).
     from molt.default_paths import (
         stdlib_archive_cache_root,
         shared_stdlib_publish_lock_path,
-        validate_required_stdlib_output,
     )
 
     root = tmp_path / "cache"
@@ -1155,14 +1126,6 @@ def test_archive_families_share_the_producer_stripe_and_required_output_rule(
         shared_stdlib_publish_lock_path(source)
         == root / "locks" / f"{lock_stem}.aa.lock"
     )
-    output = root / namespace / ("b" * 64) / "stdlib.a"
-    if namespace == "shared-stdlib":
-        # A build links a shared-stdlib store entry in place.
-        validate_required_stdlib_output(output, source)
-    else:
-        with pytest.raises(ValueError, match="canonical shared-stdlib store entry"):
-            validate_required_stdlib_output(output, source)
-    validate_required_stdlib_output(tmp_path / "build" / "required.a", source)
 
 
 @pytest.mark.parametrize("hit_after_inventory", [False, True])

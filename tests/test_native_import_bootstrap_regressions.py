@@ -2529,6 +2529,8 @@ def test_native_os_listdir_executes(tmp_path: Path) -> None:
         tmp_path,
         "import os\nprint(type(os.listdir('.')).__name__)\n",
         "os_listdir_executes",
+        # The default tier is none (deny by default); grant only the read.
+        capabilities=("fs.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "list"
@@ -2539,6 +2541,8 @@ def test_native_os_stat_executes(tmp_path: Path) -> None:
         tmp_path,
         "import os\nprint(type(os.stat('.')).__name__)\n",
         "os_stat_executes",
+        # The default tier is none (deny by default); grant only the read.
+        capabilities=("fs.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "stat_result"

@@ -548,6 +548,8 @@ split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name
 stripping, requests Binaryen debug output, and partitions optimizer caches.
 Final publication removes any remaining debug/name sections under the default
 policy; optimization without preservation may discard them earlier.
+The debug-stripped side-module link also compresses relocated instruction
+operands. Its placement and target metadata travel with the app.
 
 **Final link results are content-addressed.** A final link (`tools/wasm_link.py`:
 wasm-ld, post-link transforms, wasm-opt and split-runtime processing) is keyed by

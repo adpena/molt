@@ -923,7 +923,12 @@ def _foreign_caller(name: str) -> dict[str, Any]:
     )
 
 
-def _prove_foreign(name: str) -> tuple[dict[str, Any], list[str]]:
+def _prove_foreign(
+    name: str,
+    *,
+    reader: str = "user",
+    dep_closures: dict[str, frozenset[str]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     from molt.cli.frontend_integration import (
         stamp_foreign_globals,
         stamp_global_slots,
@@ -934,7 +939,7 @@ def _prove_foreign(name: str) -> tuple[dict[str, Any], list[str]]:
     plan = _dominance_plan(funcs, funcs)
     caller = _foreign_caller(name)
     functions = [*funcs, caller]
-    module_functions = {"mod": list(funcs), "user": [caller]}
+    module_functions = {"mod": list(funcs), reader: [caller]}
     layouts = {"mod": _DOMINANCE_LAYOUT}
     stamp_global_slots(
         functions,
@@ -946,7 +951,13 @@ def _prove_foreign(name: str) -> tuple[dict[str, Any], list[str]]:
         plan.init_dominated,
     )
     diagnostics = stamp_foreign_globals(
-        functions, layouts, plan.modules, plan.init_once, plan.ineligible
+        functions,
+        layouts,
+        plan.modules,
+        plan.init_once,
+        plan.ineligible,
+        module_functions=module_functions,
+        dep_closures=dep_closures or {},
     )
     diagnostics += prove_init_once_calls(functions, module_functions, plan)
     return functions[-1], diagnostics
@@ -967,6 +978,35 @@ def test_a_proven_foreign_call_reads_the_cell_and_enters_its_target() -> None:
     (call,) = [op for op in ops if op["kind"] == "call_guarded"]
     assert call["proven_target"] is True
     assert not [line for line in diagnostics if ":40 " in line]
+
+
+@pytest.mark.parametrize(
+    "reader,dep_closures",
+    [
+        # The runtime builds builtins when a frame first needs it, from inside
+        # whatever body is running (HF-974).
+        ("builtins", {}),
+        # A module only an on-demand module imports runs on that edge too.
+        ("_sitebuiltins", {"builtins": frozenset({"builtins", "_sitebuiltins"})}),
+        # A runtime root an intrinsic imports by typed identity.
+        ("copyreg", {}),
+    ],
+)
+def test_an_on_demand_reader_keeps_its_by_name_read(
+    reader: str, dep_closures: dict[str, frozenset[str]]
+) -> None:
+    # Its body can run while mod is partly initialized: a cell load there
+    # would return the UNBOUND word as a value.
+    caller, diagnostics = _prove_foreign(
+        "helper", reader=reader, dep_closures=dep_closures
+    )
+    (read,) = [op for op in caller["ops"] if op.get("out") == "callee"]
+    assert read["kind"] == "get_attr_generic_obj"
+    assert "global_slot" not in read
+    assert any(
+        f"mod.helper: by-name read: {reader} can initialize on demand" in line
+        for line in diagnostics
+    )
 
 
 def test_a_foreign_read_without_an_init_once_cell_keeps_its_by_name_read() -> None:

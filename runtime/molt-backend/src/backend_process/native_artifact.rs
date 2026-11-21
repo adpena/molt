@@ -59,8 +59,8 @@ impl NativeArtifactKind {
     }
 }
 
-/// The required archive is a canonical shared-stdlib store entry, which the
-/// build links in place, or a standalone path outside every cache entry.
+/// The required archive obeys the one rule in
+/// `shared_stdlib_cache::validate_required_stdlib_output`.
 pub(crate) fn validate_shared_stdlib_cache_output(output: Option<&str>) -> std::io::Result<()> {
     #[cfg(feature = "native-backend")]
     if let Some(output) = output {
