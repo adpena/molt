@@ -4,6 +4,48 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(feature = "native-backend")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
+/// The compiled application handoff. Its declarations accompany terminal TIR;
+/// they have no source operations and must never enter the source IR decoder.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedJitApplication {
+    pub(super) declarations: Vec<FunctionIR>,
+    pub(super) bodies: Vec<Option<Vec<u8>>>,
+    pub(super) registry: ModuleRegistryIR,
+    pub(super) linkage: NativeBackendModuleContext,
+    pub(super) callables: crate::passes::AppCallableManifest,
+}
+
+impl PreparedJitApplication {
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        rmp_serde::to_vec_named(self).map_err(|error| error.to_string())
+    }
+
+    #[cfg(feature = "jit")]
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = std::io::Cursor::new(bytes);
+        let program: Self = rmp_serde::from_read(&mut reader).map_err(|error| error.to_string())?;
+        if reader.position() != bytes.len() as u64 {
+            return Err("prepared JIT application has trailing bytes".to_string());
+        }
+        let mut names = BTreeSet::new();
+        for function in &program.declarations {
+            if !function.ops.is_empty() || !names.insert(&function.name) {
+                return Err(format!(
+                    "invalid prepared JIT declaration `{}`",
+                    function.name
+                ));
+            }
+        }
+        molt_ir::ir::validate_module_slots(Some(&program.registry), &program.declarations)
+            .map_err(|error| error.to_string())?;
+        program
+            .linkage
+            .validate_function_linkage_abis(&program.declarations)?;
+        Ok(program)
+    }
+}
+
 /// Declaration headers, terminal TIR and its SSA carrier facts share one row order.
 /// Retention and externalization transform those rows together.
 #[cfg(feature = "native-backend")]
@@ -238,6 +280,81 @@ impl NativeFinalFunctions {
             molt_ir::function_table::remap_function_ids(&mut self.ir.functions, &map);
             self.remap_bodies(&map);
         }
+    }
+
+    /// Shared bodies participated in type flow, but their canonical entries
+    /// are provided by the image. All newly specialized rows stay local.
+    pub(super) fn bind_shared_bodies(&mut self, shared: &BTreeSet<String>) {
+        for (function, row) in self.ir.functions.iter_mut().zip(&mut self.rows) {
+            if !function.is_extern && shared.contains(&function.name) {
+                crate::externalize_function_with_signature(function);
+                row.body = None;
+            }
+        }
+    }
+
+    pub(super) fn into_jit_artifact(
+        self,
+        registry: ModuleRegistryIR,
+        linkage: NativeBackendModuleContext,
+        callables: crate::passes::AppCallableManifest,
+    ) -> Result<PreparedJitApplication, String> {
+        let table = molt_ir::FunctionTable::of(&self.ir.functions);
+        let bodies = self
+            .rows
+            .into_iter()
+            .map(|row| {
+                row.body
+                    .map(|body| molt_ir::tir::serialize::serialize_tir_function(&body.tir, &table))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PreparedJitApplication {
+            declarations: self.ir.functions,
+            bodies,
+            registry,
+            linkage,
+            callables,
+        })
+    }
+
+    #[cfg(feature = "jit")]
+    pub(super) fn from_jit_artifact(
+        ir: SimpleIR,
+        wires: Vec<Option<Vec<u8>>>,
+    ) -> Result<Self, String> {
+        if ir.functions.len() != wires.len() {
+            return Err("native JIT body row count differs from the declaration table".to_string());
+        }
+        let table = molt_ir::FunctionTable::of(&ir.functions);
+        let by_symbol: BTreeMap<_, _> = table.ids().map(|id| (table.symbol(id), id)).collect();
+        let mut bodies = Vec::with_capacity(wires.len());
+        for (declaration, wire) in ir.functions.iter().zip(wires) {
+            let body = match (declaration.is_extern, wire) {
+                (true, None) => crate::tir::lower_from_simple::lower_to_tir(declaration),
+                (false, Some(bytes)) => {
+                    molt_ir::tir::serialize::deserialize_tir_function(&bytes, &|name| {
+                        by_symbol.get(name).copied()
+                    })
+                    .filter(|body| {
+                        body.name == declaration.name
+                            && body.return_abi == declaration.return_abi
+                            && body.param_names == declaration.params
+                    })
+                    .ok_or_else(|| {
+                        format!("invalid terminal JIT body for `{}`", declaration.name)
+                    })?
+                }
+                _ => {
+                    return Err(format!(
+                        "native JIT body ownership differs for `{}`",
+                        declaration.name
+                    ));
+                }
+            };
+            bodies.push((declaration.is_extern, body));
+        }
+        Ok(Self::from_final_tir(ir, bodies))
     }
 
     /// Resolve a physical declaration in document order. An independently

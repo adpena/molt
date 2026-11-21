@@ -276,6 +276,7 @@ def _prepare_backend_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
+    restore_application_artifact: bool = True,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
@@ -453,6 +454,7 @@ def _prepare_backend_setup(
             codegen=codegen,
             rust_cpu=rust_cpu,
             stage_timings_ms=stage_timings_ms,
+            restore_application_artifact=restore_application_artifact,
         )
     except (NativeSymbolInspectionError, OSError, ValueError) as error:
         return None, _fail(str(error), json_output, command="build")

@@ -101,6 +101,8 @@ pub struct SimpleBackend {
     /// the `emit_app_callable_resolver` custody: exactly one object per final
     /// binary emits the blob.
     pub module_registry: Option<ModuleRegistryIR>,
+    /// The process loader has installed this application's native data.
+    pub external_program_storage: bool,
     /// Final dense slot bindings, defined only by the application metadata object.
     /// Other objects import stable slot symbols without carrying program IDs.
     pub code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,

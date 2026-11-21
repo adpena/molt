@@ -3115,6 +3115,7 @@ class _InitializerPremiseReads:
         default_factory=dict
     )
     frame_borrows: bool = False
+    deferred_names: set[str] = field(default_factory=set)
 
 
 class _Analyzer:
@@ -3232,12 +3233,19 @@ class _Analyzer:
         if self._replaying_deferred:
             raise _BindingReplayRefused
         self._deferred_queue_generation += 1
-        module_bindings, lexical_bindings = self._activation_slot_bindings(
-            node,
-            scope,
-            state_id,
-            annotation_scope=annotation_scope,
-        )
+        reads = self._initializer_premise_reads
+        source_reads = self._foreign_reads
+        if reads is not None and source_reads is not None:
+            self._foreign_reads = reads.deferred_names
+        try:
+            module_bindings, lexical_bindings = self._activation_slot_bindings(
+                node,
+                scope,
+                state_id,
+                annotation_scope=annotation_scope,
+            )
+        finally:
+            self._foreign_reads = source_reads
         lexical_history = self._active_lexical_history if lexical_bindings else None
         job = _FunctionJob(
             node,
@@ -9764,6 +9772,7 @@ class _Analyzer:
         ):
             self._initializer_premise_reads.names = frozenset(self._foreign_reads)
             self._foreign_reads.update(_METADATA_NAMES)
+            self._foreign_reads.update(self._initializer_premise_reads.deferred_names)
 
     def _run_deferred_job(
         self, job: _FunctionJob, recorder: _DeferredJobRecorder | None
@@ -10327,6 +10336,26 @@ class _RebasableInitializer:
             ):
                 return None
         appended_end = len(work.slot_names)
+        if not additions.isdisjoint(self.reads.deferred_names):
+            if prefix._deferred_queue_generation != len(prefix.function_jobs):
+                return None
+            for job in work.function_jobs:
+                module, lexical = work._activation_slot_bindings(
+                    job.node,
+                    job.parent_scope,
+                    job.outer_state_id,
+                    annotation_scope=job.annotation_scope,
+                )
+                if lexical != job.lexical_base_bindings:
+                    return None
+                job.module_base_bindings = module
+            if (
+                len(work.slot_names) != appended_end
+                or work.callback_slot_mask != prefix.callback_slot_mask
+                or work.states._callback_deletion_mask
+                != prefix.states._callback_deletion_mask
+            ):
+                return None
         if appended_end != appended_start:
             # Body histories keep their physical slot coordinates. The final
             # immutable layout puts newly named slots back in callback order.

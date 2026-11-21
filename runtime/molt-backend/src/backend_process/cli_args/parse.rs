@@ -21,10 +21,11 @@ enum BackendOption {
     FactGraphFunction,
     TargetTriple,
     NativeOutputKind,
+    PrepareJit,
 }
 
 impl BackendOption {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Features,
         Self::CaptureOrigin,
         Self::EmissionScope,
@@ -39,6 +40,7 @@ impl BackendOption {
         Self::FactGraphFunction,
         Self::TargetTriple,
         Self::NativeOutputKind,
+        Self::PrepareJit,
     ];
 
     fn flag(self) -> &'static str {
@@ -57,6 +59,7 @@ impl BackendOption {
             Self::FactGraphFunction => "--fact-graph-function",
             Self::TargetTriple => "--target-triple",
             Self::NativeOutputKind => "--native-output-kind",
+            Self::PrepareJit => "--prepare-jit-application",
         }
     }
 
@@ -67,7 +70,7 @@ impl BackendOption {
     /// The `--target` whose backend reads this option, if only one does.
     fn owning_target(self) -> Option<&'static str> {
         match self {
-            Self::TargetTriple | Self::NativeOutputKind => Some("native"),
+            Self::TargetTriple | Self::NativeOutputKind | Self::PrepareJit => Some("native"),
             _ => None,
         }
     }
@@ -261,7 +264,19 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
             "origin capture requires a native MessagePack compilation without fact-graph emission",
         ));
     }
+    let prepare_jit = supplied.get(BackendOption::PrepareJit);
+    if prepare_jit.is_some()
+        && (capture_origin.is_some()
+            || fact_graph.is_some()
+            || !supplied.has(BackendOption::Output)
+            || supplied.get(BackendOption::IrFormat) != Some("msgpack"))
+    {
+        return Err(invalid(
+            "--prepare-jit-application requires --output and MessagePack IR without origin or fact-graph emission",
+        ));
+    }
     Ok(BackendCompileArgs {
+        prepare_jit,
         capture_origin,
         emission_scope,
         target,
@@ -437,6 +452,7 @@ mod tests {
                     output_path: Some("build/app.a"),
                     ir_file_path: Some("build/app.ir.json"),
                     ir_format: crate::backend_process::input::IrFormat::Json,
+                    prepare_jit: None,
                     fact_graph: None,
                     capture_origin: None,
                     emission_scope: None,

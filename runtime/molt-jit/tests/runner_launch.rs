@@ -18,7 +18,7 @@ mod cargo_test_artifacts {
 }
 
 use cargo_test_artifacts::CargoTestArtifacts;
-use molt_backend_native::{FunctionIR, ModuleRegistryIR, OpIR};
+use molt_backend_native::{FunctionIR, ModuleRegistryIR, OpIR, SimpleBackend, SimpleIR};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -28,6 +28,7 @@ const RUNNER: &str = env!("CARGO_BIN_EXE_molt-jit");
 const BOOTSTRAP_VALUE: i64 = 0x6a17;
 
 fn fake_runtime_source() -> String {
+    let ready_symbol = molt_ir::MODULE_READY_SYMBOL;
     let witness = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL;
     let suffix = molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX;
     let bootstrap_symbol = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
@@ -137,10 +138,15 @@ pub extern "C" fn molt_set_app_callable_resolver(resolver: u64) -> u64 {{
 pub extern "C" fn molt_module_registry_install(blob: *const u8, ready: *mut u64) -> u64 {{
     log(&format!(
         "molt_module_registry_install set={{}}",
-        !blob.is_null() && !ready.is_null()
+        !blob.is_null() && ready == &raw mut MODULE_READY
     ));
     0
 }}
+#[unsafe(no_mangle)]
+pub static molt_native_image_generation_test: u8 = 0;
+#[unsafe(export_name = "{ready_symbol}")]
+pub static mut MODULE_READY: u64 = 0;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {{
     let receipt = std::env::var_os("FAKE_RUNTIME_RECEIPT").expect("FAKE_RUNTIME_RECEIPT");
@@ -319,8 +325,8 @@ fn function(name: &str, returns_value: bool, ops: Vec<OpIR>) -> FunctionIR {
     }
 }
 
-/// The program as the CLI's backend IR lease (MessagePack), with `filler`
-/// extra functions that only return, to make compilation take a while.
+/// Prepare the program through the native compiler's terminal JIT handoff.
+/// `filler` adds module init bodies to exercise a long compilation.
 fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
     let mut main = vec![];
     if let Some(symbol) = extra_import {
@@ -366,17 +372,22 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
             static_cells: None,
         });
     }
-    // The content-addressed lease `src/molt/cli/jit_image.py` writes: every
-    // body shipped, each named by its digest (backend daemon protocol 4).
-    molt_ir::addressed_program::encode_complete_lease(&molt_ir::ir::BackendIrDocument {
-        ir: molt_ir::ir::SimpleIR {
-            functions,
-            profile: None,
-        },
-        module_registry: Some(registry),
-        code_slots: Default::default(),
-    })
-    .expect("encode the program")
+    let mut ir = SimpleIR {
+        functions,
+        profile: None,
+    };
+    let slots = Default::default();
+    molt_backend_native::prepare_native_application_ir(&mut ir, Some(&registry), &slots, false)
+        .expect("admit the fixture application");
+    let mut compiler = SimpleBackend::new_with_target(None);
+    compiler.module_registry = Some(registry);
+    compiler.code_slots = Some(slots);
+    compiler.set_module_context(Default::default());
+    compiler
+        .prepare_jit_application(ir, &Default::default())
+        .expect("prepare terminal application bodies")
+        .encode()
+        .expect("encode the program")
 }
 
 /// How the image asks for compiler diagnostics.
@@ -398,6 +409,13 @@ fn write_image(path: &Path, runtime_image: &Path, program: &[u8], diagnostics: D
     };
     let header = serde_json::json!({
         "runtime_image": runtime_image,
+        "runtime_generation": "molt_native_image_generation_test",
+        "shared_stdlib": {
+            "stdlib_image": runtime_image,
+            "stdlib_generation": "molt_native_image_generation_test",
+            "program_data": runtime_image,
+            "program_data_generation": "molt_native_image_generation_test",
+        },
         "backend_environment": backend_environment,
         "compiler_diagnostics": compiler_diagnostics,
         "tir_cache_root": tir_cache_root(path),
@@ -779,7 +797,7 @@ fn start_image(image: &Path, directory: &Path) -> Command {
 #[test]
 fn a_start_uses_only_the_images_cache_and_no_temporary_directory() {
     // An AOT executable starts without a usable TMPDIR and writes no file. The
-    // runner keeps its TIR cache under the root the image names; the
+    // runner keeps its machine-code cache under the root the image names; the
     // program's environment (no MOLT_CACHE) and current directory are not the
     // runner's to use (HF-371 review v5).
     let artifacts =
@@ -796,7 +814,7 @@ fn a_start_uses_only_the_images_cache_and_no_temporary_directory() {
     assert_eq!(entries(&directory), Vec::<String>::new());
     assert!(
         !entries(&tir_cache_root(&image)).is_empty(),
-        "the runner's TIR cache namespace lives under the image's root"
+        "the runner's machine-code cache lives under the image's root"
     );
 }
 
@@ -953,4 +971,41 @@ fn a_signal_pending_at_start_is_still_pending_for_the_program() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
     assert!(stdout.contains("pending sigxfsz=true"), "{stdout}");
+}
+
+#[test]
+fn the_runner_refuses_a_runtime_image_from_another_generation() {
+    let artifacts =
+        CargoTestArtifacts::new("jit-generation-mismatch").expect("Cargo test artifact root");
+    let runtime = fake_runtime(&artifacts);
+    let image = artifacts.path().join("app_molt.jit");
+    write_image(&image, &runtime, &program(None, 0), Diagnostics::OnFailure);
+    let mut bytes = std::fs::read(&image).expect("read image");
+    let expected = b"molt_native_image_generation_test";
+    let stamp = bytes
+        .windows(expected.len())
+        .position(|window| window == expected)
+        .expect("image generation witness");
+    bytes[stamp..stamp + expected.len()].copy_from_slice(b"molt_native_image_generation_fail");
+    std::fs::write(&image, &bytes).expect("replace witness in test-owned image");
+
+    let receipt = artifacts.path().join("started.json");
+    let log = artifacts.path().join("calls.log");
+    let output = Command::new(RUNNER)
+        .arg(runner_protocol("start_receipt_flag"))
+        .arg(&receipt)
+        .arg(runner_protocol("image_flag"))
+        .arg(&image)
+        .env("FAKE_RUNTIME_LOG", &log)
+        .output()
+        .expect("run molt-jit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains("native image generation mismatch")
+            && stderr.contains("molt_native_image_generation_fail"),
+        "{stderr}"
+    );
+    assert!(!receipt.exists());
+    assert!(!log.exists());
 }

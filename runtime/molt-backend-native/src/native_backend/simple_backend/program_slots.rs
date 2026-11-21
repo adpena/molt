@@ -6,6 +6,39 @@ use molt_ir::code_slots::{
 };
 
 impl SimpleBackend {
+    /// The data the application's code and every native stdlib function share.
+    /// The JIT launcher links this into the program's data image and opens it
+    /// before loading compiled stdlib code. AOT emits it into the app object.
+    pub fn emit_native_program_storage(
+        target_triple: Option<&str>,
+        code_slots: &CodeSlotBindings,
+        registry: &molt_ir::ModuleRegistryIR,
+    ) -> Vec<u8> {
+        let mut backend = Self::new_with_target(target_triple);
+        backend.emit_module_ready_binding(registry);
+        backend.emit_program_slot_bindings(Some(code_slots), Some(registry));
+        super::super::finalize_native_object(backend.module.into_object().finish())
+            .emit()
+            .expect("emit native program storage")
+    }
+
+    pub(super) fn emit_module_ready_binding(&mut self, registry: &molt_ir::ModuleRegistryIR) {
+        // The ready block: writable zeroed words the runtime stores borrowed
+        // module pointers into (IC2).
+        let ready_id = self
+            .module
+            .declare_data(molt_ir::MODULE_READY_SYMBOL, Linkage::Export, true, false)
+            .unwrap_or_else(|e| {
+                panic!("failed to declare {}: {e:?}", molt_ir::MODULE_READY_SYMBOL)
+            });
+        let mut ready = DataDescription::new();
+        ready.set_align(8);
+        ready.define_zeroinit(registry.ready_block_bytes());
+        self.module
+            .define_data(ready_id, &ready)
+            .unwrap_or_else(|e| panic!("failed to define {}: {e:?}", molt_ir::MODULE_READY_SYMBOL));
+    }
+
     pub(in crate::native_backend::simple_backend) fn emit_program_slot_bindings(
         &mut self,
         code_slots: Option<&CodeSlotBindings>,

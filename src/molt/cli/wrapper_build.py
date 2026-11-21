@@ -89,7 +89,7 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
     )
 
 
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 6
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 7
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
@@ -131,7 +131,13 @@ def _wrapper_build_default_consumer_path(
 
 # The files a cached JIT image runs besides itself. A cached launch is valid
 # only while every one still exists; a hit renews their retention windows.
-_JIT_LAUNCH_ARTIFACTS = ("runner", "runtime_image", "callable_symbols")
+_JIT_LAUNCH_ARTIFACTS = (
+    "runner",
+    "runtime_image",
+    "stdlib_image",
+    "program_data",
+    "callable_symbols",
+)
 
 
 def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -328,11 +334,17 @@ def _wrapper_build_cache_input(
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),
         "capability_config_digest": capability_config_digest,
-        # The compiler product this tier runs, with the runtime it links. A JIT
-        # launch runs the molt-jit runner and never the backend compiler, so
-        # its key hashes the runner's closure in place of the backend's: one
-        # fingerprint per tier, not two (HF-371 review v3, finding 9).
-        "runtime_backend_fingerprint": (
+        # The backend prepares the shared native partition for both tiers.
+        "runtime_backend_fingerprint": _cache_fingerprint(
+            env=env,
+            backend_features=backend_features_for_target(
+                is_wasm=is_wasm_target(target),
+                codegen_backend=request.selected_backend(),
+            ),
+            rust_cpu=rust_cpu,
+            include_runtime_sources=request.emit != RunTier.JIT.build_emit,
+        ),
+        "jit_runner_fingerprint": (
             _cache_fingerprint(
                 env=env,
                 backend_features=HostToolProduct.JIT.required_features,
@@ -340,14 +352,7 @@ def _wrapper_build_cache_input(
                 product=HostToolProduct.JIT,
             )
             if request.emit == RunTier.JIT.build_emit
-            else _cache_fingerprint(
-                env=env,
-                backend_features=backend_features_for_target(
-                    is_wasm=is_wasm_target(target),
-                    codegen_backend=request.selected_backend(),
-                ),
-                rust_cpu=rust_cpu,
-            )
+            else None
         ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
@@ -400,23 +405,29 @@ def _read_wrapper_build_cache_contract(
         for key, value in raw_artifacts.items():
             if isinstance(key, str) and isinstance(value, str):
                 artifacts[key] = Path(value)
-    if tier is RunTier.JIT:
-        if not all(name in artifacts for name in _JIT_LAUNCH_ARTIFACTS):
-            return None
+    if tier is RunTier.JIT and not all(
+        name in artifacts for name in _JIT_LAUNCH_ARTIFACTS
+    ):
+        return None
+    retained_images = (
+        _JIT_LAUNCH_ARTIFACTS
+        if tier is RunTier.JIT
+        else tuple(
+            name for name in ("runtime_image", "stdlib_image") if name in artifacts
+        )
+    )
+    if retained_images:
         from molt.cli.product_store import record_stored_file_use
         from molt.dx import product_store_dir
         from molt.source_root import compiler_source_root
 
         try:
-            # A JIT start reads every file its image names: the runner, the
-            # runtime image and the runtime's callable-symbol table, all in the
-            # product store (the JIT tier admits no installed compiler). A hit
-            # renews each one's entry under the ledger lock, so eviction cannot
-            # remove it during the run; an evicted entry is a miss.
+            # The launch reads these product files. Renew the entries under
+            # the ledger lock before execution. An evicted entry is a miss.
             store_dir = product_store_dir(compiler_source_root(), os.environ)
             stored = all(
                 record_stored_file_use(artifacts[name], store_dir)
-                for name in _JIT_LAUNCH_ARTIFACTS
+                for name in retained_images
             )
         except (OSError, ValueError):
             return None
