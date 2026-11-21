@@ -1149,28 +1149,29 @@ pub(crate) fn molt_str_hash_method_attached_body(_py: &crate::PyToken<'_>, self_
     })
 }
 
-/// Operation context for an unhashable-key `TypeError`.
+/// Operation context for a key a set or dict hashes.
 ///
-/// CPython 3.14 added an operation-specific prefix to the `unhashable type`
-/// message: `cannot use 'X' as a set element (unhashable type: 'X')` when the
-/// value is inserted into a set, `... as a dict key (...)` for a dict key. The
-/// bare form is still emitted on 3.12/3.13 and for operations that merely probe
-/// (`set.intersection`/`intersection_update`/`issubset`) without inserting, even
-/// on 3.14. `Bare` selects that probe-only form on every version.
+/// From 3.14 CPython names the operation when hashing a key it stores or looks
+/// up raises an exact `TypeError`: `cannot use 'X' as a set element (<message>)`
+/// or `... as a dict key (...)`, where `<message>` is the original error, such
+/// as `unhashable type: 'X'` (`set_unhashable_type` and `dict_unhashable_type`
+/// in `Objects/setobject.c` and `Objects/dictobject.c`). A subclass of
+/// `TypeError` and every other exception pass through. 3.12/3.13 and the
+/// probe-only set operations (`intersection`, `issubset`) keep the error as it
+/// is; `Bare` selects that form on every version.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HashContext {
-    /// Bare `unhashable type: 'X'` on every version. Used for probe-only set ops
-    /// (`intersection`, `intersection_update`, `issubset`) and the `hash()`
-    /// builtin.
+    /// The hash error unchanged on every version: probe-only set operations
+    /// and the `hash()` builtin.
     Bare,
-    /// `cannot use 'X' as a set element (...)` on 3.14; bare on 3.12/3.13.
+    /// `cannot use 'X' as a set element (...)` from 3.14.
     SetElement,
-    /// `cannot use 'X' as a dict key (...)` on 3.14; bare on 3.12/3.13.
+    /// `cannot use 'X' as a dict key (...)` from 3.14.
     DictKey,
 }
 
 impl HashContext {
-    /// The 3.14 context word, or `None` for the bare form (every version).
+    /// The context word, or `None` for the bare form (every version).
     #[inline]
     fn word(self) -> Option<&'static str> {
         match self {
@@ -1181,18 +1182,46 @@ impl HashContext {
     }
 }
 
-/// Render the unhashable-type `TypeError` message for `name`, honoring the
-/// operation context and the runtime CPython target version.
+/// Name the operation on the pending hash error of `key_bits`, as CPython 3.14
+/// does (see [`HashContext`]). The one place the context text is written.
 #[cold]
 #[inline(never)]
-pub(crate) fn unhashable_type_message(_py: &PyToken<'_>, name: &str, ctx: HashContext) -> String {
-    if let Some(word) = ctx.word()
-        && crate::object::ops_sys::runtime_target_at_least(_py, 3, 14)
-    {
-        format!("cannot use '{name}' as a {word} (unhashable type: '{name}')")
-    } else {
-        format!("unhashable type: '{name}'")
+pub(crate) fn note_hash_context(py: &PyToken<'_>, key_bits: u64, ctx: HashContext) {
+    let Some(word) = ctx.word() else {
+        return;
+    };
+    if !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        return;
     }
+    let Some(exception) = crate::builtins::exceptions::exception_last_bits_noinc(py) else {
+        return;
+    };
+    let Some(exception_ptr) = obj_from_bits(exception).as_ptr() else {
+        return;
+    };
+    let type_error = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::TypeError);
+    if unsafe { object_class_bits(exception_ptr) } != type_error {
+        return;
+    }
+    let message = crate::builtins::exceptions::format_exception_message(py, exception_ptr);
+    let name = type_name(py, obj_from_bits(key_bits));
+    crate::clear_exception(py);
+    let _ = raise_exception::<()>(
+        py,
+        BuiltinExc::TypeError,
+        &format!("cannot use '{name}' as a {word} ({message})"),
+    );
+}
+
+/// The hash of a key a set or dict stores or looks up, or `u64::MAX` with the
+/// error pending and its operation named.
+#[inline]
+pub(crate) fn hash_bits_in_context(py: &PyToken<'_>, key_bits: u64, ctx: HashContext) -> u64 {
+    let hash = hash_bits(py, key_bits);
+    if hash == u64::MAX {
+        note_hash_context(py, key_bits, ctx);
+    }
+    hash
 }
 
 pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext) -> bool {
@@ -1211,8 +1240,13 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
                 || (declaration == HashDeclaration::Builtin && is_unhashable_type(type_id))
             {
                 let name = type_name(_py, obj);
-                let msg = unhashable_type_message(_py, &name, ctx);
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
+                let _ = raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    &format!("unhashable type: '{name}'"),
+                );
+                note_hash_context(_py, key_bits, ctx);
+                return false;
             }
         }
     }

@@ -4,13 +4,10 @@ use super::weak_container::{
 };
 use crate::BuiltinExc;
 use crate::state::runtime_state::{WeakRefEntry, WeakRefRegistry};
-use crate::{
-    MoltObject, PtrSlot, PyToken, molt_is_callable_attached_body, raise_exception, runtime_state,
-    type_name,
-};
+use crate::{MoltObject, PtrSlot, PyToken, raise_exception, runtime_state, type_name};
 use crate::{
     alloc_list, call_callable1, dec_ref_bits, exception_pending, header_from_obj_ptr, inc_ref_bits,
-    int_bits_from_i64, is_truthy, obj_from_bits,
+    int_bits_from_i64, obj_from_bits,
 };
 use std::num::NonZeroU64;
 use std::ptr;
@@ -926,22 +923,6 @@ pub(crate) fn molt_weakref_register_attached_body(
                 BuiltinExc::ReferenceError,
                 "cannot create weak reference to retiring runtime type",
             );
-        }
-        if crate::object::ops_sys::runtime_target_minor(_py) >= 15
-            && !obj_from_bits(callback_bits).is_none()
-        {
-            let callable_ok = is_truthy(
-                _py,
-                obj_from_bits(molt_is_callable_attached_body(_py, callback_bits)),
-            );
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !callable_ok {
-                let callback_type = type_name(_py, obj_from_bits(callback_bits));
-                let message = format!("callback must be callable or None, not '{callback_type}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
-            }
         }
         let target_slot = PtrSlot(target_ptr);
         let mut prepared_target_list = Vec::new();

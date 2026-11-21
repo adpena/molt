@@ -1392,7 +1392,8 @@ pub(crate) unsafe fn dict_key_hash(py: &PyToken<'_>, key_bits: u64) -> Option<u6
         if !ensure_hashable(py, key_bits, HashContext::DictKey) {
             return None;
         }
-        let hash = hash_bits(py, key_bits);
+        let hash =
+            crate::object::ops_hash::hash_bits_in_context(py, key_bits, HashContext::DictKey);
         (hash != u64::MAX).then_some(hash)
     }
 }
@@ -1901,9 +1902,10 @@ pub(crate) unsafe fn set_find_entry(
     py: &PyToken<'_>,
     set: *mut u8,
     key: u64,
+    ctx: HashContext,
 ) -> Result<Option<usize>, ()> {
     let _key = PinnedSetEntry::borrow(py, key, 0);
-    let hash = hash_bits(py, key);
+    let hash = crate::object::ops_hash::hash_bits_in_context(py, key, ctx);
     if hash == u64::MAX {
         return Err(());
     }
@@ -2356,7 +2358,7 @@ pub(crate) unsafe fn set_add_in_place(
     if !ensure_hashable(py, key, ctx) {
         return false;
     }
-    let hash = hash_bits(py, key);
+    let hash = crate::object::ops_hash::hash_bits_in_context(py, key, ctx);
     if hash == u64::MAX {
         return false;
     }
@@ -2607,7 +2609,8 @@ pub(crate) unsafe fn set_del_in_place(
     if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
         return Err(());
     }
-    let hash = hash_bits(_py, key_bits);
+    let hash =
+        crate::object::ops_hash::hash_bits_in_context(_py, key_bits, HashContext::SetElement);
     if hash == u64::MAX {
         return Err(());
     }
