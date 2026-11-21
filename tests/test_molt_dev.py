@@ -3365,12 +3365,20 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     assert ran == [("gate", "1")]
 
 
-def test_postsubmit_keeps_going_and_names_every_failed_gate(drv, tmp_path):
+def test_postsubmit_keeps_going_and_names_every_failed_gate(
+    drv: ModuleType, tmp_path: Path
+) -> None:
     # HF-937: a first-failure stop let one red static check hide every later
     # gate on main for 20 days. Postsubmit runs them all and names each one.
     ran: list[str] = []
 
-    def run_captured_gate(command, repo, environment, cancelled, streams=None):
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, ...] | None = None,
+    ) -> object:
         name = next(
             (str(part) for part in command if str(part).startswith("tests/")),
             str(command[-1]),
@@ -3383,7 +3391,7 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(drv, tmp_path):
         return _gate_outcome(3 if name in failing else 0, "", "", None)
 
     class Progress:
-        def emit(self, event, **details):
+        def emit(self, event: str, **details: object) -> None:
             pass
 
     runtime = molt_dev_gates.GateRuntime(
@@ -7627,7 +7635,7 @@ def test_a_landed_unretired_lane_holds_no_dispatch_capacity(
 
 
 @pytest.fixture(autouse=True)
-def _postsubmit_starts(monkeypatch) -> list[Path]:
+def _postsubmit_starts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """A fast landing starts the queue runner (HF-937); a test records it
     instead of spawning a runner against its scratch remote."""
     from tools import molt_dev_land_fast
@@ -7653,8 +7661,11 @@ def _remote_main(work: Path) -> str:
 
 
 def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
-    drv, origin_and_clone, tmp_path, _postsubmit_starts
-):
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    _postsubmit_starts: list[Path],
+) -> None:
     """The not-rocket-science rule: main advances to exactly the tested tree."""
     from tools import landing_receipt
 
@@ -7910,8 +7921,11 @@ def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
 
 
 def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
-    drv, origin_and_clone, tmp_path, _postsubmit_starts
-):
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    _postsubmit_starts: list[Path],
+) -> None:
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
     _publish_policy(work, _try_run_policy(counter, try_gate="test ! -e broken.txt"))

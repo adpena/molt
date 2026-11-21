@@ -563,7 +563,7 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
     return EXIT_FAIL
 
 
-def _start_postsubmit(git, args: argparse.Namespace) -> None:
+def _start_postsubmit(git: Git, args: argparse.Namespace) -> None:
     """Start the queue runner, which qualifies main in postsubmit when no
     request waits. A queued landing starts it; a fast landing did not, so
     postsubmit last ran on 2026-11-16 while main took hundreds of fast
