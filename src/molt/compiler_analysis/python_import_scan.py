@@ -2593,6 +2593,16 @@ def _collect_imports_for_graph(
     source_values: list[_SourceValueSummary] = []
     source_sites: list[SourceImportSite] = []
     runtime_import_protocol: list[bool] = []
+    namespace_summary = (
+        python_namespace_summary(
+            tree,
+            package=python_package_name(module_name or "", is_package=is_package),
+            target_python=target_python.feature_version,
+            ast_digest_admission=ast_digest_admission,
+        )
+        if source_owner is None and isinstance(tree, ast.Module)
+        else None
+    )
     imports = _collect_imports(
         tree,
         module_name,
@@ -2630,17 +2640,10 @@ def _collect_imports_for_graph(
         ),
         namespace_summary=(
             refine_namespace_cache_writes(
-                python_namespace_summary(
-                    tree,
-                    package=python_package_name(
-                        module_name or "", is_package=is_package
-                    ),
-                    target_python=target_python.feature_version,
-                    ast_digest_admission=ast_digest_admission,
-                ),
+                namespace_summary,
                 source_values[0].cache_writes if source_values else (),
             )
-            if source_owner is None and isinstance(tree, ast.Module)
+            if namespace_summary is not None
             else None
         ),
         runtime_catalog=(

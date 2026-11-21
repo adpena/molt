@@ -89,6 +89,9 @@ per premise revision.
    Entry-driven demand can identify the callable and argument facts an analysis needs before visiting
    its transitive library bodies. The transfer still needs Molt's existing custody for writes and
    unresolved calls. [JARVIS, §III](https://arxiv.org/abs/2305.05949)
+   A module scan now captures syntax-only namespace writes before binding analysis. The binding
+   core reads the package-independent own names from this capture, and discovery refines the
+   package-relative foreign writes against the binding results. Both use the same admitted AST.
 3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
    foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
    fixpoint iterates over these small summaries and never reruns a module fixpoint. This is

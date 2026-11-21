@@ -230,9 +230,6 @@ def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     assert "helper" not in payload["declared_root_modules"]
 
 
-# A cold whole-stdlib module-graph discovery (161 s in the 2026-11-20
-# landing gate); postsubmit runs it until HF-938 makes discovery fast.
-@pytest.mark.slow
 def test_project_config_include_module_keeps_compile_scope_in_image_closure(
     tmp_path: Path,
 ) -> None:
@@ -284,9 +281,6 @@ def test_project_config_include_module_keeps_compile_scope_in_image_closure(
     assert import_plan.direct_call_modules <= import_plan.known_modules
 
 
-# A cold whole-stdlib module-graph discovery (325 s in the 2026-11-20
-# landing gate); postsubmit runs it until HF-938 makes discovery fast.
-@pytest.mark.slow
 def test_wrapper_build_cache_input_uses_include_module_closure_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

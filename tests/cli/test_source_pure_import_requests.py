@@ -2473,7 +2473,19 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
         )
     # Resolving foreign relative imports needs a package; own callback names do
     # not. Neither syntax fact depends on owners, arguments or graph premises.
-    assert sorted(collected, key=lambda package: package or "") == [None, "pkg"]
+    assert collected == ["pkg"]
+    relocated = _source_import_scan._collect_imports_for_graph(
+        parsed.tree,
+        "other.entry",
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+        target_python=target,
+        ast_digest_admission=parsed.admission,
+    )
+    assert relocated.namespace_summary.own_names == {"namespace_marker"}
+    assert {write.module for write in relocated.namespace_summary.foreign_writes} == {
+        "other.target"
+    }
+    assert collected == ["pkg", "other"]
 
 
 def test_module_export_fact_qualifies_target_and_namespace_premise():
