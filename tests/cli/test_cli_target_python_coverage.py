@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from molt.target_python import TargetPythonVersion, require_verified_subset_target
+from molt.target_python import TargetPythonVersion
+from molt.verified_subset import require_verified_subset_target
 from tests.process_guard_common import run_custody_subject_process
 
 

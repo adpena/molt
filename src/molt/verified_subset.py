@@ -18,6 +18,7 @@ from molt.release_matrix import (
     Tier1Cell,
 )
 from molt.source_root import compiler_source_root
+from molt.target_python import TargetPythonVersion
 from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -379,3 +380,36 @@ def require_current_host(coordinate: VerifiedSubsetCoordinate) -> None:
             f"verified-subset coordinate {coordinate.id} requires host "
             f"{expected[0]}/{expected[1]}, current host is {current[0]}/{current[1]}"
         )
+
+
+def _target_platform_name(value: str | None = None) -> str:
+    raw = (platform_module.system() if value is None else value).strip().lower()
+    return {"win32": "windows", "darwin": "macos"}.get(raw, raw)
+
+
+def required_verified_subset_python_tuples() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted(
+            {
+                (coordinate.python, coordinate.platform)
+                for coordinate in verified_subset_coordinates()
+            }
+        )
+    )
+
+
+def require_verified_subset_target(
+    target: TargetPythonVersion, *, platform: str | None = None
+) -> TargetPythonVersion:
+    selected = (target.short, _target_platform_name(platform))
+    required = required_verified_subset_python_tuples()
+    if selected not in required:
+        rendered = ", ".join(
+            f"CPython {version} on {name}" for version, name in required
+        )
+        raise ValueError(
+            f"Molt target tuple is outside the required verified-subset matrix: "
+            f"CPython {selected[0]} on {selected[1]}; required tuples: {rendered}. "
+            "A tuple is proven only by a passing source-bound receipt."
+        )
+    return target

@@ -589,7 +589,7 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
 ):
     from tools import bench
     from tools import perf_scoreboard_profile as profiling
-    from molt.target_python import _resolve_target_python_version
+    from molt.cli.config_resolution import _resolve_target_python_version
 
     captured = {}
 

@@ -87,7 +87,7 @@ def test_graph_cache_keeps_initialization_and_full_roots_disjoint(
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     monkeypatch.setattr(
-        module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "test"
+        module_graph_cache, "_import_scan_tooling_fingerprint", lambda: "test"
     )
     for full in (first_full, not first_full, first_full):
         discovery_result = module_graph_discovery._discover_module_graph_from_paths(
@@ -466,7 +466,7 @@ def test_module_getattr_demands_lazy_returned_class(
     stdlib.mkdir()
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "lazy-module-return",
     )
     parse = module_resolution._parse_source_for_target
@@ -642,7 +642,7 @@ def test_namespace_acquisition_selects_values_without_calling_the_hook(
     assert set(json.loads(observed.stdout)) == required
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-view",
     )
     stdlib = tmp_path / "stdlib"
@@ -695,7 +695,7 @@ def test_namespace_view_survives_a_partial_module_and_late_publication(
     assert observed.returncode == 0
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-cycle",
     )
     stdlib = tmp_path / "stdlib"
@@ -759,7 +759,7 @@ def test_member_context_is_proven_or_widens(
     tmp_path, monkeypatch, hook, use, required, excluded
 ):
     monkeypatch.setattr(
-        module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "test"
+        module_graph_cache, "_import_scan_tooling_fingerprint", lambda: "test"
     )
     (tmp_path / "entry.py").write_text("import api\n" + use + "\n", encoding="utf-8")
     (tmp_path / "api.py").write_text(
@@ -1228,7 +1228,7 @@ def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
     stdlib.mkdir()
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-delta",
     )
     load = module_graph_discovery._load_module_import_scan
@@ -1721,7 +1721,7 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
     assert "unused_leaf" not in actual
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "writer-owner",
     )
     install = next(
@@ -1834,7 +1834,7 @@ def test_star_custom_method_keeps_its_actual_hook_writer_provenance(
     assert json.loads(executed.stdout) == int(invoke)
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "custom-hook-writer",
     )
     for _warm in (False, True):
@@ -1922,7 +1922,7 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
     )
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "format-writer-custody",
     )
     for _warm in (False, True):
@@ -1985,7 +1985,7 @@ def test_class_mapping_call_keeps_source_candidates_without_module_universe(
     assert json.loads(executed.stdout) == ["leaf"]
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "class-source-mapping-custody",
     )
     for _warm in (False, True):
@@ -2047,7 +2047,7 @@ def test_current_namespace_read_keeps_imported_callable_source(
     assert json.loads(observed.stdout) == [True, False]
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-callable-source-custody",
     )
     for _warm in (False, True):
@@ -2110,7 +2110,7 @@ def test_namespace_call_result_read_is_not_namespace_escape(
     assert json.loads(observed.stdout) is escaped
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-read",
     )
     for _warm in (False, True):
@@ -2185,7 +2185,7 @@ def test_named_source_writer_keeps_only_published_callable_availability(
     assert json.loads(observed.stdout) == expected
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "named-source-writer-availability",
     )
     for _warm in (False, True):
@@ -2234,7 +2234,7 @@ def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypa
     assert json.loads(observed.stdout) == ["subclass_leaf"]
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "starred-base-source-custody",
     )
     for _warm in (False, True):
@@ -2293,7 +2293,7 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
     assert json.loads(actual.stdout) == ["old", "new"]
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "late-closure-writer",
     )
     load = module_graph_discovery._load_module_import_scan
@@ -2766,7 +2766,7 @@ def test_native_initializer_uses_plan_selected_callbacks(
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "native-plan-callbacks",
     )
     stdlib = tmp_path / "stdlib"
@@ -2813,7 +2813,7 @@ def test_namespace_clear_preserves_contained_destructor(tmp_path, monkeypatch):
     assert result.returncode == 0
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-cleanup",
     )
     stdlib = tmp_path / "stdlib"
@@ -2863,7 +2863,7 @@ def test_namespace_popitem_keeps_returned_tuple_value(tmp_path, monkeypatch, sel
     assert observed.returncode == 0
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "namespace-popitem",
     )
     stdlib = tmp_path / "stdlib"

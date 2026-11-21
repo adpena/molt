@@ -5,11 +5,9 @@ Authority: `_FRONTEND_COMPILER_INPUTS` in `src/molt/cli/cache_fingerprints.py`.
 
 ## Problem
 
-Every persisted frontend record carries one compiler identity: module analysis
-and module lowering (`cli/module_cache.py`), import scans and intrinsic facts
-(`cli/module_graph_cache.py`). The identity was the import closure of the
-frontend, found by running the binding analysis over the compiler's own
-sources. Two costs followed.
+Module analysis, module lowering, import scans and intrinsic facts initially
+shared a compiler identity computed from the frontend's import closure. The
+closure ran binding analysis over the compiler's own sources. Two costs followed.
 
 - Scope (HF-254). The module-level closure reached 259 files, 7.7 MB:
   toolchain identity, Rust and LLVM toolchains, file publication, build
@@ -90,13 +88,21 @@ native exports and support roots, scoped classes and defaults. Import-scan keys
 carry the scan mode and the namespace premise.
 
 Disk-backed stdlib import scans use the shared source-record store even when
-the caller has no application project root (HF-633). The existing admission
-still checks source bytes, tooling identity, scan purpose, namespace premise,
-target and demanded bodies; filesystem edges are resolved in the current
-operation. Explicit source/AST requests and rootless application sources remain
-uncached at this boundary. A helper that continues one graph shares its
-operation and resolver instead of recapturing the tooling and parsing its
-common modules again.
+the caller has no application project root (HF-633). Their tooling identity
+digests the local import closure of `compiler_analysis/python_import_scan.py`
+and the source decoder and record codec (HF-938). The closure includes
+function-local imports and rejects nonliteral dynamic imports and dependencies
+on `cli/` or `frontend/`. The per-record key still covers source bytes, scan
+purpose, namespace premise, target and demanded bodies. Filesystem edges are
+resolved in the current operation. Explicit source/AST requests and rootless
+application sources remain uncached at this boundary. A helper that continues
+one graph shares its operation and resolver instead of recapturing the tooling
+and parsing its common modules again.
+
+Intrinsic verdicts still depend on the frontend semantic fingerprint. Their
+record carries the exact premise for the verdict and the same source's
+premise-independent namespace summary. Intrinsic import evidence uses an
+inventory scan record, keyed by the scan producer and the inventory purpose.
 
 - `cli/external_native.py` builds the import admission policy from
   `MOLT_EXTERNAL_STATIC_PACKAGES` and custody checks. Discovery applies it live;

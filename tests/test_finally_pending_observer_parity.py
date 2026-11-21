@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from molt.dx import development_artifact_env
-from molt.target_python import TargetPythonVersion, require_verified_subset_target
+from molt.target_python import TargetPythonVersion
+from molt.verified_subset import require_verified_subset_target
 from tests.native_process_guard import run_native_test_process
 from tests.wasm_linked_runner import (
     build_wasm_linked,

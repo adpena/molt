@@ -267,7 +267,6 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         # Admits or refuses the host interpreter; it never shapes a record.
         "host_python.py": _BUILD,
         "source_root.py": _BUILD,
-        "verified_subset.py": _BUILD,
     }
 )
 del _P, _BUILD
@@ -761,6 +760,55 @@ def _frontend_semantic_tooling_fingerprint() -> str:
     from the broad ``frontend-tooling`` fingerprint.
     """
     return _frontend_semantic_tooling_snapshot().fingerprint
+
+
+def _import_scan_tooling_fingerprint() -> str:
+    """Identify the source request producer, its codec and source decoder."""
+    from molt.cli.python_import_resolution import PythonImportPolicy
+    from molt.cli.python_source_closure import local_python_import_closure
+
+    source_root = _compiler_python_source_root(_compiler_root()).resolve()
+    scope = "import-scan-tooling"
+    key = (scope, str(source_root))
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if transaction is not None and key in transaction.fingerprints:
+        return transaction.fingerprints[key]
+
+    package = source_root / "molt"
+    closure = local_python_import_closure(
+        source_root,
+        (package / "compiler_analysis" / "python_import_scan.py",),
+        policy=PythonImportPolicy(
+            module_level_only=False,
+            include_parent_packages=True,
+            fail_on_nonliteral_dynamic_import=True,
+            allowed_prefix="molt",
+            purpose="source_dependency",
+        ),
+        search_roots=(source_root,),
+        source_roots=(source_root,),
+    )
+    for path in closure.paths:
+        if any(path.is_relative_to(package / name) for name in ("cli", "frontend")):
+            raise ValueError(
+                f"import scan producer reaches an orchestration module: {path}"
+            )
+    # Both driver files hold representation code. Their orchestration imports
+    # resolve and admit the request's inputs before the producer reads them.
+    hashes = dict(closure.source_sha256)
+    for name in ("module_graph_cache.py", "module_source.py"):
+        path = package / "cli" / name
+        hashes[path] = _file_content_signature(path)
+    fingerprint = _compute_source_tree_content_digest(
+        _source_tree_content_signature(
+            source_root, tuple(str(path) for path in hashes), hashes
+        ),
+        scope,
+        "",
+    )
+    if transaction is not None:
+        transaction.fingerprints[key] = fingerprint
+    return fingerprint
 
 
 def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:

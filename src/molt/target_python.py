@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import ast
-import platform as platform_module
 import sys
-import tomllib
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Mapping
 
 from molt import target_python_policy
 from molt.host_python import require_frontend_python
@@ -46,24 +42,6 @@ _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT[
 ]
 
 
-def _target_platform_name(value: str | None = None) -> str:
-    raw = (platform_module.system() if value is None else value).strip().lower()
-    return {"win32": "windows", "darwin": "macos"}.get(raw, raw)
-
-
-def required_verified_subset_python_tuples() -> tuple[tuple[str, str], ...]:
-    from molt.verified_subset import verified_subset_coordinates
-
-    return tuple(
-        sorted(
-            {
-                (coordinate.python, coordinate.platform)
-                for coordinate in verified_subset_coordinates()
-            }
-        )
-    )
-
-
 def require_supported_target_python(
     target: TargetPythonVersion,
 ) -> TargetPythonVersion:
@@ -72,23 +50,6 @@ def require_supported_target_python(
         rendered = ", ".join(sorted(supported))
         raise ValueError(
             f"CPython {target.short} is outside the supported target set: {rendered}"
-        )
-    return target
-
-
-def require_verified_subset_target(
-    target: TargetPythonVersion, *, platform: str | None = None
-) -> TargetPythonVersion:
-    selected = (target.short, _target_platform_name(platform))
-    required = required_verified_subset_python_tuples()
-    if selected not in required:
-        rendered = ", ".join(
-            f"CPython {version} on {name}" for version, name in required
-        )
-        raise ValueError(
-            f"Molt target tuple is outside the required verified-subset matrix: "
-            f"CPython {selected[0]} on {selected[1]}; required tuples: {rendered}. "
-            "A tuple is proven only by a passing source-bound receipt."
         )
     return target
 
@@ -148,99 +109,6 @@ def resolve_target_python_for_oracle(
             f"target={target.short}, oracle={derived.short}"
         )
     return target
-
-
-def _project_requires_python(project_root: Path) -> str | None:
-    pyproject = project_root / "pyproject.toml"
-    from molt import input_report
-
-    input_report.report_data_file(pyproject)
-    if not pyproject.exists():
-        return None
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(
-            f"failed to read pyproject.toml at {pyproject}: {exc}"
-        ) from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"invalid pyproject.toml at {pyproject}: {exc}") from exc
-    project_cfg = data.get("project")
-    if project_cfg is None:
-        return None
-    if not isinstance(project_cfg, dict):
-        raise ValueError(f"project table in {pyproject} must be a TOML table")
-    if "requires-python" not in project_cfg:
-        return None
-    raw = project_cfg["requires-python"]
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(
-            f"project.requires-python in {pyproject} must be a non-empty string"
-        )
-    return raw
-
-
-def _target_python_from_requires_python(
-    requires_python: str | None,
-) -> TargetPythonVersion:
-    if not requires_python:
-        return _DEFAULT_TARGET_PYTHON_VERSION
-    from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    from packaging.version import Version
-
-    try:
-        specifier = SpecifierSet(requires_python)
-    except InvalidSpecifier as exc:
-        raise ValueError(
-            f"invalid project.requires-python specifier {requires_python!r}"
-        ) from exc
-    # requires-python constrains the target; it does not choose the oldest.
-    # The default target serves when the project admits it, else the newest
-    # admitted target the project admits (owner decision 2026-11-16: the
-    # latest minor is the primary target).
-    admitted: list[TargetPythonVersion] = []
-    for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
-        release = f"{target.short}.{target.micro}"
-        if target.release != "final":
-            prefix = {"alpha": "a", "beta": "b", "candidate": "rc"}[target.release]
-            release += f"{prefix}{target.serial}"
-        if Version(release) in specifier:
-            admitted.append(target)
-    if _DEFAULT_TARGET_PYTHON_VERSION in admitted:
-        return _DEFAULT_TARGET_PYTHON_VERSION
-    if admitted:
-        return max(admitted, key=lambda target: target.feature_version)
-    supported = ", ".join(
-        version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
-    )
-    raise ValueError(
-        f"project.requires-python {requires_python!r} does not admit any "
-        f"supported Molt target ({supported})"
-    )
-
-
-def _resolve_target_python_version(
-    *,
-    explicit: str | None,
-    build_config: Mapping[str, Any] | None,
-    project_root: Path,
-) -> TargetPythonVersion:
-    if explicit is not None and explicit.strip():
-        return _parse_target_python_version(explicit)
-    if build_config is not None:
-        for key in (
-            "python_version",
-            "python-version",
-            "target_python",
-            "target-python",
-        ):
-            if key not in build_config:
-                continue
-            raw_config = build_config[key]
-            if not isinstance(raw_config, str) or not raw_config.strip():
-                raise ValueError(f"[tool.molt.build] {key} must be a non-empty string")
-            return _parse_target_python_version(raw_config)
-    return _target_python_from_requires_python(_project_requires_python(project_root))
 
 
 def _parse_source_for_target(
