@@ -6988,6 +6988,18 @@ def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
             True,
         ),
         (
+            "def write(key):\n    globals()[key] = 1\nobserved = provider\n"
+            "def run():\n    return observed\n",
+            ("provider",),
+            True,
+        ),
+        (
+            "def write(key):\n    globals()[key] = 1\nobserved = repr(1)\n"
+            "def run():\n    return observed\n",
+            ("__builtins__",),
+            False,
+        ),
+        (
             "observed = provider\ndef run():\n    return observed\n",
             ("provider",),
             False,

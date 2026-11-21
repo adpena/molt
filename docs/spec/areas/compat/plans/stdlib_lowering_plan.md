@@ -140,6 +140,10 @@ per premise revision.
    execution. When a newly admitted slot changes only those inputs, discovery refreshes
    them from the original definition state. Jobs with merged definition states or changed
    lexical inputs keep the exact source solve.
+   Concrete foreign-write revisions can also reuse the initializer when the source's own
+   reflection already exposes its callback namespace. In that case both premises use the
+   same open callback domain. The explicit `__builtins__` writer, observed activation
+   answers and relevant frame-local exposure must still agree.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.
