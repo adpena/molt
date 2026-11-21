@@ -12,7 +12,7 @@ follows it in the init chain, or when every reference to its function does.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, Unpack
+from typing import Any, Literal, TypedDict, Unpack
 
 import pytest
 
@@ -1184,7 +1184,7 @@ def _method_program(
     maker_in_loop: bool = False,
     run_first: bool = False,
     pair_read: bool = False,
-    maker_kind: str = "func_new",
+    maker_kind: Literal["func_new", "func_new_closure"] = "func_new",
 ) -> list[dict[str, Any]]:
     """``mod``'s init makes method ``mod__C_m`` (``makers`` times, optionally
     in a loop) and ``mod__run``, whose body loads ``m`` on an exact receiver
@@ -1255,7 +1255,7 @@ def _function_cells(
 
 @pytest.mark.parametrize("maker_kind", ["func_new", "func_new_closure"])
 def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
-    maker_kind: str,
+    maker_kind: Literal["func_new", "func_new_closure"],
 ) -> None:
     # A closure method's object (a `__class__` cell, design 78 5.10) is one
     # per process too: the proven call reads its environment from it.
