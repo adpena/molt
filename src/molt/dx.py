@@ -2562,7 +2562,11 @@ def _purpose_parts(purpose: str) -> tuple[str, ...]:
 
 
 def scratch_dir(
-    repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
+    repo_root: Path,
+    purpose: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    artifact: Path | None = None,
 ) -> Path:
     """Return the scratch directory for one purpose, such as ``"bench"``.
 
@@ -2570,12 +2574,21 @@ def scratch_dir(
     the selected scratch storage. Its lane-owned root is created, bound and
     stamped; the purpose directory itself is not created. Existing control
     namespaces retain their own placement and retirement protocols.
+    A caller that already resolved its artifact root may reuse that selection.
     """
 
     from .checkout_state import scratch_control_names, scratch_state_root
 
     parts = _purpose_parts(purpose)
-    root = scratch_root(repo_root, env)
+    root = (
+        scratch_root(repo_root, env)
+        if artifact is None
+        else _scratch_root_for(
+            artifact,
+            repo_root.expanduser().resolve(),
+            os.environ if env is None else env,
+        )
+    )
     if parts[0] in scratch_control_names():
         return root.parent.joinpath(*parts)
     return scratch_state_root(root.parent, owner=repo_root).joinpath(*parts)

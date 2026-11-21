@@ -495,9 +495,12 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    a volume shared with other data from making every lane rebuild cold. The
    disk guard's absolute headroom stays the emergency trigger. Admission of
    build and scratch output within the configured hot mirror requires 50 GiB
-   of raw free space. This checks current capacity before a run, and already
-   admitted writers can continue allocating. The compile-cache cap covers its
-   own entries. Lane start only reports a volume below its
+   of raw free space. Cargo resolves the artifact binding from its working
+   directory, including direct builds without an exported artifact root.
+   Guard scratch carries its selected artifact root from placement into
+   admission, using one binding lookup. This checks current capacity before a
+   run, and already admitted writers can continue allocating. The compile-cache
+   cap covers its own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
    state carries no byte budget because sizing it walks hundreds of GB (the
    `target/checkouts` census did not finish in 10 minutes); the floor is its

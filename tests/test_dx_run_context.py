@@ -1334,6 +1334,61 @@ def bound_artifact_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return main.resolve(), lane.resolve(), artifacts.resolve()
 
 
+def test_family_binding_enforces_raw_hot_headroom_at_writer_boundaries(
+    bound_artifact_family: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import default_paths, disk_capacity, temporary_artifacts
+    from molt.cargo_execution_policy import require_cargo_build_capacity
+    from molt.exact_json import write_exact
+
+    _main, lane, artifact = bound_artifact_family
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    write_exact(
+        artifact / default_paths.HOT_STATE_RECORD,
+        {
+            "schema": default_paths.HOT_STATE_SCHEMA,
+            "root": str(hot),
+            "budget_bytes": 1 << 20,
+        },
+    )
+    floor = default_paths.HOT_STATE_MIN_FREE_BYTES
+    monkeypatch.setattr(
+        disk_capacity,
+        "_default_measure_free_bytes",
+        lambda path: floor - 1 if path.is_relative_to(hot) else floor,
+    )
+
+    def reject_estimate(path: Path) -> int:
+        pytest.fail(f"raw admission queried a purgeable estimate at {path}")
+
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", reject_estimate)
+    cargo_target = dx.project_cargo_target_dir(lane, {})
+    assert cargo_target.is_relative_to(hot)
+    token = "a" * 32
+    scratch_env = {
+        "MOLT_MEMORY_GUARD_TOKEN": token,
+        "MOLT_MEMORY_GUARD_MARKER": str(artifact / "guard.json"),
+    }
+    for admit in (
+        lambda: require_cargo_build_capacity(
+            ("cargo", "build"),
+            cwd=lane,
+            env={"CARGO_TARGET_DIR": str(cargo_target)},
+        ),
+        lambda: temporary_artifacts.acquire_guard_scratch(lane, scratch_env),
+    ):
+        with pytest.raises(disk_capacity.DiskCapacityError) as failure:
+            admit()
+        probe = failure.value.diagnostic["probes"][0]
+        assert probe["free_bytes"] == floor - 1
+        assert probe["required_bytes"] == floor
+    assert not cargo_target.exists()
+    assert not (temporary_artifacts.scratch_root(lane, scratch_env) / token).exists()
+
+
 @pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_artifact_binding_is_family_wide_without_shell_environment(
     bound_artifact_family, name_rule

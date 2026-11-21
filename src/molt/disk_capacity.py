@@ -454,11 +454,17 @@ _SCRATCH_REMEDY = (
 )
 
 
-def _hot_headroom_root(env: Mapping[str, str] | None) -> Path | None:
+def _hot_headroom_root(
+    env: Mapping[str, str] | None, artifact_root: Path | None
+) -> Path | None:
     from molt.default_paths import configured_artifact_root_text, hot_state
 
-    artifact = configured_artifact_root_text(env)
-    hot = hot_state(Path(artifact).expanduser().resolve()) if artifact else None
+    if artifact_root is None:
+        configured = configured_artifact_root_text(env)
+        if configured is None:
+            return None
+        artifact_root = Path(configured).expanduser().resolve()
+    hot = hot_state(artifact_root)
     return hot.root.resolve() if hot is not None else None
 
 
@@ -466,6 +472,7 @@ def require_build_capacity(
     paths: Iterable[Path],
     *,
     env: Mapping[str, str] | None = None,
+    artifact_root: Path | None = None,
     measure_free_bytes: FreeSpaceMeasurement | None = None,
 ) -> DiskCapacityReceipt:
     """Require capacity on each output volume, preserving raw hot headroom."""
@@ -476,7 +483,7 @@ def require_build_capacity(
         purpose="build",
         remedy=_BUILD_REMEDY,
         measure_free_bytes=measure_free_bytes,
-        raw_headroom_root=_hot_headroom_root(env),
+        raw_headroom_root=_hot_headroom_root(env, artifact_root),
     )
 
 
@@ -484,6 +491,7 @@ def require_scratch_capacity(
     paths: Iterable[Path],
     *,
     env: Mapping[str, str] | None = None,
+    artifact_root: Path | None = None,
     measure_free_bytes: FreeSpaceMeasurement | None = None,
 ) -> DiskCapacityReceipt:
     """Require the scratch budget free on every scratch volume before a run.
@@ -499,7 +507,7 @@ def require_scratch_capacity(
         purpose="scratch",
         remedy=_SCRATCH_REMEDY,
         measure_free_bytes=measure_free_bytes,
-        raw_headroom_root=_hot_headroom_root(env),
+        raw_headroom_root=_hot_headroom_root(env, artifact_root),
     )
 
 
