@@ -43,6 +43,7 @@ from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 import json
 import os
+import sys
 from pathlib import Path
 import re
 import shlex
@@ -932,6 +933,19 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     repo = Path(args.repo).resolve()
+    # The daily checkout-state GC and cache retention enforce the capacity
+    # floor (HF-942); a lane start only reports a volume below it (one statfs).
+    from molt.disk_capacity import FREE_SPACE_FLOOR, below_free_space_floor
+    from molt.dx import artifact_root
+
+    artifact = artifact_root(repo, os.environ)
+    if below_free_space_floor(artifact):
+        print(
+            f"lane start: {artifact} holds less than {FREE_SPACE_FLOOR:.0%} free; "
+            "the daily retention reclaims idle entries, or run "
+            "`molt_dev.py storage trim --apply`",
+            file=sys.stderr,
+        )
     git = driver.Git(repo)
     main = _main_checkout(_worktrees(git))
     root = Path(args.root).expanduser().resolve() if args.root else _default_root(main)

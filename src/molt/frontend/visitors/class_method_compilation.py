@@ -28,6 +28,8 @@ from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
 from molt.frontend._types import (
+    IMPLICIT_CLASSMETHOD_NAMES,
+    IMPLICIT_STATICMETHOD_NAMES,
     MethodValues,
     GEN_CONTROL_SIZE,
     ClassId,
@@ -256,9 +258,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         never manufactures or applies a descriptor from its spelling.
         """
         if not item.decorator_list:
-            if item.name in {"__init_subclass__", "__class_getitem__"}:
+            if item.name in IMPLICIT_CLASSMETHOD_NAMES:
                 return "classmethod", None
-            if item.name == "__new__":
+            if item.name in IMPLICIT_STATICMETHOD_NAMES:
                 return "staticmethod", None
             return "function", None
         if len(item.decorator_list) != 1 or not namespace_closed(

@@ -14,8 +14,8 @@ import json
 import os
 from pathlib import Path
 
-from molt.dx import storage_path
-from tools.molt_dev_storage import inventory, migrate, trim
+from molt.dx import artifact_root, storage_path
+from tools.molt_dev_storage import inventory, migrate, provision_hot_state, trim
 
 
 def trim_compile_cache(
@@ -44,7 +44,8 @@ def cmd_storage(args: argparse.Namespace) -> int:
     if args.storage_command == "inventory":
         result = inventory(repo, os.environ)
     elif args.storage_command == "trim":
-        result = trim_compile_cache(repo, os.environ, apply=args.apply)
+        result = provision_hot_state(artifact_root(repo, os.environ), apply=args.apply)
+        result += trim_compile_cache(repo, os.environ, apply=args.apply)
         result += trim(
             repo,
             os.environ,
@@ -53,7 +54,8 @@ def cmd_storage(args: argparse.Namespace) -> int:
             include_shared_preimages=True,
         )
     else:
-        result = migrate(
+        result = provision_hot_state(artifact_root(repo, os.environ), apply=args.apply)
+        result += migrate(
             repo, os.environ, apply=args.apply, legacy_temp=args.legacy_temp_root
         )
     print(
