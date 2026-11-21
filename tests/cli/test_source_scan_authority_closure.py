@@ -132,6 +132,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
         policy = scanner._module_graph_needs_runtime_import_support(
             module_graph=graph,
             scan_authority=authority,
+            namespace_writes={},
         )
         assert policy.needs_runtime_import_support is full
 
@@ -386,7 +387,8 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
 
 
 def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
-    # A deferred body's import counts only when the scan reaches the body.
+    # A deferred body's import call counts only when the scan reaches the
+    # body; a literal import statement never needs the protocol (D8).
     def detect(source: str, mode: str) -> bool:
         return _source_import_scan._collect_imports_for_graph(
             ast.parse(source),
@@ -396,10 +398,11 @@ def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
             target_python=PYTHON,
         ).uses_runtime_import_protocol
 
-    deferred = "def invoke():\n    import leaf\n"
+    deferred = "def invoke():\n    return __import__('leaf')\n"
     assert not detect(deferred, "module_init")
     assert detect(deferred, "full")
     assert not detect("pass\n", "full")
+    assert not detect("def invoke():\n    import leaf\n", "full")
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "mlir"])
@@ -483,7 +486,7 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
 ) -> None:
     extend = Mock(wraps=discovery._extend_module_graph_with_closure)
     monkeypatch.setattr(discovery, "_extend_module_graph_with_closure", extend)
-    entry = _source(tmp_path / "entry.py", "import leaf\n")
+    entry = _source(tmp_path / "entry.py", "import leaf\n__import__('leaf')\n")
     leaf = _source(tmp_path / "leaf.py", "pass\n")
     owner = _source(tmp_path / "stdlib" / "runtime_owner.py", "pass\n")
     monkeypatch.setattr(

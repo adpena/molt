@@ -673,6 +673,9 @@ def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -
 
 
 @pytest.mark.long_pole
+# A cold whole-stdlib module-graph discovery (149 s in the 2026-11-20
+# landing gate); postsubmit runs it until HF-938 makes discovery fast.
+@pytest.mark.slow
 def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
     tmp_path: Path,
 ) -> None:

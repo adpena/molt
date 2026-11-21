@@ -124,7 +124,9 @@ def test_runtime_import_policy_fences_complete_source_generation(
     from molt.cli import module_import_scanner
 
     entry, writer = tmp_path / "entry.py", tmp_path / "writer.py"
-    entry.write_text("import writer\nVALUE = 1\n", encoding="utf-8")
+    entry.write_text(
+        "import writer\n__import__('writer')\nVALUE = 1\n", encoding="utf-8"
+    )
     writer.write_text("VALUE = 1\n", encoding="utf-8")
     cache = module_resolution._ModuleResolutionCache()
     graph = discovery._discover_module_graph_from_paths(
@@ -140,8 +142,9 @@ def test_runtime_import_policy_fences_complete_source_generation(
     options = dict(
         module_graph=graph.graph,
         scan_authority=graph.scan_authority,
+        namespace_writes={},
     )
-    # The decision reads the scans' bits: the entry imports the writer.
+    # The decision reads the scans' bits: the entry calls ``__import__``.
     baseline = module_import_scanner._module_graph_needs_runtime_import_support(
         **options
     )

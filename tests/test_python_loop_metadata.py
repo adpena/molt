@@ -164,8 +164,9 @@ def test_import_consumers_share_loop_metadata_facts() -> None:
     assert _source_import_scan._collect_import_star_modules(
         star, module_name="pkg.entry", is_package=False
     ) == ("pkg.child",)
-    # The reached `from .child import value` needs the runtime import protocol.
-    assert _source_import_scan._collect_imports_for_graph(
+    # The reached `from .child import value` names its module: the registry
+    # serves it, with no runtime import protocol (D8, HF-841).
+    assert not _source_import_scan._collect_imports_for_graph(
         tree, "pkg.entry", False
     ).uses_runtime_import_protocol
 
