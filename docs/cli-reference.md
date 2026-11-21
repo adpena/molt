@@ -160,7 +160,7 @@ molt run app.py                          # Build and run natively
 molt run app.py --release                # Optimized build and run
 molt run app.py --target wasm            # Build and run with the Node host shim
 molt run app.py --target mlir            # Build and emit MLIR text
-molt run app.py --tier jit               # Compile into memory and run (no link)
+molt run app.py --tier jit               # Run with in-memory application code
 molt run app.py -- --arg1 val            # Pass args to your script
 molt run --module mypackage              # Run a package
 ```
@@ -177,7 +177,7 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 |------|-------------|
 | `--target TARGET` | Build target: `native`, `wasm`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
-| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which prepares the module and compiles called bodies on demand. The JIT tier runs only in a source checkout on aarch64 macOS with Cranelift and no external native package artifacts. Unsupported requests fail at build admission. `[tool.molt.run] tier` sets the default. |
+| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which compiles called application functions and specialized clones into memory and loads the same compiled stdlib as development AOT. The JIT tier runs only in a source checkout on aarch64 macOS (the verified cell), with the Cranelift code generator and no external native package artifacts; any other request fails before the frontend runs and never falls back to `aot`. `[tool.molt.run] tier` sets the default. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
 | `--python-version VERSION` | Target Python semantics for the build side. `molt run` forwards it to `molt build` and records it in wrapper cache manifests. |
@@ -191,30 +191,28 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 full binary-image closure payload, target Python version, static import
 modules, external static package/native artifact
 custody, and the discovered source closure. A cache hit is valid only when those
-facts and the output binary hash still match the manifest. A JIT launch never
-runs the backend compiler, so a JIT-tier key holds the `molt-jit` runner's source
-and dependency identity in place of the backend's. A JIT hit checks and renews,
-under the product store's ledger lock, the entry of each file a JIT start reads:
-the runner, the runtime image and the runtime's callable-symbol table. One that
-eviction removed is a miss.
+facts and the output binary hash still match the manifest. A JIT build depends
+on the backend that prepared its application, the runner and the runtime. A
+cached launch renews the product-store entries for the runner, runtime, stdlib,
+application data and runtime callable symbols. An evicted entry is a cache miss.
 
-**JIT tier costs and expiry.** Each start prepares the module through final TIR,
-including its stdlib closure. The runner retains uncalled bodies in TIR form and
-can reuse cached Cranelift machine code across starts. The JIT tier remains opt-in.
-On macOS the runner turns off libc's large-block cache for the whole process.
-This increases allocation time for workloads that churn large `malloc` blocks.
-`MallocLargeCache=1` preserves that cache.
-[Measured JIT costs by phase](design/dev_jit_tier.md#costs)
+**JIT tier costs and expiry.** Program preparation links the stdlib archive
+and its runtime generation once per image identity. Each process start loads
+those images and stages stable entries for application functions and reachable specialized clones.
+A local body's first call compiles it and applies process-specific relocations.
+The function cache can reuse machine code across starts. On macOS the runner
+turns off libc's large-block cache, which increases allocation time for programs
+that churn large `malloc` blocks. `MallocLargeCache=1` preserves the cache. The [shared runtime design](design/dev_shared_runtime.md)
+records measured startup costs.
 
-A JIT image is a development artifact. Its header names the `molt-jit` runner,
-runtime image and runtime callable-symbol table in the host's product store, and
-running the image renews none of them. `molt run --tier jit` and `molt build --emit
-jit` renew them. After 5 days with neither, a later build may evict them; `molt
-cache evict` and removing the shared Cargo target directory remove them at once.
-The image then fails: the kernel cannot start
-the runner its first line names, so a shell reports a bad interpreter (exit status
-126) and `subprocess` raises `FileNotFoundError`, or the runner cannot load the
-runtime image (exit status 125). Rebuild it with `molt build --emit jit`.
+A JIT image is a development artifact. Molt builds and cached launches renew
+its linked images and runner. Standalone execution leaves their idle deadlines
+unchanged. The product store can evict the entries after five idle days.
+`molt cache evict` and removing the shared Cargo target directory can remove
+them immediately. The shell reports a missing interpreter as exit 126.
+A load failure or generation mismatch exits 125 and names the image.
+Rebuild it with `molt build --emit jit`.
+
 
 #### `molt test`
 

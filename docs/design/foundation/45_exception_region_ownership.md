@@ -4,6 +4,11 @@ the old recovery-patch prototypes. Executable design, not a survey. -->
 
 # ExceptionRegion ownership — the exception-lifetime substrate
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 ## 0. Why this exists (the discovery, not a benchmark patch)
 
 `bench_exception_heavy` measured 0.68× warm vs CPython, cycle-attributed (#76,

@@ -1,5 +1,10 @@
 # molt RC+GC redesign — adversarially-reviewed architecture
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Source: research workflow `w95r38wfh` — 8 primary-source dimensions (Perceus, CPython cyclic GC, Nim ARC/ORC + Swift/Lobster, Bacon-Rajan cycle algorithms, RC perf engineering, MMTk/tracing/hybrid, molt current-arch + IR-level bug pinpoint, molt leak-surface blast radius) -> synthesis -> 4 adversarial lenses.
 
 STATUS: design, adversarially reviewed. All 4 lenses returned **FLAWED on specifics** while confirming the two-tier correctness arc is sound and code-accurate. The required corrections are captured below and MUST be applied. This file is the implementation contract for task #23.

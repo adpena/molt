@@ -12,6 +12,7 @@ from tests.artifact_targets import artifact_target as _target
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ import pytest
 from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import native_link_command
+from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.native_launch_plan import NativeLaunchPlan
 from molt.cli.native_main_stub import _render_native_main_stub
@@ -31,6 +33,7 @@ from molt.cli.run_tier import (
 )
 from molt.compilation_target import TargetKind, admit_target
 from molt.native_target import resolve_native_target_spec
+from molt.process_environment import ProcessEnvironment
 from tests.cli.native_link_test_support import transport_codegen_binding
 from tests.cli.test_installed_compiler import installation  # noqa: F401  (fixture)
 
@@ -300,38 +303,28 @@ _HEADER = {
 }
 
 
-def _program(ir):
-    from molt.cli.backend_ir_transport import BackendIrProgram
-    from molt.cli.cache_keys import FunctionDigests
-
-    return BackendIrProgram(ir, FunctionDigests())
+def _prepared_payload(root: Path) -> Path:
+    path = root / "program.msgpack"
+    path.write_bytes(b"\x92\xc4\x03app\xc0")
+    return path
 
 
 @_POSIX_ONLY
 def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) -> None:
     import json
 
-    import msgspec
-
     from molt.cli.jit_image import JIT_IMAGE_MARKER, publish_jit_image
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    function = {"name": "molt_main", "ops": [{"kind": "ret_void"}]}
-    ir = {"functions": [function], "profile": None}
-    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, program=_program(ir))
+    program = _prepared_payload(tmp_path)
+    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, program=program)
     interpreter, marker, rest = image.read_bytes().split(b"\n", 2)
     assert interpreter == b"#!/bin/echo --image"
     name, header_len, program_len = marker.decode().split(" ")
     assert name == JIT_IMAGE_MARKER
     assert len(rest) == int(header_len) + int(program_len)
     assert json.loads(rest[: int(header_len)]) == _HEADER
-    # The program is a content-addressed lease that ships every body.
-    lease = msgspec.msgpack.decode(rest[int(header_len) :])
-    assert lease["profile"] is None
-    assert [msgspec.msgpack.decode(body) for body in lease["function_bodies"]] == [
-        function
-    ]
-    assert lease["function_digests"] == b"".join(_program(ir).digests)
+    assert rest[int(header_len) :] == program.read_bytes()
     assert os.access(image, os.X_OK)
 
 
@@ -350,7 +343,7 @@ def test_a_jit_image_is_executable_through_the_umask(
             image,
             runner=_ECHO_RUNNER,
             header=_HEADER,
-            program=_program({"functions": []}),
+            program=_prepared_payload(tmp_path),
         )
     finally:
         os.umask(previous)
@@ -371,7 +364,7 @@ def test_executing_a_jit_image_starts_its_runner_with_no_shell(
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     publish_jit_image(
-        image, runner=_ECHO_RUNNER, header=_HEADER, program=_program({"functions": []})
+        image, runner=_ECHO_RUNNER, header=_HEADER, program=_prepared_payload(tmp_path)
     )
     arguments = ["it's", "$HOME", "--start-receipt", "*"]
     completed = run_guarded_test_process(
@@ -404,7 +397,7 @@ def test_a_runner_path_the_kernel_cannot_start_is_refused(
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     with pytest.raises(ValueError) as refused:
         publish_jit_image(
-            image, runner=runner, header=_HEADER, program=_program({"functions": []})
+            image, runner=runner, header=_HEADER, program=_prepared_payload(tmp_path)
         )
     assert reason in str(refused.value)
     assert not image.exists()
@@ -425,7 +418,7 @@ def test_a_jit_image_stops_when_its_runner_generation_is_gone(
     runner = tmp_path / "evicted" / "molt-jit"
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     publish_jit_image(
-        image, runner=runner, header=_HEADER, program=_program({"functions": []})
+        image, runner=runner, header=_HEADER, program=_prepared_payload(tmp_path)
     )
     completed = run_guarded_test_process(
         ["/bin/sh", "-c", '"$0"', str(image)],
@@ -647,10 +640,10 @@ def test_an_output_that_cannot_carry_native_artifacts_fails_before_the_frontend(
     )
     assert reason is not None and "emit=jit" in reason
 
-    def frontend(**_kwargs):
+    def frontend(_bundle: object, **_kwargs: object) -> None:
         raise AssertionError("the frontend ran before native-artifact custody")
 
-    monkeypatch.setattr(build_pipeline, "_run_frontend_pipeline", frontend)
+    monkeypatch.setattr(build_pipeline._backend_ir, "materialize_tir_closure", frontend)
     failures: list[str] = []
     monkeypatch.setattr(
         build_pipeline,
@@ -702,14 +695,9 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
     def refuse(*_args, **_kwargs):
         raise ValueError("JIT runner admission failed: the host blocks W^X")
 
-    monkeypatch.setattr(
-        jit_pipeline._backend_ir,
-        "_prepare_backend_ir",
-        lambda **_kwargs: (SimpleNamespace(required_link_features=(), ir={}), None),
-    )
     monkeypatch.setattr(jit_pipeline, "ensure_jit_runner", refuse)
     monkeypatch.setattr(
-        jit_pipeline, "_initialize_runtime_artifact_state", runtime_work
+        jit_pipeline._backend_compile, "_prepare_backend_setup", runtime_work
     )
     monkeypatch.setattr(jit_pipeline, "ensure_jit_runtime_image", runtime_work)
     bundle = SimpleNamespace(
@@ -748,6 +736,7 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
         ),
         resolved_build_entry=SimpleNamespace(entry_module="main"),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
         profile="dev",
         json_output=False,
         target=None,
@@ -829,6 +818,14 @@ def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
             ProductStore(root / "jit-runtime-image").entry(identity)
             / "libmolt_runtime.dylib",
         ),
+        "stdlib_image": (
+            ProductStore(root / "jit-runtime-image"),
+            ProductStore(root / "jit-runtime-image").entry("d" * 64) / "stdlib.dylib",
+        ),
+        "program_data": (
+            ProductStore(root / "jit-runtime-image"),
+            ProductStore(root / "jit-runtime-image").entry("e" * 64) / "program.dylib",
+        ),
         "callable_symbols": (
             runtime,
             generation / "dev-fast" / "libmolt_runtime.a.callable_symbols.v3.txt",
@@ -872,7 +869,8 @@ def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
     assert hit() is not None
     for store, _path in files.values():
         ledger = json.loads((store.root / ".product-store.json").read_text("utf-8"))
-        assert identity in ledger["last_used"], store.kind
+        key = _path.relative_to(store.root).parts[0]
+        assert key in ledger["last_used"], store.kind
     # Eviction (idle or `molt cache evict`) removes the entry and its record.
     assert runtime.evict(identity)
     assert hit() is None
@@ -936,23 +934,54 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
     monkeypatch.setattr(
         jit_pipeline, "jit_runtime_image_store", lambda _: tmp_path / "images"
     )
-    monkeypatch.setattr(
-        jit_pipeline,
-        "_initialize_runtime_artifact_state",
-        lambda **k: SimpleNamespace(native_runtime_codegen_binding=binding),
+    cache = SimpleNamespace(
+        backend_environment=backend_environment.CodegenSelection().environment(
+            os.environ, profile="dev"
+        ),
+        stdlib_object_path=tmp_path / "stdlib.a",
+        stdlib_object_cache_key="stdlib",
+        stdlib_object_manifest="manifest",
+        stdlib_modules_json="[]",
+        stdlib_modules=frozenset(),
     )
     monkeypatch.setattr(
-        jit_pipeline,
-        "_stage_runtime_callable_symbols_for_native_codegen",
-        lambda *a, **k: ("digest", None),
-    )
-    monkeypatch.setattr(
-        jit_pipeline._backend_ir,
-        "_prepare_backend_ir",
+        jit_pipeline._backend_compile,
+        "_prepare_backend_setup",
         lambda **k: (
-            SimpleNamespace(required_link_features=(), ir={}, function_digest_seeds=()),
+            SimpleNamespace(
+                native_runtime_codegen_binding=binding,
+                runtime_state=SimpleNamespace(native_runtime_codegen_binding=binding),
+                backend_bin=tmp_path / "backend",
+                cache_setup=cache,
+            ),
             None,
         ),
+    )
+
+    def prepare(
+        command: list[str], *, env: ProcessEnvironment, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert isinstance(env, ProcessEnvironment)
+        assert env["MOLT_STDLIB_OBJ"] == str(cache.stdlib_object_path)
+        assert "--prepare-jit-application" in command
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(jit_pipeline, "_run_completed_command", prepare)
+    monkeypatch.setattr(
+        jit_pipeline, "_validate_shared_stdlib_output_for_link", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        jit_pipeline, "_write_backend_ir_lease", lambda *_: tmp_path / "lease"
+    )
+    monkeypatch.setattr(
+        jit_pipeline,
+        "ensure_shared_stdlib_image",
+        lambda **k: SimpleNamespace(path=tmp_path / "stdlib.dylib"),
+    )
+    monkeypatch.setattr(
+        jit_pipeline,
+        "ensure_jit_program_data_image",
+        lambda **k: tmp_path / "program.dylib",
     )
     monkeypatch.setattr(
         jit_pipeline._runtime_features,
@@ -971,6 +1000,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             emit_ir_path=None,
             target_triple=None,
             output_artifact=tmp_path / "app.moltjit",
+            linked=False,
             emit_mode="jit",
             facts_target=_target(None),
         ),
@@ -1000,7 +1030,9 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         prepared_build_preamble=SimpleNamespace(
             rust_cpu=RustCpuPolicy.BASELINE, warnings=[]
         ),
-        prepared_build_roots=SimpleNamespace(molt_root=compiler, sysroot_path=None),
+        prepared_build_roots=SimpleNamespace(
+            molt_root=compiler, project_root=tmp_path, sysroot_path=None
+        ),
         prepared_build_config=SimpleNamespace(
             pgo_profile_summary=None,
             runtime_feedback_summary=None,
@@ -1009,6 +1041,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             runtime_cargo_profile="dev-fast",
             cargo_timeout=None,
             link_timeout=None,
+            backend_timeout=None,
             codegen=backend_environment.CodegenSelection(),
             resolved_capability_policy=None,
             capabilities_source=None,
@@ -1017,6 +1050,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             entry_module="main", source_path=tmp_path / "app.py"
         ),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
         profile="dev",
         json_output=True,
         target=admit_target("native"),

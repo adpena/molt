@@ -274,7 +274,8 @@ Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backen
   `SimpleBackend` — so `native_backend/*` is extractable.
 - CORRECTION (per the project taxonomy): **native = Cranelift + LLVM** (one codegen
   family — `SimpleBackend` drives `llvm_backend::lowering`/`runtime_imports` under
-  `cfg(llvm)`); **wasm is its own backend**; **luau + rust are transpilers**. So the cut is:
+  `cfg(llvm)`); **wasm is its own backend**; **luau + rust are transpilers** (2026-11-21: the Luau and Rust
+  transpilers and the direct WASM backend are deleted; WASM builds through LLVM wasm32). So the cut is:
   **`molt-backend` (core)** keeps ir/tir/passes/representation_plan/ir_rewrites/
   intrinsic_symbols/debug_artifacts/json_boundary; **`molt-backend-native`** = `native_backend/*`
   (SimpleBackend, function_compiler, consts, vec_layout) **+ `llvm_backend`** (LLVM is part of

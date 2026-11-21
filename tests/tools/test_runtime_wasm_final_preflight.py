@@ -69,7 +69,6 @@ def test_signature_rule_covers_canonical_runtime_identity_inputs():
         "runtime/molt-tir/src/representation_plan.rs",
         "runtime/molt-passes/src/tir/lower_to_simple.rs",
         "runtime/molt-backend-native/src/codegen_ssa/preserved.rs",
-        "runtime/molt-backend-wasm/src/wasm/final_functions.rs",
         "runtime/molt-wasm-host/src/main.rs",
     ],
 )

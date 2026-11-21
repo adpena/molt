@@ -125,7 +125,6 @@ Molt expects production-grade changes, not opportunistic patches.
 	  - `molt doctor`
 	  - `molt validate --suite smoke`
 	  - `molt validate --suite custody-proof`
-	  - `molt validate --suite smoke --backend luau`
 	  - `molt validate`
 - For repo-structure changes, verify:
   - moved paths are updated everywhere relevant

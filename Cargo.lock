@@ -2461,6 +2461,7 @@ dependencies = [
  "molt-tir",
  "object 0.40.0",
  "rayon",
+ "rmp-serde",
  "serde",
  "serde_json",
  "sha2 0.11.1",

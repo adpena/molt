@@ -87,7 +87,6 @@ REGISTRY_PATH = REPO_ROOT / "tools" / "degrade_to_slow_registry.toml"
 SCAN_ROOTS = (
     "src/molt/cli",
     "runtime/molt-passes/src",
-    "runtime/molt-backend-wasm/src",
     "runtime/molt-backend-native/src",
 )
 

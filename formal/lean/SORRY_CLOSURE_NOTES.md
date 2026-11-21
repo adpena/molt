@@ -48,10 +48,6 @@
 ### 4. lowering_reflects_eval (Correct.lean:184)
 **Backward direction.** Needs fuel witness construction.
 
-### 5. LuauCorrect string mul (LuauCorrect.lean:294)
-**Goal:** String repetition `if n ≤ 0` branch correspondence.
-**Issue:** The `all_goals first | ...` chain can't handle it. Needs per-case proof restructure.
-
 ### 6. SCCPCorrect var-case (SCCPCorrect.lean:76)
 **Goal:** `ρ x = some cv` from `AbsEnvSound σ ρ` and `σ x = .known cv`.
 **Strategy:** Migrate all callers to `AbsEnvStrongSound`. Affects 8+ files.

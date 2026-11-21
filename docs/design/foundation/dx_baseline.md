@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- DX build-throughput baseline — Phase 0 of the foundation/08_DX-buildspeed.md arc.
      Authored by the build-throughput/DX agent (agent-dx). Numbers are MEASURED on the
      host described below; the blueprint's quantified table was treated as UNVERIFIED

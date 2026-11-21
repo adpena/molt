@@ -1,5 +1,10 @@
 # molt no-op stub / fake-implementation inventory
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Generated from stub-sweep workflow `wja8h01o7` (8 parallel clusters + triage critic). Total confirmed stubs: **23**.
 
 This is a historical discovery inventory, not current release evidence. In

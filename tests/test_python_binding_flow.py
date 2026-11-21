@@ -6899,3 +6899,149 @@ def test_callback_exposes_locals_only_to_a_frame_locals_writer(
     assert fact is not None
     assert fact.binding_invalidated is invalidated
     assert (fact.static_value == 1) is not invalidated
+
+
+_TYPE_TEMPORARY_SOURCE = """
+class Plain:
+    pass
+
+
+value = Plain()
+held = type(value) is Plain
+temporary = type(Plain()) is Plain
+
+
+def held_in_function(value):
+    return type(value) is Plain
+"""
+
+
+def _metaclass_finalizer_events(release_while_bound: bool) -> list[str]:
+    """The CPython oracle: a class lives through each instance's class edge,
+    so dropping `type(value)` while `value` stays bound never releases it,
+    even under a metaclass with `__del__`; a temporary operand may."""
+    events: list[str] = []
+
+    class Meta(type):
+        def __del__(cls) -> None:
+            events.append("class released")
+
+    if release_while_bound:
+        instance = Meta("Dying", (), {})()
+        assert (type(instance) is Meta) is False
+    else:
+        assert (type(Meta("Dying", (), {})()) is Meta) is False
+    gc.collect()
+    return events
+
+
+def test_type_of_a_bound_value_releases_without_running_code() -> None:
+    # HF-971: the release of a `type(x)` temporary runs no code while `x`
+    # stays bound (its class edge holds the class).
+    assert _metaclass_finalizer_events(release_while_bound=True) == []
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[2])
+    assert fact is not None
+    assert not fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+def test_type_of_a_temporary_value_may_release_its_class() -> None:
+    assert _metaclass_finalizer_events(release_while_bound=False) == ["class released"]
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[3])
+    assert fact is not None
+    assert fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="HF-971: an activation scope's `type` is guarded builtin | OTHER "
+    "before the writer premise exists, so `type(value)` stays an unknown call",
+)
+def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
+    tree = ast.parse(_TYPE_TEMPORARY_SOURCE)
+    index = analyze_python_source_bindings(_TYPE_TEMPORARY_SOURCE)
+    fact = index.statement_fact(tree.body[4].body[0])
+    assert fact is not None
+    assert not fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+@pytest.mark.parametrize(
+    ("source", "writes", "reuses_initializer"),
+    [
+        (
+            "def run():\n    value = 'known'\n    callback()\n    return value\n",
+            (),
+            True,
+        ),
+        (
+            "class C:\n    value = 1\ndef run():\n    local = C\n"
+            "    callback()\n    return local\n",
+            ("synthetic",),
+            True,
+        ),
+        (
+            "observed = provider\ndef run():\n    return observed\n",
+            ("provider",),
+            False,
+        ),
+        (
+            "import importlib\ncallback()\n"
+            "value = importlib.import_module('.child', __package__)\n"
+            "def run():\n    return value\n",
+            ("__package__",),
+            False,
+        ),
+        (
+            "from provider import mutable\ncallback()\nraise Exception()\n",
+            ("mutable",),
+            False,
+        ),
+    ],
+)
+def test_initializer_revision_matches_fresh_binding_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    writes: tuple[str, ...],
+    reuses_initializer: bool,
+) -> None:
+    flow = python_binding_flow
+    initializers = 0
+    analyze = flow._Analyzer._analyze_module
+
+    def observe(
+        analyzer: python_binding_flow._Analyzer,
+        tree: ast.Module,
+        *,
+        ast_digest_admission: python_binding_flow._PythonAstDigestAdmission | None,
+    ) -> None:
+        nonlocal initializers
+        initializers += 1
+        analyze(analyzer, tree, ast_digest_admission=ast_digest_admission)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_module", observe)
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    initial = PythonBindingPolicy(
+        target_python=(3, 15),
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset((*writes, "C", "callback", "provider")),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+        frame_locals_writer=None,
+    )
+    revised = replace(
+        initial, frame_locals_writer="frame writer", foreign_namespace_writes=writes
+    )
+    with flow.python_binding_revision_scope():
+        analyze_python_source_bindings(source, policy=initial)
+        result = analyze_python_source_bindings(source, policy=revised)
+    assert initializers == (1 if reuses_initializer else 2)
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=revised)
+    assert (
+        replace(result, state_count=fresh.state_count, telemetry=fresh.telemetry)
+        == fresh
+    )

@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- Foundation blueprint 55. Arc: P0 MEMORY SAFETY via the OWNERSHIP LATTICE
 (resurrection / finalizer / weakref corruption made structurally impossible).
 Author: portfolio-architect. Date: 2026-06-24. Status: DESIGN ONLY / EXECUTABLE PLAN.

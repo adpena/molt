@@ -130,6 +130,12 @@ per premise revision.
    publishes changed keys only when later jobs have no dependency on them. The revised
    raw facts then pass through the same deferred-effect projection as a full transfer.
    Discovery records this dependency log once per source during a graph operation.
+   A revision can also reuse an initializer's recorded state when new foreign names do
+   not change its consumed lexical or metadata facts. A change in frame-local exposure
+   can reuse it only when the initializer's scopes and borrows are unaffected. New
+   callback slots retain stable physical identities for subsequent transfers and enter
+   their canonical position in the projected scope layout. Deferred jobs still run
+   under the revised premise, and the exact source solver handles a refused initializer.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.

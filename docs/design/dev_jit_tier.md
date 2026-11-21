@@ -1,9 +1,9 @@
 # Development JIT tier: run without building
 
-Status: steps 1-5 implemented (HF-371). The JIT runner prepares the module and compiles
-individual bodies on first call. It reuses Cranelift machine-code stencils from the
-existing compilation cache. macOS arm64 is the verified host. The development tier
-stays opt-in. Shared-stdlib reuse and incremental patching are open.
+The opt-in development tier on macOS arm64 loads a shared stdlib image.
+The runner compiles application functions and program-specific clones on
+first call and reuses cached Cranelift machine code. Incremental patching is
+open. [HF-634 startup measurements](dev_shared_runtime.md#shared-stdlib-startup-on-macos-arm64-2026-11-20)
 
 ## Problem
 
@@ -166,8 +166,11 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    runtime cannot be linked into the runner and found by name. The closed, generated
    `RuntimeFn` registry (`runtime_fn_generated.rs`) now names every all-word runtime
    entry, helpers included; HF-384 tracks the helper names backends still spell.
-4. **Lazy compilation.** The runner prepares the whole module through final TIR
-   and publishes a stable entry for each local definition. Program metadata and the
+4. **Shared stdlib and lazy compilation.** JIT image preparation uses the same
+   compiled stdlib archive as development AOT. Type flow sees the whole program.
+   The prepared image retains terminal TIR for application functions and reachable
+   specialized clones. The shared stdlib image supplies the canonical entries.
+   The runner publishes a stable entry for each local definition. Program metadata and the
    frame-size words read by task constructors are ready at launch. Each entry loads a
    target from a call slot. On first call, one caller holds the code owner's lock
    while the shared native walker lowers the body, Cranelift assembles it, and the
@@ -181,7 +184,8 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    materialization. Diagnostic requests that require whole-compilation artifacts
    materialize every body before launch through the same code owner. First-call
    compilation uses the request admitted at launch. It skips persistent stencil
-   I/O under a finite file-size limit. Molt follows the stable entry approach
+   I/O under a finite file-size limit. The [dev link design](dev_shared_runtime.md) owns image identities and reverse data bindings.
+   Molt follows the stable entry approach
    of LLVM ORC lazy reexports. [LLVM ORC design](https://llvm.org/docs/ORCv2.html)
 5. **CLI.** `molt run --tier jit` (or `[tool.molt.run] tier = "jit"`) selects the JIT
    tier (`RunTier`); `aot` stays the default and `molt build` stays AOT. `molt build
@@ -195,15 +199,10 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    frontend. WASM already runs under wasmtime, which is a JIT.
 
    A `molt run` cache hit reuses a JIT image only while its key matches. A JIT launch
-   runs the runner and never the backend compiler, so its key holds the runner's source
-   and locked-dependency identity (`_cache_fingerprint` for `HostToolProduct.JIT`) with
-   the runtime's, in place of the backend's an AOT key holds: an edit to the runner, its
-   `cranelift-jit` stack, a crate it builds on or a file such a crate's build reads
-   (`package.metadata.molt.build-inputs`, below) rebuilds. One fingerprint per key costs
-   271-320 ms warm (median, load 11), where the AOT key's costs 433-464 ms; the earlier
-   key, which added the runner's fingerprint to the backend's, cost 661-867 ms. A hit
-   checks and renews, under each store's lock, the runner generation and the runtime
-   image it runs; an entry that eviction removed is a miss.
+   uses a prepared application produced by the backend and runs the JIT runner.
+   Its key binds both tool products and the runtime. A hit checks and renews the
+   runner, both shared code images, the program-data image and the runtime
+   callable-symbol table. An entry that eviction removed is a miss.
 
    **Build inputs outside a crate.** A crate declares the files outside its root that its
    build script, `include_str!` or `#[path]` modules read in `[package.metadata.molt]
@@ -221,10 +220,10 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 
 ```text
 #!<runner> --image
-#molt.jit-image.v4 <header bytes> <program bytes>
-<header: JSON: runtime image, backend environment, compiler diagnostics, TIR cache root,
-         launch plan>
-<program: backend IR, MessagePack, the backend lease format>
+#molt.jit-image.v5 <header bytes> <program bytes>
+<header: JSON with exact image paths and witnesses, backend environment,
+         compiler diagnostics, cache root and launch plan>
+<program: prepared native application, MessagePack>
 ```
 
 The CLI publishes it with one rename, so a header always belongs to its own program, even
@@ -254,14 +253,15 @@ caller with a stale `PWD`, an `OLDPWD` and no `SHLVL`, and the twin case
 `reexec_keeps_parent_environment.py` restarts each tier by its own path with the same
 environment and checks that both see it unchanged.
 
-An image is a development artifact. Its header names the runner, the runtime image and
-the runtime callable-symbol table, three entries of the host's product store (design
-56, section 2.8), and running the image renews none of them. `molt run --tier jit` and
-`molt build --emit jit` renew all three (a cache hit too); after 5 days with neither, a
+An image is a development artifact. The runner, runtime, stdlib, application
+storage and callable-symbol table live in the host product store (design 56,
+section 2.8). `molt run --tier jit` and `molt build --emit jit` renew those
+entries, including on cache hits. Standalone execution leaves the retention
+window as it was. After 5 days without a Molt build or cached launch, a
 later build may evict them, and `molt cache evict` or removing the shared Cargo target
 directory removes them at once. The image then fails: the kernel cannot start its interpreter, so a shell reports a bad interpreter
 (exit 126) and `execve` fails with `ENOENT` (Python raises `FileNotFoundError` naming the
-image), or the runner cannot load the runtime image (exit 125).
+image), or the runner cannot load one of the linked images (exit 125).
 `tests/cli/test_jit_run_tier.py` proves the first case.
 
 **Launch.** `NativeLaunchPlan` owns a program's launch facts: the resolved capability
@@ -452,15 +452,10 @@ the first pass and 4.62 to 23.10 in the warmed pass.
 | Peak process-tree RSS, KiB | 827,832 / 1,143,040 | 960,896 / 1,594,176 | 802,368 / 947,248 | 830,576 / 1,026,048 |
 
 Warm JIT was 4.3% slower at the median and 31.4% slower at p90. Keep the existing
-explicit JIT selector. The comparison measures a prototype. The stdlib-image lane
-owns the shared image, and the common per-function cache needs its own proof before
-first-call assembly is integrated.
+explicit JIT selector. The comparison measures a prototype. The
+[dev link design](dev_shared_runtime.md) records the production image measurements.
 
-### Whole-program compilation baseline (2026-10-21)
-
-The JIT tier is slower than the AOT tier for any program that imports `os`, and it needs
-about 0.7 GB at its peak to compile such a program. It stays opt-in (`--tier jit`) until it
-reuses compiled stdlib code, as an AOT build does.
+### Current launch costs
 
 - Removed per edit-run: object emission, the runtime-archive link, output publication,
   output signing, and first-link work for new programs.
@@ -474,21 +469,24 @@ reuses compiled stdlib code, as an AOT build does.
   run under the JIT tier in that window, for one retention policy across the store.
 - Per start: process start, one read of the JIT image, the compiler output capture (a
   socket pair, 16 MiB of shared memory touched only as far as the compiler writes, one
-  drain thread and the keeper fork), the runtime image load, the program decode, and
-  compilation of the whole program, its stdlib closure included. An AOT build reuses a cached shared-stdlib
-  object; the JIT tier compiles those functions on every start, and again in every
-  process that starts the image again (a spawned `multiprocessing` worker, a
-  `subprocess` of `sys.executable`). On macOS the runner restarts itself once to turn off
+  drain thread and the keeper fork), linked image loads, application decoding,
+  and staging stable local entries. Every process materializes and relocates each
+  local body on first call, including spawned workers and subprocesses of `sys.executable`.
+  On macOS the runner restarts itself once to turn off
   the allocator's large-block cache, so the compiler's freed heap leaves the program's
   footprint. That is a named trade: about 0.3 s of compile time per start, and libc's
   large blocks lose their cache for the whole program (below).
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
   toolchain probes (HF-357).
-- Kept: the persistent TIR cache, written at start under the image's cache root. For a
-  program that imports `subprocess` (v4 runner, 2026-10-22, three starts each at load 9),
-  a warm start took 12.1-12.2 s, a start with no usable cache 14.3-14.5 s, and a cold
-  start, which writes 49 MB of cache, 15.2-15.3 s. The cache saves 2.2 s on every start
-  after the first and costs 0.9 s once.
+- The build's existing TIR cache serves function preparation. The image's cache root
+  serves local machine-code reuse at launch.
+
+### Whole-program compilation baseline (2026-10-21)
+
+Before shared stdlib reuse, the v4 runner performed TIR preparation at startup.
+For a program that imports `subprocess`, a warm start took 12.1–12.2 s and a cold
+start took 15.2–15.3 s while writing 49 MB of cache (2026-10-22, load average 9,
+three starts per case).
 
 Measured on macOS arm64, 2026-10-21, release runner, warm toolchain. Per start of one
 image, by cost bucket (`MOLT_BACKEND_TIMING=1`, `/usr/bin/time -l`; three starts at load
@@ -551,10 +549,9 @@ compiling it at load average 20-40, with 2.0-2.5 GB peak RSS. The TIR function c
 halved its IR preparation on the second start (63.7 s to 32.2 s); the module phase and
 Cranelift (12-17 s) recompile every start.
 
-The structural path (HF-371) is to compile each function lazily on its first call and to
-reuse machine code through a content-keyed cache ("Lazy compilation"). A shorter step uses
-what the AOT tier already has: link the AOT shared-stdlib archive for the program's
-stdlib set into the runtime image and compile only the application partition.
+This baseline predates both first-call compilation and shared stdlib reuse.
+The current runner stages only the application partition and links the same
+compiled stdlib as development AOT.
 
 ## Platform cells
 

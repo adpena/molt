@@ -519,6 +519,25 @@ class _ForeignNamespaceReads:
     has_empty_module_expiry: bool
 
 
+def _project_binding_slots(
+    facts: PythonBindingFacts,
+    slots: tuple[str, ...],
+    module_additions: Mapping[str, str] | None = None,
+) -> PythonBindingFacts:
+    indices = {name: index for index, name in enumerate(slots)}
+    scopes = []
+    for scope in facts.scopes:
+        bindings = {
+            name: indices[facts.slot_names[slot]] for name, slot in scope.binding_slots
+        }
+        if scope.scope_id == 0 and module_additions is not None:
+            bindings.update(
+                (name, indices[slot]) for name, slot in module_additions.items()
+            )
+        scopes.append(replace(scope, binding_slots=tuple(sorted(bindings.items()))))
+    return replace(facts, slot_names=slots, scopes=tuple(scopes))
+
+
 @dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
@@ -560,17 +579,6 @@ class _BindingAnalysis:
             *callback_layout,
             *slots[reads.callback_end :],
         )
-        indices = {name: index for index, name in enumerate(new_slots)}
-        scopes: list[PythonScopeFact] = []
-        for scope in self.facts.scopes:
-            bindings = {
-                name: indices[slots[slot]] for name, slot in scope.binding_slots
-            }
-            if scope.scope_id == 0:
-                bindings.update(
-                    (name, indices[slot]) for name, slot in additions.items()
-                )
-            scopes.append(replace(scope, binding_slots=tuple(sorted(bindings.items()))))
         # A callback can make an absent slot possibly present at module exit.
         # Only its namespace row changes, since the transfer made no use of it.
         empty_origins: frozenset[PythonSourceKey] = frozenset()
@@ -587,9 +595,7 @@ class _BindingAnalysis:
         return replace(
             self,
             facts=replace(
-                self.facts,
-                slot_names=new_slots,
-                scopes=tuple(scopes),
+                _project_binding_slots(self.facts, new_slots, additions),
                 source_namespaces=namespaces,
             ),
             foreign_namespace_reads=replace(
@@ -2431,6 +2437,11 @@ def _binding_read(node: ast.expr) -> bool:
     )
 
 
+def _plain_load(node: ast.expr) -> bool:
+    """A name or constant load: it runs no Python."""
+    return isinstance(node, (ast.Name, ast.Constant))
+
+
 def _release_may_call(identities: IdentityMask, result: StaticExpressionResult) -> bool:
     """Compose independent rooted-identity and exact-result release proofs."""
 
@@ -3097,6 +3108,15 @@ class _DeferredJobRecorder:
         )
 
 
+@dataclass(slots=True)
+class _InitializerPremiseReads:
+    names: frozenset[str] = frozenset()
+    metadata: dict[tuple[int, int], PythonModuleMetadataProof] = field(
+        default_factory=dict
+    )
+    frame_borrows: bool = False
+
+
 class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
@@ -3114,8 +3134,10 @@ class _Analyzer:
         self._foreign_universe = policy.foreign_namespace_universe
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
+        self._appended_foreign_slots: tuple[int, int] | None = None
         self._foreign_tainted_exit: PythonSourceKey | None = None
         self._has_empty_module_expiry = False
+        self._initializer_premise_reads: _InitializerPremiseReads | None = None
         self.source_digest = source_digest
         self.states = _StatePool()
         self.transfer = _BindingTransferFacts()
@@ -3636,9 +3658,14 @@ class _Analyzer:
                 clean &= resolution.clean
                 if not resolution.present:
                     pristine.add(name)
-        return PythonModuleMetadataProof(
+        result = PythonModuleMetadataProof(
             scope.activation_namespace_stable, clean, frozenset(pristine)
         )
+        if self._initializer_premise_reads is not None:
+            self._initializer_premise_reads.metadata[(state_id, scope.scope_id)] = (
+                result
+            )
+        return result
 
     def _slot_uses_lexical_storage(self, slot: int) -> bool:
         if self._class_cell_slot_mask & (1 << slot):
@@ -4350,6 +4377,34 @@ class _Analyzer:
         fact = self.transfer.expressions.get(self._node_key(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
+    def _binding_held(
+        self, node: ast.expr, read: Callable[[ast.expr], bool] = _binding_read
+    ) -> bool:
+        """Whether every reference ``node`` yields stays held by a binding (or
+        an owner it reads) until the caller releases the temporary, given that
+        no Python runs in between (the caller proves it): a ``read`` the
+        caller admits (``_binding_read`` by default), or ``type(x)`` of one
+        with the exact builtin ``type``, which runs no Python. The class ``type(x)`` answers is held by ``x``'s own class
+        edge while ``x`` stays bound, so releasing that temporary cannot drop
+        the class's last reference and runs no code, whatever its metaclass
+        (HF-971). The proof is the temporary's, never the result's: a stored
+        ``type(x)`` can outlive ``x``."""
+        if read(node):
+            return True
+        if (
+            not isinstance(node, ast.Call)
+            or node.keywords
+            or len(node.args) != 1
+            or not read(node.args[0])
+        ):
+            return False
+        callee = self.transfer.expressions.get(self._node_key(node.func))
+        return (
+            callee is not None
+            and not callee.binding_invalidated
+            and callee.identities == int(PythonIdentity.BUILTIN_TYPE)
+        )
+
     def _widen_exposed_bindings(self, state_id: int) -> int:
         self._namespace_observation_epoch += 1
         return self.states.taint_exposed_bindings(state_id)
@@ -4372,14 +4427,18 @@ class _Analyzer:
             | INVOKES_CONTEXT_CALLBACK
             | INVOKES_COMPARISON_CALLBACK
         )
-        if frame_locals_exposed(
-            self.policy.target_python, self.policy.frame_locals_writer
-        ) and effects & (
+        if effects & (
             WRITES_FRAME_STATE | EXECUTES_ARBITRARY_PYTHON | callback_effects
         ):
-            # PEP 667 permits a callback to replace a live optimized binding.
-            # Truth, descriptor and iterator callbacks obey the same boundary.
-            self._capture_pending_binding_reads()
+            observed = self._initializer_premise_reads
+            if observed is not None and not observed.frame_borrows:
+                observed.frame_borrows = any(self._binding_read_scopes)
+            if frame_locals_exposed(
+                self.policy.target_python, self.policy.frame_locals_writer
+            ):
+                # PEP 667 permits a callback to replace a live optimized binding.
+                # Truth, descriptor and iterator callbacks obey the same boundary.
+                self._capture_pending_binding_reads()
         if effects & (
             WRITES_GLOBAL_NAMESPACE
             | WRITES_FRAME_STATE
@@ -5291,6 +5350,17 @@ class _Analyzer:
                             DeferredExecution(selected, "release"),
                         }
                     )
+        elif (
+            exact
+            and callee == int(PythonIdentity.BUILTIN_TYPE)
+            and len(node.args) == 1
+            and not node.keywords
+            and not isinstance(node.args[0], ast.Starred)
+        ):
+            # `type(x)` reads the class edge of `x`'s header: it runs no
+            # Python, cannot fail, and neither calls nor publishes `x`
+            # (HF-971). The result is a class object of unknown identity.
+            argument_protocol_indices = frozenset()
         elif exact and callee == int(PythonIdentity.BUILTIN_SETATTR):
             effects |= (
                 WRITES_OBJECT_STATE
@@ -5679,8 +5749,8 @@ class _Analyzer:
                 bound_operands = (
                     inert_alias
                     and not effects & EXECUTES_ARBITRARY_PYTHON
-                    and _binding_read(node.value)
-                    and _binding_read(node.slice)
+                    and self._binding_held(node.value)
+                    and self._binding_held(node.slice)
                 )
                 if not bound_operands and (
                     assignment_target.owner_result.release_may_call
@@ -6417,8 +6487,8 @@ class _Analyzer:
                 left_node = node.left if index == 0 else node.comparators[index - 1]
                 stable_loads = (
                     scope.kind != "class"
-                    and isinstance(left_node, (ast.Name, ast.Constant))
-                    and isinstance(comparator, (ast.Name, ast.Constant))
+                    and self._binding_held(left_node, _plain_load)
+                    and self._binding_held(comparator, _plain_load)
                     and not (right.effects | boundary)
                     & _CALLEE_ELISION_FORBIDDEN_EFFECTS
                 )
@@ -9642,7 +9712,11 @@ class _Analyzer:
             self._foreign_universe is not None
             and self._callback_module_names is not None
         ):
-            self._foreign_reads = set(_METADATA_NAMES)
+            self._foreign_reads = (
+                set(_METADATA_NAMES)
+                if self._initializer_premise_reads is None
+                else set()
+            )
             self._foreign_slot_bounds = (declared_slots, len(self.slot_names))
         if self._star_import_origins:
             # Star imports can shadow otherwise undeclared globals, including
@@ -9684,6 +9758,12 @@ class _Analyzer:
         finally:
             self._observed_stack.pop()
         self._active_lexical_history = None
+        if (
+            self._initializer_premise_reads is not None
+            and self._foreign_reads is not None
+        ):
+            self._initializer_premise_reads.names = frozenset(self._foreign_reads)
+            self._foreign_reads.update(_METADATA_NAMES)
 
     def _run_deferred_job(
         self, job: _FunctionJob, recorder: _DeferredJobRecorder | None
@@ -9870,6 +9950,25 @@ class _Analyzer:
             ),
             slot_names=tuple(self.slot_names),
         )
+        declaration_end, callback_end = self._foreign_slot_bounds
+        if self._appended_foreign_slots is not None:
+            appended_start, appended_end = self._appended_foreign_slots
+            slots = facts.slot_names
+            facts = _project_binding_slots(
+                facts,
+                (
+                    *slots[:declaration_end],
+                    *sorted(
+                        (
+                            *slots[declaration_end:callback_end],
+                            *slots[appended_start:appended_end],
+                        )
+                    ),
+                    *slots[callback_end:appended_start],
+                    *slots[appended_end:],
+                ),
+            )
+            callback_end += appended_end - appended_start
         return _BindingAnalysis(
             facts,
             # Source demand proofs may require a projection even when strict
@@ -9899,7 +9998,8 @@ class _Analyzer:
                 if self._foreign_reads is None
                 else _ForeignNamespaceReads(
                     frozenset(self._foreign_reads),
-                    *self._foreign_slot_bounds,
+                    declaration_end,
+                    callback_end,
                     self._foreign_tainted_exit,
                     self._has_empty_module_expiry,
                 )
@@ -10164,6 +10264,80 @@ class _RecordedBindingTransfer:
 
 
 @dataclass(frozen=True, slots=True)
+class _RebasableInitializer:
+    prefix: _Analyzer
+    reads: _InitializerPremiseReads
+    size: int
+
+    def revise(self, requested: _Analyzer) -> _Analyzer | None:
+        prefix = self.prefix
+        before, policy = prefix.policy, requested.policy
+        active = requested._opaque_activation_sources
+        former, current = (
+            before.foreign_namespace_writes,
+            policy.foreign_namespace_writes,
+        )
+        if active is None or former is None or current is None:
+            return None
+        if any(
+            holds == owners.isdisjoint(active)
+            for owners, holds in prefix._opaque_activation_reads.items()
+        ):
+            return None
+        exposed = frame_locals_exposed(policy.target_python, policy.frame_locals_writer)
+        formerly_exposed = frame_locals_exposed(
+            before.target_python, before.frame_locals_writer
+        )
+        if exposed != formerly_exposed and (
+            self.reads.frame_borrows
+            or any(
+                scope.kind not in ("module", "class") and scope.slots
+                for scope in prefix.scopes
+            )
+        ):
+            return None
+        if not frozenset(former).issubset(current):
+            return None
+        additions = frozenset(current).difference(former)
+        if not additions.isdisjoint(self.reads.names) or (
+            additions and prefix._has_empty_module_expiry
+        ):
+            return None
+        assert prefix.module_scope is not None
+        existing = additions.intersection(prefix.module_scope.slots)
+        if existing and any(state.taint_epoch for state in prefix.states._states):
+            return None
+        work = prefix._fork_at_deferred_boundary()
+        assert (
+            work._foreign_reads is not None and work._callback_module_names is not None
+        )
+        work.policy = policy
+        work._opaque_activation_sources = active
+        work._activation_argument_values = requested._activation_argument_values.copy()
+        work._callback_module_names |= additions
+        appended_start = len(work.slot_names)
+        for name in sorted(additions):
+            slot = work._ensure_module_slot(name)
+            work.callback_module_slot_mask |= 1 << slot
+        work.states.set_taint_domain(work._callback_taint_domain())
+        for (state, scope), expected in self.reads.metadata.items():
+            if (
+                work._module_metadata_borrowing_snapshot(state, work.scopes[scope])
+                != expected
+            ):
+                return None
+        appended_end = len(work.slot_names)
+        if appended_end != appended_start:
+            # Body histories keep their physical slot coordinates. The final
+            # immutable layout puts newly named slots back in callback order.
+            work._appended_foreign_slots = (appended_start, appended_end)
+            if work._foreign_tainted_exit is not None:
+                namespace = work.transfer.source_namespaces[work._foreign_tainted_exit]
+                namespace.update((name, frozenset()) for name in additions)
+        return work
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingCheckpoint:
     completed_jobs: int
     prefix: _Analyzer
@@ -10189,6 +10363,10 @@ class _BindingRevisions:
             tuple[str, PythonBindingFlowPolicy], _RecordedBindingTransfer
         ] = {}
         self._observed_sources: set[str] = set()
+        self._initializers: OrderedDict[
+            tuple[str, PythonBindingFlowPolicy], _RebasableInitializer
+        ] = OrderedDict()
+        self._initializer_extent = 0
 
     def analyze(
         self,
@@ -10207,9 +10385,14 @@ class _BindingRevisions:
                 policy, opaque_activation_sources=(), activation_argument_values=()
             ),
         )
+        initializer_key = (
+            key[0],
+            replace(key[1], foreign_namespace_writes=(), frame_locals_writer=None),
+        )
         with self._lock:
             prior = self._recent.get(key, ())
             recorded = self._recorded.get(key)
+            initializer = self._initializers.get(initializer_key)
         if recorded is not None:
             revised = recorded.revise(policy)
             if revised is not None:
@@ -10247,7 +10430,40 @@ class _BindingRevisions:
                 )
                 break
         else:
-            analyzer._analyze_module(tree, ast_digest_admission=ast_digest_admission)
+            rebased = None if initializer is None else initializer.revise(analyzer)
+            if rebased is not None:
+                analyzer = rebased
+            else:
+                reads = (
+                    None
+                    if analyzer._foreign_universe is None
+                    else _InitializerPremiseReads()
+                )
+                analyzer._initializer_premise_reads = reads
+                try:
+                    analyzer._analyze_module(
+                        tree, ast_digest_admission=ast_digest_admission
+                    )
+                finally:
+                    analyzer._initializer_premise_reads = None
+                if reads is not None and analyzer._foreign_reads is not None:
+                    size = _binding_checkpoint_size(analyzer) + len(reads.metadata)
+                    if size <= 8192:
+                        captured = _RebasableInitializer(
+                            analyzer._fork_at_deferred_boundary(), reads, size
+                        )
+                        with self._lock:
+                            replaced = self._initializers.pop(initializer_key, None)
+                            if replaced is not None:
+                                self._initializer_extent -= replaced.size
+                            self._initializers[initializer_key] = captured
+                            self._initializer_extent += size
+                            while (
+                                self._initializer_extent > 65536
+                                or len(self._initializers) > 128
+                            ):
+                                _, evicted = self._initializers.popitem(last=False)
+                                self._initializer_extent -= evicted.size
 
         def capture(owner: _Analyzer, completed_jobs: int) -> None:
             if checkpoints and checkpoints[-1].completed_jobs == completed_jobs:

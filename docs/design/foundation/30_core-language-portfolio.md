@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- Foundation audit 30. Architect: read-only research-granted agent, 2026-06-06.
 Saved verbatim. SUPERVISOR SLOT REMAPPING (internal proposed numbers collide with
 taken/in-flight slots — 31=fuzzing lane in flight, 33-37 reserved by doc 29's program):

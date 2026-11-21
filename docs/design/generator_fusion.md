@@ -13,7 +13,7 @@ stdlib function. That doesn't compose, multiplies `unsafe` surface, and re-erect
 boundary the compiler exists to erase. Codon ships its entire stdlib in (typed) Python: its
 generators lower to LLVM coroutines but are INLINED into for-loop consumers and the frame is elided
 (LLVM `CoroElide`), so the coroutine compiles away. molt must do the equivalent at TIR (so ALL
-backends — Cranelift/LLVM/wasm/luau — benefit, not just LLVM).
+backends — Cranelift and LLVM, native and wasm32 — benefit, not just LLVM).
 
 ## Grounded findings (2026-06-03 source trace; cite when implementing)
 - **genexpr and `def`-yield generators share ONE representation**: both → a `poll_func` +

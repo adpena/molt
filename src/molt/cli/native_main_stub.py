@@ -84,6 +84,7 @@ def _render_native_main_stub(
     resolved_capability_policy: ResolvedRuntimePolicy,
     compiled_source_paths: Sequence[str] = (),
     runtime_module_roots: Sequence[Path] = (),
+    image_generation_witnesses: Sequence[str] = (),
 ) -> str:
     """Render the program's ``NativeLaunchPlan`` as an AOT executable's C main."""
     plan = NativeLaunchPlan.for_program(
@@ -292,4 +293,14 @@ int main(int argc, char** argv) {
     main_c_content = main_c_content.replace(
         "/* MOLT_COMPILED_SOURCES_CALL */", compiled_sources_call
     )
+    if image_generation_witnesses:
+        start = "int main(int argc, char** argv) {\n"
+        declarations = "".join(
+            f"extern const volatile unsigned char {symbol};\n"
+            for symbol in image_generation_witnesses
+        )
+        imports = "".join(
+            f"    (void){symbol};\n" for symbol in image_generation_witnesses
+        )
+        main_c_content = main_c_content.replace(start, declarations + start + imports)
     return main_c_content

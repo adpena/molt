@@ -2,6 +2,7 @@ from molt import compiled_symbols
 from molt.cli.build_request import BuildRequest
 import ast
 from collections import namedtuple
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -293,11 +294,18 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         dependency_fingerprints,
     )
 
-    def runtime_fingerprint(*, env, backend_features, rust_cpu):
+    def runtime_fingerprint(
+        *,
+        env: Mapping[str, str] | None,
+        backend_features: Sequence[str] | None,
+        rust_cpu: RustCpuPolicy,
+        include_runtime_sources: bool = True,
+    ) -> str:
         assert env == {}
         # `run` builds the release profile, whose default backend is LLVM.
         assert backend_features == ("native-backend", "llvm")
         assert rust_cpu is RustCpuPolicy.BASELINE
+        assert include_runtime_sources
         return "runtime"
 
     monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", runtime_fingerprint)
@@ -377,7 +385,14 @@ def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
     )
     policies: list[RustCpuPolicy] = []
 
-    def runtime_fingerprint(*, env, backend_features, rust_cpu):
+    def runtime_fingerprint(
+        *,
+        env: Mapping[str, str] | None,
+        backend_features: Sequence[str] | None,
+        rust_cpu: RustCpuPolicy,
+        include_runtime_sources: bool = True,
+    ) -> str:
+        assert include_runtime_sources
         policies.append(rust_cpu)
         return f"runtime-{rust_cpu.value}"
 

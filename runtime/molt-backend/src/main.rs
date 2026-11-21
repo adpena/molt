@@ -127,6 +127,16 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
         return Ok(());
     }
 
+    #[cfg(feature = "native-backend")]
+    if let Some(directory) = request.prepare_jit {
+        let BackendTarget::Native(options) = request.target;
+        return backend_process::prepare_jit::prepare(
+            document,
+            options,
+            Path::new(request.output_path.expect("JIT application output")),
+            &Path::new(directory).join("program_storage.o"),
+        );
+    }
     let emission = BackendTargetEmitRequest {
         document,
         output_path: request.output_path,
