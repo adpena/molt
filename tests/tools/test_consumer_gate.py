@@ -143,6 +143,24 @@ def test_an_unmarked_test_past_the_refusal_limit_leaves_no_receipt(
     assert consumer_gate.check(repo, paths) == 1
 
 
+def test_a_slow_importer_test_the_change_does_not_touch_keeps_the_receipt(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 2026-11-21: ten untouched importer tests ran 120-163 s on a loaded host
+    # and withheld the receipt of a change that passed all 3,039 of them.
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "tests/test_lib.py").write_text(
+        "import time\n\ndef test_value():\n    time.sleep(0.3)\n", encoding="utf-8"
+    )
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_S", 0.1)
+    monkeypatch.setattr(consumer_gate, "SLOW_TEST_REFUSE_S", 0.2)
+    paths = ["lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    assert "unmarked slow test" in capsys.readouterr().err
+    assert consumer_gate.check(repo, paths) == 0
+
+
 def test_a_hung_importer_run_is_stopped_and_leaves_no_receipt(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
