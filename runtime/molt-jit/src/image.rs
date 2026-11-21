@@ -4,9 +4,9 @@
 //!
 //! ```text
 //! #!<runner> --image
-//! #molt.jit-image.v4 <header bytes> <program bytes>
+//! #molt.jit-image.v5 <header bytes> <program bytes>
 //! <header: JSON>
-//! <program: backend IR, MessagePack>
+//! <program: prepared native application, MessagePack>
 //! ```
 //!
 //! The first line makes the runner the image's interpreter: `execve` of the
@@ -33,7 +33,10 @@ pub(crate) const IMAGE_INTERPRETER_PREFIX: &str = "#!";
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImageHeader {
     /// The runtime as a shared image, linked from the AOT runtime archive.
+    #[serde(deserialize_with = "absolute_path")]
     pub(crate) runtime_image: PathBuf,
+    pub(crate) runtime_generation: String,
+    pub(crate) shared_stdlib: SharedStdlibLaunch,
     /// Request-scoped backend settings for this compilation.
     pub(crate) backend_environment: serde_json::Map<String, serde_json::Value>,
     /// Whether compiler stderr streams or appears only on failure.
@@ -46,6 +49,17 @@ pub(crate) struct ImageHeader {
     #[serde(deserialize_with = "absolute_path")]
     pub(crate) tir_cache_root: PathBuf,
     pub(crate) launch: LaunchPlan,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SharedStdlibLaunch {
+    #[serde(deserialize_with = "absolute_path")]
+    pub(crate) stdlib_image: PathBuf,
+    pub(crate) stdlib_generation: String,
+    #[serde(deserialize_with = "absolute_path")]
+    pub(crate) program_data: PathBuf,
+    pub(crate) program_data_generation: String,
 }
 
 fn absolute_path<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
@@ -122,9 +136,8 @@ impl JitImage {
         })
     }
 
-    /// Decode the program's backend IR document.
-    pub(crate) fn program(&self) -> Result<molt_ir::ir::BackendIrDocument, String> {
-        molt_ir::ir::BackendIrDocument::from_msgpack_bytes(&self.bytes[self.program_start..])
+    pub(crate) fn program(&self) -> Result<molt_backend_native::PreparedJitApplication, String> {
+        molt_backend_native::PreparedJitApplication::decode(&self.bytes[self.program_start..])
             .map_err(|error| format!("invalid program: {error}"))
     }
 }
@@ -144,7 +157,7 @@ mod tests {
         bytes
     }
 
-    const HEADER: &str = r#"{"runtime_image":"/r.dylib","backend_environment":{},"compiler_diagnostics":"on_failure","tir_cache_root":"/cache","launch":{"environment":{},"runtime_module_roots":[],"compiled_source_paths":[]}}"#;
+    const HEADER: &str = r#"{"runtime_image":"/r.dylib","runtime_generation":"molt_native_image_generation_test","shared_stdlib":{"stdlib_image":"/stdlib.dylib","stdlib_generation":"stdlib_test","program_data":"/app.dylib","program_data_generation":"app_test"},"backend_environment":{},"compiler_diagnostics":"on_failure","tir_cache_root":"/cache","launch":{"environment":{},"runtime_module_roots":[],"compiled_source_paths":[]}}"#;
 
     #[test]
     fn an_image_splits_into_its_header_and_its_program() {

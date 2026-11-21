@@ -39,6 +39,7 @@ pub(crate) struct BackendCompileArgs<'a> {
     pub(crate) output_path: Option<&'a str>,
     pub(crate) ir_file_path: Option<&'a str>,
     pub(crate) ir_format: IrFormat,
+    pub(crate) prepare_jit: Option<&'a str>,
     pub(crate) fact_graph: Option<FactGraphCliRequest<'a>>,
     pub(crate) capture_origin: Option<&'a str>,
     pub(crate) emission_scope: Option<&'a str>,

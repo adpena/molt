@@ -38,6 +38,7 @@ from molt.cli.native_link_plan import (
     NativeLinkOutput,
     NativeLinkSidecar,
     NativeSymbolStrip,
+    SharedStdlibImage,
     native_link_capabilities,
     native_artifact_link_arguments,
     native_link_output_flags,
@@ -285,6 +286,7 @@ def _build_native_link_plan(
     bolt_requested: bool = False,
     host_platform: str | None = None,
     runtime_image: Path | None = None,
+    stdlib_image: SharedStdlibImage | None = None,
 ) -> NativeLinkPlan:
     """The executable's link. ``runtime_image``, when given, is the shared
     runtime image of ``runtime_lib``'s generation (``jit_runtime_image``):
@@ -310,6 +312,14 @@ def _build_native_link_plan(
         str(stub_path),
         *native_artifact_link_arguments(output_obj, kind=output_kind, target=target),
     ]
+    if stdlib_image is not None:
+        if runtime_image is None or stdlib_obj_path is not None:
+            raise RuntimeError(
+                "A shared stdlib needs a shared runtime and one stdlib input"
+            )
+        link_inputs.extend(
+            (str(stdlib_image.path), f"-Wl,-rpath,{stdlib_image.path.parent}")
+        )
     if stdlib_obj_path is not None:
         if not stdlib_obj_path.is_file():
             raise RuntimeError(
@@ -417,6 +427,8 @@ def _build_native_link_plan(
         if runtime_image is not None:
             # The image imports the application's isolate bootstrap.
             exported_symbols.append(f"_{COMPILED_ISOLATE_BOOTSTRAP_SYMBOL}")
+        if stdlib_image is not None:
+            exported_symbols.extend(f"_{name}" for name in stdlib_image.program_data)
         if has_external_inputs:
             for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
@@ -441,6 +453,8 @@ def _build_native_link_plan(
         globals = "main;"
         if runtime_image is not None:
             globals = f"main; {COMPILED_ISOLATE_BOOTSTRAP_SYMBOL};"
+        if stdlib_image is not None:
+            globals += "".join(f" {name};" for name in stdlib_image.program_data)
         if has_external_inputs:
             singleton_globals = " ".join(
                 f"{canonical}; {storage};"
@@ -640,4 +654,78 @@ def _build_native_runtime_image_link_plan(
         linker_hint=selected_linker_name,
         normalized_target=normalized_target,
         runtime_inputs=runtime_inputs,
+    )
+
+
+def _build_native_program_image_link_plan(
+    *,
+    input_artifact: Path,
+    input_kind: NativeArtifactKind,
+    runtime_image: Path | None,
+    image: SharedStdlibImage,
+    target: NativeTargetSpec,
+    sysroot_path: Path | None,
+    profile: str,
+) -> NativeLinkPlan:
+    output = image.path
+    driver, hint, normalized_target = _build_native_link_driver_command(
+        target=target, sysroot_path=sysroot_path, profile=profile
+    )
+    linker = native_linker_name_from_driver_command(driver, hinted=hint)
+    capabilities = native_link_capabilities(target=target, linker_hint=linker)
+    policy = replace(
+        native_link_policy(
+            target=target,
+            capabilities=capabilities,
+            profile=profile,
+            keep_symbols=True,
+            bolt_requested=False,
+        ),
+        dead_strip=False,
+    )
+    command = [
+        *driver,
+        *native_artifact_link_arguments(input_artifact, kind=input_kind, target=target),
+    ]
+    if runtime_image is not None:
+        command.extend((str(runtime_image), f"-Wl,-rpath,{runtime_image.parent}"))
+    command.extend(("-o", str(output)))
+    sidecars: list[NativeLinkSidecar] = []
+    if target.object_format is NativeObjectFormat.MACHO:
+        command.extend(
+            ("-dynamiclib", f"-Wl,-install_name,@rpath/{output.name}", "-lc++")
+        )
+        if image.program_data:
+            imports = output.with_name("stdlib_program_imports.rsp")
+            sidecars.append(
+                NativeLinkSidecar(
+                    role="stdlib-program-data",
+                    planned_path=imports,
+                    content="".join(
+                        f"-Xlinker -U -Xlinker _{name}\n" for name in image.program_data
+                    ).encode(),
+                    command_index=len(command),
+                    operand_prefix="@",
+                )
+            )
+            command.append(f"@{imports}")
+    else:
+        command.extend(("-shared", f"-Wl,-soname,{output.name}", "-lstdc++", "-lm"))
+    command.extend(native_link_output_flags(capabilities=capabilities, output=output))
+    command.extend(
+        native_link_policy_flags(
+            target=target,
+            capabilities=capabilities,
+            output=NativeLinkOutput.SHARED_IMAGE,
+            dead_strip=policy.dead_strip,
+        )
+    )
+    return NativeLinkPlan(
+        target=target,
+        capabilities=capabilities,
+        policy=policy,
+        command=tuple(command),
+        linker_hint=linker,
+        normalized_target=normalized_target,
+        sidecars=tuple(sidecars),
     )

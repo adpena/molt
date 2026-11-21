@@ -4,9 +4,9 @@
 and ``runtime/molt-jit/src/image.rs`` reads it. The layout is::
 
     #!<runner> --image
-    #molt.jit-image.v4 <header bytes> <program bytes>
+    #molt.jit-image.v5 <header bytes> <program bytes>
     <header: JSON>
-    <program: content-addressed backend IR lease, MessagePack>
+    <program: prepared native application, MessagePack>
 
 The first line makes the runner the image's interpreter, so ``execve`` of the
 image starts ``<runner> --image <image> [args...]`` with no shell between: the
@@ -24,13 +24,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from molt import file_publication
-from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.native_launch_abi_generated import (
     JIT_IMAGE_MARKER,
     JIT_RUNNER_IMAGE_FLAG,
@@ -92,11 +92,11 @@ def publish_jit_image(
     *,
     runner: Path,
     header: Mapping[str, Any],
-    program: BackendIrProgram,
+    program: Path,
 ) -> None:
     """Write the image for ``program`` and publish it at ``destination`` atomically.
 
-    The image ships every function body: ``molt-jit`` keeps no function store.
+    A prepared application contains only local function bodies.
     """
     interpreter = jit_image_interpreter_line(runner)
     header_bytes = json.dumps(
@@ -120,7 +120,8 @@ def publish_jit_image(
             handle.write(b"0" * _LENGTH_WIDTH + b"\n")
             handle.write(header_bytes)
             counted = _CountingWriter(handle)
-            program.write(counted)
+            with program.open("rb") as prepared:
+                shutil.copyfileobj(prepared, counted)
             handle.seek(length_offset)
             handle.write(str(counted.count).rjust(_LENGTH_WIDTH, "0").encode("ascii"))
             handle.flush()

@@ -680,9 +680,11 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         external_link_requirements: tuple[SourceExtensionLinkRequirements, ...] = (),
         bolt_requested: bool = False,
         runtime_image: Path | None = None,
+        stdlib_image: object | None = None,
     ) -> NativeLinkPlan:
         del output_obj, stub_path, sysroot_path, profile
         assert runtime_image is None
+        assert stdlib_image is None
         assert target is selected_target
         del stdlib_obj_path
         del bolt_requested

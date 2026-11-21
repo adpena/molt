@@ -6983,6 +6983,11 @@ def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
             True,
         ),
         (
+            "def render(value):\n    return repr(value)\n",
+            ("repr",),
+            True,
+        ),
+        (
             "observed = provider\ndef run():\n    return observed\n",
             ("provider",),
             False,

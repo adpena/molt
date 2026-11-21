@@ -26,7 +26,7 @@ probe_flag = "--probe"
 start_receipt_flag = "--start-receipt"
 allocator_restart_flag = "--allocator-restarted"
 start_receipt = "{\"schema\":\"molt.jit-start.v1\"}\n"
-image_marker = "#molt.jit-image.v4"
+image_marker = "#molt.jit-image.v5"
 
 # The stack compiled Python runs on (molt-runtime state/program_stack.rs):
 # address space reserved per thread that runs compiled code, committed only as

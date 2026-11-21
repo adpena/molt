@@ -136,6 +136,10 @@ per premise revision.
    callback slots retain stable physical identities for subsequent transfers and enter
    their canonical position in the projected scope layout. Deferred jobs still run
    under the revised premise, and the exact source solver handles a refused initializer.
+   Lookup for a queued body's input bindings is recorded separately from initializer
+   execution. When a newly admitted slot changes only those inputs, discovery refreshes
+   them from the original definition state. Jobs with merged definition states or changed
+   lexical inputs keep the exact source solve.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.

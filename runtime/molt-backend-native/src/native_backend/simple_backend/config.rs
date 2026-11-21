@@ -247,6 +247,7 @@ impl SimpleBackend {
             app_callable_manifest: None,
             external_function_names: std::collections::BTreeSet::new(),
             module_registry: None,
+            external_program_storage: false,
             code_slots: None,
             module_context: None,
             defined_func_names: std::collections::BTreeSet::new(),

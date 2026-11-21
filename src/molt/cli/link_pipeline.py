@@ -14,7 +14,7 @@ from molt.cli.link_input_observation import (
 from molt.toolchain_identity import stable_regular_file_content_identity
 from molt import input_report
 from molt.build_record import RecordedArtifact
-from molt.cli.native_link_plan import NativeLinkerKind
+from molt.cli.native_link_plan import NativeLinkerKind, image_generation_witness
 from molt.native_target import NativeObjectFormat
 
 import contextlib
@@ -59,6 +59,7 @@ from molt.cli.native_link_tool_identity import (
     native_link_tool_facts,
 )
 from molt.cli.native_main_stub import _render_native_main_stub
+from molt.cli.jit_runtime_image import ensure_shared_stdlib_image
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.link_outputs import link_selection_path, validate_link_output_paths
@@ -86,6 +87,7 @@ class _PreparedNativeLink:
     link_skipped: bool
     link_process: subprocess.CompletedProcess[str]
     strip_after_link: bool
+    shared_images: tuple[Path, ...] = ()
     link_selection: tuple[Path, Path] | None = None
     link_input_artifacts: dict[str, tuple[Path, Path]] | None = None
     link_input_observation: CompilationInputRecord | None = None
@@ -143,9 +145,8 @@ def _links_shared_runtime_image(
     """Whether this executable links the shared runtime image (HF-634).
 
     A dev build on the host, Mach-O or ELF, links the runtime image of its
-    runtime generation instead of the static archive: the executable is the
-    application and its stdlib partition only, so it links in a fraction of
-    the time and macOS scans a fraction of the bytes at its first launch. A
+    runtime and its stdlib as shared images. The executable carries the
+    application's code and data, including its specialized clones. A
     release build stays static. External native artifacts and BOLT keep the
     static link, whose inputs they are defined against.
     """
@@ -211,6 +212,24 @@ def _prepare_native_link(
                 json_output,
                 command="build",
             )
+    stdlib_image = None
+    if runtime_image is not None and stdlib_obj_path is not None:
+        try:
+            stdlib_image = ensure_shared_stdlib_image(
+                stdlib_archive=stdlib_obj_path,
+                program_artifact=output_obj,
+                program_kind=NativeArtifactKind.ARCHIVE,
+                runtime_image=runtime_image,
+                target=target,
+                sysroot_path=sysroot_path,
+                profile=profile,
+                link_timeout=link_timeout,
+            )
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            return None, _fail(
+                f"Shared stdlib image: {exc}", json_output, command="build"
+            )
+        link_stdlib_obj = None
     try:
         staged_external_native_artifacts = (
             _stage_external_package_native_artifacts_for_build(
@@ -224,9 +243,15 @@ def _prepare_native_link(
             json_output,
             command="build",
         )
+    shared_images = tuple(
+        image
+        for image in (runtime_image, stdlib_image.path if stdlib_image else None)
+        if image is not None
+    )
     main_c_content = _render_native_main_stub(
         resolved_capability_policy=resolved_capability_policy,
         compiled_source_paths=compiled_source_paths,
+        image_generation_witnesses=tuple(map(image_generation_witness, shared_images)),
         runtime_module_roots=tuple(
             dict.fromkeys(
                 artifact.runtime_root for artifact in staged_external_native_artifacts
@@ -282,6 +307,7 @@ def _prepare_native_link(
             ),
             bolt_requested=bolt_requested,
             runtime_image=runtime_image,
+            stdlib_image=stdlib_image,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -346,7 +372,8 @@ def _prepare_native_link(
     link_inputs = [
         stub_path,
         output_obj,
-        resolved_runtime_lib,
+        runtime_image if runtime_image is not None else resolved_runtime_lib,
+        *([stdlib_image.path] if stdlib_image is not None else []),
         *([link_stdlib_obj] if link_stdlib_obj is not None else []),
         *external_native_fingerprint_inputs,
     ]
@@ -670,6 +697,7 @@ def _prepare_native_link(
         strip_after_link=(
             link_plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
         ),
+        shared_images=shared_images,
         link_input_artifacts=link_input_artifacts,
         link_input_observation=link_input_observation,
         link_selection=(link_selection_candidate, selection_output)
