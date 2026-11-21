@@ -123,6 +123,13 @@ per premise revision.
    projects immutable binding facts from that state, so a later premise can reuse the
    transfer without inheriting a previously resolved effect. A deferred replay starts from
    a boundary whose activation and argument reads still hold.
+   When only deferred jobs read changed activation answers, discovery can refresh an
+   independent job from its immutable entry environment. The job records the fact keys
+   it reads and writes. A job that modifies an earlier lexical owner, adds deferred work,
+   or reads an earlier transfer's facts requires the ordinary prefix solver. Refresh
+   publishes changed keys only when later jobs have no dependency on them. The revised
+   raw facts then pass through the same deferred-effect projection as a full transfer.
+   Discovery records this dependency log once per source during a graph operation.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.
