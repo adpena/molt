@@ -24,6 +24,8 @@ import copy
 import dataclasses
 import importlib
 import json
+import sys
+import types
 
 import pytest
 
@@ -174,25 +176,7 @@ class Base:
     )
     namespace = {"__name__": __name__}
     exec(compile(source, "dataclass-oracle", "exec", dont_inherit=True), namespace)
-
-    def expected(cls):
-        return tuple(
-            (
-                field.name,
-                field.init,
-                field.kw_only,
-                isinstance(field.type, dataclasses.InitVar),
-                2
-                if field.default_factory is not dataclasses.MISSING
-                else 1
-                if field.default is not dataclasses.MISSING
-                else 0,
-            )
-            for field in cls.__dataclass_fields__.values()
-        )
-
-    # Keep the only helper call last: a callback can expire binding facts
-    # for subsequent fields, whose projection is deliberately conservative.
+    expected = _dataclass_fields
     _generator, classes = _lowered_classes("pkg.base", source)
     projection = classes[ClassId("pkg.base", "Base")].dataclass.init_projection
     assert projection is not None
@@ -212,6 +196,92 @@ class Child(Base):
         child = project_initializer_fields(child_definition, (inherited,), False, None)
         assert child is not None
         assert tuple(field.schema() for field in child) == expected(namespace["Child"])
+
+
+def _dataclass_fields(cls: type) -> tuple[tuple[str, bool, bool, bool, int], ...]:
+    """CPython's classification of a dataclass's init fields, in the order and
+    form of ``DataclassInitField.schema()``."""
+    return tuple(
+        (
+            field.name,
+            field.init,
+            field.kw_only,
+            field._field_type is dataclasses._FIELD_INITVAR,
+            2
+            if field.default_factory is not dataclasses.MISSING
+            else 1
+            if field.default is not dataclasses.MISSING
+            else 0,
+        )
+        for field in cls.__dataclass_fields__.values()
+        if field._field_type is not dataclasses._FIELD_CLASSVAR
+    )
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 15)])
+@pytest.mark.parametrize(
+    ("prelude", "initvar", "classvar", "kw_only"),
+    [
+        (
+            "from dataclasses import dataclass, InitVar, KW_ONLY\n"
+            "from typing import ClassVar\n",
+            "InitVar[int]",
+            "ClassVar[int]",
+            "KW_ONLY",
+        ),
+        (
+            "import dataclasses, typing\nfrom dataclasses import dataclass\n",
+            "dataclasses.InitVar[int]",
+            "typing.ClassVar[int]",
+            "dataclasses.KW_ONLY",
+        ),
+        (
+            "from __future__ import annotations\n"
+            "from dataclasses import dataclass, InitVar, KW_ONLY\n"
+            "from typing import ClassVar\n",
+            "InitVar[int]",
+            "ClassVar[int]",
+            "KW_ONLY",
+        ),
+    ],
+    ids=["names", "attributes", "future"],
+)
+def test_dataclass_projection_reads_each_marker_as_the_decorator_does(
+    monkeypatch: pytest.MonkeyPatch,
+    target: tuple[int, int],
+    prelude: str,
+    initvar: str,
+    classvar: str,
+    kw_only: str,
+) -> None:
+    # HF-949: a marker's subscription must not expire the facts of the
+    # annotations after it, and a deferred (3.14+) or string annotation is
+    # classified by the value @dataclass reads when the decorator runs.
+    source = prelude + (
+        "@dataclass\n"
+        "class Record:\n"
+        "    required: int\n"
+        f"    transient: {initvar} = 4\n"
+        f"    shared: {classvar} = 1\n"
+        f"    _: {kw_only}\n"
+        "    later: int = 5\n"
+    )
+    # dataclasses resolves a string annotation in its class's module, so the
+    # oracle runs in a module registered under its own name.
+    module = types.ModuleType("hf949_dataclass_oracle")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, "dataclass-oracle", "exec", dont_inherit=True), vars(module))
+    generator = SimpleTIRGenerator(
+        module_name="pkg.record", module_source_role="user", target_python=target
+    )
+    generator.visit(ast.parse(source))
+    dataclass_spec = generator.classes[ClassId("pkg.record", "Record")].dataclass
+    assert dataclass_spec is not None
+    projection = dataclass_spec.init_projection
+    assert projection is not None
+    assert tuple(field.schema() for field in projection) == _dataclass_fields(
+        module.Record
+    )
 
 
 def test_dataclass_cache_tag_does_not_capture_a_metadata_name() -> None:

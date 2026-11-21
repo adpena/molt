@@ -918,6 +918,9 @@ class PythonBindingFacts:
     # LOAD_BUILD_CLASS reads only the executing frame's builtins, not any
     # lexical/global/class binding. Values join at this implicit source read.
     class_builder_reads: Mapping[PythonNodeKey, IdentityMask]
+    # A decorated class's top-level annotation heads, valued as its decorators
+    # read them (``PythonBindingFacts.annotation_head_at_decoration``).
+    decoration_annotation_heads: Mapping[PythonNodeKey, IdentityMask]
     source_elements: tuple[PythonSourceElement, ...]
     source_calls: tuple[PythonSourceCall, ...]
     source_native_initializers: tuple[PythonNativeInitializerSource, ...]
@@ -963,6 +966,7 @@ class PythonBindingFacts:
         ] = (),
         callbacks_rewrite_metadata: bool = True,
         class_builder_reads: Mapping[PythonNodeKey, IdentityMask] | None = None,
+        decoration_annotation_heads: Mapping[PythonNodeKey, IdentityMask] | None = None,
         source_elements: tuple[PythonSourceElement, ...] = (),
         source_calls: tuple[PythonSourceCall, ...] = (),
         source_native_initializers: tuple[PythonNativeInitializerSource, ...] = (),
@@ -992,6 +996,9 @@ class PythonBindingFacts:
             source_bases=source_bases,
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,
             class_builder_reads=MappingProxyType(dict(class_builder_reads or {})),
+            decoration_annotation_heads=MappingProxyType(
+                dict(decoration_annotation_heads or {})
+            ),
             source_elements=source_elements,
             source_calls=source_calls,
             source_native_initializers=source_native_initializers,
@@ -1012,6 +1019,12 @@ class PythonBindingFacts:
 
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
         return self._expression_lookup.get(PythonNodeKey.from_node(node))
+
+    def annotation_head_at_decoration(self, node: ast.expr) -> IdentityMask | None:
+        """A class annotation head's value when the class's decorators run;
+        None when its own evaluation fact is that value (an eager annotation)
+        or the analysis recorded none."""
+        return self.decoration_annotation_heads.get(PythonNodeKey.from_node(node))
 
     def class_builder_identity(self, node: ast.ClassDef) -> PythonIdentity | None:
         identity = PythonIdentity.BUILTIN_BUILD_CLASS

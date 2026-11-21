@@ -232,13 +232,18 @@ def project_initializer_fields(
         )
         kind = "field"
         if index is not None:
+            # ``@dataclass`` classifies the value the annotation has when the
+            # decorator reads it.
+            identities = index.annotation_head_at_decoration(target)
+            if identities is None:
+                fact = index.expression_fact(target)
+                identities = 0 if fact is None else fact.identities
             for identity, marker in (
                 (PythonIdentity.DATACLASSES_KW_ONLY, "kw_only"),
                 (PythonIdentity.DATACLASSES_INITVAR, "initvar"),
                 (PythonIdentity.TYPING_CLASSVAR, "classvar"),
             ):
-                fact = index.expression_fact(target)
-                if fact is not None and fact.identities & int(identity):
+                if identities & int(identity):
                     kind = marker
                     break
         if kind == "kw_only":
