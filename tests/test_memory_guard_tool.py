@@ -670,6 +670,7 @@ def test_guard_history_reads_only_the_captured_pids(
         "unknown_publisher_birth",
         "unknown_birth",
         "unknown_birth_unreadable",
+        "unknown_birth_live",
         "nested_live",
         "reused_publisher_live",
         "reused_publisher_absent",
@@ -764,7 +765,13 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         for path in directory.glob("*.json")
     }
     samples = {}
-    if state in {"live", "different_birth", "nested_live", "reused_publisher_live"}:
+    if state in {
+        "live",
+        "different_birth",
+        "nested_live",
+        "reused_publisher_live",
+        "unknown_birth_live",
+    }:
         pid, birth = (404, 44) if state == "nested_live" else (303, 33)
         samples[pid] = memory_guard.ProcessSample(
             pid=pid,
@@ -856,6 +863,10 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
             "reused_publisher_legacy_foreign",
             "pending_foreign",
             "legacy_foreign",
+            # HF-972: an unknown relationship whose record the snapshot judges
+            # closed holds nothing open.
+            "unknown_publisher_birth",
+            "unknown_birth",
         }
     )
     assert evidence["closed"] is closed
@@ -863,12 +874,11 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
     if state in {
         "unreadable",
         "legacy_without_publisher",
-        "unknown_publisher_birth",
-        "unknown_birth",
         "unknown_birth_unreadable",
+        "unknown_birth_live",
     }:
-        # No missing identity can prove that a potentially owned late child is
-        # foreign. Preserve the original unknown-relationship refusal.
+        # A missing identity proves nothing foreign: a record that cannot be
+        # judged, or one judged live, keeps the unknown relationship refused.
         assert closed is False
     if state in {
         "pending_foreign",
@@ -881,10 +891,73 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
             row.get("disposition") == "foreign" and row["path"] == str(late)
             for row in evidence["guard_generations"]
         )
-    if state in {"live", "nested_live", "reused_publisher_live"}:
+    if state in {"live", "nested_live", "reused_publisher_live", "unknown_birth_live"}:
         assert any(
             row.get("disposition") == "live" for row in evidence["guard_generations"]
         )
+
+
+@pytest.mark.parametrize("old_child_live", [False, True])
+def test_a_descendant_without_a_birth_does_not_bind_an_old_guards_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_child_live: bool
+) -> None:
+    # HF-972: `clang++ --print-search-dirs` exits before any sample reads its
+    # birth. An old guard once held its pid and left a retired record. That
+    # record's custody decides closure: closed when its child is gone, refused
+    # while the child lives.
+    active = tmp_path / "custody" / "active"
+    active.mkdir(parents=True)
+    retired = active.parent / "retired" / "6748"
+    retired.mkdir(parents=True)
+    old = retired / f"guard-6748-{'a' * 32}.json"
+    active_custody.write_active_guard_marker(
+        old,
+        {
+            "schema_version": 2,
+            "pid": 6748,
+            "token": "a" * 32,
+            "status": "child_running",
+            "guard_process": {"pid": 6748, "started_at_ns": 5},
+            "child_process": {"pid": 7000, "started_at_ns": 6, "pgid": 7000},
+            "child_launch_state": "recorded",
+        },
+    )
+    active_custody.update_active_guard_marker(
+        old, "a" * 32, status="completed", descendants_closed=True
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+    tracker = memory_guard.ProcessTreeTracker(101)
+    tracker.known_pids.add(6748)  # seen, birth never read
+    samples: dict[int, memory_guard.ProcessSample] = {}
+    if old_child_live:
+        samples[7000] = memory_guard.ProcessSample(
+            pid=7000, ppid=1, rss_kb=1, command="old", pgid=7000, started_at_ns=6
+        )
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=active,
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=dataclasses.replace(_guarded_child(), started_at_ns=11),
+        tracker=tracker,
+        sampler=lambda: samples,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0.0,
+    )
+    (row,) = evidence["guard_generations"]
+    assert row["path"] == str(old)
+    assert row["relationship"] == "publisher_birth_unknown"
+    assert closed is (not old_child_live)
+    assert row["disposition"] == ("live" if old_child_live else "closed")
 
 
 def test_temporary_artifact_posix_closure_rejects_final_survivor(
