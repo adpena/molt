@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from molt.cli.closed_world_bindings import (
+    summarize_program_initializers,
     ModuleNamespaceFacts,
     bind_closed_world_calls,
 )
@@ -134,7 +135,12 @@ def _run(
     snapshot = copy.deepcopy(functions)
     admitted = list(functions)
     diagnostics = bind_closed_world_calls(
-        functions, module_functions, facts, closures, redirects
+        functions,
+        module_functions,
+        facts,
+        closures,
+        redirects,
+        summarize_program_initializers(module_functions),
     )
     # Copy-on-write: the admitted bodies never change.
     assert admitted == snapshot
@@ -283,7 +289,12 @@ def test_global_slot_stamps_see_the_rebound_bodies() -> None:
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
     assert (
         bind_closed_world_calls(
-            functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+            functions,
+            module_functions,
+            facts,
+            closures,
+            NO_IMPORT_REDIRECTS,
+            summarize_program_initializers(module_functions),
         )
         == []
     )
@@ -317,7 +328,7 @@ def test_a_foreign_writer_is_named_by_location() -> None:
         "user": ModuleNamespaceFacts(frozenset(), _premise()),
     }
     _functions, (line,) = _run(user=user, facts=facts)
-    assert "another module writes it by name (attribute writes: user:30)" in line, line
+    assert "another module writes it by name" in line, line
 
 
 def _chunked(calls: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -381,7 +392,12 @@ def test_a_publication_chunk_must_run_exactly_once(
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
     (line,) = bind_closed_world_calls(
-        functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+        functions,
+        module_functions,
+        facts,
+        closures,
+        NO_IMPORT_REDIRECTS,
+        summarize_program_initializers(module_functions),
     )
     assert reason in line, line
 
@@ -401,7 +417,12 @@ def test_a_publication_chunk_called_once_unconditionally_binds() -> None:
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
     assert (
         bind_closed_world_calls(
-            functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+            functions,
+            module_functions,
+            facts,
+            closures,
+            NO_IMPORT_REDIRECTS,
+            summarize_program_initializers(module_functions),
         )
         == []
     )

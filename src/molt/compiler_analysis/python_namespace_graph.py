@@ -200,19 +200,35 @@ def _module_scope_names(table: symtable.SymbolTable) -> set[str]:
     return names
 
 
+@dataclass(frozen=True, slots=True)
+class SourceModuleNames:
+    universe: frozenset[str]
+    initializer_bindings: frozenset[str]
+    isolate_spawn_line: int | None
+    callable_candidates: tuple[tuple[PythonSourceKey, str], ...]
+
+
 @typed_cache(maxsize=512)
-def _name_universe(text: str) -> frozenset[str] | None:
+def python_source_module_names(text: str) -> SourceModuleNames | None:
+    """Source namespace declarations shared by discovery and integration."""
     try:
         table = symtable.symtable(text, "<module>", "exec")
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return None
     names = _module_scope_names(table) | _IMPLICIT_MODULE_NAMES
+    isolate_spawn_line: int | None = None
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             # Literal keys, __all__ rows and string annotations name globals
             # by value; escapes are already decoded here.
             names.update(_IDENTIFIER.findall(node.value))
+            if node.value == "molt_thread_spawn" and (
+                isolate_spawn_line is None or node.lineno < isolate_spawn_line
+            ):
+                # The intrinsic loader admits this operation by literal id.
+                # Any source that names it may enter another isolate.
+                isolate_spawn_line = node.lineno
         annotation = (
             node.annotation
             if isinstance(node, (ast.arg, ast.AnnAssign))
@@ -226,7 +242,20 @@ def _name_universe(text: str) -> frozenset[str] | None:
             names.update(
                 name.id for name in ast.walk(annotation) if isinstance(name, ast.Name)
             )
-    return frozenset(names)
+    from molt.compiler_analysis.python_body_materialization import (
+        flat_callable_declarations,
+    )
+
+    return SourceModuleNames(
+        frozenset(names),
+        frozenset(
+            symbol.get_name()
+            for symbol in table.get_symbols()
+            if symbol.is_assigned() or symbol.is_imported() or symbol.is_namespace()
+        ),
+        isolate_spawn_line,
+        flat_callable_declarations(tree),
+    )
 
 
 def python_namespace_name_universe(text: str | None) -> frozenset[str] | None:
@@ -242,7 +271,8 @@ def python_namespace_name_universe(text: str | None) -> frozenset[str] | None:
     """
     if text is None:
         return None
-    return _name_universe(text)
+    names = python_source_module_names(text)
+    return None if names is None else names.universe
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](

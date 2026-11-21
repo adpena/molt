@@ -123,8 +123,7 @@ _SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set
 def _global_name_sites(
     funcs: Sequence[Mapping[str, Any]],
 ) -> Iterator[tuple[Mapping[str, Any], str]]:
-    """Every op of a module's own body that names one of its globals, with
-    the name: the single scanner behind its layout and its slot stamps."""
+    """Identify materialized global access sites for slot stamping."""
     for func in funcs:
         constants: dict[str, str] = {}
         globals_dicts: set[str] = set()
@@ -159,17 +158,9 @@ def _global_name_sites(
                 yield op, constants[args[1]]
 
 
-def module_global_layout(funcs: Sequence[dict[str, Any]]) -> tuple[str, ...]:
-    """A module's global slot layout (call_anatomy.md 4.5): every non-dunder
-    name its own code reads, writes or deletes as a module global, sorted.
-
-    The set is a function of the module's lowered body alone, so another
-    module's edit never renumbers it. Names bound only by other modules or
-    through ``globals()`` with a computed key are not slotted; their reads and
-    writes stay on the by-name path, which is always correct.
-    """
-    names = {name for _, name in _global_name_sites(funcs)}
-    return tuple(sorted(name for name in names if not is_dunder_name(name)))
+def module_global_layout(names: Collection[str]) -> tuple[str, ...]:
+    """Sorted slots for names the module's source may write or delete."""
+    return tuple(sorted({name for name in names if not is_dunder_name(name)}))
 
 
 def stamp_global_slots(
@@ -388,7 +379,13 @@ def _integrate_module_frontend_result_with_state(
         for symbol, row in metadata.items():
             if symbol in integration_state.function_metadata:
                 raise ValueError(f"Duplicate function metadata owner {symbol!r}")
-            inspect_source_module_publication(owned_functions[symbol], row)
+            if row.get("declaration_only"):
+                if symbol not in code_symbols:
+                    raise ValueError(
+                        f"Missing code slot for declaration-only owner {symbol!r}"
+                    )
+            else:
+                inspect_source_module_publication(owned_functions[symbol], row)
         if not isinstance(function_digest_seeds, Sequence):
             raise ValueError("Invalid module function digest evidence")
         if function_digest_seeds:
@@ -413,7 +410,9 @@ def _integrate_module_frontend_result_with_state(
         return str(exc)
     # Admission succeeded. Commit only this module's staged additions; copying
     # accumulated program state here would grow quadratically with modules.
-    for symbol in code_symbols:
+    # Publication and trace entry can both name a slot. Its order cannot
+    # depend on whether a published callable has a trace entry.
+    for symbol in sorted(code_symbols):
         _register_global_code_id_with_state(integration_state, symbol)
     for symbol in sorted(class_definitions):
         integration_state.class_definition_owners.setdefault(symbol, module_name)
@@ -421,7 +420,6 @@ def _integrate_module_frontend_result_with_state(
         integration_state.class_definition_references.setdefault(symbol, owner)
     integration_state.function_digest_seeds.extend(function_digest_seeds)
     integration_state.functions.extend(ir_functions)
-    integration_state.global_layouts[module_name] = module_global_layout(ir_functions)
     integration_state.module_functions[module_name] = ir_functions
     for symbol in sorted(metadata):
         row = metadata[symbol]

@@ -310,14 +310,6 @@ def test_native_object_publication_is_one_admitted_transaction(
         lambda **kwargs: (runtime_context, None),
     )
     monkeypatch.setattr(backend_compile, "_prepare_backend_compile", prepare_compile)
-    monkeypatch.setattr(
-        backend_pipeline._backend_ir,
-        "_prepare_backend_ir",
-        lambda **kwargs: (
-            _PreparedBackendIR(ir={"functions": []}, function_metadata={}),
-            None,
-        ),
-    )
     layout = _BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
@@ -400,6 +392,9 @@ def test_native_object_publication_is_one_admitted_transaction(
         prepared_build_config=config,
         resolved_build_entry=NS(entry_module="app", source_path=source),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(
+            ir={"functions": []}, function_metadata={}
+        ),
         profile="dev",
         json_output=True,
         target=admit_target("native"),

@@ -586,6 +586,52 @@ def namespace_closed(view: ClassView) -> bool:
     return view.layout.static and not view.definition_exposed
 
 
+@dataclass(frozen=True, slots=True)
+class ReleasePlan:
+    """The instance lifecycle plan of a class, as a compile-time constant
+    (HF-202; call_anatomy.md 4.5, object lifecycle step 7).
+
+    Instances are plain: ``field_words`` contiguous field words, then the
+    dictionary word. The layout fixes this when the class is created, so an
+    allocation site compiles the plan word in (molt-codegen-abi
+    ``plain_instance_plan``) and neither loads nor tests the class's plan. A
+    later ``__del__`` changes only the finalizer fact, which allocation never
+    reads and the release reads from the class at run time."""
+
+    field_words: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseRefusal:
+    """Why an allocation site must load and test the class's plan."""
+
+    reason: str
+
+
+type Release = ReleasePlan | ReleaseRefusal
+
+_WORD_BYTES = 8
+
+
+def release_plan(view: ClassView) -> Release:
+    """The class's instance plan, derived from the sealed layout (the one
+    authority, so the model and its cache record need no second copy)."""
+    layout = view.layout
+    if layout.refusal is not None:
+        return ReleaseRefusal(f"the class has no static layout: {layout.refusal.value}")
+    if view.custom_metaclass:
+        return ReleaseRefusal("a metaclass builds the class")
+    words = len(layout.fields)
+    contiguous = all(
+        item.offset == index * _WORD_BYTES for index, item in enumerate(layout.fields)
+    )
+    if not contiguous or layout.size != (words + 1) * _WORD_BYTES:
+        return ReleaseRefusal(
+            "the instance is not its fields as contiguous words and one dictionary word"
+        )
+    return ReleasePlan(words)
+
+
 class ResolveRefusal(Enum):
     PENDING = "the class defines it later in its body"
     SHADOWED_BY_DATA = "a class attribute that is not a def shadows it"

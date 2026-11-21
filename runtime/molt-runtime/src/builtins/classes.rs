@@ -1364,6 +1364,13 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
     state.builtin_classes.store(ptr, AtomicOrdering::Release);
+    // A thread bound before the family existed publishes `object` now;
+    // later bindings read it from the state.
+    if std::ptr::eq(py.execution_tls().bound_state.get(), state) {
+        py.execution_tls()
+            .object_class
+            .set(unsafe { (*ptr).object });
+    }
     // Sizing and slot-layout code needs the complete builtin family, so the
     // anchor is published first under the GIL + bootstrap lock. Seal every
     // builtin in base-before-derived anchor order before any caller can receive

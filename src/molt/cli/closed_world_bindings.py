@@ -71,11 +71,6 @@ def imported_module_of(op: Mapping[str, Any]) -> str | None:
 
 _GLOBAL_STORES = frozenset({"module_set_attr", "dict_set"})
 _GLOBAL_DELETES = frozenset({"module_del_global", "module_del_global_if_present"})
-_ATTRIBUTE_WRITES = (
-    "set_attr",
-    "store_attr",
-    "del_attr",
-)
 
 
 @dataclass(frozen=True)
@@ -87,6 +82,8 @@ class ModuleNamespaceFacts:
     # The first line whose code reaches the module's own namespace mapping by
     # identity; 0 for none, None when unknown (static module cells).
     own_namespace_line: int | None = None
+    initializer_bindings: frozenset[str] = frozenset()
+    isolate_spawn_line: int | None = None
 
     def stable_reason(self, name: str) -> str | None:
         """Why code may rebind ``name`` after initialization, or None."""
@@ -113,8 +110,8 @@ class _BodyStore:
     value: str | None
     function: str
     line: int | None
-    # The store op's index in ``function``'s ops.
-    index: int
+    # Lowering rewrites can shift the store's index while keeping its identity.
+    operation: Mapping[str, Any]
 
 
 def _module_body_functions(
@@ -382,17 +379,44 @@ class InitChain:
         return self._done_after_return(point)
 
 
-def _body_analysis(
+# The ops that create a function's object. A closure's object holds its
+# environment, which a proven call reads from it (design 78, 5.10).
+FUNCTION_MAKERS = frozenset({"func_new", "func_new_closure"})
+
+
+@dataclass(frozen=True)
+class CallablePublication:
+    point: tuple[str, int]
+    value: str
+    runs_once: bool
+
+
+@dataclass(frozen=True)
+class ModuleInitializerFacts:
+    stores: dict[str, list[_BodyStore]]
+    deletes: set[str]
+    star: bool
+    # Value identities are scoped to their initializer function.
+    builtins: dict[tuple[str, str], str]
+    import_results: dict[tuple[str, str], str]
+    producers: dict[tuple[str, str], Mapping[str, Any]]
+    callable_publications: dict[str, list[CallablePublication]]
+
+
+_EMPTY_INITIALIZER = ModuleInitializerFacts({}, set(), False, {}, {}, {}, {})
+
+
+def summarize_module_initializer(
     module: str, funcs: Sequence[Mapping[str, Any]]
-) -> tuple[dict[str, list[_BodyStore]], set[str], bool, dict[tuple[str, str], str]]:
-    """Every own-namespace store and delete of ``module``'s body, whether
-    the body star-imports, and each ``builtin_func`` result's intrinsic. A
-    store is unconditional when it runs once and on every normal completion
-    of the init (``InitChain.unconditional``)."""
+) -> ModuleInitializerFacts:
+    """Analyze the always-materialized initializer and its run-once chunks."""
     stores: dict[str, list[_BodyStore]] = {}
     deletes: set[str] = set()
     star = False
     builtins: dict[tuple[str, str], str] = {}
+    imports: dict[tuple[str, str], str] = {}
+    producers: dict[tuple[str, str], Mapping[str, Any]] = {}
+    callable_publications: dict[str, list[CallablePublication]] = {}
     body = _module_body_functions(module, funcs)
     chain = InitChain(module, funcs)
     for func in body:
@@ -407,6 +431,16 @@ def _body_analysis(
         for index, op in enumerate(func.get("ops", ())):
             kind = op.get("kind")
             out = op.get("out")
+            if isinstance(out, str):
+                producers[(name_of_function, out)] = op
+                if imported := imported_module_of(op):
+                    imports[(name_of_function, out)] = imported
+                symbol = op.get("s_value")
+                if kind in FUNCTION_MAKERS and isinstance(symbol, str):
+                    point = (name_of_function, index)
+                    callable_publications.setdefault(symbol, []).append(
+                        CallablePublication(point, out, chain.runs_once(point))
+                    )
             if kind == "const_str" and isinstance(out, str):
                 constants[out] = op.get("s_value")
             elif kind == "module_new" and isinstance(out, str):
@@ -432,68 +466,41 @@ def _body_analysis(
                         args[2],
                         name_of_function,
                         op.get("source_line"),
-                        index,
+                        op,
                     )
                 )
             elif kind in _GLOBAL_DELETES:
                 deletes.add(name)
-    return stores, deletes, star, builtins
+    return ModuleInitializerFacts(
+        stores, deletes, star, builtins, imports, producers, callable_publications
+    )
 
 
-@dataclass
-class _ModuleBody:
-    stores: dict[str, list[_BodyStore]]
-    deletes: set[str]
-    star: bool
-    # Keyed by (function, value): value names are scoped to one function.
-    builtins: dict[tuple[str, str], str]
-    import_results: dict[tuple[str, str], str]
+def summarize_program_initializers(
+    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, ModuleInitializerFacts]:
+    return {
+        module: summarize_module_initializer(module, funcs)
+        for module, funcs in module_functions.items()
+    }
 
 
 class ClosedWorldBinder:
     def __init__(
         self,
-        module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
+        initializers: Mapping[str, ModuleInitializerFacts],
         facts: Mapping[str, ModuleNamespaceFacts],
         dep_closures: Mapping[str, Collection[str]],
         import_redirects: ImportRedirects,
     ) -> None:
-        self.module_functions = module_functions
+        self.initializers = initializers
         self.facts = facts
         self.dep_closures = dep_closures
         self.import_redirects = import_redirects
-        self._bodies: dict[str, _ModuleBody] = {}
         self.diagnostics: list[str] = []
 
-    def _body(self, module: str) -> _ModuleBody:
-        body = self._bodies.get(module)
-        if body is None:
-            funcs = self.module_functions.get(module, ())
-            stores, deletes, star, builtins = _body_analysis(module, funcs)
-            imports: dict[tuple[str, str], str] = {}
-            for func in _module_body_functions(module, funcs):
-                for op in func.get("ops", ()):
-                    imported = imported_module_of(op)
-                    if imported is not None and isinstance(op.get("out"), str):
-                        imports[(func.get("name", ""), op["out"])] = imported
-            body = _ModuleBody(stores, deletes, star, builtins, imports)
-            self._bodies[module] = body
-        return body
-
-    def _attribute_writers(self, name: str) -> list[str]:
-        """Where the program stores or deletes an attribute ``name``, as
-        ``module:line``: the location the diagnostic names (the decision
-        is the namespace premise's)."""
-        found: list[str] = []
-        for module, funcs in sorted(self.module_functions.items()):
-            for func in funcs:
-                for op in func.get("ops", ()):
-                    kind = op.get("kind") or ""
-                    if kind.startswith(_ATTRIBUTE_WRITES) and op.get("s_value") == name:
-                        found.append(f"{module}:{op.get('source_line')}")
-                        if len(found) == 3:
-                            return found
-        return found
+    def _body(self, module: str) -> ModuleInitializerFacts:
+        return self.initializers.get(module, _EMPTY_INITIALIZER)
 
     def _facts(self, module: str) -> ModuleNamespaceFacts:
         return self.facts.get(module, ModuleNamespaceFacts(None, None))
@@ -503,9 +510,7 @@ class ClosedWorldBinder:
         object after initialization, or None."""
         reason = self._facts(module).stable_reason(name)
         if reason is not None:
-            writers = self._attribute_writers(name)
-            located = f" (attribute writes: {', '.join(writers)})" if writers else ""
-            return f"{module}.{name} may be rebound: {reason}{located}"
+            return f"{module}.{name} may be rebound: {reason}"
         body = self._body(module)
         if body.star:
             return f"{module}'s body star-imports, which may rebind {name}"
@@ -710,12 +715,13 @@ def bind_closed_world_calls(
     facts: Mapping[str, ModuleNamespaceFacts],
     dep_closures: Mapping[str, Collection[str]],
     import_redirects: ImportRedirects,
+    initializers: Mapping[str, ModuleInitializerFacts],
 ) -> list[str]:
     """Rewrite every proven site in ``functions`` (copy-on-write, as the
     global slot stamps are) and drop every module guess; return the
     diagnostics of qualifying sites that keep the generic call.
     ``import_redirects`` is the program's one redirect fact (F3)."""
-    binder = ClosedWorldBinder(module_functions, facts, dep_closures, import_redirects)
+    binder = ClosedWorldBinder(initializers, facts, dep_closures, import_redirects)
     position = {id(function): index for index, function in enumerate(functions)}
     rebound: dict[str, dict[int, dict[str, Any]]] = {}
     for module, funcs in module_functions.items():

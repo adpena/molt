@@ -1821,6 +1821,13 @@ def _discovery_pass(
             deferred_owners=authority.deferred_owners
             | scanned_bodies.get(module_name, set()),
         )
+    for module_name, reads in demands.read_callables.items():
+        authority = scan_sources[module_name]
+        if not authority.read_callables.issuperset(reads):
+            scan_sources[module_name] = replace(
+                authority, read_callables=authority.read_callables | reads
+            )
+            revised.add(module_name)
     # Exact receivers are a fact of the final graph that only lowering reads:
     # no scan consumes them, so they join each premise once the graph is
     # closed and never revise a scan or its cache key.

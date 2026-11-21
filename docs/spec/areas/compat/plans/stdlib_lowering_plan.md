@@ -176,9 +176,18 @@ after validating declarations, demanded frame layouts, referenced definitions an
 against the sealed plan. Release compilation and whole-program diagnostics select every body
 through the same frontend operation.
 
-Integration's static module cell planner, function cell planner (design 78 §5.9) and proven-call
-planner treat the demanded set as the whole program. That is sound only when every
-body the runtime can enter is demanded. Qualify the closure by comparing every demanded function's
+The analysis summaries own writer and binding facts in both eager and demanded builds.
+Static module cells, InitOnce constant folding, function cells (design 78 §5.9) and proven
+calls use this shared authority independently of which bodies the frontend lowers.
+The summaries describe declarations and every possible execution in the closed program.
+
+A published callable can remain declaration-only while the closed graph proves that no reader
+can obtain its object. A global or attribute read, escape, import selection or admitted reflection
+demands its body. The declaration-only object's code slot names one shared unreachable trap.
+The trap has no source body, frame layout or per-body digest. The JIT image and runner admit the
+declaration and bind its slot before entry.
+
+Qualify the closure by comparing every demanded function's
 final TIR byte for byte with the eager build, along with its diagnostics. Exercise implicit entry
 through each of the rules above, escaped and import-selected callables, closures, resumable frames
 and concurrent first calls. Verify an unreachable body stays unanalyzed.
@@ -193,14 +202,24 @@ frontend host process. The current directly executable image contract requires t
 Discovery owns the demand plan and shared frontend entry. The JIT lane owns `jit_pipeline.py`,
 the image and runner. Measure launch and first-call latency separately.
 
-Native, WASM and MLIR AOT builds now assemble the closure from the same frontend bundle via
-`molt.cli.backend_ir.materialize_tir_closure`. The entry currently consumes eagerly lowered
-modules. A release fixture crossing a default argument, class method, closure and generator
-produced the same 94-function canonical backend input before and after the change. The
-entry also returns the module and class layouts and the callable declaration sidecar. The
-sidecar carries parameter kinds, default positions, execution kind and lexical closure shape
-from function publication. Definition-time values remain in their enclosing initializer.
-The plan seal and demand-driven source lowering are subsequent parts of this stage.
+Native, WASM and MLIR AOT builds lower and assemble the closure from the same frontend
+bundle through `molt.cli.backend_ir.materialize_tir_closure`. A prepared bundle owns one
+materialization request. Concurrent callers receive the same result or diagnostic.
+The entry returns the plan seal and the module, class and callable declarations.
+Definition-time values remain in their enclosing initializer.
+
+The first demand selection applies to flat, undecorated synchronous definitions whose
+bodies contain only plain bindings and returns. These bodies have no deferred declarations
+or source calls that affect another function's entry or function-cell plan. Unresolved
+namespace custody keeps the body, as do entry-module host exports. The omission leaves
+the source definition's code slot, signature, defaults and source writer facts in place.
+The late integration rewrite binds its function object to the runtime's shared unreachable
+entry after the planners consume the original publication. Operand and label identities
+are allocated per body and code slots are ordered by declaration identity.
+
+In a native release fixture with two unread functions, both guarded executables match
+CPython 3.12. The demanded build has two fewer materialized bodies. Cranelift's target-final
+TIR for the demanded `live` function matches the eager build byte for byte.
 
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).

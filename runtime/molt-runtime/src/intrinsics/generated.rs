@@ -9594,6 +9594,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_init_metadata_packed),
     },
     IntrinsicSpec {
+        name: "molt_function_new_unreachable",
+        symbol: "molt_function_new_unreachable",
+        arity: 1,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_new_unreachable),
+    },
+    IntrinsicSpec {
         name: "molt_cell_new",
         symbol: "molt_cell_new",
         arity: 1,
@@ -18851,4 +18859,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xf38312691143e4a7;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x019fd8f52a1315a6;

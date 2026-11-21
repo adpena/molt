@@ -147,6 +147,31 @@ def test_guard_scratch_follows_the_hot_record_and_names_the_former_root(
     assert scratch.former_scratch_root(lane, selected) is None
 
 
+def test_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
+    from molt import dx
+
+    source = tmp_path / "source"
+    source.mkdir()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    component = dx.checkout_component(source.resolve())
+    outside = dx.cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
+    assert outside == artifact.resolve() / "target" / "checkouts" / component
+    hot = tmp_path / "home" / "hot"
+    _bind(artifact, hot)
+    default_paths._HOT_STATES.clear()
+    placed = dx.cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
+    assert placed == hot / "target" / "checkouts" / component
+    session = dx.cargo_target_dir_for_artifact_root(
+        artifact, "proof-1", source_root=source
+    )
+    assert session.is_relative_to(placed)
+    # A plain clone keeps Cargo's own target.
+    assert dx.cargo_target_dir_for_artifact_root(source, None, source_root=source) == (
+        source.resolve() / "target"
+    )
+
+
 def test_the_storage_write_check_admits_the_hot_mirror_and_nothing_else(
     tmp_path: Path,
 ) -> None:

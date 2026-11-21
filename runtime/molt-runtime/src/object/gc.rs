@@ -381,26 +381,44 @@ pub(crate) struct GcRuntimeTestSnapshot {
 /// `RuntimeState`, so shutdown/re-init cannot inherit thresholds, pending work,
 /// statistics or members from a prior embedded interpreter, and an isolate's
 /// objects never share a table with another runtime's.
+///
+/// The thresholds, the counts and the membership lead a fixed layout, the GC
+/// record: compiled code tracks and untracks a plain instance inline at these
+/// offsets (`molt_codegen_abi::object_lifecycle`), through the record address
+/// the thread record lends for the bound runtime, so each isolate's code
+/// reaches its own record.
+#[repr(C)]
 pub(crate) struct GcRuntimeState {
+    thresholds: [GcWord; NUM_GENERATIONS],
+    counts: [GcWord; NUM_GENERATIONS],
+    membership: std::cell::UnsafeCell<Membership>,
     pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
     enabled: GcWord,
     pending: GcWord,
     debug_flags: GcWord,
-    thresholds: [GcWord; NUM_GENERATIONS],
     /// Nonzero once `gc.set_threshold` (or the C API) chose the thresholds;
     /// committing the compiled target then keeps them.
     thresholds_explicit: GcWord,
     /// The target's `GcTargetFeatures` bits.
     target_features: GcWord,
-    counts: [GcWord; NUM_GENERATIONS],
     stats: [GenerationStatsWords; NUM_GENERATIONS],
     long_lived_total: GcWord,
     long_lived_pending: GcWord,
     api_roots: Mutex<GcApiRoots>,
-    membership: std::cell::UnsafeCell<Membership>,
     #[cfg(debug_assertions)]
     membership_borrowed: std::sync::atomic::AtomicBool,
 }
+
+const _: () = {
+    use molt_codegen_abi::object_lifecycle::{
+        GC_RECORD_COUNT0_OFFSET, GC_RECORD_MEMBERS_OFFSET, GC_RECORD_THRESHOLD0_OFFSET,
+    };
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<GcWord>() == 8);
+    assert!(offset_of!(GcRuntimeState, thresholds) == GC_RECORD_THRESHOLD0_OFFSET as usize);
+    assert!(offset_of!(GcRuntimeState, counts) == GC_RECORD_COUNT0_OFFSET as usize);
+    assert!(offset_of!(GcRuntimeState, membership) == GC_RECORD_MEMBERS_OFFSET as usize);
+};
 
 // Cell-backed words are accessed only while `PyToken` proves the deterministic
 // runtime GIL. The free-threaded representation of the control words is

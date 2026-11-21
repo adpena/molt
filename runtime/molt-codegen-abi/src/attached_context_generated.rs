@@ -1587,6 +1587,7 @@ macro_rules! attached_symbol {
     ("molt_function_init_metadata_packed") => { "molt_function_init_metadata_packed__molt_context_d1086a27578cda22" };
     ("molt_function_is_coroutine") => { "molt_function_is_coroutine__molt_context_d1086a27578cda22" };
     ("molt_function_is_generator") => { "molt_function_is_generator__molt_context_d1086a27578cda22" };
+    ("molt_function_new_unreachable") => { "molt_function_new_unreachable__molt_context_d1086a27578cda22" };
     ("molt_function_set_builtin") => { "molt_function_set_builtin__molt_context_d1086a27578cda22" };
     ("molt_function_set_defaults") => { "molt_function_set_defaults__molt_context_d1086a27578cda22" };
     ("molt_function_set_fixed_builtin") => { "molt_function_set_fixed_builtin__molt_context_d1086a27578cda22" };
@@ -1762,6 +1763,8 @@ macro_rules! attached_symbol {
     ("molt_hash_new") => { "molt_hash_new__molt_context_d1086a27578cda22" };
     ("molt_hash_update") => { "molt_hash_update__molt_context_d1086a27578cda22" };
     ("molt_header_size") => { "molt_header_size__molt_context_d1086a27578cda22" };
+    ("molt_heap_alloc") => { "molt_heap_alloc__molt_context_d1086a27578cda22" };
+    ("molt_heap_free") => { "molt_heap_free__molt_context_d1086a27578cda22" };
     ("molt_heapq_heapify") => { "molt_heapq_heapify__molt_context_d1086a27578cda22" };
     ("molt_heapq_heappop") => { "molt_heapq_heappop__molt_context_d1086a27578cda22" };
     ("molt_heapq_heappush") => { "molt_heapq_heappush__molt_context_d1086a27578cda22" };

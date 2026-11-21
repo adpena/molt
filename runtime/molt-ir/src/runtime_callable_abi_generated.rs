@@ -4188,6 +4188,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_function_new_unreachable",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_function_set_builtin",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -18885,6 +18890,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_function_is_generator__molt_context_d1086a27578cda22",
         },
+        "molt_function_new_unreachable" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_function_new_unreachable__molt_context_d1086a27578cda22",
+        },
         "molt_function_set_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_function_set_builtin__molt_context_d1086a27578cda22",
@@ -19696,6 +19705,14 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_header_size" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_header_size__molt_context_d1086a27578cda22",
+        },
+        "molt_heap_alloc" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_heap_alloc__molt_context_d1086a27578cda22",
+        },
+        "molt_heap_free" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_heap_free__molt_context_d1086a27578cda22",
         },
         "molt_heapq_heapify" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

@@ -61,6 +61,24 @@ impl<'b> NativeCodegen<'_, 'b> {
         self.words.builder.ins()
     }
 
+    /// The thread-record words the lifecycle generators read.
+    fn lifecycle_words(
+        &mut self,
+        profile_enabled: Value,
+    ) -> molt_codegen_abi::object_lifecycle::LifecycleWords<Value> {
+        use molt_codegen_abi::thread_record::ThreadRecordWord;
+        let record = self.thread_record_word();
+        let word = |this: &mut Self, word: ThreadRecordWord| {
+            this.ins()
+                .load(types::I64, MemFlagsData::trusted(), record, word.offset())
+        };
+        molt_codegen_abi::object_lifecycle::LifecycleWords {
+            profile_enabled,
+            gc_record: word(self, ThreadRecordWord::GcRecord),
+            missing_slot: word(self, ThreadRecordWord::MissingSlot),
+        }
+    }
+
     fn frame_sites(&mut self) -> NativeFrameSites {
         NativeFrameSites {
             retain: self.refcount_site(RefcountOperation::Retain),
@@ -584,10 +602,22 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
 
     fn refcount_site(&mut self, operation: RefcountOperation) -> NativeRefcountSite {
-        let slow = self.runtime_callee(match operation {
-            RefcountOperation::Retain => RuntimeFn::IncRefObj,
-            RefcountOperation::Release => RuntimeFn::DecRefObj,
-        });
+        // With plain refcount storage, a release's slow call reaches the
+        // program's terminal-release helper, which frees an unobserved plain
+        // instance inline. A hardened or atomic build never frees inline, so
+        // its releases call the runtime directly.
+        let plain = molt_codegen_abi::inline_refcount::RefcountStorage::for_build(
+            molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
+        ) == molt_codegen_abi::inline_refcount::RefcountStorage::Plain;
+        let slow = match operation {
+            RefcountOperation::Retain => self.runtime_callee(RuntimeFn::IncRefObj),
+            RefcountOperation::Release if plain => self.define_helper(
+                crate::codegen_ssa::RELEASE_TERMINAL_HELPER,
+                1,
+                &crate::codegen_ssa::ReleaseTerminalBody,
+            ),
+            RefcountOperation::Release => self.runtime_callee(RuntimeFn::DecRefObj),
+        };
         NativeRefcountSite {
             slow,
             operation,
@@ -669,6 +699,78 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                         builder.inst_results(call)[0]
                     },
                 )
+            }
+            (SiteBody::ObjectAlloc { root, plan }, &[class, profile, _]) => {
+                let words = self.lifecycle_words(profile);
+                let allocate = self.runtime_callee(RuntimeFn::HeapAlloc);
+                let cold = self.runtime_callee(if root {
+                    RuntimeFn::ObjectNew
+                } else {
+                    RuntimeFn::ObjectNewBound
+                });
+                emit_object_alloc(
+                    self.words.builder,
+                    sites,
+                    class,
+                    plan,
+                    words,
+                    allocate,
+                    |builder| {
+                        let call = if root {
+                            builder.ins().call(cold, &[])
+                        } else {
+                            builder.ins().call(cold, &[class])
+                        };
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::ReleaseTerminal, &[bits, admission]) => {
+                let free = self.runtime_callee(RuntimeFn::HeapFree);
+                let cold = self.runtime_callee(RuntimeFn::DecRefObj);
+                let profile = self.profile_enabled();
+                let words = self.lifecycle_words(profile);
+                let record = self.thread_record_word();
+                let terminal_release = self.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    record,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::TerminalRelease.offset(),
+                );
+                emit_release_terminal(
+                    self.words.builder,
+                    sites,
+                    bits,
+                    admission,
+                    words,
+                    terminal_release,
+                    free,
+                    |builder| {
+                        builder.ins().call(cold, &[bits]);
+                    },
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::TypeOf, &[value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::TypeOf);
+                emit_type_of(self.words.builder, sites, value, |builder| {
+                    let call = builder.ins().call(cold, &[value]);
+                    builder.inst_results(call)[0]
+                })
+            }
+            (SiteBody::BuiltinType, &[tag, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::BuiltinType);
+                let record = self.thread_record_word();
+                let object_class = self.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    record,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::ObjectClass.offset(),
+                );
+                emit_builtin_type(self.words.builder, sites, tag, object_class, |builder| {
+                    let call = builder.ins().call(cold, &[tag]);
+                    builder.inst_results(call)[0]
+                })
             }
             (SiteBody::ClosureLoad, &[owner, offset, _]) => {
                 emit_closure_load(self.words.builder, sites, owner, offset)

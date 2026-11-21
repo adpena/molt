@@ -119,16 +119,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 let Some(&class) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };
-                let callee = b.runtime_callee(RuntimeFn::ObjectNewBound);
-                self.runtime_call(
-                    b,
-                    op,
-                    CallTarget::Callee(callee),
-                    &[RuntimeArg::Operand(class)],
-                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
-                    "object_new_bound",
-                    "object_new_bound",
-                );
+                self.object_alloc(b, op, Some(class));
             }
             OpCode::GetIter => {
                 let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
@@ -1581,6 +1572,14 @@ mod tests {
     #[test]
     fn a_bound_object_is_allocated_from_its_class() {
         use molt_ir::runtime_fn_generated::RuntimeFn;
+        // A class object with no lifecycle plan, so the shared allocation
+        // reads its header and plan word and takes its miss, the runtime
+        // constructor. The image lives for the test.
+        let image: &'static mut [u64] = Box::leak(vec![0_u64; 3 + 20].into_boxed_slice());
+        image[0] = u64::from(molt_codegen_abi::TYPE_ID_TYPE);
+        let class = molt_codegen_abi::QNAN
+            | molt_codegen_abi::TAG_PTR
+            | (std::ptr::from_ref(&image[3]) as u64);
         let mut func = TirFunction::new(
             "walk_object_new".into(),
             vec![TirType::DynBox],
@@ -1597,11 +1596,11 @@ mod tests {
         entry.terminator = Terminator::Return {
             values: vec![object_id],
         };
-        let run = walk(&func, &[OBJECT]);
+        let run = walk(&func, &[class]);
         assert_eq!(run.fact, Ok(()));
         assert_eq!(
             run.results,
-            [Value::Word(object(RuntimeFn::ObjectNewBound, &[OBJECT]))]
+            [Value::Word(object(RuntimeFn::ObjectNewBound, &[class]))]
         );
     }
 

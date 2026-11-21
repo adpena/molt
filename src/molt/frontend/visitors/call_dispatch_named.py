@@ -20,9 +20,11 @@ from molt.frontend.class_model import (
     Closure,
     ConstructorPlan,
     MemberKind,
+    ReleasePlan,
     Resolved,
     ResolveRefusal,
     Unresolved,
+    release_plan,
     resolve,
 )
 from molt.frontend._types import (
@@ -1151,6 +1153,28 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             f"runtime class call: {reason}"
         )
 
+    def _object_new_bound_metadata(
+        self, node: ast.Call, class_id: ClassId, class_info: ClassView
+    ) -> dict[str, object]:
+        """The facts an ``OBJECT_NEW_BOUND`` of the class carries: its static
+        payload extent (typed-field analysis; not a placement or lifetime
+        proof), its identity, and its instance plan when the layout proves
+        one (the allocation then compiles the plan word in). A guarded
+        allocation names why in the constructor diagnostics."""
+        metadata: dict[str, object] = {
+            "class_size_bytes": class_info.layout.size,
+            "class_id": class_id,
+        }
+        plan = release_plan(class_info)
+        if isinstance(plan, ReleasePlan):
+            metadata["release_plan"] = plan.field_words
+        else:
+            self.constructor_fallbacks.setdefault(self.current_func_name, []).append(
+                f"{self.module_name}:{node.lineno} {class_id.qualname}(): "
+                f"guarded allocation: {plan.reason}"
+            )
+        return metadata
+
     def _emit_inline_construction(
         self,
         node: ast.Call,
@@ -1187,24 +1211,19 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             return f"__init__ cannot be resolved: {init_lookup.reason.value}"
         init_member = init_lookup.member if isinstance(init_lookup, Resolved) else None
         init_owner = init_lookup.owner
-        class_size_bytes = class_info.layout.size
         if init_member is None:
             if node.args:
                 # object.__init__ raises for extra arguments.
                 return "object.__init__ receives arguments"
             res = MoltValue(self.next_var(), type_hint=DeclaredClass(class_id))
-            # Carry static payload extent for typed-field analysis. The runtime
-            # owns physical class layout and allocation; layout metadata is not
-            # a placement or lifetime proof.
             self.emit(
                 MoltOp(
                     kind="OBJECT_NEW_BOUND",
                     args=[class_ref],
                     result=res,
-                    metadata={
-                        "class_size_bytes": class_size_bytes,
-                        "class_id": class_id,
-                    },
+                    metadata=self._object_new_bound_metadata(
+                        node, class_id, class_info
+                    ),
                 )
             )
             self._stamp_exact_class(res, class_id)
@@ -1240,10 +1259,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 kind="OBJECT_NEW_BOUND",
                 args=[class_ref],
                 result=res,
-                metadata={
-                    "class_size_bytes": class_size_bytes,
-                    "class_id": class_id,
-                },
+                metadata=self._object_new_bound_metadata(node, class_id, class_info),
             )
         )
         self._stamp_exact_class(res, class_id)

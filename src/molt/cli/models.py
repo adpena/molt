@@ -159,6 +159,7 @@ class _ModuleSourceScanAuthority:
     # Some scan of this source reached an import or an import-capable call.
     uses_runtime_import_protocol: bool = False
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
+    read_callables: frozenset[PythonSourceKey] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
     # The globals the module's own deferred code may rebind
     # (``PythonNamespaceSummary.own_names``): None when it reflects its own
@@ -284,6 +285,7 @@ class _ModuleGraphScanAuthority:
                     or source.uses_runtime_import_protocol
                 )
                 deferred_owners = prior.deferred_owners | source.deferred_owners
+                read_callables = prior.read_callables | source.read_callables
                 namespace_premise = join_python_namespace_premises(
                     prior.namespace_premise, source.namespace_premise
                 )
@@ -303,6 +305,7 @@ class _ModuleGraphScanAuthority:
                     source = prior
                 if (
                     deferred_owners != source.deferred_owners
+                    or read_callables != source.read_callables
                     or requires_runtime_package_anchor
                     != source.requires_runtime_package_anchor
                     or uses_runtime_import_protocol
@@ -318,6 +321,7 @@ class _ModuleGraphScanAuthority:
                         requires_runtime_package_anchor=requires_runtime_package_anchor,
                         uses_runtime_import_protocol=uses_runtime_import_protocol,
                         deferred_owners=deferred_owners,
+                        read_callables=read_callables,
                         namespace_premise=namespace_premise,
                         namespace_own_names=namespace_own_names,
                         namespace_own_line=namespace_own_line,
@@ -364,6 +368,9 @@ class _ModuleGraphScanAuthority:
                 "deferred_bodies": [
                     {"source": list(owner), "arguments": list(arguments)}
                     for owner, arguments in sorted(source.deferred_owners)
+                ],
+                "read_callables": [
+                    list(owner) for owner in sorted(source.read_callables)
                 ],
                 "is_package": source.is_package,
                 "package_paths": [os.fspath(path) for path in source.package_paths],
@@ -447,6 +454,7 @@ class _ScopedLoweringInputs:
     native_python_exports_by_module: dict[str, tuple[str, ...]]
     native_support_function_roots_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
+    body_selections: dict[str, ModuleBodySelection] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -704,8 +712,7 @@ class _FrontendIntegrationState:
     # module whose stamp or layout guard names each symbol.
     class_definition_owners: dict[str, str] = field(default_factory=dict)
     class_definition_references: dict[str, str] = field(default_factory=dict)
-    # Each module's global slot layout (call_anatomy.md 4.5), derived from its
-    # own lowered body; the module registry carries it to the runtime.
+    # Each module's global slot layout from its source namespace declaration.
     global_layouts: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Each module's own function bodies, for the global slot stamps.
     module_functions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)

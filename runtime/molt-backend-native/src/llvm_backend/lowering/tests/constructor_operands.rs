@@ -630,6 +630,17 @@ pub extern "C" fn molt_inc_ref_obj_attached(context: u64, value: u64)  {
     molt_inc_ref_obj(value)
 }
 
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {
+    0
+}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {
+    unreachable!("a fixture object is never freed inline")
+}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn molt_dec_ref_obj_attached(context: u64, value: u64)  {
     assert_eq!(context, fixed_execution_context(), "molt_dec_ref_obj forwards its attached context");
@@ -1624,6 +1635,17 @@ pub extern "C" fn molt_inc_ref_obj_attached(context: u64, word: u64)  {
     molt_inc_ref_obj(word)
 }
 
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {
+    0
+}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {
+    unreachable!("a fixture object is never freed inline")
+}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn molt_dec_ref_obj_attached(context: u64, word: u64)  {
     assert_eq!(context, fixed_execution_context(), "molt_dec_ref_obj forwards its attached context");

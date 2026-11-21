@@ -23,6 +23,22 @@ pub unsafe extern "C" fn molt_alloc_class(__context: u64, size_bits: u64, class_
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_alloc_class_attached_body(_py, size_bits, class_bits)
 }
+#[unsafe(export_name = "molt_heap_alloc__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_heap_alloc(__context: u64, bytes: u64) -> u64 {
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_heap_alloc);
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_heap_alloc_attached_body(_py, bytes)
+}
+#[unsafe(export_name = "molt_heap_free__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_heap_free(__context: u64, object: u64) {
+    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_heap_free);
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_heap_free_attached_body(_py, object)
+}
 #[unsafe(export_name = "molt_object_publish_initialized__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_object_publish_initialized(__context: u64, obj_bits: u64) -> u64 {
