@@ -111,31 +111,18 @@ def _run_jit_pipeline(
     # The AOT backend pipeline's one source of logical paths (HF-372).
     graph_metadata = prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
     logical_source_path_by_module = graph_metadata.logical_source_path_by_module
-    prepared_backend_ir, prepared_backend_ir_error = _backend_ir._prepare_backend_ir(
-        entry_module=resolved_build_entry.entry_module,
-        module_graph=module_graph,
-        logical_source_path_by_module=logical_source_path_by_module,
-        namespace_portions_by_module=graph_metadata.namespace_portions_by_module,
-        module_source_role_by_module=graph_metadata.module_source_role_by_module,
-        known_modules=prepared_frontend_pipeline_bundle.known_modules,
-        stdlib_allowlist=prepared_frontend_pipeline_bundle.stdlib_allowlist,
-        integration_state=prepared_frontend_pipeline_bundle.integration_state,
-        fail=_fail,
-        json_output=json_output,
-        module_order=prepared_frontend_pipeline_bundle.module_order,
-        runtime_import_dispatch_roots=(
-            prepared_frontend_pipeline_bundle.runtime_import_dispatch_roots
-        ),
-        spawn_enabled=prepared_frontend_pipeline_bundle.spawn_enabled,
-        pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-        runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-        emit_ir_path=output_layout.emit_ir_path,
-        validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
-        target_python=prepared_build_config.target_python,
-        stdlib_profile=stdlib_profile,
-        target=target,
-        facts_target=output_layout.facts_target,
-        native_artifact_plan=native_artifact_plan,
+    prepared_backend_ir, prepared_backend_ir_error = (
+        _backend_ir.materialize_tir_closure(
+            prepared_frontend_pipeline_bundle,
+            entry_module=resolved_build_entry.entry_module,
+            fail=_fail,
+            json_output=json_output,
+            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
+            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
+            target_python=prepared_build_config.target_python,
+            stdlib_profile=stdlib_profile,
+            target=target,
+        )
     )
     if prepared_backend_ir_error is not None:
         return prepared_backend_ir_error
