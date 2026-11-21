@@ -123,7 +123,12 @@ permission to omit cells or raise every timeout without diagnosis.
    or admission leaves no partial distribution at the requested output path.
    The bundle
    ships them under `runtime/<cell-id>/`, declared in
-   `release-compiler-source.json`. `COMPILER_BUNDLE_DIRECTORIES` in
+   `release-compiler-source.json`. The same manifest binds
+   `share/molt/stdlib-namespace-syntax.json`. The release builder derives these
+   syntax summaries from the sealed stdlib sources for each supported guest
+   Python target. A cold installed scan can reuse a row when the admitted source
+   bytes, package, target, AST, and analysis producer match.
+   `COMPILER_BUNDLE_DIRECTORIES` in
    `molt.compiler_distribution` owns the top-level directory projection; the
    bundle builder checks it and the Homebrew renderer consumes it. Installers
    retain whole directories, including hidden source inputs and every runtime

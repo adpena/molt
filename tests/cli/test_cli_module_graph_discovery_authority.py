@@ -1165,6 +1165,81 @@ def test_generator_source_demand_is_resumed_not_its_creation(tmp_path, consume):
     assert any(key[-1] == "GeneratorExp" for key, _args in owners) is consume
 
 
+def test_nested_writer_revisions_hold_receivers_until_the_outer_exit(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    # a ↔ b contains the b ↔ c cycle after its head a is removed. The
+    # receiver d follows both exits. e has no dependency on this component.
+    for writer, receivers in (
+        ("a", ("b",)),
+        ("b", ("a", "c")),
+        ("c", ("b", "d")),
+        ("d", ()),
+        ("e", ()),
+    ):
+        path = state.graph[writer] = tmp_path / f"{writer}.py"
+        state.modules_by_source[path] = {writer}
+        state.active_owners[writer] = {None}
+        state.namespace_writes[writer] = {
+            PythonNamespaceWrite(receiver, "value", "attribute", 1)
+            for receiver in receivers
+        }
+        state.scan_revisions.add(discovery._SourceScanJob(writer, None))
+
+    for expected in ({"c", "e"}, {"b"}, {"c"}, {"a"}, {"d"}):
+        ready = discovery._ready_namespace_revisions(state)
+        assert {job.module_name for job in ready} == expected
+        state.scan_revisions.difference_update(ready)
+        if expected == {"b"}:
+            # Revising the inner head can make its child dirty again.
+            state.scan_revisions.add(discovery._SourceScanJob("c", None))
+    assert not state.scan_revisions
+
+
+def test_opaque_activation_revision_follows_the_escaping_consumer(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+    )
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    state.demands = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    for module in ("consumer", "provider", "unrelated"):
+        state.graph[module] = tmp_path / f"{module}.py"
+        state.scan_revisions.add(discovery._SourceScanJob(module, None))
+    state.demands.activate(
+        SourceCandidate("provider", (1, 0, 2, 8, "FunctionDef")),
+        "escape",
+        consumer="consumer",
+    )
+
+    first = discovery._ready_namespace_revisions(state)
+    assert {job.module_name for job in first} == {"consumer", "unrelated"}
+    state.scan_revisions.difference_update(first)
+    assert discovery._ready_namespace_revisions(state) == {
+        discovery._SourceScanJob("provider", None)
+    }
+
+
 @pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("write_kind", ["named", "computed", "canonical-member"])
 def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(

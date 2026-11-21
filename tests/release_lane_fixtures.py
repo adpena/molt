@@ -1,7 +1,12 @@
 """Finite source policy fixtures; never compiler/execution evidence."""
 
+import hashlib
 from pathlib import Path
 import tomllib
+from molt.compiler_distribution import (
+    STDLIB_NAMESPACE_SYNTAX_PATH,
+    StdlibNamespaceSyntaxRecord,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_LANES = (
@@ -52,3 +57,17 @@ def stage_release_lane_authorities(root: Path) -> None:
         dest.mkdir(parents=True, exist_ok=True)
         # A Git snapshot retains directories through actual source members.
         (dest / "lane_fixture.py").write_bytes(b"# synthetic transport fixture\n")
+
+
+def stage_stdlib_namespace_syntax_fixture(
+    root: Path,
+    data: bytes = b'{"producer":"fixture","rows":[],"schema":"molt.stdlib-namespace-syntax.v1"}\n',
+) -> StdlibNamespaceSyntaxRecord:
+    path = root / STDLIB_NAMESPACE_SYNTAX_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return {
+        "path": STDLIB_NAMESPACE_SYNTAX_PATH,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }

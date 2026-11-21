@@ -21,6 +21,7 @@ from tests.compiler_identity_helper import (
     compiler_cargo_stdout,
     stub_compiler_admission,
 )
+from tests.release_lane_fixtures import stage_stdlib_namespace_syntax_fixture
 
 
 def _workspace(root: Path) -> None:
@@ -315,6 +316,7 @@ def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch
         launcher={},
         runtime={},
         wasm_facts={"sha256": expected, "profile": "release"},
+        stdlib_namespace_syntax=stage_stdlib_namespace_syntax_fixture(tmp_path),
         binary=tmp_path / "installed-compiler",
         wasm_facts_binary=binary,
         verify_sources=lambda: None,
