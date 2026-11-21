@@ -235,7 +235,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return True
             # ``__new__`` may return an object of another type.
             for name in ("__set__", "__delete__", "__new__"):
-                if defines(owner_view, name) or name in owner_view.possible_data_descriptors:
+                if (
+                    defines(owner_view, name)
+                    or name in owner_view.possible_data_descriptors
+                ):
                     return True
         return False
 
@@ -1119,11 +1122,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             property_field = member.property_field
             if property_field:
-                if (
-                    class_info.layout.field(property_field) is not None
-                    and not self._class_attr_may_be_data_descriptor(
-                        declared_class, property_field
-                    )
+                if class_info.layout.field(
+                    property_field
+                ) is not None and not self._class_attr_may_be_data_descriptor(
+                    declared_class, property_field
                 ):
                     if exact_receiver:
                         return self._emit_guarded_getattr(

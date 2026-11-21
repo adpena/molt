@@ -81,9 +81,7 @@ def test_builtin_base_identity_requires_the_binding_proof(base: str) -> None:
 
 def test_implicit_object_base_is_not_a_source_builtin_read() -> None:
     generator = _lower("import builtins\nbuiltins.object = int\nclass Child: pass\n")
-    assert generator.classes[ClassId("mod", "Child")].bases == (
-        BuiltinClass("object"),
-    )
+    assert generator.classes[ClassId("mod", "Child")].bases == (BuiltinClass("object"),)
 
 
 @pytest.mark.parametrize("method", ["__init__", "value"])
@@ -497,7 +495,10 @@ def test_each_field_op_carries_the_class_statement_that_emitted_it() -> None:
         "        self.a = 2\n"
     )
     first, second = generator.local_class_ids
-    assert generator.classes[first].layout.fields != generator.classes[second].layout.fields
+    assert (
+        generator.classes[first].layout.fields
+        != generator.classes[second].layout.fields
+    )
     for class_id, symbol_suffix in ((first, 0), (second, 1)):
         init_symbols = sorted(
             name for name in generator.funcs_map if name.startswith("py.mod.P___init__")

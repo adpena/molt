@@ -38,9 +38,10 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             # (a subclass of `type`), emit generic setattr so the
             # attribute goes into the class __dict__.
             _class_info_meta = self.classes.get(expected_class)
-            _is_type_subclass = _class_info_meta is not None and BuiltinClass(
-                "type"
-            ) in _class_info_meta.bases
+            _is_type_subclass = (
+                _class_info_meta is not None
+                and BuiltinClass("type") in _class_info_meta.bases
+            )
             if offset is None or _is_type_subclass:
                 if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(
@@ -154,9 +155,10 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             # Metaclass methods operate on TYPE objects, not instances.
             # Field offsets don't apply — use generic getattr.
             _ga_class_info = self.classes.get(expected_class)
-            _ga_is_type_sub = _ga_class_info is not None and BuiltinClass(
-                "type"
-            ) in _ga_class_info.bases
+            _ga_is_type_sub = (
+                _ga_class_info is not None
+                and BuiltinClass("type") in _ga_class_info.bases
+            )
             if offset is None or _ga_is_type_sub:
                 if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(

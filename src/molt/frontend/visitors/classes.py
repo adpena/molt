@@ -945,7 +945,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     if base_field.name not in fields:
                         fields[base_field.name] = len(field_order) * 8
                         field_order.append(base_field.name)
-                    if base_field.hint is not None and base_field.name not in field_hints:
+                    if (
+                        base_field.hint is not None
+                        and base_field.name not in field_hints
+                    ):
                         field_hints[base_field.name] = base_field.hint
 
             def add_field(name: str) -> None:
@@ -1362,9 +1365,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         class_ns_scope = _ClassNsScope(
             ns=dynamic_namespace,
             attr_values=class_attr_values,
-            names=(
-                set(class_attr_values) | self._collect_assigned_names(node.body)
-            ),
+            names=(set(class_attr_values) | self._collect_assigned_names(node.body)),
             class_name=node.name,
             module_name=module_name,
             class_node=node,
@@ -1687,11 +1688,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         if not dynamic_build:
             # Collect field offsets into attrs
-            if (
-                draft.dataclass is None
-                and draft.layout.static
-                and draft.layout.fields
-            ):
+            if draft.dataclass is None and draft.layout.static and draft.layout.fields:
                 field_items: list[MoltValue] = []
                 for field in sorted(item.name for item in draft.layout.fields):
                     key_val = MoltValue(self.next_var(), type_hint="str")

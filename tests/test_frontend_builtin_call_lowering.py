@@ -3213,7 +3213,9 @@ def _counter_known_classes() -> dict[ClassId, ClassModel]:
             members=(),
             possible_data_descriptors=frozenset(),
             dataclass=None,
-            constructor=ConstructorRefusal("the class is defined in module collections"),
+            constructor=ConstructorRefusal(
+                "the class is defined in module collections"
+            ),
         )
     }
 

@@ -826,9 +826,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     # `constructor_refusal` always satisfies the
                     # resolver's (superset) layout/decoration/mutation guards.
                     static_class_ref = self._current_module_static_class_ref(class_id)
-                    if (
-                        static_class_ref is not None
-                        and isinstance(class_info.constructor, ConstructorPlan)
+                    if static_class_ref is not None and isinstance(
+                        class_info.constructor, ConstructorPlan
                     ):
                         class_ref = static_class_ref
                     else:
@@ -1179,9 +1178,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             return "the call passes keywords or unpacked arguments"
         if self._class_layout_definition(class_id) is None:
             return "no class statement stamps the class identity"
-        init_lookup = resolve(
-            self._class_mro(class_id), "__init__", self.classes.get
-        )
+        init_lookup = resolve(self._class_mro(class_id), "__init__", self.classes.get)
         if (
             isinstance(init_lookup, Unresolved)
             and init_lookup.reason is not ResolveRefusal.NOT_FOUND

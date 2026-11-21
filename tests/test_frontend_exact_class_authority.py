@@ -28,7 +28,6 @@ RECORD = ClassId("exact_class_authority", "Record")
 ELSEWHERE_POINT = ClassId("elsewhere", "Point")
 
 
-
 def _class_model(
     class_id: ClassId,
     *,
@@ -65,7 +64,6 @@ def _class_model(
 
 
 @pytest.mark.parametrize("kind", ["GETATTR", "GUARDED_GETATTR", "GETATTR_GENERIC_PTR"])
-
 def test_attribute_serialization_is_independent_of_global_cache_allocation(
     kind: str,
 ) -> None:
@@ -98,8 +96,8 @@ def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
     generator = SimpleTIRGenerator()
     generator.classes[POINT] = _class_model(
         POINT,
-        fields={'x': 8},
-        binding_name='Point',
+        fields={"x": 8},
+        binding_name="Point",
     )
     context = SerializationContext([], set(), None)
     assert generator._serialize_object_attr_op(
@@ -267,10 +265,10 @@ def test_exact_binding_alias_and_lowered_value_drive_direct_field_consumers() ->
     first_field_op = len(generator.current_ops)
     generator.classes[POINT] = _class_model(
         POINT,
-        fields={'x': 24},
+        fields={"x": 24},
         layout_version=7,
         module_level=True,
-        binding_name='Point',
+        binding_name="Point",
     )
     allocated = generator._stamp_exact_class(
         MoltValue("allocated_point", type_hint=DeclaredClass(POINT)), POINT
@@ -505,7 +503,7 @@ def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
         RECORD,
         fields={},
         dataclass=True,
-        binding_name='Record',
+        binding_name="Record",
     )
     record = generator._stamp_exact_class(
         MoltValue("record", type_hint=DeclaredClass(RECORD)), RECORD
@@ -650,15 +648,17 @@ def test_synthesized_layout_guards_name_their_class_statement(operation: str) ->
     generator.current_func_name = "retained_method"
     generator.classes[POINT] = _class_model(
         POINT,
-        fields={'x': 8},
+        fields={"x": 8},
         module_level=True,
-        binding_name='Point',
+        binding_name="Point",
     )
     _assert_guard_names_statement(_emit_guard(generator, operation, POINT), POINT)
 
 
 def test_optional_layout_identity_does_not_change_explicit_source_name() -> None:
-    source = "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
+    source = (
+        "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
+    )
     ops = _ops(source, function="py.exact_class_authority.Point_read")
     strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     assert any(
@@ -686,9 +686,9 @@ def test_external_layout_identity_does_not_import_or_read_module(
     generator.current_func_name = "retained_method"
     generator.classes[ELSEWHERE_POINT] = _class_model(
         ELSEWHERE_POINT,
-        fields={'x': 8},
+        fields={"x": 8},
         module_level=True,
-        binding_name='Point',
+        binding_name="Point",
     )
     ops = _emit_guard(generator, operation, ELSEWHERE_POINT)
     _assert_guard_names_statement(ops, ELSEWHERE_POINT)
@@ -727,9 +727,9 @@ def test_external_layout_identity_ignores_imported_aliases(local: bool) -> None:
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
     generator.classes[ELSEWHERE_POINT] = _class_model(
         ELSEWHERE_POINT,
-        fields={'x': 8},
+        fields={"x": 8},
         module_level=True,
-        binding_name='Point',
+        binding_name="Point",
     )
     generator.global_imported_names["Point"] = "unrelated"
     if local:
@@ -754,8 +754,8 @@ def test_local_class_guard_reads_no_class_storage(operation: str, storage: str) 
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
     generator.classes[POINT] = _class_model(
         POINT,
-        fields={'x': 8},
-        binding_name='Point',
+        fields={"x": 8},
+        binding_name="Point",
     )
     generator.unbound_check_names.add("Point")
     if storage == "global":

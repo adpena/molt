@@ -281,9 +281,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             and decorator.value.id == item.name
             and decorator.attr in {"setter", "deleter"}
         ):
-            previous = self.classes[
-                self._class_id_for_definition(class_node)
-            ].member(item.name)
+            previous = self.classes[self._class_id_for_definition(class_node)].member(
+                item.name
+            )
             if previous is not None and previous.kind is MemberKind.PROPERTY:
                 return "property_update", decorator.attr
         return "decorated", None
