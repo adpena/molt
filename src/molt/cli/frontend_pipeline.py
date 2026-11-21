@@ -64,6 +64,11 @@ from molt.cli.module_source import (
     _ModuleSourceLease,
 )
 from molt.compiler_analysis.python_imports import ModuleExecutionKind
+from molt.compiler_analysis.python_namespace_graph import (
+    SourceModuleNames,
+    python_source_module_names,
+)
+from molt.cli.frontend_integration import module_global_layout
 from molt.cli.build_request import (
     BuildProfile,
     EmitMode,
@@ -112,6 +117,7 @@ class _PreparedFrontendAnalysis:
     module_deps: dict[str, set[str]]
     module_sources: dict[str, str]
     module_source_catalog: _ModuleSourceCatalog
+    namespace_declarations: Mapping[str, SourceModuleNames]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     module_trees: dict[str, ast.AST]
@@ -286,6 +292,7 @@ def _prepare_frontend_analysis(
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     module_source_leases: dict[str, _ModuleSourceLease] = {}
+    namespace_declarations: dict[str, SourceModuleNames] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
     known_func_kinds: dict[str, dict[str, str]] = {}
     module_trees: dict[str, ast.AST] = {}
@@ -298,6 +305,8 @@ def _prepare_frontend_analysis(
             module_source_leases[module_name] = _ModuleSourceLease.path_backed(
                 module_path, snapshot=snapshot
             )
+            if names := python_source_module_names(snapshot.text):
+                namespace_declarations[module_name] = names
             (
                 tree,
                 module_imports,
@@ -379,6 +388,7 @@ def _prepare_frontend_analysis(
         module_deps=module_deps,
         module_sources=module_sources,
         module_source_catalog=module_source_catalog,
+        namespace_declarations=namespace_declarations,
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
         module_trees=module_trees,
@@ -1220,13 +1230,20 @@ def _prepare_frontend_pipeline(
         frontend_layer_execution_context=frontend_layer_execution_context,
         frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
     )
-    integration_state.module_namespace_facts = {
-        module: ModuleNamespaceFacts(
+    for module, authority in import_plan.scan_authority.by_module.items():
+        names = prepared_frontend_analysis.namespace_declarations.get(module)
+        integration_state.module_namespace_facts[module] = ModuleNamespaceFacts(
             authority.namespace_own_names,
             authority.namespace_premise,
             authority.namespace_own_line,
+            names.initializer_bindings if names is not None else frozenset(),
+            names.isolate_spawn_line if names is not None else None,
         )
-        for module, authority in import_plan.scan_authority.by_module.items()
+    integration_state.global_layouts = {
+        module: module_global_layout(
+            facts.initializer_bindings | (facts.own_names or frozenset())
+        )
+        for module, facts in integration_state.module_namespace_facts.items()
     }
     integration_state.module_dep_closures = (
         prepared_frontend_analysis.module_dep_closures

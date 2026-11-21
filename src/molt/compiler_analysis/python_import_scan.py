@@ -2400,7 +2400,9 @@ def _collect_imports(
             demand(binding_index.expression_result(node), "read")
             # Binding flow owns argument protocol/escape transfers. Repeating
             # generic exposure here would discard proven callee/formal selection.
-        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+        elif isinstance(node, (ast.Attribute, ast.Name, ast.Subscript)) and isinstance(
+            node.ctx, ast.Load
+        ):
             demand(binding_index.expression_result(node), "read")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(node, ast.ClassDef):
