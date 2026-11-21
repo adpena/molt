@@ -2,7 +2,7 @@
 """Generate the SimpleTIRGenerator static-typing Protocol shim (F1 decomposition).
 
 Single source of truth: the *assembled* ``SimpleTIRGenerator`` class and its
-visitor/lowering mixins (``src/molt/frontend/__init__.py`` +
+visitor/lowering mixins (``src/molt/frontend/generator.py`` +
 ``src/molt/frontend/visitors/*.py`` + ``src/molt/frontend/lowering/*.py``), plus
 the curated attribute-type table that already lives in the two generated files.
 
