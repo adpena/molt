@@ -137,7 +137,11 @@ hundreds of fast landings while postsubmit last ran on 2026-11-16.
 `keep_going`: every selected gate runs, read-only checks one at a time, and one
 `CandidateFailure` names each failed gate. A first-failure stop let a red static
 check hide every later gate; no run from 2026-11-01 to 2026-11-16 reached a
-Cargo gate (HF-937). Runner, custody and cancellation faults still stop at once. Pytest
+Cargo gate (HF-937). A gate whose tests do not collect is reported and skipped.
+Runner, custody and cancellation faults still stop at once. Postsubmit's heavy
+block takes half the development class as a share (`postsubmit_demand`), not the
+whole class: holding the class made every lane's consumer gate wait for the whole
+run once fast landings started postsubmit. Pytest
 writes JUnit beside each gate's logs, using its built-in `--junitxml` and xunit1
 file attributes. The aggregate `<head>.<run>.postsubmit-result.json` receipt records
 the outcome, test node IDs, prior green, suspect commits, exact restoration

@@ -12,7 +12,7 @@ follows it in the init chain, or when every reference to its function does.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict, Unpack
 
 import pytest
 
@@ -639,6 +639,19 @@ def test_a_call_in_a_loop_after_the_store_is_one_dominated_start() -> None:
     assert _lines(funcs, plan.init_dominated["mod"]) == {30}
 
 
+class _CallProgramChanges(TypedDict, total=False):
+    """The keyword overrides ``_call_program`` accepts."""
+
+    shape: bool
+    arity: int
+    supplied: int
+    kind: str
+    entry_custody: tuple[str, ...]
+    call_custody: bool
+    caller_before_store: bool
+    caller_use_before_store: dict[str, Any] | None
+
+
 def _call_program(
     *,
     shape: bool = True,
@@ -771,7 +784,7 @@ def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
 
 
 def _generator_call_program(
-    *, generator: bool = True, **changes: Any
+    *, generator: bool = True, **changes: Unpack[_CallProgramChanges]
 ) -> list[dict[str, Any]]:
     """``_call_program`` with ``helper`` a generator function (its ``func_new``
     names the poll function and carries the frame size) and the caller's call
