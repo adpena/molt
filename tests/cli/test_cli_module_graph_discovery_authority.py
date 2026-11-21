@@ -548,6 +548,9 @@ def test_module_getattr_demands_lazy_returned_class(
         ),
     ],
 )
+# A cold whole-stdlib module-graph discovery (157-466 s per case in the 2026-11-20
+# landing gate); postsubmit runs it until HF-938 makes discovery fast.
+@pytest.mark.slow
 def test_public_stdlib_deferred_demand_graph(
     tmp_path: Path, source: str, required: set[str], excluded: set[str]
 ) -> None:

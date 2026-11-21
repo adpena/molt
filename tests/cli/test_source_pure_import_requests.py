@@ -1455,17 +1455,19 @@ def test_intrinsic_acquisition_family_preserves_possible_import_demand(source):
     "source,mode,expected",
     [
         ("values = [i for i in range(2)]\n", "full", False),
-        ("import leaf\n", "full", True),
+        ("import leaf\n", "full", False),
+        ("import leaf\n__import__('leaf')\n", "full", True),
         ("raise RuntimeError()\nimport leaf\n", "full", False),
         ("from __future__ import annotations\n", "full", False),
         ("import _intrinsics\n", "full", False),
         ("from pkg._intrinsics import item\n", "full", False),
-        ("from ._intrinsics import item\n", "full", True),
-        ("import pkg._intrinsics\n", "full", True),
+        ("from ._intrinsics import item\n", "full", False),
+        ("import pkg._intrinsics\n", "full", False),
         ("loader = __import__ if flag else None\nloader('leaf')\n", "full", True),
         ("def __import__(*args):\n    pass\n__import__('leaf')\n", "full", False),
         ("def invoke():\n    import leaf\n", "module_init", False),
-        ("def invoke():\n    import leaf\n", "full", True),
+        ("def invoke():\n    __import__('leaf')\n", "module_init", False),
+        ("def invoke():\n    __import__('leaf')\n", "full", True),
     ],
 )
 def test_protocol_and_import_demands_share_execution_regions(

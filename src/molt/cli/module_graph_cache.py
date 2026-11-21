@@ -914,7 +914,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 # Completed projections from older schemas are never admitted as source requests.
 # 51: a scan row no longer copies its key's premise view; the key alone names it.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 51
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 52
 
 
 def _import_scan_cache_key(

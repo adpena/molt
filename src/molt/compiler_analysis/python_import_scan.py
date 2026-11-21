@@ -2104,13 +2104,12 @@ def _collect_imports(
                     call.callee_identities, argument_count
                 )
             )
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            uses_runtime_import_protocol = (
-                any(alias.name != "_intrinsics" for alias in node.names)
-                if isinstance(node, ast.Import)
-                else node.module != "__future__"
-                and not (node.level == 0 and is_compiler_intrinsics_module(node.module))
-            )
+        # A literal ``import``/``from ... import`` statement names its modules,
+        # so the closed graph holds them and the module registry serves them
+        # (bedrock §13 D8): it does not need the Python import machinery. Only
+        # a call that may reach an import entry point does; a write of the
+        # import state (hooks, ``sys.modules``, ``builtins.__import__``) is the
+        # graph policy's separate fact (HF-841).
 
     def record_deferred_inventory(node: ast.AST) -> None:
         # Full depth describes source permission and protocol requirements;

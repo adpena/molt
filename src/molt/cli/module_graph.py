@@ -1235,6 +1235,7 @@ def _finalize_runtime_import_closure(
     policy = _module_import_scanner._module_graph_needs_runtime_import_support(
         module_graph=module_graph,
         scan_authority=authority,
+        namespace_writes=discovery.namespace_writes,
     )
     runtime_roots = set(dispatch_roots) | set(explicit_imports)
     dynamic_owner_required = any(
@@ -1305,6 +1306,7 @@ def _finalize_runtime_import_closure(
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
             module_graph=module_graph,
             scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
+            namespace_writes=discovery.namespace_writes,
         )
         if dynamic_owner_required and not policy.needs_runtime_import_support:
             policy = _RuntimeImportSupportPolicy(

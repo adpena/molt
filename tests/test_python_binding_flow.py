@@ -2399,6 +2399,89 @@ def test_flow_policy_dimensions_cannot_share_a_fixpoint(
         )
 
 
+def test_binding_core_reuses_only_unread_opaque_activation_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import FunctionType
+
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "def unused(): return 0\ndef run(): return len(())\n"
+    tree = ast.parse(source)
+    unused, run = tree.body
+    read = run.body[0].value.func
+    namespace = {}
+    exec(compile(source, "<opaque-activation-reads>", "exec"), namespace)
+    assert namespace["run"]() == 0
+    assert FunctionType(namespace["run"].__code__, {"len": lambda _: 42})() == 42
+
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        callback_member_writes=0,
+        opaque_activation_sources=(),
+    )
+    closed = analyze_python_source_bindings(source, policy=policy)
+    irrelevant = analyze_python_source_bindings(
+        source,
+        policy=replace(
+            policy, opaque_activation_sources=(python_node_source_key(unused),)
+        ),
+    )
+    assert closed == irrelevant
+    assert irrelevant.expression_fact(read).exact_builtin_name() == "len"
+    assert flow.python_binding_core_computations() == 1
+
+    reopened = analyze_python_source_bindings(
+        source,
+        policy=replace(
+            policy, opaque_activation_sources=(python_node_source_key(run),)
+        ),
+    )
+    assert reopened.expression_fact(read).exact_builtin_name() is None
+    assert flow.python_binding_core_computations() == 2
+
+    open_policy = analyze_python_source_bindings(
+        source, policy=replace(policy, opaque_activation_sources=None)
+    )
+    assert open_policy.expression_fact(read).exact_builtin_name() is None
+    assert flow.python_binding_core_computations() == 3
+
+
+def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = (
+        "def accept(value): return 0\n"
+        "def callback(): return 5\n"
+        "result = accept(callback)\n"
+    )
+    accept, callback, statement = ast.parse(source).body
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        callback_member_writes=0,
+        opaque_activation_sources=(),
+    )
+    closed = analyze_python_source_bindings(source, policy=policy)
+    assert not any(
+        ref.phase == "escape"
+        for ref in closed.expression_fact(statement.value).deferred_execution
+    )
+
+    reopened = analyze_python_source_bindings(
+        source,
+        policy=replace(
+            policy, opaque_activation_sources=(python_node_source_key(accept),)
+        ),
+    )
+    assert any(
+        ref.phase == "escape" and ref.source == python_node_source_key(callback)
+        for ref in reopened.expression_fact(statement.value).deferred_execution
+    )
+    assert flow.python_binding_core_computations() == 2
+
+
 def test_context_cache_lifetime_is_owned_and_bounded_by_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
