@@ -19,8 +19,11 @@ import pytest
 from molt.cli.closed_world_bindings import ModuleNamespaceFacts
 from molt.cli.frontend_integration import module_global_layout, stamp_global_slots
 from molt.cli.static_module_cells import (
+    FunctionCells,
     InitOnce,
     StaticCellPlan,
+    apply_function_cells,
+    plan_function_cells,
     plan_static_module_cells,
 )
 from molt.compiler_analysis.python_import_redirects import (
@@ -258,21 +261,24 @@ def test_cell_stamps_and_the_bind_follow_module_creation() -> None:
         {"module": "mod", "index": 1, "cell": True},
         {"module": "mod", "index": 1, "cell": True},
     ]
-    kinds = [op["kind"] for op in ops[:7]]
+    kinds = [op["kind"] for op in ops[:8]]
     assert kinds == [
         "const_str",
         "module_new",
         "check_exception",
         "static_cell_base",
         "const",
+        "const",
         "call",
         "func_new",
     ]
-    # No layout name is a guarded builtin here: the bind records no bit.
+    # No layout name is a guarded builtin here: the bind records no bit, and
+    # no proven method load names a function cell.
     assert ops[4]["value"] == 0
+    assert ops[5]["value"] == 0
     assert ops[3]["s_value"] == "mod"
-    assert ops[5]["s_value"] == "molt_static_cells_bind"
-    assert ops[5]["args"] == ["m", ops[3]["out"], ops[4]["out"]]
+    assert ops[6]["s_value"] == "molt_static_cells_bind"
+    assert ops[6]["args"] == ["m", ops[3]["out"], ops[4]["out"], ops[5]["out"]]
     # The dunder read and the delete keep their by-name ops.
     assert all("global_slot" not in op for op in ops if op.get("args") == ["m", "kn"])
 
@@ -1136,3 +1142,123 @@ def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publicatio
     )
     plan = _dominance_plan(funcs, funcs + [other])
     assert _lines(funcs, plan.init_dominated["mod"]) == {9, 30, 40, 60}
+
+
+# Function cells (design 78, 5.9).
+
+
+def _method_program(
+    *,
+    makers: int = 1,
+    maker_in_loop: bool = False,
+    run_first: bool = False,
+    pair_read: bool = False,
+) -> list[dict[str, Any]]:
+    """``mod``'s init makes method ``mod__C_m`` (``makers`` times, optionally
+    in a loop) and ``mod__run``, whose body loads ``m`` on an exact receiver
+    and calls it through a proven call."""
+    maker = {"kind": "func_new", "s_value": "mod__C_m", "out": "method"}
+    run_maker = {"kind": "func_new", "s_value": "mod__run", "out": "runner"}
+    ops: list[dict[str, Any]] = [
+        {"kind": "const_str", "out": "nm", "s_value": "mod"},
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        {"kind": "check_exception", "value": 1},
+    ]
+    store_run = [
+        {"kind": "const_str", "out": "kr", "s_value": "run"},
+        {"kind": "module_set_attr", "args": ["m", "kr", "runner"], "out": "none"},
+    ]
+    if run_first:
+        # `run` escapes into the namespace, so it may start, before the
+        # method's maker runs.
+        ops += [run_maker, *store_run]
+    if maker_in_loop:
+        ops += [{"kind": "loop_start"}, maker, {"kind": "loop_end"}]
+    else:
+        ops += [dict(maker, out=f"method{n}") for n in range(makers)]
+    if not run_first:
+        ops += [run_maker, *store_run]
+    body = [
+        {"kind": "load_var", "var": "obj", "out": "receiver"},
+        {
+            "kind": "load_method",
+            "args": ["receiver"],
+            "s_value": "m",
+            "var": "callable",
+            "out": "pair",
+            "proven_target": True,
+        },
+        {"kind": "check_exception", "value": 1},
+        {
+            "kind": "call_guarded",
+            "s_value": "mod__C_m",
+            "args": ["callable", "receiver"],
+            "out": "result",
+            "proven_target": True,
+        },
+    ]
+    if pair_read:
+        body.append({"kind": "load_attr", "args": ["pair"], "out": "leak"})
+    return [
+        {"name": "pyinit.mod", "params": [], "ops": ops},
+        {"name": "mod__run", "params": [], "ops": body},
+    ]
+
+
+def _function_cells(
+    funcs: list[dict[str, Any]],
+) -> tuple[FunctionCells, dict[str, tuple[str, ...]]]:
+    plan = _plan(funcs, _facts())
+    assert plan.modules == frozenset({"mod"})
+    layouts = {"mod": module_global_layout(funcs)}
+    return plan_function_cells(plan, {"mod": funcs}, layouts, funcs), layouts
+
+
+def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell() -> None:
+    funcs = _method_program()
+    cells, layouts = _function_cells(funcs)
+    index = len(layouts["mod"])
+    assert cells.cells == {"mod": {"mod__C_m": index}}
+    assert cells.counts() == {"mod": 1}
+    apply_function_cells(funcs, cells)
+    init_ops, run_ops = funcs[0]["ops"], funcs[1]["ops"]
+    store = next(op for op in init_ops if op["kind"] == "static_cell_set")
+    assert store["args"][1] == "method0"
+    assert store["global_slot"] == {"module": "mod", "index": index, "cell": True}
+    # The store follows the maker; the load becomes one cell read.
+    assert [op["kind"] for op in init_ops[3:6]] == [
+        "func_new",
+        "static_cell_base",
+        "static_cell_set",
+    ]
+    assert "load_method" not in [op["kind"] for op in run_ops]
+    read = next(op for op in run_ops if op["kind"] == "static_cell_load")
+    assert read["out"] == "callable"
+    assert read["global_slot"] == {
+        "module": "mod",
+        "index": index,
+        "cell": True,
+        "init_once": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("program", "reason"),
+    [
+        ({"makers": 2}, "2 func_new ops make mod__C_m"),
+        ({"maker_in_loop": True}, "does not run once"),
+        ({"run_first": True}, "may run before mod__C_m's func_new"),
+        ({"pair_read": True}, "its bound pair is read"),
+    ],
+    ids=["two-makers", "maker-in-loop", "run-made-first", "pair-read"],
+)
+def test_a_load_whose_callee_object_is_not_proven_keeps_load_method(
+    program: dict[str, bool | int], reason: str
+) -> None:
+    funcs = _method_program(**program)  # ty: ignore[invalid-argument-type]
+    cells, _layouts = _function_cells(funcs)
+    assert cells.cells == {}
+    (diagnostic,) = cells.diagnostics
+    assert reason in diagnostic
+    apply_function_cells(funcs, cells)
+    assert "load_method" in [op["kind"] for op in funcs[1]["ops"]]

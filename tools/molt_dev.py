@@ -640,7 +640,9 @@ def prepare_gate_environment(
     managed = not bool(env.get("MOLT_VENV"))
     try:
         venv_exec.venv_python(venv)
-        activated = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        activated = venv_exec.venv_env(
+            venv=venv, env=env, managed=managed, repo_root=repo
+        )
         if not managed:
             activated = activated.updated({"MOLT_VENV": str(venv)})
     except (venv_exec.VenvExecError, ValueError) as exc:
@@ -781,7 +783,7 @@ def _gate_environment(
     managed = context.managed
     try:
         venv_exec.venv_python(venv)
-        env = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        env = venv_exec.venv_env(venv=venv, env=env, managed=managed, repo_root=repo)
         if managed and shell_python:
             from molt.python_interpreter import (
                 parse_python_invocation,

@@ -1346,6 +1346,17 @@ class PythonSourceDemands:
                 self.demand(member, "call")
                 self.demand((module_name, SourceReturn(member)), "next")
             return
+        if phase == "class_subscription":
+            if origin.kind == "value" and self._source_class_candidate(origin):
+                # Class subscription uses type.__getitem__ or the class's
+                # inherited __class_getitem__. Class creation already exposes
+                # custom metaclasses through its preparation demands.
+                self.demand(
+                    (module_name, SourceMember(origin, "__class_getitem__")),
+                    "escape",
+                    arguments,
+                )
+            return
         if phase == "descriptor":
             if origin.kind == "instance":
                 # Keep the phase on the canonical class value so namespace

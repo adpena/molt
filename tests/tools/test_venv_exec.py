@@ -262,3 +262,25 @@ def test_forward_command_rejects_shell_text(command: str | bytes) -> None:
 def test_forward_command_rejects_empty_argv() -> None:
     with pytest.raises(ValueError, match="command is required"):
         forward_command([], env={})
+
+
+def test_a_managed_environment_puts_only_the_named_checkout_on_the_path(
+    tmp_path: Path,
+) -> None:
+    # HF-969: a pinned controller imports this module and builds gates for
+    # the landing sandbox; defaulting to this module's checkout put the
+    # controller's src first, so every gate imported the controller's tools.
+    venv = tmp_path / "environment"
+    sandbox = tmp_path / "sandbox"
+    unnamed = venv_exec.venv_env(
+        venv=venv, env={"PYTHONPATH": "inherited"}, managed=True
+    )
+    assert unnamed["PYTHONPATH"] == "inherited"
+    named = venv_exec.venv_env(
+        venv=venv, env={"PYTHONPATH": "inherited"}, managed=True, repo_root=sandbox
+    )
+    assert named["PYTHONPATH"].split(os.pathsep) == [
+        str(sandbox.resolve() / "src"),
+        "inherited",
+    ]
+    assert str(ROOT / "src") not in named["PYTHONPATH"].split(os.pathsep)

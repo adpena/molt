@@ -498,7 +498,9 @@ Bytecode goes to one writable cache beside the environments
 managed Python command, by `-X pycache_prefix=`, which `-I` cannot drop. CPython
 names each cache file by its source's absolute path and its cache tag, so checkouts
 and interpreters never collide. A shared environment is not checkout state: it has no
-owner record or lease, and retiring a worktree never removes it.
+owner record or lease, and retiring a worktree never removes it. The disk guard's daily
+collection retires environments unused for 30 days, stale bytecode and the per-checkout images
+they replaced ([one environment](../design/one_environment.md), item 4).
 
 Environment capture places read-only published-image checks before
 one mandatory closing file/membership fence. Plain identities and full custody
