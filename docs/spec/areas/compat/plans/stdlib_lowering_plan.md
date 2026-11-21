@@ -87,6 +87,10 @@ per premise revision.
    foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
    fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
    assume-guarantee composition, as in IFDS/IDE (Reps, Horwitz, Sagiv 1995) and Datalog solvers.
+   The first slice records the binding core's opaque-activation membership queries. Another
+   concrete set can reuse that core when every consumed answer holds and the source and all other
+   flow inputs match. A missing activation set keeps its own cache key. Changed answers and foreign
+   writes still require flow analysis until the global solver can evaluate transfer summaries.
 4. *Iteration order.* Premise propagation visits writers before the modules they write, in a
    weak topological order of the write graph (Bourdoncle 1993). Revisions then reach a module
    once per strongly connected component, not once per discovered writer.

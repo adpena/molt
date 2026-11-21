@@ -483,10 +483,20 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
 
 
 @dataclass(frozen=True, slots=True)
+class _OpaqueActivationReads:
+    present: frozenset[PythonSourceKey]
+    absent: frozenset[PythonSourceKey]
+
+    def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
+        return self.present <= opaque and self.absent.isdisjoint(opaque)
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonNodeKey, EffectMask]
     module_import_flow_required: bool
+    opaque_activation_reads: _OpaqueActivationReads | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
@@ -2670,6 +2680,7 @@ class _Analyzer:
             if policy.opaque_activation_sources is None
             else frozenset(policy.opaque_activation_sources)
         )
+        self._opaque_activation_reads: set[PythonSourceKey] = set()
         self._foreign_universe = policy.foreign_namespace_universe
         self.source_digest = source_digest
         self.states = _StatePool()
@@ -3298,6 +3309,12 @@ class _Analyzer:
         )
         return scope.namespace_can_call(name, write=write, namespace_tainted=tainted)
 
+    def _activation_source_is_opaque(self, source: PythonSourceKey) -> bool:
+        opaque = self._opaque_activation_sources
+        assert opaque is not None
+        self._opaque_activation_reads.add(source)
+        return source in opaque
+
     def _name_uses_activation_namespace(
         self, state_id: int, scope: _Scope, name: str
     ) -> bool:
@@ -3305,15 +3322,17 @@ class _Analyzer:
             return False
         slot = self._slot_for_name(scope, name)
         if slot is None or self.module_slot_mask & (1 << slot):
-            opaque = self._opaque_activation_sources
-            if not self._callback_rebinds_module_name(name) and opaque is not None:
+            if (
+                not self._callback_rebinds_module_name(name)
+                and self._opaque_activation_sources is not None
+            ):
                 # Initialization histories already join every source-visible
                 # global value. Exposed code/callables can instead run with
                 # another globals dictionary; that fact belongs to the same
                 # source-value demand worklist, including enclosing recreations.
                 owner: _Scope | None = scope
                 while owner is not None and owner.kind != "module":
-                    if owner.source in opaque:
+                    if self._activation_source_is_opaque(owner.source):
                         return True
                     owner = owner.parent
                 return False
@@ -5419,11 +5438,11 @@ class _Analyzer:
             if (
                 protocol_indices is None
                 and callee_result.identities == int(PythonIdentity.USER_FUNCTION)
-                and (opaque := self._opaque_activation_sources) is not None
+                and self._opaque_activation_sources is not None
                 and callee_result.result.source_origins
                 and all(
                     source[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
-                    and source not in opaque
+                    and not self._activation_source_is_opaque(source)
                     for source in callee_result.result.source_origins
                 )
             ):
@@ -9224,6 +9243,14 @@ class _Analyzer:
             # dropping them would turn harmless stores into unknown callbacks.
             MappingProxyType(dict(self.assignment_effects)),
             flow_required,
+            (
+                None
+                if (opaque := self._opaque_activation_sources) is None
+                else _OpaqueActivationReads(
+                    frozenset(self._opaque_activation_reads & opaque),
+                    frozenset(self._opaque_activation_reads - opaque),
+                )
+            ),
         )
 
 
@@ -9347,10 +9374,17 @@ class _BindingCache[T]:
         with self._lock:
             return self._computations
 
+    def _remember_ready(self, key: tuple[object, ...], result: T) -> None:
+        self._ready[key] = result
+        while len(self._ready) > self._max_entries:
+            self._ready.popitem(last=False)
+
     def get_or_compute(
         self,
         key: tuple[object, ...],
         compute: Callable[[], T],
+        *,
+        reusable: Callable[[tuple[object, ...], T], bool] | None = None,
     ) -> T:
         owner = False
         with self._lock:
@@ -9359,6 +9393,11 @@ class _BindingCache[T]:
                 return cached
             pending = self._pending.get(key)
             if pending is None:
+                if reusable is not None:
+                    for prior_key, result in reversed(self._ready.items()):
+                        if reusable(prior_key, result):
+                            self._remember_ready(key, result)
+                            return result
                 pending = _PendingAnalysis()
                 self._pending[key] = pending
                 self._computations += 1
@@ -9378,9 +9417,7 @@ class _BindingCache[T]:
                 pending.ready.set()
             raise
         with self._lock:
-            self._ready[key] = result
-            while len(self._ready) > self._max_entries:
-                self._ready.popitem(last=False)
+            self._remember_ready(key, result)
             pending.result = result
             self._pending.pop(key, None)
             pending.ready.set()
@@ -9453,11 +9490,28 @@ def _binding_analysis(
 ) -> _BindingAnalysis:
     if type(policy) is not PythonBindingFlowPolicy:
         raise TypeError("binding fixpoint requires an exact flow-only policy")
+    key = (_ANALYSIS_SCHEMA, source_digest, policy)
+
+    def reusable(prior_key: tuple[object, ...], result: _BindingAnalysis) -> bool:
+        if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
+            return False
+        prior = cast(PythonBindingFlowPolicy, prior_key[2])
+        opaque = policy.opaque_activation_sources
+        assert opaque is not None
+        # A deterministic transfer observes the same branches while every
+        # consumed activation query agrees. Keep the rest of the policy exact.
+        return replace(
+            prior, opaque_activation_sources=opaque
+        ) == policy and result.opaque_activation_reads.unchanged_under(
+            frozenset(opaque)
+        )
+
     return _CORE_CACHE.get_or_compute(
-        (_ANALYSIS_SCHEMA, source_digest, policy),
+        key,
         lambda: _Analyzer(policy, source_digest).analyze(
             tree(), ast_digest_admission=ast_digest_admission
         ),
+        reusable=reusable if policy.opaque_activation_sources is not None else None,
     )
 
 
