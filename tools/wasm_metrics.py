@@ -49,6 +49,9 @@ def _skip_const_expr(data: bytes, offset: int) -> int:
             return offset
         if opcode in {0x41, 0x42, 0x23, 0xD2}:
             _, offset = _read_varuint(data, offset)
+        elif opcode in {0x6A, 0x6B, 0x6C, 0x7C, 0x7D, 0x7E}:
+            # Extended constant expressions admit i32/i64 add, sub and mul.
+            continue
         elif opcode == 0x43:
             offset += 4
         elif opcode == 0x44:

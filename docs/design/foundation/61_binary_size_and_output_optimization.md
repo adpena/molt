@@ -942,6 +942,14 @@ code. The shared member is 10,755,038 bytes and 3,517,242 bytes with `gzip -n -9
 Its code and data sections are 7,611,676 and 2,948,853 bytes respectively. Both
 budget findings remain open. The standalone linked module is 8,511,376 bytes.
 
+The next split release link compresses relocated LEB operands and removes the
+debug name section. On macOS arm64 the Cloudflare fixture dropped from 1,220,151
+to 1,073,310 bytes in a same-object link replay. Both versions print `42` in Node
+and normalize to the same module with Binaryen's read/write path and no code
+passes. The app remains 24,734 bytes over its budget. The full Binaryen size
+pipeline saved 228,148 bytes in a separate matched replay and increased retired
+instructions by about 1% on `bench_class_hierarchy`, so it was not adopted.
+
 #### 2. Prune the dominant runtime and app roots
 
 The native decision is driven by the root attribution. Start with the existing Cargo-derived tier and archive/link plan. For a root that should be absent in a smaller program, remove the dependency at its producer, preserving demanded relocation paths. If an app-level resolver row demonstrably originates only in a dead publisher, fix the existing `AppCallableManifest` preparation and its partition consumers together. If fixed runtime support retains optional code via legitimate dynamic behavior, use the typed program fact at that support producer and retain the generic path in cells that can use it. A feature/profile change must keep publisher, fingerprint, installed-runtime and link-validation consumers aligned and justify its cold-build and artifact-cache costs. Plan for these decisions from the measured owners before choosing paths or writing a new record.

@@ -31,7 +31,10 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     render_source_extension_link_arguments,
 )
-from molt.wasm_artifact import _collect_wasm_export_names
+from molt.wasm_artifact import (
+    _collect_wasm_export_names,
+    strip_wasm_publication_sections,
+)
 from molt.wasm_optimizer_identity import (
     build_wasm_optimizer_attestation,
     encode_wasm_optimizer_attestation,
@@ -213,11 +216,16 @@ def publish_app_export_names(data: bytes, app_export_contract: Path) -> bytes:
     return _build_sections(rebuilt)
 
 
-def _publish_app_exports(staged: Path, app_export_contract: Path) -> bool:
+def _publish_app_exports(
+    staged: Path, app_export_contract: Path, *, strip_debug: bool = False
+) -> bool:
     try:
-        staged.write_bytes(
-            publish_app_export_names(staged.read_bytes(), app_export_contract)
-        )
+        data = publish_app_export_names(staged.read_bytes(), app_export_contract)
+        if strip_debug:
+            data = strip_wasm_publication_sections(
+                data, final_artifact=True, preserve_debug=False
+            )
+        staged.write_bytes(data)
     except ValueError as exc:
         print(f"wasm app exports: {exc}", file=sys.stderr)
         staged.unlink(missing_ok=True)
@@ -437,7 +445,9 @@ def side_module_link_command(
         "--no-export-dynamic",
         "--gc-sections",
         "--error-limit=0",
-        *(() if preserve_debug else ("--strip-debug",)),
+        # Shorten the relocated LEBs. Relocation compression changes code
+        # offsets and requires the linker to discard DWARF.
+        *(() if preserve_debug else ("--strip-debug", "--compress-relocations")),
         f"--export={main}",
         *(f"--export-if-defined={name}" for name in exports if name != main),
         "-o",
@@ -518,7 +528,9 @@ def link_side_module(
         print("wasm-ld failed to link the side module", file=sys.stderr)
         staged.unlink(missing_ok=True)
         return 1
-    if not _publish_app_exports(staged, app_export_contract):
+    if not _publish_app_exports(
+        staged, app_export_contract, strip_debug=not preserve_debug
+    ):
         return 1
     error = side_module_import_error(staged)
     if error is not None:
