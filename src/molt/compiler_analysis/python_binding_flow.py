@@ -3118,6 +3118,13 @@ class _InitializerPremiseReads:
     deferred_names: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True, slots=True)
+class _InitializerContinuation:
+    completion: PythonCompletionFlow[int]
+    observation: _ObservedStateFrame
+    history_job: int | None
+
+
 class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
@@ -3139,6 +3146,9 @@ class _Analyzer:
         self._foreign_tainted_exit: PythonSourceKey | None = None
         self._has_empty_module_expiry = False
         self._initializer_premise_reads: _InitializerPremiseReads | None = None
+        self._capture_initializer: (
+            Callable[[PythonCompletionFlow[int]], None] | None
+        ) = None
         self.source_digest = source_digest
         self.states = _StatePool()
         self.transfer = _BindingTransferFacts()
@@ -7889,14 +7899,26 @@ class _Analyzer:
         )
 
     def exec_statements(
-        self, body: Sequence[ast.stmt], state_id: int, scope: _Scope
+        self,
+        body: Sequence[ast.stmt],
+        state_id: int,
+        scope: _Scope,
+        *,
+        continuation: _InitializerContinuation | None = None,
+        capture: Callable[[PythonCompletionFlow[int]], None] | None = None,
     ) -> PythonCompletionFlow[int]:
         # Python represents an elif chain as nested If nodes. Schedule both
         # branches and their statement sequences explicitly: source depth must
         # not become Python evaluator call depth. Other compound statements
         # retain their own completion semantics and enter this same scheduler.
         frames: list[_StatementSequenceFrame | _ConditionalStatementFrame] = [
-            _StatementSequenceFrame(body, PythonCompletionFlow(normal=state_id))
+            _StatementSequenceFrame(
+                body,
+                PythonCompletionFlow(normal=state_id)
+                if continuation is None
+                else continuation.completion,
+                0 if continuation is None else 1,
+            )
         ]
         observation_depth = len(self._observed_stack)
         try:
@@ -7906,6 +7928,12 @@ class _Analyzer:
                     if frame.flow.normal is not None and frame.position < len(
                         frame.body
                     ):
+                        if (
+                            capture is not None
+                            and frame.position == 1
+                            and len(frames) == 1
+                        ):
+                            capture(frame.flow)
                         node = frame.body[frame.position]
                         frame.position += 1
                         incoming = frame.flow.normal
@@ -9737,11 +9765,36 @@ class _Analyzer:
             0, self.policy.entry_invalid_members
         )
         self._module_history = [entry_state]
-        observed: list[int] = [entry_state]
-        self._observed_stack.append(_ObservedStateFrame(observed))
-        self._active_lexical_history = observed
+        self._execute_initializer(entry_state)
+
+    def _execute_initializer(
+        self, entry: int, continuation: _InitializerContinuation | None = None
+    ) -> None:
+        assert self.module_scope is not None
+        module = self.module_scope
+        if continuation is None:
+            observation = _ObservedStateFrame([entry])
+        else:
+            source = continuation.observation
+            history = (
+                source.states.copy()
+                if continuation.history_job is None
+                else self.function_jobs[continuation.history_job].lexical_history
+            )
+            assert history is not None
+            observation = replace(
+                source, states=history, folded_ids=source.folded_ids.copy()
+            )
+        self._observed_stack.append(observation)
+        self._active_lexical_history = observation.states
         try:
-            module_flow = self.exec_statements(tree.body, entry_state, module)
+            module_flow = self.exec_statements(
+                self._module_tree.body,
+                entry,
+                module,
+                continuation=continuation,
+                capture=self._capture_initializer,
+            )
             if module_flow.normal is not None:
                 namespace = self.transfer.source_namespaces.setdefault(
                     self._module_source, {}
@@ -9765,7 +9818,7 @@ class _Analyzer:
 
         finally:
             self._observed_stack.pop()
-        self._active_lexical_history = None
+            self._active_lexical_history = None
         if (
             self._initializer_premise_reads is not None
             and self._foreign_reads is not None
@@ -10015,14 +10068,22 @@ class _Analyzer:
             ),
         )
 
-    def _fork_at_deferred_boundary(self, *, empty_transfer: bool = False) -> _Analyzer:
+    def _fork_at_deferred_boundary(
+        self, *, empty_transfer: bool = False, initializer_prefix: bool = False
+    ) -> _Analyzer:
         """Fork a drained prefix without sharing mutable scope or job owners."""
         assert self.module_scope is not None and self._dependency_authority is not None
-        assert not self._observed_stack and not self._binding_read_scopes
-        assert (
-            self._active_lexical_history is None and self._active_module_states is None
-        )
+        assert not self._binding_read_scopes and self._active_module_states is None
+        if initializer_prefix:
+            assert len(self._observed_stack) == 1
+            assert self._active_lexical_history is self._observed_stack[0].states
+        else:
+            assert not self._observed_stack and self._active_lexical_history is None
         result = _copy_analysis_containers(self)
+        result._observed_stack = []
+        result._active_lexical_history = None
+        result._initializer_premise_reads = None
+        result._capture_initializer = None
         # Stored binding states, trie nodes, syntax and projected facts are
         # immutable. The pool's indexes and the dependency caches are private
         # to each fork so the suffix cannot add records to the sealed prefix.
@@ -10277,6 +10338,55 @@ class _RebasableInitializer:
     prefix: _Analyzer
     reads: _InitializerPremiseReads
     size: int
+    continuation: _InitializerContinuation | None = None
+
+    @classmethod
+    def capture(
+        cls,
+        owner: _Analyzer,
+        reads: _InitializerPremiseReads,
+        completion: PythonCompletionFlow[int] | None = None,
+    ) -> _RebasableInitializer | None:
+        if owner._foreign_reads is None and completion is not None:
+            return None
+        size = _binding_checkpoint_size(owner) + len(reads.metadata)
+        if size > 8192:
+            return None
+        prefix = owner._fork_at_deferred_boundary(
+            initializer_prefix=completion is not None
+        )
+        if completion is None:
+            return cls(prefix, reads, size)
+        assert owner._foreign_reads is not None
+        current = owner._observed_stack[0]
+        history_job = next(
+            (
+                index
+                for index, job in enumerate(owner.function_jobs)
+                if job.lexical_history is current.states
+            ),
+            None,
+        )
+        reads = replace(
+            reads,
+            names=frozenset(owner._foreign_reads),
+            metadata=reads.metadata.copy(),
+            deferred_names=reads.deferred_names.copy(),
+        )
+        return cls(
+            prefix,
+            reads,
+            size,
+            _InitializerContinuation(
+                completion,
+                replace(
+                    current,
+                    states=current.states.copy(),
+                    folded_ids=current.folded_ids.copy(),
+                ),
+                history_job,
+            ),
+        )
 
     def revise(self, requested: _Analyzer) -> _Analyzer | None:
         prefix = self.prefix
@@ -10370,6 +10480,18 @@ class _RebasableInitializer:
             if work._foreign_tainted_exit is not None:
                 namespace = work.transfer.source_namespaces[work._foreign_tainted_exit]
                 namespace.update((name, frozenset()) for name in additions)
+        if self.continuation is not None:
+            entry = self.continuation.completion.normal
+            assert entry is not None
+            work._initializer_premise_reads = replace(
+                self.reads,
+                metadata=self.reads.metadata.copy(),
+                deferred_names=self.reads.deferred_names.copy(),
+            )
+            try:
+                work._execute_initializer(entry, self.continuation)
+            finally:
+                work._initializer_premise_reads = None
         return work
 
 
@@ -10400,7 +10522,7 @@ class _BindingRevisions:
         ] = {}
         self._observed_sources: set[str] = set()
         self._initializers: OrderedDict[
-            tuple[str, PythonBindingFlowPolicy], _RebasableInitializer
+            tuple[str, PythonBindingFlowPolicy], tuple[_RebasableInitializer, ...]
         ] = OrderedDict()
         self._initializer_extent = 0
 
@@ -10428,7 +10550,7 @@ class _BindingRevisions:
         with self._lock:
             prior = self._recent.get(key, ())
             recorded = self._recorded.get(key)
-            initializer = self._initializers.get(initializer_key)
+            initializers = self._initializers.get(initializer_key, ())
         if recorded is not None:
             revised = recorded.revise(policy)
             if revised is not None:
@@ -10466,40 +10588,46 @@ class _BindingRevisions:
                 )
                 break
         else:
-            rebased = None if initializer is None else initializer.revise(analyzer)
-            if rebased is not None:
-                analyzer = rebased
+            for initializer in reversed(initializers):
+                rebased = initializer.revise(analyzer)
+                if rebased is not None:
+                    analyzer = rebased
+                    break
             else:
                 reads = (
                     None
                     if analyzer._foreign_universe is None
                     else _InitializerPremiseReads()
                 )
+                first = next(
+                    (item for item in initializers if item.continuation is not None),
+                    None,
+                )
+
+                def capture_initializer(
+                    completion: PythonCompletionFlow[int],
+                ) -> None:
+                    nonlocal first
+                    assert reads is not None
+                    first = _RebasableInitializer.capture(analyzer, reads, completion)
+
                 analyzer._initializer_premise_reads = reads
+                if reads is not None and first is None:
+                    analyzer._capture_initializer = capture_initializer
                 try:
                     analyzer._analyze_module(
                         tree, ast_digest_admission=ast_digest_admission
                     )
                 finally:
                     analyzer._initializer_premise_reads = None
+                    analyzer._capture_initializer = None
                 if reads is not None:
-                    size = _binding_checkpoint_size(analyzer) + len(reads.metadata)
-                    if size <= 8192:
-                        captured = _RebasableInitializer(
-                            analyzer._fork_at_deferred_boundary(), reads, size
+                    completed = _RebasableInitializer.capture(analyzer, reads)
+                    if completed is not None:
+                        self._retain_initializers(
+                            initializer_key,
+                            (completed,) if first is None else (first, completed),
                         )
-                        with self._lock:
-                            replaced = self._initializers.pop(initializer_key, None)
-                            if replaced is not None:
-                                self._initializer_extent -= replaced.size
-                            self._initializers[initializer_key] = captured
-                            self._initializer_extent += size
-                            while (
-                                self._initializer_extent > 65536
-                                or len(self._initializers) > 128
-                            ):
-                                _, evicted = self._initializers.popitem(last=False)
-                                self._initializer_extent -= evicted.size
 
         def capture(owner: _Analyzer, completed_jobs: int) -> None:
             if checkpoints and checkpoints[-1].completed_jobs == completed_jobs:
@@ -10580,6 +10708,20 @@ class _BindingRevisions:
             else:
                 self._recorded.pop(key, None)
         return result
+
+    def _retain_initializers(
+        self,
+        key: tuple[str, PythonBindingFlowPolicy],
+        snapshots: tuple[_RebasableInitializer, ...],
+    ) -> None:
+        with self._lock:
+            replaced = self._initializers.pop(key, ())
+            self._initializer_extent -= sum(item.size for item in replaced)
+            self._initializers[key] = snapshots
+            self._initializer_extent += sum(item.size for item in snapshots)
+            while self._initializer_extent > 65536 or len(self._initializers) > 128:
+                _, evicted = self._initializers.popitem(last=False)
+                self._initializer_extent -= sum(item.size for item in evicted)
 
 
 _BINDING_REVISIONS: ContextVar[_BindingRevisions | None] = ContextVar(

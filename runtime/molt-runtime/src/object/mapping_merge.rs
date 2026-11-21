@@ -65,6 +65,10 @@ unsafe fn exact_str_proxy_backing(py: &PyToken<'_>, source: u64) -> Option<*mut 
     }
     let backing = super::ops::dict_backing_bits(py, mapping).ok()??;
     let dict = obj_from_bits(backing).as_ptr()?;
+    if unsafe { dict_storage(dict).kind } == DictKeyKind::Unicode {
+        return Some(dict);
+    }
+    // A general table can retain its kind after the last non-string key is removed.
     let str_class = builtin_classes(py).str;
     let mut cursor = 0;
     while let Some(row) = unsafe { dict_next_entry(dict, &mut cursor) } {

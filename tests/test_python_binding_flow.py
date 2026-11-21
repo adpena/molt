@@ -6969,52 +6969,57 @@ def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "writes", "reuses_initializer"),
+    ("source", "writes", "initializer_positions"),
     [
         (
             "def run():\n    value = 'known'\n    callback()\n    return value\n",
             (),
-            True,
+            (0,),
         ),
         (
             "class C:\n    value = 1\ndef run():\n    local = C\n"
             "    callback()\n    return local\n",
             ("synthetic",),
-            True,
+            (0,),
         ),
         (
             "def render(value):\n    return repr(value)\n",
             ("repr",),
-            True,
+            (0,),
         ),
         (
             "def write(key):\n    globals()[key] = 1\nobserved = provider\n"
             "def run():\n    return observed\n",
             ("provider",),
-            True,
+            (0,),
         ),
         (
             "def write(key):\n    globals()[key] = 1\nobserved = repr(1)\n"
             "def run():\n    return observed\n",
             ("__builtins__",),
-            False,
+            (0, 0),
         ),
         (
             "observed = provider\ndef run():\n    return observed\n",
             ("provider",),
-            False,
+            (0, 0),
         ),
         (
             "import importlib\ncallback()\n"
             "value = importlib.import_module('.child', __package__)\n"
             "def run():\n    return value\n",
             ("__package__",),
-            False,
+            (0, 1),
         ),
         (
             "from provider import mutable\ncallback()\nraise Exception()\n",
             ("mutable",),
-            False,
+            (0, 0),
+        ),
+        (
+            "def saved():\n    return result\nresult = repr(1)\nlast = saved\n",
+            ("repr",),
+            (0, 1),
         ),
     ],
 )
@@ -7022,23 +7027,21 @@ def test_initializer_revision_matches_fresh_binding_facts(
     monkeypatch: pytest.MonkeyPatch,
     source: str,
     writes: tuple[str, ...],
-    reuses_initializer: bool,
+    initializer_positions: tuple[int, ...],
 ) -> None:
     flow = python_binding_flow
-    initializers = 0
-    analyze = flow._Analyzer._analyze_module
+    positions: list[int] = []
+    execute = flow._Analyzer._execute_initializer
 
     def observe(
         analyzer: python_binding_flow._Analyzer,
-        tree: ast.Module,
-        *,
-        ast_digest_admission: python_binding_flow._PythonAstDigestAdmission | None,
+        entry: int,
+        continuation: python_binding_flow._InitializerContinuation | None = None,
     ) -> None:
-        nonlocal initializers
-        initializers += 1
-        analyze(analyzer, tree, ast_digest_admission=ast_digest_admission)
+        positions.append(0 if continuation is None else 1)
+        execute(analyzer, entry, continuation)
 
-    monkeypatch.setattr(flow._Analyzer, "_analyze_module", observe)
+    monkeypatch.setattr(flow._Analyzer, "_execute_initializer", observe)
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     initial = PythonBindingPolicy(
         target_python=(3, 15),
@@ -7054,7 +7057,7 @@ def test_initializer_revision_matches_fresh_binding_facts(
     with flow.python_binding_revision_scope():
         analyze_python_source_bindings(source, policy=initial)
         result = analyze_python_source_bindings(source, policy=revised)
-    assert initializers == (1 if reuses_initializer else 2)
+    assert tuple(positions) == initializer_positions
 
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     fresh = analyze_python_source_bindings(source, policy=revised)
