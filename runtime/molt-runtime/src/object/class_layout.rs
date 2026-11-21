@@ -164,21 +164,26 @@ pub(crate) unsafe fn prepare_slot_admission<'guard>(
 }
 
 impl<'guard> SlotAdmission<'guard> {
-    /// CPython type_new_slots: materialization precedes this function; variable
-    /// layout rejection precedes per-item validation, then special names are
-    /// visited in declaration order. Ordinary duplicate names remain valid.
+    /// CPython type_new_slots: materialization precedes this function, then
+    /// special names are visited in declaration order. Ordinary duplicate
+    /// names remain valid. Before 3.15 a variable-size base refuses any
+    /// nonempty `__slots__` first and never adds a weakref slot; from 3.15 its
+    /// managed `__dict__` and `__weakref__` live outside the item storage, and
+    /// `admit_fields` refuses the remaining members after the namespace check.
     pub(crate) unsafe fn validate(
         &self,
         py: &'guard PyToken<'guard>,
         names: Option<&[u64]>,
     ) -> Result<super::class_storage::ClassSlotPolicy, ()> {
         unsafe {
+            let managed_variable = crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
             let may_add_dict = !self.inherited.allows_dict;
-            let may_add_weak = !self.inherited.allows_weakref && !self.inherited.variable_sized;
+            let may_add_weak = !self.inherited.allows_weakref
+                && (managed_variable || !self.inherited.variable_sized);
             let mut add_dict = false;
             let mut add_weak = false;
             if let Some(names) = names {
-                if !names.is_empty() && self.inherited.variable_sized {
+                if !managed_variable && !names.is_empty() && self.inherited.variable_sized {
                     let base = self.base.expect("variable layout has a base");
                     let name = class_name_for_error(base.direct);
                     raise_exception::<()>(
@@ -238,8 +243,10 @@ impl<'guard> SlotAdmission<'guard> {
                 add_dict |= may_add_dict && self.secondary.allows_dict;
                 add_weak |= may_add_weak && self.secondary.allows_weakref;
             } else if self.native.is_none() {
+                // Without `__slots__`, only a fixed-size instance gains a
+                // weakref slot (every target version).
                 add_dict = may_add_dict;
-                add_weak = may_add_weak;
+                add_weak = may_add_weak && !self.inherited.variable_sized;
             }
             let native = self.native.unwrap_or_default();
             Ok(super::class_storage::ClassSlotPolicy {
@@ -249,6 +256,76 @@ impl<'guard> SlotAdmission<'guard> {
             })
         }
     }
+
+    /// CPython 3.15 type_new_descriptors: `fields` member slots remain after
+    /// `__dict__` and `__weakref__` leave the declaration. A variable-size base
+    /// stores no member beside its items unless it is a tuple subclass, whose
+    /// members follow the items. Earlier targets refused in `validate`.
+    pub(crate) unsafe fn admit_fields(
+        &self,
+        py: &'guard PyToken<'guard>,
+        fields: usize,
+    ) -> Result<(), ()> {
+        if fields == 0
+            || !self.inherited.variable_sized
+            || !crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+        {
+            return Ok(());
+        }
+        let base = self.base.expect("variable layout has a base");
+        if unsafe { is_real_subtype(py, base.direct, builtin_classes(py).tuple) } {
+            return Ok(());
+        }
+        let name = class_name_for_error(base.direct);
+        raise_exception::<()>(
+            py,
+            BuiltinExc::TypeError,
+            &format!("arbitrary __slots__ not supported for subtype of '{name}'"),
+        );
+        Err(())
+    }
+}
+
+/// The runtime's one `__dict__` or `__weakref__` getset declared on `object`
+/// (CPython 3.15 `type_new_descriptors`), borrowed from the special cache; 0
+/// with an exception pending when allocation fails. Its accessors check the
+/// receiver's own capability, since `object` admits every receiver.
+fn shared_instance_descriptor_bits(
+    py: &PyToken<'_>,
+    flavor: super::layout::NativeDescriptorFlavor,
+) -> u64 {
+    let cache = &runtime_state(py).special_cache;
+    let (slot, name) = match flavor {
+        super::layout::NativeDescriptorFlavor::InstanceDictionary => {
+            (&cache.instance_dict_descriptor, crate::NameId::DunderDict)
+        }
+        super::layout::NativeDescriptorFlavor::InstanceWeakref => (
+            &cache.instance_weakref_descriptor,
+            crate::NameId::DunderWeakref,
+        ),
+        _ => unreachable!("only instance capabilities share an object getset"),
+    };
+    init_atomic_bits(py, slot, || {
+        let Some(name) = name.owned_bits(py) else {
+            return 0;
+        };
+        let none = MoltObject::none().bits();
+        let descriptor = crate::builtins::types::alloc_native_descriptor(
+            py,
+            crate::builtins::types::NativeDescriptorSpec {
+                flavor,
+                operation: 0,
+                owner: builtin_classes(py).object,
+                name,
+                doc: none,
+                getter: none,
+                setter: none,
+                deleter: none,
+            },
+        );
+        dec_ref_bits(py, name);
+        if exception_pending(py) { 0 } else { descriptor }
+    })
 }
 
 /// Borrow a real class's C view without invoking Python identity hooks. A
@@ -1142,6 +1219,10 @@ pub(crate) unsafe fn prepare<'guard>(
         let base_policy = best.and_then(|base| {
             super::layout::class_slot_policy(obj_from_bits(base.direct).as_ptr().unwrap())
         });
+        // CPython 3.15's type_new publishes one common getset per capability,
+        // declared on `object`, instead of one per heap type.
+        let shared_capability_descriptors = super::class_storage::class_is_heap_type(class)
+            && crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
         for (adds, name, flavor) in [
             (
                 policy.allows_dict && !base_policy.is_some_and(|base| base.allows_dict),
@@ -1166,6 +1247,13 @@ pub(crate) unsafe fn prepare<'guard>(
                 return Err(());
             }
             if dict_get_in_place(py, namespace, name)?.is_none() {
+                if shared_capability_descriptors {
+                    let descriptor = shared_instance_descriptor_bits(py, flavor);
+                    if descriptor == 0 || !dict_set_in_place(py, namespace, name, descriptor) {
+                        return Err(());
+                    }
+                    continue;
+                }
                 let descriptor = crate::builtins::types::alloc_native_descriptor(
                     py,
                     crate::builtins::types::NativeDescriptorSpec {

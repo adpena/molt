@@ -1460,6 +1460,8 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
         &state.special_cache.function_code_descriptor,
         &state.special_cache.function_globals_descriptor,
         &state.special_cache.weakref_callback_descriptor,
+        &state.special_cache.instance_dict_descriptor,
+        &state.special_cache.instance_weakref_descriptor,
     ];
     clear_atomic_slots(_py, &slots)
 }

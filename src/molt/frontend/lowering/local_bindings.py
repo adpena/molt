@@ -32,10 +32,12 @@ from molt.compiler_analysis.python_binding_flow import (
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     AsyncFrameSlotRole,
+    BuiltinLayout,
     ClassId,
     ComprehensionBinding,
     CompilerLocalHome,
     ExactClassFact,
+    ExactFact,
     MoltOp,
     MoltValue,
     ScratchCell,
@@ -96,14 +98,17 @@ class LocalBindingMixin(GeneratorMixinBase):
         fact survives it on a local no callback can rebind. Every other
         boundary (a loop's fixed point, an exception join) ends them all.
         """
+        no_class_writer = self._instance_class_writer() is None
         surviving = (
             {
                 name: fact
                 for name, fact in self.exact_locals.items()
                 if fact.token == self.exact_class_token
                 and self._binding_survives_callbacks(name)
+                # No `__class__` store changes a builtin exception's layout.
+                and (no_class_writer or isinstance(fact.class_id, BuiltinLayout))
             }
-            if callback and self._instance_class_writer() is None
+            if callback
             else {}
         )
         token = self._advance_exact_class_token()
@@ -133,7 +138,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         )
 
     def _stamp_exact_class(
-        self, value: MoltValue, class_id: ClassId, *, durable: bool = False
+        self, value: MoltValue, class_id: ExactFact, *, durable: bool = False
     ) -> MoltValue:
         value.exact_class = class_id
         value.exact_class_token = self.exact_class_token
@@ -149,7 +154,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         self._stamp_exact_class(value, fact.class_id, durable=fact.durable)
 
     def _publish_exact_local(
-        self, name: str, class_id: ClassId, *, durable: bool = False
+        self, name: str, class_id: ExactFact, *, durable: bool = False
     ) -> None:
         self.exact_locals[name] = ExactClassFact(
             class_id, self.exact_class_token, durable
@@ -158,14 +163,29 @@ class LocalBindingMixin(GeneratorMixinBase):
     def _exact_class_for_name(
         self, name: str, *, fields: bool = False
     ) -> ClassId | None:
-        """The class ``name`` exactly holds. A durable fact answers only a
-        field access (``fields``); see ``ExactClassFact.durable``."""
+        """The user class ``name`` exactly holds. A durable fact answers only
+        a field access (``fields``); see ``ExactClassFact.durable``."""
+        fact = self._exact_fact_for_name(name, fields=fields)
+        return fact if isinstance(fact, ClassId) else None
+
+    def _exact_fact_for_name(
+        self, name: str, *, fields: bool = False
+    ) -> ExactFact | None:
+        """The exact-identity fact ``name`` holds, a user class or a builtin
+        layout; the propagation of either."""
         fact = self.exact_locals.get(name)
         if fact is None or fact.token != self.exact_class_token:
             return None
         if fact.durable and not fields:
             return None
         return fact.class_id
+
+    def _builtin_layout_for_value(
+        self, value: MoltValue, source_name: str | None
+    ) -> BuiltinLayout | None:
+        """The builtin layout ``value`` (read as ``source_name``) proves."""
+        fact = self._exact_fact_for_value(value, source_name, fields=True)
+        return fact if isinstance(fact, BuiltinLayout) else None
 
     def _snapshot_live_exact_bindings(self) -> dict[str, ExactClassFact]:
         return {
@@ -748,17 +768,15 @@ class LocalBindingMixin(GeneratorMixinBase):
                 self.exact_locals.pop(name, None)
                 return
             for fields in (False, True):
-                source_class = self._exact_class_for_name(source_expr.id, fields=fields)
-                lowered_class = self._exact_class_for_value(
-                    lowered_value, fields=fields
-                )
+                source_class = self._exact_fact_for_name(source_expr.id, fields=fields)
+                lowered_class = self._exact_fact_for_value(lowered_value, fields=fields)
                 if source_class is not None and lowered_class == source_class:
                     self._publish_exact_local(name, source_class, durable=fields)
                     return
             self.exact_locals.pop(name, None)
             return
         for fields in (False, True):
-            exact_class = self._exact_class_for_value(lowered_value, fields=fields)
+            exact_class = self._exact_fact_for_value(lowered_value, fields=fields)
             if exact_class is not None:
                 self._publish_exact_local(name, exact_class, durable=fields)
                 return
@@ -771,6 +789,17 @@ class LocalBindingMixin(GeneratorMixinBase):
         *,
         fields: bool = False,
     ) -> ClassId | None:
+        """The user class ``value`` exactly holds (see `_exact_fact_for_value`)."""
+        fact = self._exact_fact_for_value(value, source_name, fields=fields)
+        return fact if isinstance(fact, ClassId) else None
+
+    def _exact_fact_for_value(
+        self,
+        value: MoltValue | None,
+        source_name: str | None = None,
+        *,
+        fields: bool = False,
+    ) -> ExactFact | None:
         """Resolve the canonical lowered fact, with named-binding recovery.
 
         ``fields``: the consumer is a field access, which needs only the
@@ -784,6 +813,7 @@ class LocalBindingMixin(GeneratorMixinBase):
             live = (
                 value.exact_class_token == self.exact_class_token
                 or self._instance_class_writer() is None
+                or isinstance(value.exact_class, BuiltinLayout)
             )
         else:
             live = (
@@ -793,7 +823,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         if not live:
             return None
         if source_name is not None:
-            named_class = self._exact_class_for_name(source_name, fields=fields)
+            named_class = self._exact_fact_for_name(source_name, fields=fields)
             return named_class if value.exact_class == named_class else None
         return value.exact_class
 
@@ -1360,11 +1390,11 @@ class LocalBindingMixin(GeneratorMixinBase):
         return self._emit_owned_value_alias(value) if value.borrows_binding else value
 
     def _emit_owned_value_alias(self, value: MoltValue) -> MoltValue:
-        exact_class = self._exact_class_for_value(value)
+        exact_class = self._exact_fact_for_value(value)
         durable_class = (
             None
             if exact_class is not None
-            else self._exact_class_for_value(value, fields=True)
+            else self._exact_fact_for_value(value, fields=True)
         )
         retained = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(MoltOp(kind="BINDING_ALIAS", args=[value], result=retained))
@@ -1472,7 +1502,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         *,
         publish_module: bool = False,
     ) -> None:
-        exact_class = self._exact_class_for_value(value)
+        exact_class = self._exact_fact_for_value(value)
         self._invalidate_loop_guard(name)
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:

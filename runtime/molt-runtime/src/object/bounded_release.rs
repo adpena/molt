@@ -352,6 +352,23 @@ impl Drop for ReleaseFrame<'_> {
     }
 }
 
+/// Whether this authority would run a release now rather than defer it. A
+/// release that runs no code and releases no child (`free_plain_leaf`) is then
+/// the same whether it enters a frame or not: it nests nothing, and the 3.12
+/// trashcan count it would add covers no child.
+#[inline(always)]
+pub(super) fn runs_now(py: &PyToken<'_>) -> bool {
+    let state = py.execution_tls().terminal_release.get();
+    if state.is_null() {
+        return true;
+    }
+    // SAFETY: only the current thread reads this Cell, and its outermost
+    // release owns the state while it is set.
+    let state = unsafe { &*state };
+    state.depth.get() < RELEASE_DEPTH_LIMIT
+        && !(state.trashcan && state.trash_nesting.get() >= TRASHCAN_UNWIND_LEVEL)
+}
+
 /// The one managed terminal entry, used by every generated heap kind and by
 /// ordinary, collector-pin, C-view and runtime-teardown owner releases.
 #[inline(always)]

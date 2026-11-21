@@ -117,8 +117,13 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
     } else {
         ObjectAuxPreselection::ClassInline
     };
+    // CPython never tracks an exact `object()`: it takes no GC head.
+    let untracked = obj_from_bits(class_bits)
+        .as_ptr()
+        .is_some_and(|class| unsafe { super::lifecycle_plan::plan(class) }.instances_untracked());
+    let gc_head = super::kind_reserves_gc_head(type_id) && !untracked;
     let obj_ptr =
-        crate::object::alloc_object_zeroed_unpublished_with_aux(_py, total_size, type_id, aux);
+        super::alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true, gc_head);
     if obj_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -2217,9 +2222,11 @@ pub(crate) fn alloc_class_obj_with_spec(
         );
         // No compiled class statement has stamped this class yet, and no
         // native iterator advance is declared until a native factory does so.
+        // The lifecycle plan is absent until the class seals.
         for word in [
             super::layout::CLASS_DEFINITION_WORD,
             super::layout::CLASS_NATIVE_NEXT_WORD,
+            super::lifecycle_plan::CLASS_LIFECYCLE_PLAN_WORD,
         ] {
             std::ptr::write(
                 ptr.add(word * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicU64,

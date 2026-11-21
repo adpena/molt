@@ -64,6 +64,7 @@ pub(crate) mod heap_lifecycle;
 mod immortal_owner_tests;
 pub(crate) mod iterable;
 pub(crate) mod layout;
+pub(crate) mod lifecycle_plan;
 pub(crate) mod list_mutation;
 #[cfg(test)]
 mod list_representation_tests;
@@ -2583,7 +2584,11 @@ fn alloc_object_zeroed_with_aux_policy(
             record_allocation_profile(_py, header, type_id, plan.alloc_size);
         }
         let data_ptr = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
-        gc::gc_track_if_cyclic(_py, data_ptr, type_id);
+        // Only a head-bearing allocation can be a member; a kind without a
+        // head never tracks, and an exact `object()` has none.
+        if gc_head {
+            gc::gc_track_if_cyclic(_py, data_ptr, type_id);
+        }
         data_ptr
     }
 }
@@ -3121,10 +3126,11 @@ unsafe fn class_has_stable_nonfinalizing_mro(_py: &PyToken<'_>, class_ptr: *mut 
     }
 }
 
-/// Finalizer eligibility is a projection of current MRO declaration facts,
-/// not a cached inherited bit. A mutable base can add or remove __del__ after
-/// descendants were sealed; no descendant invalidation registry is required.
-/// This scan pins the already published MRO and never allocates or runs Python.
+/// Finalizer eligibility is a projection of current MRO declaration facts. A
+/// sealed class answers from its lifecycle plan, which every declaration and
+/// hierarchy change recomputes for the class and its descendants
+/// (`lifecycle_plan`); a class without a plan answers from the MRO walk the
+/// plan itself uses. Neither allocates nor runs Python.
 pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
         if object_type_id(ptr) == TYPE_ID_ASYNC_GENERATOR {
@@ -3139,22 +3145,12 @@ pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bo
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
             return false;
         }
-        if class_header_declares_finalizer(class_ptr) {
-            return true;
+        let plan = lifecycle_plan::plan(class_ptr);
+        if plan.is_present() {
+            plan.has_finalizer()
+        } else {
+            lifecycle_plan::mro_declares_finalizer(class_ptr)
         }
-        // The walk reads class header flags and runs no code, so it borrows
-        // the MRO under the GIL instead of pinning it.
-        let mro = obj_from_bits(layout::class_mro_bits(class_ptr)).as_ptr();
-        mro.and_then(|mro| {
-            seq_access::with_immutable_tuple_slice(mro, |mro| {
-                mro.iter().skip(1).any(|&bits| {
-                    obj_from_bits(bits)
-                        .as_ptr()
-                        .is_some_and(|base| class_header_declares_finalizer(base))
-                })
-            })
-        })
-        .unwrap_or(false)
     }
 }
 
@@ -3213,10 +3209,15 @@ pub(crate) unsafe fn class_refresh_declared_finalizer_flag(_py: &PyToken<'_>, cl
             });
 
         let header = header_from_obj_ptr(class_ptr);
-        if has_finalizer {
-            (*header).fetch_or_flags(HEADER_FLAG_CLASS_DECLARES_FINALIZER);
+        let previous = if has_finalizer {
+            (*header).fetch_or_flags(HEADER_FLAG_CLASS_DECLARES_FINALIZER)
         } else {
-            (*header).fetch_and_flags(!HEADER_FLAG_CLASS_DECLARES_FINALIZER);
+            (*header).fetch_and_flags(!HEADER_FLAG_CLASS_DECLARES_FINALIZER)
+        };
+        // The declaration is a lifecycle-plan input of this class and every
+        // descendant; keep their plans current even before a version bump.
+        if ((previous & HEADER_FLAG_CLASS_DECLARES_FINALIZER) != 0) != has_finalizer {
+            lifecycle_plan::refresh_family(class_ptr);
         }
     }
 }
@@ -3393,6 +3394,10 @@ pub(crate) unsafe fn class_finish_definition(
         let mut prepared = class_layout::prepare(_py, class_ptr)?;
         prepared.publish(_py, class_ptr);
         finish_guard.complete();
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let root_object =
+            builtin_classes_if_initialized(_py).is_some_and(|classes| classes.object == class_bits);
+        lifecycle_plan::publish_sealed(class_ptr, root_object);
         // Old namespace/map contents may release callback-capable values only
         // after every descriptor, row, size and finished policy is coherent.
         drop(prepared);
@@ -4452,6 +4457,11 @@ unsafe fn dec_ref_ptr_terminal(
     header_aux: ObjectAuxSnapshot,
 ) -> Option<u64> {
     unsafe {
+        if type_id == TYPE_ID_OBJECT
+            && free_plain_leaf(py, ptr, header_flags, header_size_class, header_aux)
+        {
+            return None;
+        }
         bounded_release::release(
             py,
             bounded_release::TerminalRelease {
@@ -4462,6 +4472,71 @@ unsafe fn dec_ref_ptr_terminal(
                 header_aux,
             },
         )
+    }
+}
+
+/// Free a plain instance whose death nothing can observe, without the
+/// bounded-release frame (call_anatomy.md 4.5, "Implementation (object
+/// lifecycle)", step 3). The snapshot must show no weak reference, C view,
+/// scheduler retain, scoped storage or pointer field (field-slot invariant 4:
+/// while `HAS_PTRS` is clear every field holds an immediate or the immortal
+/// missing word, and there is no dictionary), an owned inline class edge, and
+/// a class plan for plain instances with no finalizer anywhere in the MRO.
+/// Such a release runs no Python code and releases no child, so it equals
+/// entering the frame and running the body whenever the frame would run it
+/// now. Returns false, having done nothing, for every other object.
+#[inline(always)]
+unsafe fn free_plain_leaf(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    header_flags: u32,
+    header_size_class: u16,
+    header_aux: ObjectAuxSnapshot,
+) -> bool {
+    const OBSERVED: u32 = HEADER_FLAG_HAS_WEAKREF
+        | HEADER_FLAG_HAS_ABI_VIEW
+        | crate::HEADER_FLAG_SPAWN_RETAIN
+        | HEADER_FLAG_SCOPED
+        | HEADER_FLAG_HAS_PTRS
+        | HEADER_FLAG_DEALLOCATING;
+    unsafe {
+        if header_flags & OBSERVED != 0
+            || header_aux.kind != HEADER_AUX_KIND_CLASS_INLINE
+            || header_aux.word & HEADER_CLASS_WORD_BORROWED != 0
+        {
+            return false;
+        }
+        let class_bits = object_class_bits_from_word(header_aux.word);
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return false;
+        };
+        if !lifecycle_plan::plan(class_ptr).frees_trivially()
+            || !bounded_release::runs_now(py)
+            || debug_dec_ref_zero()
+        {
+            return false;
+        }
+        gc::gc_untrack(py, ptr, TYPE_ID_OBJECT, gc::GcUntrackReason::Deallocation);
+        #[cfg(debug_assertions)]
+        molt_obj_model::release_ptr(ptr);
+        let total_size =
+            total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
+        let allocation = total_size + gc_head_bytes_for_flags(header_flags);
+        crate::resource::release_allocation(allocation);
+        let header_ptr = header_from_obj_ptr(ptr);
+        let layout = std::alloc::Layout::from_size_align(allocation, 8)
+            .unwrap_or_else(|_| std::process::abort());
+        std::alloc::dealloc(
+            header_ptr
+                .cast::<u8>()
+                .sub(gc_head_bytes_for_flags(header_flags)),
+            layout,
+        );
+        if crate::profile_enabled(py) {
+            record_terminal_deallocation(py, TYPE_ID_OBJECT, allocation as u64);
+        }
+        dec_ref_bits(py, class_bits);
+        true
     }
 }
 
@@ -5019,9 +5094,14 @@ mod tests {
             let old_flags = unsafe { (*class_header).load_metadata_flags() };
             unsafe {
                 (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
+                // A raw declaration write bypasses the refresh authority.
+                super::lifecycle_plan::refresh_family(class_ptr);
             }
             let result = run(object_bits);
-            unsafe { (*class_header).store_flags(old_flags) };
+            unsafe {
+                (*class_header).store_flags(old_flags);
+                super::lifecycle_plan::refresh_family(class_ptr);
+            }
             result
         })
     }
@@ -5386,9 +5466,18 @@ mod tests {
                 unsafe { super::layout::native_descriptor_flavor(descriptor_ptr) },
                 Some(super::layout::NativeDescriptorFlavor::InstanceDictionary),
             );
+            // CPython 3.15 shares one getset per capability, declared on
+            // `object` (`__objclass__` is object); earlier targets give each
+            // heap class its own, which owns the class.
+            let shared = crate::object::ops_sys::runtime_target_at_least(_py, 3, 15);
+            let descriptor_owner = if shared {
+                crate::builtin_classes(_py).object
+            } else {
+                crate::MoltObject::from_ptr(class_ptr).bits()
+            };
             assert_eq!(
                 unsafe { super::layout::native_descriptor_owner_bits(descriptor_ptr) },
-                crate::MoltObject::from_ptr(class_ptr).bits(),
+                descriptor_owner,
             );
             dec_ref_bits(_py, dict_name);
             // CPython's add_weak rule: a heap class over `object` without
@@ -5405,13 +5494,13 @@ mod tests {
             );
             assert_eq!(
                 unsafe { super::layout::native_descriptor_owner_bits(weakref_ptr) },
-                crate::MoltObject::from_ptr(class_ptr).bits(),
+                descriptor_owner,
             );
             dec_ref_bits(_py, weakref_name);
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                allocated_class_rc + 2,
+                allocated_class_rc + if shared { 0 } else { 2 },
                 "sealing publishes both descriptors' class owners before the baseline"
             );
             (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
@@ -5473,10 +5562,16 @@ mod tests {
             );
             let class_ptr = crate::obj_from_bits(class_bits).as_ptr().unwrap();
             unsafe { super::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
+            // The 3.15 shared getsets own `object`, not this class.
+            let descriptor_owned = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 15) {
+                0
+            } else {
+                2
+            };
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                initial_class_rc - 2,
-                "fixture teardown releases both descriptor-owned class references"
+                initial_class_rc - descriptor_owned,
+                "fixture teardown releases every descriptor-owned class reference"
             );
             dec_ref_bits(_py, class_bits);
             assert!(!crate::exception_pending(_py));
@@ -5569,9 +5664,12 @@ mod tests {
             let _restore =
                 std::mem::DropGuard::new((class_header, old_flags), |(header, flags)| unsafe {
                     (*header).store_flags(flags);
+                    super::lifecycle_plan::refresh_family(class_ptr);
                 });
             unsafe {
                 (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
+                // A raw declaration write bypasses the refresh authority.
+                super::lifecycle_plan::refresh_family(class_ptr);
             }
 
             let ptr = alloc_object_with_aux(
@@ -5594,6 +5692,7 @@ mod tests {
 
             unsafe {
                 (*class_header).store_flags(old_flags);
+                super::lifecycle_plan::refresh_family(class_ptr);
             }
             dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
         });

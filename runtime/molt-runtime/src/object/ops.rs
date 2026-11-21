@@ -132,9 +132,7 @@ pub(crate) use {
     super::ops_sys::molt_sys_abiflags_attached_body,
     super::ops_sys::molt_sys_api_version_attached_body,
     super::ops_sys::molt_sys_hexversion_attached_body,
-    super::ops_sys::molt_sys_implementation_payload_attached_body,
     super::ops_sys::molt_sys_version_attached_body,
-    super::ops_sys::molt_sys_version_info_attached_body,
 };
 
 #[cfg(any(test, feature = "stdlib_path"))]

@@ -68,7 +68,10 @@ follows the same layout rule with one word:
   (`kind_reserves_gc_head`): every projection except `Never` and
   `NativeSubtype`, plus `list[int]`/`list[bool]`, which promote in place to a
   tracked list. A `NativeSubtype` kind reserves a head only at its subtype
-  allocation, so plain `str`/`bytes` pay nothing. Heap, arena and frame storage
+  allocation, so plain `str`/`bytes` pay nothing. An exact `object()` reserves none and is
+  never a member, as CPython never tracks it (its class's lifecycle plan says `UNTRACKED`;
+  call_anatomy.md 4.5, "Implementation (object lifecycle)"); every other heap-class instance
+  is a member from allocation, as in CPython. Heap, arena and frame storage
   all reserve it. The 24-byte header, `HEADER_SIZE_BYTES` and every codegen
   offset are unchanged; compiled code never allocates objects itself, and C-API
   views are separate allocations. The size class still describes header and

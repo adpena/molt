@@ -73,6 +73,17 @@ class PropertyGrandchild(PropertyChild):
     pass
 
 
+def construction_outcome(action):
+    """The constructed type's name, or the refusal: CPython 3.15's
+    staticmethod and classmethod __new__ take exactly one positional
+    callable and no keywords, and initialize the wrapper."""
+    try:
+        value = action()
+    except TypeError as error:
+        return f"TypeError: {error}"
+    return type(value).__name__
+
+
 def allocation_matrix():
     for label, base, child, grandchild, payload in (
         ("static", staticmethod, StaticChild, StaticGrandchild, static_first),
@@ -82,64 +93,92 @@ def allocation_matrix():
         exact = base(payload)
         direct_subclass = child(payload)
         inherited_subclass = grandchild(payload)
-        raw_exact = base.__new__(base, "ignored", ignored=True)
-        raw_direct = child.__new__(child, "ignored", ignored=True)
-        raw_inherited = grandchild.__new__(grandchild, "ignored", ignored=True)
         print(
             "allocation",
             label,
             type(exact).__name__,
             type(direct_subclass).__name__,
             type(inherited_subclass).__name__,
-            type(raw_exact).__name__,
-            type(raw_direct).__name__,
-            type(raw_inherited).__name__,
         )
+        for owner in (base, child, grandchild):
+            print(
+                "raw-allocation",
+                label,
+                owner.__name__,
+                construction_outcome(
+                    lambda owner=owner: owner.__new__(owner, "ignored", ignored=True)
+                ),
+                construction_outcome(lambda owner=owner: owner.__new__(owner)),
+                construction_outcome(
+                    lambda owner=owner: owner.__new__(owner, payload, payload)
+                ),
+            )
+        if base is not property:
+            single = base.__new__(base, payload)
+            print(
+                "raw-allocation-callable",
+                label,
+                single.__func__ is payload,
+                getattr(single, "__wrapped__", None) is payload,
+                sorted(single.__dict__),
+            )
+
+
+def uninitialized_wrapper(wrapper_type):
+    """An uninitialized wrapper, or None where __new__ requires the callable
+    (CPython 3.15)."""
+    try:
+        return wrapper_type.__new__(wrapper_type)
+    except TypeError as error:
+        print("uninitialized", wrapper_type.__name__, "unavailable", error)
+        return None
 
 
 def uninitialized_objects():
     class Owner:
         pass
 
-    raw_static = staticmethod.__new__(staticmethod)
-    print(
-        "uninitialized-static-members",
-        raw_static.__func__,
-        raw_static.__wrapped__,
-        raw_static.__dict__,
-    )
-    expect_error(
-        "uninitialized-static-get-class",
-        RuntimeError,
-        lambda: raw_static.__get__(None, Owner),
-    )
-    expect_error(
-        "uninitialized-static-get-instance",
-        RuntimeError,
-        lambda: raw_static.__get__(Owner(), Owner),
-    )
-    # CPython 3.12.13 dereferences the null payload and crashes here. This is
-    # deliberately outside the safe in-process differential oracle.
-    print("uninitialized-static-call", "skipped-upstream-crash")
+    raw_static = uninitialized_wrapper(staticmethod)
+    if raw_static is not None:
+        print(
+            "uninitialized-static-members",
+            raw_static.__func__,
+            raw_static.__wrapped__,
+            raw_static.__dict__,
+        )
+        expect_error(
+            "uninitialized-static-get-class",
+            RuntimeError,
+            lambda: raw_static.__get__(None, Owner),
+        )
+        expect_error(
+            "uninitialized-static-get-instance",
+            RuntimeError,
+            lambda: raw_static.__get__(Owner(), Owner),
+        )
+        # CPython 3.12.13 dereferences the null payload and crashes here. This
+        # is deliberately outside the safe in-process differential oracle.
+        print("uninitialized-static-call", "skipped-upstream-crash")
 
-    raw_class = classmethod.__new__(classmethod)
-    print(
-        "uninitialized-class-members",
-        raw_class.__func__,
-        raw_class.__wrapped__,
-        raw_class.__dict__,
-        callable(raw_class),
-    )
-    expect_error(
-        "uninitialized-class-get-class",
-        RuntimeError,
-        lambda: raw_class.__get__(None, Owner),
-    )
-    expect_error(
-        "uninitialized-class-get-instance",
-        RuntimeError,
-        lambda: raw_class.__get__(Owner(), Owner),
-    )
+    raw_class = uninitialized_wrapper(classmethod)
+    if raw_class is not None:
+        print(
+            "uninitialized-class-members",
+            raw_class.__func__,
+            raw_class.__wrapped__,
+            raw_class.__dict__,
+            callable(raw_class),
+        )
+        expect_error(
+            "uninitialized-class-get-class",
+            RuntimeError,
+            lambda: raw_class.__get__(None, Owner),
+        )
+        expect_error(
+            "uninitialized-class-get-instance",
+            RuntimeError,
+            lambda: raw_class.__get__(Owner(), Owner),
+        )
 
     raw_property = property.__new__(property)
     print(

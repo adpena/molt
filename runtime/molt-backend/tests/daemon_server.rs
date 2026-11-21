@@ -17,8 +17,11 @@ const PROTOCOL_VERSION: u32 = include!(concat!(
 ));
 // Bounds a hung daemon, not a slow one: these tests check concurrency and
 // retirement, and a request that takes 1 s alone took over 30 s in a landing
-// gate that shares the machine with other builds (measured 2026-11-11).
-const PATIENCE: Duration = Duration::from_secs(120);
+// gate that shares the machine with other builds (measured 2026-11-11). A
+// request that spawns production workers pays the first-launch executable scan
+// that START_PATIENCE bounds; on 2026-11-20 two such requests passed 120 s in
+// a loaded landing gate while every compile in them took under 2 ms.
+const PATIENCE: Duration = Duration::from_secs(300);
 /// The first launch of a freshly built backend binary can wait on macOS's scan
 /// of the new executable for tens of seconds under load; a daemon that dies
 /// fails at once below, so a long start deadline costs a passing run nothing.

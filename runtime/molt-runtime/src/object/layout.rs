@@ -2804,8 +2804,10 @@ unsafe fn advance_class_layout_version(ptr: *mut u8) {
 pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
     unsafe {
         advance_class_layout_version(ptr);
+        super::lifecycle_plan::refresh(ptr);
         super::class_subclasses::for_each_descendant(ptr, |subclass| {
-            advance_class_layout_version(subclass)
+            advance_class_layout_version(subclass);
+            super::lifecycle_plan::refresh(subclass);
         });
     }
     // Also bump the global type version so inline caches are invalidated.

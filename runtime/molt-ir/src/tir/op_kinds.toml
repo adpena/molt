@@ -567,7 +567,7 @@ simpleir_iterable_protocol_semantics_kinds = [
 simpleir_object_model_semantics_kinds = [
     "const_none", "const_bytes",
     "closure_load", "closure_store",
-    "guarded_field_get", "guarded_field_set",
+    "guarded_field_get", "guarded_field_set", "exception_field_get",
     "module_del_global", "module_del_global_if_present",
     "build_list", "list_new", "alloc", "build_dict", "dict_new",
     "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
@@ -734,6 +734,7 @@ ssa_original_kind_preserving_kinds = [
     "get_attr_generic_ptr",
     "get_attr_generic_obj",
     "get_attr_name",
+    "exception_field_get",
     "guarded_field_get",
     "load",
     "guarded_load",
@@ -4508,7 +4509,7 @@ mapper_opcode = "Free"
 
 [[kind]]
 canonical = "get_attr"
-aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "guarded_load", "load_attr"]
+aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "guarded_load", "load_attr", "exception_field_get"]
 mapper_opcode = "LoadAttr"
 
 [[kind]]

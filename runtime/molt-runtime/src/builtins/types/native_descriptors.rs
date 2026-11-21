@@ -362,6 +362,47 @@ unsafe fn descriptor_text(ptr: *mut u8) -> (String, String) {
     (name, owner)
 }
 
+/// CPython 3.15 `subtype_dict` and `subtype_getweakref`: the common getset is
+/// declared on `object`, which admits every receiver, so the accessor checks
+/// the receiver type's own capability. A per-class descriptor's receiver check
+/// already implies it.
+unsafe fn shared_capability_admits(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    flavor: NativeDescriptorFlavor,
+    instance: u64,
+) -> bool {
+    if unsafe { native_descriptor_owner_bits(ptr) } != builtin_classes(py).object {
+        return true;
+    }
+    let (admitted, message) = match flavor {
+        NativeDescriptorFlavor::InstanceDictionary => {
+            let class = type_of_bits(py, instance);
+            let admitted = obj_from_bits(class).as_ptr().is_some_and(|class| unsafe {
+                object_type_id(class) == TYPE_ID_TYPE
+                    && crate::builtins::attr::class_slots_info(py, class)
+                        .is_some_and(|info| info.allows_dict)
+            });
+            (admitted, "This object has no __dict__")
+        }
+        NativeDescriptorFlavor::InstanceWeakref => (
+            crate::object::weakref::object_supports_weakrefs(py, instance),
+            "This object has no __weakref__",
+        ),
+        _ => return true,
+    };
+    if !admitted {
+        raise_exception::<()>(py, BuiltinExc::AttributeError, message);
+    }
+    admitted
+}
+
+/// CPython 3.15 `descr_repr`: a descriptor declared on `object` names no owner.
+pub(crate) fn descriptor_repr_names_owner(py: &PyToken<'_>, owner: u64) -> bool {
+    owner != builtin_classes(py).object
+        || !crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+}
+
 unsafe fn validate_receiver(py: &PyToken<'_>, ptr: *mut u8, instance: u64) -> bool {
     let owner = unsafe { native_descriptor_owner_bits(ptr) };
     match unsafe { crate::object::class_layout::try_is_real_instance(py, instance, owner) } {
@@ -527,7 +568,9 @@ pub(crate) unsafe fn native_descriptor_get(
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
         return unsafe { managed_slot_get(py, ptr, instance) };
     }
-    if !unsafe { validate_receiver(py, ptr, instance) } {
+    if !unsafe { validate_receiver(py, ptr, instance) }
+        || !unsafe { shared_capability_admits(py, ptr, flavor, instance) }
+    {
         return Err(());
     }
     if flavor == NativeDescriptorFlavor::InstanceDictionary {
@@ -633,6 +676,11 @@ pub(crate) unsafe fn native_descriptor_mutate(
         return unsafe { managed_slot_mutate(py, ptr, instance, value) };
     }
     if !unsafe { validate_receiver(py, ptr, instance) } {
+        return Err(());
+    }
+    if flavor == NativeDescriptorFlavor::InstanceDictionary
+        && !unsafe { shared_capability_admits(py, ptr, flavor, instance) }
+    {
         return Err(());
     }
     if flavor == NativeDescriptorFlavor::InstanceDictionary {
@@ -801,6 +849,7 @@ pub(crate) unsafe fn native_descriptor_repr(py: &PyToken<'_>, descriptor: u64) -
         return MoltObject::none().bits();
     };
     let (name, owner) = unsafe { descriptor_text(ptr) };
+    let names_owner = descriptor_repr_names_owner(py, unsafe { native_descriptor_owner_bits(ptr) });
     let label = match flavor {
         NativeDescriptorFlavor::Member
         | NativeDescriptorFlavor::ManagedSlot
@@ -811,7 +860,11 @@ pub(crate) unsafe fn native_descriptor_repr(py: &PyToken<'_>, descriptor: u64) -
         | NativeDescriptorFlavor::CallableGetSet
         | NativeDescriptorFlavor::RootMetadata => "attribute",
     };
-    let text = format!("<{label} '{name}' of '{owner}' objects>");
+    let text = if names_owner {
+        format!("<{label} '{name}' of '{owner}' objects>")
+    } else {
+        format!("<{label} '{name}'>")
+    };
     let value = alloc_string(py, text.as_bytes());
     if value.is_null() {
         MoltObject::none().bits()

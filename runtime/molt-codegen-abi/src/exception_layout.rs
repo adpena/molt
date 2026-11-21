@@ -5,6 +5,56 @@
 //! semantics, and the CPython ABI projection all consume this table so the
 //! field order and class-to-layout mapping cannot drift independently.
 
+/// Word slots of the common exception payload prefix, from the object
+/// address. Typed builtin state starts at [`EXCEPTION_TYPED_TAIL_SLOT`] and is
+/// sized by [`ExceptionLayoutKind::tail_policies`]. The runtime allocates,
+/// reads and writes by these slots; compiled code loads by them.
+pub const EXCEPTION_MSG_SLOT: usize = 0;
+pub const EXCEPTION_CAUSE_SLOT: usize = 1;
+pub const EXCEPTION_CONTEXT_SLOT: usize = 2;
+pub const EXCEPTION_SUPPRESS_SLOT: usize = 3;
+pub const EXCEPTION_TRACE_SLOT: usize = 4;
+pub const EXCEPTION_ARGS_SLOT: usize = 5;
+pub const EXCEPTION_DICT_SLOT: usize = 6;
+pub const EXCEPTION_ARGS_PAYLOAD_SLOT: usize = 7;
+pub const EXCEPTION_NOTES_SLOT: usize = 8;
+/// An immutable, non-reference word holding the `ExceptionLayoutKind` tag.
+pub const EXCEPTION_LAYOUT_KIND_SLOT: usize = 9;
+pub const EXCEPTION_TYPED_TAIL_SLOT: usize = 10;
+pub const EXCEPTION_FIXED_WORDS: usize = EXCEPTION_TYPED_TAIL_SLOT;
+/// An absent object member: the pending word, not None (`del` writes it back).
+pub const EXCEPTION_FIELD_MISSING_BITS: u64 = crate::QNAN | crate::TAG_PENDING;
+/// An absent `Py_ssize_t` member.
+pub const EXCEPTION_PY_SSIZE_MISSING: u64 = (-1isize) as u64;
+
+/// The word slot that holds `field` in an exception of `layout`: the message
+/// slot for a message alias, else its position in the typed tail. None when
+/// the layout has no such member.
+pub const fn exception_field_slot(
+    layout: ExceptionLayoutKind,
+    field: ExceptionTypedField,
+) -> Option<usize> {
+    let policies = layout.field_policies();
+    let mut tail = 0;
+    let mut index = 0;
+    while index < policies.len() {
+        let policy = &policies[index];
+        let message = policy.storage as u8 == ExceptionFieldStorage::RuntimeMessage as u8;
+        if policy.field as u8 == field as u8 {
+            return Some(if message {
+                EXCEPTION_MSG_SLOT
+            } else {
+                EXCEPTION_TYPED_TAIL_SLOT + tail
+            });
+        }
+        if !message {
+            tail += 1;
+        }
+        index += 1;
+    }
+    None
+}
+
 pub const MAX_EXCEPTION_TYPED_FIELDS: usize = max_exception_typed_fields();
 pub const MAX_EXCEPTION_TYPED_TAIL_WORDS: usize = max_exception_typed_tail_words();
 
@@ -165,18 +215,7 @@ impl ExceptionLayoutKind {
     }
 
     pub const fn field_policies(self) -> &'static [ExceptionFieldPolicy] {
-        match self {
-            Self::Base => BASE_POLICIES,
-            Self::Group => GROUP_POLICIES,
-            Self::Syntax => SYNTAX_POLICIES,
-            Self::Import => IMPORT_POLICIES,
-            Self::Unicode => UNICODE_POLICIES,
-            Self::SystemExit => SYSTEM_EXIT_POLICIES,
-            Self::OSError => OS_ERROR_POLICIES,
-            Self::StopIteration => STOP_ITERATION_POLICIES,
-            Self::NameError => NAME_ERROR_POLICIES,
-            Self::AttributeError => ATTRIBUTE_ERROR_POLICIES,
-        }
+        exception_kinds_generated::layout_field_policies(self)
     }
 
     pub const fn field_policy(
@@ -241,55 +280,6 @@ impl ExceptionLayoutKind {
         self.constructor_keyword_policies()
             .find(|policy| policy.python_name == python_name)
     }
-}
-
-/// Globally unambiguous typed-field identity. Runtime storage uses the order
-/// returned by [`ExceptionLayoutKind::field_policies`], not these discriminants.
-macro_rules! exception_typed_fields {
-    ($($name:ident = $tag:literal,)*) => {
-        #[repr(u8)]
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-        pub enum ExceptionTypedField { $($name = $tag,)* }
-
-        impl ExceptionTypedField {
-            pub const fn from_u8(tag: u8) -> Option<Self> {
-                match tag { $($tag => Some(Self::$name),)* _ => None }
-            }
-        }
-    };
-}
-
-exception_typed_fields! {
-    GroupMessage = 0,
-    GroupExceptions = 1,
-    SyntaxMessage = 2,
-    SyntaxFilename = 3,
-    SyntaxLineNumber = 4,
-    SyntaxOffset = 5,
-    SyntaxEndLineNumber = 6,
-    SyntaxEndOffset = 7,
-    SyntaxText = 8,
-    SyntaxPrintFileAndLine = 9,
-    ImportMessage = 10,
-    ImportName = 11,
-    ImportPath = 12,
-    ImportNameFrom = 13,
-    UnicodeEncoding = 14,
-    UnicodeObject = 15,
-    UnicodeStart = 16,
-    UnicodeEnd = 17,
-    UnicodeReason = 18,
-    SystemExitCode = 19,
-    OSErrorErrno = 20,
-    OSErrorStrError = 21,
-    OSErrorFilename = 22,
-    OSErrorFilename2 = 23,
-    OSErrorWinError = 24,
-    OSErrorCharactersWritten = 25,
-    StopIterationValue = 26,
-    NameErrorName = 27,
-    AttributeErrorObject = 28,
-    AttributeErrorName = 29,
 }
 
 #[repr(u8)]
@@ -428,182 +418,6 @@ impl ExceptionLayoutRoot {
             }))
     }
 }
-
-const fn object_policy(
-    field: ExceptionTypedField,
-    python_name: &'static str,
-    writable: bool,
-    deletable: bool,
-) -> ExceptionFieldPolicy {
-    ExceptionFieldPolicy {
-        field,
-        python_name,
-        storage: ExceptionFieldStorage::Object,
-        writable,
-        deletable,
-        constructor_keyword: false,
-        missing_read: ExceptionMissingRead::None,
-    }
-}
-
-const fn message_policy(
-    field: ExceptionTypedField,
-    python_name: &'static str,
-    writable: bool,
-    deletable: bool,
-) -> ExceptionFieldPolicy {
-    ExceptionFieldPolicy {
-        field,
-        python_name,
-        storage: ExceptionFieldStorage::RuntimeMessage,
-        writable,
-        deletable,
-        constructor_keyword: false,
-        missing_read: ExceptionMissingRead::None,
-    }
-}
-
-const fn ssize_policy(
-    field: ExceptionTypedField,
-    python_name: &'static str,
-    deletable: bool,
-    missing_read: ExceptionMissingRead,
-) -> ExceptionFieldPolicy {
-    ExceptionFieldPolicy {
-        field,
-        python_name,
-        storage: ExceptionFieldStorage::PySsize,
-        writable: true,
-        deletable,
-        constructor_keyword: false,
-        missing_read,
-    }
-}
-
-const fn keyword_object_policy(
-    field: ExceptionTypedField,
-    python_name: &'static str,
-) -> ExceptionFieldPolicy {
-    let mut policy = object_policy(field, python_name, true, true);
-    policy.constructor_keyword = true;
-    policy
-}
-
-const BASE_POLICIES: &[ExceptionFieldPolicy] = &[];
-const GROUP_POLICIES: &[ExceptionFieldPolicy] = &[
-    message_policy(ExceptionTypedField::GroupMessage, "message", false, false),
-    object_policy(
-        ExceptionTypedField::GroupExceptions,
-        "exceptions",
-        false,
-        false,
-    ),
-];
-const SYNTAX_POLICIES: &[ExceptionFieldPolicy] = &[
-    message_policy(ExceptionTypedField::SyntaxMessage, "msg", true, true),
-    object_policy(ExceptionTypedField::SyntaxFilename, "filename", true, true),
-    object_policy(ExceptionTypedField::SyntaxLineNumber, "lineno", true, true),
-    object_policy(ExceptionTypedField::SyntaxOffset, "offset", true, true),
-    object_policy(
-        ExceptionTypedField::SyntaxEndLineNumber,
-        "end_lineno",
-        true,
-        true,
-    ),
-    object_policy(
-        ExceptionTypedField::SyntaxEndOffset,
-        "end_offset",
-        true,
-        true,
-    ),
-    object_policy(ExceptionTypedField::SyntaxText, "text", true, true),
-    object_policy(
-        ExceptionTypedField::SyntaxPrintFileAndLine,
-        "print_file_and_line",
-        true,
-        true,
-    ),
-];
-const IMPORT_POLICIES: &[ExceptionFieldPolicy] = &[
-    message_policy(ExceptionTypedField::ImportMessage, "msg", true, true),
-    keyword_object_policy(ExceptionTypedField::ImportName, "name"),
-    keyword_object_policy(ExceptionTypedField::ImportPath, "path"),
-    keyword_object_policy(ExceptionTypedField::ImportNameFrom, "name_from"),
-];
-const UNICODE_POLICIES: &[ExceptionFieldPolicy] = &[
-    object_policy(ExceptionTypedField::UnicodeEncoding, "encoding", true, true),
-    object_policy(ExceptionTypedField::UnicodeObject, "object", true, true),
-    ssize_policy(
-        ExceptionTypedField::UnicodeStart,
-        "start",
-        false,
-        ExceptionMissingRead::None,
-    ),
-    ssize_policy(
-        ExceptionTypedField::UnicodeEnd,
-        "end",
-        false,
-        ExceptionMissingRead::None,
-    ),
-    object_policy(ExceptionTypedField::UnicodeReason, "reason", true, true),
-];
-const SYSTEM_EXIT_POLICIES: &[ExceptionFieldPolicy] = &[object_policy(
-    ExceptionTypedField::SystemExitCode,
-    "code",
-    true,
-    true,
-)];
-#[cfg(windows)]
-const OS_ERROR_POLICIES: &[ExceptionFieldPolicy] = &[
-    object_policy(ExceptionTypedField::OSErrorErrno, "errno", true, true),
-    object_policy(ExceptionTypedField::OSErrorStrError, "strerror", true, true),
-    object_policy(ExceptionTypedField::OSErrorFilename, "filename", true, true),
-    object_policy(
-        ExceptionTypedField::OSErrorFilename2,
-        "filename2",
-        true,
-        true,
-    ),
-    object_policy(ExceptionTypedField::OSErrorWinError, "winerror", true, true),
-    ssize_policy(
-        ExceptionTypedField::OSErrorCharactersWritten,
-        "characters_written",
-        true,
-        ExceptionMissingRead::AttributeError,
-    ),
-];
-#[cfg(not(windows))]
-const OS_ERROR_POLICIES: &[ExceptionFieldPolicy] = &[
-    object_policy(ExceptionTypedField::OSErrorErrno, "errno", true, true),
-    object_policy(ExceptionTypedField::OSErrorStrError, "strerror", true, true),
-    object_policy(ExceptionTypedField::OSErrorFilename, "filename", true, true),
-    object_policy(
-        ExceptionTypedField::OSErrorFilename2,
-        "filename2",
-        true,
-        true,
-    ),
-    ssize_policy(
-        ExceptionTypedField::OSErrorCharactersWritten,
-        "characters_written",
-        true,
-        ExceptionMissingRead::AttributeError,
-    ),
-];
-const STOP_ITERATION_POLICIES: &[ExceptionFieldPolicy] = &[object_policy(
-    ExceptionTypedField::StopIterationValue,
-    "value",
-    true,
-    true,
-)];
-const NAME_ERROR_POLICIES: &[ExceptionFieldPolicy] = &[keyword_object_policy(
-    ExceptionTypedField::NameErrorName,
-    "name",
-)];
-const ATTRIBUTE_ERROR_POLICIES: &[ExceptionFieldPolicy] = &[
-    keyword_object_policy(ExceptionTypedField::AttributeErrorObject, "obj"),
-    keyword_object_policy(ExceptionTypedField::AttributeErrorName, "name"),
-];
 
 const fn max_exception_typed_fields() -> usize {
     let mut max = 0;
@@ -816,34 +630,6 @@ impl BuiltinExceptionSpec {
         }
     }
 
-    /// The `__str__` slot an exact instance of `kind` renders through: its own
-    /// declaration or the nearest declaring base. Builtin exception classes are
-    /// immutable, so this is a fixed fact of the schema, computed once per kind.
-    pub fn effective_str_slot(kind: BuiltinExc) -> ExceptionStrSlot {
-        // Indexed by code, which is the discriminant; size by the largest one.
-        const SIZE: usize = {
-            let mut largest = 0;
-            let mut index = 0;
-            while index < BuiltinExc::COUNT {
-                let code = BuiltinExc::ALL[index] as usize;
-                if code > largest {
-                    largest = code;
-                }
-                index += 1;
-            }
-            largest + 1
-        };
-        static SLOTS: std::sync::LazyLock<[ExceptionStrSlot; SIZE]> =
-            std::sync::LazyLock::new(|| {
-                let mut slots = [ExceptionStrSlot::Base; SIZE];
-                for kind in BuiltinExc::ALL {
-                    slots[kind as usize] = kind.spec().effective_render_slots().0;
-                }
-                slots
-            });
-        SLOTS[kind as usize]
-    }
-
     pub(crate) const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
         self.minimum_python_minor = minimum_python_minor;
         self
@@ -963,7 +749,8 @@ impl BuiltinExceptionSpec {
 mod exception_kinds_generated;
 use exception_kinds_generated::{BUILTIN_EXCEPTION_SPECS, builtin_exception_alias};
 pub use exception_kinds_generated::{
-    BuiltinExc, ExcKind, MODULE_EXCEPTION_SPECS, ModuleExc, ModuleExcOwner, ModuleExceptionSpec,
+    BuiltinExc, ExcKind, ExceptionTypedField, MODULE_EXCEPTION_SPECS, ModuleExc, ModuleExcOwner,
+    ModuleExceptionSpec,
 };
 
 #[cfg(test)]
@@ -1117,7 +904,7 @@ mod tests {
                 .tail_policies()
                 .iter()
                 .map(|policy| policy.field)
-                .collect::<Vec<_>>(),
+                .collect::<std::vec::Vec<_>>(),
             [ExceptionTypedField::GroupExceptions]
         );
 
@@ -1146,7 +933,7 @@ mod tests {
                 .field_policies()
                 .iter()
                 .map(|policy| policy.field)
-                .collect::<Vec<_>>(),
+                .collect::<std::vec::Vec<_>>(),
             [
                 ExceptionTypedField::AttributeErrorObject,
                 ExceptionTypedField::AttributeErrorName,

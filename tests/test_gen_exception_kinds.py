@@ -40,7 +40,7 @@ def test_closed_types_equal_the_table() -> None:
         (ROOT / "runtime" / "exception_kinds.toml").read_text(encoding="utf-8")
     )
     source = (
-        ROOT / "runtime/molt-obj-model/src/exception_kinds_generated.rs"
+        ROOT / "runtime/molt-codegen-abi/src/exception_kinds_generated.rs"
     ).read_text(encoding="utf-8")
     builtin_rows = [row.get("variant", row["name"]) for row in raw["builtin"]]
     module_rows = [row["variant"] for row in raw["module"]]
@@ -59,7 +59,7 @@ def test_owner_members_follow_row_order() -> None:
         (ROOT / "runtime" / "exception_kinds.toml").read_text(encoding="utf-8")
     )
     source = (
-        ROOT / "runtime/molt-obj-model/src/exception_kinds_generated.rs"
+        ROOT / "runtime/molt-codegen-abi/src/exception_kinds_generated.rs"
     ).read_text(encoding="utf-8")
     gen = _gen()
     for owner in gen.owners(gen.load_table()):
@@ -80,7 +80,7 @@ def test_frontend_codes_match_builtin_discriminants() -> None:
     from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
 
     source = (
-        ROOT / "runtime/molt-obj-model/src/exception_kinds_generated.rs"
+        ROOT / "runtime/molt-codegen-abi/src/exception_kinds_generated.rs"
     ).read_text(encoding="utf-8")
     raw = tomllib.loads(
         (ROOT / "runtime" / "exception_kinds.toml").read_text(encoding="utf-8")

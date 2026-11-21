@@ -489,51 +489,84 @@ pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObjec
         .unwrap_or_else(|| format_class_name_bytes(class))
 }
 
-/// One argument of a `types.GenericAlias` or `types.UnionType` repr: CPython's
-/// `ga_repr_item` and `union_repr_item`. `...` is spelled as written and a
-/// class is its qualified name. The union spells `NoneType` as `None`, and so
-/// does the generic alias from Python 3.14 (`_Py_typing_type_repr`).
+/// The origin or one argument of a `types.GenericAlias` or `types.UnionType`
+/// repr: CPython's `ga_repr_item` and `union_repr_item`, which 3.14 merged as
+/// `_Py_typing_type_repr`. `...` is spelled as written; the union spells
+/// `NoneType` as `None`, and so does the generic alias from 3.14. A value with
+/// both `__origin__` and `__args__` is its repr; else a value with
+/// `__qualname__` and a non-None `__module__` is `module.qualname`, or the bare
+/// qualname for `builtins`; anything else is its repr. Absent attributes read
+/// as absent; any other lookup error propagates (empty output, pending).
 fn format_typing_argument(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     arg_bits: u64,
     none_type_as_none: bool,
 ) -> FormatOutput {
-    if arg_bits == ellipsis_bits(_py) {
+    if arg_bits == ellipsis_bits(py) {
         return "...".into();
     }
-    if none_type_as_none && arg_bits == builtin_classes(_py).none_type {
+    if none_type_as_none && arg_bits == builtin_classes(py).none_type {
         return "None".into();
     }
-    let arg_obj = obj_from_bits(arg_bits);
-    if let Some(arg_ptr) = arg_obj.as_ptr()
-        && unsafe { object_type_id(arg_ptr) } == TYPE_ID_TYPE
-        && let Some(name) = format_qualified_type_name(_py, arg_ptr)
-    {
-        return name.into();
+    match typing_qualified_name(py, arg_bits) {
+        Ok(Some(name)) => name,
+        Ok(None) => format_obj_output(py, obj_from_bits(arg_bits)),
+        Err(()) => "".into(),
     }
-    format_obj_output(_py, arg_obj)
+}
+
+/// `module.qualname` for `_Py_typing_type_repr`, or None where it uses repr.
+fn typing_qualified_name(py: &PyToken<'_>, bits: u64) -> Result<Option<FormatOutput>, ()> {
+    let lookup =
+        |name: crate::NameId| crate::lookup_attribute(py, bits, name.bits(py)).into_result();
+    if let Some(origin) = lookup(crate::NameId::DunderOrigin)? {
+        dec_ref_bits(py, origin);
+        if let Some(args) = lookup(crate::NameId::DunderArgs)? {
+            dec_ref_bits(py, args);
+            return Ok(None);
+        }
+    }
+    let Some(qualname) = lookup(crate::NameId::DunderQualname)? else {
+        return Ok(None);
+    };
+    let module = lookup(crate::NameId::DunderModule);
+    let rendered = match module {
+        Err(()) => Err(()),
+        Ok(None) => Ok(None),
+        Ok(Some(module)) if obj_from_bits(module).is_none() => Ok(None),
+        Ok(Some(module)) => {
+            let module_obj = obj_from_bits(module);
+            let mut out = FormatBuffer::new();
+            if string_obj_bytes(module_obj).as_deref() != Some(b"builtins".as_slice()) {
+                out.push_output(py, format_obj_str_output(py, module_obj));
+                out.push('.');
+            }
+            if !exception_pending(py) {
+                out.push_output(py, format_obj_str_output(py, obj_from_bits(qualname)));
+            }
+            dec_ref_bits(py, module);
+            if exception_pending(py) {
+                Err(())
+            } else {
+                Ok(Some(out.into()))
+            }
+        }
+    };
+    dec_ref_bits(py, qualname);
+    rendered
 }
 
 fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     unsafe {
         let origin_bits = generic_alias_origin_bits(ptr);
         let args_bits = generic_alias_args_bits(ptr);
-        let origin_obj = obj_from_bits(origin_bits);
         let none_type_as_none = super::ops_sys::runtime_target_at_least(_py, 3, 14);
         let render_arg = |arg_bits: u64| format_typing_argument(_py, arg_bits, none_type_as_none);
-        let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
-            if object_type_id(origin_ptr) == TYPE_ID_TYPE {
-                format_qualified_type_name(_py, origin_ptr)
-                    .map(FormatOutput::from)
-                    .unwrap_or_else(|| format_obj_output(_py, origin_obj))
-            } else {
-                format_obj_output(_py, origin_obj)
-            }
-        } else {
-            format_obj_output(_py, origin_obj)
-        };
         let mut out = FormatBuffer::new();
-        out.push_output(_py, origin_repr);
+        out.push_output(_py, render_arg(origin_bits));
+        if exception_pending(_py) {
+            return out.into();
+        }
         out.push('[');
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr() {

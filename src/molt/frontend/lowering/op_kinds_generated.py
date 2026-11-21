@@ -206,6 +206,7 @@ FrontendOpKind = Literal[
     'EXCEPTION_CLEAR',
     'EXCEPTION_CONTEXT_SET',
     'EXCEPTION_CURRENT',
+    'EXCEPTION_FIELD_GET',
     'EXCEPTION_FINALLY_PENDING_OBSERVER',
     'EXCEPTION_LAST',
     'EXCEPTION_LAST_PENDING',
@@ -736,6 +737,7 @@ WireOpKind = Literal[
     'exception_clear',
     'exception_context_set',
     'exception_current',
+    'exception_field_get',
     'exception_finally_pending_observer',
     'exception_last',
     'exception_last_pending',
@@ -1243,6 +1245,7 @@ class FrontendKinds:
     EXCEPTION_CLEAR: Final = 'EXCEPTION_CLEAR'
     EXCEPTION_CONTEXT_SET: Final = 'EXCEPTION_CONTEXT_SET'
     EXCEPTION_CURRENT: Final = 'EXCEPTION_CURRENT'
+    EXCEPTION_FIELD_GET: Final = 'EXCEPTION_FIELD_GET'
     EXCEPTION_FINALLY_PENDING_OBSERVER: Final = 'EXCEPTION_FINALLY_PENDING_OBSERVER'
     EXCEPTION_LAST: Final = 'EXCEPTION_LAST'
     EXCEPTION_LAST_PENDING: Final = 'EXCEPTION_LAST_PENDING'
@@ -1773,6 +1776,7 @@ class WireKinds:
     EXCEPTION_CLEAR: Final = 'exception_clear'
     EXCEPTION_CONTEXT_SET: Final = 'exception_context_set'
     EXCEPTION_CURRENT: Final = 'exception_current'
+    EXCEPTION_FIELD_GET: Final = 'exception_field_get'
     EXCEPTION_FINALLY_PENDING_OBSERVER: Final = 'exception_finally_pending_observer'
     EXCEPTION_LAST: Final = 'exception_last'
     EXCEPTION_LAST_PENDING: Final = 'exception_last_pending'
@@ -2279,6 +2283,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'EXCEPTION_CLEAR': 'exception_clear',
     'EXCEPTION_CONTEXT_SET': 'exception_context_set',
     'EXCEPTION_CURRENT': 'exception_current',
+    'EXCEPTION_FIELD_GET': 'exception_field_get',
     'EXCEPTION_FINALLY_PENDING_OBSERVER': 'exception_finally_pending_observer',
     'EXCEPTION_LAST': 'exception_last',
     'EXCEPTION_LAST_PENDING': 'exception_last_pending',
@@ -2804,6 +2809,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "exception_clear",
         "exception_context_set",
         "exception_current",
+        "exception_field_get",
         "exception_finally_pending_observer",
         "exception_last",
         "exception_last_pending",
@@ -3312,6 +3318,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "EXCEPTION_CLEAR",
         "EXCEPTION_CONTEXT_SET",
         "EXCEPTION_CURRENT",
+        "EXCEPTION_FIELD_GET",
         "EXCEPTION_FINALLY_PENDING_OBSERVER",
         "EXCEPTION_LAST",
         "EXCEPTION_LAST_PENDING",
@@ -3769,6 +3776,7 @@ CANONICAL_KIND: dict[str, str] = {
     "load": "get_attr",
     "guarded_load": "get_attr",
     "load_attr": "get_attr",
+    "exception_field_get": "get_attr",
     "set_attr": "set_attr",
     "store_attr": "set_attr",
     "set_attr_name": "set_attr",
@@ -4238,6 +4246,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "EQ": True,
     "EXCEPTION_CLEAR": False,
     "EXCEPTION_CONTEXT_SET": False,
+    "EXCEPTION_FIELD_GET": True,
     "EXCEPTION_FINALLY_PENDING_OBSERVER": False,
     "EXCEPTION_LAST": False,
     "EXCEPTION_LAST_PENDING": False,
@@ -4684,6 +4693,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "exception_class": 4,
     "exception_clear": 4,
     "exception_context_set": 4,
+    "exception_field_get": 64,
     "exception_finally_pending_observer": 4,
     "exception_last": 4,
     "exception_last_pending": 4,

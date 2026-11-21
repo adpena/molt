@@ -66,4 +66,45 @@ impl<'ctx> LlvmBackend<'ctx> {
             b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
         })
     }
+
+    /// The proven builtin member read of `field`: `(context, object,
+    /// admission) -> owned value`; its miss calls
+    /// `molt_exception_field_get(object, tag)`.
+    pub(super) fn builtin_field_get_helper(
+        &self,
+        field: molt_codegen_abi::exception_layout::ExceptionTypedField,
+    ) -> FunctionValue<'ctx> {
+        use molt_codegen_abi::builtin_field::{exception_field_read, generate_builtin_field_get};
+        let cold_fn = self.runtime_import(RuntimeFn::ExceptionFieldGet);
+        let tag = field as u8;
+        self.site_helper(
+            &format!("__molt_exception_field_get_{tag}"),
+            2,
+            |b, words| {
+                let &[object] = words else {
+                    unreachable!("the member read helper's parameters")
+                };
+                generate_builtin_field_get(
+                    b,
+                    object,
+                    exception_field_read(field),
+                    ListLocking::BUILD,
+                    |b, object| {
+                        let tag = b.constant(u64::from(tag));
+                        b.words
+                            .builder
+                            .build_execution_call(
+                                cold_fn,
+                                &[object.into(), tag.into()],
+                                "exception_field_get_miss",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .unwrap_basic()
+                            .into_int_value()
+                    },
+                )
+            },
+        )
+    }
 }
