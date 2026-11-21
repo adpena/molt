@@ -693,11 +693,12 @@ def resolve(
 def member_from_method_info(info: MethodInfo) -> Member:
     """The one translation of a compiled method's lowering record into its
     class member fact. ``func``'s type hint names the compiled symbol
-    (``Func:<symbol>``); the SSA values stay with the defining module."""
+    (``Func:<symbol>``, or ``ClosureFunc:<symbol>`` for a closure); the SSA
+    values stay with the defining module."""
     hint = info["func"].type_hint
     symbol = (
         hint.split(":", 1)[1]
-        if isinstance(hint, str) and hint.startswith("Func:")
+        if isinstance(hint, str) and hint.startswith(("Func:", "ClosureFunc:"))
         else None
     )
     inline_params = info.get("inline_params")

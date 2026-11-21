@@ -309,6 +309,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::BoxInlineInt => "box_inline_int",
         OpCode::CodeIs => "code_is",
         OpCode::DirectCall => "direct_call",
+        OpCode::FunctionClosure => "function_closure",
         OpCode::RecursionAdmits => "recursion_admits",
         OpCode::RecursionCount => "recursion_count",
         OpCode::RecursionRelease => "recursion_release",

@@ -289,6 +289,11 @@ pub const SIDECAR_FRAME_RECORD_BASE_OFFSET: i32 = 136;
 /// Function object fields the inline push reads (molt-runtime object/layout.rs
 /// asserts both).
 pub const FUNCTION_CODE_OFFSET: i32 = 32;
+/// A function object's closure tuple, from its payload pointer: the lexical
+/// environment a closure target's entry takes first. The runtime writes it
+/// when it creates the function (molt-runtime object/layout.rs reads and
+/// writes the slot through this constant).
+pub const FUNCTION_CLOSURE_OFFSET: i32 = 24;
 /// A code object's compiled slot id plus one; zero when it has none.
 pub const CODE_FRAME_SLOT_OFFSET: i32 = 136;
 

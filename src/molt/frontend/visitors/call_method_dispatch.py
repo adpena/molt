@@ -259,9 +259,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             return None
         if member.kind is not MemberKind.FUNCTION:
             return None
-        # Closures require their real lexical cell transport and executing frame.
-        if member.closure is not Closure.NONE:
-            return None
+        # A closure target (a method holding the `__class__` cell of a
+        # zero-argument `super()`, or cells of an enclosing function) takes its
+        # function object's live closure tuple as its environment; the late
+        # stage reads it from the callable this call loads (design 78, 5.10).
         shape = member.shape
         if shape is None or shape.vararg or shape.varkw:
             return None

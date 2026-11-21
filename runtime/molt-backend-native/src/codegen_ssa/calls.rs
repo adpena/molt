@@ -529,6 +529,22 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         self.bind(op.results[0], same, HeldCarrier::RawBool);
     }
 
+    /// `FunctionClosure` (design 78 5.10): the function word's closure tuple,
+    /// one load at `FUNCTION_CLOSURE_OFFSET`. The result is a view: the
+    /// function object owns the tuple, and ownership facts give the view no
+    /// release of its own.
+    pub(crate) fn function_closure_op(&mut self, b: &mut B, op: &TirOp) {
+        let operand = self.operands().resolve(b, op.operands[0]);
+        let word = scalar::word_of(b, operand);
+        let mask = b.constant(molt_codegen_abi::POINTER_MASK);
+        let address = b.int_binary(IntBinary::And, word, mask, false);
+        let object = b.word_to_address(address);
+        let closure = b.load_word(object, molt_codegen_abi::FUNCTION_CLOSURE_OFFSET);
+        let closure = b.word_value(closure);
+        b.set_name(closure, "function_closure");
+        self.bind(op.results[0], closure, HeldCarrier::of(&TirType::DynBox));
+    }
+
     /// The compiled target `op` names and its frozen linkage row, when the
     /// program has one.
     pub(crate) fn linked_target(&self, op: &TirOp) -> Option<(String, NativeFunctionLinkageAbi)> {
