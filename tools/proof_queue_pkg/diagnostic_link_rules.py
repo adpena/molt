@@ -210,7 +210,7 @@ def _append_diagnostics(
                     "Move the callable into package/import/native symbol closure "
                     "authority or fail closed at admission with this exact callable."
                 ),
-                scopes=("src/molt/cli/", "runtime/molt-backend-wasm/src/"),
+                scopes=("src/molt/cli/",),
             )
         )
 

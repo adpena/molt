@@ -1079,7 +1079,7 @@ def test_generated_marker_inside_string_literal_is_not_an_orphan(tmp_path: Path)
     """Generated banners emitted as data are not generated-file headers."""
     root = _mirror_min_tree(tmp_path)
     _write_baseline(root, {"OpCode": 0, "Terminator": 0})
-    handwritten = root / "runtime" / "molt-backend-wasm" / "src" / "wasm"
+    handwritten = root / "runtime" / "molt-backend-native" / "src" / "codegen_ssa"
     handwritten.mkdir(parents=True, exist_ok=True)
     (handwritten / "prelude.rs").write_text(
         "fn emit_header(output: &mut String) {\n"

@@ -2167,7 +2167,6 @@ _SPELLED_RUNTIME_ENTRY_ROOTS = (
     "runtime/molt-tir/src",
     "runtime/molt-passes/src",
     "runtime/molt-backend-native/src",
-    "runtime/molt-backend-wasm/src",
 )
 _SPELLED_RUNTIME_ENTRY_RE = re.compile(r'"molt_[a-z0-9_]+"')
 _RUST_TEST_FILE_RE = re.compile(r"(?:^|/)(?:tests?|[a-z0-9_]+_tests?)\.rs$|/tests/")
