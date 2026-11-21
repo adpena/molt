@@ -2431,6 +2431,11 @@ def _binding_read(node: ast.expr) -> bool:
     )
 
 
+def _plain_load(node: ast.expr) -> bool:
+    """A name or constant load: it runs no Python."""
+    return isinstance(node, (ast.Name, ast.Constant))
+
+
 def _release_may_call(identities: IdentityMask, result: StaticExpressionResult) -> bool:
     """Compose independent rooted-identity and exact-result release proofs."""
 
@@ -4350,6 +4355,34 @@ class _Analyzer:
         fact = self.transfer.expressions.get(self._node_key(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
+    def _binding_held(
+        self, node: ast.expr, read: Callable[[ast.expr], bool] = _binding_read
+    ) -> bool:
+        """Whether every reference ``node`` yields stays held by a binding (or
+        an owner it reads) until the caller releases the temporary, given that
+        no Python runs in between (the caller proves it): a ``read`` the
+        caller admits (``_binding_read`` by default), or ``type(x)`` of one
+        with the exact builtin ``type``, which runs no Python. The class ``type(x)`` answers is held by ``x``'s own class
+        edge while ``x`` stays bound, so releasing that temporary cannot drop
+        the class's last reference and runs no code, whatever its metaclass
+        (HF-971). The proof is the temporary's, never the result's: a stored
+        ``type(x)`` can outlive ``x``."""
+        if read(node):
+            return True
+        if (
+            not isinstance(node, ast.Call)
+            or node.keywords
+            or len(node.args) != 1
+            or not read(node.args[0])
+        ):
+            return False
+        callee = self.transfer.expressions.get(self._node_key(node.func))
+        return (
+            callee is not None
+            and not callee.binding_invalidated
+            and callee.identities == int(PythonIdentity.BUILTIN_TYPE)
+        )
+
     def _widen_exposed_bindings(self, state_id: int) -> int:
         self._namespace_observation_epoch += 1
         return self.states.taint_exposed_bindings(state_id)
@@ -5291,6 +5324,17 @@ class _Analyzer:
                             DeferredExecution(selected, "release"),
                         }
                     )
+        elif (
+            exact
+            and callee == int(PythonIdentity.BUILTIN_TYPE)
+            and len(node.args) == 1
+            and not node.keywords
+            and not isinstance(node.args[0], ast.Starred)
+        ):
+            # `type(x)` reads the class edge of `x`'s header: it runs no
+            # Python, cannot fail, and neither calls nor publishes `x`
+            # (HF-971). The result is a class object of unknown identity.
+            argument_protocol_indices = frozenset()
         elif exact and callee == int(PythonIdentity.BUILTIN_SETATTR):
             effects |= (
                 WRITES_OBJECT_STATE
@@ -5679,8 +5723,8 @@ class _Analyzer:
                 bound_operands = (
                     inert_alias
                     and not effects & EXECUTES_ARBITRARY_PYTHON
-                    and _binding_read(node.value)
-                    and _binding_read(node.slice)
+                    and self._binding_held(node.value)
+                    and self._binding_held(node.slice)
                 )
                 if not bound_operands and (
                     assignment_target.owner_result.release_may_call
@@ -6417,8 +6461,8 @@ class _Analyzer:
                 left_node = node.left if index == 0 else node.comparators[index - 1]
                 stable_loads = (
                     scope.kind != "class"
-                    and isinstance(left_node, (ast.Name, ast.Constant))
-                    and isinstance(comparator, (ast.Name, ast.Constant))
+                    and self._binding_held(left_node, _plain_load)
+                    and self._binding_held(comparator, _plain_load)
                     and not (right.effects | boundary)
                     & _CALLEE_ELISION_FORBIDDEN_EFFECTS
                 )
