@@ -22,8 +22,9 @@
 //!     retain class; result = box(object)
 //!   else: cold                                   ; the runtime allocation
 //!
-//!   release_terminal(bits):                      ; the count read 1
+//!   release_terminal(bits):                      ; a release's slow call
 //!     p = unbox(bits)
+//!     require plain storage and plain admission, count(p) == 1
 //!     require type_id(p) == TYPE_ID_OBJECT
 //!     require flags(p) & OBSERVED == 0, aux kind CLASS_INLINE, owned class
 //!     plan = load [class + CLASS_LIFECYCLE_PLAN_OFFSET]
@@ -55,6 +56,7 @@
 
 use crate::boxed_word::{BoxTag, generate_has_tag};
 use crate::frame_record::FrameBuilder;
+use crate::inline_refcount::{CompiledRefcountAdmission, RefcountStorage};
 use crate::list_item::ListLocking;
 use crate::word::WordComparison;
 use crate::{
@@ -62,8 +64,8 @@ use crate::{
     HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED, HEADER_FLAG_DEALLOCATING,
     HEADER_FLAG_GC_ACCOUNTED, HEADER_FLAG_GC_HEAD, HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_HAS_WEAKREF, HEADER_FLAG_SCOPED, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAGS_OFFSET,
-    HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, POINTER_MASK, QNAN, TAG_PTR, TYPE_ID_FOREIGN,
-    TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    HEADER_REFCOUNT_OFFSET, HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, POINTER_MASK, QNAN, TAG_PTR,
+    TYPE_ID_FOREIGN, TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 /// The allocator size classes: index 0 is the oversized sentinel.
@@ -451,31 +453,50 @@ pub fn generate_object_alloc<B: FrameBuilder>(
     b.get(result)
 }
 
-/// Free the object whose boxed bits are `bits` after its count read 1, when
-/// nothing can observe the death; otherwise `cold`, the runtime release
-/// (`molt_dec_ref_obj`). A GC member leaves its list as the runtime's untrack
+/// Free the object whose boxed bits are `bits` when this release drops its
+/// last reference and nothing can observe the death; otherwise `cold`, the
+/// runtime release (`molt_dec_ref_obj`). A release refcount site's slow call
+/// reaches here for every release it does not decide inline: under runtime
+/// admission, in a hardened or atomic build, and for a count outside the
+/// plain window, so the free itself requires plain storage, the invocation's
+/// plain admission (`admission`) and a count of exactly 1. A GC member leaves its list as the runtime's untrack
 /// does (swap-remove, the moved member's head rewritten) and count 0 falls by
 /// one. `free(object)` calls the runtime allocator entry, which reads the
 /// allocation's extent and head from the header.
 /// `terminal_release` is the thread record's terminal-release word, nonzero
 /// while a terminal release runs on the thread.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_release_terminal<B: FrameBuilder>(
     b: &mut B,
     bits: B::Word,
+    admission: B::Word,
     words: LifecycleWords<B::Word>,
     terminal_release: B::Word,
     locking: ListLocking,
+    storage: RefcountStorage,
     free: impl FnOnce(&mut B, B::Word),
     cold: impl FnOnce(&mut B),
 ) {
     use WordComparison::*;
-    if locking == ListLocking::FreeThreaded {
+    if locking == ListLocking::FreeThreaded || storage != RefcountStorage::Plain {
         cold(b);
         return;
     }
     b.attempt(
         |b| {
+            // Only the runtime decides a release outside plain admission.
+            let plain = compare_immediate(
+                b,
+                Equal,
+                admission,
+                CompiledRefcountAdmission::AttachedPlain as u64,
+            );
+            b.require(plain);
             let pointer = b.and(bits, POINTER_MASK);
+            // The last reference: a count of 1 with no runtime custody bit.
+            let count = b.load_header_u32(pointer, HEADER_REFCOUNT_OFFSET);
+            let last = compare_immediate(b, Equal, count, 1);
+            b.require(last);
             let type_id = b.load_header_u32(pointer, HEADER_TYPE_ID_OFFSET);
             let object = compare_immediate(b, Equal, type_id, TYPE_ID_OBJECT as u64);
             b.require(object);

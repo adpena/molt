@@ -6,6 +6,7 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use inkwell::values::IntValue;
+use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
     LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
@@ -156,12 +157,15 @@ impl<'ctx> LlvmBackend<'ctx> {
                 ThreadRecordWord::TerminalRelease,
                 "terminal_release",
             );
+            let admission = b.admission;
             generate_release_terminal(
                 b,
                 bits,
+                admission,
                 words,
                 terminal_release,
                 ListLocking::BUILD,
+                RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC),
                 |b, object| {
                     b.words
                         .builder

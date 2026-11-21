@@ -3,6 +3,7 @@
 //! builder's control and word primitives, as `field_slot.rs` is.
 
 use super::*;
+use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
     LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
@@ -74,10 +75,12 @@ pub(crate) fn emit_builtin_type(
 
 /// The release of `bits` after its count read 1. `free` is
 /// `molt_heap_free`; `cold(builder)` is `molt_dec_ref_obj`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_release_terminal(
     builder: &mut FunctionBuilder<'_>,
     sites: NativeFrameSites,
     bits: Value,
+    admission: Value,
     words: LifecycleWords<Value>,
     terminal_release: Value,
     free: FuncRef,
@@ -87,9 +90,11 @@ pub(crate) fn emit_release_terminal(
     generate_release_terminal(
         &mut b,
         bits,
+        admission,
         words,
         terminal_release,
         ListLocking::BUILD,
+        RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC),
         |b, object| {
             b.words.builder.ins().call(free, &[object]);
         },

@@ -158,6 +158,7 @@ impl Machine {
     /// A live object at `OBJECT` with `flags`, `aux_kind` and `class_word`.
     fn dying(&mut self, type_id: u32, flags: u32, aux_kind: u16, class_word: u64) {
         self.write_bytes(OBJECT, HEADER_TYPE_ID_OFFSET, type_id.into(), 4);
+        self.write_bytes(OBJECT, HEADER_REFCOUNT_OFFSET, 1, 4);
         self.write_bytes(OBJECT, HEADER_FLAGS_OFFSET, flags.into(), 4);
         self.write_bytes(OBJECT, HEADER_FLAGS_OFFSET + 4, SIZE_CLASS, 2);
         self.write_bytes(OBJECT, HEADER_AUX_KIND_OFFSET, aux_kind.into(), 2);
@@ -169,12 +170,31 @@ impl Machine {
     }
 
     fn release_at(&mut self, object: u64, profile: u64, terminal_release: u64) {
+        self.release_with(
+            object,
+            profile,
+            terminal_release,
+            CompiledRefcountAdmission::AttachedPlain,
+            RefcountStorage::Plain,
+        );
+    }
+
+    fn release_with(
+        &mut self,
+        object: u64,
+        profile: u64,
+        terminal_release: u64,
+        admission: CompiledRefcountAdmission,
+        storage: RefcountStorage,
+    ) {
         generate_release_terminal(
             self,
             boxed(object),
+            admission as u64,
             words(profile),
             terminal_release,
             ListLocking::Gil,
+            storage,
             |m, object| {
                 if !m.bailed {
                     m.events.push(Event::Call("heap_free", std::vec![object]));
@@ -536,6 +556,7 @@ impl Machine {
     /// A dying tracked `Point` at member `position` of `generation`.
     fn dying_member(&mut self, object: u64, generation: u64, position: u64) {
         self.write_bytes(object, HEADER_TYPE_ID_OFFSET, TYPE_ID_OBJECT.into(), 4);
+        self.write_bytes(object, HEADER_REFCOUNT_OFFSET, 1, 4);
         self.write_bytes(object, HEADER_FLAGS_OFFSET, TRACKED_HEADER_FLAGS.into(), 4);
         self.write_bytes(object, HEADER_FLAGS_OFFSET + 4, POINT_SIZE_CLASS, 2);
         self.write_bytes(
@@ -764,4 +785,55 @@ fn builtin_object_reads_the_lent_class() {
         COLD
     );
     assert_eq!(m.events, std::vec![Event::Cold]);
+}
+
+#[test]
+fn only_the_last_plainly_admitted_reference_frees_inline() {
+    // The oracle: the refcount site's own window (`inline_refcount`), which
+    // sends every release it does not decide to this slow call.
+    let cases = [
+        (
+            "shared",
+            2,
+            CompiledRefcountAdmission::AttachedPlain,
+            RefcountStorage::Plain,
+        ),
+        (
+            "runtime custody",
+            1 | crate::REFCOUNT_RUNTIME_CUSTODY as u64,
+            CompiledRefcountAdmission::AttachedPlain,
+            RefcountStorage::Plain,
+        ),
+        (
+            "runtime admission",
+            1,
+            CompiledRefcountAdmission::Runtime,
+            RefcountStorage::Plain,
+        ),
+        (
+            "hardened",
+            1,
+            CompiledRefcountAdmission::AttachedPlain,
+            RefcountStorage::HardenedPlain,
+        ),
+        (
+            "atomic",
+            1,
+            CompiledRefcountAdmission::AttachedPlain,
+            RefcountStorage::Atomic,
+        ),
+    ];
+    for (label, count, admission, storage) in cases {
+        let mut m = Machine::default();
+        m.class(root_plan());
+        m.dying(
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+        );
+        m.write_bytes(OBJECT, HEADER_REFCOUNT_OFFSET, count, 4);
+        m.release_with(OBJECT, 0, 0, admission, storage);
+        assert_eq!(m.events, std::vec![Event::Cold], "{label}");
+    }
 }

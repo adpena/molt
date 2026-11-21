@@ -1904,11 +1904,13 @@ through `molt_codegen_abi::object_lifecycle`, which the shared walker lowers on 
   record's layout is the 64-bit one), so wasm32 tracks through the runtime. Admission takes the runtime when generation 0 has no room, when
   count 0 reaches threshold 0 (the runtime schedules the collection) or when a retirement watch is
   armed.
-- Release: every release refcount site's slow call (the count read 1) reaches the program's one
-  terminal-release helper (`molt_release_terminal`, a walker helper body on Cranelift, a `noinline`
-  body on LLVM), which frees a plain instance that nothing observes: no weak reference, C view,
-  scheduler retain, scoped storage, pointer field or finalizer, no terminal release active on the
-  thread (`THREAD_RECORD_TERMINAL_RELEASE_OFFSET`) and no profile counters. A GC member leaves its
+- Release: every release refcount site's slow call reaches the program's one terminal-release
+  helper (`molt_release_terminal`, a walker helper body on Cranelift, a `noinline` body on LLVM).
+  The slow call carries every release the site does not decide inline: a count of 1, but also
+  runtime admission and a hardened or atomic build. So the helper first requires plain storage, the
+  invocation's plain admission and a count of exactly 1. It then frees a plain instance that nothing
+  observes: no weak reference, C view, scheduler retain, scoped storage, pointer field or
+  finalizer, no terminal release active on the thread (`THREAD_RECORD_TERMINAL_RELEASE_OFFSET`) and no profile counters. A GC member leaves its
   list as the runtime's untrack does, and `molt_heap_free` returns the storage. Everything else calls
   `molt_dec_ref_obj`.
 
@@ -1945,16 +1947,18 @@ S4b and S5 (2026-11-21):
   `object` reference (`BUILTIN_TYPE` with the `object` tag) is the thread record's `ObjectClass`
   word (`generate_builtin_type`); other tags call `molt_builtin_type`.
 
-Measured (release, macOS arm64, instructions retired, median of three interleaved runs against S4,
-output identical):
+Measured (release, macOS arm64, instructions retired, the lowest of three interleaved runs against
+S4, since the first runs of fresh binaries paid a launch scan of up to 25 M; output identical):
 
 | program | LLVM | Cranelift |
 |---|---|---|
-| `object()` probe, 1M | 885 M -> 635 M (-28.2%; 813 -> 564 per iteration) | 947 M -> 722 M (-23.7%) |
-| `Point(i, 1)` probe, 1M | 510 M -> 450 M (-11.8%) | 662 M -> 628 M (-5.2%) |
-| `bench_struct` | 503 M -> 437 M (-13.1%) | 625 M -> 593 M (-5.0%) |
-| `bench_object_class_lifecycle` | 7.78 G -> 7.38 G (-5.2%) | 7.94 G -> 7.58 G (-4.5%) |
-| `bench_gc_pressure` | 8.60 G -> 8.56 G (-0.4%, noise) | 8.65 G -> 8.63 G (-0.2%, noise) |
+| `object()` probe, 1M | 884 M -> 634 M (-28.3%; 810 -> 562 per iteration) | 948 M -> 727 M (-23.3%) |
+| `Point(i, 1)` probe, 1M | 510 M -> 450 M (-11.9%) | 663 M -> 634 M (-4.5%) |
+| `bench_struct` | 503 M -> 435 M (-13.5%) | 627 M -> 599 M (-4.4%) |
+| `bench_object_class_lifecycle` | 7.79 G -> 7.37 G (-5.3%) | 7.93 G -> 7.59 G (-4.3%) |
+| `bench_gc_pressure` | 8.58 G -> 8.58 G (0.0%) | 8.63 G -> 8.63 G (-0.1%) |
+
+These numbers include the terminal free's count and admission test (one load and two compares).
 
 What remains of the `object()` iteration (LLVM disassembly): the generic `range` iteration and `+=`
 (`molt_operator_index`, `molt_operator_lt`, `molt_operator_iadd`, `molt_add`) on untyped

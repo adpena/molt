@@ -719,7 +719,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
-            (SiteBody::ReleaseTerminal, &[bits, _]) => {
+            (SiteBody::ReleaseTerminal, &[bits, admission]) => {
                 let free = self.runtime_callee(RuntimeFn::HeapFree);
                 let cold = self.runtime_callee(RuntimeFn::DecRefObj);
                 let profile = self.profile_enabled();
@@ -735,6 +735,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     self.words.builder,
                     sites,
                     bits,
+                    admission,
                     words,
                     terminal_release,
                     free,
