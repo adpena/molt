@@ -177,7 +177,7 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 |------|-------------|
 | `--target TARGET` | Build target: `native`, `wasm`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
-| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which compiles the whole program into its own memory on every run: no object, link or executable. The JIT tier runs only in a source checkout on aarch64 macOS (the verified cell), with the Cranelift code generator and no external native package artifacts; any other request fails before the frontend runs and never falls back to `aot`. `[tool.molt.run] tier` sets the default. |
+| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which prepares the module and compiles called bodies on demand. The JIT tier runs only in a source checkout on aarch64 macOS with Cranelift and no external native package artifacts. Unsupported requests fail at build admission. `[tool.molt.run] tier` sets the default. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
 | `--python-version VERSION` | Target Python semantics for the build side. `molt run` forwards it to `molt build` and records it in wrapper cache manifests. |
@@ -198,18 +198,13 @@ under the product store's ledger lock, the entry of each file a JIT start reads:
 the runner, the runtime image and the runtime's callable-symbol table. One that
 eviction removed is a miss.
 
-**JIT tier costs and expiry.** The JIT tier is slower than `aot` for any program
-that imports `os`, until it reuses compiled stdlib code as an AOT build does
-(HF-371). Each start compiles the whole program, its stdlib closure included, and
-every process that starts the program again pays the same cost. Measured on macOS
-arm64 at host load 8-16: `import os, sys` compiles 832 functions in 6.8-10.2 s at
-0.7-0.8 GB peak RSS per start, where the AOT executable starts in 0.27-0.35 s at
-23 MB; and a no-change `molt run` takes 9.2-10.1 s against 1.6 s. Once the program
-runs, the compiler's memory is gone from its footprint (72-75 MB against 6.7 MB for
-a program that imports `subprocess`): on macOS the runner turns off libc's
-large-block cache for the whole program, which makes C code that churns large
-`malloc` blocks much slower; set `MallocLargeCache=1` to keep the cache. [design/dev_jit_tier.md](design/dev_jit_tier.md)
-("Costs") breaks these down by phase.
+**JIT tier costs and expiry.** Each start prepares the module through final TIR,
+including its stdlib closure. The runner retains uncalled bodies in TIR form and
+can reuse cached Cranelift machine code across starts. The JIT tier remains opt-in.
+On macOS the runner turns off libc's large-block cache for the whole process.
+This increases allocation time for workloads that churn large `malloc` blocks.
+`MallocLargeCache=1` preserves that cache.
+[Measured JIT costs by phase](design/dev_jit_tier.md#costs)
 
 A JIT image is a development artifact. Its header names the `molt-jit` runner,
 runtime image and runtime callable-symbol table in the host's product store, and

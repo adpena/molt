@@ -1,9 +1,9 @@
 # Development JIT tier: run without building
 
-Status: steps 1-3 and 5 implemented, 2026-10-21 (HF-371). Step 4 (lazy compilation) and
-"Incremental patching" remain. The JIT runner reuses warm Cranelift machine-code stencils
-from its existing compilation cache. Verified cell: macOS arm64. The development tier
-stays opt-in while shared-stdlib reuse and differential latency qualification remain open.
+Status: steps 1-5 implemented (HF-371). The JIT runner prepares the module and compiles
+individual bodies on first call. It reuses Cranelift machine-code stencils from the
+existing compilation cache. macOS arm64 is the verified host. The development tier
+stays opt-in. Shared-stdlib reuse and incremental patching are open.
 
 ## Problem
 
@@ -61,8 +61,9 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    `cranelift_jit`. It builds as `HostToolProduct.JIT` through the backend binary's Cargo
    plan, source receipts, generation store and capability probe, with the backend's Cargo
    profile and CPU policy. Its probe compiles and runs one function, so a host whose W^X
-   policy refuses JIT code fails admission. It reads a JIT image, compiles the program and
-   starts it in process. Stdout, stderr, exit status and signals are the program's own.
+   policy refuses JIT code fails admission. The runner reads a JIT image, prepares
+   executable entries and starts the program in process. Stdout, stderr, exit status
+   and signals are the program's own.
 
    The program must start in the process state an AOT executable gives it, so the runner
    is a C `main` (`#![no_main]`), not a Rust `main`: Rust's start-up code sets `SIGPIPE`
@@ -145,8 +146,10 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 3. **Runtime symbols.** Generated code imports runtime functions through
    `Linkage::Import`. The runner loads the runtime as a shared image and resolves every
    import with `dlsym` on that image, as cg_clif resolves dependency symbols in their
-   dylibs. Every import must resolve before relocation; a missing one fails with its name
-   before any code runs, as an AOT link fails. The ABI witness
+   dylibs. Launch declarations and explicit function targets resolve before the
+   program starts. Imports introduced by the native walker resolve before the
+   first-call compiler relocates the body. A missing provider is named in the diagnostic.
+   The ABI witness
    (`molt_generated_object_abi_<fingerprint>_<mode>`) is an import like any other, so a
    runtime built for the other execution mode is refused.
 
@@ -163,20 +166,23 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    runtime cannot be linked into the runner and found by name. The closed, generated
    `RuntimeFn` registry (`runtime_fn_generated.rs`) now names every all-word runtime
    entry, helpers included; HF-384 tracks the helper names backends still spell.
-4. **Lazy compilation.** Not implemented. It is the structural fix for the per-start
-   cost ("Costs"). The runner compiles the whole program, its stdlib closure included,
-   before it runs it, as cg_clif's current JIT mode does. `import os, sys` lowers to 832
-   functions (517,441 source ops); each start spends 4.1-5.2 s in IR passes and 2.7-2.8 s
-   in Cranelift (macOS arm64, load 10-12), mostly on functions the run never calls.
-   Leading JITs compile a function only when it is first called: HotSpot compiles no
-   method before it runs, V8 compiles JavaScript functions lazily and WebAssembly
-   functions with lazy Liftoff compilation on first call, and cg_clif's former lazy JIT
-   mode gave each function a Cranelift stub that compiled it on its first call. They
-   then reuse compiled code across starts through a content-keyed cache: V8's code cache
-   and Wasmtime's compilation cache key machine code by the bytes it was compiled from.
-   Molt needs both: call slots that Molt owns and a first call fills (`cranelift-jit`
-   0.137.0 has no redefinition, and "Patched calls" needs the same slots), and a cache of
-   each function's machine code keyed by its IR and the code generator's identity.
+4. **Lazy compilation.** The runner prepares the whole module through final TIR
+   and publishes a stable entry for each local definition. Program metadata and the
+   frame-size words read by task constructors are ready at launch. Each entry loads a
+   target from a call slot. On first call, one caller holds the code owner's lock
+   while the shared native walker lowers the body, Cranelift assembles it, and the
+   JIT resolves imports and makes the relocated bytes executable. That caller
+   publishes the body with release ordering. Contending callers acquire the same
+   target, and later calls read it without the compiler lock. The entry preserves
+   the function's machine signature for arguments and returns. Direct calls,
+   function objects and the module registry share that entry address.
+
+   Molt retains final TIR for uncalled bodies and consumes each body at
+   materialization. Diagnostic requests that require whole-compilation artifacts
+   materialize every body before launch through the same code owner. First-call
+   compilation uses the request admitted at launch. It skips persistent stencil
+   I/O under a finite file-size limit. Molt follows the stable entry approach
+   of LLVM ORC lazy reexports. [LLVM ORC design](https://llvm.org/docs/ORCv2.html)
 5. **CLI.** `molt run --tier jit` (or `[tool.molt.run] tier = "jit"`) selects the JIT
    tier (`RunTier`); `aot` stays the default and `molt build` stays AOT. `molt build
    --emit jit` publishes one JIT image, `<name>_molt.jit`, after the shared frontend and
@@ -215,7 +221,7 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 
 ```text
 #!<runner> --image
-#molt.jit-image.v3 <header bytes> <program bytes>
+#molt.jit-image.v4 <header bytes> <program bytes>
 <header: JSON: runtime image, backend environment, compiler diagnostics, TIR cache root,
          launch plan>
 <program: backend IR, MessagePack, the backend lease format>
@@ -270,9 +276,9 @@ leave through `molt_runtime_exit` with the status `molt_main_exit_status` return
 runtime entry reports an exception the program left pending as CPython's `PyErr_Print`
 does, and the WASM hosts call the same entry after `molt_main`. The runner's own
 failures exit with status 125, as the stub's do. With `--start-receipt <path>` the runner
-also creates `<path>` after the program compiled, immediately before the runtime starts,
-so a caller can tell a failure to compile from a program that exits with status 125;
-`molt run` reports a run with no receipt as a failed build.
+also creates `<path>` after the entry points and metadata are ready, immediately before
+the runtime starts. `molt run` reports a run with no receipt as a failed build. A failure
+while compiling a called body exits with status 125 and reports the compiler diagnostic.
 
 ## Incremental patching
 
@@ -308,6 +314,48 @@ because the JIT tier already owns its program's call graph:
    function-level identity and the differential gate first.
 
 ## Costs
+
+### Round two baseline and first-call compilation (2026-11-20)
+
+An edited dev AOT build of `os_path_basic.py` took 20.46 s with a release-built
+host compiler. Frontend phases took 3.52 s (17.2%). Module preparation included
+7.63 s freezing native linkage and 16.75 ms in IR passes (37.4% combined).
+Cranelift lowering and machine code took 7.33 ms (0.04%). Linking took 1.34 s (6.6%).
+The remainder included backend setup and dispatch. The source edit changed one
+string written to a temporary file. One-minute load was 5.55–6.30.
+
+Three pre-slice warm JIT starts of an already built image took a median 6.22 s.
+Module passes took 4.79 s (77.1%), Cranelift took 1.19 s (19.2%), and JIT
+finalization took 12.26 ms (0.2%). All 909 stencils hit. The frontend ran when
+building the image and contributes zero to these starts. One-minute load was
+5.80–8.95.
+
+The baseline and first-call runners shared one program image and runtime image.
+Both host runners used Cargo release, with one cold cache pair and three
+alternating warm pairs. One-minute load was 7.50–13.41.
+
+| Runner start, macOS arm64 | Eager | First call |
+| --- | ---: | ---: |
+| Cold wall time, s | 15.48 | 30.12 |
+| Cold peak RSS, KiB | 618,816 | 657,280 |
+| Warm wall time, median / p90, s | 7.29 / 27.58 | 8.72 / 19.86 |
+| Warm peak RSS, median / p90, KiB | 437,808 / 492,448 | 471,600 / 473,600 |
+
+The first-call runner lowered and assembled 157 of 909 bodies. Warm calls hit on
+all 157 stencils. All eight starts had identical guest stdout, stderr and exit
+status. In the cold pair the module passes took 7.33 s and 22.46 s respectively.
+
+The fixed 40-case suite alternated tier order per case with three workers.
+Host load was 6.30–16.67. Times cover the complete build and run through
+`molt_diff`. Process and process-tree peaks are sampled by the guard.
+
+| Per test, median / p90 | Native AOT | First-call JIT |
+| --- | ---: | ---: |
+| Wall time, s | 41.97 / 111.77 | 47.78 / 106.91 |
+| Peak process RSS, KiB | 661,704 / 801,728 | 614,552 / 1,035,072 |
+| Peak process-tree RSS, KiB | 823,928 / 1,115,952 | 689,512 / 1,201,664 |
+
+The JIT was 13.8% slower at the median. Keep the existing explicit JIT selector.
 
 ### Cranelift machine-code reuse (2026-11-20)
 
@@ -471,6 +519,13 @@ stdlib set into the runtime image and compile only the application partition.
 - WASM targets: not applicable.
 
 ## Verification
+
+- The production first-call runner matched native AOT byte-for-byte on stdout
+  and stderr and returned the same status on all 40 fixed cases. Both tiers
+  matched CPython on 37 and reproduced the three known disagreements named below.
+  `threading_shared_call_identity.py` and `generator_state.py` also matched.
+  The Rust tests race four first callers against one stable entry and check that
+  just two bodies compile in a launch fixture with 64 additional uncalled bodies.
 
 - The 40-case prototype comparison matched stdout, stderr and exit status on all 37
   native CPython passers in each pass. The remaining three agreed between Molt tiers

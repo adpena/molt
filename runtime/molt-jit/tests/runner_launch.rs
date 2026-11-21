@@ -808,7 +808,7 @@ fn a_warm_start_reuses_machine_code_and_relocates_it_in_its_own_process() {
     let image = artifacts.path().join("app_molt.jit");
     let directory = artifacts.path().join("cwd");
     std::fs::create_dir(&directory).expect("create the program's directory");
-    write_image(&image, &runtime, &program(None, 0), Diagnostics::Timing);
+    write_image(&image, &runtime, &program(None, 64), Diagnostics::Timing);
 
     let run = || {
         let output = start_image(&image, &directory)
@@ -818,6 +818,7 @@ fn a_warm_start_reuses_machine_code_and_relocates_it_in_its_own_process() {
         assert_eq!(output.status.code(), Some(0), "{stderr}");
         let counts = stderr
             .lines()
+            .rev()
             .find_map(|line| {
                 let record = line.strip_prefix("MOLT_BACKEND_TIMING: JIT machine-code cache: ")?;
                 let (hits, misses) = record.strip_suffix(" misses")?.split_once(" hits, ")?;
@@ -828,8 +829,8 @@ fn a_warm_start_reuses_machine_code_and_relocates_it_in_its_own_process() {
     };
     let (cold_output, (_, cold_misses)) = run();
     let (warm_output, (warm_hits, warm_misses)) = run();
-    assert!(cold_misses > 0);
-    assert!(warm_hits >= cold_misses);
+    assert_eq!(cold_misses, 2, "only main and the isolate bootstrap ran");
+    assert_eq!(warm_hits, cold_misses);
     assert_eq!(warm_misses, 0);
     assert_eq!(warm_output, cold_output);
 }
