@@ -128,27 +128,29 @@ class Field:
 
 
 @dataclass(frozen=True, slots=True)
-class StaticLayout:
-    """Inferred instance fields at fixed offsets, in declaration order."""
+class InstanceLayout:
+    """The instance fields inferred for the class, at their offsets in
+    declaration order, and the byte size. ``refusal`` is None when the offsets
+    are the instance's static layout; otherwise it names why the runtime owns
+    the layout, and the fields stay inferred names and hints only."""
 
     fields: tuple[Field, ...]
     size: int
+    refusal: LayoutRefusal | None
 
-    def offset(self, name: str) -> int | None:
+    @property
+    def static(self) -> bool:
+        return self.refusal is None
+
+    def field(self, name: str) -> Field | None:
         for item in self.fields:
             if item.name == name:
-                return item.offset
+                return item
         return None
 
-
-@dataclass(frozen=True, slots=True)
-class DynamicLayout:
-    reason: LayoutRefusal
-    # The minimum byte size a builtin base requires.
-    size: int
-
-
-type Layout = StaticLayout | DynamicLayout
+    def offset(self, name: str) -> int | None:
+        item = self.field(name)
+        return None if item is None else item.offset
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +193,7 @@ class ClassView(Protocol):
     @property
     def linearization(self) -> tuple[ClassRef, ...]: ...
     @property
-    def layout(self) -> Layout: ...
+    def layout(self) -> InstanceLayout: ...
     @property
     def module_level(self) -> bool: ...
     @property
@@ -225,7 +227,7 @@ class ClassModel:
     binding_name: str
     bases: tuple[ClassRef, ...]
     linearization: tuple[ClassRef, ...]
-    layout: Layout
+    layout: InstanceLayout
     module_level: bool
     # Code the program cannot see may hold the class or one of its methods.
     definition_exposed: bool
@@ -261,7 +263,7 @@ class ClassDraft:
     binding_name: str
     bases: tuple[ClassRef, ...]
     linearization: tuple[ClassRef, ...]
-    layout: Layout
+    layout: InstanceLayout
     module_level: bool
     definition_exposed: bool
     custom_metaclass: bool
@@ -319,7 +321,7 @@ def namespace_closed(view: ClassView) -> bool:
     unexposed definition: allocation, method binding, method bodies and
     unguarded field access all assume that no unseen code rebinds a member or
     replaces a method body."""
-    return isinstance(view.layout, StaticLayout) and not view.definition_exposed
+    return view.layout.static and not view.definition_exposed
 
 
 class ResolveRefusal(Enum):
