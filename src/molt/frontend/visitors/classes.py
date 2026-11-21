@@ -762,8 +762,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ),
             eager_annotations=self.eager_annotations,
         )
-        if annotation_namespace_required:
-            body_has_no_callbacks_or_reflection = False
+        # An evaluator that needs the namespace reads it through the class's
+        # __classdict__ cell (`_create_class_annotation_namespace`), which a
+        # static build allocates too and type construction points at the
+        # class dict. It runs after the body, so it neither makes the body
+        # observable nor changes the instance layout: the class keeps its
+        # static build and its layout facts.
         materialize_namespace = dynamic_build or not body_has_no_callbacks_or_reflection
         if not has_explicit_bases:
             bases = [OBJECT_CLASS]

@@ -1042,3 +1042,84 @@ def test_a_read_that_is_not_a_proven_immediate_constant_keeps_the_cell(
     functions, folded = _fold(_constant_program(producer, **change))
     assert folded == 0
     assert _scale_read(functions)["kind"] == "module_get_global"
+
+
+def _intrinsic_call_program(supplied: int) -> list[dict[str, Any]]:
+    """``mod`` binds ``_INTERN = require_intrinsic("molt_sys_intern")`` (a
+    ``builtin_func`` of arity 1) once, and ``caller`` calls it generically."""
+    init = _function(
+        "pyinit.mod",
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        _const("bn", "molt_sys_intern"),
+        {
+            "kind": "builtin_func",
+            "s_value": "molt_sys_intern",
+            "value": 1,
+            "args": ["bn"],
+            "out": "f_intern",
+            "source_line": 3,
+        },
+        *_store("_INTERN", "f_intern", 3),
+        _func_new("mod__caller", "f_caller", 5),
+        *_store("caller", "f_caller", 5),
+        {"kind": "ret_void"},
+    )
+    caller = _function(
+        "mod__caller",
+        *_read("_INTERN", "callee", 20, "none"),
+        {
+            "kind": "call_func",
+            "args": ["callee", *[f"a{i}" for i in range(supplied)]],
+            "argument_custody": ["transferred"] * (supplied + 1),
+            "out": "r",
+            "type_hint": "str",
+            "source_line": 20,
+        },
+    )
+    return [init, caller]
+
+
+def test_a_call_of_an_init_once_intrinsic_cell_is_the_direct_intrinsic_call() -> None:
+    """The cell holds one builtin_func for the whole program (closed world), so
+    an exact positional call is the frontend's direct intrinsic call: no
+    callable to find, bind or admit at run time."""
+    functions, diagnostics = _prove(_intrinsic_call_program(1))
+    assert diagnostics == []
+    (call,) = [op for f in functions for op in f["ops"] if op.get("out") == "r"]
+    assert call == {
+        "kind": "call",
+        "s_value": "molt_sys_intern",
+        "args": ["a0"],
+        "out": "r",
+        "type_hint": "str",
+        "source_line": 20,
+    }
+
+
+def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
+    functions, diagnostics = _prove(_intrinsic_call_program(2))
+    (call,) = [op for f in functions for op in f["ops"] if op.get("out") == "r"]
+    assert call["kind"] == "call_func"
+    assert any(
+        "generic intrinsic call: the call passes 2 of 1 parameters" in line
+        for line in diagnostics
+    )
+
+
+def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publication() -> (
+    None
+):
+    """Another module that calls ``shared`` through its object (a guarded call
+    whose callee word is the function) can only do so after ``mod`` published
+    that object, which follows LIMIT's store; a call by symbol alone (the
+    ``call_internal`` of ``_dominance_program``) keeps the read checked."""
+    funcs, _others = _dominance_program()
+    other = _function(
+        "pyinit.other",
+        _const("k_shared", "shared"),
+        {"kind": "module_get_global", "args": ["mod_value", "k_shared"], "out": "f"},
+        {"kind": "call_guarded", "s_value": "mod__shared", "args": ["f"], "out": "r"},
+    )
+    plan = _dominance_plan(funcs, funcs + [other])
+    assert _lines(funcs, plan.init_dominated["mod"]) == {9, 30, 40, 60}

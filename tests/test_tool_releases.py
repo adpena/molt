@@ -322,6 +322,69 @@ def test_warm_discovery_reuses_the_executable_digest_and_sees_a_rewrite(
     assert tool_releases.discover_tool(release, toolchain_root) is None
 
 
+def _counted_discoveries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[tool_releases.ToolRelease, Path, tool_releases.ToolDiscovery, list[Path]]:
+    """A provisioned demo tool and the executables each discovery hashes."""
+    release, archive = _pinned_release(tmp_path, b"demo binary")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / archive.name).write_bytes(archive.read_bytes())
+    toolchain_root = tmp_path / "target-root"
+    provisioned = tool_releases.provision_tool(
+        release, toolchain_root, downloads=downloads
+    )
+    # Discoveries below start from an empty memo, whatever provisioning did.
+    monkeypatch.setattr(tool_releases, "_VERIFIED_DISCOVERIES", {})
+    hashed: list[Path] = []
+    real_sha256 = tool_releases._file_sha256
+
+    def counted(path: Path, *, label: str) -> str:
+        hashed.append(path)
+        return real_sha256(path, label=label)
+
+    monkeypatch.setattr(tool_releases, "_file_sha256", counted)
+    return release, toolchain_root, provisioned, hashed
+
+
+def test_a_verified_discovery_is_reused_in_process_until_a_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from molt import file_hashing
+
+    release, toolchain_root, provisioned, hashed = _counted_discoveries(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(file_hashing, "DIGEST_RACY_WINDOW_NS", 0)
+    time.sleep(0.01)  # the install now predates the first discovery
+    assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+    assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+    assert len(hashed) == 1, "the second discovery reuses the first"
+
+    # Same bytes length, same mtime: only ctime shows the write, and the
+    # rewritten executable is verified again and refused.
+    before = provisioned.executable.stat()
+    provisioned.executable.write_bytes(b"demo binarX")
+    os.utime(provisioned.executable, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert tool_releases.discover_tool(release, toolchain_root) is None
+    assert len(hashed) == 2
+
+
+def test_a_discovery_inside_the_racy_window_is_verified_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The install was just written: a later write in the same timestamp tick
+    # could keep its signature, so nothing is reused yet.
+    release, toolchain_root, provisioned, hashed = _counted_discoveries(
+        tmp_path, monkeypatch
+    )
+    assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+    assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+    assert len(hashed) == 2
+
+
 def test_tampered_or_stale_installs_are_not_discoveries(tmp_path: Path) -> None:
     release, archive = _pinned_release(tmp_path, b"demo binary")
     downloads = tmp_path / "downloads"
