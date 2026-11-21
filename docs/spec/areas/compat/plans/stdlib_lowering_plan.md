@@ -81,6 +81,11 @@ per premise revision.
    Source request records address the captured bytes, parser, target, package role and premise.
    Relative source requests stay symbolic in the record. Graph completion resolves them against
    the current package and filesystem, so byte-identical source can reuse requests after relocation.
+   Release staging now builds the namespace syntax portion for each supported Python target from
+   the sealed stdlib sources. The installed compiler manifest binds the artifact's bytes. Each
+   row is selected by source digest, target, and package; its canonical AST digest and producer
+   identity must match before it can supply the syntax-only namespace summary. The proof still
+   refines those writes against binding facts for the importing program.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint

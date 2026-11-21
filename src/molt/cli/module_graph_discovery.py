@@ -56,6 +56,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
+    python_package_name,
 )
 from molt.cli.python_import_resolution import python_package_child_names
 from molt.compiler_analysis.python_source_keys import (
@@ -2131,6 +2132,20 @@ def _load_module_import_scan(
             target_python=target_python,
         )
         tree, ast_digest_admission = selected.tree, selected.admission
+    elif (
+        persist_scan
+        and snapshot is not None
+        and source_owner is None
+        and stdlib_root is not None
+        and resolution_cache.is_stdlib_path(path, stdlib_root)
+        and (syntax := resolution_cache.installed_stdlib_namespace_syntax) is not None
+    ):
+        syntax.seed(
+            snapshot,
+            package=python_package_name(module_name, is_package=is_package),
+            target=target_python,
+            admission=ast_digest_admission,
+        )
     premise_reads = ScanPremiseReads() if record_premise_reads else None
     reads_token = SCAN_PREMISE_READS.set(premise_reads)
     try:
