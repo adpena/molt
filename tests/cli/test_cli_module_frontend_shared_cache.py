@@ -17,7 +17,11 @@ from pathlib import Path
 import pytest
 
 from molt.cli import module_cache as MC
-from molt.cli.frontend_record_files import FrontendRecordFiles, frontend_record_files
+from molt.cli.frontend_record_files import (
+    FrontendRecordFiles,
+    FrontendRecordKind,
+    frontend_record_files,
+)
 from molt.frontend import SimpleTIRGenerator
 from molt.cli.source_record_store import (
     SourceRecord,
@@ -935,7 +939,9 @@ def test_module_cache_publishes_once_without_file_hydration(tmp_path, monkeypatc
         calls.append((kind, key))
         return put(store, kind, key, payload, generation=generation)
 
-    def publish_file(files, kind, key, payload):
+    def publish_file(
+        files: FrontendRecordFiles, kind: FrontendRecordKind, key: str, payload: bytes
+    ) -> bool:
         calls.append((kind, key))
         return put_file(files, kind, key, payload)
 
