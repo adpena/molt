@@ -190,6 +190,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/python_import_resolution.py": _P,
         "cli/python_import_topology.py": _P,
         "cli/static_module_cells.py": _P,
+        "cli/stdlib_source_summaries.py": _P,
         "cli/models.py": _P,
         # Defaults (stdlib profile names) that drivers read as constants.
         "cli/config_resolution.py": _P,
@@ -234,6 +235,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/__init__.py": _FrontendInputRole.PACKAGE,
         "cli/cache_fingerprints.py": _FrontendInputRole.IDENTITY,
         "cli/source_extension_input_custody.py": _FrontendInputRole.IDENTITY,
+        "compiler_distribution.py": _FrontendInputRole.IDENTITY,
         "file_hashing.py": _FrontendInputRole.IDENTITY,
         "toolchain_identity.py": _FrontendInputRole.IDENTITY,
         "cli/atomic_io.py": _FrontendInputRole.STORAGE,
@@ -767,13 +769,15 @@ def _import_scan_tooling_fingerprint() -> str:
     from molt.cli.python_import_resolution import PythonImportPolicy
     from molt.cli.python_source_closure import local_python_import_closure
 
-    source_root = _compiler_python_source_root(_compiler_root()).resolve()
+    # The operation pins the source layout for each selected compiler.
+    root = _compiler_root()
     scope = "import-scan-tooling"
-    key = (scope, str(source_root))
+    key = (scope, str(root))
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     if transaction is not None and key in transaction.fingerprints:
         return transaction.fingerprints[key]
 
+    source_root = _operation_resolved(_compiler_python_source_root(root))
     package = source_root / "molt"
     closure = local_python_import_closure(
         source_root,
