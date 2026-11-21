@@ -239,6 +239,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/atomic_io.py": _FrontendInputRole.STORAGE,
         "cli/json_cache.py": _FrontendInputRole.STORAGE,
         "cli/source_record_store.py": _FrontendInputRole.STORAGE,
+        "cli/frontend_record_files.py": _FrontendInputRole.STORAGE,
         "file_publication.py": _FrontendInputRole.STORAGE,
         "cli/binary_image_analysis.py": _FrontendInputRole.REPORTING,
         "cli/build_diagnostics.py": _FrontendInputRole.REPORTING,
