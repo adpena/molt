@@ -1635,7 +1635,8 @@ def test_quarantined_incremental_state_of_every_cargo_target_retires(tmp_path):
     live = target / "debug" / "deps"
     _make_dir(live, size_bytes=_GB, age_s=60, now=now)
 
-    assert {p.resolve() for p in dg._iter_quarantine_dirs(ext.resolve())} == {
+    targets = dg._cargo_target_roots(ext.resolve())
+    assert {p.resolve() for p in dg._iter_quarantine_dirs(targets)} == {
         p.resolve() for p in (*stale, fresh)
     }
     reclaimed = _reclaimed(_gc(ext, env, now))
@@ -1671,12 +1672,22 @@ def test_stale_toolchain_partitions_retire_and_the_newest_stays(tmp_path: Path) 
 
     assert dg._is_reclaimable(old, ext, dg.DEFAULT_LANE_GLOBS) == "toolchain-partition"
     assert dg._is_reclaimable(not_a_partition, ext, dg.DEFAULT_LANE_GLOBS) is None
-    assert dg.stale_toolchain_partitions(target, now=now) == [old]
+    assert set(dg.stale_toolchain_partitions(target, now=now)) == {old}
     reclaimed = _reclaimed(_gc(ext, env, now))
     assert old.resolve() in {Path(path) for path in reclaimed}
     assert not old.exists()
     for kept in (recent, newest, not_a_partition):
         assert kept.is_dir()
+    pressured = dg.gc(
+        root=ext,
+        env=env,
+        now_fn=lambda: now,
+        log=False,
+        free_space_low=lambda volume: volume == ext.resolve(),
+    )
+    assert str(recent.resolve()) in _reclaimed(pressured)
+    assert not recent.exists()
+    assert newest.is_dir() and not_a_partition.is_dir()
     # The target's own owner and use metadata survive its partition's removal.
     assert dg.checkout_state_kind_of(target, ext) == "cargo-target"
 
@@ -1689,7 +1700,7 @@ def test_a_lone_old_partition_is_its_targets_newest_and_stays(tmp_path: Path) ->
     lone.mkdir(parents=True)
     old = time.time() - 30 * DAY
     os.utime(lone, (old, old))
-    assert dg.stale_toolchain_partitions(target, now=time.time()) == []
+    assert not dg.stale_toolchain_partitions(target, now=time.time())
 
 
 def test_a_hot_mirror_is_governed_with_its_artifact_root(

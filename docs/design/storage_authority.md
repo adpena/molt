@@ -475,8 +475,12 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    internal restores). The disk guard governs a root's hot mirror with the
    root (`reclaim_roots`). A target's toolchain partitions
    (`.molt-toolchains/<digest>`, one per external-input identity) other than
-   its newest retire after 7 idle days under the target's exclusive lock
-   (`stale_toolchain_partitions`): slot-07's target held 9 partitions, 22.9
+   its newest retire after 7 idle days under the target's exclusive lock.
+   Under the standing volume free-space floor, the existing collector uses
+   the one-day idle window. It refreshes partition activity and volume pressure
+   under that lock before removal. Partition and quarantine planning share one
+   Cargo target inventory and reuse partition activity for candidate ordering.
+   Slot-07's target held 9 partitions, 22.9
    GiB of its 32.0 GiB. The product store (97.1 GiB) stays on the data volume
    until it has a byte bound on the hot volume.
 3. Capacity: every Molt volume keeps 20% free (`disk_capacity.FREE_SPACE_FLOOR`).
