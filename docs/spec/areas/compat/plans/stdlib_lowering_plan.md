@@ -86,6 +86,11 @@ per premise revision.
    row is selected by source digest, target, and package; its canonical AST digest and producer
    identity must match before it can supply the syntax-only namespace summary. The proof still
    refines those writes against binding facts for the importing program.
+   The same archive carries source requests for stdlib initializers under a closed premise
+   that allows package child bindings. It uses the same key and codec as the writable scan
+   cache, including the exact parser, target plan and namespace premise. The importing program
+   completes admitted requests against its own topology. A revised premise or a demanded body
+   can still require binding analysis.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint

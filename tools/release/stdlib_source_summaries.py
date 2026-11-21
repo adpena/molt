@@ -1,4 +1,4 @@
-"""Produce the stdlib namespace syntax artifact from sealed release source."""
+"""Produce the stdlib source summaries from sealed release source."""
 
 from pathlib import Path
 import sys
@@ -11,8 +11,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.cli.stdlib_namespace_syntax import stdlib_namespace_syntax_document  # noqa: E402
-from molt.exact_json import canonical_json_bytes  # noqa: E402
+from molt.cli.stdlib_source_summaries import encode_stdlib_source_summaries  # noqa: E402
 from molt.file_publication import atomic_write_bytes  # noqa: E402
 from molt.source_root import compiler_source_root  # noqa: E402
 
@@ -21,9 +20,6 @@ if __name__ == "__main__":
     (destination,) = sys.argv[1:]
     atomic_write_bytes(
         Path(destination),
-        canonical_json_bytes(
-            stdlib_namespace_syntax_document(compiler_source_root() / "src/molt/stdlib")
-        )
-        + b"\n",
+        encode_stdlib_source_summaries(compiler_source_root() / "src/molt/stdlib"),
         exclusive=True,
     )

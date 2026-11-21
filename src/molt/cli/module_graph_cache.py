@@ -29,7 +29,7 @@ from molt.compiler_analysis.python_imports import (
     SourceAllExports,
     SourceDemandPhase,
 )
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from itertools import pairwise
@@ -1097,6 +1097,7 @@ def _read_persisted_import_scan_record(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
+    installed_initializer: Callable[[str], bytes | None] | None = None,
 ) -> _ImportScanRequests | None:
     if snapshot is None:
         try:
@@ -1121,7 +1122,10 @@ def _read_persisted_import_scan_record(
         purpose=purpose,
     )
     record = _read_import_scan_record(record_key)
-    payload = _decode_source_record_json(None if record is None else record.payload)
+    raw = record.payload if record is not None else None
+    if raw is None and installed_initializer is not None:
+        raw = installed_initializer(record_key)
+    payload = _decode_source_record_json(raw)
     if payload is None:
         return None
     # Source records are a closed versioned protocol. Retired projections and
@@ -1602,8 +1606,8 @@ def _read_persisted_import_scan_record(
         runtime_catalog,
         uses_runtime_import_protocol=uses_protocol,
     )
-    assert record is not None
-    record.refresh()
+    if record is not None:
+        record.refresh()
     return scan
 
 
@@ -1637,16 +1641,13 @@ def _decode_runtime_catalog_deferral(value: object) -> RuntimeCatalogDeferral | 
     )
 
 
-@_source_tree_fingerprint_transaction()
-def _write_persisted_import_scan(
-    path: Path,
+def _encode_import_scan_payload(
     *,
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
-    namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
@@ -1654,7 +1655,7 @@ def _write_persisted_import_scan(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
-) -> None:
+) -> bytes:
     _validate_import_scan_namespace_summary(
         scan.namespace_summary, source_owner=source_owner
     )
@@ -1663,12 +1664,7 @@ def _write_persisted_import_scan(
         and any(binding.runtime_catalog for binding in scan.source_bindings)
     ):
         raise ValueError("a runtime catalog deferral belongs only to an owner scan")
-    if snapshot.path != path:
-        raise ValueError("source scan snapshot path mismatch")
     identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
-    # A publication is for the captured generation, never a later pathname hash.
-    if not _module_source._payload_source_matches(identity, path, path.stat()):
-        return
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "parser": [sys.implementation.name, sys.version],
@@ -1817,6 +1813,47 @@ def _write_persisted_import_scan(
         "uses_runtime_import_protocol": scan.uses_runtime_import_protocol,
         "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
     }
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+@_source_tree_fingerprint_transaction()
+def _write_persisted_import_scan(
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
+    namespace_premise: PythonNamespacePremise | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
+    scan: _ImportScanRequests,
+    snapshot: _module_source.PythonSourceSnapshot,
+    target_sys_platform: str | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_catalog_owner: bool = False,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
+) -> None:
+    if snapshot.path != path:
+        raise ValueError("source scan snapshot path mismatch")
+    identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
+    # A publication is for the captured generation, never a later pathname hash.
+    if not _module_source._payload_source_matches(identity, path, path.stat()):
+        return
+    payload = _encode_import_scan_payload(
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
+        native_support_function_roots=native_support_function_roots,
+        scan=scan,
+        snapshot=snapshot,
+        target_sys_platform=target_sys_platform,
+        target_python=target_python,
+        runtime_catalog_owner=runtime_catalog_owner,
+        purpose=purpose,
+    )
     record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
@@ -1832,6 +1869,4 @@ def _write_persisted_import_scan(
         runtime_catalog_owner=runtime_catalog_owner,
         purpose=purpose,
     )
-    frontend_record_files().put(
-        "import-scan", record_key, json.dumps(payload, separators=(",", ":")).encode()
-    )
+    frontend_record_files().put("import-scan", record_key, payload)

@@ -11,11 +11,11 @@ from molt.compiler_distribution import (
     MANIFEST_SCHEMA,
     MAX_SOURCE_BYTES,
     MAX_SOURCE_FILES,
-    MAX_STDLIB_NAMESPACE_SYNTAX_BYTES,
+    MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
     PRODUCTION_COMPILER_PROFILE,
     PRODUCTION_COMPILER_FEATURES,
-    STDLIB_NAMESPACE_SYNTAX_PATH,
-    StdlibNamespaceSyntaxRecord,
+    STDLIB_SOURCE_SUMMARIES_PATH,
+    StdlibSourceSummariesRecord,
     validate_compiler_record,
     validate_launcher_record,
     validate_wasm_facts_record,
@@ -227,32 +227,32 @@ def wasm_facts_record(binary: Path, *, platform: str, arch: str) -> dict[str, An
     )
 
 
-def _stage_stdlib_namespace_syntax(
+def _stage_stdlib_source_summaries(
     root: Path, source: Path
-) -> StdlibNamespaceSyntaxRecord:
-    destination = root / STDLIB_NAMESPACE_SYNTAX_PATH
+) -> StdlibSourceSummariesRecord:
+    destination = root / STDLIB_SOURCE_SUMMARIES_PATH
     destination.parent.mkdir(parents=True, exist_ok=True)
     with OwnedTemporaryDirectory() as cache:
         environment = source_environment()
         environment["MOLT_CACHE"] = str(cache)
         result = run_git_source_python(
             source,
-            "tools/release/stdlib_namespace_syntax.py",
+            "tools/release/stdlib_source_summaries.py",
             [str(destination.resolve())],
             environment=ProcessEnvironment(environment),
-            timeout=180,
+            timeout=1800,
         )
     if result.returncode != 0:
         raise ValueError(
-            f"Cannot build stdlib namespace syntax: {result.stderr.strip()}"
+            f"Cannot build stdlib source summaries: {result.stderr.strip()}"
         )
     identity = stable_regular_file_identity(
-        destination, label="release stdlib namespace syntax"
+        destination, label="release stdlib source summaries"
     )
-    if not 0 < identity.size <= MAX_STDLIB_NAMESPACE_SYNTAX_BYTES:
-        raise ValueError("Release stdlib namespace syntax exceeds its size policy")
+    if not 0 < identity.size <= MAX_STDLIB_SOURCE_SUMMARIES_BYTES:
+        raise ValueError("Release stdlib source summaries exceed their size policy")
     return {
-        "path": STDLIB_NAMESPACE_SYNTAX_PATH,
+        "path": STDLIB_SOURCE_SUMMARIES_PATH,
         "size": identity.size,
         "sha256": identity.sha256,
     }
@@ -290,7 +290,7 @@ def materialize_sources(
             "launcher": launcher,
             "wasm_facts": wasm_facts,
             "runtime": runtime,
-            "stdlib_namespace_syntax": _stage_stdlib_namespace_syntax(root, source),
+            "stdlib_source_summaries": _stage_stdlib_source_summaries(root, source),
         },
     )
     return source
