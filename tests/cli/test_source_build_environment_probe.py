@@ -393,8 +393,8 @@ def test_sealed_attestation_skips_the_seal_and_refuses_reopened_write_bits(
     ],
 )
 def test_admission_accepts_only_one_way_installed_permission_transition(
-    tmp_path, fault
-):
+    tmp_path: Path, fault: str
+) -> None:
     from molt.exact_json import canonical_json_sha256
     from tests.python_environment_test_support import build_environment_manifest
 

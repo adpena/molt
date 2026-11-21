@@ -168,7 +168,9 @@ def test_the_installed_tree_refuses_new_files_and_a_retry_reopens_it(
     with pytest.raises(PermissionError):
         (package / "__pycache__").mkdir()
     with pytest.raises(PermissionError):
-        (root / "lib" / "site-packages" / "installed.py").write_text("")
+        (root / "lib" / "site-packages" / "installed.py").write_text(
+            "", encoding="utf-8"
+        )
     # A crash after the seal and before the record: the next use reopens the
     # tree for uv, then seals it again.
     (root / uv_environment.RECORD).unlink()

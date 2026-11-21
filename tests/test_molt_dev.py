@@ -12706,7 +12706,7 @@ def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
 
 @pytest.mark.slow  # 91 s on an 18-core host (2026-11-13)
 @pytest.mark.skipif(os.name != "posix", reason="same-PID exec source and image custody")
-def test_controller_repins_release_previous_sources(tmp_path):
+def test_controller_repins_release_previous_sources(tmp_path: Path) -> None:
     from molt.checkout_state import record_checkout_owner
     from molt.dx import cargo_target_dir_for_artifact_root
     from tests.process_guard_common import run_custody_subject_process
