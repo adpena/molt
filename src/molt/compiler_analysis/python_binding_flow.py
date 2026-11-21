@@ -21,7 +21,10 @@ from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
 from bisect import bisect_left
 from collections import OrderedDict, deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import copy
 from dataclasses import dataclass, field, fields, replace
 from threading import Event, RLock
 from types import MappingProxyType
@@ -9108,6 +9111,26 @@ class _Analyzer:
         *,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
     ) -> _BindingAnalysis:
+        revisions = _BINDING_REVISIONS.get()
+        if (
+            revisions is not None
+            and self._opaque_activation_sources is not None
+            and self.policy.analyze_deferred_bodies
+        ):
+            return revisions.analyze(
+                self, tree, ast_digest_admission=ast_digest_admission
+            )
+        self._analyze_module(tree, ast_digest_admission=ast_digest_admission)
+        return self._finish_analysis(
+            0 if self.policy.analyze_deferred_bodies else len(self.function_jobs)
+        )
+
+    def _analyze_module(
+        self,
+        tree: ast.Module,
+        *,
+        ast_digest_admission: _PythonAstDigestAdmission | None,
+    ) -> None:
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
             and statement.module == "__future__"
@@ -9181,8 +9204,15 @@ class _Analyzer:
         finally:
             self._observed_stack.pop()
         self._active_lexical_history = None
-        cursor = 0 if self.policy.analyze_deferred_bodies else len(self.function_jobs)
+
+    def _finish_analysis(
+        self, cursor: int, *, capture: Callable[[_Analyzer, int], None] | None = None
+    ) -> _BindingAnalysis:
         while cursor < len(self.function_jobs):
+            # Exponential spacing keeps retained work logarithmic in the
+            # number of deferred jobs. Small bodies cost less to replay.
+            if capture is not None and cursor >= 64 and not cursor & (cursor - 1):
+                capture(self, cursor)
             job = self.function_jobs[cursor]
             cursor += 1
             # Deferred bodies can run after any observed module state.  Parent
@@ -9366,6 +9396,158 @@ class _Analyzer:
                 )
             ),
         )
+
+    def _fork_at_deferred_boundary(self) -> _Analyzer:
+        """Fork a drained prefix without sharing mutable scope or job owners."""
+        assert self.module_scope is not None and self._dependency_authority is not None
+        assert not self._observed_stack and not self._binding_read_scopes
+        assert (
+            self._active_lexical_history is None and self._active_module_states is None
+        )
+        result = _copy_analysis_containers(self)
+        # Stored binding states, trie nodes, syntax and projected facts are
+        # immutable. The pool's indexes and the dependency caches are private
+        # to each fork so the suffix cannot add records to the sealed prefix.
+        result.states = _copy_analysis_containers(self.states)
+        result._dependency_authority = _copy_analysis_containers(
+            self._dependency_authority
+        )
+        result.source_namespaces = {
+            owner: names.copy() for owner, names in self.source_namespaces.items()
+        }
+        result._history_summaries = {}
+
+        scopes: list[_Scope] = []
+        for scope in self.scopes:
+            parent = scopes[scope.parent.scope_id] if scope.parent is not None else None
+            scopes.append(replace(scope, parent=parent, slots=scope.slots.copy()))
+        result.scopes = scopes
+        result.module_scope = scopes[self.module_scope.scope_id]
+        result._source_scopes = {
+            key: scopes[scope.scope_id] for key, scope in self._source_scopes.items()
+        }
+        # Several jobs can read the same ancestor's observed states. Fork
+        # each list once and retain those aliases in the new worklist.
+        histories = {id(self._module_history): result._module_history}
+
+        def fork_job(job: _FunctionJob) -> _FunctionJob:
+            history = job.lexical_history
+            if history is not None:
+                owned = histories.get(id(history))
+                if owned is None:
+                    owned = histories[id(history)] = history.copy()
+                history = owned
+            return replace(
+                job,
+                parent_scope=scopes[job.parent_scope.scope_id],
+                lexical_history=history,
+            )
+
+        jobs = {id(job): fork_job(job) for job in self.function_jobs}
+        result.function_jobs = [jobs[id(job)] for job in self.function_jobs]
+        result._queued_function_jobs = {
+            key: jobs[id(job)] for key, job in self._queued_function_jobs.items()
+        }
+        return result
+
+
+def _copy_analysis_containers[T](owner: T) -> T:
+    """Copy the flat, analysis-owned containers of a binding work owner."""
+    result = copy(owner)
+    for name, value in vars(owner).items():
+        if isinstance(value, (dict, list, set)):
+            setattr(result, name, value.copy())
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingCheckpoint:
+    completed_jobs: int
+    prefix: _Analyzer
+
+
+class _BindingRevisions:
+    """Operation-local prefixes for adjacent policies of the same source."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._recent: OrderedDict[
+            tuple[str, PythonBindingFlowPolicy], tuple[_BindingCheckpoint, ...]
+        ] = OrderedDict()
+
+    def analyze(
+        self,
+        analyzer: _Analyzer,
+        tree: ast.Module,
+        *,
+        ast_digest_admission: _PythonAstDigestAdmission | None,
+    ) -> _BindingAnalysis:
+        policy = analyzer.policy
+        active = analyzer._opaque_activation_sources
+        assert active is not None
+        key = (analyzer.source_digest, replace(policy, opaque_activation_sources=()))
+        with self._lock:
+            prior = self._recent.get(key, ())
+        checkpoints: list[_BindingCheckpoint] = []
+        cursor = 0
+        for checkpoint in reversed(prior):
+            prefix = checkpoint.prefix
+            if all(
+                answer == (not owners.isdisjoint(active))
+                for owners, answer in prefix._opaque_activation_reads.items()
+            ):
+                analyzer = prefix._fork_at_deferred_boundary()
+                analyzer.policy = policy
+                analyzer._opaque_activation_sources = active
+                cursor = checkpoint.completed_jobs
+                checkpoints.extend(
+                    item for item in prior if item.completed_jobs <= cursor
+                )
+                break
+        else:
+            analyzer._analyze_module(tree, ast_digest_admission=ast_digest_admission)
+
+        def capture(owner: _Analyzer, completed_jobs: int) -> None:
+            if checkpoints and checkpoints[-1].completed_jobs == completed_jobs:
+                return
+            # Bound retention on large sources as well as on many small
+            # sources. Exact analysis still runs after a refused checkpoint.
+            if (
+                len(owner.states) + len(owner.expressions) + len(owner.statements)
+                > 32768
+            ):
+                return
+            checkpoints.append(
+                _BindingCheckpoint(completed_jobs, owner._fork_at_deferred_boundary())
+            )
+            if len(checkpoints) > 8:
+                del checkpoints[0]
+
+        result = analyzer._finish_analysis(cursor, capture=capture)
+        with self._lock:
+            self._recent[key] = tuple(checkpoints)
+            self._recent.move_to_end(key)
+            if len(self._recent) > 4:
+                self._recent.popitem(last=False)
+        return result
+
+
+_BINDING_REVISIONS: ContextVar[_BindingRevisions | None] = ContextVar(
+    "_BINDING_REVISIONS", default=None
+)
+
+
+@contextmanager
+def python_binding_revision_scope() -> Generator[None]:
+    """Keep partial transfers only while discovery settles its input graph."""
+    if _BINDING_REVISIONS.get() is not None:
+        yield
+        return
+    token = _BINDING_REVISIONS.set(_BindingRevisions())
+    try:
+        yield
+    finally:
+        _BINDING_REVISIONS.reset(token)
 
 
 def _project_binding_index(
