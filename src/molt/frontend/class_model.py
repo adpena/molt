@@ -99,9 +99,6 @@ class Member:
     # A property's field, and for a setter/deleter which update it is.
     property_field: str | None = None
     property_update: str | None = None
-    # A data member the defining module cannot prove is not a data
-    # descriptor (it may define ``__set__``, ``__delete__`` or ``__new__``).
-    possible_data_descriptor: bool = False
 
 
 class LayoutRefusal(Enum):
@@ -205,6 +202,8 @@ class ClassView(Protocol):
     @property
     def field_defaults(self) -> tuple[tuple[str, ast.expr], ...]: ...
     @property
+    def possible_data_descriptors(self) -> frozenset[str]: ...
+    @property
     def dataclass(self) -> DataclassSpec | None: ...
     @property
     def constructor(self) -> Constructor: ...
@@ -238,6 +237,10 @@ class ClassModel:
     layout_version: int
     members: tuple[tuple[str, Member], ...]
     field_defaults: tuple[tuple[str, ast.expr], ...]
+    # Class-level names the defining module cannot prove are not data
+    # descriptors (a value that may define ``__set__``, ``__delete__`` or
+    # ``__new__``, or a binding the body makes some other way).
+    possible_data_descriptors: frozenset[str]
     dataclass: DataclassSpec | None
     constructor: Constructor
 
@@ -300,6 +303,10 @@ class ClassDraft:
     decorated: bool
     layout_version: int
     field_defaults: tuple[tuple[str, ast.expr], ...]
+    # Class-level names the defining module cannot prove are not data
+    # descriptors (a value that may define ``__set__``, ``__delete__`` or
+    # ``__new__``, or a binding the body makes some other way).
+    possible_data_descriptors: frozenset[str]
     dataclass: DataclassSpec | None
     constructor: Constructor = ConstructorRefusal("the class statement has not run")
     members: dict[str, Member] = field(default_factory=dict)
@@ -318,11 +325,9 @@ class ClassDraft:
         self.members[name] = member
         self.pending_members.discard(name)
 
-    def bind_data(self, name: str, *, possible_data_descriptor: bool) -> None:
+    def bind_data(self, name: str) -> None:
         """A class-level store bound ``name`` to a value that is not a def."""
-        self.members[name] = Member(
-            MemberKind.DATA, possible_data_descriptor=possible_data_descriptor
-        )
+        self.members[name] = Member(MemberKind.DATA)
         self.pending_members.discard(name)
 
     def unbind(self, name: str) -> None:
@@ -345,6 +350,7 @@ class ClassDraft:
             layout_version=self.layout_version,
             members=tuple(sorted(self.members.items())),
             field_defaults=self.field_defaults,
+            possible_data_descriptors=self.possible_data_descriptors,
             dataclass=self.dataclass,
             constructor=self.constructor,
         )

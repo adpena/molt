@@ -78,6 +78,7 @@ def _model(cls: type) -> ClassModel:
         layout_version=1,
         members=tuple(sorted(members)),
         field_defaults=(),
+        possible_data_descriptors=frozenset(),
         dataclass=None,
         constructor=ConstructorRefusal("test"),
     )
@@ -152,6 +153,7 @@ def test_a_def_the_body_has_not_compiled_stops_the_walk() -> None:
         decorated=False,
         layout_version=1,
         field_defaults=(),
+        possible_data_descriptors=frozenset(),
         dataclass=None,
         pending_members={"m"},
     )
@@ -209,7 +211,7 @@ def _apply(draft, sequence: tuple[str, ...], namespace: dict) -> None:
             draft.bind_member("m", Member(MemberKind.FUNCTION, symbol="def"))
             namespace["m"] = "function"
         elif operation == "data":
-            draft.bind_data("m", possible_data_descriptor=False)
+            draft.bind_data("m")
             namespace["m"] = "data"
         elif operation == "property":
             draft.bind_member("m", Member(MemberKind.PROPERTY, symbol="prop"))
@@ -259,6 +261,7 @@ def test_body_bindings_in_order_match_the_interpreter(sequence: tuple[str, ...])
         decorated=False,
         layout_version=1,
         field_defaults=(),
+        possible_data_descriptors=frozenset(),
         dataclass=None,
         pending_members={"m"},
     )
@@ -277,6 +280,7 @@ def test_body_bindings_in_order_match_the_interpreter(sequence: tuple[str, ...])
         layout_version=1,
         members=(("m", Member(MemberKind.FUNCTION, symbol="base")),),
         field_defaults=(),
+        possible_data_descriptors=frozenset(),
         dataclass=None,
         constructor=ConstructorRefusal("test"),
     )

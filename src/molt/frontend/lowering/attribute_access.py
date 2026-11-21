@@ -22,26 +22,30 @@ from molt.frontend.exception_kinds_generated import EXCEPTION_LAYOUT_MEMBER_TAGS
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.class_model import (
+    Member,
+    MemberKind,
+    defines,
+    namespace_closed,
+)
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
     OBJECT_CLASS,
     BoundMethodHint,
     BuiltinClass,
     ClassId,
-    MethodDescriptor,
     MoltOp,
     MoltValue,
     ReceiverKind,
     TypeHint,
-    class_namespace_closed,
 )
 
 # Data descriptors every user class reaches through ``object`` and ``type``:
 # ``object.__class__`` and the per-class ``__dict__``/``__weakref__`` getsets.
 _OBJECT_DATA_DESCRIPTOR_ATTRS = frozenset({"__class__", "__dict__", "__weakref__"})
 # Functions, classmethods and staticmethods define no ``__set__``/``__delete__``.
-_NON_DATA_METHOD_DESCRIPTORS: frozenset[MethodDescriptor] = frozenset(
-    {"function", "classmethod", "staticmethod"}
+_NON_DATA_MEMBER_KINDS: frozenset[MemberKind] = frozenset(
+    {MemberKind.FUNCTION, MemberKind.CLASSMETHOD, MemberKind.STATICMETHOD}
 )
 # Builtin constructors whose results never define ``__set__``/``__delete__``.
 _NON_DESCRIPTOR_BUILTIN_CONSTRUCTORS = frozenset(
@@ -215,28 +219,23 @@ class AttributeAccessMixin(GeneratorMixinBase):
 
     def _class_instances_may_be_data_descriptors(self, class_id: ClassId) -> bool:
         """False only when calling the class makes plain instances of it."""
-        info = self.classes.get(class_id)
+        view = self.classes.get(class_id)
         if (
-            info is None
-            or not class_namespace_closed(info)
-            or info.get("custom_metaclass")
+            view is None
+            or not namespace_closed(view)
+            or view.custom_metaclass
             or class_id in self.class_definition_pending
         ):
             return True
         for owner in self._class_mro(class_id):
             if owner == OBJECT_CLASS:
                 continue
-            owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if owner_info is None or not class_namespace_closed(owner_info):
+            owner_view = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if owner_view is None or not namespace_closed(owner_view):
                 return True
             # ``__new__`` may return an object of another type.
             for name in ("__set__", "__delete__", "__new__"):
-                if (
-                    name in owner_info.get("methods", {})
-                    or name in (owner_info.get("pending_methods") or ())
-                    or name in owner_info.get("class_attrs", {})
-                    or name in owner_info["possible_data_descriptor_attrs"]
-                ):
+                if defines(owner_view, name) or name in owner_view.possible_data_descriptors:
                     return True
         return False
 
@@ -257,17 +256,17 @@ class AttributeAccessMixin(GeneratorMixinBase):
         for owner in self._class_mro(class_id):
             if owner == OBJECT_CLASS:
                 continue
-            mro_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if not mro_info:
+            mro_view = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if mro_view is None:
                 return True
-            if attr in mro_info["possible_data_descriptor_attrs"]:
+            if attr in mro_view.possible_data_descriptors:
                 return True
-            method_info = mro_info.get("methods", {}).get(attr)
-            if method_info is not None:
-                if method_info["descriptor"] not in _NON_DATA_METHOD_DESCRIPTORS:
+            member = mro_view.member(attr)
+            if member is not None and member.kind is not MemberKind.DATA:
+                if member.kind not in _NON_DATA_MEMBER_KINDS:
                     return True
-            elif attr in (mro_info.get("pending_methods") or ()):
-                # Not compiled yet: its decorators are still unclassified.
+            elif member is None and mro_view.pending(attr):
+                # Not bound yet: its decorators are still unclassified.
                 return True
         return False
 
@@ -512,7 +511,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return
         # Metaclass __init__ receives `cls` which is a TYPE object, not an
         # instance. Field offsets don't apply — always use generic setattr.
-        if class_info and BuiltinClass("type") in class_info.get("bases", ()):
+        if class_info and BuiltinClass("type") in class_info.bases:
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_PTR",
@@ -521,7 +520,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return
-        if class_info and attr not in class_info.get("fields", {}):
+        if class_info and class_info.layout.field(attr) is None:
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_PTR",
@@ -625,13 +624,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if (
             class_info is None
             or self._class_is_exception_subclass(class_id)
-            or BuiltinClass("type") in class_info.get("bases", ())
+            or BuiltinClass("type") in class_info.bases
         ):
             return None
         return {
-            name: offset
-            for name, offset in class_info.get("fields", {}).items()
-            if not self._class_attr_may_be_data_descriptor(class_id, name)
+            item.name: item.offset
+            for item in class_info.layout.fields
+            if not self._class_attr_may_be_data_descriptor(class_id, item.name)
         }
 
     def _emit_guarded_getattr(
@@ -655,7 +654,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             return res
         # Metaclass methods operate on TYPE objects — field offsets don't apply.
-        if class_info and BuiltinClass("type") in class_info.get("bases", ()):
+        if class_info and BuiltinClass("type") in class_info.bases:
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -665,7 +664,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return res
-        if class_info and attr not in class_info.get("fields", {}):
+        if class_info and class_info.layout.field(attr) is None:
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -1031,14 +1030,14 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.classes[declared_class] if declared_class is not None else None
         )
         if declared_class is not None:
-            getattribute_info, _ = self._resolve_method_info(
+            getattribute_member, _ = self._resolve_member(
                 declared_class, "__getattribute__"
             )
-            if getattribute_info:
+            if getattribute_member is not None:
                 return self._emit_generic_attribute_load(
                     obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
                 )
-        if class_info and class_info.get("dataclass"):
+        if class_info is not None and class_info.dataclass is not None:
             return self._emit_generic_attribute_load(
                 obj,
                 node.attr,
@@ -1046,41 +1045,45 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 method_load=method_load,
                 type_hint="Any",
             )
-        method_info = None
+        member: Member | None = None
         method_class: ClassId | None = None
         if declared_class is not None:
-            method_info, method_class = self._resolve_method_info(
-                declared_class, node.attr
-            )
+            member, method_class = self._resolve_member(declared_class, node.attr)
         if (
-            method_info
-            and method_info["descriptor"] == "function"
+            member is not None
+            and member.kind is MemberKind.FUNCTION
             and not receiver_is_class_object
         ):
             if method_class and method_class.module == self.module_name:
                 # Avoid binding to same-module class methods directly; class
                 # method objects are not guaranteed to be in scope for reuse.
-                method_info = None
+                member = None
+        values = (
+            self._member_values(method_class, node.attr)
+            if method_class is not None
+            else None
+        )
         if (
             declared_class is not None
             and class_info is not None
-            and method_info
-            and method_info["descriptor"] == "function"
+            and member is not None
+            and member.kind is MemberKind.FUNCTION
             and not receiver_is_class_object
         ):
-            fields = class_info.get("fields", {})
             if (
-                class_namespace_closed(class_info)
+                namespace_closed(class_info)
                 and declared_class.module == self.module_name
-                and node.attr not in fields
+                and class_info.layout.field(node.attr) is None
                 and not self._instance_attr_mutated(declared_class, node.attr)
             ):
                 if method_load:
                     # The method load selects the same function at run time
                     # and binds no method object.
                     return self._emit_method_load(obj, node.attr)
-                func_val = method_info["func"]
-                if self.current_func_name != "molt_main":
+                # The function's SSA value exists only in its defining module;
+                # elsewhere the class supplies it at run time.
+                func_val = values.func if values is not None else None
+                if func_val is None or self.current_func_name != "molt_main":
                     class_ref = MoltValue(self.next_var(), type_hint="type")
                     self.emit(MoltOp(kind="TYPE_OF", args=[obj], result=class_ref))
                     func_val = self._emit_class_method_func(class_ref, node.attr)
@@ -1101,9 +1104,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if (
             declared_class is not None
             and class_info is not None
-            and method_info
-            and method_info["descriptor"] == "property"
-            and class_namespace_closed(class_info)
+            and member is not None
+            and member.kind is MemberKind.PROPERTY
+            and namespace_closed(class_info)
             and not receiver_is_class_object
         ):
             # A property is a data descriptor, so no instance attribute shadows
@@ -1114,11 +1117,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 and self._exact_class_for_value(obj, obj_name, fields=True)
                 == declared_class
             )
-            property_field = method_info.get("property_field")
+            property_field = member.property_field
             if property_field:
-                field_map = class_info.get("fields", {})
                 if (
-                    property_field in field_map
+                    class_info.layout.field(property_field) is not None
                     and not self._class_attr_may_be_data_descriptor(
                         declared_class, property_field
                     )
@@ -1137,9 +1139,8 @@ class AttributeAccessMixin(GeneratorMixinBase):
                         expected_class=declared_class,
                         guard=guard,
                     )
-            getter_hint = method_info["func"].type_hint
-            assert isinstance(getter_hint, str), "property getter carries a Func hint"
-            getter_symbol = getter_hint.split(":", 1)[1]
+            getter_symbol = member.symbol
+            assert getter_symbol is not None, "a property getter has a symbol"
             if exact_receiver:
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=res))
@@ -1215,14 +1216,14 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return self._emit_generic_attribute_load(
                 obj, node.attr, "GETATTR_GENERIC_OBJ", method_load=method_load
             )
-        if class_info.get("dynamic"):
+        if not class_info.layout.static:
             return self._emit_generic_attribute_load(
                 obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
             )
-        field_map = class_info.get("fields", {})
+        field = class_info.layout.field(node.attr)
         if (
             receiver_is_class_object
-            or node.attr not in field_map
+            or field is None
             or self._class_attr_may_be_data_descriptor(expected_class, node.attr)
         ):
             return self._emit_generic_attribute_load(
@@ -1230,7 +1231,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
         field_hint: TypeHint | None = None
         if self._hints_enabled():
-            field_hint = class_info.get("field_hints", {}).get(node.attr)
+            field_hint = field.hint
         res = self._emit_guarded_getattr(
             obj,
             node.attr,
@@ -1275,14 +1276,15 @@ class AttributeAccessMixin(GeneratorMixinBase):
         elif declared_class is not None:
             self._record_instance_attr_mutation(declared_class, attr)
         if exact_class is not None and obj is not None:
-            exact_info = self.classes.get(exact_class)
+            exact_view = self.classes.get(exact_class)
             if (
-                exact_info
-                and not exact_info.get("dynamic")
-                and not exact_info.get("dataclass")
+                exact_view is not None
+                and exact_view.layout.static
+                and exact_view.dataclass is None
             ):
-                field_map = exact_info.get("fields", {})
-                if attr in field_map and not self._class_attr_may_be_data_descriptor(
+                if exact_view.layout.field(
+                    attr
+                ) is not None and not self._class_attr_may_be_data_descriptor(
                     exact_class, attr
                 ):
                     self._emit_guarded_setattr(
@@ -1293,7 +1295,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                         obj_name=obj_name,
                     )
                     return
-        if class_info and class_info.get("dataclass"):
+        if class_info is not None and class_info.dataclass is not None:
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_OBJ",
@@ -1304,8 +1306,8 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return
         if obj is not None and declared_class is not None and class_info is not None:
             if (
-                class_info.get("dynamic")
-                or attr not in class_info.get("fields", {})
+                not class_info.layout.static
+                or class_info.layout.field(attr) is None
                 or declared is not None
                 and declared.kind is ReceiverKind.CLASS_OBJECT
                 or self._class_attr_may_be_data_descriptor(declared_class, attr)

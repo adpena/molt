@@ -923,10 +923,7 @@ class LocalBindingMixin(GeneratorMixinBase):
             if member is not None:
                 scope.draft.bind_member(name, member)
             else:
-                scope.draft.bind_data(
-                    name,
-                    possible_data_descriptor=name in scope.possible_data_descriptors,
-                )
+                scope.draft.bind_data(name)
         if scope.ns is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))

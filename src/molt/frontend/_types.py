@@ -514,9 +514,6 @@ class _ClassNsScope:
     # The statement's class draft: the body's bindings run through it in
     # source order (``molt.frontend.class_model``).
     draft: ClassDraft | None = None
-    # Class-level names whose value the defining module cannot prove is not a
-    # data descriptor.
-    possible_data_descriptors: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

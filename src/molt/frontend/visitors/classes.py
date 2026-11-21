@@ -913,6 +913,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     params=tuple(sorted(dataclass_opts.items())),
                     init_projection=init_candidate_fields,
                 ),
+                possible_data_descriptors=self._possible_data_descriptor_attrs(
+                    node, class_attrs
+                ),
                 pending_members=pending_methods | set(class_attrs),
             )
         else:
@@ -1101,12 +1104,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 ),
                 field_defaults=tuple(field_defaults.items()),
                 dataclass=None,
+                possible_data_descriptors=self._possible_data_descriptor_attrs(
+                    node, class_attrs
+                ),
                 pending_members=pending_methods | set(class_attrs),
             )
         self.classes[class_id] = draft
-        possible_data_descriptors = self._possible_data_descriptor_attrs(
-            node, class_attrs
-        )
         classcell_val: MoltValue | None = None
         if needs_classcell:
             empty = self._emit_missing_value()
@@ -1362,7 +1365,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             class_node=node,
             class_cell=classcell_val,
             draft=draft,
-            possible_data_descriptors=possible_data_descriptors,
             annotation_namespace_required=annotation_namespace_required,
             local_names=frozenset(self._collect_assigned_names(node.body)),
             global_names=frozenset(self._collect_global_decls(node.body)),
