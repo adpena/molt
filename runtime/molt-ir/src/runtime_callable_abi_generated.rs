@@ -19706,6 +19706,14 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_header_size__molt_context_d1086a27578cda22",
         },
+        "molt_heap_alloc" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_heap_alloc__molt_context_d1086a27578cda22",
+        },
+        "molt_heap_free" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_heap_free__molt_context_d1086a27578cda22",
+        },
         "molt_heapq_heapify" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_heapq_heapify__molt_context_d1086a27578cda22",

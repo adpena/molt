@@ -524,21 +524,24 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                 .collect();
             assert_eq!(!owners.is_empty(), returns_value, "{kind} {target:?}");
             for symbol in ["molt_dec_ref_obj", "molt_inc_ref_obj"] {
-                let matching = compiled
-                    .import_ids
-                    .get(symbol)
-                    .map_or_else(Vec::new, |&import| {
-                        call_sites_for_import(function, import)
-                            .into_iter()
-                            .filter(|(_, inst)| {
-                                let args = attached_arguments(function, *inst);
-                                args.len() == 1
-                                    && owners.iter().any(|owner| {
-                                        canonical_value_sources(function, args[0]).contains(owner)
-                                    })
+                let sites = if symbol == "molt_dec_ref_obj" {
+                    release_call_sites(function, &compiled.import_ids)
+                } else {
+                    compiled
+                        .import_ids
+                        .get(symbol)
+                        .map_or_else(Vec::new, |&import| call_sites_for_import(function, import))
+                };
+                let matching = sites
+                    .into_iter()
+                    .filter(|(_, inst)| {
+                        let args = attached_arguments(function, *inst);
+                        args.len() == 1
+                            && owners.iter().any(|owner| {
+                                canonical_value_sources(function, args[0]).contains(owner)
                             })
-                            .collect::<Vec<_>>()
-                    });
+                    })
+                    .collect::<Vec<_>>();
                 if native_abi.is_some() && symbol == "molt_dec_ref_obj" {
                     let cfg = ControlFlowGraph::with_function(function);
                     let mut returns_owner = false;
@@ -716,18 +719,13 @@ fn callable_constructors_release_only_discarded_owned_results() {
             let calls = call_sites_for_import(function, compiled.import_ids[symbol.as_str()]);
             assert_eq!(calls.len(), 1, "{kind}: {}", function.display());
             let owner = function.dfg.first_result(calls[0].1);
-            let releases = compiled
-                .import_ids
-                .get("molt_dec_ref_obj")
-                .map_or(0, |&import| {
-                    call_sites_for_import(function, import)
-                        .into_iter()
-                        .filter(|(_, inst)| {
-                            let args = attached_arguments(function, *inst);
-                            args.len() == 1 && value_originates_only_from(function, args[0], owner)
-                        })
-                        .count()
-                });
+            let releases = release_call_sites(function, &compiled.import_ids)
+                .into_iter()
+                .filter(|(_, inst)| {
+                    let args = attached_arguments(function, *inst);
+                    args.len() == 1 && value_originates_only_from(function, args[0], owner)
+                })
+                .count();
             assert_eq!(
                 releases,
                 usize::from(!bound),
@@ -1043,8 +1041,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
             function.display()
         );
         let prior_task = function.dfg.first_result(task_calls[0].1);
-        let dec_ref_obj = compiled.import_ids[RuntimeFn::DecRefObj.symbol()];
-        let releases: Vec<_> = call_sites_for_import(function, dec_ref_obj)
+        let releases: Vec<_> = release_call_sites(function, &compiled.import_ids)
             .into_iter()
             .filter(|(_, inst)| {
                 let args = attached_arguments(function, *inst);
@@ -1149,8 +1146,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
     let task_calls = call_sites_for_import(function, task_new);
     assert_eq!(task_calls.len(), 1, "{}", function.display());
     let owned_task = function.dfg.first_result(task_calls[0].1);
-    let dec_ref_obj = compiled.import_ids[RuntimeFn::DecRefObj.symbol()];
-    let release_blocks: BTreeSet<_> = call_sites_for_import(function, dec_ref_obj)
+    let release_blocks: BTreeSet<_> = release_call_sites(function, &compiled.import_ids)
         .into_iter()
         .filter(|(_, inst)| {
             let args = attached_arguments(function, *inst);

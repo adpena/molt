@@ -151,6 +151,18 @@ impl<'ctx> LlvmBackend<'ctx> {
         params: usize,
         body: impl FnOnce(&mut LlvmFrameBuilder<'_, 'ctx>, &[IntValue<'ctx>]) -> IntValue<'ctx>,
     ) -> FunctionValue<'ctx> {
+        self.site_helper_placed(name, params, "alwaysinline", body)
+    }
+
+    /// [`Self::site_helper`] with the function attribute `placement`
+    /// (`alwaysinline`, or `noinline` for a cold body many sites share).
+    pub(super) fn site_helper_placed(
+        &self,
+        name: &str,
+        params: usize,
+        placement: &str,
+        body: impl FnOnce(&mut LlvmFrameBuilder<'_, 'ctx>, &[IntValue<'ctx>]) -> IntValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
         let context = self.context;
         let i64_type = context.i64_type();
         let logical_signature = i64_type.fn_type(&vec![i64_type.into(); params], false);
@@ -166,7 +178,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         function.add_attribute(
             AttributeLoc::Function,
             context.create_enum_attribute(
-                inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                inkwell::attributes::Attribute::get_named_enum_kind_id(placement),
                 0,
             ),
         );

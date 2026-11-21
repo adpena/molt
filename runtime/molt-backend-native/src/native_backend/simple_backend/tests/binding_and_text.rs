@@ -283,7 +283,10 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
         assert_eq!(calls.len(), 1, "{name}: {}", function.display());
         let arguments = attached_arguments(function, calls[0]);
         assert_eq!(arguments.len(), *arity, "{name}");
-        let releases = import_calls(function, &ids, "molt_dec_ref_obj");
+        let releases: Vec<Inst> = release_call_sites(function, &ids)
+            .into_iter()
+            .map(|(_, inst)| inst)
+            .collect();
         if *wide {
             assert_eq!(
                 import_calls(function, &ids, "molt_int_from_i64").len(),

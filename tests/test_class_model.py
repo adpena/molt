@@ -14,14 +14,19 @@ from molt.frontend.class_model import (
     ClassDraft,
     ClassModel,
     ClassView,
+    ConstructorPlan,
     ConstructorRefusal,
+    Field,
     InstanceLayout,
     LayoutRefusal,
     Member,
     MemberKind,
+    ReleasePlan,
+    ReleaseRefusal,
     Resolved,
     ResolveRefusal,
     Unresolved,
+    release_plan,
     resolve,
 )
 
@@ -296,3 +301,59 @@ def test_body_bindings_in_order_match_the_interpreter(
         assert result.member.kind is MemberKind.FUNCTION
     else:
         assert result == Unresolved(ResolveRefusal.SHADOWED_BY_DATA, draft.class_id)
+
+
+def _layout_model(layout: InstanceLayout, *, metaclass: bool = False) -> ClassModel:
+    return ClassModel(
+        class_id=ClassId("t", "Point"),
+        binding_name="Point",
+        bases=(),
+        linearization=(ClassId("t", "Point"),),
+        layout=layout,
+        module_level=True,
+        definition_exposed=False,
+        binding_proven=True,
+        custom_metaclass=metaclass,
+        decorated=False,
+        layout_version=1,
+        members=(),
+        possible_data_descriptors=frozenset(),
+        dataclass=None,
+        constructor=ConstructorPlan(),
+    )
+
+
+_POINT_LAYOUT = InstanceLayout((Field("x", 0, None), Field("y", 8, "int")), 24, None)
+
+
+@pytest.mark.parametrize(
+    "layout,metaclass,expected",
+    [
+        # The runtime's plain instance: fields from offset 0, then the
+        # dictionary word (molt-runtime `lifecycle_plan::plain_field_words`).
+        (_POINT_LAYOUT, False, ReleasePlan(2)),
+        (InstanceLayout((), 8, None), False, ReleasePlan(0)),
+        # A gap, a missing dictionary word, a dict-subclass tail, a refused
+        # layout and a metaclass all leave the plan to the run time.
+        (InstanceLayout((Field("x", 8, None),), 24, None), False, None),
+        (InstanceLayout((Field("x", 0, None),), 8, None), False, None),
+        (InstanceLayout((Field("x", 0, None),), 24, None), False, None),
+        (InstanceLayout((), 8, LayoutRefusal.SLOTS), False, None),
+        (_POINT_LAYOUT, True, None),
+    ],
+)
+def test_release_plan_follows_the_runtime_plain_layout(
+    layout: InstanceLayout, metaclass: bool, expected: ReleasePlan | None
+) -> None:
+    plan = release_plan(_layout_model(layout, metaclass=metaclass))
+    if expected is None:
+        assert isinstance(plan, ReleaseRefusal) and plan.reason
+    else:
+        assert plan == expected
+
+
+def test_release_plan_survives_the_cache_record() -> None:
+    model = _layout_model(_POINT_LAYOUT)
+    restored = ClassModel.from_cache_record(model.cache_record())
+    assert restored == model
+    assert release_plan(restored) == release_plan(model) == ReleasePlan(2)

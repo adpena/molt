@@ -211,6 +211,12 @@ impl<'a> SsaContext<'a> {
                 AttrValue::Bytes(crate::class_identity::encode_field_slots(slots)),
             );
         }
+        if let Some(words) = op.release_plan {
+            attrs.insert(
+                crate::class_identity::RELEASE_PLAN_ATTR.into(),
+                AttrValue::Int(i64::from(words)),
+            );
+        }
         if op.runtime_requirement_bits != 0 {
             attrs.insert(
                 "runtime_requirement_bits".into(),

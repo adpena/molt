@@ -1278,6 +1278,8 @@ pub enum RuntimeFn {
     HashDigest,
     HashNew,
     HashUpdate,
+    HeapAlloc,
+    HeapFree,
     HeapqHeapify,
     HeapqHeappop,
     HeapqHeappush,
@@ -4132,6 +4134,8 @@ impl RuntimeFn {
         Self::HashDigest,
         Self::HashNew,
         Self::HashUpdate,
+        Self::HeapAlloc,
+        Self::HeapFree,
         Self::HeapqHeapify,
         Self::HeapqHeappop,
         Self::HeapqHeappush,
@@ -5825,7 +5829,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2850;
+    pub const COUNT: usize = 2852;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -22759,6 +22763,30 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         }),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_heap_alloc",
+        linker_symbol: "molt_heap_alloc__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::RawBits,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_heap_free",
+        linker_symbol: "molt_heap_free__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: None,
+        callable: None,
+        result: RuntimeReturnContract::Void,
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

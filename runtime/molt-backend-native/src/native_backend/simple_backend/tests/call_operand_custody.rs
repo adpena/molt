@@ -641,9 +641,9 @@ const FALSE:u64=@FALSE@;
 const METHOD_NULL:u64=@METHOD_NULL@;
 #[export_name="@ABI@"] pub static ABI:u8=0;
 // The thread record prefix compiled code addresses (molt_codegen_abi THREAD_RECORD_*).
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64 }
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64, terminal_release: u64, object_class: u64, gc_record: u64, missing_slot: u64 }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0 };
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0, terminal_release: 0, object_class: 0, gc_record: 0, missing_slot: 0 };
 // The runtime's recursion limit; a guard case lowers it to the depth.
 static LIMIT:AtomicU64=AtomicU64::new(1000);
 static ATTEMPTS:AtomicU64=AtomicU64::new(0);
@@ -666,6 +666,17 @@ pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {
     molt_inc_ref_obj(_arg0)
 }
 pub fn molt_inc_ref_obj(word:u64)  {if let Some(refs)=refs(word){assert!(refs.fetch_add(1,SeqCst)>0,"retain after release");}}
+// Lifecycle allocation and terminal free (object_lifecycle): the
+// fixture has no allocator and no planned objects, so an allocation
+// takes its runtime miss and no release frees inline.
+#[export_name = "molt_heap_alloc@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_alloc(_context: u64, _bytes: u64) -> u64 {
+    0
+}
+#[export_name = "molt_heap_free@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_heap_free(_context: u64, _object: u64) {
+    unreachable!("a fixture object is never freed inline")
+}
 #[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
