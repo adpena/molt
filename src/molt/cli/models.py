@@ -454,6 +454,7 @@ class _ScopedLoweringInputs:
     native_python_exports_by_module: dict[str, tuple[str, ...]]
     native_support_function_roots_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
+    body_selections: dict[str, ModuleBodySelection] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

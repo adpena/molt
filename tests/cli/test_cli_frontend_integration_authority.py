@@ -372,7 +372,5 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
         assert state.function_metadata[symbol] is metadata[symbol]
         assert list(state.global_code_ids) == [
             "seed__body",
-            symbol,
-            earlier.definition_symbol,
-            later.definition_symbol,
+            *sorted((symbol, earlier.definition_symbol, later.definition_symbol)),
         ]

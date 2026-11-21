@@ -80,6 +80,7 @@ def _run_backend_pipeline(
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
     prepared_frontend_pipeline_bundle: _frontend_pipeline._PreparedFrontendPipelineBundle,
+    prepared_backend_ir: _backend_ir._PreparedBackendIR,
     profile: BuildProfile,
     json_output: bool,
     target: Target,
@@ -133,30 +134,6 @@ def _run_backend_pipeline(
         return return_after_build_diagnostics(
             _fail(native_artifact_custody_error, json_output, command="build")
         )
-    backend_ir_start = time.perf_counter()
-    prepared_backend_ir, prepared_backend_ir_error = (
-        _backend_ir.materialize_tir_closure(
-            prepared_frontend_pipeline_bundle,
-            entry_module=resolved_build_entry.entry_module,
-            fail=_fail,
-            json_output=json_output,
-            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-            target_python=prepared_build_config.target_python,
-            stdlib_profile=stdlib_profile,
-            target=target,
-        )
-    )
-    if prepared_build_preamble.diagnostics_enabled:
-        prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
-            "pipeline_stage_ms", {}
-        )["prepare_backend_ir"] = round(
-            max(0.0, (time.perf_counter() - backend_ir_start) * 1000.0),
-            6,
-        )
-    if prepared_backend_ir_error is not None:
-        return return_after_build_diagnostics(prepared_backend_ir_error)
-    assert prepared_backend_ir is not None
     logical_source_path_by_module = prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
     if prepared_build_preamble.diagnostics_enabled:
         prepared_frontend_run_ticket.frontend_parallel_details[

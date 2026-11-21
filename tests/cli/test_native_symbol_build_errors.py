@@ -162,14 +162,6 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
             None,
         ),
     )
-    monkeypatch.setattr(
-        backend_pipeline._backend_ir,
-        "_prepare_backend_ir",
-        lambda **kwargs: (
-            _PreparedBackendIR(ir={"functions": []}, function_metadata={}),
-            None,
-        ),
-    )
 
     def unexpected_output(**kwargs: Any) -> None:
         pytest.fail("build output publication must not run after symbol failure")
@@ -253,6 +245,9 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         prepared_build_config=config,
         resolved_build_entry=SimpleNamespace(entry_module="__main__"),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(
+            ir={"functions": []}, function_metadata={}
+        ),
         profile="dev",
         json_output=json_output,
         target=admit_target("native"),

@@ -446,6 +446,7 @@ class PythonBindingFlowPolicy:
     # exists. A closed graph supplies None when no code can; standalone
     # analysis, with no graph, keeps the conservative premise.
     frame_locals_writer: str | None = NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
+    declaration_only: tuple[PythonSourceKey, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
@@ -485,6 +486,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             entry_invalid_members=self.entry_invalid_members,
             class_preparation=self.class_preparation,
             frame_locals_writer=self.frame_locals_writer,
+            declaration_only=self.declaration_only,
         )
 
 
@@ -2819,6 +2821,12 @@ class _Analyzer:
         *,
         annotation_scope: bool = False,
     ) -> None:
+        if (
+            self.policy.declaration_only
+            and not annotation_scope
+            and (python_node_source_key(node) in self.policy.declaration_only)
+        ):
+            return
         module_bindings, lexical_bindings = self._activation_slot_bindings(
             node,
             scope,

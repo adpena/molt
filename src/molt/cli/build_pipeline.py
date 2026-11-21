@@ -122,19 +122,43 @@ def _run_build_pipeline(
             _fail(native_artifact_custody_error, json_output, command="build")
         )
     _progress.phase("frontend")
-    frontend_run_start = time.perf_counter()
-    frontend_layer_error = _run_frontend_pipeline(
-        prepared_frontend_run_ticket=prepared_frontend_run_ticket,
-    )
-    if prepared_build_preamble.diagnostics_enabled:
-        prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
-            "pipeline_stage_ms", {}
-        )["run_frontend_pipeline"] = round(
-            max(0.0, (time.perf_counter() - frontend_run_start) * 1000.0),
-            6,
+    prepared_backend_ir: _backend_ir._PreparedBackendIR | None = None
+    if output_layout.emit_mode == "jit":
+        frontend_run_start = time.perf_counter()
+        frontend_layer_error = _run_frontend_pipeline(
+            prepared_frontend_run_ticket=prepared_frontend_run_ticket,
         )
-    if frontend_layer_error is not None:
-        return return_after_build_diagnostics(frontend_layer_error)
+        if prepared_build_preamble.diagnostics_enabled:
+            prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+                "pipeline_stage_ms", {}
+            )["run_frontend_pipeline"] = round(
+                max(0.0, (time.perf_counter() - frontend_run_start) * 1000.0),
+                6,
+            )
+        if frontend_layer_error is not None:
+            return return_after_build_diagnostics(frontend_layer_error)
+    else:
+        prepared_backend_ir, closure_error = _backend_ir.materialize_tir_closure(
+            prepared_frontend_pipeline_bundle,
+            entry_module=resolved_build_entry.entry_module,
+            fail=_fail,
+            json_output=json_output,
+            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
+            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
+            target_python=prepared_build_config.target_python,
+            stdlib_profile=stdlib_profile,
+            target=target,
+            mode=(
+                "demanded"
+                if profile == "dev"
+                and not prepared_build_preamble.diagnostics_enabled
+                and output_layout.emit_ir_path is None
+                and fact_graph_request is None
+                else "eager"
+            ),
+        )
+        if closure_error is not None:
+            return return_after_build_diagnostics(closure_error)
     if verbose and not json_output:
         summary = _frontend_lowering_cache_summary(
             {
@@ -170,6 +194,7 @@ def _run_build_pipeline(
                 stdlib_profile=stdlib_profile,
             )
         )
+    assert prepared_backend_ir is not None
     # MLIR target: run the frontend to produce TIR, then shell out to the
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
@@ -185,22 +210,6 @@ def _run_build_pipeline(
         record_binary_image_analysis = (
             prepared_frontend_pipeline_bundle.record_binary_image_analysis
         )
-        prepared_backend_ir, prepared_backend_ir_error = (
-            _backend_ir.materialize_tir_closure(
-                prepared_frontend_pipeline_bundle,
-                entry_module=resolved_build_entry.entry_module,
-                fail=_fail,
-                json_output=json_output,
-                pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-                runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-                target_python=prepared_build_config.target_python,
-                stdlib_profile=stdlib_profile,
-                target=target,
-            )
-        )
-        if prepared_backend_ir_error is not None:
-            return return_after_build_diagnostics(prepared_backend_ir_error)
-        assert prepared_backend_ir is not None
         if prepared_build_preamble.diagnostics_enabled:
             backend_ir_analysis = _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
                 project_root=prepared_build_roots.project_root,
@@ -236,6 +245,7 @@ def _run_build_pipeline(
         prepared_build_config=prepared_build_config,
         resolved_build_entry=resolved_build_entry,
         prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
+        prepared_backend_ir=prepared_backend_ir,
         profile=profile,
         json_output=json_output,
         target=target,

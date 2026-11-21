@@ -606,6 +606,11 @@ def _scoped_lowering_input_view(
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
         )
+    body_selection = (
+        scoped_lowering_inputs.body_selections.get(module_name)
+        if scoped_lowering_inputs is not None
+        else None
+    )
     return _ScopedLoweringInputView(
         known_modules=scoped_known_modules,
         direct_call_modules=scoped_direct_call_modules,
@@ -613,7 +618,8 @@ def _scoped_lowering_input_view(
         known_func_kinds=scoped_known_func_kinds,
         native_callable_exports=scoped_native_callable_exports,
         native_python_exports=scoped_native_python_exports,
-        body_selection=ModuleBodySelection.from_requested_roots(
+        body_selection=body_selection
+        or ModuleBodySelection.from_requested_roots(
             scoped_native_support_function_roots
         ),
         type_facts=scoped_type_facts,
@@ -1656,7 +1662,8 @@ def _validate_persisted_module_lowering_payload(
             result.get("function_metadata"), function_symbols=by_symbol.keys()
         )
         for symbol, row in metadata.items():
-            inspect_source_module_publication(by_symbol[symbol], row)
+            if not row.get("declaration_only"):
+                inspect_source_module_publication(by_symbol[symbol], row)
     except ValueError:
         return None
     if _module_lowering_payload_issue(module_name, raw_functions) is not None:
@@ -1851,6 +1858,11 @@ def _load_cached_module_lowering_result(
         )
         if context_digest is None:
             return None
+    body_selection = (
+        scoped_lowering_inputs.body_selections.get(module_name)
+        if scoped_lowering_inputs is not None
+        else None
+    )
     return _read_persisted_module_lowering(
         module_path,
         source_lease=source_lease,
@@ -1859,7 +1871,8 @@ def _load_cached_module_lowering_result(
         body_selection=(
             scoped_inputs.body_selection
             if scoped_inputs is not None
-            else ModuleBodySelection.from_requested_roots(
+            else body_selection
+            or ModuleBodySelection.from_requested_roots(
                 scoped_lowering_inputs.native_support_function_roots_by_module[
                     module_name
                 ]

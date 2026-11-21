@@ -397,6 +397,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}
         self.callable_declarations: dict[str, CallableDeclaration] = {}
+        self.declaration_only_symbols: set[str] = set()
         self.source_callable_symbols: dict[CallableId, str] = {}
         self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()

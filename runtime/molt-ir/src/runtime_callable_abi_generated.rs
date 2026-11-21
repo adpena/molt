@@ -4188,6 +4188,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_function_new_unreachable",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_function_set_builtin",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -18884,6 +18889,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_function_is_generator" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_function_is_generator__molt_context_d1086a27578cda22",
+        },
+        "molt_function_new_unreachable" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_function_new_unreachable__molt_context_d1086a27578cda22",
         },
         "molt_function_set_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
