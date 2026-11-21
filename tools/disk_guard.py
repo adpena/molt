@@ -187,7 +187,9 @@ ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 CandidateKind = Literal[
     "checkout-state", "session-target", "lane", "quarantine", "cargo-target", "scratch"
 ]
-ReclaimOperation = Literal["gc", "pressure", "checkout-retirement", "retired-backlog"]
+ReclaimOperation = Literal[
+    "gc", "pressure", "checkout-retirement", "retired-backlog", "environments"
+]
 ReclaimPhase = Literal[
     "setup",
     "discovery",
@@ -2468,8 +2470,65 @@ def collect(
 
     return [
         gc(root=root, env=env, free_space_low=below_free_space_floor),
+        retire_environments(root=root, env=env),
         ensure_free(root=root, env=env),
     ]
+
+
+def _live_checkouts(root: Path) -> tuple[Path, ...]:
+    """Every live worktree of the artifact root's families, for liveness.
+
+    ``registered_worktree_roots`` keeps only worktrees inside the artifact
+    scope, which bounds deletion authority; worktrees on another volume (the
+    internal disk) fall outside it. A retirement that keeps what live
+    checkouts use needs them all, and a wider set only keeps more, so the
+    running checkout's family is read without the scope filter."""
+    from molt.source_root import compiler_source_root
+
+    live = set(registered_worktree_roots(root))
+    directories = git_directories(compiler_source_root())
+    if directories is not None:
+        live.update(
+            _registered_worktrees_from_common(
+                directories[1], scope=Path(os.path.abspath(os.sep))
+            )
+        )
+    return tuple(sorted(live, key=_norm))
+
+
+def retire_environments(
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    apply: bool = True,
+) -> ReclaimResult:
+    """Retire unused shared Python environments, their stale bytecode and
+    the per-checkout images they replaced (``uv_environment.retire_unused``)."""
+    from molt.uv_environment import retire_unused
+
+    started = time.monotonic()
+    environment = os.environ if env is None else env
+    resolved_root = resolve_root(root, env=environment)
+    free_fn = _default_free_fn(resolved_root)
+    result = ReclaimResult(
+        operation="environments",
+        root=str(resolved_root),
+        triggered=True,
+        free_before=free_fn(),
+        free_after=0,
+        mode="apply" if apply else "dry-run",
+    )
+    try:
+        result.reclaimed = list(
+            retire_unused(
+                resolved_root, checkouts=_live_checkouts(resolved_root), apply=apply
+            )
+        )
+    except OSError as exc:
+        result.errors.append(f"environment retirement: {exc}")
+    result.free_after = free_fn()
+    result.elapsed_s = _elapsed_since(started)
+    return result
 
 
 def collect_due(
