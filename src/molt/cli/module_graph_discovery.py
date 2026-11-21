@@ -56,6 +56,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
+    python_package_name,
 )
 from molt.cli.python_import_resolution import python_package_child_names
 from molt.compiler_analysis.python_source_keys import (
@@ -227,37 +228,61 @@ class _ModuleGraphDiscovery:
 def _ready_namespace_revisions(
     state: _ModuleGraphDiscovery,
 ) -> set[_SourceScanJob]:
-    """Wake dependent revisions once their currently known writers settle."""
+    """Wake dependent revisions once their currently known premise inputs settle."""
     dirty = {job.module_name for job in state.scan_revisions}
     if len(dirty) < 2:
         return state.scan_revisions.copy()
 
     writers: dict[str, set[str]] = {}
+    if state.demands is not None:
+        for receiver, producers in state.demands.opaque_activation_producers().items():
+            if receiver in state.graph and (admitted := producers & state.graph.keys()):
+                writers[receiver] = admitted
+    writers_with_unknown_receivers: set[str] = set()
     for writer, writes in state.namespace_writes.items():
         active = state.active_owners.get(writer, ())
         for write in writes:
-            target = state.graph.get(write.module) if write.module is not None else None
-            if target is not None and write.source_owner in active:
+            if write.source_owner not in active:
+                continue
+            if write.module is None:
+                if writer in dirty:
+                    writers_with_unknown_receivers.add(writer)
+            elif (target := state.graph.get(write.module)) is not None:
                 for name in state.modules_by_source[target]:
                     if writer != name:
                         writers.setdefault(name, set()).add(writer)
+    if writers_with_unknown_receivers:
+        for receiver in state.graph:
+            if dependencies := writers_with_unknown_receivers - {receiver}:
+                writers.setdefault(receiver, set()).update(dependencies)
     if not writers:
         return state.scan_revisions.copy()
 
-    components = _module_dependency_authority._module_strongly_connected_components(
-        state.graph, writers
-    )
-    blocked: set[str] = set()
     ready: set[str] = set()
-    for component in components:
-        members = set(component)
-        if any(blocked.intersection(writers.get(member, ())) for member in members):
-            # An unchanged intermediate component can still propagate a
-            # pending writer's effects before downstream work becomes ready.
-            blocked.update(members)
-        elif members & dirty:
-            ready.update(members & dirty)
-            blocked.update(members)
+    pending: list[Collection[str]] = [state.graph.keys()]
+    while pending:
+        components = _module_dependency_authority._module_strongly_connected_components(
+            pending.pop(), writers
+        )
+        blocked: set[str] = set()
+        for component in components:
+            if any(
+                not blocked.isdisjoint(writers.get(member, ())) for member in component
+            ):
+                # A clean component can relay a pending writer's effects.
+                blocked.update(component)
+            elif not dirty.isdisjoint(component):
+                # The admission pass already evaluated the head. During a
+                # revision, settle the interior under that head's output.
+                # A new head result can reawaken the interior on the next wave.
+                head, *interior = component
+                if dirty.isdisjoint(interior):
+                    ready.add(head)
+                else:
+                    pending.append(interior)
+                # No dependent runs until this entire component is clean,
+                # even when only one nested component runs in this wave.
+                blocked.update(component)
     return {job for job in state.scan_revisions if job.module_name in ready}
 
 
@@ -2070,6 +2095,13 @@ def _load_module_import_scan(
             target_python=target_python,
         )
 
+    shipped_stdlib = (
+        persist_scan
+        and source_owner is None
+        and not native_support_function_roots
+        and stdlib_root is not None
+        and resolution_cache.is_stdlib_path(path, stdlib_root)
+    )
     if persist_scan:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
             path,
@@ -2085,6 +2117,11 @@ def _load_module_import_scan(
             native_support_function_roots=native_support_function_roots,
             runtime_catalog_owner=runtime_catalog_owner,
             target_sys_platform=resolution_cache.target_sys_platform,
+            installed_initializer=(
+                resolution_cache.installed_stdlib_initializer
+                if shipped_stdlib and not runtime_catalog_owner
+                else None
+            ),
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -2120,6 +2157,17 @@ def _load_module_import_scan(
             target_python=target_python,
         )
         tree, ast_digest_admission = selected.tree, selected.admission
+    elif (
+        shipped_stdlib
+        and snapshot is not None
+        and (syntax := resolution_cache.installed_stdlib_source_summaries) is not None
+    ):
+        syntax.seed(
+            snapshot,
+            package=python_package_name(module_name, is_package=is_package),
+            target=target_python,
+            admission=ast_digest_admission,
+        )
     premise_reads = ScanPremiseReads() if record_premise_reads else None
     reads_token = SCAN_PREMISE_READS.set(premise_reads)
     try:

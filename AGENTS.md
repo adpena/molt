@@ -193,8 +193,8 @@ over stale prose or precedent.
   once; CI arbitrates release candidates. Review matching receipts; avoid duplicate prechecks and
   reflexive rechecks. Hand off a lane only after `tools/molt_dev.py land --repo <checkout>
   --precheck-only` and its changed tests pass in the runner's plain environment, not a lane env.sh.
-- Before each commit, `tools/consumer_gate.py run -- PATHS` runs the static gates and first-hop
-  importers as presubmit does (`-n auto --skip-slow`). Mark a test whose median is 60 s or more
+- Before each commit, `tools/consumer_gate.py run -- PATHS` runs the static gates, the reached
+  Rust lib tests and first-hop importers as presubmit does (`-n auto --skip-slow`). Mark a test whose median is 60 s or more
   `@pytest.mark.slow`; postsubmit runs it (`docs/ops/INTEGRATION.md`).
 - Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
   checks without adding unrelated suites to amortize a compile; avoid cold targets and competing

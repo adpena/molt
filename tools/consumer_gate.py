@@ -24,6 +24,7 @@ tool only moves that selection before the commit.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -144,6 +145,7 @@ def proven_gates(
     if exact and payload.get("exact") is not True:
         return None
     statics = frozenset(payload["static_gates"])
+    commits = frozenset(payload.get("commit_gates", ()))
     importers = frozenset(payload["importers"])
     import shlex
 
@@ -154,6 +156,9 @@ def proven_gates(
     def proven(gate: SelectedGate) -> bool:
         if gate.static:
             return display(gate.command) in statics
+        if gate.commit:
+            # The same command over the same tree, as for a static gate.
+            return display(gate.command) in commits
         if not gate.pytest:
             return False
         argv = (
@@ -214,10 +219,33 @@ def static_gates(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
     checks an importer trace cannot select (encoding pins, test ownership,
     subprocess guard coverage, generator freshness) run before any test.
     """
-    if not (root / "tools" / "proof_plan.toml").is_file():
-        return []
-    from tools import molt_dev as drv
     from tools.molt_dev_gates import display
+
+    return [
+        display(gate.command) for gate in _selected(root, tree, base) if gate.static
+    ]
+
+
+def commit_gates(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
+    """The landing's `commit = true` gates for this tree, as their commands.
+
+    These are the lib tests a Rust change reaches (HF-937): the bounded bypass
+    pushes on this gate's receipt alone, so it runs them before the commit.
+    """
+    from tools.molt_dev_gates import display
+
+    return [
+        display(gate.command)
+        for gate in _selected(root, tree, base)
+        if gate.commit and not gate.static
+    ]
+
+
+@functools.cache
+def _selected(root: Path, tree: str, base: str) -> tuple[SelectedGate, ...]:
+    if not (root / "tools" / "proof_plan.toml").is_file():
+        return ()
+    from tools import molt_dev as drv
     from tools.molt_dev_policy import select_landing_gates
 
     head = _git(root, "rev-parse", base)
@@ -242,11 +270,13 @@ def static_gates(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
     _policy, _config, _touched, gates, _rules = select_landing_gates(
         drv.Git(root), root, probe, head, extra=[]
     )
-    return [display(gate.command) for gate in gates if gate.static]
+    return tuple(gates)
 
 
-def run_static_gates(root: Path, commands: list[str]) -> list[str]:
-    """Run each static gate in the checkout; return the commands that failed."""
+def run_static_gates(
+    root: Path, commands: list[str], *, label: str = "static gate"
+) -> list[str]:
+    """Run each gate command in the checkout; return the commands that failed."""
     import shlex
 
     failed = []
@@ -254,7 +284,7 @@ def run_static_gates(root: Path, commands: list[str]) -> list[str]:
         argv = shlex.split(command)
         if argv and argv[0] == "python":
             argv[0] = sys.executable
-        print(f"consumer-gate: static gate: {command}", flush=True)
+        print(f"consumer-gate: {label}: {command}", flush=True)
         if _COMMANDS.run(argv, cwd=root).returncode != 0:
             failed.append(command)
     return failed
@@ -369,6 +399,15 @@ def run(
     if failed:
         print(
             "consumer-gate: static gates failed; no receipt:\n"
+            + "\n".join(f"  {command}" for command in failed),
+            file=sys.stderr,
+        )
+        return 1
+    commits = commit_gates(root, tree, base=base)
+    failed = run_static_gates(root, commits, label="commit gate")
+    if failed:
+        print(
+            "consumer-gate: commit gates failed; no receipt:\n"
             + "\n".join(f"  {command}" for command in failed),
             file=sys.stderr,
         )
@@ -490,12 +529,14 @@ def run(
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
         refused = [
-            name for name, seconds in slow_cases if seconds >= SLOW_TEST_REFUSE_S
+            name
+            for name, seconds in slow_cases
+            if seconds >= SLOW_TEST_REFUSE_S and _case_in_paths(name, paths)
         ]
         if refused:
             print(
-                f"consumer-gate: {len(refused)} unmarked test(s) ran "
-                f"{SLOW_TEST_REFUSE_S:.0f} s or more; no receipt",
+                f"consumer-gate: {len(refused)} unmarked test(s) this change "
+                f"touches ran {SLOW_TEST_REFUSE_S:.0f} s or more; no receipt",
                 file=sys.stderr,
             )
             return 1
@@ -511,6 +552,8 @@ def run(
         "base": base,
         "changed": changed,
         "static_gates": statics,
+        # The lib tests a Rust change reaches (`commit = true`, HF-937).
+        "commit_gates": commits,
         "importers": run_now,
         "landing_built_importers": {
             test: list(deps) for test, deps in landing_built.items()
@@ -543,9 +586,26 @@ RERUN_LIMIT = 10
 # AGENTS.md: a test whose median is 60 s or more is marked `slow` and runs in
 # postsubmit. Presubmit skips marked tests, so a case that reaches the limit
 # here is unmarked. One run is not a median, so the gate names a case from
-# SLOW_TEST_S and withholds its receipt only from SLOW_TEST_REFUSE_S.
+# SLOW_TEST_S and withholds its receipt only from SLOW_TEST_REFUSE_S, and only
+# when the change touches that test's file: one run of another file's test on
+# a loaded host says nothing about this change (2026-11-21: 3,039 importer
+# tests passed and ten untouched ones, WASM link checks among them, ran
+# 120-163 s at load average 10).
 SLOW_TEST_S = 60.0
 SLOW_TEST_REFUSE_S = 2 * SLOW_TEST_S
+
+
+def _case_in_paths(name: str, paths: Sequence[str]) -> bool:
+    """Whether the JUnit case ``name`` (``classname::name``) lives in one of
+    ``paths``: its class name is a changed test module or a class inside one."""
+    classname = name.split("::", 1)[0]
+    for path in paths:
+        if not path.endswith(".py"):
+            continue
+        module = path[: -len(".py")].replace("/", ".")
+        if classname == module or classname.startswith(f"{module}."):
+            return True
+    return False
 
 
 def _slow_cases(report: Path) -> list[tuple[str, float]]:

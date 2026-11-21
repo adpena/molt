@@ -6113,10 +6113,12 @@ gates = [
 # declared member that runs 0 tests fails. Lane tests reuse the target, so `land` runs it in the lane before
 # it queues and `land --fast` before it pushes (docs/design/landing_queue.md,
 # section 9).
+# The consumer gate runs it before each commit (`commit = true`, HF-937).
 [[rule]]
 name = "rust-test-changed"
 toolchains = ["python", "rustc", "cargo"]
 precheck = true
+commit = true
 description = "Whole-crate lib tests, in every declared profile and feature cell, for every Cargo package a change reaches."
 globs = [
   "runtime/**",
@@ -6366,9 +6368,16 @@ pytest = [
   "tests/test_browser_vfs.py",
 ]
 
+# Every path to main runs it (HF-937): `land --fast` and the lane precheck run
+# it in the try run, and the consumer gate runs it before each commit. Before,
+# a fast landing waived it to a queue batch that a direct landing never runs,
+# and rust-test-changed left molt-runtime to it, so no molt-runtime lib test
+# ran on any path to main. Warm dev-fast: 188 s on a loaded host (cold 380 s).
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
+precheck = true
+commit = true
 description = "Runtime/object-model Rust: one dev-fast Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed; release-output qualification remains in CI."
 globs = [
   "runtime/molt-runtime/**/*.rs",

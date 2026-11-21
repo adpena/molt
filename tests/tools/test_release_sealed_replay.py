@@ -3240,6 +3240,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     from molt.cli import installed_runtime
     from molt.release_lanes import capture_release_lanes
     from molt.exact_json import read_exact
+    from tests.release_lane_fixtures import stage_stdlib_source_summaries_fixture
     from tools.release.release_model import ROOT
 
     inventory = capture_release_lanes(ROOT)
@@ -3263,6 +3264,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         {},
         (),
         {},
+        stage_stdlib_source_summaries_fixture(tmp_path / "installed"),
     )
     monkeypatch.setattr(consumer_replay, "capture_release_lanes", lambda _: inventory)
     staged = []

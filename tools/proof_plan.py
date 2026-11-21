@@ -794,6 +794,8 @@ _LOCAL_RULE_FIELDS = frozenset(
         # `land` runs the rule's gates in the lane before it queues the lane,
         # beside the static gates its toolchains alone would admit there.
         "precheck",
+        # The consumer gate runs the rule's gates before each commit (HF-937).
+        "commit",
     }
 )
 
@@ -1288,8 +1290,9 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
             f"{rule.get('name', 'local rule')}: unknown local rule fields: "
             + ", ".join(unknown)
         )
-    if type(rule.get("precheck", False)) is not bool:
-        return f"{rule.get('name', 'local rule')}: precheck must be a boolean"
+    for flag in ("precheck", "commit"):
+        if type(rule.get(flag, False)) is not bool:
+            return f"{rule.get('name', 'local rule')}: {flag} must be a boolean"
     return None
 
 

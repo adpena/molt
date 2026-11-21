@@ -854,6 +854,26 @@ class FileDigestCache:
         # not change, and this process stops adding load to a contended store.
         # Every other SQLite failure, a statement defect included, stays loud.
         self._unavailable = False
+        # One read connection per process. An autocommit SELECT holds no
+        # snapshot between statements, so keeping it open blocks no writer.
+        # Closing the last connection to a WAL store checkpoints it: a
+        # connection per page cost 70 of the 84 s of one environment capture
+        # (6,301 closes at about 11 ms on 2026-11-20).
+        self._reader: sqlite3.Connection | None = None
+        self._reader_pid = 0
+
+    def _read_connection(self) -> sqlite3.Connection:
+        # A forked child gets its own connection; SQLite handles do not cross
+        # a fork.
+        if self._reader is None or self._reader_pid != os.getpid():
+            self._reader = self._connect()
+            self._reader_pid = os.getpid()
+        return self._reader
+
+    def _drop_reader(self) -> None:
+        if self._reader is not None and self._reader_pid == os.getpid():
+            self._reader.close()
+        self._reader = None
 
     def _contended(self, error: sqlite3.OperationalError) -> None:
         # A stale snapshot is cured by a new transaction, and this cache never
@@ -900,21 +920,25 @@ class FileDigestCache:
         return connection
 
     def _row(self, key: str) -> tuple[StatToken, str, int] | None:
-        # Fetch a bounded page of adjacent keys. Inventories visit nearby file
-        # paths together, amortizing connection/WAL teardown without loading the
-        # whole host store or keeping native SQLite handles between calls.
+        # Fetch a bounded page of adjacent keys: inventories visit nearby file
+        # paths together, and the page bounds memory without loading the whole
+        # host store.
         if key not in self._recorded:
             rows: list[Any] = []
             if not self._unavailable:
                 try:
-                    with closing(self._connect()) as connection:
-                        rows = connection.execute(
+                    rows = (
+                        self._read_connection()
+                        .execute(
                             "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
                             " sha256, recorded_ns FROM digests WHERE path >= ?"
                             " ORDER BY path LIMIT 64",
                             (key,),
-                        ).fetchall()
+                        )
+                        .fetchall()
+                    )
                 except sqlite3.OperationalError as error:
+                    self._drop_reader()
                     self._contended(error)
             for row in rows:
                 self._recorded.setdefault(

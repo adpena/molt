@@ -83,6 +83,7 @@ def installed_compiler_admission(
                 "launcher": compiler.launcher,
                 "runtime": compiler.runtime,
                 "wasm_facts": compiler.wasm_facts,
+                "stdlib_source_summaries": compiler.stdlib_source_summaries,
             }
         )
         key = (os.fspath(root.resolve()), release)

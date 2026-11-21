@@ -11,8 +11,11 @@ from molt.compiler_distribution import (
     MANIFEST_SCHEMA,
     MAX_SOURCE_BYTES,
     MAX_SOURCE_FILES,
+    MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
     PRODUCTION_COMPILER_PROFILE,
     PRODUCTION_COMPILER_FEATURES,
+    STDLIB_SOURCE_SUMMARIES_PATH,
+    StdlibSourceSummariesRecord,
     validate_compiler_record,
     validate_launcher_record,
     validate_wasm_facts_record,
@@ -26,15 +29,18 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 from molt.toolchain_identity import (
     resolve_executable,
     stable_regular_file_content_identity,
+    stable_regular_file_identity,
 )
 from molt.cli.native_binary import validate_native_binary_architecture
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from tools.git_identity import immutable_git_environment
 from .git_source_snapshot import (
     GitSourceSnapshot,
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
     read_git_commit_epoch,
+    run_git_source_python,
 )
 
 # Harvested from the preserved release-source lane; current config consumers
@@ -221,6 +227,37 @@ def wasm_facts_record(binary: Path, *, platform: str, arch: str) -> dict[str, An
     )
 
 
+def _stage_stdlib_source_summaries(
+    root: Path, source: Path
+) -> StdlibSourceSummariesRecord:
+    destination = root / STDLIB_SOURCE_SUMMARIES_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with OwnedTemporaryDirectory() as cache:
+        environment = source_environment()
+        environment["MOLT_CACHE"] = str(cache)
+        result = run_git_source_python(
+            source,
+            "tools/release/stdlib_source_summaries.py",
+            [str(destination.resolve())],
+            environment=ProcessEnvironment(environment),
+            timeout=1800,
+        )
+    if result.returncode != 0:
+        raise ValueError(
+            f"Cannot build stdlib source summaries: {result.stderr.strip()}"
+        )
+    identity = stable_regular_file_identity(
+        destination, label="release stdlib source summaries"
+    )
+    if not 0 < identity.size <= MAX_STDLIB_SOURCE_SUMMARIES_BYTES:
+        raise ValueError("Release stdlib source summaries exceed their size policy")
+    return {
+        "path": STDLIB_SOURCE_SUMMARIES_PATH,
+        "size": identity.size,
+        "sha256": identity.sha256,
+    }
+
+
 def materialize_sources(
     root: Path,
     *,
@@ -253,6 +290,7 @@ def materialize_sources(
             "launcher": launcher,
             "wasm_facts": wasm_facts,
             "runtime": runtime,
+            "stdlib_source_summaries": _stage_stdlib_source_summaries(root, source),
         },
     )
     return source

@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TypedDict
 
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import is_link_like, resolve_owned_path
@@ -31,12 +31,15 @@ from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from molt.source_root import MANIFEST_NAME, installed_distribution_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
+    capture_stable_regular_file,
     stable_regular_file_content_identity,
     stable_regular_file_identity,
 )
 from molt.verified_subset import current_host_coordinate
 
-MANIFEST_SCHEMA = "molt.release-compiler-source.v6"
+MANIFEST_SCHEMA = "molt.release-compiler-source.v8"
+STDLIB_SOURCE_SUMMARIES_PATH = "share/molt/stdlib-source-summaries.zip"
+MAX_STDLIB_SOURCE_SUMMARIES_BYTES = 64 * 1024 * 1024
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
@@ -44,6 +47,12 @@ PRODUCTION_COMPILER_FEATURES = (
 )
 MAX_SOURCE_FILES = 25_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+class StdlibSourceSummariesRecord(TypedDict):
+    path: str
+    size: int
+    sha256: str
 
 
 def _source_mode_matches_git(actual: int, recorded: int) -> bool:
@@ -434,6 +443,7 @@ class InstalledCompiler:
     wasm_facts: dict[str, Any]
     files: tuple[dict[str, Any], ...]
     runtime: dict[str, Any]
+    stdlib_source_summaries: StdlibSourceSummariesRecord
 
     @property
     def binary(self) -> Path:
@@ -504,6 +514,39 @@ class InstalledCompiler:
         verify_source_inventory(
             self.source_root, self.files, manifest_name=MANIFEST_NAME
         )
+        identity = stable_regular_file_identity(
+            self._stdlib_source_summaries_path(),
+            label="installed stdlib source summaries",
+        )
+        self._verify_stdlib_source_summaries_identity(identity)
+
+    def _stdlib_source_summaries_path(self) -> Path:
+        return resolve_owned_path(
+            self.source_root.parent / STDLIB_SOURCE_SUMMARIES_PATH
+        )
+
+    def capture_stdlib_source_summaries(self) -> bytes:
+        from molt import input_report
+
+        identity, value = capture_stable_regular_file(
+            self._stdlib_source_summaries_path(),
+            max_bytes=MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
+            label="installed stdlib source summaries",
+        )
+        self._verify_stdlib_source_summaries_identity(identity)
+        input_report.report_consumed_buffer(identity.path, value)
+        return value
+
+    def _verify_stdlib_source_summaries_identity(
+        self, identity: StableRegularFileIdentity
+    ) -> None:
+        if (
+            identity.sha256 != self.stdlib_source_summaries["sha256"]
+            or identity.size != self.stdlib_source_summaries["size"]
+        ):
+            raise ValueError(
+                "Installed stdlib source summaries differ from their manifest"
+            )
 
     @property
     def runtime_root(self) -> Path:
@@ -569,7 +612,16 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     if (
         not isinstance(payload, dict)
         or set(payload)
-        != {"schema", "git", "files", "compiler", "launcher", "wasm_facts", "runtime"}
+        != {
+            "schema",
+            "git",
+            "files",
+            "compiler",
+            "launcher",
+            "wasm_facts",
+            "runtime",
+            "stdlib_source_summaries",
+        }
         or payload["schema"] != MANIFEST_SCHEMA
     ):
         raise ValueError("Invalid installed compiler manifest")
@@ -631,6 +683,16 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     )
     if runtime["source"] != git:
         raise ValueError("Installed runtime cells come from different source")
+    summaries = payload["stdlib_source_summaries"]
+    if (
+        not isinstance(summaries, dict)
+        or set(summaries) != {"path", "size", "sha256"}
+        or summaries["path"] != STDLIB_SOURCE_SUMMARIES_PATH
+        or type(summaries["size"]) is not int
+        or not 0 < summaries["size"] <= MAX_STDLIB_SOURCE_SUMMARIES_BYTES
+        or not _digest(summaries["sha256"])
+    ):
+        raise ValueError("Invalid installed stdlib source summaries manifest record")
     return InstalledCompiler(
         source_root,
         git["commit"],
@@ -639,4 +701,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         wasm_facts,
         tuple(files),
         runtime,
+        StdlibSourceSummariesRecord(
+            path=summaries["path"], size=summaries["size"], sha256=summaries["sha256"]
+        ),
     )

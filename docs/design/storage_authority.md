@@ -16,7 +16,7 @@ when a capacity-selected output volume changes.
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
 | Native proof-supervisor store | Artifact root `proof-supervisor/<implementation-source-key>` | Thirty days since last use; existing checkout-state lifetime locks protect provisioning and readers |
 | Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
-| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Lock stripes (cache, checkout-state), the file-digest store and the frontend record files; cache retention trims hot entries by last use to the record's cap and keeps the home volume 50 GiB free |
+| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Lock stripes (cache, checkout-state), the file-digest store, the frontend record files and guard scratch (`tmp/gs/v2`); cache retention trims hot entries by last use to the record's cap and keeps the home volume 50 GiB free |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
 | Browser/Edgebox package environments | Existing checkout-provisioning paths | Lock-file producer admission, shared use through child closure, last-use budget |
@@ -455,9 +455,19 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    (`storage migrate` writes it when home is another volume). Lock
    directories, the file-digest store and the frontend record files resolve
    below it under their artifact-relative paths (`hot_path`), so placement
-   changes a prefix and never a name. Without a record (tests, plain clones,
-   one volume) nothing moves. The Python build environments and warm Cargo
-   targets are the next moves, each measured before it lands.
+   changes a prefix and never a name. The development write check
+   (`dx.storage_write_check`) admits each artifact claim at the same relative
+   path below the hot root. Without a record (tests, plain clones,
+   one volume) nothing moves. Guard scratch (`tmp/gs/v2`: each guarded run's
+   receipts and its TMPDIR lease target) moves the same way
+   (`temporary_artifacts.scratch_root`). A guarded no-op's finalization took
+   a median 20.9 ms (p90 55.6, max 89.9) on the data volume and 9.4 ms (p90
+   11.5, max 12.4) on the internal disk, 25 interleaved pairs under live gate
+   load. An explicit `MOLT_SCRATCH_STORAGE` root keeps its placement. Live
+   scratch is transient and retained failures stay bounded (3 generations,
+   2 GiB); `storage trim` retires terminal generations left on the former
+   root. The integrator owns the Python build environments' placement; warm
+   Cargo targets are the next move here, measured before it lands.
 3. Capacity: every Molt volume keeps 20% free (`disk_capacity.FREE_SPACE_FLOOR`).
    Below it, checkout state (the disk guard's daily GC, reason
    `free-space-floor`) and the regenerable classes `storage trim` sizes give up

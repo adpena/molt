@@ -60,7 +60,10 @@ from tests.runtime_build_identity_helper import (
     runtime_build_identity,
     runtime_cargo_environment_inputs,
 )
-from tests.release_lane_fixtures import stage_release_lane_authorities
+from tests.release_lane_fixtures import (
+    stage_release_lane_authorities,
+    stage_stdlib_source_summaries_fixture,
+)
 
 _SOURCE_FILES = (
     "Cargo.lock",
@@ -218,6 +221,7 @@ def _installed_bundle(
         shutil.copyfile(path, destination)
     payload = {
         "schema": distribution.MANIFEST_SCHEMA,
+        "stdlib_source_summaries": stage_stdlib_source_summaries_fixture(root),
         "git": dict(_GIT),
         "files": records,
         "compiler": {

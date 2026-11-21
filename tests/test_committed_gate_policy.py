@@ -1114,14 +1114,23 @@ def test_land_precheck_runs_static_gates_and_the_lane_try_run():
     # Every always gate and the frontend type check read files only.
     assert {display(command) for command in cfg.always} <= pre
     assert "python -m ty check src" in pre
-    # Changed-crate Clippy and whole-crate lib tests run in the lane: their
-    # rules declare `precheck`.
+    # Changed-crate Clippy, whole-crate lib tests and the runtime gate run in
+    # the lane: their rules declare `precheck` (the runtime gate since HF-937,
+    # when a fast landing had waived it to a batch that never ran).
     clippy = "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
     crate_tests = (
         "python tools/check_changed_crate_tests.py --base {integration_upstream_commit}"
     )
-    for lane_gate in (clippy, crate_tests):
+    runtime = (
+        "python tools/run_runtime_test_gate.py --profile dev-fast "
+        "--build-timeout-seconds 6300 --child-timeout-seconds 120"
+    )
+    lane_gates = {clippy, crate_tests, runtime}
+    for lane_gate in lane_gates:
         assert lane_gate in pre and "cargo" in shown[lane_gate].toolchains
+    # The lib tests also run before each commit; Clippy does not.
+    assert shown[crate_tests].commit and shown[runtime].commit
+    assert not shown[clippy].commit
     for name, gate in shown.items():
         args = _gate_args(gate.command)
         tests = {arg for arg in args if arg.startswith("tests/")}
@@ -1141,7 +1150,7 @@ def test_land_precheck_runs_static_gates_and_the_lane_try_run():
             # A curated rule cohort runs in the lane exactly when it holds the
             # direct readers the graph selected; the rest waits for the batch.
             assert (name in pre) == (tests <= graph_files), name
-        elif "cargo" in gate.toolchains and name not in {clippy, crate_tests}:
+        elif "cargo" in gate.toolchains and name not in lane_gates:
             # Cargo builds and compiled programs wait for the queue's batch.
             assert name not in pre, name
         else:

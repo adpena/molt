@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
+    from molt.cli.stdlib_source_summaries import InstalledStdlibSourceSummaries
 
 from molt.cli import module_source as _module_source
 from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
@@ -377,6 +378,18 @@ class _ModuleResolutionCache:
     canonical_provider_exclusions: dict[_ResolutionContext, tuple[str, ...]] = field(
         default_factory=dict
     )
+
+    @functools.cached_property
+    def installed_stdlib_source_summaries(
+        self,
+    ) -> InstalledStdlibSourceSummaries | None:
+        from molt.cli.stdlib_source_summaries import InstalledStdlibSourceSummaries
+
+        return InstalledStdlibSourceSummaries.selected()
+
+    def installed_stdlib_initializer(self, key: str) -> bytes | None:
+        summaries = self.installed_stdlib_source_summaries
+        return None if summaries is None else summaries.initializer(key)
 
     def noncanonical_imports(
         self, roots: tuple[Path, ...], stdlib_root: Path, allowlist: frozenset[str]
