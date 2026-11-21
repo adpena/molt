@@ -238,14 +238,23 @@ def _ready_namespace_revisions(
         for receiver, producers in state.demands.opaque_activation_producers().items():
             if receiver in state.graph and (admitted := producers & state.graph.keys()):
                 writers[receiver] = admitted
+    writers_with_unknown_receivers: set[str] = set()
     for writer, writes in state.namespace_writes.items():
         active = state.active_owners.get(writer, ())
         for write in writes:
-            target = state.graph.get(write.module) if write.module is not None else None
-            if target is not None and write.source_owner in active:
+            if write.source_owner not in active:
+                continue
+            if write.module is None:
+                if writer in dirty:
+                    writers_with_unknown_receivers.add(writer)
+            elif (target := state.graph.get(write.module)) is not None:
                 for name in state.modules_by_source[target]:
                     if writer != name:
                         writers.setdefault(name, set()).add(writer)
+    if writers_with_unknown_receivers:
+        for receiver in state.graph:
+            if dependencies := writers_with_unknown_receivers - {receiver}:
+                writers.setdefault(receiver, set()).update(dependencies)
     if not writers:
         return state.scan_revisions.copy()
 
@@ -2086,6 +2095,13 @@ def _load_module_import_scan(
             target_python=target_python,
         )
 
+    shipped_stdlib = (
+        persist_scan
+        and source_owner is None
+        and not native_support_function_roots
+        and stdlib_root is not None
+        and resolution_cache.is_stdlib_path(path, stdlib_root)
+    )
     if persist_scan:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
             path,
@@ -2101,6 +2117,11 @@ def _load_module_import_scan(
             native_support_function_roots=native_support_function_roots,
             runtime_catalog_owner=runtime_catalog_owner,
             target_sys_platform=resolution_cache.target_sys_platform,
+            installed_initializer=(
+                resolution_cache.installed_stdlib_initializer
+                if shipped_stdlib and not runtime_catalog_owner
+                else None
+            ),
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -2137,12 +2158,9 @@ def _load_module_import_scan(
         )
         tree, ast_digest_admission = selected.tree, selected.admission
     elif (
-        persist_scan
+        shipped_stdlib
         and snapshot is not None
-        and source_owner is None
-        and stdlib_root is not None
-        and resolution_cache.is_stdlib_path(path, stdlib_root)
-        and (syntax := resolution_cache.installed_stdlib_namespace_syntax) is not None
+        and (syntax := resolution_cache.installed_stdlib_source_summaries) is not None
     ):
         syntax.seed(
             snapshot,

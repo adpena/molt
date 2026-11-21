@@ -39,7 +39,11 @@ linked module that a 30-line program pulls in.
    `consumer_gate.proven_gates`) is skipped by the `land` precheck. The queue's batch skips
    it too when the receipt is `exact`: the consumer gate's checkout held only that tree's
    files. Landing-built, Cargo and slow tests still run in the batch. A rebase onto a moved
-   main is a new tree, so every gate runs again.
+   main is a new tree, so every gate runs again. The lib tests a Rust change reaches
+   (`commit = true` rules: `rust-test-changed`, `runtime-lib`) also run in the consumer gate
+   before the commit and in the `land` try run, and its receipt proves them the same way
+   (HF-937): the bounded bypass pushes on that receipt alone, and the runtime gate takes about
+   3 minutes warm (188 s on a loaded host; 380 s cold with kache).
 2. **Differential smoke per touched backend**: a fixed, coverage-chosen subset of the corpus
    (start: 150 basic + 100 stdlib programs) on native, plus WASM and LLVM when their crates
    or the shared frontend/midend change. Programs run against a cached runtime build

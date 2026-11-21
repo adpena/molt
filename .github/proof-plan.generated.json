@@ -12179,6 +12179,7 @@
         "command_ids": [
           "local.rust-test-changed.0"
         ],
+        "commit": true,
         "description": "Whole-crate lib tests, in every declared profile and feature cell, for every Cargo package a change reaches.",
         "gates": [
           "python tools/check_changed_crate_tests.py --base {integration_upstream_commit}"
@@ -12513,6 +12514,7 @@
         "command_ids": [
           "local.runtime-lib.0"
         ],
+        "commit": true,
         "description": "Runtime/object-model Rust: one dev-fast Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed; release-output qualification remains in CI.",
         "gates": [
           "python tools/run_runtime_test_gate.py --profile dev-fast --build-timeout-seconds 6300 --child-timeout-seconds 120"
@@ -12525,6 +12527,7 @@
           "runtime/**/Cargo.toml"
         ],
         "name": "runtime-lib",
+        "precheck": true,
         "toolchains": [
           "python",
           "rustc",
