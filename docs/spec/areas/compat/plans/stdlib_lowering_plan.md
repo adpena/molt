@@ -54,6 +54,65 @@ binding two-job, 6/24/48 GiB limits, timeouts and isolated spinning-loop procedu
 8. **Imports resolve at compile time.** A module object exists at run time only where the program
    reflects on it; module namespaces are static cells.
 
+### Discovery and summaries (HF-938; owner approval 2026-11-20)
+
+**Measured problem** (2026-11-20, macOS arm64, fresh cache, `import os, sys, json, re,
+collections`): cold module-graph discovery takes 23.1 s and warm takes 3.3 s for 41 modules.
+- 100 whole-module binding fixpoints cost 15.9 s (69%).
+- 26 modules run their fixpoint 2-8 times, about 9 s (40%) in all. Each rerun follows a premise
+  revision (`opaque_activation_sources`, `foreign_namespace_writes`) as discovery finds more
+  writers. Then a replay runs again under the settled premises (HF-926).
+- The early cutoff (`ScanPremiseReads.unchanged_under`) reruns the fixpoint to verify, so it saves
+  only import collection.
+- A scan record's key digests the whole frontend. Any compiler edit voids every stdlib record.
+  The scan producer's static import closure is 477 files: the eager `molt.frontend` package
+  import, and 219 CLI modules.
+
+**Cause.** Discovery runs the precise proof to answer a reachability question, then repeats it
+per premise revision.
+
+**Design.** Each stage lands on its own, with its measurement.
+
+1. *Stdlib summaries are a toolchain artifact.* The stdlib is fixed per toolchain and target. The
+   release build computes each stdlib module's scan summary once and ships it, content-addressed
+   by source digest, target plan and analysis schema. A user's cold build then analyzes only user
+   modules. This is item 3 above applied to discovery, and GraalVM Native Image's build-time
+   initialization applied to analysis.
+2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
+   (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
+   import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
+   runs once per module, under its settled premise, where lowering needs it. This is the shape of
+   the Go, Zig and rustc module graphs.
+3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
+   foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
+   fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
+   assume-guarantee composition, as in IFDS/IDE (Reps, Horwitz, Sagiv 1995) and Datalog solvers.
+4. *Iteration order.* Premise propagation visits writers before the modules they write, in a
+   weak topological order of the write graph (Bourdoncle 1993). Revisions then reach a module
+   once per strongly connected component, not once per discovered writer.
+5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
+   imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
+   keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
+   This is the rustc red-green and salsa model, with the existing content-addressed store.
+6. *Laziness in development.* A development build does not wait for the whole closure: it
+   analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
+   fallback). A release build keeps the full closed-world solve.
+
+**Invariants.**
+- A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).
+- The global solve reaches the same fixpoint as today's replay: differential results and the
+  emitted graph are unchanged.
+- A refused or unknown dynamic import widens to today's conservative edge set, never narrows.
+
+**Proof per stage.**
+- Cold and warm discovery time for the program above and for the five slow tests (HF-938).
+- Fixpoint count: target one per module.
+- Graph identity against the current discovery over the basic and stdlib differential sets.
+
+**Alternatives rejected.**
+- A hand-listed narrow key: unsound, because it misses imports added later.
+- Tuning the binding trie alone: it shrinks a 69% share but keeps the reruns.
+
 ## Non-Negotiable Gates
 1. a required intrinsic that nothing reads hard fails (no anchors, spec 0016).
 2. top-level union coverage hard fail.
