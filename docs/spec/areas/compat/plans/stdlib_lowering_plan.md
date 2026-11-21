@@ -113,7 +113,11 @@ per premise revision.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
-   This is the rustc red-green and salsa model, with the existing content-addressed store.
+   The import-scan fingerprint now covers the scan producer's 32 Python source dependencies,
+   the source decoder and the record codec. The import walk includes function-local imports
+   and rejects dependencies on CLI or frontend code. A real store test keeps a scan after
+   changing frontend bytes and invalidates it after changing a binding producer. See
+   [Frontend semantic fingerprint](../../../../design/frontend_semantic_fingerprint.md).
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.

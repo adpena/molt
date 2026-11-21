@@ -40,6 +40,7 @@ from molt.cli.source_record_store import SourceRecord, shared_source_records
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
+    _import_scan_tooling_fingerprint,
     _operation_resolved,
     _source_tree_fingerprint_transaction,
 )
@@ -660,6 +661,16 @@ def _intrinsic_source_identity(
     }
 
 
+def _intrinsic_facts_record_key(identity: Mapping[str, object]) -> str:
+    # The syntax-only projection may read the latest facts for this source
+    # regardless of the premise used to prove its intrinsic custody.
+    inputs = {
+        key: value for key, value in identity.items() if key != "namespace_premise"
+    }
+    encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
 @_source_tree_fingerprint_transaction()
 def _stdlib_intrinsic_namespace_summary(
     module_name: str,
@@ -675,15 +686,8 @@ def _stdlib_intrinsic_namespace_summary(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    record_key = _import_scan_cache_key(
-        path,
-        module_name=module_name,
-        is_package=path.name == "__init__.py",
-        import_scan_mode="full",
-        snapshot=snapshot,
-        target_python=target_python,
-    )
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
+    record_key = _intrinsic_facts_record_key(expected)
     record = _read_intrinsic_facts_record(record_key)
     payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None:
@@ -749,17 +753,10 @@ def _stdlib_intrinsic_source_facts(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    record_key = _import_scan_cache_key(
-        path,
-        module_name=module_name,
-        is_package=path.name == "__init__.py",
-        import_scan_mode="full",
-        snapshot=snapshot,
-        target_python=target_python,
-    )
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
+    record_key = _intrinsic_facts_record_key(identity)
     record = _read_intrinsic_facts_record(record_key)
     payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None and payload.get("identity") == identity:
@@ -779,6 +776,7 @@ def _stdlib_intrinsic_source_facts(
                 namespace_premise=namespace_premise,
                 snapshot=snapshot,
                 target_python=target_python,
+                purpose=SourceImportPurpose.INVENTORY,
             )
             if scan is None:
                 raise ValueError("intrinsic metadata lacks current source requests")
@@ -812,6 +810,7 @@ def _stdlib_intrinsic_source_facts(
             scan=facts.import_evidence.source_scan,
             snapshot=snapshot,
             target_python=target_python,
+            purpose=SourceImportPurpose.INVENTORY,
         )
     except OSError as exc:
         failure: str | None = str(exc)
@@ -960,7 +959,7 @@ def _import_scan_cache_key(
         _namespace_premise_cache_identity(namespace_premise),
         target_python.tag,
         target_sys_platform,
-        _frontend_semantic_tooling_fingerprint(),
+        _import_scan_tooling_fingerprint(),
     )
     encoded = json.dumps(identity, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
@@ -1177,8 +1176,7 @@ def _read_persisted_import_scan_record(
         return None
     if (
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint")
-        != _frontend_semantic_tooling_fingerprint()
+        or payload.get("compiler_fingerprint") != _import_scan_tooling_fingerprint()
         or payload.get("module_name") != module_name
         or payload.get("is_package") != is_package
         or payload.get("body_selection")
@@ -1674,7 +1672,7 @@ def _write_persisted_import_scan(
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "parser": [sys.implementation.name, sys.version],
-        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+        "compiler_fingerprint": _import_scan_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
         "body_selection": ModuleBodySelection.from_requested_roots(

@@ -47,8 +47,6 @@ from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.target_python import (
     _SUPPORTED_TARGET_PYTHON_BY_SHORT as _SUPPORTED_TARGET_PYTHON_BY_SHORT,
     _SUPPORTED_TARGET_PYTHON_VERSIONS as _SUPPORTED_TARGET_PYTHON_VERSIONS,
-    _project_requires_python as _project_requires_python,
-    _target_python_from_requires_python as _target_python_from_requires_python,
 )
 from molt.cli.mlir_backend import (
     _run_mlir_backend_pipeline,

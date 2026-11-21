@@ -30,10 +30,12 @@ def isolated_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", raising=False)
-    for owner in (module_cache, module_graph_cache):
-        monkeypatch.setattr(
-            owner, "_frontend_semantic_tooling_fingerprint", lambda: "scan-admission"
-        )
+    monkeypatch.setattr(
+        module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "scan-admission"
+    )
+    monkeypatch.setattr(
+        module_graph_cache, "_import_scan_tooling_fingerprint", lambda: "scan-admission"
+    )
 
 
 def _analyze(path: Path, **overrides: Any) -> tuple[Any, ...]:

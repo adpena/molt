@@ -1289,7 +1289,7 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
     )
     monkeypatch.setattr(
         module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "star-provenance",
     )
     requests = _load_module_import_scan(
