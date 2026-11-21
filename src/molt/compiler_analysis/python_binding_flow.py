@@ -113,6 +113,7 @@ from molt.compiler_analysis.python_value_identity import (
     SOURCE_CALLABLE_IDENTITIES,
     exact_identity,
     possible_identity,
+    subscription_is_inert_alias,
 )
 from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.builtin_binding_guards_generated import (
@@ -153,6 +154,7 @@ from molt.compiler_analysis.python_effects_generated import (
 from molt.compiler_analysis.static_truth import (
     ExpressionSequenceItem,
     StaticExpressionResult,
+    StaticSubscriptionShape,
     SourceDemandPhase,
     UNKNOWN_EXPRESSION_RESULT,
     expression_result_for_owned_binding,
@@ -251,7 +253,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 70
+_ANALYSIS_SCHEMA: Final = 71
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -2284,6 +2286,20 @@ def _identity_can_release(mask: IdentityMask) -> bool:
     return bool(mask & ~rooted)
 
 
+def _binding_read(node: ast.expr) -> bool:
+    """Whether evaluating ``node`` yields only references that a binding, an
+    owner's attribute or the code object keeps: a name, a constant, an
+    attribute of such a read, or a tuple display of those. The caller proves
+    the evaluation ran no Python (no descriptor or ``__getattr__``)."""
+    if isinstance(node, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _binding_read(node.value)
+    return isinstance(node, ast.Tuple) and all(
+        _binding_read(element) for element in node.elts
+    )
+
+
 def _release_may_call(identities: IdentityMask, result: StaticExpressionResult) -> bool:
     """Compose independent rooted-identity and exact-result release proofs."""
 
@@ -2393,6 +2409,7 @@ class _EvaluatedMemberTarget:
     static_index: PythonStaticValue = None
     index_result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     slice_parts: tuple[StaticExpressionResult, ...] | None = None
+    index_identities: IdentityMask = OTHER_IDENTITY
 
     @property
     def is_exact_globals_dict(self) -> bool:
@@ -2698,6 +2715,7 @@ class _Analyzer:
         self._class_cell_slot_mask = 0
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
         self.class_builder_reads: dict[PythonNodeKey, IdentityMask] = {}
+        self.decoration_annotation_heads: dict[PythonNodeKey, IdentityMask] = {}
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
@@ -3356,6 +3374,51 @@ class _Analyzer:
             self.states._binding_resolution(state_id, slot).identities
             & UNBOUND_IDENTITY
         )
+
+    def _record_decoration_annotation_heads(
+        self,
+        node: ast.ClassDef,
+        state_id: int,
+        scope: _Scope,
+        class_scope: _Scope,
+    ) -> None:
+        """Each top-level annotation head's value when the decorators run.
+
+        A decorator such as ``@dataclass`` reads the annotations then. A
+        deferred annotation (3.14+) evaluates in an annotation scope that sees
+        the class namespace, then globals; ``dataclasses._is_type`` resolves a
+        ``from __future__`` string's head in the module namespace. An eager
+        annotation already carries the fact of its own evaluation.
+        """
+        deferred = not self._future_annotations and self.policy.target_python >= (3, 14)
+        if deferred:
+            lookup = class_scope
+        elif self._future_annotations and scope.kind == "module":
+            lookup = scope
+        else:
+            return
+        for item in node.body:
+            if not isinstance(item, ast.AnnAssign) or not isinstance(
+                item.target, ast.Name
+            ):
+                continue
+            annotation = item.annotation
+            head = (
+                annotation.value
+                if isinstance(annotation, ast.Subscript)
+                else annotation
+            )
+            if isinstance(head, ast.Name):
+                identities = self._resolve_name(state_id, lookup, head.id)[0]
+            elif isinstance(head, ast.Attribute) and isinstance(head.value, ast.Name):
+                base = self._resolve_name(state_id, lookup, head.value.id)[0]
+                identities = self._member_value(state_id, base, head.attr)
+            else:
+                continue
+            key = self._node_key(head)
+            self.decoration_annotation_heads[key] = (
+                self.decoration_annotation_heads.get(key, NO_IDENTITIES) | identities
+            )
 
     def _plain_class_base(self, base: ast.expr) -> bool:
         """Whether a class statement's base is, on every execution, the class
@@ -5118,6 +5181,13 @@ class _Analyzer:
                     assignment_target.index_result,
                     slice_parts=assignment_target.slice_parts,
                 )
+                inert_alias = subscription_is_inert_alias(
+                    owner_identities,
+                    assignment_target.index_identities,
+                    assignment_target.static_index,
+                )
+                if inert_alias:
+                    shape = StaticSubscriptionShape(shape.result, invokes_python=False)
                 result_override = (
                     shape.result
                     if assignment_target.slice_parts is not None
@@ -5157,11 +5227,22 @@ class _Analyzer:
                 # BINARY_SUBSCR releases its evaluated operands. An inert
                 # selected element does not prove inert retirement of siblings.
                 member_effects |= RELEASES_REFERENCE
-                if assignment_target.owner_result.release_may_call or any(
-                    part.release_may_call
-                    for part in (
-                        assignment_target.slice_parts
-                        or (assignment_target.index_result,)
+                # An inert alias runs no Python, so an operand read from a
+                # binding is still held by that binding when it is released.
+                bound_operands = (
+                    inert_alias
+                    and not effects & EXECUTES_ARBITRARY_PYTHON
+                    and _binding_read(node.value)
+                    and _binding_read(node.slice)
+                )
+                if not bound_operands and (
+                    assignment_target.owner_result.release_may_call
+                    or any(
+                        part.release_may_call
+                        for part in (
+                            assignment_target.slice_parts
+                            or (assignment_target.index_result,)
+                        )
                     )
                 ):
                     member_effects |= _RELEASE_CALLBACK_EFFECTS
@@ -6712,6 +6793,7 @@ class _Analyzer:
         effects = owner.effects
         static_index: PythonStaticValue = None
         index_result = UNKNOWN_EXPRESSION_RESULT
+        index_identities = OTHER_IDENTITY
         slice_parts = None
         owner_result = owner.result
         if isinstance(target, ast.Subscript):
@@ -6734,6 +6816,7 @@ class _Analyzer:
                 index_effects = index.effects
                 static_index = index.static_value
                 index_result = index.result
+                index_identities = index.identities
             effects |= index_effects
             if index_effects & _CALLEE_ELISION_FORBIDDEN_EFFECTS:
                 owner_result = expression_result_without_mutable_contents(owner.result)
@@ -6745,6 +6828,7 @@ class _Analyzer:
                 static_index,
                 index_result,
                 slice_parts,
+                index_identities,
             ),
             state_id,
             effects,
@@ -8013,6 +8097,10 @@ class _Analyzer:
             )
             if class_flow.normal is not None:
                 class_state = class_flow.normal
+                if node.decorator_list:
+                    self._record_decoration_annotation_heads(
+                        node, class_state, scope, class_scope
+                    )
                 # Body failure never creates or binds a class. Plain creation
                 # remains a projection of the successful namespace state.
                 plain_creation = (
@@ -9166,6 +9254,7 @@ class _Analyzer:
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
             class_builder_reads=self.class_builder_reads,
+            decoration_annotation_heads=self.decoration_annotation_heads,
             callbacks_rewrite_metadata=self._callback_module_names is None
             or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(

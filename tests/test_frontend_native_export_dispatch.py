@@ -13,6 +13,7 @@ from molt.frontend.sema.funcmeta import (
     collect_module_func_defaults,
     collect_module_func_kinds,
 )
+from tests.class_model_support import class_model
 
 _DEFINITION_BY_KIND = {
     FunctionKind.SYNC: "def {name}(value):\n    return value\n",
@@ -365,16 +366,16 @@ def test_published_native_class_collision_uses_object_before_argument_effects(
         known_modules={"nativepkg", "nativepkg.ops"},
         direct_call_modules={"__main__", "nativepkg.ops"},
         known_classes={
-            OPS_ERROR: {
-                "binding_name": "OpsError",
-                "static": True,
-                "mro": (
+            OPS_ERROR: class_model(
+                OPS_ERROR,
+                module_level=True,
+                linearization=(
                     OPS_ERROR,
                     BuiltinClass("Exception"),
                     BuiltinClass("BaseException"),
                     OBJECT_CLASS,
                 ),
-            }
+            )
         },
         native_python_exports=set() if metadata_only else {"nativepkg.ops.OpsError"},
         native_callable_exports=exports,

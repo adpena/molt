@@ -25,7 +25,6 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    Required,
     TypedDict,
 )
 
@@ -36,7 +35,6 @@ from molt.compat import CompatibilityError, CompatibilityReporter
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_NAMES
 from molt.frontend.module_publication import SourceModulePublication
-from molt.frontend.dataclass_init import DataclassInitField
 from molt.type_facts import normalize_type_hint
 
 _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -50,6 +48,7 @@ _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
 
 
 if TYPE_CHECKING:
+    from molt.frontend.class_model import ClassDraft, ClassView
     from molt.compiler_analysis.python_binding_facts import PythonBindingFacts
 
     from molt.frontend.sema.funcmeta import (
@@ -510,7 +509,19 @@ class _ClassNsScope:
     annotation_namespace_required: bool = False
     class_node: ast.ClassDef | None = None
     class_cell: MoltValue | None = None
-    methods: dict[str, MethodInfo] = field(default_factory=dict)
+    # The statement's class draft: the body's bindings run through it in
+    # source order (``molt.frontend.class_model``).
+    draft: ClassDraft | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MethodValues:
+    """A compiled method's SSA values in its defining module: the function
+    object and the value the class binds (after decorators). Lowering-only:
+    never published, never crosses a module."""
+
+    func: MoltValue
+    attr: MoltValue
 
 
 # 47-bit signed inline integer range for NaN-boxing.
@@ -761,81 +772,17 @@ class MethodInfo(TypedDict):
     returns_none: NotRequired[bool]
 
 
-class ClassInfo(TypedDict, total=False):
-    """Facts for one class statement, keyed by its :class:`ClassId`.
-
-    ``visit_ClassDef`` builds it and nothing writes it afterwards: lowering-time
-    derived facts live in typed side tables on the generator.
-    """
-
-    # The namespace binding the statement writes (a mangled private name
-    # inside a class body). The Python-visible names come from the ClassId.
-    binding_name: str
-    fields: dict[str, int]
-    field_hints: dict[str, TypeHint]
-    size: int
-    field_order: list[str]
-    defaults: dict[str, ast.expr]
-    class_attrs: dict[str, ast.expr]
-    # Class attributes whose value the defining module cannot prove is not a
-    # data descriptor: anything but a literal display, a builtin non-descriptor
-    # constructor, or an instance of a class whose MRO defines no ``__set__``,
-    # ``__delete__`` or ``__new__``. Decided where the class is defined, so a
-    # consumer in another module never resolves the defining module's names.
-    possible_data_descriptor_attrs: frozenset[str]
-    bases: tuple[ClassRef, ...]
-    mro: tuple[ClassRef, ...]
-    # The layout fact: True when the statement has no static instance layout
-    # (a metaclass call, several bases, ``__slots__``, attribute hooks, a
-    # visible class mutation) or a base is not namespace-closed. A static
-    # statement publishes inferred field offsets with ``CLASS_DEF``.
-    dynamic: Required[bool]
-    # The identity fact (family B): code the program cannot see may hold the
-    # class statement's value or one of its methods. It never changes the
-    # layout; see :func:`class_namespace_closed`.
-    definition_exposed: Required[bool]
-    static: bool
-    dataclass: bool
-    dataclass_params: dict[str, bool]
-    dataclass_init_projection: tuple[DataclassInitField, ...] | None
-    methods: dict[str, MethodInfo]
-    pending_methods: set[str]
-    layout_version: int
-    needs_classcell: bool
-    custom_metaclass: bool
-    class_value_name: str
-    # Why ``C(args)`` keeps the runtime class call; None: inline allocation.
-    constructor_refusal: str | None
-    constructor_binding_proven: bool
-    decorated: bool
-
-
-def layout_definition_symbol(class_id: ClassId, info: ClassInfo) -> str | None:
+def layout_definition_symbol(class_id: ClassId, view: ClassView) -> str | None:
     """The class statement identity a layout guard may trust, or None (HF-220).
 
-    Only a non-dynamic statement publishes its field offsets with ``CLASS_DEF``
-    and stamps the class it creates. A dynamic class (a metaclass call, several
-    bases, ``__slots__``, attribute hooks) has no offsets to trust, and a
-    metaclass may return a class that another statement created. Every module
-    applies this one rule: the defining module stamps exactly the statements a
-    guard in any module may name.
+    Only a statement with a static layout publishes its field offsets with
+    ``CLASS_DEF`` and stamps the class it creates. A dynamic class (a
+    metaclass call, several bases, ``__slots__``, attribute hooks) has no
+    offsets to trust, and a metaclass may return a class that another
+    statement created. Every module applies this one rule: the defining
+    module stamps exactly the statements a guard in any module may name.
     """
-    return None if info.get("dynamic") else class_id.definition_symbol
-
-
-def class_namespace_closed(info: ClassInfo) -> bool:
-    """Whether unguarded facts about the class namespace hold (HF-812).
-
-    A layout guard checks the receiver's own class at its layout version, and
-    every mutation of the class or of any base advances that version (the
-    runtime's subclass edges, as CPython's ``PyType_Modified``), so guarded
-    field access needs only a static layout. Unguarded facts also need an
-    unexposed definition: the allocation protocol, method binding, method
-    bodies and unguarded field access all assume that no unseen code rebinds a
-    member or replaces a method body. A subclass inherits members from its
-    bases, so a base that is not closed makes its subclasses ``dynamic``.
-    """
-    return not info["dynamic"] and not info["definition_exposed"]
+    return class_id.definition_symbol if view.layout.static else None
 
 
 class FuncInfo(TypedDict):
@@ -878,9 +825,7 @@ __all__ = [
     "_intrinsic_arity_exact",
     "TryScope",
     "MethodInfo",
-    "ClassInfo",
     "layout_definition_symbol",
-    "class_namespace_closed",
     "FuncInfo",
     "CompatibilityError",
     "CompatibilityReporter",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
-from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
+from molt.frontend import ClassId, ClassModel, layout_definition_symbol
 from molt.cli.models import _FrontendIntegrationState
 from molt.cli.module_registry import is_dunder_name
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM
@@ -31,7 +31,7 @@ def _register_global_code_id_with_state(
     return code_id
 
 
-def _module_class_definitions(local_classes: Mapping[ClassId, ClassInfo]) -> set[str]:
+def _module_class_definitions(local_classes: Mapping[ClassId, ClassModel]) -> set[str]:
     """The class statement symbols a module owns: the ones it stamps (HF-220)."""
     return {
         symbol
@@ -357,7 +357,7 @@ def _integrate_module_frontend_result_with_state(
     ir_functions: list[dict[str, Any]],
     function_metadata: object,
     func_code_ids: dict[str, int],
-    local_classes: dict[ClassId, ClassInfo],
+    local_classes: dict[ClassId, ClassModel],
     function_digest_seeds: Sequence[FunctionDigestSeed] = (),
 ) -> str | None:
     class_definitions = _module_class_definitions(local_classes)

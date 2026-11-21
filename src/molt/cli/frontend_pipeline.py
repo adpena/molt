@@ -97,7 +97,7 @@ from molt.target_python import TargetPythonVersion
 
 if TYPE_CHECKING:
     from molt.frontend.lowering.exception_lowering import SyntaxErrorName
-    from molt.frontend import ClassId, ClassInfo
+    from molt.frontend import ClassId, ClassModel
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ class _PreparedFrontendAnalysis:
 @dataclass(frozen=True)
 class _PreparedFrontendLoweringConfig:
     type_facts: TypeFacts | None
-    known_classes: dict[ClassId, ClassInfo]
+    known_classes: dict[ClassId, ClassModel]
     scoped_lowering_inputs: _ScopedLoweringInputs
     module_graph_metadata: _ModuleGraphMetadata
     frontend_module_costs: Mapping[str, float]
@@ -453,7 +453,7 @@ def _prepare_frontend_lowering_config(
                 command="build",
             )
 
-    known_classes: dict[ClassId, ClassInfo] = {}
+    known_classes: dict[ClassId, ClassModel] = {}
     scoped_lowering_inputs = _build_scoped_lowering_inputs(
         module_graph,
         module_deps=module_deps,

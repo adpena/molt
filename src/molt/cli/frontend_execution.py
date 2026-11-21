@@ -21,7 +21,7 @@ from typing import (
 
 from molt import compiler_process
 from molt import input_report as _input_report
-from molt.frontend import ClassId, ClassInfo
+from molt.frontend import ClassId, ClassModel
 from molt.type_facts import TypeFacts
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
@@ -103,7 +103,7 @@ class _FrontendLayerExecutionContext:
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     frontend_module_costs: Mapping[str, float]
     stdlib_like_by_module: Mapping[str, bool]
-    known_classes: Mapping[ClassId, ClassInfo]
+    known_classes: Mapping[ClassId, ClassModel]
     target_python: TargetPythonVersion
     target_sys_platform: str | None
     frontend_phase_timeout: float | None
@@ -156,7 +156,7 @@ def _prepare_frontend_execution(
     scoped_lowering_inputs: _ScopedLoweringInputs,
     frontend_module_costs: Mapping[str, float],
     stdlib_like_by_module: Mapping[str, bool],
-    known_classes: dict[ClassId, ClassInfo],
+    known_classes: dict[ClassId, ClassModel],
     frontend_phase_timeout: float | None,
     record_frontend_timing: Callable[..., None],
     fail: Callable[..., int],
@@ -426,7 +426,7 @@ def _run_frontend_parallel_layer_batches(
     *,
     layer_workers: int,
     executor: Any,
-    known_classes_snapshot_source: Mapping[ClassId, ClassInfo],
+    known_classes_snapshot_source: Mapping[ClassId, ClassModel],
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,

@@ -5,6 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from molt.frontend.class_model import (
+    ClassModel,
+    ConstructorRefusal,
+    DataclassSpec,
+    Field,
+    InstanceLayout,
+    LayoutRefusal,
+)
 from molt.frontend import (
     ClassId,
     DeclaredClass,
@@ -18,6 +26,41 @@ from molt.frontend.lowering.serialization_context import SerializationContext
 POINT = ClassId("exact_class_authority", "Point")
 RECORD = ClassId("exact_class_authority", "Record")
 ELSEWHERE_POINT = ClassId("elsewhere", "Point")
+
+
+def _class_model(
+    class_id: ClassId,
+    *,
+    binding_name: str,
+    fields: dict[str, int],
+    layout_version: int = 0,
+    module_level: bool = False,
+    dataclass: bool = False,
+    exposed: bool = False,
+    dynamic: bool = False,
+) -> ClassModel:
+    """A sealed class model with only the facts a test sets."""
+    return ClassModel(
+        class_id=class_id,
+        binding_name=binding_name,
+        bases=(),
+        linearization=(class_id,),
+        layout=InstanceLayout(
+            tuple(Field(name, offset, None) for name, offset in fields.items()),
+            8 * (len(fields) + 1),
+            LayoutRefusal.MULTIPLE_BASES if dynamic else None,
+        ),
+        module_level=module_level,
+        definition_exposed=exposed,
+        binding_proven=False,
+        custom_metaclass=False,
+        decorated=False,
+        layout_version=layout_version,
+        members=(),
+        possible_data_descriptors=frozenset(),
+        dataclass=DataclassSpec((), None) if dataclass else None,
+        constructor=ConstructorRefusal("test"),
+    )
 
 
 @pytest.mark.parametrize("kind", ["GETATTR", "GUARDED_GETATTR", "GETATTR_GENERIC_PTR"])
@@ -51,12 +94,11 @@ def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
     # class's offsets, and the wire names the class statement the guard trusts
     # (HF-220), never a class operand.
     generator = SimpleTIRGenerator()
-    generator.classes[POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "fields": {"x": 8},
-    }
+    generator.classes[POINT] = _class_model(
+        POINT,
+        fields={"x": 8},
+        binding_name="Point",
+    )
     context = SerializationContext([], set(), None)
     assert generator._serialize_object_attr_op(
         MoltOp(
@@ -221,14 +263,13 @@ def test_runtime_selected_constructor_shapes_never_authorize_fixed_layout(
 def test_exact_binding_alias_and_lowered_value_drive_direct_field_consumers() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     first_field_op = len(generator.current_ops)
-    generator.classes[POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "fields": {"x": 24},
-        "layout_version": 7,
-        "static": True,
-    }
+    generator.classes[POINT] = _class_model(
+        POINT,
+        fields={"x": 24},
+        layout_version=7,
+        module_level=True,
+        binding_name="Point",
+    )
     allocated = generator._stamp_exact_class(
         MoltValue("allocated_point", type_hint=DeclaredClass(POINT)), POINT
     )
@@ -458,16 +499,12 @@ def test_matching_branch_facts_publish_one_live_join_authority() -> None:
 
 def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
-    generator.classes[RECORD] = {
-        "binding_name": "Record",
-        "dynamic": False,
-        "definition_exposed": False,
-        "dataclass": True,
-        "fields": {},
-        "field_hints": {},
-        # The dataclass transform owns runtime fields, not inferred offsets.
-        "possible_data_descriptor_attrs": frozenset(),
-    }
+    generator.classes[RECORD] = _class_model(
+        RECORD,
+        fields={},
+        dataclass=True,
+        binding_name="Record",
+    )
     record = generator._stamp_exact_class(
         MoltValue("record", type_hint=DeclaredClass(RECORD)), RECORD
     )
@@ -552,7 +589,7 @@ def test_native_base_layout_never_publishes_inferred_prefix_offsets(
 ) -> None:
     generator = SimpleTIRGenerator(module_name="native_base_layout")
     generator.visit(ast.parse(declaration))
-    assert generator.classes[ClassId("native_base_layout", "Native")]["dynamic"]
+    assert not generator.classes[ClassId("native_base_layout", "Native")].layout.static
     ops = [
         op
         for function in generator.funcs_map.values()
@@ -609,26 +646,28 @@ def test_synthesized_layout_guards_name_their_class_statement(operation: str) ->
     # not the module binding, so rebinding the name cannot redirect it.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
-    generator.classes[POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "static": True,
-        "fields": {"x": 8},
-    }
+    generator.classes[POINT] = _class_model(
+        POINT,
+        fields={"x": 8},
+        module_level=True,
+        binding_name="Point",
+    )
     _assert_guard_names_statement(_emit_guard(generator, operation, POINT), POINT)
 
 
 def test_optional_layout_identity_does_not_change_explicit_source_name() -> None:
-    ops = _ops(
+    source = (
         "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
     )
+    ops = _ops(source, function="py.exact_class_authority.Point_read")
     strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     assert any(
         op.kind == "MODULE_GET_GLOBAL" and strings.get(op.args[1].name) == "Point"
         for op in ops
     )
     # The guard names the statement; only the explicit source read loads it.
+    # (The class's PEP 649 ``__annotate__`` reads its own namespace for
+    # ``int``; that evaluator is not this method's guard.)
     assert not any(op.kind == "DICT_GET" for op in ops)
     assert any(
         (op.metadata or {}).get("class_definition") == POINT.definition_symbol
@@ -645,13 +684,12 @@ def test_external_layout_identity_does_not_import_or_read_module(
     # import, module read or binding is needed to construct it.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
-    generator.classes[ELSEWHERE_POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "static": True,
-        "fields": {"x": 8},
-    }
+    generator.classes[ELSEWHERE_POINT] = _class_model(
+        ELSEWHERE_POINT,
+        fields={"x": 8},
+        module_level=True,
+        binding_name="Point",
+    )
     ops = _emit_guard(generator, operation, ELSEWHERE_POINT)
     _assert_guard_names_statement(ops, ELSEWHERE_POINT)
     assert ELSEWHERE_POINT.definition_symbol == "class:elsewhere:Point"
@@ -687,13 +725,12 @@ def test_external_layout_identity_ignores_imported_aliases(local: bool) -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
-    generator.classes[ELSEWHERE_POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "static": True,
-        "fields": {"x": 8},
-    }
+    generator.classes[ELSEWHERE_POINT] = _class_model(
+        ELSEWHERE_POINT,
+        fields={"x": 8},
+        module_level=True,
+        binding_name="Point",
+    )
     generator.global_imported_names["Point"] = "unrelated"
     if local:
         generator.imported_names["Alias"] = "elsewhere"
@@ -715,13 +752,11 @@ def test_local_class_guard_reads_no_class_storage(operation: str, storage: str) 
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
-    generator.classes[POINT] = {
-        "binding_name": "Point",
-        "dynamic": False,
-        "definition_exposed": False,
-        "static": False,
-        "fields": {"x": 8},
-    }
+    generator.classes[POINT] = _class_model(
+        POINT,
+        fields={"x": 8},
+        binding_name="Point",
+    )
     generator.unbound_check_names.add("Point")
     if storage == "global":
         generator.global_decls.add("Point")

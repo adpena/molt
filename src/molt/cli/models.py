@@ -80,7 +80,7 @@ if TYPE_CHECKING:
         SyntaxErrorAttribute,
         SyntaxErrorName,
     )
-    from molt.frontend import ClassId, ClassInfo
+    from molt.frontend import ClassId, ClassModel
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
@@ -676,7 +676,7 @@ class _SerialFrontendLoweringContext:
     module_dep_closures: dict[str, frozenset[str]]
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     module_graph_metadata: "_ModuleGraphMetadata"
-    known_classes: Mapping[ClassId, ClassInfo]
+    known_classes: Mapping[ClassId, ClassModel]
     frontend_phase_timeout: float | None
     target_python: TargetPythonVersion
     target_sys_platform: str | None
@@ -692,7 +692,7 @@ class _SerialFrontendLoweringHooks:
 @dataclass
 class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
-    known_classes: dict[ClassId, ClassInfo]
+    known_classes: dict[ClassId, ClassModel]
     function_digest_seeds: list[FunctionDigestSeed] = field(default_factory=list)
     global_code_ids: dict[str, int] = field(default_factory=dict)
     function_metadata: dict[str, FunctionAssemblyMetadata] = field(default_factory=dict)
