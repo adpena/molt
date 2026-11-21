@@ -8,11 +8,18 @@ use crate::{
     ExceptionLayoutKind, ExceptionStrSlot, ExceptionTypedField, MAX_EXCEPTION_TYPED_FIELDS,
 };
 
+/// Own the captured argument shape across a possibly reentrant renderer.
+pub enum ExceptionRenderArgs<V> {
+    Empty,
+    Single(V),
+    Tuple(V),
+}
+
 /// Fields are owned only when requested. Missing physical fields remain distinct
 /// from Python None. Declaration-order Drop retires args, typed fields, class,
 /// including during unwinding; adapters use ordinary semantic owners.
 pub struct ExceptionRenderSnapshot<V> {
-    pub args: Option<V>,
+    pub args: ExceptionRenderArgs<V>,
     pub fields: [Option<V>; MAX_EXCEPTION_TYPED_FIELDS],
     pub class: V,
     pub layout: ExceptionLayoutKind,
@@ -86,27 +93,39 @@ fn rendered_bytes<C: ExceptionRenderContext>(
     context.string_bytes(C::borrow(&result))
 }
 
-fn argc<C: ExceptionRenderContext>(
+enum RenderArgs<T> {
+    Empty,
+    Single(T),
+    Many(T),
+}
+
+fn render_args<C: ExceptionRenderContext>(
     context: &C,
-    snapshot: &ExceptionRenderSnapshot<C::Owned>,
-) -> Option<usize> {
-    snapshot
-        .args
-        .as_ref()
-        .map_or(Some(0), |args| context.tuple_len(Some(C::borrow(args))))
+    args: &ExceptionRenderArgs<C::Owned>,
+) -> Option<RenderArgs<C::Object>> {
+    Some(match args {
+        ExceptionRenderArgs::Empty => RenderArgs::Empty,
+        ExceptionRenderArgs::Single(value) => RenderArgs::Single(C::borrow(value)),
+        ExceptionRenderArgs::Tuple(tuple) => {
+            let tuple = C::borrow(tuple);
+            match context.tuple_len(Some(tuple))? {
+                0 => RenderArgs::Empty,
+                1 => RenderArgs::Single(context.tuple_item(tuple, 0)?),
+                _ => RenderArgs::Many(tuple),
+            }
+        }
+    })
 }
 
 fn base_str<C: ExceptionRenderContext>(
     context: &C,
     snapshot: &ExceptionRenderSnapshot<C::Owned>,
+    repr_single: bool,
 ) -> Option<C::Owned> {
-    match argc(context, snapshot)? {
-        0 => context.string_from_bytes(b""),
-        1 => context.render(
-            Some(context.tuple_item(C::borrow(snapshot.args.as_ref()?), 0)?),
-            false,
-        ),
-        _ => context.render(snapshot.args.as_ref().map(C::borrow), false),
+    match render_args(context, &snapshot.args)? {
+        RenderArgs::Empty => context.string_from_bytes(b""),
+        RenderArgs::Single(value) => context.render(Some(value), repr_single),
+        RenderArgs::Many(tuple) => context.render(Some(tuple), false),
     }
 }
 
@@ -116,20 +135,15 @@ pub fn render_exception_repr<C: ExceptionRenderContext>(
 ) -> Option<C::Owned> {
     let snapshot = context.capture(object, None, true, &[])?;
     let mut out = context.type_short_name(C::borrow(&snapshot.class))?;
-    let count = argc(context, &snapshot)?;
-    if count == 0 {
-        out.extend_from_slice(b"()");
-    } else {
-        let args = C::borrow(snapshot.args.as_ref()?);
-        let value = if count == 1 {
+    match render_args(context, &snapshot.args)? {
+        RenderArgs::Empty => out.extend_from_slice(b"()"),
+        RenderArgs::Single(value) => {
             out.push(b'(');
-            context.tuple_item(args, 0)?
-        } else {
-            args
-        };
-        out.extend_from_slice(&rendered_bytes(context, value, true)?);
-        if count == 1 {
+            out.extend_from_slice(&rendered_bytes(context, value, true)?);
             out.push(b')');
+        }
+        RenderArgs::Many(tuple) => {
+            out.extend_from_slice(&rendered_bytes(context, tuple, true)?);
         }
     }
     context.string_from_bytes(&out)
@@ -143,14 +157,7 @@ pub fn render_exception_str<C: ExceptionRenderContext>(
     match slot {
         ExceptionStrSlot::Base | ExceptionStrSlot::KeyError => {
             let snapshot = context.capture(object, None, true, &[])?;
-            if slot == ExceptionStrSlot::KeyError && argc(context, &snapshot)? == 1 {
-                context.render(
-                    Some(context.tuple_item(C::borrow(snapshot.args.as_ref()?), 0)?),
-                    true,
-                )
-            } else {
-                base_str(context, &snapshot)
-            }
+            base_str(context, &snapshot, slot == ExceptionStrSlot::KeyError)
         }
         ExceptionStrSlot::Group => group_str(context, object),
         ExceptionStrSlot::Import => import_str(context, object),
@@ -199,7 +206,7 @@ fn import_str<C: ExceptionRenderContext>(context: &C, object: C::Object) -> Opti
     {
         Some(context.retain(message))
     } else {
-        base_str(context, &snapshot)
+        base_str(context, &snapshot, false)
     }
 }
 
@@ -275,7 +282,7 @@ fn os_str<C: ExceptionRenderContext>(context: &C, object: C::Object) -> Option<C
     #[cfg(not(windows))]
     let (label, code) = ("Errno", errno);
     if filename.is_none() && (code.is_none() || reason.is_none()) {
-        return base_str(context, &snapshot);
+        return base_str(context, &snapshot, false);
     }
     let code = rendered_bytes(context, code.unwrap_or_else(|| context.none()), false)?;
     let reason = rendered_bytes(context, reason.unwrap_or_else(|| context.none()), false)?;

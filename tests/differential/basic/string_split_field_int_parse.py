@@ -23,6 +23,7 @@ def main() -> None:
     print(int(line.split("|")[1]))  # leading zeros
     print(int(line.split("|")[2]))  # negative
     print(int(line.split("|")[3]))  # bigint (overflows i64, must stay exact)
+    print(int("１２|٣".split("|")[1]))
 
     # invalid-literal ValueError (message must match CPython exactly)
     try:

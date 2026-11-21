@@ -6,8 +6,8 @@ use crate::BuiltinExc;
 use molt_obj_model::{
     ExceptionStrSlot,
     exception_render::{
-        ExceptionRenderContext, ExceptionRenderSnapshot, render_exception_repr,
-        render_exception_str,
+        ExceptionRenderArgs, ExceptionRenderContext, ExceptionRenderSnapshot,
+        render_exception_repr, render_exception_str,
     },
 };
 
@@ -217,9 +217,17 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
             return None;
         }
         let args = if capture_args {
-            Some(self.retain(exception_materialized_args_bits(self.0, pointer)?))
+            let raw = unsafe { exception_args_bits(pointer) };
+            if exception_args_is_lazy_single(raw) {
+                let value = unsafe { exception_args_payload_bits(pointer) };
+                ExceptionRenderArgs::Single(self.retain(value))
+            } else if raw == 0 || obj_from_bits(raw).is_none() {
+                ExceptionRenderArgs::Empty
+            } else {
+                ExceptionRenderArgs::Tuple(self.retain(raw))
+            }
         } else {
-            None
+            ExceptionRenderArgs::Empty
         };
         let mut snapshot = ExceptionRenderSnapshot {
             args,

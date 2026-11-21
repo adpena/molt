@@ -7165,6 +7165,9 @@ mod tests {
             });
             assert_eq!(format_exception_message(_py, exc_ptr), "42");
             assert_eq!(format_obj(_py, obj_from_bits(exc_bits)), "ValueError(42)");
+            assert!(unsafe {
+                super::exception_args_is_lazy_single(super::exception_args_bits(exc_ptr))
+            });
 
             let args_bits = super::exception_materialized_args_bits(_py, exc_ptr)
                 .expect("args materialization");

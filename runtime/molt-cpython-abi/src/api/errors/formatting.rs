@@ -8,8 +8,8 @@ use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::{
     ExceptionFieldStorage, ExceptionLayoutKind, ExceptionStrSlot, ExceptionTypedField,
     exception_render::{
-        ExceptionRenderContext, ExceptionRenderSnapshot, render_exception_repr,
-        render_exception_str,
+        ExceptionRenderArgs, ExceptionRenderContext, ExceptionRenderSnapshot,
+        render_exception_repr, render_exception_str,
     },
 };
 use std::ptr;
@@ -82,9 +82,9 @@ impl ExceptionRenderContext for PhysicalRender {
             let base = op.cast::<PyBaseExceptionObject>();
             let mut snapshot = ExceptionRenderSnapshot {
                 args: if capture_args && !(*base).args.is_null() {
-                    Some(self.retain((*base).args))
+                    ExceptionRenderArgs::Tuple(self.retain((*base).args))
                 } else {
-                    None
+                    ExceptionRenderArgs::Empty
                 },
                 fields: std::array::from_fn(|_| None),
                 class: self.retain(class.cast()),

@@ -1105,7 +1105,7 @@ pub unsafe extern "C" fn PyLong_FromUnicodeObject(u: *mut PyObject, base: c_int)
     let Some(raw) = (unsafe { crate::api::strings::unicode_bytes(u) }) else {
         return ptr::null_mut();
     };
-    let Some(text) = crate::api::strings::PythonStringBytes::from_bytes(raw) else {
+    if crate::api::strings::PythonStringBytes::from_bytes(raw).is_none() {
         unsafe {
             set_numeric_parse_error(
                 NumericParseError::InvalidLiteral,
@@ -1113,22 +1113,11 @@ pub unsafe extern "C" fn PyLong_FromUnicodeObject(u: *mut PyObject, base: c_int)
             )
         };
         return ptr::null_mut();
-    };
+    }
     let Some(data) = crate::api::strings::unicode_data() else {
         return ptr::null_mut();
     };
-    let mut bytes = Vec::with_capacity(raw.len());
-    for ch in text.code_points() {
-        if ch < 0x80 {
-            bytes.push(ch as u8);
-        } else if let Some(digit) = data.decimal(ch) {
-            bytes.push(b'0' + digit);
-        } else if data.is_space(ch) {
-            bytes.push(b' ');
-        } else {
-            bytes.push(b'?');
-        }
-    }
+    let bytes = molt_lang_obj_model::int_literal::normalize_unicode_int_literal(raw, data);
     match scan_python_int_literal(&bytes, base) {
         Ok(scanned) => py_long_from_scanned(&scanned),
         Err(NumericParseError::TooManyDigits { limit, digits }) => {
