@@ -138,7 +138,20 @@ hundreds of fast landings while postsubmit last ran on 2026-11-16.
 `CandidateFailure` names each failed gate. A first-failure stop let a red static
 check hide every later gate; no run from 2026-11-01 to 2026-11-16 reached a
 Cargo gate (HF-937). A gate whose tests do not collect is reported and skipped.
-Runner, custody and cancellation faults still stop at once. Postsubmit's heavy
+Runner, custody and cancellation faults still stop at once. Heavy
+continuations retain completed gates and use numbered `postsubmit-rest-N`
+namespaces for cancelled or skipped work. Each continuation keeps its own
+executor receipts, streams, whole retries and test isolation, preserving earlier
+evidence. Failure collection reads only these known attempt namespaces, and
+passing pytest admission requires JUnit beside that gate's exact successful
+stream, including the executor's numbered launch attempts. Failure isolation
+reads the latest attempt's evidence and retains the original gate identity.
+An unclean failure never enters a continuation and records inconclusive main
+health without suspect commits or restoration advice. Terminal memory pressure
+also stops postsubmit as inconclusive without replaying independent gates.
+Cancelled work can still
+repeat; independent-collection scheduling remains a separate optimization.
+Postsubmit's heavy
 block takes half the development class as a share (`postsubmit_demand`), not the
 whole class: holding the class made every lane's consumer gate wait for the whole
 run once fast landings started postsubmit. Pytest

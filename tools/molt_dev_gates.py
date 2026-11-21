@@ -33,7 +33,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Protocol, assert_never
+from typing import TYPE_CHECKING, Any, Literal, Protocol, assert_never
 
 from tools import harness_memory_guard, proof_executor, proof_receipts
 from tools.driver_errors import CandidateFailure, DriverError, GateFailure  # noqa: E402
@@ -415,6 +415,38 @@ def junit_path(log_dir: Path, ordinal: int) -> Path:
     return log_dir / f"gate-{ordinal:03d}.junit.xml"
 
 
+def _numbered_attempt_directories(
+    directory: Path,
+    prefix: Literal[
+        "postsubmit-rest-", "heavy-rest-", "isolate-", "continue-", "attempt-"
+    ],
+) -> tuple[Path, ...]:
+    """Existing directories with the exact numeric suffix of an owned phase."""
+    return tuple(
+        sorted(
+            (
+                path
+                for path in directory.glob(prefix + "[0-9]*")
+                if path.name.removeprefix(prefix).isdecimal() and path.is_dir()
+            ),
+            key=lambda path: int(path.name.removeprefix(prefix)),
+        )
+    )
+
+
+def last_gate_attempt_directory(log_dir: Path, ordinal: int) -> Path:
+    """The latest executor attempt that created this gate's stream evidence."""
+    attempts = _numbered_attempt_directories(log_dir, "attempt-")
+    return next(
+        (
+            path
+            for path in reversed(attempts)
+            if (path / f"gate-{ordinal:03d}.stdout.log").is_file()
+        ),
+        log_dir,
+    )
+
+
 def _with_pytest_options(
     argv: Sequence[str], *options: str, repo: Path
 ) -> tuple[str, ...]:
@@ -754,32 +786,41 @@ def run_selected_gates(
                 else (lambda: max(1, min(host_limit(), grant.workers)))
             )
             remaining = heavy
+            continuation = 0
             while remaining:
+                attempt = runtime
+                if continuation:
+                    output = runtime.output_dir / f"postsubmit-rest-{continuation}"
+                    attempt = replace(
+                        runtime,
+                        output_dir=output,
+                        receipt_path=output / runtime.receipt_path.name,
+                    )
                 try:
-                    _run_heavy_gates(remaining, runtime, gate_seconds, limit)
+                    _run_heavy_gates(remaining, attempt, gate_seconds, limit)
                     break
-                except (GateFailure, GateMemoryPressure) as failure:
-                    if not keep_going or runtime.cancelled():
+                except GateFailure as failure:
+                    if (
+                        not keep_going
+                        or runtime.cancelled()
+                        or not failure.clean_closure
+                    ):
                         raise
                     failed = {
                         display(gate.command)
                         for _ordinal, gate in remaining
-                        if display(gate.command) in getattr(failure, "shown", ())
-                        or display(gate.command) in str(failure)
+                        if display(gate.command) in failure.shown
                     }
                     if not failed:
                         raise
-                    failures.append(
-                        failure
-                        if isinstance(failure, CandidateFailure)
-                        else CandidateFailure(str(failure))
-                    )
+                    failures.append(failure)
                     remaining = [
                         (ordinal, gate)
                         for ordinal, gate in remaining
                         if gate not in runtime.passed
                         and display(gate.command) not in failed
                     ]
+                    continuation += 1
     _check_cancellation(runtime)
     if failures:
         raise CandidateFailure(
@@ -916,7 +957,9 @@ def _retry_whole_gates(
     )
     log_dir = runtime.output_dir / "heavy-retry"
     for ordinal, gate in failed:
-        path = junit_path(runtime.output_dir, ordinal)
+        path = junit_path(
+            last_gate_attempt_directory(runtime.output_dir, ordinal), ordinal
+        )
         nodes = _failed_nodes(path)
         _record_flake(runtime, gate, nodes or (), evidence=log_dir)
 
@@ -965,7 +1008,7 @@ def _failed_tests(
 
     if not gate_runs_pytest(gate, repo=runtime.repo):
         return None
-    path = junit_path(log_dir, ordinal)
+    path = junit_path(last_gate_attempt_directory(log_dir, ordinal), ordinal)
     if not path.is_file():
         return None
     try:
@@ -1068,6 +1111,8 @@ def _isolate_tests(
         try:
             sub, _log_dir = run(f"isolate-{attempt}", isolated, 1)
         except BaseException as second:
+            if isinstance(second, (GateFailure, GateMemoryPressure)):
+                second.shown = (shown,)
             second.add_note(f"first attempt, beside other gates: {first}")
             raise
         log = next(iter(sub.passed_logs.values()), log)
@@ -1091,8 +1136,9 @@ def _isolate_tests(
             sub, _log_dir = run(f"continue-{attempt}", rest, host_limit())
             log = next(iter(sub.passed_logs.values()), log)
             break
-        except GateFailure as again:
-            if not again.clean_closure:
+        except (GateFailure, GateMemoryPressure) as again:
+            again.shown = (shown,)
+            if isinstance(again, GateMemoryPressure) or not again.clean_closure:
                 raise
             more = _failed_tests(
                 replace(gate, command=rest),
@@ -1117,7 +1163,9 @@ def _failed_cargo_tests(ordinal: int, log_dir: Path) -> Path | None:
     names its failed tests (``failed_tests``), or None."""
     from tools.check_changed_crate_tests import SCHEMA
 
-    log = log_dir / f"gate-{ordinal:03d}.stdout.log"
+    log = (
+        last_gate_attempt_directory(log_dir, ordinal) / f"gate-{ordinal:03d}.stdout.log"
+    )
     try:
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -1182,6 +1230,8 @@ def _isolate_cargo_tests(
             log_dir=state,
         )
     except BaseException as second:
+        if isinstance(second, (GateFailure, GateMemoryPressure)):
+            second.shown = (shown,)
         second.add_note(f"first attempt, beside other gates: {first}")
         raise
     runtime.say(
@@ -1219,13 +1269,46 @@ def flakes_path(output_dir: Path) -> Path:
     return output_dir / "flakes.json"
 
 
-def recorded_flaky_tests(output_dir: Path) -> frozenset[str]:
+def gate_evidence_directories(output_dir: Path) -> tuple[Path, ...]:
+    """The known attempt namespaces of one run, never arbitrary descendants.
+
+    Outer postsubmit continuations retain their own heavy rounds and test
+    isolation. Every reader uses this inventory so a later failed test and a
+    passed retry's flake record retain the same evidence scope.
+    """
+    roots = (output_dir, *_numbered_attempt_directories(output_dir, "postsubmit-rest-"))
+    directories: list[Path] = []
+    for root in roots:
+        directories.extend((root, root / "heavy-retry", root / "heavy-rest"))
+        directories.extend(_numbered_attempt_directories(root, "heavy-rest-"))
+        for state in sorted(root.glob("gate-*.isolation")):
+            if (
+                not state.name.removeprefix("gate-")
+                .removesuffix(".isolation")
+                .isdecimal()
+            ):
+                continue
+            directories.append(state)
+            directories.extend(_numbered_attempt_directories(state, "isolate-"))
+            directories.extend(_numbered_attempt_directories(state, "continue-"))
+    for directory in tuple(directories):
+        directories.extend(_numbered_attempt_directories(directory, "attempt-"))
+    return tuple(path for path in directories if path.is_dir())
+
+
+def recorded_flaky_tests(
+    output_dir: Path, *, directories: tuple[Path, ...] | None = None
+) -> frozenset[str]:
     """The tests a retry of this run passed (``_record_flake``)."""
-    path = flakes_path(output_dir)
-    if not path.is_file():
-        return frozenset()
-    records = json.loads(path.read_text(encoding="utf-8"))
-    return frozenset(node for record in records for node in record["tests"])
+    nodes: set[str] = set()
+    for directory in (
+        gate_evidence_directories(output_dir) if directories is None else directories
+    ):
+        path = flakes_path(directory)
+        if path.is_file():
+            records = json.loads(path.read_text(encoding="utf-8"))
+            nodes.update(node for record in records for node in record["tests"])
+    return frozenset(nodes)
 
 
 def _run_serial_gate(
@@ -1549,12 +1632,12 @@ def _run_executor_block(
         )
         required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
-        streams, stream_error = prepare_gate_streams(
+        attempt_dir = (
             log_dir
             if allocation.attempt == 1
-            else log_dir / f"attempt-{allocation.attempt}",
-            command.ordinal,
+            else log_dir / f"attempt-{allocation.attempt}"
         )
+        streams, stream_error = prepare_gate_streams(attempt_dir, command.ordinal)
         record.update(stream_record(streams, stream_error))
         try:
             environment = environments[command.gate.toolchains].overlay(
@@ -1577,7 +1660,7 @@ def _run_executor_block(
                 )
                 record["pytest_workers"] = workers
             argv = _pytest_report_command(
-                argv, command.gate, runtime, command.ordinal, log_dir
+                argv, command.gate, runtime, command.ordinal, attempt_dir
             )
             record["launch_argv"] = (
                 list(argv) if not isinstance(argv, str) else ["/bin/sh", "-c", argv]
