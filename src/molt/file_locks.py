@@ -756,6 +756,18 @@ def retire_unheld_lock_files(
         for entry in entries:
             if name.fullmatch(entry.name) is None:
                 continue
+            # The entry's own stat screens size and age; only a candidate is
+            # opened and locked (157k legacy files on a saturated volume).
+            try:
+                seen = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if seen.st_size or now - seen.st_mtime < min_idle_s:
+                kept += 1
+                continue
+            if not apply:
+                removed += 1
+                continue
             path = Path(entry.path)
             try:
                 fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -765,9 +777,6 @@ def retire_unheld_lock_files(
                 held = os.fstat(fd)
                 if held.st_size or now - held.st_mtime < min_idle_s:
                     kept += 1
-                    continue
-                if not apply:
-                    removed += 1
                     continue
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
