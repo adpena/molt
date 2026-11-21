@@ -5478,7 +5478,7 @@ globs = [
   "src/molt/frontend/_types.py",
   "runtime/molt-runtime/src/object/type_ids.rs",
   "runtime/molt-runtime/src/builtins/exceptions.rs",
-  "runtime/molt-obj-model/src/exception_layout.rs",
+  "runtime/molt-codegen-abi/src/exception_layout.rs",
   "src/molt/rust_source_scan.py",
   # #5 C-API module slots have two maintained header consumers.
   "include/molt/Python.h",
@@ -6462,7 +6462,7 @@ gates = [
 # --- Native-callable ABI authority --------------------------------------
 [[rule]]
 name = "native-callable-abi"
-toolchains = ["python", "rustc", "cargo", "rustfmt", "node", "wasm-ld"]
+toolchains = ["python", "rustc", "cargo", "rustfmt", "node", "wasm-ld", "llvm-sdk"]
 description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
 globs = [
   "runtime/test_support/native_object_execution.rs",

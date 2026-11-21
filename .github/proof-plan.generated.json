@@ -11447,7 +11447,7 @@
           "src/molt/frontend/_types.py",
           "runtime/molt-runtime/src/object/type_ids.rs",
           "runtime/molt-runtime/src/builtins/exceptions.rs",
-          "runtime/molt-obj-model/src/exception_layout.rs",
+          "runtime/molt-codegen-abi/src/exception_layout.rs",
           "src/molt/rust_source_scan.py",
           "include/molt/Python.h",
           "runtime/molt-cpython-abi/include/Python.h",
@@ -12674,7 +12674,8 @@
           "cargo",
           "rustfmt",
           "node",
-          "wasm-ld"
+          "wasm-ld",
+          "llvm-sdk"
         ]
       },
       {
@@ -13358,7 +13359,8 @@
         "git",
         "rustfmt",
         "node",
-        "wasm-ld"
+        "wasm-ld",
+        "llvm-sdk"
       ],
       "local.native-callable-abi.pytest": [
         "python",
@@ -13367,7 +13369,8 @@
         "git",
         "rustfmt",
         "node",
-        "wasm-ld"
+        "wasm-ld",
+        "llvm-sdk"
       ],
       "local.native-launch-abi.0": [
         "python",

@@ -110,6 +110,12 @@ pub(crate) enum SiteBody {
     /// (`generate_field_slot_set`); words `[object, value]`; the miss is
     /// `molt_object_field_set_ptr`.
     FieldSet { offset: i32 },
+    /// A proven builtin exception member, owned
+    /// (`molt_codegen_abi::builtin_field::generate_builtin_field_get`); words
+    /// `[object]`; the miss is `molt_exception_field_get(object, tag)`.
+    BuiltinFieldGet {
+        field: molt_codegen_abi::exception_layout::ExceptionTypedField,
+    },
     /// `sequence[index]`, owned, over the `containers` a proof admits
     /// (`generate_list_item_get`); words `[sequence, index]`; the miss is
     /// `cold`.

@@ -74,6 +74,84 @@ pub(crate) fn molt_object_publish_initialized_attached_body(
     })
 }
 
+/// The plan path of instance allocation (call_anatomy.md 4.5, "Implementation
+/// (object lifecycle)", step 4): a sealed plain class allocates its size
+/// class, stores the header, fills its fields with the missing word and owns
+/// its class edge, with no re-validation. The plan exists only for a sealed
+/// class, and every mutation that could change it rewrites it first. Every
+/// word is written once, so the allocation needs no zeroing pass. The object
+/// is unpublished; the caller publishes it.
+pub(crate) unsafe fn alloc_planned_instance(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    plan: super::lifecycle_plan::ClassLifecyclePlan,
+) -> u64 {
+    debug_assert!(plan.allocates_inline());
+    let gc_head = !plan.instances_untracked();
+    let head_bytes = if gc_head { super::gc::GC_HEAD_BYTES } else { 0 };
+    let size_class = plan.size_class();
+    let object_size = super::SIZE_CLASS_TABLE[size_class as usize];
+    let alloc_size = object_size + head_bytes;
+    if crate::resource::charge_allocation(alloc_size).is_err() {
+        record_memory_error_without_allocation(py);
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align_unchecked(
+            alloc_size,
+            molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES,
+        );
+        let base = std::alloc::alloc(layout);
+        if base.is_null() {
+            crate::resource::release_allocation(alloc_size);
+            record_memory_error_without_allocation(py);
+            return MoltObject::none().bits();
+        }
+        if gc_head {
+            // The head reads "untracked" until admission below.
+            base.cast::<u64>().write(0);
+        }
+        let header = base.add(head_bytes).cast::<MoltHeader>();
+        (*header).type_id = TYPE_ID_OBJECT;
+        MoltHeader::initialize_refcount_before_publication(header, 1);
+        MoltHeader::initialize_flags_gc_unpublished(
+            header,
+            if gc_head {
+                super::HEADER_FLAG_GC_HEAD
+            } else {
+                0
+            },
+        );
+        (*header).size_class = size_class;
+        // The class lane owns one class reference from here on.
+        let class_bits = MoltObject::from_ptr(class).bits();
+        inc_ref_bits(py, class_bits);
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*header).aux),
+            MoltAuxWord::new(super::class_word(class_bits, ClassEdgeOwnership::Owned)),
+        );
+        (*header).aux_kind = super::HEADER_AUX_KIND_CLASS_INLINE;
+        // Fields hold the immortal missing word (no retain, no HAS_PTRS);
+        // the size-class tail, whose last word is the dictionary, is empty.
+        let data = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
+        let words = (object_size - std::mem::size_of::<MoltHeader>()) / std::mem::size_of::<u64>();
+        let fields = plan.field_words();
+        let missing = if fields == 0 { 0 } else { missing_bits(py) };
+        for index in 0..words {
+            data.cast::<u64>()
+                .add(index)
+                .write(if index < fields { missing } else { 0 });
+        }
+        if crate::profile_enabled(py) {
+            super::record_allocation_profile(py, header, TYPE_ID_OBJECT, alloc_size);
+        }
+        if gc_head {
+            super::gc::gc_track_if_cyclic(py, data, TYPE_ID_OBJECT);
+        }
+        MoltObject::from_ptr(data).bits()
+    }
+}
+
 /// Allocate with a native byte extent; only the external ABI decodes raw u64 sizes.
 pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u64) -> u64 {
     let mut type_id = TYPE_ID_OBJECT;
@@ -84,6 +162,10 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
+            }
+            let plan = super::lifecycle_plan::plan(class_ptr);
+            if plan.allocates_inline() && size == plan.payload_bytes() {
+                return alloc_planned_instance(_py, class_ptr, plan);
             }
             if crate::object::class_finish_definition(_py, class_ptr).is_err() {
                 return MoltObject::none().bits();
@@ -117,8 +199,13 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
     } else {
         ObjectAuxPreselection::ClassInline
     };
+    // CPython never tracks an exact `object()`: it takes no GC head.
+    let untracked = obj_from_bits(class_bits)
+        .as_ptr()
+        .is_some_and(|class| unsafe { super::lifecycle_plan::plan(class) }.instances_untracked());
+    let gc_head = super::kind_reserves_gc_head(type_id) && !untracked;
     let obj_ptr =
-        crate::object::alloc_object_zeroed_unpublished_with_aux(_py, total_size, type_id, aux);
+        super::alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true, gc_head);
     if obj_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -2217,9 +2304,11 @@ pub(crate) fn alloc_class_obj_with_spec(
         );
         // No compiled class statement has stamped this class yet, and no
         // native iterator advance is declared until a native factory does so.
+        // The lifecycle plan is absent until the class seals.
         for word in [
             super::layout::CLASS_DEFINITION_WORD,
             super::layout::CLASS_NATIVE_NEXT_WORD,
+            super::lifecycle_plan::CLASS_LIFECYCLE_PLAN_WORD,
         ] {
             std::ptr::write(
                 ptr.add(word * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicU64,

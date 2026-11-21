@@ -591,7 +591,24 @@ fn wrapper_method(
     let args = &call.positional;
     let keywords = call.keyword_view();
     if matches!(operation, WrapperOperation::New) {
-        return wrapper_allocate(py, kind, args.first().copied());
+        let instance = wrapper_allocate(py, kind, args.first().copied());
+        if exception_pending(py)
+            || kind == WrapperKind::Property
+            || !crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+        {
+            return instance;
+        }
+        // CPython 3.15 sm_new and cm_new: after tp_new admits the type, the
+        // constructor rejects keywords, unpacks exactly one callable and
+        // initializes the wrapper as __init__ does, so a subclass that
+        // overrides __init__ still wraps its callable.
+        let initialized = wrapper_initialize(py, kind, instance, &args[1..], keywords);
+        dec_ref_bits(py, initialized);
+        if exception_pending(py) {
+            dec_ref_bits(py, instance);
+            return MoltObject::none().bits();
+        }
+        return instance;
     }
     let Some((&receiver, args)) = args.split_first() else {
         return raise_exception::<_>(

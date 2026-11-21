@@ -37,7 +37,9 @@ def _compile(source, target=(3, 14)):
     ],
 )
 def test_all_class_evaluators_reload_explicit_namespace_capture(header, body):
-    ir = _compile(header + "\n" + body)
+    # A store on the class object opens even a `type`-prepared namespace: the
+    # evaluators read the class's live mapping after it exists.
+    ir = _compile(header + "\n" + body + "Subject.injected = 1\n")
     evaluators = [fn for fn in ir["functions"] if "__annotate__" in fn["name"]]
     assert evaluators
     probes = []
@@ -71,6 +73,33 @@ def test_all_class_evaluators_reload_explicit_namespace_capture(header, body):
         for function in ir["functions"]
         for op in function["ops"]
     )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    observed: injected\n",
+        "    def method(value: injected): pass\n",
+    ],
+)
+def test_closed_class_evaluators_read_unbound_names_as_globals(body: str) -> None:
+    """A closed namespace (`type`'s preparation, no callback or reflection in
+    the body, no store on the class object) holds only the names the body
+    binds, so an evaluator reads every other name as a global (HF-901)."""
+    ir = _compile("class Subject:\n" + body)
+    evaluators = [fn for fn in ir["functions"] if "__annotate__" in fn["name"]]
+    assert evaluators
+    for function in evaluators:
+        ops = function["ops"]
+        strings = {
+            op["out"]: op.get("s_value") for op in ops if op["kind"] == "const_str"
+        }
+        assert not any(op.get("s_value") == "molt_namespace_get" for op in ops)
+        assert any(
+            op.get("kind") == "module_get_global"
+            and strings.get(op["args"][1]) == "injected"
+            for op in ops
+        )
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13)])
@@ -630,7 +659,8 @@ def test_direct_only_class_type_parameter_keeps_uncaptured_value_path():
 
 
 def test_type_parameter_cell_read_stays_in_namespace_miss_arm():
-    ir = _compile("class Box[T]:\n    value: T\n")
+    # The store on the class keeps its namespace open to the evaluator.
+    ir = _compile("class Box[T]:\n    value: T\nBox.T = 1\n")
     evaluator = next(fn for fn in ir["functions"] if "__annotate__" in fn["name"])
     ops = evaluator["ops"]
     definitions = {op["out"]: op for op in ops if "out" in op}

@@ -133,6 +133,31 @@ def _prepare_native_object_artifact(
     return output_artifact, None
 
 
+def _links_shared_runtime_image(
+    *,
+    profile: BuildProfile,
+    target: NativeTargetSpec,
+    external_native_artifacts: bool,
+    bolt_requested: bool,
+) -> bool:
+    """Whether this executable links the shared runtime image (HF-634).
+
+    A dev build on the host, Mach-O or ELF, links the runtime image of its
+    runtime generation instead of the static archive: the executable is the
+    application and its stdlib partition only, so it links in a fraction of
+    the time and macOS scans a fraction of the bytes at its first launch. A
+    release build stays static. External native artifacts and BOLT keep the
+    static link, whose inputs they are defined against.
+    """
+    return (
+        profile == "dev"
+        and target.is_host
+        and target.object_format in (NativeObjectFormat.MACHO, NativeObjectFormat.ELF)
+        and not external_native_artifacts
+        and not bolt_requested
+    )
+
+
 def _prepare_native_link(
     *,
     output_artifact: Path,
@@ -162,6 +187,7 @@ def _prepare_native_link(
     emission_origin: BackendEmissionOrigin | None = None,
     compiler_cache_path: Path | None = None,
     stdlib_cache_path: Path | None = None,
+    runtime_image: Path | None = None,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["link"] = time.perf_counter()
@@ -255,6 +281,7 @@ def _prepare_native_link(
                 ),
             ),
             bolt_requested=bolt_requested,
+            runtime_image=runtime_image,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")

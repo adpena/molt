@@ -31,6 +31,7 @@ import shutil
 import stat
 import sys
 import tarfile
+import time
 import tomllib
 import unicodedata
 import urllib.parse
@@ -518,17 +519,82 @@ def _attestation_payload(
     return payload
 
 
+# One verified discovery per tool, version and prefix for the life of the
+# process. A build constructs its Cargo environment more than once, and each
+# construction discovered the pinned sccache again through the host digest
+# store: 4.7 s of a 17.1 s warm build under disk load (HF-939, 2026-11-20).
+_StatSignature = tuple[tuple[int, int, int, int, int, int], ...]
+_VERIFIED_DISCOVERIES: dict[
+    tuple[str, str, Path], tuple[_StatSignature, "ToolDiscovery"]
+] = {}
+
+
+def _stat_signature(*paths: Path) -> _StatSignature | None:
+    """Each path's (device, inode, mode, size, mtime_ns, ctime_ns), or None."""
+    try:
+        infos = [path.lstat() for path in paths]
+    except OSError:
+        return None
+    return tuple(
+        (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+        for info in infos
+    )
+
+
 def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery | None:
     """Return the attested installation of ``release`` under the root, if valid.
 
     Anything short of a byte-exact match between the attestation and the
     installed executable is not a discovery: the caller provisions afresh or
     fails closed, never trusts a partially matching install.
-    """
 
-    from molt.checkout_state import toolchain_state_use
+    A verified single-executable discovery is reused in this process while
+    the executable and its attestation keep the stat signature they had when
+    they were hashed. Like the host digest cache, reuse requires both change
+    times to predate the hash by the racy window, so a write in the same
+    timestamp tick cannot hide behind an equal signature. A package tree
+    (``entrypoint``) is hashed directly each time, as before.
+    """
+    from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 
     prefix = tool_prefix(toolchain_root, release)
+    executable = tool_executable(prefix, release)
+    inputs = (executable, prefix / TOOL_ATTESTATION_FILENAME)
+    key = (release.name, release.version, prefix)
+    remembered = _VERIFIED_DISCOVERIES.get(key)
+    if remembered is not None and _stat_signature(*inputs) == remembered[0]:
+        from molt import input_report
+
+        input_report.report_probe(executable)
+        return remembered[1]
+    _VERIFIED_DISCOVERIES.pop(key, None)
+    started_ns = time.time_ns()
+    before = _stat_signature(*inputs)
+    discovery = _discover_tool_verified(release, prefix)
+    if (
+        discovery is not None
+        and release.entrypoint is None
+        and before is not None
+        and before == _stat_signature(*inputs)
+        and all(
+            ctime_ns < started_ns - DIGEST_RACY_WINDOW_NS for *_, ctime_ns in before
+        )
+    ):
+        _VERIFIED_DISCOVERIES[key] = (before, discovery)
+    return discovery
+
+
+def _discover_tool_verified(release: ToolRelease, prefix: Path) -> ToolDiscovery | None:
+    """Verify the installation under ``prefix`` byte for byte."""
+    from molt.checkout_state import toolchain_state_use
+
     with toolchain_state_use((prefix,)):
         from molt import input_report
 

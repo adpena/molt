@@ -507,9 +507,10 @@ pub(crate) enum ClassReferenceSlot {
     NativeModule = 13,
     /// An unpublished initializer candidate, consumed by the dataclass transform.
     /// Never projected into the Python class namespace or inherited.
-    DataclassInitTemplate = 16,
-    /// Conditional tail after the definition (14) and native-next (15) scalars.
-    StructSequence = 17,
+    DataclassInitTemplate = 17,
+    /// Conditional tail after the definition (14), native-next (15) and
+    /// lifecycle-plan (16) scalars.
+    StructSequence = 18,
 }
 
 /// Capture the native constructor module before publication. Static types retire
@@ -1713,7 +1714,8 @@ mod tests {
             assert_eq!(fixture.words[last], 0x9ab1_3476);
             assert_eq!(super::super::layout::CLASS_DEFINITION_WORD, 14);
             assert_eq!(super::super::layout::CLASS_NATIVE_NEXT_WORD, 15);
-            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 17);
+            assert_eq!(super::super::lifecycle_plan::CLASS_LIFECYCLE_PLAN_WORD, 16);
+            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 18);
             assert_eq!(
                 ClassReferenceSlot::StructSequence as usize,
                 super::super::layout::CLASS_PAYLOAD_WORDS
@@ -1725,7 +1727,7 @@ mod tests {
     fn class_reference_family_detaches_every_owned_slot_without_touching_policy() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let mut fixture = ClassReferenceFixture::new(0xA55A, true);
+            let mut fixture = ClassReferenceFixture::new(0xA54A, true);
             let words = &mut fixture.words;
             for (index, slot) in ClassReferenceSlot::ALL.into_iter().enumerate() {
                 words[slot as usize] = MoltObject::from_int(index as i64).bits();
@@ -1736,7 +1738,7 @@ mod tests {
                 assert_eq!(old[index], MoltObject::from_int(index as i64).bits());
                 assert_eq!(unsafe { slot.load(ptr) }, MoltObject::none().bits());
             }
-            assert_eq!(words[4], 0xA55A + 1);
+            assert_eq!(words[4], 0xA54A + 1);
             assert_eq!(
                 words[super::super::layout::CLASS_DECLARATIONS_WORD],
                 ClassDeclaration::StructSequence as u64,
@@ -1747,8 +1749,13 @@ mod tests {
                 super::super::layout::CLASS_DEFINITION_WORD,
                 super::super::layout::CLASS_NATIVE_NEXT_WORD,
             ] {
-                assert_eq!(words[index], 0xA55A);
+                assert_eq!(words[index], 0xA54A);
             }
+            // The fill's policy is unsealed, so the bump leaves no plan.
+            assert_eq!(
+                words[super::super::lifecycle_plan::CLASS_LIFECYCLE_PLAN_WORD],
+                0
+            );
         });
     }
 

@@ -322,9 +322,11 @@ fn representation_conversions_require_one_operand_independent_of_result_use() {
                 .collect();
             assert_eq!(conversions.len(), 1, "{kind} {out:?}: {roundtrip:?}");
             assert_eq!(conversions[0].args.as_ref().map(Vec::len), Some(1));
-            assert_eq!(
+            // A conversion produces its fixed result slot whether or not the
+            // source names it (`translate_op`), so the projection names it.
+            assert!(
                 molt_ir::tir::simple_def_use::simple_ir_out_result(conversions[0]).is_some(),
-                out == Some("result")
+                "{kind} {out:?}: {roundtrip:?}"
             );
         }
     }

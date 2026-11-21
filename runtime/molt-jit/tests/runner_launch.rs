@@ -337,10 +337,6 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
             true,
             vec![
                 OpIR {
-                    s_value: Some("molt_async_work_poll_and_exception_pending".into()),
-                    ..op(molt_ir::OpKind::Call)
-                },
-                OpIR {
                     out: Some("value".to_string()),
                     value: Some(BOOTSTRAP_VALUE),
                     ..op(molt_ir::OpKind::Const)
@@ -352,13 +348,24 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
             ],
         ),
     ];
-    functions.extend((0..filler).map(|index| {
-        function(
-            &format!("filler_{index}"),
-            false,
-            vec![op(molt_ir::OpKind::RetVoid)],
-        )
-    }));
+    // Keep these bodies reachable through the registry relocations so the
+    // compiler-output test exercises compilation after dead-code elimination.
+    let mut registry = ModuleRegistryIR {
+        blob: vec![0; filler.max(1) * 8],
+        ..ModuleRegistryIR::default()
+    };
+    for index in 0..filler {
+        let name = format!("filler_{index:05}");
+        let symbol = format!("molt_init_{name}");
+        functions.push(function(&symbol, false, vec![op(molt_ir::OpKind::RetVoid)]));
+        registry.relocs.push(((index * 8) as u64, symbol.clone()));
+        registry.init_symbols.push(symbol.clone());
+        registry.rows.push(molt_ir::ir::ModuleRegistryRowIR {
+            name,
+            init_symbol: Some(symbol),
+            static_cells: None,
+        });
+    }
     // The content-addressed lease `src/molt/cli/jit_image.py` writes: every
     // body shipped, each named by its digest (backend daemon protocol 4).
     molt_ir::addressed_program::encode_complete_lease(&molt_ir::ir::BackendIrDocument {
@@ -366,10 +373,7 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
             functions,
             profile: None,
         },
-        module_registry: Some(ModuleRegistryIR {
-            blob: vec![0; 8],
-            ..ModuleRegistryIR::default()
-        }),
+        module_registry: Some(registry),
         code_slots: Default::default(),
     })
     .expect("encode the program")
@@ -668,7 +672,7 @@ fn children_of(pid: u32) -> Vec<u32> {
 fn a_keeper_killed_alone_leaves_the_program_running() {
     // The compiler writes a progress line with eprintln! every 50 functions,
     // and eprintln! panics on a write error. Another process kills only the
-    // compiler output keeper while the runner compiles 20,000 functions: the
+    // compiler output keeper while the runner compiles a registry of functions: the
     // remaining progress lines must still be written, and the program must
     // start and exit as it would have.
     let artifacts = CargoTestArtifacts::new("jit-keeper-killed").expect("Cargo test artifact root");
@@ -677,11 +681,18 @@ fn a_keeper_killed_alone_leaves_the_program_running() {
     write_image(
         &image,
         &runtime,
-        &program(None, 20_000),
+        &program(None, 1_024),
         Diagnostics::OnFailure,
     );
     let log = artifacts.path().join("calls.log");
     let receipt = artifacts.path().join("started.json");
+    // Admit the exact runner before timing the lifetime of its keeper. The
+    // host can hold the first launch of a new executable before C main runs.
+    let probe = Command::new(RUNNER)
+        .arg(runner_protocol("probe_flag"))
+        .output()
+        .expect("probe the runner");
+    assert!(probe.status.success(), "{:?}", probe.stderr);
     let runner = Command::new(RUNNER)
         .arg(runner_protocol("start_receipt_flag"))
         .arg(&receipt)
@@ -787,6 +798,40 @@ fn a_start_uses_only_the_images_cache_and_no_temporary_directory() {
         !entries(&tir_cache_root(&image)).is_empty(),
         "the runner's TIR cache namespace lives under the image's root"
     );
+}
+
+#[test]
+fn a_warm_start_reuses_machine_code_and_relocates_it_in_its_own_process() {
+    let artifacts =
+        CargoTestArtifacts::new("jit-machine-code-cache").expect("Cargo test artifact root");
+    let runtime = fake_runtime(&artifacts);
+    let image = artifacts.path().join("app_molt.jit");
+    let directory = artifacts.path().join("cwd");
+    std::fs::create_dir(&directory).expect("create the program's directory");
+    write_image(&image, &runtime, &program(None, 0), Diagnostics::Timing);
+
+    let run = || {
+        let output = start_image(&image, &directory)
+            .output()
+            .expect("run the image");
+        let stderr = String::from_utf8(output.stderr).expect("compiler diagnostics are UTF-8");
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        let counts = stderr
+            .lines()
+            .find_map(|line| {
+                let record = line.strip_prefix("MOLT_BACKEND_TIMING: JIT machine-code cache: ")?;
+                let (hits, misses) = record.strip_suffix(" misses")?.split_once(" hits, ")?;
+                Some((hits.parse::<usize>().ok()?, misses.parse::<usize>().ok()?))
+            })
+            .unwrap_or_else(|| panic!("missing machine-code cache timing: {stderr}"));
+        (output.stdout, counts)
+    };
+    let (cold_output, (_, cold_misses)) = run();
+    let (warm_output, (warm_hits, warm_misses)) = run();
+    assert!(cold_misses > 0);
+    assert!(warm_hits >= cold_misses);
+    assert_eq!(warm_misses, 0);
+    assert_eq!(warm_output, cold_output);
 }
 
 #[test]

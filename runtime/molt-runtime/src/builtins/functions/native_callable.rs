@@ -1074,9 +1074,13 @@ pub(crate) unsafe fn native_callable_repr(py: &PyToken<'_>, public: *mut u8) -> 
             };
             let mut out = label.to_vec();
             out.extend_from_slice(&name);
-            out.extend_from_slice(b"' of '");
-            out.extend_from_slice(&owner);
-            out.extend_from_slice(b"' objects>");
+            if crate::builtins::types::descriptor_repr_names_owner(py, declaring) {
+                out.extend_from_slice(b"' of '");
+                out.extend_from_slice(&owner);
+                out.extend_from_slice(b"' objects>");
+            } else {
+                out.extend_from_slice(b"'>");
+            }
             return Some(out);
         }
         if bound {

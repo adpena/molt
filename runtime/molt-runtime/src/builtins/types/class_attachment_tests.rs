@@ -514,12 +514,22 @@ fn tuple_subclass_admission_rejects_nominal_and_physical_layout_mismatches() {
         let expanded = unsafe {
             new_slotted_class_with_base(_py, b"ExpandedTupleChild", b"extra", tuple_base)
         };
-        assert_eq!(
-            molt_tuple_new_bound_attached_body(_py, expanded, missing),
-            MoltObject::none().bits()
-        );
-        assert!(exception_pending(_py));
-        crate::molt_exception_clear_attached_body(_py);
+        let constructed = molt_tuple_new_bound_attached_body(_py, expanded, missing);
+        if crate::object::ops_sys::runtime_target_at_least(_py, 3, 15) {
+            // CPython 3.15 stores a tuple subclass's members after its items,
+            // so `tuple.__new__` builds the expanded child.
+            assert!(!exception_pending(_py));
+            let tuple = obj_from_bits(constructed)
+                .as_ptr()
+                .expect("expanded tuple child");
+            assert_eq!(unsafe { object_class_bits(tuple) }, expanded);
+            dec_ref_bits(_py, constructed);
+        } else {
+            // Before 3.15 a nonempty `__slots__` cannot extend a tuple.
+            assert_eq!(constructed, MoltObject::none().bits());
+            assert!(exception_pending(_py));
+            crate::molt_exception_clear_attached_body(_py);
+        }
 
         let shaped = unsafe { new_class_with_base(_py, b"ShapedTupleChild", tuple_base) };
         let shaped_ptr = obj_from_bits(shaped).as_ptr().expect("shaped tuple class");

@@ -1150,6 +1150,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "get_attr_generic_obj",
         "get_attr_name",
         "guarded_field_get",
+        "exception_field_get",
         "guarded_load",
         "load",
         "load_attr",

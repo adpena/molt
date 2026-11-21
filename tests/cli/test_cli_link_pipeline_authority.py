@@ -96,3 +96,32 @@ def test_required_build_owned_stdlib_is_validated_without_late_cache_copy(
     assert "snapshot admission rejected the generation" in message
     assert "staging cleanup also failed: owned archive denied" in message
     assert "Traceback (most recent call last)" not in message
+
+
+@pytest.mark.parametrize(
+    ("profile", "triple", "external", "bolt", "expected"),
+    [
+        ("dev", None, False, False, True),
+        ("release", None, False, False, False),
+        ("dev", None, True, False, False),
+        ("dev", None, False, True, False),
+        ("dev", "x86_64-pc-windows-msvc", False, False, False),
+    ],
+)
+def test_only_a_host_dev_build_links_the_shared_runtime_image(
+    profile: str, triple: str | None, external: bool, bolt: bool, expected: bool
+) -> None:
+    """HF-634: dev executables on the host link the runtime image; release,
+    external native artifacts, BOLT and other targets keep the static link."""
+    from molt.native_target import resolve_native_target_spec
+
+    target = resolve_native_target_spec(triple)
+    assert (
+        link_pipeline._links_shared_runtime_image(
+            profile=profile,
+            target=target,
+            external_native_artifacts=external,
+            bolt_requested=bolt,
+        )
+        is expected
+    )

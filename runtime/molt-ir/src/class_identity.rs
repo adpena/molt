@@ -61,19 +61,6 @@ pub fn check_class_identities(functions: &[FunctionIR]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn same_named_classes_in_two_modules_have_distinct_ids() {
-        let a = ClassId::of_definition("class:geometry:Point");
-        let b = ClassId::of_definition("class:physics:Point");
-        assert_ne!(a, b);
-        assert_eq!(a, ClassId::of_definition("class:geometry:Point"));
-    }
-}
-
 /// The TIR attribute that carries a class definition stamp's exact field
 /// slots (`OpIR::exact_field_slots`).
 pub const EXACT_FIELD_SLOTS_ATTR: &str = "exact_field_slots";
@@ -106,4 +93,17 @@ pub fn decode_field_slots(mut bytes: &[u8]) -> Option<Vec<(String, i64)>> {
         slots.push((name, offset));
     }
     Some(slots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_named_classes_in_two_modules_have_distinct_ids() {
+        let a = ClassId::of_definition("class:geometry:Point");
+        let b = ClassId::of_definition("class:physics:Point");
+        assert_ne!(a, b);
+        assert_eq!(a, ClassId::of_definition("class:geometry:Point"));
+    }
 }

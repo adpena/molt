@@ -87,7 +87,7 @@ native-backend = [
     "molt-tir/native-backend",
 ]
 # Emit Cranelift code into process memory instead of an object (molt-jit).
-jit = ["native-backend", "dep:cranelift-jit"]
+jit = ["native-backend", "dep:cranelift-jit", "cranelift-codegen/incremental-cache"]
 llvm = ["dep:inkwell", "inkwell/llvm22-1-no-llvm-linking", "dep:molt-llvm-link", "molt-llvm-link/native-link", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]
 

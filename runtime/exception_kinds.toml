@@ -38,8 +38,110 @@
 #   name      the class __qualname__ (an attribute of the owner)
 #   variant   the Rust variant
 #   base      the builtin row the class must derive from
+#
+# [[layout]] rows are the typed payload families after the common
+# BaseException prefix, in physical order. `kind` is the ExceptionLayoutKind,
+# `roots` the ExceptionLayoutRoot rows that use it. Each member:
+#   field        the ExceptionTypedField variant; `tag` its stable u8 identity
+#   name         the Python attribute
+#   storage      "message" (the common message word), "object" (a boxed word)
+#                or "py_ssize" (a raw Py_ssize_t)
+#   writable, deletable, keyword (a constructor keyword of the owner)
+#   missing      "none" (an absent member reads None) or "attribute_error"
+#   windows_only the member exists on Windows targets only
+# Compiled code reads a member at the slot this order fixes
+# (molt-codegen-abi builtin_field); the runtime allocates by the same order.
 
 schema_version = 1
+
+[[layout]]
+kind = "Base"
+roots = ["Base"]
+members = []
+
+[[layout]]
+kind = "Group"
+roots = ["BaseExceptionGroup"]
+members = [
+  { field = "GroupMessage", tag = 0, name = "message", storage = "message", writable = false, deletable = false, keyword = false, missing = "none" },
+  { field = "GroupExceptions", tag = 1, name = "exceptions", storage = "object", writable = false, deletable = false, keyword = false, missing = "none" },
+]
+
+[[layout]]
+kind = "Syntax"
+roots = ["SyntaxError"]
+members = [
+  { field = "SyntaxMessage", tag = 2, name = "msg", storage = "message", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxFilename", tag = 3, name = "filename", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxLineNumber", tag = 4, name = "lineno", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxOffset", tag = 5, name = "offset", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxEndLineNumber", tag = 6, name = "end_lineno", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxEndOffset", tag = 7, name = "end_offset", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxText", tag = 8, name = "text", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "SyntaxPrintFileAndLine", tag = 9, name = "print_file_and_line", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+]
+
+[[layout]]
+kind = "Import"
+roots = ["ImportError"]
+members = [
+  { field = "ImportMessage", tag = 10, name = "msg", storage = "message", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "ImportName", tag = 11, name = "name", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+  { field = "ImportPath", tag = 12, name = "path", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+  { field = "ImportNameFrom", tag = 13, name = "name_from", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+]
+
+[[layout]]
+kind = "Unicode"
+roots = ["UnicodeDecodeError", "UnicodeEncodeError", "UnicodeTranslateError"]
+members = [
+  { field = "UnicodeEncoding", tag = 14, name = "encoding", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "UnicodeObject", tag = 15, name = "object", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "UnicodeStart", tag = 16, name = "start", storage = "py_ssize", writable = true, deletable = false, keyword = false, missing = "none" },
+  { field = "UnicodeEnd", tag = 17, name = "end", storage = "py_ssize", writable = true, deletable = false, keyword = false, missing = "none" },
+  { field = "UnicodeReason", tag = 18, name = "reason", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+]
+
+[[layout]]
+kind = "SystemExit"
+roots = ["SystemExit"]
+members = [
+  { field = "SystemExitCode", tag = 19, name = "code", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+]
+
+[[layout]]
+kind = "OSError"
+roots = ["OSError"]
+members = [
+  { field = "OSErrorErrno", tag = 20, name = "errno", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "OSErrorStrError", tag = 21, name = "strerror", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "OSErrorFilename", tag = 22, name = "filename", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "OSErrorFilename2", tag = 23, name = "filename2", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+  { field = "OSErrorWinError", tag = 24, name = "winerror", storage = "object", writable = true, deletable = true, keyword = false, missing = "none", windows_only = true },
+  { field = "OSErrorCharactersWritten", tag = 25, name = "characters_written", storage = "py_ssize", writable = true, deletable = true, keyword = false, missing = "attribute_error" },
+]
+
+[[layout]]
+kind = "StopIteration"
+roots = ["StopIteration"]
+members = [
+  { field = "StopIterationValue", tag = 26, name = "value", storage = "object", writable = true, deletable = true, keyword = false, missing = "none" },
+]
+
+[[layout]]
+kind = "NameError"
+roots = ["NameError"]
+members = [
+  { field = "NameErrorName", tag = 27, name = "name", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+]
+
+[[layout]]
+kind = "AttributeError"
+roots = ["AttributeError"]
+members = [
+  { field = "AttributeErrorObject", tag = 28, name = "obj", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+  { field = "AttributeErrorName", tag = 29, name = "name", storage = "object", writable = true, deletable = true, keyword = true, missing = "none" },
+]
 
 [[builtin]]
 name = "BaseException"

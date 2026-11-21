@@ -86,7 +86,7 @@ pub(crate) fn builtin_exception_str(py: &PyToken<'_>, object: u64) -> Result<Opt
     if let Some(kind) =
         unsafe { crate::object::class_storage::class_builtin_exception_kind(class_ptr) }
     {
-        let slot = BuiltinExceptionSpec::effective_str_slot(kind);
+        let slot = effective_str_slot(kind);
         return Ok(Some(invoke(py, object, Some(slot))));
     }
     let name = crate::NameId::DunderStr.bits(py);
@@ -444,3 +444,31 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
 #[cfg(test)]
 #[path = "rendering_tests.rs"]
 pub(crate) mod tests;
+
+/// The `__str__` slot an exact instance of `kind` renders through: its own
+/// declaration or the nearest declaring base. Builtin exception classes are
+/// immutable, so this is a fixed fact of the schema, computed once per kind.
+fn effective_str_slot(kind: BuiltinExc) -> molt_obj_model::ExceptionStrSlot {
+    // Indexed by code, which is the discriminant; size by the largest one.
+    const SIZE: usize = {
+        let mut largest = 0;
+        let mut index = 0;
+        while index < BuiltinExc::COUNT {
+            let code = BuiltinExc::ALL[index] as usize;
+            if code > largest {
+                largest = code;
+            }
+            index += 1;
+        }
+        largest + 1
+    };
+    static SLOTS: std::sync::LazyLock<[molt_obj_model::ExceptionStrSlot; SIZE]> =
+        std::sync::LazyLock::new(|| {
+            let mut slots = [molt_obj_model::ExceptionStrSlot::Base; SIZE];
+            for kind in BuiltinExc::ALL {
+                slots[kind as usize] = kind.spec().effective_render_slots().0;
+            }
+            slots
+        });
+    SLOTS[kind as usize]
+}
