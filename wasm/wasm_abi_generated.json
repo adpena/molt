@@ -2574,6 +2574,10 @@
       "context": "Attached",
       "physical_symbol": "__molt_math_list_swap__molt_context_d1086a27578cda22"
     },
+    "__molt_math_log_index_on_overflow": {
+      "context": "Attached",
+      "physical_symbol": "__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22"
+    },
     "__molt_math_lookup_special_method": {
       "context": "Attached",
       "physical_symbol": "__molt_math_lookup_special_method__molt_context_d1086a27578cda22"
@@ -18327,6 +18331,7 @@
     "__molt_math_is_truthy__molt_context_d1086a27578cda22": "__molt_math_is_truthy__molt_context_d1086a27578cda22",
     "__molt_math_list_len": "__molt_math_list_len",
     "__molt_math_list_swap__molt_context_d1086a27578cda22": "__molt_math_list_swap__molt_context_d1086a27578cda22",
+    "__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22": "__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22",
     "__molt_math_lookup_special_method__molt_context_d1086a27578cda22": "__molt_math_lookup_special_method__molt_context_d1086a27578cda22",
     "__molt_math_maybe_ptr_from_bits": "__molt_math_maybe_ptr_from_bits",
     "__molt_math_molt_add__molt_context_d1086a27578cda22": "__molt_math_molt_add__molt_context_d1086a27578cda22",

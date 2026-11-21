@@ -24,6 +24,12 @@ from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.compiler_analysis.python_imports import ModuleSourceRole
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.frontend.class_model import (
+    ClassModel,
+    ConstructorRefusal,
+    Field,
+    InstanceLayout,
+)
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.logical_source_paths import toolchain_logical_path
@@ -33,11 +39,11 @@ from molt.frontend._types import (
     BoundMethodHint,
     BuiltinClass,
     ClassId,
-    ClassInfo,
     CodeSlotDeclaration,
     TypeHint,
     _builtin_func_abi_arity,
 )
+from tests.class_model_support import class_model, plain_method
 
 # The module is the whole closed program, so no code holds a PEP 667
 # frame-locals writer (HF-901) and callbacks leave its locals in SSA.
@@ -712,10 +718,9 @@ def test_dynamic_callable_result_does_not_inherit_lexical_return_hint(
     generator = SimpleTIRGenerator()
     generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
     generator.funcs_map["target"] = {"return_hint": "int"}
-    generator.classes[ClassId("__main__", "Owner")] = {
-        "binding_name": "Owner",
-        "methods": {},
-    }
+    generator.classes[ClassId("__main__", "Owner")] = class_model(
+        ClassId("__main__", "Owner")
+    )
     callee = MoltValue("actual_callable", type_hint=hint)
     result = generator._emit_dynamic_call(
         ast.parse("callee()", mode="eval").body, callee
@@ -2919,33 +2924,14 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
     # at zipfile._path.Path.__init__, while source imports Path from pathlib.
     zip_path = ClassId("zipfile._path", "Path")
     known_classes = {
-        zip_path: {
-            "binding_name": "Path",
-            "fields": {},
-            "size": 24,
-            "dynamic": False,
-            "definition_exposed": False,
-            "static": True,
-            "methods": {
-                "__init__": {
-                    "func": MoltValue(
-                        "Path___init__", type_hint="Func:zipfile__path__Path___init__"
-                    ),
-                    "attr": MoltValue("__init__", type_hint="str"),
-                    "descriptor": "function",
-                    "param_count": 2,
-                    "defaults": [],
-                    "posonly_count": 0,
-                    "kwonly_count": 0,
-                    "has_vararg": False,
-                    "has_varkw": False,
-                    "has_closure": False,
-                    "property_field": None,
-                    "property_update": None,
-                }
+        zip_path: class_model(
+            zip_path,
+            size=24,
+            module_level=True,
+            members={
+                "__init__": plain_method("zipfile__path__Path___init__", params=2)
             },
-            "mro": (zip_path, OBJECT_CLASS),
-        }
+        )
     }
     # A function's private fast local keeps the imported value across the
     # call's callbacks only while no frame-locals writer exists (HF-901).
@@ -3008,22 +2994,18 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
 def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
     axis_error = ClassId("numpy.exceptions", "AxisError")
     known_classes = {
-        axis_error: {
-            "binding_name": "AxisError",
-            "fields": {},
-            "size": 0,
-            "dynamic": False,
-            "definition_exposed": False,
-            "static": True,
-            "methods": {},
-            "mro": (
+        axis_error: class_model(
+            axis_error,
+            size=0,
+            module_level=True,
+            linearization=(
                 axis_error,
                 BuiltinClass("ValueError"),
                 BuiltinClass("Exception"),
                 BuiltinClass("BaseException"),
                 OBJECT_CLASS,
             ),
-        }
+        )
     }
     gen = SimpleTIRGenerator(
         module_name="scipy._lib._util",
@@ -3213,17 +3195,28 @@ def test_keyword_merge_consumers_share_argument_assembly(source: str) -> None:
     assert all(op.kind != "DICT_UPDATE_KWSTAR" for op in ops)
 
 
-def _counter_known_classes() -> dict[ClassId, ClassInfo]:
+def _counter_known_classes() -> dict[ClassId, ClassModel]:
     counter = ClassId("collections", "Counter")
     return {
-        counter: {
-            "binding_name": "Counter",
-            "methods": {},
-            "fields": {"_handle": 0},
-            "mro": (counter, OBJECT_CLASS),
-            "static": True,
-            "size": 8,
-        }
+        counter: ClassModel(
+            class_id=counter,
+            binding_name="Counter",
+            bases=(OBJECT_CLASS,),
+            linearization=(counter, OBJECT_CLASS),
+            layout=InstanceLayout((Field("_handle", 0, None),), 8, None),
+            module_level=True,
+            definition_exposed=False,
+            binding_proven=False,
+            custom_metaclass=False,
+            decorated=False,
+            layout_version=0,
+            members=(),
+            possible_data_descriptors=frozenset(),
+            dataclass=None,
+            constructor=ConstructorRefusal(
+                "the class is defined in module collections"
+            ),
+        )
     }
 
 

@@ -67,7 +67,7 @@ from molt.compiler_analysis.python_parameter_classes import (
     parameter_literal_classes,
 )
 from molt.compiler_analysis.python_namespace_writes import (
-    _resolved_python_namespace_summary,
+    _own_namespace_names,
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
@@ -113,6 +113,7 @@ from molt.compiler_analysis.python_value_identity import (
     SOURCE_CALLABLE_IDENTITIES,
     exact_identity,
     possible_identity,
+    subscription_is_inert_alias,
 )
 from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.builtin_binding_guards_generated import (
@@ -153,6 +154,7 @@ from molt.compiler_analysis.python_effects_generated import (
 from molt.compiler_analysis.static_truth import (
     ExpressionSequenceItem,
     StaticExpressionResult,
+    StaticSubscriptionShape,
     SourceDemandPhase,
     UNKNOWN_EXPRESSION_RESULT,
     expression_result_for_owned_binding,
@@ -175,6 +177,7 @@ from molt.compiler_analysis.python_effects import (
     mapping_unpack_effects,
 )
 from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
     import_metadata_target_name,
     import_call_fallback_operand,
     is_compiler_intrinsics_module,
@@ -250,7 +253,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 70
+_ANALYSIS_SCHEMA: Final = 71
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -483,10 +486,22 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
 
 
 @dataclass(frozen=True, slots=True)
+class _OpaqueActivationReads:
+    present: tuple[frozenset[PythonSourceKey], ...]
+    absent: frozenset[PythonSourceKey]
+
+    def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
+        return self.absent.isdisjoint(opaque) and all(
+            not group.isdisjoint(opaque) for group in self.present
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonNodeKey, EffectMask]
     module_import_flow_required: bool
+    opaque_activation_reads: _OpaqueActivationReads | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
@@ -2271,6 +2286,20 @@ def _identity_can_release(mask: IdentityMask) -> bool:
     return bool(mask & ~rooted)
 
 
+def _binding_read(node: ast.expr) -> bool:
+    """Whether evaluating ``node`` yields only references that a binding, an
+    owner's attribute or the code object keeps: a name, a constant, an
+    attribute of such a read, or a tuple display of those. The caller proves
+    the evaluation ran no Python (no descriptor or ``__getattr__``)."""
+    if isinstance(node, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _binding_read(node.value)
+    return isinstance(node, ast.Tuple) and all(
+        _binding_read(element) for element in node.elts
+    )
+
+
 def _release_may_call(identities: IdentityMask, result: StaticExpressionResult) -> bool:
     """Compose independent rooted-identity and exact-result release proofs."""
 
@@ -2380,6 +2409,7 @@ class _EvaluatedMemberTarget:
     static_index: PythonStaticValue = None
     index_result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     slice_parts: tuple[StaticExpressionResult, ...] | None = None
+    index_identities: IdentityMask = OTHER_IDENTITY
 
     @property
     def is_exact_globals_dict(self) -> bool:
@@ -2670,6 +2700,8 @@ class _Analyzer:
             if policy.opaque_activation_sources is None
             else frozenset(policy.opaque_activation_sources)
         )
+        self._opaque_activation_reads: dict[frozenset[PythonSourceKey], bool] = {}
+        self._opaque_lexical_activations: dict[int, bool] = {}
         self._foreign_universe = policy.foreign_namespace_universe
         self.source_digest = source_digest
         self.states = _StatePool()
@@ -2683,6 +2715,7 @@ class _Analyzer:
         self._class_cell_slot_mask = 0
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
         self.class_builder_reads: dict[PythonNodeKey, IdentityMask] = {}
+        self.decoration_annotation_heads: dict[PythonNodeKey, IdentityMask] = {}
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
@@ -3138,11 +3171,11 @@ class _Analyzer:
         """
         foreign = self.policy.foreign_namespace_writes
         own = (
-            _resolved_python_namespace_summary(
+            _own_namespace_names(
                 tree,
                 target_python=self.policy.target_python,
                 ast_digest_admission=ast_digest_admission,
-            ).own_names
+            )
             if foreign is not None
             else None
         )
@@ -3298,6 +3331,27 @@ class _Analyzer:
         )
         return scope.namespace_can_call(name, write=write, namespace_tainted=tainted)
 
+    def _activation_group_is_opaque(self, sources: frozenset[PythonSourceKey]) -> bool:
+        opaque = self._opaque_activation_sources
+        assert opaque is not None
+        answer = self._opaque_activation_reads.get(sources)
+        if answer is None:
+            answer = not sources.isdisjoint(opaque)
+            self._opaque_activation_reads[sources] = answer
+        return answer
+
+    def _lexical_activation_is_opaque(self, scope: _Scope) -> bool:
+        answer = self._opaque_lexical_activations.get(scope.scope_id)
+        if answer is None:
+            sources: set[PythonSourceKey] = set()
+            owner: _Scope | None = scope
+            while owner is not None and owner.kind != "module":
+                sources.add(owner.source)
+                owner = owner.parent
+            answer = self._activation_group_is_opaque(frozenset(sources))
+            self._opaque_lexical_activations[scope.scope_id] = answer
+        return answer
+
     def _name_uses_activation_namespace(
         self, state_id: int, scope: _Scope, name: str
     ) -> bool:
@@ -3305,24 +3359,66 @@ class _Analyzer:
             return False
         slot = self._slot_for_name(scope, name)
         if slot is None or self.module_slot_mask & (1 << slot):
-            opaque = self._opaque_activation_sources
-            if not self._callback_rebinds_module_name(name) and opaque is not None:
+            if (
+                not self._callback_rebinds_module_name(name)
+                and self._opaque_activation_sources is not None
+            ):
                 # Initialization histories already join every source-visible
                 # global value. Exposed code/callables can instead run with
                 # another globals dictionary; that fact belongs to the same
                 # source-value demand worklist, including enclosing recreations.
-                owner: _Scope | None = scope
-                while owner is not None and owner.kind != "module":
-                    if owner.source in opaque:
-                        return True
-                    owner = owner.parent
-                return False
+                return self._lexical_activation_is_opaque(scope)
             return True
         owner = scope.namespace_lookup_owner(name)
         return owner is not None and bool(
             self.states._binding_resolution(state_id, slot).identities
             & UNBOUND_IDENTITY
         )
+
+    def _record_decoration_annotation_heads(
+        self,
+        node: ast.ClassDef,
+        state_id: int,
+        scope: _Scope,
+        class_scope: _Scope,
+    ) -> None:
+        """Each top-level annotation head's value when the decorators run.
+
+        A decorator such as ``@dataclass`` reads the annotations then. A
+        deferred annotation (3.14+) evaluates in an annotation scope that sees
+        the class namespace, then globals; ``dataclasses._is_type`` resolves a
+        ``from __future__`` string's head in the module namespace. An eager
+        annotation already carries the fact of its own evaluation.
+        """
+        deferred = not self._future_annotations and self.policy.target_python >= (3, 14)
+        if deferred:
+            lookup = class_scope
+        elif self._future_annotations and scope.kind == "module":
+            lookup = scope
+        else:
+            return
+        for item in node.body:
+            if not isinstance(item, ast.AnnAssign) or not isinstance(
+                item.target, ast.Name
+            ):
+                continue
+            annotation = item.annotation
+            head = (
+                annotation.value
+                if isinstance(annotation, ast.Subscript)
+                else annotation
+            )
+            if isinstance(head, ast.Name):
+                identities = self._resolve_name(state_id, lookup, head.id)[0]
+            elif isinstance(head, ast.Attribute) and isinstance(head.value, ast.Name):
+                base = self._resolve_name(state_id, lookup, head.value.id)[0]
+                identities = self._member_value(state_id, base, head.attr)
+            else:
+                continue
+            key = self._node_key(head)
+            self.decoration_annotation_heads[key] = (
+                self.decoration_annotation_heads.get(key, NO_IDENTITIES) | identities
+            )
 
     def _plain_class_base(self, base: ast.expr) -> bool:
         """Whether a class statement's base is, on every execution, the class
@@ -5085,6 +5181,13 @@ class _Analyzer:
                     assignment_target.index_result,
                     slice_parts=assignment_target.slice_parts,
                 )
+                inert_alias = subscription_is_inert_alias(
+                    owner_identities,
+                    assignment_target.index_identities,
+                    assignment_target.static_index,
+                )
+                if inert_alias:
+                    shape = StaticSubscriptionShape(shape.result, invokes_python=False)
                 result_override = (
                     shape.result
                     if assignment_target.slice_parts is not None
@@ -5124,11 +5227,22 @@ class _Analyzer:
                 # BINARY_SUBSCR releases its evaluated operands. An inert
                 # selected element does not prove inert retirement of siblings.
                 member_effects |= RELEASES_REFERENCE
-                if assignment_target.owner_result.release_may_call or any(
-                    part.release_may_call
-                    for part in (
-                        assignment_target.slice_parts
-                        or (assignment_target.index_result,)
+                # An inert alias runs no Python, so an operand read from a
+                # binding is still held by that binding when it is released.
+                bound_operands = (
+                    inert_alias
+                    and not effects & EXECUTES_ARBITRARY_PYTHON
+                    and _binding_read(node.value)
+                    and _binding_read(node.slice)
+                )
+                if not bound_operands and (
+                    assignment_target.owner_result.release_may_call
+                    or any(
+                        part.release_may_call
+                        for part in (
+                            assignment_target.slice_parts
+                            or (assignment_target.index_result,)
+                        )
                     )
                 ):
                     member_effects |= _RELEASE_CALLBACK_EFFECTS
@@ -5419,12 +5533,14 @@ class _Analyzer:
             if (
                 protocol_indices is None
                 and callee_result.identities == int(PythonIdentity.USER_FUNCTION)
-                and (opaque := self._opaque_activation_sources) is not None
+                and self._opaque_activation_sources is not None
                 and callee_result.result.source_origins
                 and all(
                     source[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
-                    and source not in opaque
                     for source in callee_result.result.source_origins
+                )
+                and not self._activation_group_is_opaque(
+                    callee_result.result.source_origins
                 )
             ):
                 # The existing call/formal graph owns uses of these arguments.
@@ -6677,6 +6793,7 @@ class _Analyzer:
         effects = owner.effects
         static_index: PythonStaticValue = None
         index_result = UNKNOWN_EXPRESSION_RESULT
+        index_identities = OTHER_IDENTITY
         slice_parts = None
         owner_result = owner.result
         if isinstance(target, ast.Subscript):
@@ -6699,6 +6816,7 @@ class _Analyzer:
                 index_effects = index.effects
                 static_index = index.static_value
                 index_result = index.result
+                index_identities = index.identities
             effects |= index_effects
             if index_effects & _CALLEE_ELISION_FORBIDDEN_EFFECTS:
                 owner_result = expression_result_without_mutable_contents(owner.result)
@@ -6710,6 +6828,7 @@ class _Analyzer:
                 static_index,
                 index_result,
                 slice_parts,
+                index_identities,
             ),
             state_id,
             effects,
@@ -7978,6 +8097,10 @@ class _Analyzer:
             )
             if class_flow.normal is not None:
                 class_state = class_flow.normal
+                if node.decorator_list:
+                    self._record_decoration_annotation_heads(
+                        node, class_state, scope, class_scope
+                    )
                 # Body failure never creates or binds a class. Plain creation
                 # remains a projection of the successful namespace state.
                 plain_creation = (
@@ -9131,6 +9254,7 @@ class _Analyzer:
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
             class_builder_reads=self.class_builder_reads,
+            decoration_annotation_heads=self.decoration_annotation_heads,
             callbacks_rewrite_metadata=self._callback_module_names is None
             or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(
@@ -9224,36 +9348,48 @@ class _Analyzer:
             # dropping them would turn harmless stores into unknown callbacks.
             MappingProxyType(dict(self.assignment_effects)),
             flow_required,
+            (
+                None
+                if self._opaque_activation_sources is None
+                else _OpaqueActivationReads(
+                    tuple(
+                        group
+                        for group, answer in self._opaque_activation_reads.items()
+                        if answer
+                    ),
+                    frozenset(
+                        source
+                        for group, answer in self._opaque_activation_reads.items()
+                        if not answer
+                        for source in group
+                    ),
+                )
+            ),
         )
 
 
 def _project_binding_index(
     analysis: _BindingAnalysis,
-    policy: PythonBindingPolicy,
+    context: ModuleImportContext,
     tree: Callable[[], ast.Module],
+    *,
+    include_import_discovery: bool,
 ) -> PythonBindingIndex:
     from molt.compiler_analysis.python_imports import (
-        ModuleImportContext,
         ModuleImportFlow,
         _analyze_module_import_flow_uncached,
         context_import_state,
     )
 
-    context = ModuleImportContext(
-        module_name=policy.module_name,
-        is_package=policy.module_is_package,
-        spec_name=policy.module_spec_name,
-        target_python=policy.target_python,
-        execution_kind=policy.module_execution_kind,
-    )
     facts = analysis.facts
-    if policy.include_import_discovery:
+    if include_import_discovery:
         # This dependency is acyclic: the strict projection never requests a
         # discovery projection. Both keys share the core's bounded single flight.
-        strict_policy = replace(policy, include_import_discovery=False)
         strict = analysis.projections.get_or_compute(
-            (strict_policy,),
-            lambda: _project_binding_index(analysis, strict_policy, tree),
+            (context, False),
+            lambda: _project_binding_index(
+                analysis, context, tree, include_import_discovery=False
+            ),
         )
         flow = strict.module_import_flow
     elif analysis.module_import_flow_required:
@@ -9270,7 +9406,7 @@ def _project_binding_index(
     else:
         state = context_import_state(context)
         flow = ModuleImportFlow({}, (state,), (state,))
-    if policy.include_import_discovery:
+    if include_import_discovery:
         # Reuse the cached strict projection and immutable fixpoint facts. Only
         # the source transfer is additional, and it is cached with the core.
         # Even an invariant lexical state can lose storage custody at a getter,
@@ -9294,10 +9430,10 @@ def _project_binding_index(
         )
     return PythonBindingIndex.from_facts(
         facts,
-        module_name=policy.module_name,
-        module_spec_name=policy.module_spec_name,
-        module_is_package=policy.module_is_package,
-        module_execution_kind=policy.module_execution_kind,
+        module_name=context.module_name,
+        module_spec_name=context.spec_name,
+        module_is_package=context.is_package,
+        module_execution_kind=context.execution_kind,
         module_import_flow=flow,
     )
 
@@ -9347,10 +9483,17 @@ class _BindingCache[T]:
         with self._lock:
             return self._computations
 
+    def _remember_ready(self, key: tuple[object, ...], result: T) -> None:
+        self._ready[key] = result
+        while len(self._ready) > self._max_entries:
+            self._ready.popitem(last=False)
+
     def get_or_compute(
         self,
         key: tuple[object, ...],
         compute: Callable[[], T],
+        *,
+        reusable: Callable[[tuple[object, ...], T], bool] | None = None,
     ) -> T:
         owner = False
         with self._lock:
@@ -9359,6 +9502,11 @@ class _BindingCache[T]:
                 return cached
             pending = self._pending.get(key)
             if pending is None:
+                if reusable is not None:
+                    for prior_key, result in reversed(self._ready.items()):
+                        if reusable(prior_key, result):
+                            self._remember_ready(key, result)
+                            return result
                 pending = _PendingAnalysis()
                 self._pending[key] = pending
                 self._computations += 1
@@ -9378,9 +9526,7 @@ class _BindingCache[T]:
                 pending.ready.set()
             raise
         with self._lock:
-            self._ready[key] = result
-            while len(self._ready) > self._max_entries:
-                self._ready.popitem(last=False)
+            self._remember_ready(key, result)
             pending.result = result
             self._pending.pop(key, None)
             pending.ready.set()
@@ -9439,8 +9585,21 @@ def _cached_binding_index(
     # Projections are owned by their core, so eviction cannot leave a second
     # global cache retaining orphaned facts. Each source retains at most eight
     # module contexts; computing either level uses the same single-flight law.
+    # The core may already serve another flow policy with identical facts.
+    # Projection reads only those facts, the context and its discovery mode.
+    context = ModuleImportContext(
+        module_name=policy.module_name,
+        is_package=policy.module_is_package,
+        spec_name=policy.module_spec_name,
+        target_python=policy.target_python,
+        execution_kind=policy.module_execution_kind,
+    )
+    include_import_discovery = policy.include_import_discovery
     return analysis.projections.get_or_compute(
-        (policy,), lambda: _project_binding_index(analysis, policy, tree)
+        (context, include_import_discovery),
+        lambda: _project_binding_index(
+            analysis, context, tree, include_import_discovery=include_import_discovery
+        ),
     )
 
 
@@ -9453,11 +9612,28 @@ def _binding_analysis(
 ) -> _BindingAnalysis:
     if type(policy) is not PythonBindingFlowPolicy:
         raise TypeError("binding fixpoint requires an exact flow-only policy")
+    key = (_ANALYSIS_SCHEMA, source_digest, policy)
+
+    def reusable(prior_key: tuple[object, ...], result: _BindingAnalysis) -> bool:
+        if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
+            return False
+        prior = cast(PythonBindingFlowPolicy, prior_key[2])
+        opaque = policy.opaque_activation_sources
+        assert opaque is not None
+        # A deterministic transfer observes the same branches while every
+        # consumed activation query agrees. Keep the rest of the policy exact.
+        return replace(
+            prior, opaque_activation_sources=opaque
+        ) == policy and result.opaque_activation_reads.unchanged_under(
+            frozenset(opaque)
+        )
+
     return _CORE_CACHE.get_or_compute(
-        (_ANALYSIS_SCHEMA, source_digest, policy),
+        key,
         lambda: _Analyzer(policy, source_digest).analyze(
             tree(), ast_digest_admission=ast_digest_admission
         ),
+        reusable=reusable if policy.opaque_activation_sources is not None else None,
     )
 
 

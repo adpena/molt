@@ -1342,7 +1342,7 @@ def test_lowering_record_persists_and_restores_a_dataclass_projection(
         class_id: generator.classes[class_id] for class_id in generator.local_class_ids
     }
     record_id = ClassId("records", "Record")
-    projection = local_classes[record_id]["dataclass_init_projection"]
+    projection = local_classes[record_id].dataclass.init_projection
     assert projection, "the dataclass transform recorded no initializer projection"
     digest = "cd" * 32
     result = {
@@ -1367,4 +1367,4 @@ def test_lowering_record_persists_and_restores_a_dataclass_projection(
         context_digest=digest,
     )
     assert loaded is not None, "the cold build persisted no lowering record"
-    assert loaded["local_classes"][record_id]["dataclass_init_projection"] == projection
+    assert loaded["local_classes"][record_id].dataclass.init_projection == projection

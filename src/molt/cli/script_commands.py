@@ -77,9 +77,9 @@ from molt.cli.project_roots import (
     _find_project_root,
     _require_molt_root,
 )
+from molt.cli.config_resolution import _resolve_target_python_version
 from molt.target_python import (
     _parse_target_python_version,
-    _resolve_target_python_version,
     resolve_target_python_for_oracle,
 )
 from molt.node_runtime import resolve_node_runtime

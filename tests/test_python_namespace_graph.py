@@ -22,7 +22,7 @@ from molt.compiler_analysis.python_namespace_graph import (
     python_namespace_binding_policy,
 )
 from molt.compiler_analysis.python_binding_flow import PythonBindingPolicy
-from molt.cli.models import ImportScanMode
+from molt.compiler_analysis.python_imports import ImportScanMode
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 
 # A global import redirect makes every canonical provider noncanonical (M7).

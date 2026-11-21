@@ -109,7 +109,6 @@ from molt.cli.backend_artifact_contract import (
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
-    ImportScanMode,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -126,6 +125,7 @@ from molt.cli.external_native import (
 )
 from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     ModuleSourceRole,
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
@@ -3186,9 +3186,10 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     assert "copy" in json.loads(backend_setup.stdlib_modules_json)
 
 
-def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported(
+def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registry(
     tmp_path: Path,
 ) -> None:
+    # A literal import names its module; the registry serves it (D8, HF-841).
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import math\nvalue = math.sqrt(4)\n", encoding="utf-8")
     entry_tree = ast.parse(
@@ -3210,9 +3211,9 @@ def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported
 
     assert error is None
     assert prepared is not None
-    assert prepared.runtime_import_support_policy.needs_runtime_import_support
-    assert "importlib.util" in prepared.module_graph
-    assert "importlib.machinery" in prepared.module_graph
+    assert not prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert "importlib.util" not in prepared.module_graph
+    assert "importlib.machinery" not in prepared.module_graph
 
 
 def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_supported(
@@ -3589,7 +3590,7 @@ def test_prepare_entry_module_graph_preserves_user_importer_spelling(
 
     assert error is None
     assert prepared is not None
-    assert prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert not prepared.runtime_import_support_policy.needs_runtime_import_support
     assert prepared.module_graph["_molt_importer"] == user_importer
 
 
@@ -3733,13 +3734,17 @@ def test_public_import_transaction_plan_includes_runtime_support_modules(
 @pytest.mark.slow
 def test_runtime_import_support_redirects_no_program_row(tmp_path: Path) -> None:
     # The import protocol's support closure (importlib.machinery, zipimport,
-    # ...) is in every program that imports a module. Code it keeps live must
-    # not redirect a row the program imports, or every module attribute call
-    # loses its closed-world binding (HF-898: `_NamespacePath` read
+    # ...) joins a program that may call an import entry point (HF-841). Code
+    # it keeps live must not redirect a row the program imports, or every
+    # module attribute call loses its closed-world binding (HF-898: `_NamespacePath` read
     # `getattr(sys.modules[parent], name)`, which let every module escape and
     # made zipimporter.load_module's sys.modules writes redirect every row).
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import math\nprint(math.sqrt(4.0))\n", encoding="utf-8")
+    entry_path.write_text(
+        "import importlib\nimport math\nprint(math.sqrt(4.0))\n"
+        "importlib.import_module('json')\n",
+        encoding="utf-8",
+    )
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -4259,16 +4264,16 @@ def test_runtime_import_machinery_is_a_wasm_pure_target_fact() -> None:
 def test_registry_only_target_roots_no_python_import_machinery(
     tmp_path: Path,
 ) -> None:
-    # A pure WASM guest serves compiled modules from the runtime registry, so a
-    # static import roots json and the core set but no importlib, zipimport or
-    # os; the default target roots the machinery for the same program.
+    # The module registry serves a literal import (bedrock §13 D8, HF-841), so
+    # a static program roots json and the core set but no importlib, zipimport
+    # or os on either target. A possible import call needs the protocol: the
+    # default target roots the machinery for it; a pure WASM guest, which
+    # serves compiled modules from its registry, still roots none.
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import json\nprint(json.dumps([1]))\n", encoding="utf-8")
-    entry_tree = ast.parse(
-        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
-    )
-    graphs = {}
-    for machinery in cli_models.RuntimeImportMachinery:
+
+    def graph_for(source: str, machinery: object) -> set[str]:
+        entry_path.write_text(source, encoding="utf-8")
+        entry_tree = ast.parse(source, filename=str(entry_path))
         prepared, error = cli_module_graph._prepare_entry_module_graph(
             source_path=entry_path,
             entry_module="demo",
@@ -4286,13 +4291,19 @@ def test_registry_only_target_roots_no_python_import_machinery(
         assert error is None
         assert prepared is not None
         assert prepared.runtime_import_machinery is machinery
-        graphs[machinery] = set(prepared.module_graph)
-    registry_only = graphs[cli_models.RuntimeImportMachinery.REGISTRY_ONLY]
-    python = graphs[cli_models.RuntimeImportMachinery.PYTHON]
-    assert {"demo", "json", "copyreg", "builtins", "sys"} <= registry_only
-    assert registry_only.isdisjoint({"zipimport", "importlib.machinery", "os"})
+        return set(prepared.module_graph)
+
+    kinds = tuple(cli_models.RuntimeImportMachinery)
+    machinery_modules = {"zipimport", "importlib.machinery", "os"}
+    for machinery in kinds:
+        graph = graph_for("import json\nprint(json.dumps([1]))\n", machinery)
+        assert {"demo", "json", "copyreg", "builtins", "sys"} <= graph
+        assert graph.isdisjoint(machinery_modules)
+    dynamic = {kind: graph_for("__import__('json')\n", kind) for kind in kinds}
+    registry_only = dynamic[cli_models.RuntimeImportMachinery.REGISTRY_ONLY]
+    python = dynamic[cli_models.RuntimeImportMachinery.PYTHON]
+    assert registry_only.isdisjoint(machinery_modules)
     assert {"zipimport", "importlib.machinery"} <= python
-    assert registry_only < python
 
 
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
@@ -12186,7 +12197,7 @@ def test_collect_static_source_execution_preserves_loader_name_and_path(
     )
 
     requests = _source_import_scan._collect_static_source_execution_requests(
-        tree, source_path=entry
+        tree, is_package=False
     )
     assert requests == (_StaticSourceExecutionRequest("loaded_name", str(target)),)
     completed = cli_module_import_scanner._complete_import_scan(
@@ -14449,7 +14460,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-a",
     )
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
@@ -14482,7 +14493,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-b",
     )
     assert (
@@ -14507,7 +14518,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
 
     monkeypatch.setattr(
         cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
+        "_import_scan_tooling_fingerprint",
         lambda: "tool-a",
     )
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)

@@ -3638,7 +3638,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_math_fma",
         arity: 3,
         defaults: &[],
-        public: None,
+        public: Some(super::public_objects_generated::PublicObjectId::MathFma),
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_fma),
     },
     IntrinsicSpec {

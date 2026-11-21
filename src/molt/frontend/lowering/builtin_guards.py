@@ -336,8 +336,12 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         receiver = self._zero_argument_super_receiver(node)
         if receiver is None:
             return CALL_NOT_HANDLED
-        if self._builtin_binding_proven(receiver.func):
+        proven = self._proven_builtin_name(receiver.func)
+        if proven == "super":
             return self._emit_super_method_call(node)
+        if proven is not None:
+            # The name holds another builtin (``super = len``): an ordinary call.
+            return CALL_NOT_HANDLED
         if not self._builtin_guard_may_open(
             receiver.func
         ) or not self._builtin_guard_region_duplicable(node):

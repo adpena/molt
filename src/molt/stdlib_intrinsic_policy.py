@@ -60,7 +60,6 @@ STDLIB_STUB_MARKER = (
 # or outside the union, so the set can only shrink.
 UNAVAILABLE_STDLIB_MODULES: frozenset[str] = frozenset(
     {
-        "_math_integer",
         "_pyrepl.content",
         "_pyrepl.fancycompleter",
         "_pyrepl.layout",
@@ -794,7 +793,7 @@ def _stdlib_module_import_evidence_from_tree(
     scan = _collect_import_scan_requests(
         projection,
         tree,
-        source_path=path,
+        is_package=path.name == "__init__.py",
         module_name=module_name,
         import_scan_mode="full",
         target_python=target_python,

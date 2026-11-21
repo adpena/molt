@@ -44,6 +44,43 @@ def possible_identity(identity: _catalog.PythonIdentity) -> _catalog.IdentityMas
     return int(identity) | _catalog.OTHER_IDENTITY
 
 
+# Subscriptions whose ``__class_getitem__`` is fixed CPython code that calls
+# nothing on its operands: ``dataclasses.InitVar[T]`` builds an ``InitVar``, and
+# a builtin container class builds a ``types.GenericAlias``.
+_INERT_ALIAS_OWNERS: frozenset[_catalog.IdentityMask] = frozenset(
+    int(identity)
+    for identity in (
+        _catalog.PythonIdentity.DATACLASSES_INITVAR,
+        _catalog.PythonIdentity.BUILTIN_TUPLE,
+        _catalog.PythonIdentity.BUILTIN_LIST,
+        _catalog.PythonIdentity.BUILTIN_SET,
+        _catalog.PythonIdentity.BUILTIN_FROZENSET,
+        _catalog.PythonIdentity.BUILTIN_DICT,
+        _catalog.PythonIdentity.BUILTIN_TYPE,
+    )
+)
+_BUILTIN_CLASSES: frozenset[_catalog.IdentityMask] = frozenset(
+    int(identity) for identity in _catalog.BUILTIN_SHAPE_IDENTITIES.values()
+)
+
+
+def subscription_is_inert_alias(
+    owner: _catalog.IdentityMask,
+    index: _catalog.IdentityMask,
+    static_index: object,
+) -> bool:
+    """Whether ``owner[index]`` runs no Python a program can supply.
+
+    ``typing.ClassVar[X]`` runs ``typing._type_check(X)``, which compares X
+    with ``==``, so it is inert only for an exact builtin class or a string.
+    """
+    if owner in _INERT_ALIAS_OWNERS:
+        return True
+    return owner == int(_catalog.PythonIdentity.TYPING_CLASSVAR) and (
+        type(static_index) is str or index in _BUILTIN_CLASSES
+    )
+
+
 def identity_fact_is_exact(
     mask: _catalog.IdentityMask, identity: _catalog.PythonIdentity
 ) -> bool:

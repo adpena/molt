@@ -42,7 +42,6 @@ from molt.frontend._types import (
     BuiltinLayout,
     CallableId,
     ClassId,
-    ClassInfo,
     ClassRef,
     CodeSlotDeclaration,
     CompilerLocalHome,
@@ -56,6 +55,7 @@ from molt.frontend._types import (
     LoopScope,
     MethodDescriptor,
     MethodInfo,
+    MethodValues,
     MoltOp,
     MoltValue,
     PythonIdentity,
@@ -72,8 +72,11 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_call_arguments import CallForm
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
+    from molt.frontend.class_model import ClassModel
+    from molt.frontend.class_model import ClassView
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
     from molt.compiler_analysis.python_function_kind import FunctionKind
+    from molt.frontend.class_model import Member
     from molt.compiler_analysis.native_support_slice import ModuleBodySelection
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
@@ -103,6 +106,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -110,7 +114,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_generator: Any
     instance_attr_mutations: dict[ClassId, set[str]]
     is_entry_module: bool
-    known_classes: dict[ClassId, ClassInfo]
+    known_classes: dict[ClassId, ClassModel]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -211,7 +215,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
-        known_classes: dict[ClassId, ClassInfo] | None = ...,
+        known_classes: Mapping[ClassId, ClassModel] | None = ...,
         stdlib_allowlist: set[str] | None = ...,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = ...,
         known_func_kinds: dict[str, dict[str, str]] | None = ...,
@@ -416,7 +420,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_binding_is_the_class(self, class_id: ClassId) -> bool: ...
 
     def _class_constructor_refusal(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> str | None: ...
 
     def _class_decorator_plan(
@@ -435,12 +439,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _class_layout_stable(self, class_id: ClassId) -> bool: ...
 
+    @staticmethod
     def _class_layout_version(
-        self,
-        class_id: ClassId,
-        class_attrs: dict[str, ast.expr],
-        methods: dict[str, MethodInfo] | None = ...,
-        method_count: int | None = ...,
+        *, static_fields: bool, class_attr_count: int, method_count: int
     ) -> int: ...
 
     def _class_method_descriptor(
@@ -456,7 +457,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_mutation_targets(self, node: ast.expr) -> frozenset[ClassId]: ...
 
     def _class_new_policy(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> tuple[bool, bool]: ...
 
     def _class_ns_delete(self, scope: "_ClassNsScope", name: str) -> None: ...
@@ -470,7 +471,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue | None: ...
 
     def _class_ns_store(
-        self, scope: "_ClassNsScope", name: str, value: MoltValue
+        self,
+        scope: "_ClassNsScope",
+        name: str,
+        value: MoltValue,
+        member: "Member | None" = ...,
     ) -> None: ...
 
     def _class_reference(self, node: ast.expr) -> ClassId | None: ...
@@ -478,7 +483,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_reserved_tail_size(self, mro: tuple[ClassRef, ...]) -> int: ...
 
     def _class_resolves_default_object_new(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> bool: ...
 
     def _clear_exact_bindings(self, names: set[str]) -> None: ...
@@ -1212,7 +1217,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.Call,
         class_id: ClassId,
-        class_info: ClassInfo,
+        class_info: ClassView,
         class_ref: MoltValue,
     ) -> MoltValue | str: ...
 
@@ -2005,6 +2010,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
 
+    def _member_values(self, owner: ClassId, name: str) -> MethodValues | None: ...
+
     def _module_can_defer_attrs(self, node: ast.Module) -> bool: ...
 
     def _module_chunk_param_value(self) -> MoltValue: ...
@@ -2265,9 +2272,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None: ...
 
-    def _resolve_method_info(
-        self, class_id: ClassId, method: str
-    ) -> tuple[MethodInfo | None, ClassId | None]: ...
+    def _resolve_member(
+        self, class_id: ClassId, name: str
+    ) -> tuple[Member | None, ClassId | None]: ...
 
     def _restore_class_import_state(
         self,
@@ -2549,7 +2556,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> bool: ...
 
     def _try_inline_method_call(
-        self, method_info: MethodInfo, receiver: MoltValue, call_args: list[MoltValue]
+        self, member: Member, receiver: MoltValue, call_args: list[MoltValue]
     ) -> MoltValue | None: ...
 
     def _try_lower_intrinsic_lookup_call(
@@ -2627,6 +2634,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def generic_visit(self, node): ...
 
     def is_async(self) -> bool: ...
+
+    def local_class_models(self) -> dict[ClassId, ClassModel]: ...
 
     def map_ops_to_json(
         self,

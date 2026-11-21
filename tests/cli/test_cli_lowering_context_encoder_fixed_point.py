@@ -42,7 +42,9 @@ import importlib
 import json
 import sys
 
+from molt.frontend.class_model import InlineBody, Member, MemberKind
 from molt.frontend.dataclass_init import DataclassInitField
+from tests.class_model_support import class_model
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -100,16 +102,21 @@ _FIXED_POINT_CASES: dict[str, object] = {
         "f": {"a": (1, 2), "b": frozenset({1, 2}), "c": b"xy", "d": 3 + 4j, "e": ...}
     },
     "known_classes_shape": {
-        _REDEFINED: {"binding_name": "P", "mro": (_REDEFINED, BuiltinClass("object"))},
-        _CLASS: {
-            "binding_name": "C",
-            "mro": (_CLASS, BuiltinClass("object")),
-            "field_hints": {"peer": DeclaredClass(_REDEFINED)},
-            "methods": {"__init__": {"inline_init_assigns": [["attr", _NODE]]}},
-            "dataclass_init_projection": (
-                DataclassInitField("x", True, False, False, 0),
-            ),
-        },
+        _REDEFINED: class_model(_REDEFINED, binding_name="P"),
+        _CLASS: class_model(
+            _CLASS,
+            binding_name="C",
+            fields={"peer": 8},
+            hints={"peer": DeclaredClass(_REDEFINED)},
+            members={
+                "__init__": Member(
+                    MemberKind.FUNCTION,
+                    symbol="C___init__",
+                    inline=InlineBody.of(("self",), None, (("attr", _NODE),)),
+                )
+            },
+            dataclass_projection=(DataclassInitField("x", True, False, False, 0),),
+        ),
     },
     "class_id": _CLASS,
     "class_id_with_occurrence": _REDEFINED,
@@ -254,9 +261,8 @@ def test_class_identity_round_trips_to_equal_values() -> None:
     hydrated = _round_trip(known)
     assert isinstance(known, dict) and isinstance(hydrated, dict)
     assert list(hydrated) == sorted(known, key=lambda class_id: class_id.sort_key())
-    for class_id, info in known.items():
-        for field in ("binding_name", "mro", "field_hints"):
-            assert hydrated[class_id].get(field) == info.get(field), (class_id, field)
+    for class_id, model in known.items():
+        assert hydrated[class_id] == model, class_id
     declared = _round_trip(_FIXED_POINT_CASES["declared_class_value"])
     assert isinstance(declared, MoltValue)
     assert declared.type_hint == DeclaredClass(_CLASS, ReceiverKind.CLASS_OBJECT)

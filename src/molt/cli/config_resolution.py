@@ -14,6 +14,12 @@ from molt.backend_executable_names import (
     default_codegen_backend,
 )
 from molt.capability_policy import CapabilityInput
+from molt.target_python import (
+    TargetPythonVersion,
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _SUPPORTED_TARGET_PYTHON_VERSIONS,
+    _parse_target_python_version,
+)
 
 if TYPE_CHECKING:
     from molt.cli.build_request import BuildProfile
@@ -41,6 +47,99 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
             config["tool"].setdefault("molt", {})
             config["tool"]["molt"].update(tool_cfg)
     return config
+
+
+def _project_requires_python(project_root: Path) -> str | None:
+    pyproject = project_root / "pyproject.toml"
+    from molt import input_report
+
+    input_report.report_data_file(pyproject)
+    if not pyproject.exists():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(
+            f"failed to read pyproject.toml at {pyproject}: {exc}"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid pyproject.toml at {pyproject}: {exc}") from exc
+    project_cfg = data.get("project")
+    if project_cfg is None:
+        return None
+    if not isinstance(project_cfg, dict):
+        raise ValueError(f"project table in {pyproject} must be a TOML table")
+    if "requires-python" not in project_cfg:
+        return None
+    raw = project_cfg["requires-python"]
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"project.requires-python in {pyproject} must be a non-empty string"
+        )
+    return raw
+
+
+def _target_python_from_requires_python(
+    requires_python: str | None,
+) -> TargetPythonVersion:
+    if not requires_python:
+        return _DEFAULT_TARGET_PYTHON_VERSION
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import Version
+
+    try:
+        specifier = SpecifierSet(requires_python)
+    except InvalidSpecifier as exc:
+        raise ValueError(
+            f"invalid project.requires-python specifier {requires_python!r}"
+        ) from exc
+    # requires-python constrains the target; it does not choose the oldest.
+    # The default target serves when the project admits it, else the newest
+    # admitted target the project admits (owner decision 2026-11-16: the
+    # latest minor is the primary target).
+    admitted: list[TargetPythonVersion] = []
+    for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
+        release = f"{target.short}.{target.micro}"
+        if target.release != "final":
+            prefix = {"alpha": "a", "beta": "b", "candidate": "rc"}[target.release]
+            release += f"{prefix}{target.serial}"
+        if Version(release) in specifier:
+            admitted.append(target)
+    if _DEFAULT_TARGET_PYTHON_VERSION in admitted:
+        return _DEFAULT_TARGET_PYTHON_VERSION
+    if admitted:
+        return max(admitted, key=lambda target: target.feature_version)
+    supported = ", ".join(
+        version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
+    )
+    raise ValueError(
+        f"project.requires-python {requires_python!r} does not admit any "
+        f"supported Molt target ({supported})"
+    )
+
+
+def _resolve_target_python_version(
+    *,
+    explicit: str | None,
+    build_config: Mapping[str, Any] | None,
+    project_root: Path,
+) -> TargetPythonVersion:
+    if explicit is not None and explicit.strip():
+        return _parse_target_python_version(explicit)
+    if build_config is not None:
+        for key in (
+            "python_version",
+            "python-version",
+            "target_python",
+            "target-python",
+        ):
+            if key not in build_config:
+                continue
+            raw_config = build_config[key]
+            if not isinstance(raw_config, str) or not raw_config.strip():
+                raise ValueError(f"[tool.molt.build] {key} must be a non-empty string")
+            return _parse_target_python_version(raw_config)
+    return _target_python_from_requires_python(_project_requires_python(project_root))
 
 
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"

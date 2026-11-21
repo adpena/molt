@@ -11,7 +11,7 @@ from typing import Any, NamedTuple, TYPE_CHECKING
 from molt.compiler_analysis.hashing import stable_payload_hash as _stable_payload_hash
 
 if TYPE_CHECKING:
-    from molt.frontend import ClassId, ClassInfo
+    from molt.frontend import ClassId, ClassModel
 
 
 class _ModuleSourceProjection(NamedTuple):
@@ -320,7 +320,7 @@ def _frontend_binary_image_analysis_payload(
     import_plan: Any,
     frontend_analysis: Any,
     frontend_module_costs: Mapping[str, float],
-    known_classes: Mapping[ClassId, ClassInfo],
+    known_classes: Mapping[ClassId, ClassModel],
     enable_phi: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,

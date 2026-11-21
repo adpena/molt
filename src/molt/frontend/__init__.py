@@ -1,221 +1,154 @@
-"""Frontend TIR generator: SimpleTIRGenerator assembly + public API.
+"""Frontend public API: Python-to-TIR lowering types and the generator.
 
-The generator is composed from visitor/lowering mixins (F1 decomposition,
-move-only). Shared data types, constants, and lookup tables live in the
-``molt.frontend._types`` leaf and are re-exported here so the historical public
-import surface (``from molt.frontend import MoltValue, MoltOp, ...``) is
-maintained for language-lowering entities. Retired optimizer-only entities
-are removed with their consumers. Per-family method bodies live under ``molt.frontend.visitors``
-and ``molt.frontend.lowering`` and are mixed into the class below via MRO.
+Each public name resolves on first use from its owning module (PEP 562), so
+importing ``molt.frontend`` or a leaf module such as ``molt.frontend._types``
+does not load the generator. ``molt.frontend.generator`` assembles
+``SimpleTIRGenerator`` from the visitor/lowering mixins; the shared data types
+live in the ``molt.frontend._types`` leaf.
 """
 
 from __future__ import annotations
 
-import ast
-from typing import (
-    Any,
-    Literal,
-)
+from collections.abc import Callable
+from types import ModuleType
+from typing import TYPE_CHECKING
 
-# Shared frontend data types / constants / tables (the import-graph leaf).
-# Imported explicitly (no star) and re-exported via __all__ so the historical
-# ``from molt.frontend import <name>`` surface is preserved exactly. This single
-# source also covers the compat / cfg_analysis / type_facts names the assembly
-# class uses (they are re-exported from _types).
-from molt.frontend._types import (
-    BoundMethodHint,
-    BuiltinClass,
-    ClassId,
-    DeclaredClass,
-    ReceiverKind,
-    MoltValue,
-    MoltOp,
-    _INLINE_INT_MIN,
-    _INLINE_INT_MAX,
-    ActiveException,
-    GEN_SEND_OFFSET,
-    GEN_THROW_OFFSET,
-    GEN_RESUME_RETURNED,
-    GEN_YIELD_FROM_OFFSET,
-    GEN_CONTROL_SIZE,
-    BUILTIN_TYPE_TAGS,
-    BUILTIN_LAYOUT_MIN,
-    IMPLICIT_CLASSMETHOD_NAMES,
-    IMPLICIT_STATICMETHOD_NAMES,
-    _function_is_instance_method,
-    _BUILTIN_FAST_METHODS,
-    BUILTIN_EXCEPTION_NAMES,
-    _MOLT_CLOSURE_PARAM,
-    _MOLT_MODULE_CHUNK_PARAM,
-    _MOLT_MODULE_CHUNK_PREFIX,
-    _builtin_func_abi_arity,
-    _intrinsic_arity_exact,
-    TryScope,
-    MethodInfo,
-    ClassInfo,
-    layout_definition_symbol,
-    FuncInfo,
-    CompatibilityError,
-    CompatibilityReporter,
-    CFGGraph,
-    ControlMaps,
-    build_cfg,
-    normalize_type_hint,
-)
-
-# Bind/Sema phase (doc 44 §F2b): free functions over the immutable ast.Module
-# computing the SemaResult — immutable semantic facts (static class graph,
-# local class-member facts, class-body block-exec requirements, const
-# environment, top-level function metadata) — once, pre-walk, in the
-# cfg_analysis.py house shape. F2b is additive:
-# visit_Module populates the existing pre-walk state dicts FROM SemaResult (the
-# _populate_sema_state shim) so the walk is byte-identical; F2c rewires the
-# read-sites onto SemaResult and deletes the mutable god-object dicts.
-from molt.frontend.sema import (
-    SemaResult,
-    analyze_module,
-)
-
-# Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
-from molt.frontend.lowering.analysis_collect_static import AnalysisCollectStaticMixin
-from molt.frontend.lowering.analysis_patterns import AnalysisPatternMixin
-from molt.frontend.lowering.app_bindings import AppBindingAuthorityMixin
-from molt.frontend.lowering.attribute_access import AttributeAccessMixin
-from molt.frontend.lowering.class_resolution import ClassResolutionMixin
-from molt.frontend.lowering.compile_warnings import CompileWarningMixin
-from molt.frontend.lowering.condition_flow import ConditionFlowMixin
-from molt.frontend.lowering.emission_core import EmissionCoreMixin
-from molt.frontend.lowering.exception_lowering import ExceptionLoweringMixin
-from molt.frontend.lowering.expression_primitives import ExpressionPrimitivesMixin
-from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
-from molt.frontend.lowering.function_metadata import FunctionMetadataMixin
-from molt.frontend.lowering.generator_state import GeneratorStateMixin
-from molt.frontend.lowering.import_lowering import ImportLoweringMixin
-from molt.frontend.lowering.local_bindings import LocalBindingMixin
-from molt.frontend.lowering.loop_lowering import LoopLoweringMixin
-from molt.frontend.lowering.builtin_guards import BuiltinGuardMixin
-from molt.frontend.lowering.module_globals import ModuleGlobalsMixin
-from molt.frontend.lowering.module_lifecycle import ModuleLifecycleMixin
-from molt.frontend.lowering.ownership_lowering import OwnershipLoweringMixin
-from molt.frontend.lowering.runtime_references import RuntimeReferenceMixin
-from molt.frontend.lowering.serialization import SerializationMixin
-from molt.frontend.lowering.sema_state import SemaStateMixin
-from molt.frontend.lowering.string_formatting import StringFormattingMixin
-from molt.frontend.lowering.symbol_naming import SymbolNamingMixin
-from molt.frontend.lowering.type_annotations import TypeAnnotationMixin
-from molt.frontend.visitors.async_gen import AsyncGenVisitorMixin
-from molt.frontend.visitors.pattern_match import PatternMatchMixin
-from molt.frontend.visitors.calls import CallVisitorMixin
-from molt.frontend.visitors.classes import ClassDefVisitorMixin
-from molt.frontend.visitors.comprehensions import ComprehensionMixin
-from molt.frontend.visitors.expressions import ExpressionVisitorMixin
-from molt.frontend.visitors.functions import FunctionVisitorMixin
-from molt.frontend.visitors.statement_assignments import (
-    AssignmentStatementVisitorMixin,
-)
-from molt.frontend.visitors.statement_control_flow import (
-    ControlFlowStatementVisitorMixin,
-)
-from molt.frontend.visitors.statement_scope import StatementScopeVisitorMixin
-
-__all__ = [
-    "BoundMethodHint",
-    "BuiltinClass",
-    "ClassId",
-    "DeclaredClass",
-    "ReceiverKind",
-    "MoltValue",
-    "MoltOp",
-    "_INLINE_INT_MIN",
-    "_INLINE_INT_MAX",
-    "ActiveException",
-    "GEN_SEND_OFFSET",
-    "GEN_THROW_OFFSET",
-    "GEN_RESUME_RETURNED",
-    "GEN_YIELD_FROM_OFFSET",
-    "GEN_CONTROL_SIZE",
-    "BUILTIN_TYPE_TAGS",
-    "BUILTIN_LAYOUT_MIN",
-    "IMPLICIT_CLASSMETHOD_NAMES",
-    "IMPLICIT_STATICMETHOD_NAMES",
-    "_function_is_instance_method",
-    "_BUILTIN_FAST_METHODS",
-    "BUILTIN_EXCEPTION_NAMES",
-    "_MOLT_CLOSURE_PARAM",
-    "_MOLT_MODULE_CHUNK_PARAM",
-    "_MOLT_MODULE_CHUNK_PREFIX",
-    "_builtin_func_abi_arity",
-    "_intrinsic_arity_exact",
-    "TryScope",
-    "MethodInfo",
-    "ClassInfo",
-    "layout_definition_symbol",
-    "FuncInfo",
-    "CompatibilityError",
-    "CompatibilityReporter",
-    "CFGGraph",
-    "ControlMaps",
-    "build_cfg",
-    "normalize_type_hint",
-    "SimpleTIRGenerator",
-    "compile_to_tir",
-    "SemaResult",
-    "analyze_module",
-]
-
-
-class SimpleTIRGenerator(
-    GeneratorStateMixin,
-    AppBindingAuthorityMixin,
-    LocalBindingMixin,
-    SerializationMixin,
-    OwnershipLoweringMixin,
-    StringFormattingMixin,
-    RuntimeReferenceMixin,
-    CompileWarningMixin,
-    EmissionCoreMixin,
-    ExpressionPrimitivesMixin,
-    ConditionFlowMixin,
-    ExceptionLoweringMixin,
-    FunctionLifecycleMixin,
-    FunctionMetadataMixin,
-    ModuleGlobalsMixin,
-    ModuleLifecycleMixin,
-    SemaStateMixin,
-    ImportLoweringMixin,
-    SymbolNamingMixin,
-    AttributeAccessMixin,
-    ClassResolutionMixin,
-    TypeAnnotationMixin,
-    LoopLoweringMixin,
-    BuiltinGuardMixin,
-    AnalysisCollectStaticMixin,
-    AnalysisPatternMixin,
-    AsyncGenVisitorMixin,
-    PatternMatchMixin,
-    CallVisitorMixin,
-    ClassDefVisitorMixin,
-    ComprehensionMixin,
-    ExpressionVisitorMixin,
-    FunctionVisitorMixin,
-    AssignmentStatementVisitorMixin,
-    ControlFlowStatementVisitorMixin,
-    StatementScopeVisitorMixin,
-    ast.NodeVisitor,
-):
-    pass
-
-
-def compile_to_tir(
-    source: str,
-    type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
-) -> dict[str, Any]:
-    from molt.host_python import require_frontend_python
-
-    require_frontend_python()
-    tree = ast.parse(source)
-    gen = SimpleTIRGenerator(
-        type_hint_policy=type_hint_policy,
+if TYPE_CHECKING:
+    from molt.frontend._types import (
+        BoundMethodHint as BoundMethodHint,
+        BuiltinClass as BuiltinClass,
+        ClassId as ClassId,
+        DeclaredClass as DeclaredClass,
+        ReceiverKind as ReceiverKind,
+        MoltValue as MoltValue,
+        MoltOp as MoltOp,
+        _INLINE_INT_MIN as _INLINE_INT_MIN,
+        _INLINE_INT_MAX as _INLINE_INT_MAX,
+        ActiveException as ActiveException,
+        GEN_SEND_OFFSET as GEN_SEND_OFFSET,
+        GEN_THROW_OFFSET as GEN_THROW_OFFSET,
+        GEN_RESUME_RETURNED as GEN_RESUME_RETURNED,
+        GEN_YIELD_FROM_OFFSET as GEN_YIELD_FROM_OFFSET,
+        GEN_CONTROL_SIZE as GEN_CONTROL_SIZE,
+        BUILTIN_TYPE_TAGS as BUILTIN_TYPE_TAGS,
+        BUILTIN_LAYOUT_MIN as BUILTIN_LAYOUT_MIN,
+        IMPLICIT_CLASSMETHOD_NAMES as IMPLICIT_CLASSMETHOD_NAMES,
+        IMPLICIT_STATICMETHOD_NAMES as IMPLICIT_STATICMETHOD_NAMES,
+        _function_is_instance_method as _function_is_instance_method,
+        _BUILTIN_FAST_METHODS as _BUILTIN_FAST_METHODS,
+        BUILTIN_EXCEPTION_NAMES as BUILTIN_EXCEPTION_NAMES,
+        _MOLT_CLOSURE_PARAM as _MOLT_CLOSURE_PARAM,
+        _MOLT_MODULE_CHUNK_PARAM as _MOLT_MODULE_CHUNK_PARAM,
+        _MOLT_MODULE_CHUNK_PREFIX as _MOLT_MODULE_CHUNK_PREFIX,
+        _builtin_func_abi_arity as _builtin_func_abi_arity,
+        _intrinsic_arity_exact as _intrinsic_arity_exact,
+        TryScope as TryScope,
+        MethodInfo as MethodInfo,
+        layout_definition_symbol as layout_definition_symbol,
+        FuncInfo as FuncInfo,
+        CompatibilityError as CompatibilityError,
+        CompatibilityReporter as CompatibilityReporter,
+        CFGGraph as CFGGraph,
+        ControlMaps as ControlMaps,
+        build_cfg as build_cfg,
+        normalize_type_hint as normalize_type_hint,
     )
-    gen.visit(tree)
-    return gen.to_json()
+    from molt.frontend.class_model import (
+        ClassModel as ClassModel,
+    )
+    from molt.frontend.generator import (
+        SimpleTIRGenerator as SimpleTIRGenerator,
+        compile_to_tir as compile_to_tir,
+    )
+    from molt.frontend.sema import (
+        SemaResult as SemaResult,
+        analyze_module as analyze_module,
+    )
+
+
+# Each owner loads on first use through a static import, so the import graph
+# and the lowering cache key see every edge (no computed-name import).
+def _types_module() -> ModuleType:
+    from molt.frontend import _types as owner
+
+    return owner
+
+
+def _class_model_module() -> ModuleType:
+    from molt.frontend import class_model as owner
+
+    return owner
+
+
+def _generator_module() -> ModuleType:
+    from molt.frontend import generator as owner
+
+    return owner
+
+
+def _sema_module() -> ModuleType:
+    from molt.frontend import sema as owner
+
+    return owner
+
+
+# Each public name and the loader of the module that owns it.
+_EXPORTS: dict[str, Callable[[], ModuleType]] = {
+    "BoundMethodHint": _types_module,
+    "BuiltinClass": _types_module,
+    "ClassId": _types_module,
+    "DeclaredClass": _types_module,
+    "ReceiverKind": _types_module,
+    "MoltValue": _types_module,
+    "MoltOp": _types_module,
+    "_INLINE_INT_MIN": _types_module,
+    "_INLINE_INT_MAX": _types_module,
+    "ActiveException": _types_module,
+    "GEN_SEND_OFFSET": _types_module,
+    "GEN_THROW_OFFSET": _types_module,
+    "GEN_RESUME_RETURNED": _types_module,
+    "GEN_YIELD_FROM_OFFSET": _types_module,
+    "GEN_CONTROL_SIZE": _types_module,
+    "BUILTIN_TYPE_TAGS": _types_module,
+    "BUILTIN_LAYOUT_MIN": _types_module,
+    "IMPLICIT_CLASSMETHOD_NAMES": _types_module,
+    "IMPLICIT_STATICMETHOD_NAMES": _types_module,
+    "_function_is_instance_method": _types_module,
+    "_BUILTIN_FAST_METHODS": _types_module,
+    "BUILTIN_EXCEPTION_NAMES": _types_module,
+    "_MOLT_CLOSURE_PARAM": _types_module,
+    "_MOLT_MODULE_CHUNK_PARAM": _types_module,
+    "_MOLT_MODULE_CHUNK_PREFIX": _types_module,
+    "_builtin_func_abi_arity": _types_module,
+    "_intrinsic_arity_exact": _types_module,
+    "TryScope": _types_module,
+    "MethodInfo": _types_module,
+    "ClassModel": _class_model_module,
+    "layout_definition_symbol": _types_module,
+    "FuncInfo": _types_module,
+    "CompatibilityError": _types_module,
+    "CompatibilityReporter": _types_module,
+    "CFGGraph": _types_module,
+    "ControlMaps": _types_module,
+    "build_cfg": _types_module,
+    "normalize_type_hint": _types_module,
+    "SimpleTIRGenerator": _generator_module,
+    "compile_to_tir": _generator_module,
+    "SemaResult": _sema_module,
+    "analyze_module": _sema_module,
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> object:
+    loader = _EXPORTS.get(name)
+    if loader is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(loader(), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))

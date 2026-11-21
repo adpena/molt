@@ -27,12 +27,12 @@ from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
     ClassId,
-    ClassInfo,
     CodeSlotDeclaration,
     ComprehensionBinding,
     ExactClassFact,
     FrontendOpKind,
     FuncInfo,
+    MethodValues,
     MoltOp,
     MoltValue,
     TypeHint,
@@ -41,6 +41,7 @@ from molt.frontend._types import (
 
 if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
+    from molt.frontend.class_model import ClassView
     from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
@@ -89,7 +90,9 @@ class _GeneratorProtocolAttrs(Protocol):
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
     class_definition_pending: set[ClassId]
-    classes: dict[ClassId, ClassInfo]
+    class_method_values: dict[ClassId, dict[str, MethodValues]]
+    class_value_names: dict[ClassId, str]
+    classes: dict[ClassId, ClassView]
     closure_locals: set[str]
     code_slots_emitted: Any
     comp_shadow_locals: set[str]
@@ -141,4 +144,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: Any

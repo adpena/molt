@@ -12,6 +12,7 @@ import molt.cli as cli
 from molt.cli import frontend_execution
 from molt.cli.models import _FrontendIntegrationState
 from molt.frontend import SimpleTIRGenerator
+from tests.class_model_support import class_model
 
 frontend_integration = importlib.import_module("molt.cli.frontend_integration")
 frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -202,7 +203,7 @@ def test_module_integration_keeps_class_statement_owner_refusal() -> None:
         ir_functions=[function],
         func_code_ids={symbol: 0},
         function_metadata={},
-        local_classes={class_id: {"dynamic": False}},
+        local_classes={class_id: class_model(class_id)},
     )
     assert issue == (
         f"Class statement {class_id.definition_symbol!r} is defined by both module "
@@ -288,7 +289,7 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
         "params": [],
         "ops": [{"kind": "ret_void"}],
     }
-    retained_class = {"dynamic": False}
+    retained_class = class_model(seeded_class)
     retained_row = {"app_callable_bindings": []}
     _encoded, (retained_seed,) = encode_lowering_record(b"{}", [retained_function])
     state = _FrontendIntegrationState(
@@ -350,7 +351,7 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
         ir_functions=[function],
         function_metadata=metadata,
         func_code_ids={symbol: 0},
-        local_classes={earlier: {"dynamic": False}, later: {"dynamic": False}},
+        local_classes={earlier: class_model(earlier), later: class_model(later)},
         function_digest_seeds=seeds,
     )
     assert (function, metadata) == incoming

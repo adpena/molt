@@ -502,7 +502,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(
                 kind="CONST",
-                args=[self.classes[expected_class].get("layout_version", 0)],
+                args=[self.classes[expected_class].layout_version],
                 result=expected_version,
             )
         )
@@ -986,10 +986,10 @@ class LoopLoweringMixin(GeneratorMixinBase):
             return False
         class_id = self._exact_class_for_name(key.value.id)
         class_info = self.classes.get(class_id) if class_id is not None else None
-        return bool(
-            class_info
-            and class_info.get("dataclass")
-            and key.attr in class_info.get("fields", {})
+        return (
+            class_info is not None
+            and class_info.dataclass is not None
+            and class_info.layout.field(key.attr) is not None
         )
 
     def _emit_split_dict_increment_for_loop(

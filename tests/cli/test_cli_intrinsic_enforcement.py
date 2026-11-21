@@ -177,7 +177,7 @@ def test_intrinsic_source_cache_recomputes_malformed_payload(
     kind = "intrinsic-facts"
     if corruption == "sites":
         kind = "import-scan"
-        payload = source_records(kind)[key]
+        [(key, payload)] = source_records(kind).items()
         payload["source_sites"] = {"poison": True}
     else:
         payload["facts"][corruption] = {"poison": True}
@@ -790,8 +790,7 @@ def test_intrinsic_source_cache_rejects_malformed_site_facts(
         "__import__(unknown_name)\n",
     )
     first = provider("consumer", path)
-    [key] = source_records("intrinsic-facts")
-    payload = source_records("import-scan")[key]
+    [(key, payload)] = source_records("import-scan").items()
     site = payload["source_sites"][0]
     if corruption == "missing-owner-plan":
         del site["owner_plan"]
@@ -883,9 +882,9 @@ def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
         "__all__ = ['value']\ndef f():\n    _MOLT_OP()\ntry:\n    f()\nexcept Exception:\n    pass\n",
     )
     first = provider("consumer", path)
-    [(key, metadata)] = source_records("intrinsic-facts").items()
+    [metadata] = source_records("intrinsic-facts").values()
     assert "sites" not in metadata["facts"]
-    payload = source_records("import-scan")[key]
+    [(key, payload)] = source_records("import-scan").items()
     if corruption == "retired-effects":
         payload["source_effects"] = []
     elif corruption == "demand-phase":

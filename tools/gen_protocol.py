@@ -2,7 +2,7 @@
 """Generate the SimpleTIRGenerator static-typing Protocol shim (F1 decomposition).
 
 Single source of truth: the *assembled* ``SimpleTIRGenerator`` class and its
-visitor/lowering mixins (``src/molt/frontend/__init__.py`` +
+visitor/lowering mixins (``src/molt/frontend/generator.py`` +
 ``src/molt/frontend/visitors/*.py`` + ``src/molt/frontend/lowering/*.py``), plus
 the curated attribute-type table that already lives in the two generated files.
 
@@ -153,6 +153,9 @@ _TYPE_CHECKING_IMPORTS = {
     "MoltSyntaxError": "molt.frontend.lowering.exception_lowering",
     "PythonDependencyAuthority": "molt.compiler_analysis.python_lexical_scope",
     "ClassDefinitionIndex": "molt.frontend.lowering.class_resolution",
+    "ClassModel": "molt.frontend.class_model",
+    "ClassView": "molt.frontend.class_model",
+    "Member": "molt.frontend.class_model",
     "PythonCodeNameLayout": "molt.compiler_analysis.python_lexical_scope",
     "PythonCellStoragePlan": "molt.compiler_analysis.python_lexical_scope",
     "PythonScopeCellCaptures": "molt.compiler_analysis.python_lexical_scope",
