@@ -80,7 +80,9 @@ exit = _sitebuiltins.exit
 # Complete construction metadata before sealing the public builtin role.
 # Native callable metadata is readonly after finalization; initialization must
 # propagate its original failure instead of exposing a partially initialized API.
-if _sys.version_info >= (3, 13):
+# The runtime can run this body while sys's body is still running (a frame
+# needs builtins); sys binds version_info last, so ask the target fact itself.
+if _require_intrinsic("molt_sys_version_info")()[:2] >= (3, 13):
     eval.__text_signature__ = "($module, source, /, globals=None, locals=None)"  # type: ignore[attr-defined]
     exec.__text_signature__ = (  # type: ignore[attr-defined]
         "($module, source, /, globals=None, locals=None, *, closure=None)"

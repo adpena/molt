@@ -77,6 +77,11 @@ def _compile_and_run(source: str) -> str:
                 str(src_path),
                 "--out-dir",
                 str(tmp),
+                # The default tier is none: urlopen reads the proxy environment
+                # and opens a socket.
+                "--no-trusted",
+                "--capabilities",
+                "net,env.read",
             ],
             capture_output=True,
             text=True,

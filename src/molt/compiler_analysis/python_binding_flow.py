@@ -10305,24 +10305,31 @@ class _RebasableInitializer:
             )
         ):
             return None
-        if not frozenset(former).issubset(current):
-            return None
         additions = frozenset(current).difference(former)
-        if not additions.isdisjoint(self.reads.names) or (
-            additions and prefix._has_empty_module_expiry
-        ):
-            return None
-        assert prefix.module_scope is not None
-        existing = additions.intersection(prefix.module_scope.slots)
-        if existing and any(state.taint_epoch for state in prefix.states._states):
-            return None
+        if prefix._callback_module_names is None:
+            # Both premises supply concrete foreign writes, so source-owned
+            # reflection kept the callback domain open. The explicit
+            # __builtins__ writer still participates in pristine lookup.
+            if ("__builtins__" in former) != ("__builtins__" in current):
+                return None
+        else:
+            if not frozenset(former).issubset(current):
+                return None
+            if not additions.isdisjoint(self.reads.names) or (
+                additions and prefix._has_empty_module_expiry
+            ):
+                return None
+            assert prefix.module_scope is not None
+            existing = additions.intersection(prefix.module_scope.slots)
+            if existing and any(state.taint_epoch for state in prefix.states._states):
+                return None
         work = prefix._fork_at_deferred_boundary()
-        assert (
-            work._foreign_reads is not None and work._callback_module_names is not None
-        )
         work.policy = policy
         work._opaque_activation_sources = active
         work._activation_argument_values = requested._activation_argument_values.copy()
+        if work._callback_module_names is None:
+            return work
+        assert work._foreign_reads is not None
         work._callback_module_names |= additions
         appended_start = len(work.slot_names)
         for name in sorted(additions):
@@ -10475,7 +10482,7 @@ class _BindingRevisions:
                     )
                 finally:
                     analyzer._initializer_premise_reads = None
-                if reads is not None and analyzer._foreign_reads is not None:
+                if reads is not None:
                     size = _binding_checkpoint_size(analyzer) + len(reads.metadata)
                     if size <= 8192:
                         captured = _RebasableInitializer(

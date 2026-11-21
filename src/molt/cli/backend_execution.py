@@ -21,9 +21,6 @@ import time
 from typing import Any, Collection, Mapping, cast, NamedTuple
 import uuid
 
-from molt.default_paths import (
-    validate_required_stdlib_output,
-)
 from molt.backend_environment import (
     backend_process_environment,
     environment_keys,
@@ -955,11 +952,6 @@ def _backend_daemon_compile_request_bytes(
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
-    if stdlib_object_path is not None:
-        try:
-            validate_required_stdlib_output(stdlib_object_path)
-        except (OSError, ValueError) as error:
-            return None, str(error)
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
         shared_stdlib=bool(

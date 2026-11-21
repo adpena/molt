@@ -2863,6 +2863,8 @@ def _prepare_backend_ir(
             static_cells.modules,
             static_cells.init_once,
             static_cells.ineligible,
+            module_functions=integration_state.module_functions,
+            dep_closures=integration_state.module_dep_closures,
         )
     )
     # Proven direct calls of InitOnce functions (HF-846 slice 2); every lane

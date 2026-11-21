@@ -50,9 +50,12 @@ def _resolve_default_dflash_runtime(
     if not has_dflash_backend(backend):
         return None
     if dflash_target_model_id is None or dflash_tokenizer_id is None:
-        if dflash_adapter is not None:
-            raise LookupError(_dflash_missing_message(dflash_adapter))
-        return None
+        # SPEC F7: a DFlash backend needs explicit identity, refused before any
+        # adapter or plain-greedy fallback runs.
+        raise TypeError(
+            "a DFlash GPU backend requires dflash_target_model_id and "
+            "dflash_tokenizer_id"
+        )
     context = DFlashSelectionContext(
         model=model,
         backend=backend,
