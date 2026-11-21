@@ -1398,13 +1398,36 @@ mod numeric_protocol_tests {
             }
             let _callbacks = callback_state();
             INDEX_RESULT.store(huge.as_ptr(), Ordering::SeqCst);
-            for operation in [
-                molt_runtime_math::math::molt_math_log,
-                molt_runtime_math::math::molt_math_log2,
-                molt_runtime_math::math::molt_math_log10,
+            // The index is 2**1200. CPython 3.15 retries `__index__` after the
+            // float conversion overflows (HF-947); earlier minors raise.
+            let retries = crate::object::ops_sys::runtime_target_minor(py) >= 15;
+            for (operation, expected) in [
+                (
+                    molt_runtime_math::math::molt_math_log as unsafe extern "C" fn(u64, u64) -> u64,
+                    1200.0 * std::f64::consts::LN_2,
+                ),
+                (molt_runtime_math::math::molt_math_log2, 1200.0),
+                (
+                    molt_runtime_math::math::molt_math_log10,
+                    1200.0 * std::f64::consts::LOG10_2,
+                ),
             ] {
                 let result =
                     ExceptionValue::adopt(py, operation(py.attached_context(), index_bits.bits()));
+                if retries {
+                    let mut value = 0.0;
+                    assert_eq!(
+                        super::__molt_math_exact_float_value(
+                            py.attached_context(),
+                            result.bits(),
+                            &mut value
+                        ),
+                        1
+                    );
+                    assert!((value - expected).abs() <= 4.0 * f64::EPSILON * expected);
+                    assert!(!crate::exception_pending(py));
+                    continue;
+                }
                 assert!(crate::obj_from_bits(result.bits()).is_none());
                 let error = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!error.as_ptr().is_null());

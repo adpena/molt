@@ -132,7 +132,9 @@ per premise revision.
    cycle, remove its already evaluated head and settle its nested components before revisiting
    the head. Dependent components wait for the outer exit. A consumer known to escape a callable
    is also an opaque-activation premise producer for the defining module. The revision order
-   includes that dependency. The summary solver remains open.
+   includes that dependency. An active writer with an unknown receiver can affect every module,
+   so a pending revision for that writer participates in the order for all admitted receivers.
+   The summary solver remains open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.

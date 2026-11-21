@@ -102,6 +102,9 @@ class GateRule:
     plan_entities: frozenset[PlanEntity] = frozenset()
     # `land` runs this rule's gates in the lane before it queues the lane.
     precheck: bool = False
+    # The consumer gate runs this rule's gates before each commit (HF-937):
+    # the lib tests a Rust change reaches, so no path to main skips them.
+    commit: bool = False
 
 
 # The toolchains of a gate that only reads the candidate's files: linters,
@@ -163,6 +166,8 @@ class SelectedGate:
     # The rules whose `gates` list declares it, in plan order: a rule's later
     # gate may consume an earlier one's build (run_selected_gates).
     rules: tuple[str, ...] = ()
+    # A `commit = true` rule declares it: the consumer gate runs it too.
+    commit: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -397,6 +402,7 @@ class GateConfig:
                     pytest_select=resolved_selections,
                     plan_entities=claims,
                     precheck=entry.get("precheck", False),
+                    commit=entry.get("commit", False),
                 )
             )
         always = data.get("always", [])
@@ -780,6 +786,7 @@ class GateConfig:
             cells: tuple[str, ...] = (),
             try_run: bool = False,
             rules: tuple[str, ...] = (),
+            commit: bool = False,
         ) -> None:
             from tools.proof_command_argv import pytest_arguments
 
@@ -806,6 +813,7 @@ class GateConfig:
                     cells=tuple(dict.fromkeys((*prior.cells, *cells))),
                     try_run=prior.try_run or try_run,
                     rules=tuple(dict.fromkeys((*prior.rules, *rules))),
+                    commit=prior.commit or commit,
                 )
             else:
                 indices[key] = len(selected)
@@ -821,6 +829,7 @@ class GateConfig:
                         cells,
                         try_run,
                         rules,
+                        commit,
                     )
                 )
 
@@ -906,6 +915,7 @@ class GateConfig:
                     pinned_assets=self.prerequisites[f"{owner}.{index}"].pinned_assets,
                     try_run=rule.precheck,
                     rules=(rule.name,),
+                    commit=rule.commit,
                 )
             if rule.pytest:
                 if pytest_index is None:

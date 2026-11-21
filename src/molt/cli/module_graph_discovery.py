@@ -238,14 +238,23 @@ def _ready_namespace_revisions(
         for receiver, producers in state.demands.opaque_activation_producers().items():
             if receiver in state.graph and (admitted := producers & state.graph.keys()):
                 writers[receiver] = admitted
+    writers_with_unknown_receivers: set[str] = set()
     for writer, writes in state.namespace_writes.items():
         active = state.active_owners.get(writer, ())
         for write in writes:
-            target = state.graph.get(write.module) if write.module is not None else None
-            if target is not None and write.source_owner in active:
+            if write.source_owner not in active:
+                continue
+            if write.module is None:
+                if writer in dirty:
+                    writers_with_unknown_receivers.add(writer)
+            elif (target := state.graph.get(write.module)) is not None:
                 for name in state.modules_by_source[target]:
                     if writer != name:
                         writers.setdefault(name, set()).add(writer)
+    if writers_with_unknown_receivers:
+        for receiver in state.graph:
+            if dependencies := writers_with_unknown_receivers - {receiver}:
+                writers.setdefault(receiver, set()).update(dependencies)
     if not writers:
         return state.scan_revisions.copy()
 
