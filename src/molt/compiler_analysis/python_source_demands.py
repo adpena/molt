@@ -174,6 +174,9 @@ class PythonSourceDemands:
         self.queue_body = queue_body
         self.require_runtime_import_protocol = require_runtime_import_protocol
         self._consumer: str | None = None
+        # Reading a callable requires its executable body at publication
+        # even when this incidence does not execute it or scan its imports.
+        self.read_callables: dict[str, set[PythonSourceKey]] = {}
         # A monotone projection of existing activation transitions. The delta
         # wakes only source scans whose globals-custody proof has changed.
         self._opaque_activation_sources: dict[str, set[PythonSourceKey]] = {}
@@ -1140,7 +1143,16 @@ class PythonSourceDemands:
     ) -> None:
         consumer = consumer or self._consumer or origin.module
         incidence = (origin, phase, arguments, argument_count, consumer)
-        if phase in {"read", "factory"} or incidence in self.activated:
+        if phase in {"read", "factory"}:
+            if (
+                origin.identity is None
+                and origin.source is not None
+                and origin.source[-1]
+                in {"FunctionDef", "AsyncFunctionDef", "Lambda", "GeneratorExp"}
+            ):
+                self.read_callables.setdefault(origin.module, set()).add(origin.source)
+            return
+        if incidence in self.activated:
             return
         self.activated.add(incidence)
         if (

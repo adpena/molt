@@ -1044,6 +1044,45 @@ def test_implicit_source_body_custody(
     assert python_node_source_key(hook_node) in owners
 
 
+def test_callable_reads_require_bodies_without_executing_them(tmp_path: Path) -> None:
+    source = (
+        "def selected(): import missing\n"
+        "def member(): import missing\n"
+        "def reflected(): import missing\n"
+        "def local_read(): import missing\n"
+        "def unread(): import missing\n"
+        "alias = local_read\n"
+    )
+    (tmp_path / "provider.py").write_text(source, encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import provider\n"
+        "from provider import selected\n"
+        "value = provider.member\n"
+        "getattr(provider, 'reflected')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "missing.py").write_text("raise AssertionError\n", encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,), [tmp_path], [tmp_path], stdlib, None, set(), full_scan_roots=True
+    )
+    provider = result.scan_authority.by_module["provider"]
+    declarations = {
+        python_node_source_key(node): node.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert {declarations[key] for key in provider.read_callables} == {
+        "selected",
+        "member",
+        "reflected",
+        "local_read",
+    }
+    assert "missing" not in result.graph
+
+
 @pytest.mark.parametrize(
     "publication",
     [

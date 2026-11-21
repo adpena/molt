@@ -484,41 +484,35 @@ def test_global_slot_layout_is_a_sorted_typed_digest_and_wire_fact() -> None:
             registry(names)
 
 
-def test_module_global_layout_collects_the_module_body_names() -> None:
+def test_module_layout_uses_source_bindings_and_deferred_writes() -> None:
+    import ast
+
     from molt.cli.frontend_integration import module_global_layout
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_source_module_names,
+    )
+    from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 
-    def const(out: str, value: str) -> dict[str, str]:
-        return {"kind": "const_str", "out": out, "s_value": value}
-
-    funcs = [
-        {
-            "name": "chunk",
-            "params": ["__molt_module_obj__"],
-            "ops": [
-                const("a", "total"),
-                {"kind": "module_get_global", "args": ["m", "a"], "out": "v"},
-                const("b", "__name__"),
-                {"kind": "module_set_attr", "args": ["__molt_module_obj__", "b", "v"]},
-                const("c", "index"),
-                {"kind": "module_set_attr", "args": ["__molt_module_obj__", "c", "v"]},
-                const("d", "gone"),
-                {"kind": "module_del_global", "args": ["__molt_module_obj__", "d"]},
-                const("x", "foreign"),
-                {"kind": "module_set_attr", "args": ["other_module", "x", "v"]},
-            ],
-        },
-        {
-            "name": "f",
-            "ops": [
-                {"kind": "call", "s_value": "molt_globals_builtin", "out": "g"},
-                const("e", "counter"),
-                {"kind": "dict_set", "args": ["g", "e", "v"]},
-                const("f", "unrelated"),
-                {"kind": "dict_set", "args": ["other", "f", "v"]},
-            ],
-        },
-    ]
-    assert module_global_layout(funcs) == ("counter", "gone", "index", "total")
+    source = """\
+import other
+index = total
+del gone
+other.foreign = 0
+__name__ = 'module'
+def write():
+    global counter
+    counter = 1
+"""
+    names = python_source_module_names(source)
+    deferred = python_namespace_summary(ast.parse(source)).own_names
+    assert names is not None and deferred is not None
+    assert module_global_layout(names.initializer_bindings | deferred) == (
+        "counter",
+        "gone",
+        "index",
+        "other",
+        "write",
+    )
 
 
 def test_global_slot_stamps_name_each_slotted_read_and_store() -> None:
@@ -549,7 +543,7 @@ def test_global_slot_stamps_name_each_slotted_read_and_store() -> None:
             {"kind": "dict_set", "args": ["g", "e", "v"]},
         ],
     }
-    layout = module_global_layout([chunk, func])
+    layout = module_global_layout({"gone", "index", "total"})
     assert layout == ("gone", "index", "total")
     functions = [chunk, func]
     stamp_global_slots(functions, {"demo": [chunk, func]}, {"demo": layout}, {"demo"})
