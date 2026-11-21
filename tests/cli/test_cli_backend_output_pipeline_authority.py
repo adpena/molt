@@ -69,7 +69,6 @@ def terminal_build(
         backend_pipeline,
         build_diagnostics,
         cli_backend_output_pipeline,
-        cli_build_pipeline,
         perf_counter=lambda: clock.now,
     )
     monkeypatch.setattr(

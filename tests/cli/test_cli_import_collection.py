@@ -3190,8 +3190,15 @@ def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registr
     tmp_path: Path,
 ) -> None:
     # A literal import names its module; the registry serves it (D8, HF-841).
+    # Use a source dependency with no import-state writes of its own. The
+    # stdlib math module can publish math.integer to sys.modules.
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import math\nvalue = math.sqrt(4)\n", encoding="utf-8")
+    dependency = tmp_path / "registry_dependency.py"
+    dependency.write_text("VALUE = 4\n", encoding="utf-8")
+    entry_path.write_text(
+        "import registry_dependency\nvalue = registry_dependency.VALUE\n",
+        encoding="utf-8",
+    )
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3211,6 +3218,8 @@ def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registr
 
     assert error is None
     assert prepared is not None
+    assert prepared.module_graph["registry_dependency"] == dependency
+    assert "registry_dependency" in prepared.runtime_import_dispatch_roots
     assert not prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "importlib.util" not in prepared.module_graph
     assert "importlib.machinery" not in prepared.module_graph

@@ -20,6 +20,7 @@ import pytest
 from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import native_link_command
+from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.native_launch_plan import NativeLaunchPlan
 from molt.cli.native_main_stub import _render_native_main_stub
@@ -639,10 +640,10 @@ def test_an_output_that_cannot_carry_native_artifacts_fails_before_the_frontend(
     )
     assert reason is not None and "emit=jit" in reason
 
-    def frontend(**_kwargs):
+    def frontend(_bundle: object, **_kwargs: object) -> None:
         raise AssertionError("the frontend ran before native-artifact custody")
 
-    monkeypatch.setattr(build_pipeline, "_run_frontend_pipeline", frontend)
+    monkeypatch.setattr(build_pipeline._backend_ir, "materialize_tir_closure", frontend)
     failures: list[str] = []
     monkeypatch.setattr(
         build_pipeline,
@@ -694,11 +695,6 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
     def refuse(*_args, **_kwargs):
         raise ValueError("JIT runner admission failed: the host blocks W^X")
 
-    monkeypatch.setattr(
-        jit_pipeline._backend_ir,
-        "_prepare_backend_ir",
-        lambda **_kwargs: (SimpleNamespace(required_link_features=(), ir={}), None),
-    )
     monkeypatch.setattr(jit_pipeline, "ensure_jit_runner", refuse)
     monkeypatch.setattr(
         jit_pipeline._backend_compile, "_prepare_backend_setup", runtime_work
@@ -740,6 +736,7 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
         ),
         resolved_build_entry=SimpleNamespace(entry_module="main"),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
         profile="dev",
         json_output=False,
         target=None,
@@ -987,14 +984,6 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         lambda **k: tmp_path / "program.dylib",
     )
     monkeypatch.setattr(
-        jit_pipeline._backend_ir,
-        "_prepare_backend_ir",
-        lambda **k: (
-            SimpleNamespace(required_link_features=(), ir={}, function_digest_seeds=()),
-            None,
-        ),
-    )
-    monkeypatch.setattr(
         jit_pipeline._runtime_features,
         "runtime_stdlib_profile_for_required_features",
         lambda *a, **k: "micro",
@@ -1061,6 +1050,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             entry_module="main", source_path=tmp_path / "app.py"
         ),
         prepared_frontend_pipeline_bundle=bundle,
+        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
         profile="dev",
         json_output=True,
         target=admit_target("native"),

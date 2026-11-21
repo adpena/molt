@@ -23,9 +23,9 @@ from molt.backend_environment import (
 )
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_cache import _validate_shared_stdlib_output_for_link
-from molt.cli import backend_ir as _backend_ir
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
+from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.backend_diagnostics import _env_requests_backend_diagnostics
 from molt.cli.backend_execution import (
     _backend_request_environment,
@@ -96,6 +96,7 @@ def _run_jit_pipeline(
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
     prepared_frontend_pipeline_bundle: _frontend_pipeline._PreparedFrontendPipelineBundle,
+    prepared_backend_ir: _PreparedBackendIR,
     profile: BuildProfile,
     json_output: bool,
     target: Target,
@@ -111,22 +112,6 @@ def _run_jit_pipeline(
     # The AOT backend pipeline's one source of logical paths (HF-372).
     graph_metadata = prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
     logical_source_path_by_module = graph_metadata.logical_source_path_by_module
-    prepared_backend_ir, prepared_backend_ir_error = (
-        _backend_ir.materialize_tir_closure(
-            prepared_frontend_pipeline_bundle,
-            entry_module=resolved_build_entry.entry_module,
-            fail=_fail,
-            json_output=json_output,
-            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-            target_python=prepared_build_config.target_python,
-            stdlib_profile=stdlib_profile,
-            target=target,
-        )
-    )
-    if prepared_backend_ir_error is not None:
-        return prepared_backend_ir_error
-    assert prepared_backend_ir is not None
     molt_root = prepared_build_roots.molt_root
     # Admit the runner first: its probe refuses a host that blocks executable
     # memory before this build builds the runtime and links its 37 MiB image.
