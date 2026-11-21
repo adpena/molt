@@ -151,6 +151,20 @@ pub(crate) enum SiteBody {
     /// (`generate_closure_store`); words `[owner_address, offset, value]`;
     /// the miss is `molt_closure_store`.
     ClosureStore,
+    /// A new instance of a class allocated from its lifecycle plan, owned
+    /// (`object_lifecycle::generate_object_alloc`); words `[class, profile]`.
+    /// The miss is `molt_object_new` for the root `object` (`root`), whose
+    /// class word may still be zero, else `molt_object_new_bound(class)`.
+    /// `plan` is where the site finds the class's lifecycle plan.
+    ObjectAlloc {
+        root: bool,
+        plan: molt_codegen_abi::object_lifecycle::PlanSource,
+    },
+    /// The release of an object whose count read 1
+    /// (`object_lifecycle::generate_release_terminal`), answering None;
+    /// words `[bits]`; the miss is `molt_dec_ref_obj`. Only the backend's
+    /// release refcount sites reach it, through their slow call.
+    ReleaseTerminal,
 }
 
 /// One step of the inline recursion charge of a direct call.

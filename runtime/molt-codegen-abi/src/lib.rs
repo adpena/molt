@@ -38,6 +38,7 @@ pub mod list_item;
 pub mod literal_cell;
 pub mod method_site;
 pub mod module_ready;
+pub mod object_lifecycle;
 pub mod static_cell;
 pub mod task_site;
 #[cfg(test)]
@@ -238,6 +239,13 @@ pub const THREAD_RECORD_RECURSION_DEPTH_OFFSET: i32 = 64;
 /// `sys.setrecursionlimit` stores with relaxed ordering; published with the
 /// runtime execution binding, as the pending-work pointer is.
 pub const THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET: i32 = 72;
+/// u64: nonzero while a terminal release runs on the thread (the outermost
+/// release's custody state, molt-runtime `object/bounded_release.rs`). A
+/// compiled inline free requires zero (`object_lifecycle`).
+pub const THREAD_RECORD_TERMINAL_RELEASE_OFFSET: i32 = 80;
+/// u64: the bound runtime's builtin `object` class, boxed, or zero; published
+/// with the runtime execution binding. Compiled `object()` allocates it.
+pub const THREAD_RECORD_OBJECT_CLASS_OFFSET: i32 = 88;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home
@@ -452,6 +460,16 @@ pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
 /// are disjoint, so the two meanings never meet on one object.
 pub const HEADER_FLAG_HAS_INSTANCE_DICT: u32 = 1 << 22;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
+/// A scheduler retain owns the object besides its counted owners.
+pub const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
+/// The allocation reserved a GC head before its header.
+pub const HEADER_FLAG_GC_HEAD: u32 = 1 << 11;
+/// The collector counted the allocation toward generation 0.
+pub const HEADER_FLAG_GC_ACCOUNTED: u32 = 1 << 14;
+/// Caller-managed (stack or arena) storage, not the allocator's.
+pub const HEADER_FLAG_SCOPED: u32 = 1 << 21;
+/// A weak reference names the object.
+pub const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
 pub const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
 pub const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
 pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;

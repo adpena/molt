@@ -73,8 +73,9 @@ follows the same layout rule with one word:
   call_anatomy.md 4.5, "Implementation (object lifecycle)"); every other heap-class instance
   is a member from allocation, as in CPython. Heap, arena and frame storage
   all reserve it. The 24-byte header, `HEADER_SIZE_BYTES` and every codegen
-  offset are unchanged; compiled code never allocates objects itself, and C-API
-  views are separate allocations. The size class still describes header and
+  offset are unchanged; compiled code allocates and frees inline only an
+  untracked plain instance (`molt_codegen_abi::object_lifecycle`), which has
+  no head, and C-API views are separate allocations. The size class still describes header and
   payload; deallocation frees from the head with the extra 8 bytes, and the
   resource tracker and allocation profile count them.
 - **Head word.** Zero when untracked; otherwise generation (2 bits) and the

@@ -52,6 +52,15 @@ pub(crate) struct ExecutionTls {
     /// (`THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET`); published and cleared
     /// with `bound_state`.
     pub(crate) recursion_limit_ptr: Cell<u64>,
+    /// Borrowed from the outermost terminal release until its queue drains
+    /// (`THREAD_RECORD_TERMINAL_RELEASE_OFFSET`): compiled inline frees read
+    /// it. A pointer Cell has no TLS destructor, including during runtime
+    /// teardown.
+    pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
+    /// The bound runtime's builtin `object` class, boxed, or zero
+    /// (`THREAD_RECORD_OBJECT_CLASS_OFFSET`); published with `bound_state`
+    /// and when the builtin classes initialize.
+    pub(crate) object_class: Cell<u64>,
     /// GIL custody depth held by this thread.
     pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
@@ -70,9 +79,6 @@ pub(crate) struct ExecutionTls {
     pub(crate) bound_state: Cell<*const RuntimeState>,
     /// Whether this thread ordered its destructor-bearing thread-locals.
     pub(crate) tls_guard_touched: Cell<bool>,
-    /// Borrowed from the outermost terminal release until its queue drains.
-    /// A pointer Cell has no TLS destructor, including during runtime teardown.
-    pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
     pub(crate) attached_context: molt_codegen_abi::AttachedExecutionContextStorage,
     pub(crate) cext_execution_depth: AdmissionInput<u32>,
     pub(crate) compiled_depth: Cell<usize>,
@@ -109,9 +115,10 @@ const _: () = {
     use molt_codegen_abi::{
         THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
         THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
-        THREAD_RECORD_PENDING_INVOCATION_OFFSET, THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
-        THREAD_RECORD_PROFILE_ENABLED_OFFSET, THREAD_RECORD_RECURSION_DEPTH_OFFSET,
-        THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET, THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
+        THREAD_RECORD_OBJECT_CLASS_OFFSET, THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+        THREAD_RECORD_PENDING_WORK_PTR_OFFSET, THREAD_RECORD_PROFILE_ENABLED_OFFSET,
+        THREAD_RECORD_RECURSION_DEPTH_OFFSET, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+        THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET, THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
@@ -144,6 +151,10 @@ const _: () = {
         offset_of!(ExecutionTls, recursion_limit_ptr) as i32
             == THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET
     );
+    assert!(
+        offset_of!(ExecutionTls, terminal_release) as i32 == THREAD_RECORD_TERMINAL_RELEASE_OFFSET
+    );
+    assert!(offset_of!(ExecutionTls, object_class) as i32 == THREAD_RECORD_OBJECT_CLASS_OFFSET);
 };
 
 /// An input of the refcount admission word. Any code reads it; only the
@@ -228,6 +239,7 @@ thread_local! {
             bound_state: Cell::new(std::ptr::null()),
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
+            object_class: Cell::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_gil: crate::concurrency::gil::GilMutexCustody::new(),
             attached_context: molt_codegen_abi::AttachedExecutionContextStorage::new(),

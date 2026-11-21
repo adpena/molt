@@ -115,6 +115,9 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 self.unpack_sequence_op(b, op),
                 "verified UnpackSequence must lower through the canonical runtime ABI"
             ),
+            // A heap class's instances are GC members, which compiled code
+            // does not yet admit inline (object lifecycle S4): the runtime's
+            // plan allocation.
             OpCode::ObjectNewBound => {
                 let Some(&class) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);

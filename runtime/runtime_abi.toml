@@ -522,6 +522,15 @@ return_contract = "unpublished_object"
 type = 3
 
 [[import]]
+name = "heap_alloc"
+return_contract = "raw_bits"
+type = 2
+
+[[import]]
+name = "heap_free"
+type = 5
+
+[[import]]
 name = "object_publish_initialized"
 type = 2
 runtime_name = "molt_object_publish_initialized"

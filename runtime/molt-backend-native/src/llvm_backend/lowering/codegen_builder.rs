@@ -946,6 +946,8 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
                 self.backend.list_item_get_helper(containers, cold)
             }
             SiteBody::ListItemSet => self.backend.list_item_set_helper(),
+            SiteBody::ObjectAlloc { root, plan } => self.backend.object_alloc_helper(root, plan),
+            SiteBody::ReleaseTerminal => self.backend.release_terminal_helper(),
             SiteBody::ClosureLoad => self.backend.closure_load_helper(),
             SiteBody::ClosureStore => self.backend.closure_store_helper(),
             SiteBody::GlobalSlotRead { index } => self.backend.global_slot_read_helper(index),

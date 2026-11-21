@@ -145,6 +145,46 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         }
     }
 
+    /// `object()` (`class` None) or a proven `C()` allocation: the shared
+    /// lifecycle allocation (`SiteBody::ObjectAlloc`), whose miss is the
+    /// runtime constructor. Only `object()` reaches it until compiled code
+    /// admits GC members inline (S4).
+    pub(crate) fn object_alloc(&mut self, b: &mut B, op: &TirOp, class: Option<ValueId>) {
+        let profile = b.profile_enabled();
+        let admission = b.refcount_admission();
+        let (root, class) = match class {
+            Some(class) => (false, RuntimeArg::Operand(class)),
+            None => {
+                let thread = b.thread_record_word();
+                let thread = b.word_to_address(thread);
+                let class = b.load_word(
+                    thread,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::ObjectClass.offset(),
+                );
+                (true, RuntimeArg::Word(b.word_value(class)))
+            }
+        };
+        let args = [
+            class,
+            RuntimeArg::Word(b.word_value(profile)),
+            RuntimeArg::Word(b.word_value(admission)),
+        ];
+        let word = self.operands().call(
+            b,
+            // The closed-world class model's proven plan replaces the guarded
+            // load where it holds (design step 7).
+            CallTarget::Site(SiteBody::ObjectAlloc {
+                root,
+                plan: molt_codegen_abi::object_lifecycle::PlanSource::Guarded,
+            }),
+            &args,
+            false,
+            "object_new",
+            "object_alloc",
+        );
+        self.bind_owned(b, op, b.word_value(word));
+    }
+
     fn load_attr(&mut self, b: &mut B, op: &TirOp) {
         let origin = op.origin;
         if origin == Some(OpKind::GetAttrName) && op.operands.len() >= 2 {
@@ -773,5 +813,26 @@ mod tests {
         let delete = op(OpCode::DelIndex, None, 2, false);
         let run = object_op(delete, TirType::DynBox, &words(&[RECEIVER, KEY]), None);
         assert_eq!(run.runtime_calls, [RuntimeFn::DelitemMethod]);
+    }
+}
+
+/// The body of the program's one terminal-release helper: the release of an
+/// object whose count read 1 (`SiteBody::ReleaseTerminal`). Every release
+/// refcount site's slow call reaches it, so a plain instance nothing observes
+/// frees without a runtime call; its miss is `molt_dec_ref_obj`.
+pub(crate) struct ReleaseTerminalBody;
+
+/// The helper's name; one per program.
+pub(crate) const RELEASE_TERMINAL_HELPER: &str = "molt_release_terminal";
+
+impl super::builder::HelperBody for ReleaseTerminalBody {
+    fn build<H: super::task::TaskPlacement>(&self, h: &mut H, params: &[H::Word]) -> H::Word {
+        let &[bits] = params else {
+            unreachable!("the terminal-release helper takes one word")
+        };
+        let admission = h.refcount_admission();
+        let args = [h.word_value(bits), h.word_value(admission)];
+        let answer = h.site(SiteBody::ReleaseTerminal, &args);
+        h.expect_word(answer)
     }
 }

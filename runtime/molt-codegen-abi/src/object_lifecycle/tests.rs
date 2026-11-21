@@ -1,0 +1,374 @@
+//! The lifecycle generators run on the interpreting builder over byte memory
+//! holding real headers and plan words. The oracles are the runtime's own
+//! rules written directly: its planned allocation's header (molt-runtime
+//! `alloc_planned_instance`: type id and an owner count of 1, published
+//! flags, the size class, an inline owned class word, empty payload) and its
+//! terminal fast path's admission (`free_plain_leaf`).
+
+use super::*;
+use crate::test_machine::{Event, Machine};
+use crate::{
+    HEADER_AUX_KIND_SIDECAR, HEADER_FLAG_GC_HEAD, MOLT_REFCOUNT_ATOMIC, TAG_INT, TYPE_ID_STRING,
+};
+
+const CLASS: u64 = 0x1_0000;
+const BASE: u64 = 0x2_0000;
+const OBJECT: u64 = BASE + HEADER_SIZE_BYTES as u64;
+const COLD: u64 = 0xC01D;
+const BYTES: u64 = 32;
+const SIZE_CLASS: u64 = 3;
+
+fn boxed(address: u64) -> u64 {
+    QNAN | TAG_PTR | address
+}
+
+/// The plan of the root `object`: present, plain, inline-allocated,
+/// untracked, no fields, a 32-byte size class.
+fn root_plan() -> u64 {
+    PLAN_PRESENT
+        | PLAN_PLAIN
+        | PLAN_INLINE_ALLOC
+        | PLAN_UNTRACKED
+        | (SIZE_CLASS << PLAN_SIZE_CLASS_SHIFT)
+        | (BYTES << PLAN_OBJECT_BYTES_SHIFT)
+}
+
+impl Machine {
+    fn class(&mut self, plan: u64) {
+        self.write_bytes(CLASS, HEADER_TYPE_ID_OFFSET, TYPE_ID_TYPE.into(), 4);
+        self.write_word(CLASS, CLASS_LIFECYCLE_PLAN_OFFSET, plan);
+    }
+
+    fn allocate(&mut self, class: u64, profile: u64, allocator: u64) -> u64 {
+        self.allocate_from(class, PlanSource::Guarded, profile, allocator)
+    }
+
+    fn allocate_from(&mut self, class: u64, plan: PlanSource, profile: u64, allocator: u64) -> u64 {
+        generate_object_alloc(
+            self,
+            class,
+            plan,
+            LifecycleWords {
+                profile_enabled: profile,
+            },
+            ListLocking::Gil,
+            |m, bytes| {
+                if m.bailed {
+                    return 0;
+                }
+                m.events.push(Event::Call("heap_alloc", std::vec![bytes]));
+                allocator
+            },
+            |m| {
+                m.events.push(Event::Cold);
+                COLD
+            },
+        )
+    }
+
+    /// A live object at `OBJECT` with `flags`, `aux_kind` and `class_word`.
+    fn dying(&mut self, type_id: u32, flags: u32, aux_kind: u16, class_word: u64) {
+        self.write_bytes(OBJECT, HEADER_TYPE_ID_OFFSET, type_id.into(), 4);
+        self.write_bytes(OBJECT, HEADER_FLAGS_OFFSET, flags.into(), 4);
+        self.write_bytes(OBJECT, HEADER_FLAGS_OFFSET + 4, SIZE_CLASS, 2);
+        self.write_bytes(OBJECT, HEADER_AUX_KIND_OFFSET, aux_kind.into(), 2);
+        self.write_word(OBJECT, HEADER_AUX_OFFSET, class_word);
+    }
+
+    fn release_terminal(&mut self, profile: u64, terminal_release: u64) {
+        generate_release_terminal(
+            self,
+            boxed(OBJECT),
+            LifecycleWords {
+                profile_enabled: profile,
+            },
+            terminal_release,
+            ListLocking::Gil,
+            |m, base, bytes| {
+                if !m.bailed {
+                    m.events
+                        .push(Event::Call("heap_free", std::vec![base, bytes]));
+                }
+            },
+            |m| m.events.push(Event::Cold),
+        );
+    }
+}
+
+#[test]
+fn header_image_matches_the_runtime_allocation() {
+    let [first, second] = planned_header_words(SIZE_CLASS as u16, HEADER_FLAG_GC_HEAD);
+    assert_eq!(first as u32, TYPE_ID_OBJECT);
+    assert_eq!((first >> 32) as u32, 1, "an owner count of 1");
+    assert_eq!(second as u32, HEADER_FLAG_GC_HEAD);
+    assert_eq!((second >> 32) as u16, SIZE_CLASS as u16);
+    assert_eq!((second >> 48) as u16, HEADER_AUX_KIND_CLASS_INLINE);
+}
+
+#[test]
+fn root_object_allocates_inline_with_its_header_and_class() {
+    let mut m = Machine::default();
+    m.class(root_plan());
+    let object = m.allocate(boxed(CLASS), 0, BASE);
+    assert_eq!(object, boxed(OBJECT));
+    assert_eq!(
+        m.events,
+        std::vec![
+            Event::Call("heap_alloc", std::vec![BYTES]),
+            Event::Retain(boxed(CLASS)),
+        ]
+    );
+    let [first, second] = planned_header_words(SIZE_CLASS as u16, 0);
+    assert_eq!(m.read_bytes(BASE, 0, 8), first);
+    assert_eq!(m.read_bytes(BASE, 8, 8), second);
+    assert_eq!(
+        m.read_bytes(BASE, 16, 8),
+        boxed(CLASS),
+        "an owned class word"
+    );
+    // The one payload word, the dictionary word, is empty.
+    assert_eq!(m.read_bytes(OBJECT, 0, 8), 0);
+}
+
+#[test]
+fn allocation_takes_the_runtime_when_the_plan_or_process_refuses() {
+    let refusals: [(&str, u64, u64, u64); 6] = [
+        ("profile counters on", root_plan(), 1, BASE),
+        ("no plan", 0, 0, BASE),
+        ("tracked instances", root_plan() & !PLAN_UNTRACKED, 0, BASE),
+        (
+            "abstract or no size class",
+            root_plan() & !PLAN_INLINE_ALLOC,
+            0,
+            BASE,
+        ),
+        ("allocator refused", root_plan(), 0, 0),
+        ("absent plan bit", root_plan() & !PLAN_PRESENT, 0, BASE),
+    ];
+    for (label, plan, profile, allocator) in refusals {
+        let mut m = Machine::default();
+        m.class(plan);
+        assert_eq!(
+            m.allocate(boxed(CLASS), profile, allocator),
+            COLD,
+            "{label}"
+        );
+        assert!(
+            !m.events
+                .iter()
+                .any(|event| matches!(event, Event::Retain(_))),
+            "{label}: no class retain on the cold path"
+        );
+        assert_eq!(m.events.last(), Some(&Event::Cold), "{label}");
+    }
+    // A class operand that is no class object (or not a pointer) is the
+    // runtime's, which raises.
+    let mut m = Machine::default();
+    m.write_bytes(CLASS, HEADER_TYPE_ID_OFFSET, TYPE_ID_STRING.into(), 4);
+    m.write_word(CLASS, CLASS_LIFECYCLE_PLAN_OFFSET, root_plan());
+    assert_eq!(m.allocate(boxed(CLASS), 0, BASE), COLD);
+    let mut m = Machine::default();
+    assert_eq!(m.allocate(QNAN | TAG_INT | 5, 0, BASE), COLD);
+    let mut m = Machine::default();
+    assert_eq!(m.allocate(0, 0, BASE), COLD, "an unpublished root class");
+}
+
+#[test]
+fn free_threaded_builds_take_the_runtime() {
+    let mut m = Machine::default();
+    m.class(root_plan());
+    let value = generate_object_alloc(
+        &mut m,
+        boxed(CLASS),
+        PlanSource::Guarded,
+        LifecycleWords { profile_enabled: 0 },
+        ListLocking::FreeThreaded,
+        |_, _| unreachable!("no inline allocation"),
+        |_| COLD,
+    );
+    assert_eq!(value, COLD);
+    let _ = MOLT_REFCOUNT_ATOMIC;
+}
+
+#[test]
+fn an_unobserved_plain_instance_frees_inline() {
+    let mut m = Machine::default();
+    m.class(root_plan());
+    m.dying(
+        TYPE_ID_OBJECT,
+        0,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        boxed(CLASS),
+    );
+    m.release_terminal(0, 0);
+    assert_eq!(
+        m.events,
+        std::vec![
+            Event::Call("heap_free", std::vec![BASE, BYTES]),
+            Event::Release(boxed(CLASS)),
+        ]
+    );
+}
+
+/// Label, type id, flags, aux kind, class word, plan, profile word and
+/// terminal-release word of one dying object.
+type DeathCase = (&'static str, u32, u32, u16, u64, u64, u64, u64);
+
+#[test]
+fn an_observable_death_takes_the_runtime() {
+    let finalizing = root_plan() | PLAN_FINALIZER;
+    let cases: [DeathCase; 13] = [
+        (
+            "weakref",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_HAS_WEAKREF,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "c view",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_HAS_ABI_VIEW,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "scheduler retain",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_SPAWN_RETAIN,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "scoped storage",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_SCOPED,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "pointer field",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_HAS_PTRS,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "gc accounted",
+            TYPE_ID_OBJECT,
+            HEADER_FLAG_GC_ACCOUNTED,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "sidecar",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_SIDECAR,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "borrowed class",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS) | HEADER_CLASS_WORD_BORROWED,
+            root_plan(),
+            0,
+            0,
+        ),
+        (
+            "finalizer",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            finalizing,
+            0,
+            0,
+        ),
+        (
+            "tracked class",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan() & !PLAN_UNTRACKED,
+            0,
+            0,
+        ),
+        (
+            "terminal release active",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            1,
+        ),
+        (
+            "profile counters on",
+            TYPE_ID_OBJECT,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            1,
+            0,
+        ),
+        (
+            "another kind",
+            TYPE_ID_STRING,
+            0,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+            root_plan(),
+            0,
+            0,
+        ),
+    ];
+    for (label, type_id, flags, aux_kind, class_word, plan, profile, terminal) in cases {
+        let mut m = Machine::default();
+        m.class(plan);
+        m.dying(type_id, flags, aux_kind, class_word);
+        m.release_terminal(profile, terminal);
+        assert_eq!(m.events, std::vec![Event::Cold], "{label}");
+    }
+}
+
+#[test]
+fn a_proven_plan_allocates_without_loading_or_testing_the_plan_word() {
+    // No class header and no plan word in memory: a load would fail.
+    let mut m = Machine::default();
+    let object = m.allocate_from(boxed(CLASS), PlanSource::Proven(root_plan()), 0, BASE);
+    assert_eq!(object, boxed(OBJECT));
+    let [first, _] = planned_header_words(SIZE_CLASS as u16, 0);
+    assert_eq!(m.read_bytes(BASE, 0, 8), first);
+    // A proven plan that refuses inline allocation is the runtime's at once.
+    let mut m = Machine::default();
+    let refused = PlanSource::Proven(root_plan() & !PLAN_INLINE_ALLOC);
+    assert_eq!(m.allocate_from(boxed(CLASS), refused, 0, BASE), COLD);
+    assert_eq!(m.events, std::vec![Event::Cold]);
+}

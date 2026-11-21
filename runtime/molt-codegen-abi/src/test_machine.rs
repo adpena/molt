@@ -168,8 +168,13 @@ impl FrameBuilder for Machine {
             then(self);
         }
     }
-    fn counted_loop(&mut self, _count: u64, _descending: bool, _body: impl FnMut(&mut Self, u64)) {
-        unreachable!("the modeled sites have no loop")
+    fn counted_loop(&mut self, count: u64, descending: bool, mut body: impl FnMut(&mut Self, u64)) {
+        if self.bailed {
+            return;
+        }
+        for step in 0..count {
+            body(self, if descending { count - 1 - step } else { step });
+        }
     }
 }
 

@@ -9,8 +9,9 @@
 use crate::attached_context_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET;
 use crate::word::{WordBuilder, WordComparison};
 use crate::{
-    THREAD_RECORD_PROFILE_ENABLED_OFFSET, THREAD_RECORD_RECURSION_DEPTH_OFFSET,
-    THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET, THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
+    THREAD_RECORD_OBJECT_CLASS_OFFSET, THREAD_RECORD_PROFILE_ENABLED_OFFSET,
+    THREAD_RECORD_RECURSION_DEPTH_OFFSET, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+    THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET, THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
 };
 
 /// A u64 word of the thread record that compiled code reads at entry.
@@ -20,6 +21,10 @@ pub enum ThreadRecordWord {
     RefcountAdmission,
     /// 1 when the process collects runtime profile counters, else 0.
     ProfileEnabled,
+    /// Nonzero while a terminal release runs on the thread.
+    TerminalRelease,
+    /// The bound runtime's builtin `object` class, boxed.
+    ObjectClass,
 }
 
 impl ThreadRecordWord {
@@ -27,6 +32,8 @@ impl ThreadRecordWord {
         match self {
             Self::RefcountAdmission => THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
             Self::ProfileEnabled => THREAD_RECORD_PROFILE_ENABLED_OFFSET,
+            Self::TerminalRelease => THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
+            Self::ObjectClass => THREAD_RECORD_OBJECT_CLASS_OFFSET,
         }
     }
 }

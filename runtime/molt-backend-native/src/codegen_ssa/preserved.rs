@@ -33,7 +33,6 @@ const fn nullary_runtime(kind: OpKind) -> Option<RuntimeFn> {
         OpKind::ConstEllipsis => RuntimeFn::Ellipsis,
         OpKind::ConstNotImplemented => RuntimeFn::NotImplemented,
         OpKind::Missing => RuntimeFn::Missing,
-        OpKind::ObjectNew => RuntimeFn::ObjectNew,
         _ => return None,
     })
 }
@@ -107,6 +106,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return true;
         }
         match kind {
+            // `object()`: the shared lifecycle allocation of the root class.
+            OpKind::ObjectNew => {
+                self.object_alloc(b, op, None);
+                true
+            }
             // Representation-identity ops: operand 0 itself, no new value.
             OpKind::Cast | OpKind::Widen | OpKind::StoreVar | OpKind::CopyVar => {
                 self.forward_operand(b, op)
