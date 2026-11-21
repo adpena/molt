@@ -175,6 +175,7 @@ from molt.compiler_analysis.python_effects import (
     mapping_unpack_effects,
 )
 from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
     import_metadata_target_name,
     import_call_fallback_operand,
     is_compiler_intrinsics_module,
@@ -9256,31 +9257,26 @@ class _Analyzer:
 
 def _project_binding_index(
     analysis: _BindingAnalysis,
-    policy: PythonBindingPolicy,
+    context: ModuleImportContext,
     tree: Callable[[], ast.Module],
+    *,
+    include_import_discovery: bool,
 ) -> PythonBindingIndex:
     from molt.compiler_analysis.python_imports import (
-        ModuleImportContext,
         ModuleImportFlow,
         _analyze_module_import_flow_uncached,
         context_import_state,
     )
 
-    context = ModuleImportContext(
-        module_name=policy.module_name,
-        is_package=policy.module_is_package,
-        spec_name=policy.module_spec_name,
-        target_python=policy.target_python,
-        execution_kind=policy.module_execution_kind,
-    )
     facts = analysis.facts
-    if policy.include_import_discovery:
+    if include_import_discovery:
         # This dependency is acyclic: the strict projection never requests a
         # discovery projection. Both keys share the core's bounded single flight.
-        strict_policy = replace(policy, include_import_discovery=False)
         strict = analysis.projections.get_or_compute(
-            (strict_policy,),
-            lambda: _project_binding_index(analysis, strict_policy, tree),
+            (context, False),
+            lambda: _project_binding_index(
+                analysis, context, tree, include_import_discovery=False
+            ),
         )
         flow = strict.module_import_flow
     elif analysis.module_import_flow_required:
@@ -9297,7 +9293,7 @@ def _project_binding_index(
     else:
         state = context_import_state(context)
         flow = ModuleImportFlow({}, (state,), (state,))
-    if policy.include_import_discovery:
+    if include_import_discovery:
         # Reuse the cached strict projection and immutable fixpoint facts. Only
         # the source transfer is additional, and it is cached with the core.
         # Even an invariant lexical state can lose storage custody at a getter,
@@ -9321,10 +9317,10 @@ def _project_binding_index(
         )
     return PythonBindingIndex.from_facts(
         facts,
-        module_name=policy.module_name,
-        module_spec_name=policy.module_spec_name,
-        module_is_package=policy.module_is_package,
-        module_execution_kind=policy.module_execution_kind,
+        module_name=context.module_name,
+        module_spec_name=context.spec_name,
+        module_is_package=context.is_package,
+        module_execution_kind=context.execution_kind,
         module_import_flow=flow,
     )
 
@@ -9476,8 +9472,21 @@ def _cached_binding_index(
     # Projections are owned by their core, so eviction cannot leave a second
     # global cache retaining orphaned facts. Each source retains at most eight
     # module contexts; computing either level uses the same single-flight law.
+    # The core may already serve another flow policy with identical facts.
+    # Projection reads only those facts, the context and its discovery mode.
+    context = ModuleImportContext(
+        module_name=policy.module_name,
+        is_package=policy.module_is_package,
+        spec_name=policy.module_spec_name,
+        target_python=policy.target_python,
+        execution_kind=policy.module_execution_kind,
+    )
+    include_import_discovery = policy.include_import_discovery
     return analysis.projections.get_or_compute(
-        (policy,), lambda: _project_binding_index(analysis, policy, tree)
+        (context, include_import_discovery),
+        lambda: _project_binding_index(
+            analysis, context, tree, include_import_discovery=include_import_discovery
+        ),
     )
 
 

@@ -95,8 +95,10 @@ per premise revision.
    assume-guarantee composition, as in IFDS/IDE (Reps, Horwitz, Sagiv 1995) and Datalog solvers.
    The first slice records the binding core's opaque-activation membership queries. Another
    concrete set can reuse that core when every consumed answer holds and the source and all other
-   flow inputs match. A missing activation set keeps its own cache key. Changed answers and foreign
-   writes still require flow analysis until the global solver can evaluate transfer summaries.
+   flow inputs match. Its import projections use that core's facts, the module context and the
+   discovery mode, so equivalent flow inputs also share strict and discovery projections. A
+   missing activation set keeps its own cache key. Changed answers and foreign writes still
+   require flow analysis until the global solver can evaluate transfer summaries.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
