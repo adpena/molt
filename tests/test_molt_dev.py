@@ -1080,7 +1080,7 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
         env["UV_PROJECT_ENVIRONMENT"] = str(repo / ".venv")
     before = dict(env)
     message = (
-        "virtualenv Python not found"
+        "environment Python not found"
         if selector == "MOLT_VENV"
         else "managed development image refused"
     )
@@ -1971,22 +1971,17 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
 
 
 def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
-    """A checkout's Cargo target and Python generation state under a shared root."""
+    """A checkout's Cargo target and the Python environment every checkout
+    shares under the same artifact root (not checkout state)."""
     from molt import dx
 
     target = dx.cargo_target_dir_for_artifact_root(ext, None, source_root=checkout)
-    uv_environment = (
-        ext
-        / "build-environments"
-        / "development"
-        / dx.checkout_component(checkout)
-        / ("a" * 64)
-    )
-    for root in (target, uv_environment):
-        root.mkdir(parents=True)
-        (root / "payload.bin").write_bytes(b"\0" * 64)
-    (uv_environment / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
-    return target, uv_environment
+    shared = ext / "python-environments" / f"3.12.16-dev-{'a' * 16}"
+    target.mkdir(parents=True)
+    (target / "payload.bin").write_bytes(b"\0" * 64)
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+    return target, shared
 
 
 def test_cleanup_retires_the_checkouts_state_with_it(
@@ -2002,7 +1997,7 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     )
     assert rc == EXIT_OK
     assert not wt.exists()
-    assert not target.exists() and not uv_environment.exists()
+    assert not target.exists() and uv_environment.is_dir()
     assert sibling_target.is_dir() and sibling_uv.is_dir()
 
 
@@ -2069,7 +2064,7 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert completed.returncode == 0, completed.stderr
     assert "were not reclaimed" not in completed.stderr
     assert not wt.exists()
-    assert not target.exists() and not uv_environment.exists()
+    assert not target.exists() and uv_environment.is_dir()
 
 
 @pytest.mark.parametrize("release_timing", ["before", "omitted", "after"])
@@ -2342,7 +2337,6 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     with checkout_state.checkout_state_use(
         (
             (foreign_target, checkout_state.CheckoutOwner(main, "cargo-target")),
-            (foreign_uv, checkout_state.CheckoutOwner(main, "python-environment")),
             (
                 foreign_control,
                 checkout_state.CheckoutOwner(foreign_target, "build-control"),
@@ -2432,32 +2426,28 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     roots = {
         target: (str(wt.resolve()), "cargo-target"),
         session: (str(wt.resolve()), "cargo-target"),
-        uv_environment: (str(wt.resolve()), "python-environment"),
         target_control: (str(target.resolve()), "build-control"),
         session_control: (str(session.resolve()), "build-control"),
     }
     for root, (owner, kind) in roots.items():
         assert root.exists() is not removal_succeeds
         if not removal_succeeds:
-            if kind == "python-environment":
-                assert checkout_state.read_checkout_owner(root) == (
-                    checkout_state.CheckoutOwner(Path(owner), kind)
-                )
-                assert not (root / checkout_state.OWNER_RECORD).exists()
-            else:
-                assert json.loads(
-                    (root / checkout_state.OWNER_RECORD).read_text(encoding="utf-8")
-                ) == {
-                    "schema": "molt.state-root-owner.v1",
-                    "owner": owner,
-                    "kind": kind,
-                }
+            assert json.loads(
+                (root / checkout_state.OWNER_RECORD).read_text(encoding="utf-8")
+            ) == {
+                "schema": "molt.state-root-owner.v1",
+                "owner": owner,
+                "kind": kind,
+            }
+    # The shared environment is the same directory for both checkouts; its
+    # bytes are among the foreign ones that stay unchanged.
+    assert uv_environment == foreign_uv and uv_environment.is_dir()
     assert foreign_bytes() == before
     # Linux VMs release their pins of the checkout and its state roots once,
     # just before the removal, while they still exist (HF-463).
     [(released, checkout_present)] = guest_releases
     assert checkout_present
-    assert {wt, target, uv_environment} <= set(released)
+    assert {wt, target} <= set(released)
     assert foreign_target not in released
 
 

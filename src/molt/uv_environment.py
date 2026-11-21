@@ -131,15 +131,20 @@ def resolve_release(selector: str, checkout: Path, environ: Mapping[str, str]) -
     return version
 
 
-def default_key(checkout: Path) -> EnvironmentKey:
-    """The development environment: the pin and `[tool.molt.dx]` groups."""
+def default_groups(checkout: Path) -> tuple[str, ...]:
+    """The development groups: ``[tool.molt.dx].dependency_groups``."""
     from molt.dx import DxConfigError, DxProject
 
     try:
-        groups = DxProject(checkout).dependency_groups()
+        return DxProject(checkout).dependency_groups()
     except DxConfigError as exc:
         raise UvEnvironmentError(str(exc)) from exc
-    return EnvironmentKey(pinned_python(checkout), groups)
+
+
+def default_key(checkout: Path, environ: Mapping[str, str]) -> EnvironmentKey:
+    """The development environment: the pin's release and the dx groups."""
+    release = resolve_release(pinned_python(checkout), checkout, environ)
+    return EnvironmentKey(release, default_groups(checkout))
 
 
 def _table_entry(document: Mapping[str, object], path: Sequence[str]) -> object:
@@ -246,7 +251,7 @@ def selected(
     explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
     if explicit:
         return Path(os.path.abspath(checkout / Path(explicit).expanduser()))
-    root = environment_root(checkout, key or default_key(checkout), environ)
+    root = environment_root(checkout, key or default_key(checkout, environ), environ)
     return root if (root / RECORD).is_file() else None
 
 
@@ -326,7 +331,7 @@ def environment(
     """
     checkout = checkout.expanduser().resolve()
     source = os.environ if environ is None else environ
-    key = key or default_key(checkout)
+    key = key or default_key(checkout, source)
     root = environment_root(checkout, key, source)
     if (root / RECORD).is_file():
         return root

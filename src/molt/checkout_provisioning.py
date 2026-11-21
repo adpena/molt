@@ -444,7 +444,7 @@ def _development_key(spec: DevelopmentEnvironment) -> EnvironmentKey:
     try:
         groups = spec.groups
         if groups is None:
-            groups = uv_environment.default_key(spec.checkout).groups
+            groups = uv_environment.default_groups(spec.checkout)
         selector = (
             spec.python
             or spec.environment.get("MOLT_UV_PROJECT_PYTHON", "").strip()
