@@ -247,13 +247,38 @@ class ClassModel:
     def pending(self, name: str) -> bool:
         return False
 
+    def cache_payload(self) -> object:
+        """The model as plain data for cache identity: enum values by name, AST
+        nodes by ``ast.dump``; class references and type hints stay objects,
+        which the cache's canonical encoder owns."""
+        return _payload(self)
+
+
+def _payload(value: object) -> object:
+    # Class references and type hints stay objects: the cache's canonical
+    # encoder owns their encoding.
+    if isinstance(value, (ClassId, BuiltinClass)):
+        return value
+    if isinstance(value, Enum):
+        return value.name
+    if isinstance(value, ast.AST):
+        return {"ast": ast.dump(value, include_attributes=False)}
+    if isinstance(value, tuple | list):
+        return [_payload(item) for item in value]
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            name: _payload(getattr(value, name))
+            for name in value.__dataclass_fields__  # type: ignore[attr-defined]
+        }
+    return value
+
 
 @dataclass(slots=True)
 class ClassDraft:
     """A class statement's facts while its body lowers.
 
     The statement fixes everything but the members; the body's bindings run in
-    source order through ``compile_member``, ``bind_data`` and ``unbind``, and
+    source order through ``bind_member``, ``bind_data`` and ``unbind``, and
     ``seal`` returns the frozen model when the statement completes. Until a
     binding runs, its name is pending, and a lookup that reaches it refuses.
     """
@@ -281,16 +306,10 @@ class ClassDraft:
     def pending(self, name: str) -> bool:
         return name in self.pending_members
 
-    def compile_member(self, name: str, member: Member) -> None:
-        """A def bound ``name``. A property setter or deleter updates the
-        property it extends, which keeps its member."""
-        previous = self.members.get(name)
-        if not (
-            member.kind is MemberKind.PROPERTY_UPDATE
-            and previous is not None
-            and previous.kind is MemberKind.PROPERTY
-        ):
-            self.members[name] = member
+    def bind_member(self, name: str, member: Member) -> None:
+        """A def bound ``name`` to ``member`` (a property setter or deleter
+        binds the property it extends)."""
+        self.members[name] = member
         self.pending_members.discard(name)
 
     def bind_data(self, name: str, *, possible_data_descriptor: bool) -> None:

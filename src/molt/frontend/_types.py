@@ -50,6 +50,7 @@ _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
 
 
 if TYPE_CHECKING:
+    from molt.frontend.class_model import ClassDraft, ClassView
     from molt.compiler_analysis.python_binding_facts import PythonBindingFacts
 
     from molt.frontend.sema.funcmeta import (
@@ -510,7 +511,22 @@ class _ClassNsScope:
     annotation_namespace_required: bool = False
     class_node: ast.ClassDef | None = None
     class_cell: MoltValue | None = None
-    methods: dict[str, MethodInfo] = field(default_factory=dict)
+    # The statement's class draft: the body's bindings run through it in
+    # source order (``molt.frontend.class_model``).
+    draft: ClassDraft | None = None
+    # Class-level names whose value the defining module cannot prove is not a
+    # data descriptor.
+    possible_data_descriptors: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class MethodValues:
+    """A compiled method's SSA values in its defining module: the function
+    object and the value the class binds (after decorators). Lowering-only:
+    never published, never crosses a module."""
+
+    func: MoltValue
+    attr: MoltValue
 
 
 # 47-bit signed inline integer range for NaN-boxing.
@@ -810,32 +826,17 @@ class ClassInfo(TypedDict, total=False):
     decorated: bool
 
 
-def layout_definition_symbol(class_id: ClassId, info: ClassInfo) -> str | None:
+def layout_definition_symbol(class_id: ClassId, view: ClassView) -> str | None:
     """The class statement identity a layout guard may trust, or None (HF-220).
 
-    Only a non-dynamic statement publishes its field offsets with ``CLASS_DEF``
-    and stamps the class it creates. A dynamic class (a metaclass call, several
-    bases, ``__slots__``, attribute hooks) has no offsets to trust, and a
-    metaclass may return a class that another statement created. Every module
-    applies this one rule: the defining module stamps exactly the statements a
-    guard in any module may name.
+    Only a statement with a static layout publishes its field offsets with
+    ``CLASS_DEF`` and stamps the class it creates. A dynamic class (a
+    metaclass call, several bases, ``__slots__``, attribute hooks) has no
+    offsets to trust, and a metaclass may return a class that another
+    statement created. Every module applies this one rule: the defining
+    module stamps exactly the statements a guard in any module may name.
     """
-    return None if info.get("dynamic") else class_id.definition_symbol
-
-
-def class_namespace_closed(info: ClassInfo) -> bool:
-    """Whether unguarded facts about the class namespace hold (HF-812).
-
-    A layout guard checks the receiver's own class at its layout version, and
-    every mutation of the class or of any base advances that version (the
-    runtime's subclass edges, as CPython's ``PyType_Modified``), so guarded
-    field access needs only a static layout. Unguarded facts also need an
-    unexposed definition: the allocation protocol, method binding, method
-    bodies and unguarded field access all assume that no unseen code rebinds a
-    member or replaces a method body. A subclass inherits members from its
-    bases, so a base that is not closed makes its subclasses ``dynamic``.
-    """
-    return not info["dynamic"] and not info["definition_exposed"]
+    return class_id.definition_symbol if view.layout.static else None
 
 
 class FuncInfo(TypedDict):
@@ -880,7 +881,6 @@ __all__ = [
     "MethodInfo",
     "ClassInfo",
     "layout_definition_symbol",
-    "class_namespace_closed",
     "FuncInfo",
     "CompatibilityError",
     "CompatibilityReporter",

@@ -52,6 +52,7 @@ from molt.frontend.lowering.generator_state import (
 from molt.frontend.sema.funcmeta import parse_stateful_function_type_hint
 
 if TYPE_CHECKING:
+    from molt.frontend.class_model import Member
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
 
 
@@ -893,8 +894,14 @@ class LocalBindingMixin(GeneratorMixinBase):
         return self._class_ns_stack[-1]
 
     def _class_ns_store(
-        self, scope: "_ClassNsScope", name: str, value: MoltValue
+        self,
+        scope: "_ClassNsScope",
+        name: str,
+        value: MoltValue,
+        member: "Member | None" = None,
     ) -> None:
+        """Bind a class-body name. ``member`` is the def's class member when a
+        def binds it; any other value is a data member."""
         if name in scope.global_names:
             self._emit_module_attr_set_runtime(name, value)
             return
@@ -912,7 +919,14 @@ class LocalBindingMixin(GeneratorMixinBase):
         # ``__setitem__`` observes the store, matching CPython's class body).
         scope.names.add(name)
         scope.attr_values[name] = value
-        scope.methods.pop(name, None)
+        if scope.draft is not None:
+            if member is not None:
+                scope.draft.bind_member(name, member)
+            else:
+                scope.draft.bind_data(
+                    name,
+                    possible_data_descriptor=name in scope.possible_data_descriptors,
+                )
         if scope.ns is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
@@ -1010,7 +1024,8 @@ class LocalBindingMixin(GeneratorMixinBase):
         # owns that exception translation for all backend consumers.
         scope.names.discard(name)
         scope.attr_values.pop(name, None)
-        scope.methods.pop(name, None)
+        if scope.draft is not None:
+            scope.draft.unbind(name)
         if scope.ns is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))

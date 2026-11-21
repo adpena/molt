@@ -157,7 +157,7 @@ def test_a_def_the_body_has_not_compiled_stops_the_walk() -> None:
     pending = resolve(draft.linearization, "m", lookup)
     assert pending == Unresolved(ResolveRefusal.PENDING, _IDS["B"])
     member = Member(MemberKind.FUNCTION, symbol="m__B_m")
-    draft.compile_member("m", member)
+    draft.bind_member("m", member)
     assert resolve(draft.linearization, "m", lookup) == Resolved(member, _IDS["B"])
     sealed = draft.seal()
     assert sealed.member("m") == member and not sealed.pending("m")
@@ -204,19 +204,20 @@ def _apply(draft, sequence: tuple[str, ...], namespace: dict) -> None:
     # Mirror the body: each operation runs only when CPython's guard runs it.
     for operation in sequence:
         if operation == "def":
-            draft.compile_member("m", Member(MemberKind.FUNCTION, symbol="def"))
+            draft.bind_member("m", Member(MemberKind.FUNCTION, symbol="def"))
             namespace["m"] = "function"
         elif operation == "data":
             draft.bind_data("m", possible_data_descriptor=False)
             namespace["m"] = "data"
         elif operation == "property":
-            draft.compile_member("m", Member(MemberKind.PROPERTY, symbol="prop"))
+            draft.bind_member("m", Member(MemberKind.PROPERTY, symbol="prop"))
             namespace["m"] = "property"
         elif operation == "setter":
-            if namespace.get("m") == "property":
-                draft.compile_member(
-                    "m", Member(MemberKind.PROPERTY_UPDATE, symbol="setter")
-                )
+            # The setter's def binds the property it extends (the lowering
+            # reads the previous member before its store).
+            previous = draft.member("m")
+            if namespace.get("m") == "property" and previous is not None:
+                draft.bind_member("m", previous)
         elif "m" in namespace:
             draft.unbind("m")
             del namespace["m"]

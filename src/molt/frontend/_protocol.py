@@ -435,12 +435,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _class_layout_stable(self, class_id: ClassId) -> bool: ...
 
+    @staticmethod
     def _class_layout_version(
-        self,
-        class_id: ClassId,
-        class_attrs: dict[str, ast.expr],
-        methods: dict[str, MethodInfo] | None = ...,
-        method_count: int | None = ...,
+        *, static_fields: bool, class_attr_count: int, method_count: int
     ) -> int: ...
 
     def _class_method_descriptor(

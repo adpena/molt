@@ -28,6 +28,7 @@ from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
 from molt.frontend._types import (
+    MethodValues,
     GEN_CONTROL_SIZE,
     ClassId,
     DeclaredClass,
@@ -40,6 +41,7 @@ from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     class_namespace_closed,
 )
+from molt.frontend.class_model import MemberKind, member_from_method_info
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
@@ -67,8 +69,14 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             )
 
         definition = self._prepare_function_definition(item)
+        draft = scope.draft
+        if draft is None:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT, "Method definition has no class draft"
+            )
         with self._type_parameter_scope(definition.type_parameter_bindings):
-            previous_method = scope.methods.get(item.name)
+            # Read before the store below rebinds the name.
+            previous = draft.member(item.name)
             if isinstance(item, ast.AsyncFunctionDef):
                 info = self._compile_class_async_method(
                     class_node, item, definition.defaults
@@ -84,20 +92,26 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._emit_function_annotate(function, item, definition.type_params)
             value = self._apply_function_decorators(function, definition)
             info["attr"] = value
-            self._class_ns_store(scope, item.name, value)
+            member = member_from_method_info(info)
+            values = self.class_method_values.setdefault(draft.class_id, {})
+            extended = values.get(item.name)
+            if (
+                member.kind is MemberKind.PROPERTY_UPDATE
+                and previous is not None
+                and previous.kind is MemberKind.PROPERTY
+                and extended is not None
+            ):
+                # A setter or deleter extends the property: the name keeps the
+                # property's member and function, bound to the new value.
+                member = previous
+                function = extended.func
+            self._class_ns_store(scope, item.name, value, member)
             self.locals[item.name] = value
             if (
                 item.name not in scope.global_names
                 and item.name not in scope.nonlocal_names
             ):
-                if (
-                    info["descriptor"] == "property_update"
-                    and previous_method is not None
-                ):
-                    previous_method["attr"] = value
-                    scope.methods[item.name] = previous_method
-                else:
-                    scope.methods[item.name] = info
+                values[item.name] = MethodValues(func=function, attr=value)
 
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:

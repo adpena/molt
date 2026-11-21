@@ -128,27 +128,17 @@ def class_annotations_need_namespace(
 
 
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
+    @staticmethod
     def _class_layout_version(
-        self,
-        class_id: ClassId,
-        class_attrs: dict[str, ast.expr],
-        methods: dict[str, MethodInfo] | None = None,
-        method_count: int | None = None,
+        *, static_fields: bool, class_attr_count: int, method_count: int
     ) -> int:
-        class_info = self.classes[class_id]
-        field_offsets = (
-            1
-            if class_info.get("fields")
-            and not class_info.get("dynamic")
-            and not class_info.get("dataclass")
-            else 0
-        )
-        if method_count is None:
-            method_count = len(methods or {})
-        return 1 + field_offsets + len(class_attrs) + method_count
+        """The layout version the runtime computes for the class statement:
+        one, plus one for a static field table, plus each class attribute and
+        each method the body defines."""
+        return 1 + int(static_fields) + class_attr_count + method_count
 
     def _class_constructor_refusal(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView, binding_proven: bool
     ) -> str | None:
         """Why ``C(args)`` cannot allocate inline, or None when it can.
 
@@ -162,8 +152,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         """
         if class_id.module != self.module_name:
             return f"the class is defined in module {class_id.module}"
-        if not class_info.get("constructor_binding_proven"):
-            if class_info.get("definition_exposed"):
+        if not binding_proven:
+            if view.definition_exposed:
                 return (
                     "the class statement reaches code the whole-program analysis "
                     "cannot follow"
@@ -172,7 +162,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         index = self._class_index
         if index is None or class_id not in index.top_level:
             return "the class statement is not at module top level"
-        binding_name = class_info["binding_name"]
+        binding_name = view.binding_name
         if binding_name not in self.stable_module_classes:
             return f"module scope may rebind {binding_name!r}"
         if self.module_globals_dict_escaped and (
@@ -185,17 +175,16 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             return "the module namespace escapes and no premise names its writers"
         if binding_name in self.module_global_mutations:
             return f"this module writes {binding_name!r} after the class statement"
-        if class_info.get("custom_metaclass"):
+        if view.custom_metaclass:
             return "the class has a custom metaclass"
-        if class_info.get("dataclass"):
+        if view.dataclass is not None:
             return "a dataclass: the generated __init__ uses the class protocol"
-        if class_info.get("decorated"):
+        if view.decorated:
             return "a class decorator may replace the class"
-        if not class_namespace_closed(class_info):
-            return (
-                "the class namespace is not closed (several bases, __slots__, "
-                "attribute hooks or a mutated base)"
-            )
+        if view.layout.refusal is not None:
+            return f"the class has no static layout: {view.layout.refusal.value}"
+        if not namespace_closed(view):
+            return "the class definition is exposed to unseen code"
         # A class that defines `__del__` (directly or anywhere in its MRO except
         # `object`) has a finalizer that CPython runs at the LAST reference drop.
         # The constructor fold inlines `__init__` and statically tracks
@@ -217,42 +206,28 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # `object.__new__`. Custom or opaque `__new__` must stay on the runtime
         # class-call route so inherited overrides consume constructor args and
         # decide whether `__init__` should run.
-        if not self._class_resolves_default_object_new(class_id, class_info):
+        if not self._class_resolves_default_object_new(class_id, view):
             return "__new__ does not resolve to object.__new__"
         if not self._class_layout_stable(class_id):
             return "the class layout is mutated"
         return None
 
     def _class_defines_finalizer(self, class_id: ClassId) -> bool:
-        """True iff ``class_id`` resolves a user-defined ``__del__`` through its
-        MRO (excluding ``object``). Used to suppress lifetime-shortening
+        """Whether ``class_id`` may resolve a user-defined ``__del__`` through
+        its MRO (excluding ``object``). Used to suppress lifetime-shortening
         optimizations that would skip or mis-time finalizer dispatch.
 
-        Resolves directly over each MRO class's ``methods`` table rather than via
-        ``_resolve_method_info``: the constructor-fold decision is taken while the
-        class is still in ``class_definition_pending`` (its body is processed but
-        the registration is not finalized), and ``_resolve_method_info``
-        short-circuits to ``(None, None)`` for a pending class — which would hide a
-        ``__del__`` the class plainly defines. The per-class ``methods`` dict is
-        already fully populated at this point, so a direct MRO walk is the sound
-        source of truth here. A class-level assignment that shadows ``__del__``
-        with a non-method value (present in ``class_attrs`` but not ``methods``)
-        does not install a finalizer, matching ``_resolve_method_info``'s
-        override rule."""
-        for owner in self._class_mro(class_id):
-            if isinstance(owner, BuiltinClass):
-                continue
-            info = self.classes.get(owner)
-            if not info:
-                continue
-            methods = info.get("methods", {})
-            if "__del__" in methods:
-                return True
-            class_attrs = info.get("class_attrs", {})
-            if "__del__" in class_attrs:
-                # A non-method override at this level masks any base __del__.
-                return False
-        return False
+        The class's own bindings have all run when this is asked, so the one
+        member lookup answers it. A data attribute that shadows ``__del__``
+        installs no finalizer; a class on the MRO with no model may define one,
+        so it counts as a finalizer."""
+        result = resolve(self._class_mro(class_id), "__del__", self.classes.get)
+        if isinstance(result, Resolved):
+            return True
+        return result.reason not in (
+            ResolveRefusal.NOT_FOUND,
+            ResolveRefusal.SHADOWED_BY_DATA,
+        )
 
     def _builtin_min_layout(self, mro: tuple[ClassRef, ...]) -> int:
         min_size = 0
@@ -696,14 +671,15 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 continue
             if isinstance(base_ref, BuiltinClass):
                 continue
-            base_info = self.classes.get(base_ref)
-            if base_info is None:
+            base_view = self.classes.get(base_ref)
+            if base_view is None:
                 dynamic_build = True
                 continue
-            if base_info.get("custom_metaclass"):
+            if base_view.custom_metaclass:
                 inherits_custom_meta = True
                 dynamic_build = True
-            if "__mro_entries__" in base_info.get("methods", {}):
+            mro_entries = base_view.member("__mro_entries__")
+            if mro_entries is not None and mro_entries.kind is not MemberKind.DATA:
                 dynamic_build = True
         # A class body that contains anything beyond straight-line attribute
         # bindings / method-and-nested-class definitions (i.e. control flow —
@@ -782,7 +758,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             base_vals = [base_val]
             bases = [OBJECT_CLASS]
 
-        methods: dict[str, MethodInfo] = {}
         method_nodes = class_body_functions(node)
         needs_classcell = self._lexical_dependencies().summary(node).class_cell_required
         class_attrs: dict[str, ast.expr] = {}
@@ -881,18 +856,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             inherited = []
             inheritance_known = True
             for mro_entry in reversed(mro[1:]):
-                base_info = (
+                base_view = (
                     self.classes.get(mro_entry)
                     if isinstance(mro_entry, ClassId)
                     else None
                 )
-                if base_info and base_info.get("dataclass"):
-                    group = base_info.get("dataclass_init_projection")
+                if base_view is not None and base_view.dataclass is not None:
+                    group = base_view.dataclass.init_projection
                     if group is None:
                         inheritance_known = False
                     else:
                         inherited.append(group)
-                elif mro_entry != OBJECT_CLASS and base_info is None:
+                elif mro_entry != OBJECT_CLASS and base_view is None:
                     inheritance_known = False
             if inheritance_known:
                 init_candidate_fields = project_initializer_fields(
@@ -913,55 +888,52 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
-            size = self._builtin_min_layout(mro)
-            self.classes[class_id] = {
-                "binding_name": node.name,
-                "fields": {},
-                "field_order": [],
-                "field_hints": {},
-                "class_attrs": class_attrs,
-                "possible_data_descriptor_attrs": self._possible_data_descriptor_attrs(
-                    node, class_attrs
+            draft = ClassDraft(
+                class_id=class_id,
+                binding_name=node.name,
+                bases=tuple(bases),
+                linearization=mro,
+                layout=InstanceLayout(
+                    (), self._builtin_min_layout(mro), layout_refusal
                 ),
-                "bases": tuple(bases),
-                "mro": mro,
-                "dynamic": dynamic,
-                "definition_exposed": definition_exposed,
-                "static": is_static,
-                "size": size,
-                "dataclass": True,
-                "dataclass_params": dataclass_opts,
-                "dataclass_init_projection": init_candidate_fields,
-                "constructor_binding_proven": constructor_binding_proven,
-                "methods": methods,
-                "pending_methods": pending_methods,
-                "needs_classcell": needs_classcell,
-                "custom_metaclass": has_metaclass_kw
+                module_level=is_static,
+                definition_exposed=definition_exposed,
+                custom_metaclass=has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
-                "decorated": bool(other_decorators),
-            }
+                decorated=bool(other_decorators),
+                layout_version=self._class_layout_version(
+                    static_fields=False,
+                    class_attr_count=len(class_attrs),
+                    method_count=len(pending_methods),
+                ),
+                field_defaults=(),
+                dataclass=DataclassSpec(
+                    params=tuple(sorted(dataclass_opts.items())),
+                    init_projection=init_candidate_fields,
+                ),
+                pending_members=pending_methods | set(class_attrs),
+            )
         else:
             fields: dict[str, int] = {}
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
             field_hints: dict[str, TypeHint] = {}
             for mro_entry in mro[1:]:
-                base_info = (
+                base_view = (
                     self.classes.get(mro_entry)
                     if isinstance(mro_entry, ClassId)
                     else None
                 )
-                if base_info is None:
+                if base_view is None:
                     continue
-                for field in base_info.get("field_order", []):
-                    if field not in fields:
-                        fields[field] = len(field_order) * 8
-                        field_order.append(field)
-                for field, hint in base_info.get("field_hints", {}).items():
-                    if field not in field_hints:
-                        field_hints[field] = hint
-                for name, expr in base_info.get("defaults", {}).items():
+                for base_field in base_view.layout.fields:
+                    if base_field.name not in fields:
+                        fields[base_field.name] = len(field_order) * 8
+                        field_order.append(base_field.name)
+                    if base_field.hint is not None and base_field.name not in field_hints:
+                        field_hints[base_field.name] = base_field.hint
+                for name, expr in base_view.field_defaults:
                     if name not in field_defaults:
                         field_defaults[name] = expr
 
@@ -1096,40 +1068,42 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 else reserved_tail
             )
             size = max(base_size, min_layout)
-            self.classes[class_id] = ClassInfo(
+            draft = ClassDraft(
+                class_id=class_id,
                 binding_name=node.name,
-                fields=fields,
-                size=size,
-                methods=methods,
-                pending_methods=pending_methods,
-                field_order=field_order,
-                defaults=field_defaults,
-                field_hints=field_hints,
-                class_attrs=class_attrs,
-                possible_data_descriptor_attrs=self._possible_data_descriptor_attrs(
-                    node, class_attrs
-                ),
                 bases=tuple(bases),
-                mro=mro,
-                dynamic=dynamic,
+                linearization=mro,
+                layout=InstanceLayout(
+                    tuple(
+                        Field(name, fields[name], field_hints.get(name))
+                        for name in field_order
+                    ),
+                    size,
+                    layout_refusal,
+                ),
+                module_level=is_static,
                 definition_exposed=definition_exposed,
-                static=is_static,
-                needs_classcell=needs_classcell,
                 custom_metaclass=has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
                 decorated=bool(other_decorators),
-                constructor_binding_proven=constructor_binding_proven,
+                # Layout expectations come from immutable potential slots, not
+                # values eagerly instantiated by a separate method-emission
+                # lane. Dynamic class bodies use runtime layout and never turn
+                # conditional methods into unconditional devirtualization
+                # targets.
+                layout_version=self._class_layout_version(
+                    static_fields=bool(fields) and layout_refusal is None,
+                    class_attr_count=len(class_attrs),
+                    method_count=len(pending_methods),
+                ),
+                field_defaults=tuple(field_defaults.items()),
+                dataclass=None,
+                pending_members=pending_methods | set(class_attrs),
             )
-
-        # Layout expectations come from immutable potential slots, not values
-        # eagerly instantiated by a separate method-emission lane. Dynamic class
-        # bodies use runtime layout and never turn conditional methods into
-        # unconditional devirtualization targets.
-        self.classes[class_id]["layout_version"] = self._class_layout_version(
-            class_id,
-            class_attrs,
-            method_count=len(pending_methods),
+        self.classes[class_id] = draft
+        possible_data_descriptors = self._possible_data_descriptor_attrs(
+            node, class_attrs
         )
         classcell_val: MoltValue | None = None
         if needs_classcell:
@@ -1379,15 +1353,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ns=dynamic_namespace,
             attr_values=class_attr_values,
             names=(
-                set(class_attr_values)
-                | set(methods)
-                | self._collect_assigned_names(node.body)
+                set(class_attr_values) | self._collect_assigned_names(node.body)
             ),
             class_name=node.name,
             module_name=module_name,
             class_node=node,
             class_cell=classcell_val,
-            methods=methods,
+            draft=draft,
+            possible_data_descriptors=possible_data_descriptors,
             annotation_namespace_required=annotation_namespace_required,
             local_names=frozenset(self._collect_assigned_names(node.body)),
             global_names=frozenset(self._collect_global_decls(node.body)),
@@ -1703,23 +1676,22 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 class_def_attrs.append((sa_key, sa_tuple))
             class_val = MoltValue(self.next_var(), type_hint="type")
 
-        class_info = self.classes[class_id]
         if not dynamic_build:
             # Collect field offsets into attrs
             if (
-                not class_info.get("dataclass")
-                and not class_info.get("dynamic")
-                and class_info.get("fields")
+                draft.dataclass is None
+                and draft.layout.static
+                and draft.layout.fields
             ):
                 field_items: list[MoltValue] = []
-                for field in sorted(class_info["fields"]):
+                for field in sorted(item.name for item in draft.layout.fields):
                     key_val = MoltValue(self.next_var(), type_hint="str")
                     self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
                     offset_val = MoltValue(self.next_var(), type_hint="int")
                     self.emit(
                         MoltOp(
                             kind="CONST",
-                            args=[class_info["fields"][field]],
+                            args=[draft.layout.offset(field)],
                             result=offset_val,
                         )
                     )
@@ -1745,9 +1717,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             for k, v in class_def_attrs:
                 class_def_args.append(k)
                 class_def_args.append(v)
-            layout_version = class_info.get("layout_version", 0)
+            layout_version = draft.layout_version
             class_def_flags = 1 if base_vals else 0
-            class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{class_info['size']},{layout_version},{class_def_flags}"
+            class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{draft.layout.size},{layout_version},{class_def_flags}"
             if dynamic_namespace is None:
                 self.emit(
                     MoltOp(
@@ -1780,7 +1752,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         bases_tuple,
                         dynamic_namespace,
                         layout_attrs,
-                        self._emit_const_value(class_info["size"]),
+                        self._emit_const_value(draft.layout.size),
                         self._emit_const_value(layout_version),
                     ],
                     type_hint="type",
@@ -1790,7 +1762,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             # before any binding, decorator or dataclass transform sees it
             # (HF-220). Layout guards compare it; the metaclass path below
             # builds only dynamic classes, which no guard trusts.
-            definition = layout_definition_symbol(class_id, class_info)
+            definition = layout_definition_symbol(class_id, draft)
             if definition is not None:
                 self._register_code_symbol(definition)
                 self.emit(
@@ -1838,8 +1810,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             if init_candidate_fields is not None:
                 has_post_init = any(
                     isinstance(owner, ClassId)
-                    and "__post_init__"
-                    in self.classes.get(owner, {}).get("methods", {})
+                    and (owner_view := self.classes.get(owner)) is not None
+                    and (post_init := owner_view.member("__post_init__")) is not None
+                    and post_init.kind is not MemberKind.DATA
                     for owner in mro
                 )
                 template_node = initializer_template(
@@ -1931,21 +1904,25 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             and not dynamic_build
             and bound_class is not None
             and bound_class.name == class_val.name
-            and (
-                not class_info.get("dataclass")
-                or not class_info.get("dataclass_params", {}).get("slots", False)
-            )
+            and (draft.dataclass is None or not draft.dataclass.option("slots"))
         ):
-            class_info["class_value_name"] = class_val.name
-            class_info["constructor_refusal"] = self._class_constructor_refusal(
-                class_id, class_info
+            self.class_value_names[class_id] = class_val.name
+            refusal = self._class_constructor_refusal(
+                class_id, draft, constructor_binding_proven
+            )
+            draft.constructor = (
+                ConstructorPlan(binding_proven=constructor_binding_proven)
+                if refusal is None
+                else ConstructorRefusal(refusal)
             )
         else:
-            class_info.pop("class_value_name", None)
-            class_info["constructor_refusal"] = (
+            self.class_value_names.pop(class_id, None)
+            draft.constructor = ConstructorRefusal(
                 "the class statement is decorated, built dynamically or not "
                 "bound at module scope"
             )
+        # Every binding of the body has run: the statement's facts are final.
+        self.classes[class_id] = draft.seal()
 
         return None
 
