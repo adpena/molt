@@ -11,6 +11,7 @@ import pytest
 
 from molt.frontend._types import ClassId
 from molt.frontend.class_model import (
+    ClassDraft,
     ClassModel,
     ClassView,
     ConstructorRefusal,
@@ -137,8 +138,6 @@ def test_resolve_matches_the_interpreters_mro_lookup(
 
 
 def test_a_def_the_body_has_not_compiled_stops_the_walk() -> None:
-    from molt.frontend.class_model import ClassDraft
-
     draft = ClassDraft(
         class_id=_IDS["B"],
         binding_name="B",
@@ -202,7 +201,9 @@ def _body_source(sequence: tuple[str, ...]) -> str:
     return "\n".join(lines) or "pass"
 
 
-def _apply(draft, sequence: tuple[str, ...], namespace: dict) -> None:
+def _apply(
+    draft: ClassDraft, sequence: tuple[str, ...], namespace: dict[str, str]
+) -> None:
     # Mirror the body: each operation runs only when CPython's guard runs it.
     for operation in sequence:
         if operation == "def":
@@ -235,9 +236,9 @@ _SEQUENCES = [
 
 
 @pytest.mark.parametrize("sequence", _SEQUENCES, ids=["-".join(s) for s in _SEQUENCES])
-def test_body_bindings_in_order_match_the_interpreter(sequence: tuple[str, ...]) -> None:
-    from molt.frontend.class_model import ClassDraft
-
+def test_body_bindings_in_order_match_the_interpreter(
+    sequence: tuple[str, ...],
+) -> None:
     class Base:
         def m(self) -> int:
             return 0

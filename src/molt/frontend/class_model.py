@@ -25,7 +25,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
-from molt.frontend._types import BuiltinClass, ClassId, ClassRef, TypeHint
+from molt.frontend._types import (
+    BoundMethodHint,
+    BuiltinClass,
+    ClassId,
+    ClassRef,
+    DeclaredClass,
+    TypeHint,
+)
 from molt.frontend.dataclass_init import DataclassInitField
 
 if TYPE_CHECKING:
@@ -334,47 +341,95 @@ class ClassModel:
 
     @classmethod
     def from_cache_record(cls, record: dict[str, object]) -> ClassModel:
-        """The inverse of ``cache_record``; a malformed record raises."""
-        fields, size, refusal = record["layout"]  # type: ignore[misc]
+        """The inverse of ``cache_record``; a malformed record raises
+        ValueError."""
+        fields, size, refusal = _items(record["layout"], 3)
         dataclass_record = record["dataclass"]
         constructor = record["constructor"]
         return cls(
-            class_id=record["class_id"],  # type: ignore[arg-type]
-            binding_name=record["binding_name"],  # type: ignore[arg-type]
-            bases=tuple(record["bases"]),  # type: ignore[arg-type]
-            linearization=tuple(record["linearization"]),  # type: ignore[arg-type]
+            class_id=_of(record["class_id"], ClassId),
+            binding_name=_of(record["binding_name"], str),
+            bases=_class_refs(record["bases"]),
+            linearization=_class_refs(record["linearization"]),
             layout=InstanceLayout(
-                tuple(Field(name, offset, hint) for name, offset, hint in fields),
-                size,
-                None if refusal is None else LayoutRefusal[refusal],
+                tuple(_field_from_record(item) for item in _items(fields)),
+                _of(size, int),
+                None if refusal is None else LayoutRefusal[_of(refusal, str)],
             ),
-            module_level=record["module_level"],  # type: ignore[arg-type]
-            definition_exposed=record["definition_exposed"],  # type: ignore[arg-type]
-            binding_proven=record["binding_proven"],  # type: ignore[arg-type]
-            custom_metaclass=record["custom_metaclass"],  # type: ignore[arg-type]
-            decorated=record["decorated"],  # type: ignore[arg-type]
-            layout_version=record["layout_version"],  # type: ignore[arg-type]
+            module_level=_of(record["module_level"], bool),
+            definition_exposed=_of(record["definition_exposed"], bool),
+            binding_proven=_of(record["binding_proven"], bool),
+            custom_metaclass=_of(record["custom_metaclass"], bool),
+            decorated=_of(record["decorated"], bool),
+            layout_version=_of(record["layout_version"], int),
             members=tuple(
-                (name, _member_from_record(member))
-                for name, member in record["members"]  # type: ignore[union-attr]
+                _named_member_from_record(item) for item in _items(record["members"])
             ),
-            possible_data_descriptors=frozenset(record["possible_data_descriptors"]),  # type: ignore[arg-type]
+            possible_data_descriptors=frozenset(
+                _of(name, str) for name in _items(record["possible_data_descriptors"])
+            ),
             dataclass=None
             if dataclass_record is None
-            else DataclassSpec(
-                params=tuple(tuple(item) for item in dataclass_record[0]),  # type: ignore[index]
-                init_projection=None
-                if dataclass_record[1] is None  # type: ignore[index]
-                else tuple(
-                    DataclassInitField.from_schema(schema)
-                    for schema in dataclass_record[1]  # type: ignore[index]
-                ),
-            ),
+            else _dataclass_from_record(dataclass_record),
             constructor=ConstructorPlan()
             if constructor is None
-            else ConstructorRefusal(constructor),  # type: ignore[arg-type]
+            else ConstructorRefusal(_of(constructor, str)),
         )
 
+
+def _of[T](value: object, kind: type[T]) -> T:
+    """``value`` when it is a ``kind``; a cache record part of another type
+    raises ValueError."""
+    if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+        raise ValueError(f"class cache record: expected {kind.__name__}, got {value!r}")
+    return value
+
+
+def _optional[T](value: object, kind: type[T]) -> T | None:
+    return None if value is None else _of(value, kind)
+
+
+def _items(value: object, length: int | None = None) -> tuple[object, ...]:
+    """A record sequence (a tuple, or the list a JSON round trip makes), of
+    ``length`` items when one is given."""
+    if not isinstance(value, (tuple, list)) or (
+        length is not None and len(value) != length
+    ):
+        raise ValueError(
+            f"class cache record: expected {length or 'a'} items, got {value!r}"
+        )
+    return tuple(value)
+
+
+def _class_refs(value: object) -> tuple[ClassRef, ...]:
+    refs: list[ClassRef] = []
+    for item in _items(value):
+        if not isinstance(item, (ClassId, BuiltinClass)):
+            raise ValueError(f"class cache record: expected a class, got {item!r}")
+        refs.append(item)
+    return tuple(refs)
+
+
+def _field_from_record(value: object) -> Field:
+    name, offset, hint = _items(value, 3)
+    if hint is not None and not isinstance(hint, (str, DeclaredClass, BoundMethodHint)):
+        raise ValueError(f"class cache record: expected a type hint, got {hint!r}")
+    return Field(_of(name, str), _of(offset, int), hint)
+
+
+def _dataclass_from_record(value: object) -> DataclassSpec:
+    params, projection = _items(value, 2)
+    return DataclassSpec(
+        params=tuple(
+            (_of(name, str), _of(flag, bool))
+            for name, flag in (_items(item, 2) for item in _items(params))
+        ),
+        init_projection=None
+        if projection is None
+        else tuple(
+            DataclassInitField.from_schema(schema) for schema in _items(projection)
+        ),
+    )
 
 
 def _member_record(member: Member) -> tuple[object, ...]:
@@ -401,19 +456,44 @@ def _member_record(member: Member) -> tuple[object, ...]:
     )
 
 
-def _member_from_record(record: tuple[object, ...]) -> Member:
-    kind, symbol, shape, closure, returns_none, inline, field_name, update = record
+def _shape_from_record(value: object) -> Shape:
+    params, posonly, kwonly, defaults, vararg, varkw = _items(value, 6)
+    return Shape(
+        _of(params, int),
+        _of(posonly, int),
+        _of(kwonly, int),
+        _of(defaults, int),
+        _of(vararg, bool),
+        _of(varkw, bool),
+    )
+
+
+def _named_member_from_record(value: object) -> tuple[str, Member]:
+    name, member = _items(value, 2)
+    return _of(name, str), _member_from_record(member)
+
+
+def _member_from_record(value: object) -> Member:
+    kind, symbol, shape, closure, returns_none, inline, field_name, update = _items(
+        value, 8
+    )
+    if inline is None:
+        body = None
+    else:
+        params, source = _items(inline, 2)
+        body = InlineBody(
+            params=tuple(_of(param, str) for param in _items(params)),
+            source=_of(source, str),
+        )
     return Member(
-        kind=MemberKind[kind],  # type: ignore[index]
-        symbol=symbol,  # type: ignore[arg-type]
-        shape=None if shape is None else Shape(*shape),  # type: ignore[misc]
-        closure=Closure[closure],  # type: ignore[index]
-        returns_none=returns_none,  # type: ignore[arg-type]
-        inline=None
-        if inline is None
-        else InlineBody(params=tuple(inline[0]), source=inline[1]),  # type: ignore[index]
-        property_field=field_name,  # type: ignore[arg-type]
-        property_update=update,  # type: ignore[arg-type]
+        kind=MemberKind[_of(kind, str)],
+        symbol=_optional(symbol, str),
+        shape=None if shape is None else _shape_from_record(shape),
+        closure=Closure[_of(closure, str)],
+        returns_none=_of(returns_none, bool),
+        inline=body,
+        property_field=_optional(field_name, str),
+        property_update=_optional(update, str),
     )
 
 

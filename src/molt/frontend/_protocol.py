@@ -72,8 +72,11 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_call_arguments import CallForm
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
+    from molt.frontend.class_model import ClassModel
+    from molt.frontend.class_model import ClassView
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
     from molt.compiler_analysis.python_function_kind import FunctionKind
+    from molt.frontend.class_model import Member
     from molt.compiler_analysis.native_support_slice import ModuleBodySelection
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
