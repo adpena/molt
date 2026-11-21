@@ -2,6 +2,7 @@
 // Kept separate from call dispatch and object slot wrappers so builtin method-surface facts have one home.
 
 use crate::object::foreign::NativeObjectOwner;
+use crate::object::ops_dict::{DictSnapshotKind, dict_snapshot_list};
 use crate::*;
 use molt_obj_model::MoltObject;
 
@@ -157,8 +158,9 @@ unsafe fn dir_default_collect_native(
         }
         Ok(())
     })();
-    let keys =
-        collected.and_then(|()| unsafe { list_from_iter_bits(py, dictionary_bits) }.ok_or(()));
+    let keys = collected.and_then(|()| unsafe {
+        dict_snapshot_list(py, dictionary, DictSnapshotKind::Keys).ok_or(())
+    });
     dec_ref_bits(py, dictionary_bits);
     keys
 }
