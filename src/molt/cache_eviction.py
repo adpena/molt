@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from molt.default_paths import (
     BUILD_ARTIFACTS_CACHE_DIRECTORY,
     FRONTEND_RECORD_FILES_DIRECTORY,
+    RETIRED_CACHE_LOCK_NAMES,
+    RETIRED_LOCK_MIN_IDLE_S,
+    cache_control_root,
     build_artifacts_entry,
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
@@ -170,6 +173,8 @@ class PruneCompleted(TypedDict):
     protected_state: list[str]
     legacy_native_state: list[str]
     legacy_source_record_state: list[str]
+    # Unheld files of the per-key lock families the stripes replaced (HF-942).
+    retired_lock_files_removed: int
 
 
 class PruneSkipped(TypedDict):
@@ -1009,7 +1014,16 @@ def _prune_locked(
                 failures += 1
     if store is not None:
         physical_after = store.physical_bytes()
+    from molt.file_locks import retire_unheld_lock_files
+
+    retired_locks, _kept = retire_unheld_lock_files(
+        cache_control_root(cache_root),
+        RETIRED_CACHE_LOCK_NAMES,
+        min_idle_s=RETIRED_LOCK_MIN_IDLE_S,
+        apply=not dry_run,
+    )
     return {
+        "retired_lock_files_removed": retired_locks,
         "status": "completed",
         "cache_root": str(cache_root),
         "entries_before": before_count,

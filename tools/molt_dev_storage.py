@@ -567,6 +567,40 @@ def trim(
             result.extend(
                 retire_regenerable([cache], kind=kind, now=time.time(), apply=apply)
             )
+    # The per-key lock families the stripes replaced (HF-942): unheld files go.
+    from molt.default_paths import (
+        RETIRED_CACHE_LOCK_NAMES,
+        RETIRED_CHECKOUT_STATE_LOCK_NAMES,
+        RETIRED_LOCK_MIN_IDLE_S,
+        cache_control_root,
+    )
+    from molt.file_locks import retire_unheld_lock_files
+
+    for directory, names in (
+        (
+            artifact_root(repo, environment)
+            / "target"
+            / ".disk_guard"
+            / "checkout-state-locks",
+            RETIRED_CHECKOUT_STATE_LOCK_NAMES,
+        ),
+        (
+            cache_control_root(storage_path(repo, "compile-cache", environment)),
+            RETIRED_CACHE_LOCK_NAMES,
+        ),
+    ):
+        removed, kept = retire_unheld_lock_files(
+            directory, names, min_idle_s=RETIRED_LOCK_MIN_IDLE_S, apply=apply
+        )
+        result.append(
+            {
+                "class": "retired-lock-files",
+                "path": str(directory),
+                "action": "removed" if apply else "removable",
+                "count": removed,
+                "kept": kept,
+            }
+        )
     # Repository preimages have one Git custody owner. Historical user-cache
     # and host-temp preimages require the operator's explicit inventory scope;
     # a test/SDK checkout never takes custody of the account's global history.

@@ -373,10 +373,31 @@ def backend_cache_artifact_for_sync_receipt(receipt: Path) -> Path | None:
     return artifact if backend_cache_sync_receipt_path(artifact) == receipt else None
 
 
+# A keyed lock family names one of this many stripes (4,096), so its lock
+# files stay bounded: per-key names left about 157k files in the compile
+# cache's lock directory and 65k checkout-state locks (HF-942). A stripe only
+# ever serializes two holders; no path takes two keys of one family at once.
+LOCK_STRIPE_HEX_DIGITS = 3
+
+
+# Per-key lock names the stripes replaced; the storage tooling and the daily
+# cache retention unlink their unheld files (file_locks.retire_unheld_lock_files).
+RETIRED_CACHE_LOCK_NAMES = re.compile(
+    r"(?:immutable-publish-[0-9a-f]{16}|compile\.[0-9a-f]{64})\.lock"
+)
+RETIRED_CHECKOUT_STATE_LOCK_NAMES = re.compile(r"[0-9a-f]{64}\.lock")
+# A retired lock file this recently changed may still be another process's.
+RETIRED_LOCK_MIN_IDLE_S = 86400.0
+
+
+def lock_stripe(key: str) -> str:
+    """The stripe of ``key`` within its lock family."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:LOCK_STRIPE_HEX_DIGITS]
+
+
 def backend_cache_publication_lock_name(artifact: Path) -> str:
-    """Publication and eviction serialize on the same artifact generation."""
-    digest = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[:16]
-    return f"immutable-publish-{digest}"
+    """Publication and eviction serialize on the artifact's stripe."""
+    return f"immutable-publish.{lock_stripe(str(artifact.resolve()))}"
 
 
 def cache_control_root(cache_root: Path) -> Path:

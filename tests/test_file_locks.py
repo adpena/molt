@@ -1180,3 +1180,48 @@ def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
     finally:
         release.set()
         thread.join(timeout=_HANG_BOUND_S)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unlink of an unheld lock file")
+def test_retired_lock_files_go_only_when_unheld_idle_empty_and_named(
+    tmp_path: Path,
+) -> None:
+    """HF-942: per-key lock files of a retired family are unlinked only when
+    no process holds them, they have been idle long enough, and they are
+    still the empty file the name points to."""
+    import re
+    import fcntl
+
+    from molt.file_locks import retire_unheld_lock_files
+
+    names = re.compile(r"compile\.[0-9a-f]{64}\.lock")
+    old = time.time() - 2 * 86400
+
+    def lock(name: str, *, body: bytes = b"", idle: bool = True) -> Path:
+        path = tmp_path / name
+        path.write_bytes(body)
+        if idle:
+            os.utime(path, (old, old))
+        return path
+
+    idle = lock("compile." + "a" * 64 + ".lock")
+    recent = lock("compile." + "b" * 64 + ".lock", idle=False)
+    stamped = lock("compile." + "c" * 64 + ".lock", body=b"1700000000.0")
+    held = lock("compile." + "d" * 64 + ".lock")
+    stripe = lock("compile.abc.lock")
+    holder = os.open(held, os.O_RDONLY)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        # A dry run counts the removable file and changes nothing.
+        assert retire_unheld_lock_files(
+            tmp_path, names, min_idle_s=86400, apply=False
+        ) == (2, 2)
+        assert idle.exists()
+        assert retire_unheld_lock_files(tmp_path, names, min_idle_s=86400) == (1, 3)
+    finally:
+        os.close(holder)
+    assert not idle.exists()
+    assert recent.exists() and stamped.exists() and held.exists() and stripe.exists()
+    # Released, the formerly held file goes on the next pass.
+    assert retire_unheld_lock_files(tmp_path, names, min_idle_s=86400) == (1, 2)
+    assert not held.exists()
