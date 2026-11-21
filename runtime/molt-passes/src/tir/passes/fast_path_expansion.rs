@@ -177,8 +177,10 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
                 )
             }
             Expansion::Truthiness => expand_truthiness(func, block, split),
-            Expansion::GuardedCall => expand_guarded_call(func, block, split, false),
-            Expansion::ProvenCall => expand_guarded_call(func, block, split, true),
+            Expansion::GuardedCall => expand_guarded_call(func, block, split, None),
+            Expansion::ProvenCall { closure } => {
+                expand_guarded_call(func, block, split, Some(closure))
+            }
         };
         stats.ops_added += 6;
         stats.values_changed += 1;
@@ -246,7 +248,8 @@ enum Expansion {
     /// A guarded call whose target's linkage row admits a direct call.
     GuardedCall,
     /// A guarded call whose callee integration proved (HF-846 slice 2).
-    ProvenCall,
+    /// `closure`: the target takes its function's closure tuple first.
+    ProvenCall { closure: bool },
 }
 
 /// What the stage needs of a guarded call's target, from its linkage row.
@@ -636,24 +639,29 @@ fn expansion_of(
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
         .then_some(Expansion::Truthiness),
-        // A closure-taking target and an arity mismatch keep the runtime lane:
-        // binding, not a static ABI, must answer them.
+        // An unproven closure-taking target and an arity mismatch keep the
+        // runtime lane: binding, not a static ABI, must answer them.
         FastPathExpansionRule::GuardedCall => {
             let facts = targets.get(&guarded_target(op)?)?;
-            let admitted = !facts.has_closure
-                && facts.arity + 1 == op.operands.len()
-                && is_boxed_word(repr, op.operands[0]);
+            let boxed_callee = is_boxed_word(repr, op.operands[0]);
             if op.proven_target() {
                 // Integration proved the callee is the target's function
                 // object with an exact positional call (HF-846 slice 2); the
-                // linkage row must agree, or the wiring is broken.
+                // linkage row must agree, or the wiring is broken. A closure
+                // target's arity counts its environment, which the call
+                // takes from that function object (design 78 5.10).
+                let parameters = op.operands.len() - usize::from(!facts.has_closure);
                 assert!(
-                    admitted,
+                    boxed_callee && facts.arity == parameters,
                     "proven call of function #{} disagrees with its linkage row",
                     guarded_target(op).map_or(u32::MAX, |id| id.0)
                 );
-                return Some(Expansion::ProvenCall);
+                return Some(Expansion::ProvenCall {
+                    closure: facts.has_closure,
+                });
             }
+            let admitted =
+                !facts.has_closure && facts.arity + 1 == op.operands.len() && boxed_callee;
             admitted.then_some(Expansion::GuardedCall)
         }
         FastPathExpansionRule::None => None,
@@ -1504,12 +1512,24 @@ fn runtime_call(
 /// ends in `^enter`'s recursion check. Integration proved the callee is the
 /// target's function object, with an exact positional call of a
 /// positional-only signature and matching entry custody, so the admission
-/// call and the code guard would always pass.
+/// call and the code guard would always pass. When that target takes a
+/// closure (`proven == Some(true)`, design 78 5.10), `^direct` first reads the
+/// callee's closure tuple and passes it after the callable, where the
+/// target's entry takes its environment:
+///
+/// ```text
+/// ^direct: RecursionCount ; %env = FunctionClosure %f
+///          %r1 = DirectCall[@target] %f, %env, args... ; RecursionRelease
+/// ```
+///
+/// The tuple is the one the runtime's binding would pass, read live, so a
+/// write to one of its cells is seen by the callee. Both `%f` and `%env` are
+/// borrowed; `%f` owns `%env` and outlives the call.
 fn expand_guarded_call(
     func: &mut TirFunction,
     block: BlockId,
     split: Split,
-    proven: bool,
+    proven: Option<bool>,
 ) -> BlockId {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     let Split {
@@ -1531,7 +1551,7 @@ fn expand_guarded_call(
 
     let [code, enter, direct, refuse, slow, join] = [(); 6].map(|()| func.fresh_block());
 
-    if proven {
+    if proven.is_some() {
         end_block(func, block, vec![], branch_to(enter));
     } else {
         let nargs = fresh_typed(func, TirType::I64);
@@ -1593,21 +1613,32 @@ fn expand_guarded_call(
     call.opcode = OpCode::DirectCall;
     call.origin = None;
     call.results = vec![direct_result];
-    if let Some(mut custody) = op.argument_custody() {
+    let mut direct_ops = vec![new_op(OpCode::RecursionCount, vec![], vec![], span)];
+    let custody = op.argument_custody().map(|mut custody| {
         custody[0] = crate::ir::ParameterCustody::Borrowed;
+        custody
+    });
+    if proven == Some(true) {
+        let environment = fresh_typed(func, TirType::DynBox);
+        direct_ops.push(new_op(
+            OpCode::FunctionClosure,
+            vec![callee],
+            vec![environment],
+            span,
+        ));
+        call.operands.insert(1, environment);
+        if let Some(mut custody) = custody {
+            custody.insert(1, crate::ir::ParameterCustody::Borrowed);
+            call.set_argument_custody(&custody);
+        }
+    } else if let Some(custody) = custody {
         call.set_argument_custody(&custody);
     }
+    direct_ops.push(call);
+    direct_ops.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
     func.blocks.insert(
         direct,
-        new_block(
-            direct,
-            vec![
-                new_op(OpCode::RecursionCount, vec![], vec![], span),
-                call,
-                new_op(OpCode::RecursionRelease, vec![], vec![], span),
-            ],
-            branch(join, direct_result),
-        ),
+        new_block(direct, direct_ops, branch(join, direct_result)),
     );
 
     let none = fresh_typed(func, TirType::None);
@@ -1626,7 +1657,7 @@ fn expand_guarded_call(
         ),
     );
 
-    if !proven {
+    if proven.is_none() {
         let slow_result = fresh_typed(func, TirType::DynBox);
         let mut slow_call = op;
         slow_call.results = vec![slow_result];

@@ -1878,7 +1878,7 @@ pub(crate) fn alloc_function_obj(
         *(ptr as *mut u64) = identity.word();
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(molt_codegen_abi::FUNCTION_CLOSURE_OFFSET as usize) as *mut u64) = 0;
         std::ptr::write(
             ptr.add(4 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicU64,
             std::sync::atomic::AtomicU64::new(0),

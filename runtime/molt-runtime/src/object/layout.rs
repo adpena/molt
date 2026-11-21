@@ -686,7 +686,7 @@ pub(crate) unsafe fn function_set_dict_bits(ptr: *mut u8, bits: u64) {
 }
 
 pub(crate) unsafe fn function_closure_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { *(ptr.add(molt_codegen_abi::FUNCTION_CLOSURE_OFFSET as usize) as *const u64) }
 }
 
 /// Immutable physical-call convention for a function object's first native
@@ -846,7 +846,7 @@ pub(crate) unsafe fn function_set_closure_bits(
         if bits != 0 {
             inc_ref_bits(_py, bits);
         }
-        let closure_slot = ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
+        let closure_slot = ptr.add(molt_codegen_abi::FUNCTION_CLOSURE_OFFSET as usize) as *mut u64;
         let old_bits = closure_slot.replace(bits);
         function_store_call_abi_word(ptr, call_abi, function_entry_custody(ptr));
         if old_bits != 0 {

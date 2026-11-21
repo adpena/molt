@@ -988,6 +988,10 @@ def fold_init_once_constants(
 
 # Function cells (design 78, 5.9).
 
+# The ops that create a function's object. A closure target's object holds
+# its environment, which a proven call reads from it (design 78, 5.10).
+_FUNCTION_MAKERS = frozenset({"func_new", "func_new_closure"})
+
 
 @dataclass(frozen=True)
 class FunctionCells:
@@ -1077,12 +1081,14 @@ def plan_function_cells(
                         f.get("name", "") for f in _module_body_functions(module, funcs)
                     }
                 makers = [
-                    ref for ref in references.get(symbol, ()) if ref[3] == "func_new"
+                    ref
+                    for ref in references.get(symbol, ())
+                    if ref[3] in _FUNCTION_MAKERS
                 ]
                 reason = None
                 store: tuple[str, int] | None = None
                 if len(makers) != 1:
-                    reason = f"{len(makers)} func_new ops make {symbol}"
+                    reason = f"{len(makers)} function makers make {symbol}"
                 else:
                     store = (makers[0][0], makers[0][1])
                     if store[0] not in chain.functions or not chain.runs_once(store):
@@ -1155,7 +1161,7 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
                 continue
             ops.append(op)
             made = op.get("out")
-            if op.get("kind") == "func_new" and made in stores:
+            if op.get("kind") in _FUNCTION_MAKERS and made in stores:
                 module, symbol = stores[made]
                 base = f"function_cells_base_{made}"
                 ops.append({"kind": "static_cell_base", "s_value": module, "out": base})

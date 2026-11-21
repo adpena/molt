@@ -503,6 +503,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                             elif (
                                 member.kind is MemberKind.STATICMETHOD
                                 and member.symbol is not None
+                                and member.closure is Closure.NONE
                             ):
                                 res_hint = f"Func:{member.symbol}"
                 res = MoltValue(self.next_var(), type_hint=res_hint)
