@@ -45,8 +45,6 @@ LIVE_WORKTREE_LIMIT = 12
 CheckoutStateKind = Literal[
     "cargo-target",
     "proof-supervisor",
-    "uv-environment",
-    "python-environment",
     "pytest-cache",
     "hypothesis-home",
     "build-control",
@@ -78,6 +76,7 @@ ReplacedStorageClass = Literal[
 ]
 StorageClass = Literal[
     CheckoutStateKind,
+    "python-environment",
     EvidenceClass,
     "compile-cache",
     "uv-cache",
@@ -278,18 +277,13 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 ("proof-supervisor",),
                 Regenerable(month, None),
             )
-        case "uv-environment":
-            return StorageRule(
-                "artifact",
-                "checkout-provisioning",
-                ("uv-project-envs",),
-                Regenerable(month, None),
-            )
         case "python-environment":
+            # One shared directory of uv environments, one per key and lock
+            # digest (molt.uv_environment); every checkout selects from it.
             return StorageRule(
                 "artifact",
-                "checkout-provisioning",
-                ("build-environments", "development"),
+                "uv_environment",
+                ("python-environments",),
                 Regenerable(month, None),
             )
         case "browser-environment":

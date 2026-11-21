@@ -112,8 +112,14 @@ per premise revision.
    can supply the same proof of a foreign activation namespace. Its import projections use
    that core's facts, the module context and the
    discovery mode, so equivalent flow inputs also share strict and discovery projections. A
-   missing activation set keeps its own cache key. Changed answers and foreign writes still
-   require flow analysis until the global solver can evaluate transfer summaries.
+   missing activation set keeps its own cache key. Within one discovery operation, a revision
+   can resume from a deferred-job boundary if the source and other flow inputs match and every
+   opaque-activation and argument answer read by that prefix still agrees. The completed
+   jobs identify the parameters that can have read an argument. A revision to a pending job
+   leaves the prefix reusable. The checkpoint shares immutable state, copies the scope and
+   history owners before resuming, and retains a bounded amount of recent work. A changed
+   foreign-write set or a changed answer before any saved boundary starts the analysis from
+   the source. The whole-graph transfer-summary solver remains open.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
@@ -149,20 +155,33 @@ per premise revision.
 
 #### Development source-to-TIR materialization
 
-Proposed for integrator review.
+The frontend exposes one operation that returns a sealed TIR closure and its declaration table.
+The compilation plan seals source bytes, target, settled namespace facts, declaration identities
+and body selection. Declaration collection is eager, including class layouts, member tables,
+MROs, signatures, defaults, closure shapes and module layouts. The entry and module initializers
+seed demand. Calls, value escapes, import custody and observable metadata add demands through the
+source-value graph. An unresolved selection demands every eligible body in its conservative set.
 
-The frontend owns an operation that materializes a body by its function identity in a frozen
-compilation plan. The plan seals source bytes, target, settled namespace facts and declaration
-identities. Declarations carry signatures and the metadata needed to create function objects,
-closures and tasks. The entry and module initializers seed demand. Calls, value escapes, import
-custody and observable metadata add demands through the existing source-value graph. An unresolved
-selection demands every eligible body in its current conservative set.
+When a class or instance reaches runtime, demand every body the runtime can enter implicitly.
+This includes protocol methods for equality, hashing, iteration, context exit and finalization,
+as well as `__init_subclass__`, `__set_name__`, `__class_getitem__`, and descriptor `__get__` and
+`__set__`. Follow decorator wrappers and callables passed to runtime intrinsics or registered as
+callbacks. Apply the rule through inheritance and the reachable wrapper and descriptor values.
+The source solver uses class-subscription demand to select `__class_getitem__` through the
+receiver's class family. Instance operations use their own protocol demand.
 
-One owner produces final TIR and its existing function digest for each demanded definition.
-Concurrent requests share its result or its diagnostic. The compiler publishes the result only
-after it has validated the declaration, frame layout, referenced definitions and runtime symbols
-against the sealed plan. Whole-program diagnostics demand every body through the same operation.
-Release compilation does the full solve through this operation as well.
+Produce the body, frame layout and existing function digest per demanded definition. Cache keys
+include the plan seal. Concurrent requests share the result or diagnostic. Publish the closure
+after validating declarations, demanded frame layouts, referenced definitions and runtime symbols
+against the sealed plan. Release compilation and whole-program diagnostics select every body
+through the same frontend operation.
+
+Integration's static module cell planner, function cell planner (design 78 §5.9) and proven-call
+planner treat the demanded set as the whole program. That is sound only when every
+body the runtime can enter is demanded. Qualify the closure by comparing every demanded function's
+final TIR byte for byte with the eager build, along with its diagnostics. Exercise implicit entry
+through each of the rules above, escaped and import-selected callables, closures, resumable frames
+and concurrent first calls. Verify an unreachable body stays unanalyzed.
 
 The first integration settles source demands during compilation and passes the sealed TIR closure
 to the existing JIT image and first-call code owner. Every runtime-visible function and launch
@@ -171,11 +190,8 @@ metadata and first-call native compilation. Deferring source-to-TIR work beyond 
 require a runner-owned materializer for sealed inputs that can execute independently of the
 frontend host process. The current directly executable image contract requires that independence.
 
-Discovery owns the demand plan and the minimum frontend entry points. The JIT lane owns acceptance
-at `jit_pipeline.py` and the image and runner contracts. Qualification compares demanded TIR and
-diagnostics with the eager build, checks that an unreachable body stays unanalyzed, and exercises
-an escaped callable, an import-selected callable, a closure, a resumable frame and concurrent
-first calls. Measure launch and first-call latency separately.
+Discovery owns the demand plan and shared frontend entry. The JIT lane owns `jit_pipeline.py`,
+the image and runner. Measure launch and first-call latency separately.
 
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).

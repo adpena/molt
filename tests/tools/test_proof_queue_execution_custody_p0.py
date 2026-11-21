@@ -142,7 +142,7 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
     tmp_path, runtime, interpreter_role, alias_form
 ):
     import shutil
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
     from tools.proof_command_argv import python_environment_command
     from tools.proof_queue_pkg import process_image_capture
 
@@ -150,6 +150,7 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
     if runtime == "node" and node is None:
         pytest.skip("node is unavailable")
     selected = tmp_path / "selected-image"
+    selected.mkdir()
     prefix = environment_bytecode_prefix(selected)
     prefix.mkdir(parents=True)
     child_executable = sys.executable
@@ -307,7 +308,9 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
             "allow": False,
         },
         {
-            "name": "writes-enabled",
+            # The shared cache is writable: an explicit prefix without -B is
+            # the environment's own policy.
+            "name": "explicit-prefix",
             "argv": [
                 child_executable,
                 "-E",
@@ -316,7 +319,7 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
                 "-c",
                 program,
             ],
-            "allow": False,
+            "allow": True,
         },
         {
             "name": "terminal",
@@ -327,8 +330,8 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
     environment = {
         **os.environ,
         "PYTHONPYCACHEPREFIX": str(prefix),
-        "PYTHONDONTWRITEBYTECODE": "1",
     }
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
     server = execution_custody.ChildCustodyEventServer(runtime, policy)
     environment.update(
         {execution_custody.CHILD_POLICY_ENV: json.dumps(policy), **server.environment()}
@@ -390,7 +393,7 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
         if row["allowed"]:
             assert row["rc"] == 0, row
             if row["name"] != "terminal":
-                assert json.loads(row["stdout"]) == [str(prefix), True, 111]
+                assert json.loads(row["stdout"]) == [str(prefix), False, 111]
     receipt = server.receipt()
     assert receipt["broker_complete"] is True, receipt
     decisions = [
@@ -427,7 +430,7 @@ def test_python_child_policy_rejects_unknown_launch_roles(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX kernel shebang image boundary")
 def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
     from tools.proof_command_argv import python_environment_command
     from tools.proof_queue_pkg import process_image_capture
 
@@ -550,7 +553,7 @@ def test_windows_python_doubled_quote_warning_cannot_grant_hidden_flags(tmp_path
     import subprocess
     from tools.proof_queue_pkg import process_image_capture
     from tools.proof_command_argv import split_windows_python_command_line
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     prefix = str(environment_bytecode_prefix(tmp_path))
     foreign = str(tmp_path / "foreign")
@@ -625,7 +628,7 @@ def test_python_console_startup_is_image_bound_and_payload_flags_cannot_weaken_i
 ):
     import io
     import zipfile
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     interpreter = tmp_path / "python.exe"
     interpreter.write_bytes(b"captured interpreter")
@@ -831,11 +834,11 @@ def test_python_interpreter_unicode_transport_is_image_bound(tmp_path, monkeypat
         "python_windows_transport": "ascii",
         "python_bytecode": {
             "environment_root": str(tmp_path),
-            "pycache_prefix": str(tmp_path / "bytecode"),
+            "pycache_prefix": str(tmp_path.parent / ".bytecode"),
         },
     }
     intent = {
-        "command_line": f'python.exe -B -X pycache_prefix={tmp_path / "bytecode"} -c "print(1)"',
+        "command_line": f'python.exe -X pycache_prefix={tmp_path.parent / ".bytecode"} -c "print(1)"',
         "python_environment": {
             "PYTHONPYCACHEPREFIX": None,
             "PYTHONDONTWRITEBYTECODE": None,
@@ -1024,7 +1027,7 @@ def test_windows_python_forwarder_cannot_remove_observed_startup_options(
 def test_windows_python_console_launcher_honors_captured_startup(tmp_path, runtime):
     import shutil
     from distlib.scripts import ScriptMaker
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
     from tools.proof_queue_pkg import process_image_capture
 
     node = shutil.which("node") if runtime == "node" else None
@@ -1197,7 +1200,7 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
     # Use real native interpreter aliases: the independent ordinary CPython
     # launch is the oracle, and the broker sees the actual bootstrap hook.
     image = Path(sys.executable).resolve(strict=True)
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
     from tools.proof_command_argv import python_environment_command
 
     environment_root = tmp_path / "selected-image"
@@ -1590,7 +1593,7 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
     # Windows itself names the image, and once under the real hook and broker.
     # A suspended child never runs, and the kernel reports its mapped image.
     import shutil
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     source = Path(sys.executable).resolve(strict=True)
     directory = {

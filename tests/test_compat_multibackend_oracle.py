@@ -791,12 +791,10 @@ def test_cross_backend_build_command_binds_target_python(
 def test_only_compiler_children_run_inside_the_frontend_image(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, adapter: str
 ) -> None:
-    """HF-726: a build runs in the frontend's image; the guest never sees it.
-
-    The runtime reads PYTHONDONTWRITEBYTECODE into sys.flags, so a projected
-    guest environment would diverge from the unprojected CPython oracle.
+    """HF-726: a build runs in the frontend's environment; the guest never
+    sees it, so the guest's environment matches the unprojected CPython oracle.
     """
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix
 
     image = tmp_path / "image"
     harness = {
@@ -833,8 +831,8 @@ def test_only_compiler_children_run_inside_the_frontend_image(
     )
     build = phases["build"]
     assert build["UV_PROJECT_ENVIRONMENT"] == str(image)
-    assert build["PYTHONPYCACHEPREFIX"] == str(environment_bytecode_prefix(image))
-    assert build["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert build["PYTHONPYCACHEPREFIX"] == str(bytecode_prefix(image))
+    assert "PYTHONDONTWRITEBYTECODE" not in build
     if adapter == "LlvmAdapter":
         run = phases["first_run"]
         assert run["UV_PROJECT_ENVIRONMENT"] == harness["UV_PROJECT_ENVIRONMENT"]

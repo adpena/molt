@@ -37,6 +37,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
 )
+from molt.compiler_analysis.python_binding_flow import python_binding_revision_scope
 from molt.compiler_analysis.python_imports import (
     ImportScanMode,
     _ImportDiscoveryProjection,
@@ -753,6 +754,7 @@ def _replay_history(
 
 
 @_source_tree_fingerprint_transaction()
+@python_binding_revision_scope()
 def _discover_module_graph_from_paths(
     entry_paths: Sequence[Path],
     roots: list[Path],

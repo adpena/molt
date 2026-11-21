@@ -132,7 +132,6 @@ def _wrapper_execution_environment(
     if wrapper.get("kind") == "uv-project":
         return uv_project_env.uv_project_env(
             python=str(wrapper["python"]),
-            purpose=str(wrapper["purpose"]),
             explicit=wrapper.get("venv"),
             env=inherited,
         )
@@ -573,7 +572,7 @@ def _python_capture_envelope(
         if borrowed:
             executable = str(venv_python(Path(root)))
         else:
-            from molt.python_environment_location import environment_python_path
+            from molt.uv_environment import python_path as environment_python_path
 
             # Publication seals the lexical image entrypoint. A native payload
             # requests no Python alias, so capture the publisher's selection.

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 
 import json
 import sys
@@ -2387,7 +2387,7 @@ def test_retirement_does_not_inherit_caller_exception_handler(tmp_path, local_gu
     observed = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             "import sys\n"

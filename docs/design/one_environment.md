@@ -1,9 +1,10 @@
 # One environment mechanism
 
-Status: design, 2026-11-07, revised after one Goldfish round (zoom-out and codebase-details;
-both "revise"; findings below). Owner: integrator. Owner decision (2026-11-07): replace the
-custom development-image and custody system with uv-managed environments, plain `cargo test`,
-and a small fixed landing suite, in staged deletions.
+Status: stage 1 landed; stage 3a landed with this revision (2026-11-21); stages 2 and 3b
+pending. Owner: integrator. Owner decision (2026-11-07): replace the custom development-image
+and custody system with uv-managed environments, plain `cargo test`, and a small fixed landing
+suite, in staged deletions. Owner direction (2026-11-20): one environment, not one per
+worktree ("Shouldn't there just be one?").
 
 ## Problem (measured 2026-11-07)
 
@@ -36,23 +37,40 @@ and a small fixed landing suite, in staged deletions.
 
 ## Design
 
-1. **One function** `environment(key) -> Path` with `key = (python, groups)`. It returns
-   `<artifact root>/venvs/<checkout>/<python>-<groups digest>` (outside the checkout, as CI and
-   `dx` require: `dx.py:2822-2829`, `tests/test_ci_workflow_topology.py:3988-3989`) and runs
-   `uv sync --locked --python <python> --no-default-groups --group ...` with
-   `UV_PROJECT_ENVIRONMENT` set to that path. uv no-ops in milliseconds when current and
-   rebuilds when the lock or pin changed, so no entry point refuses a moved pin. The default key
-   is `(.python-version, [dev, bench])`; `pyproject.toml` declares `[tool.uv] default-groups` to
-   match, so plain `uv run` in a shell uses the same groups.
-2. **Sync points, then no sync**: entry points (gate runner, landing, CI setup, farm host
-   setup, `molt_diff` frontend selection) call `environment(key)` once; commands they launch run
-   that environment's interpreter directly (`bin/python`, `Scripts\python.exe` on Windows) with
-   `UV_NO_SYNC=1`, as today.
-3. **Delete**: development-image generations, selection records, provisioning stamps and leases
+1. **One function** `molt.uv_environment.environment(checkout, key) -> Path` with
+   `key = (python, groups)`: an exact CPython release and sorted dependency groups. The
+   directory is `<python-environments>/<python>-<groups>-<lock digest>`, where
+   `<python-environments>` is the `python-environment` storage class placed through
+   `default_paths.hot_path` (the internal disk once the artifact root has a hot-state record,
+   HF-942; outside every checkout, as CI and `dx` require). The lock digest covers `uv.lock`
+   and the pyproject entries that decide contents (`requires-python`, dependencies, optional
+   dependencies, dependency groups, `[tool.uv]`), so a tool-setting edit keeps the directory and
+   a lock change selects a new one. The first use takes the directory's lock and runs
+   `uv sync --locked --no-install-project --managed-python --python <python>
+   --no-default-groups --group ...`, records the interpreter's identity from one child, and
+   publishes `molt-environment.json` last. The record proves the directory current, so the warm
+   path is one `stat` (2.2 ms with the lock digest, measured 2026-11-21) and runs no uv. The
+   project is not installed: each checkout puts its own `src` first on `PYTHONPATH`
+   (`dx.ensure_repo_src_pythonpath`), so every worktree with the same lock shares one
+   environment. The default key is `(.python-version, [tool.molt.dx].dependency_groups)`.
+   A minor selector (`3.13`) resolves once to uv's managed release.
+2. **Sync points, then no sync**: entry points (`tools/venv_exec.py`, `tools/uv_project_env.py`,
+   `checkout_provisioning ensure`, `molt_diff` frontend selection, `dev.py`) call
+   `environment(key)` once; commands they launch run that environment's interpreter directly
+   (`bin/python`, `Scripts\python.exe` on Windows) with `UV_NO_SYNC=1`.
+3. **Bytecode**: one writable cache beside the environments (`<python-environments>/.bytecode`),
+   selected by `PYTHONPYCACHEPREFIX` and, for a managed Python command, by
+   `-X pycache_prefix=` (which `-I` cannot drop). CPython names cache files by absolute source
+   path and cache tag, so checkouts and interpreters never collide. The old images ran
+   source-only (`-B` and an empty prefix): every process recompiled everything it imported,
+   0.62 s against 0.11 s for `import molt.dx, molt.frontend.generator` (2026-11-21).
+4. **Not checkout state**: a shared environment has no checkout owner, lease or retirement;
+   `python-environment` left `CheckoutStateKind`, and retiring a worktree never touches one.
+5. **Delete**: development-image generations, selection records, provisioning stamps and leases
    for Python environments (`checkout_state.py`, `custody_layout.py:280-291`), runtime-closure
    and bytecode attestation, `tools/venv_exec.py` (both modes), `tools/uv_project_env.py`'s
    wrapper kind once its callers move, and the environment-registry rows that only describe them.
-4. **The pinned controller** keeps its own environment because it must run an older main's
+6. **The pinned controller** keeps its own environment because it must run an older main's
    driver; it uses `environment(key)` like everything else.
 
 ## Stages (each lands with its deletions; no stage leaves two live mechanisms)
@@ -61,10 +79,18 @@ and a small fixed landing suite, in staged deletions.
    environment (landed in lane apparatus-exit, 3be76b90fb); then `setup-uv` and one `uv sync`.
 2. **Identity probe and receipt key**: move the probe out of the layer; switch receipt identity to
    `uv.lock` digest plus interpreter version; switch release provenance to the probe.
-3. **`environment(key)` and every consumer family at once** (development, target-version and
-   group environments; gate runner, landing executor, `molt_diff`, extension builds, pact,
-   farm hosts, hooks), deleting the image layer, `venv_exec.py` and their implementation tests in
-   the same landing.
+3. **`environment(key)` and every consumer family.** 3a (landed 2026-11-21): development and
+   target-version environments, every reader of their selection (`venv_exec`,
+   `uv_project_env`, `checkout_provisioning`, `dx`, `dev.py`, `molt_dev`, proof-command argv,
+   proof admission and custody), deleting selection records, runtime refresh, drift
+   retirement, editable bindings, the source-only bytecode policy and checkout-state ownership
+   of environments. `venv_exec.py` stays as the thin documented entry. Measured on macOS arm64:
+   a new lock costs one sync for every worktree (38 s cross-volume, 12.9 s with the cache on
+   the environment's volume) where each checkout built its own image (39 s each, 0.35 s warm);
+   the warm entry is 0.14 s end to end. 3b (next): source-build group environments
+   (`source_build_environment`, pact, extension producers) move onto `environment(key)`, with
+   the build-tool closure captured at the producer's run instead of at image publication; then
+   the image modules and their tests go.
 
 The landing suite is owned by `docs/design/presubmit_test_strategy.md`; this design does not
 restate it.

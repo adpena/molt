@@ -1746,11 +1746,10 @@ def _supervised_execution_command(
     if not isinstance(root_raw, str) or not Path(root_raw).is_absolute():
         raise ValueError("proof Python execution has no captured environment prefix")
     environment_root = Path(root_raw)
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
 
     selected_environment = {
         "PYTHONPYCACHEPREFIX": str(environment_bytecode_prefix(environment_root)),
-        "PYTHONDONTWRITEBYTECODE": "1",
     }
     if os.name != "nt":
         return _python_bootstrap_command(

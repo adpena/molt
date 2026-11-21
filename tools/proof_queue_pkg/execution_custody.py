@@ -1348,7 +1348,9 @@ def child_policy(
                 continue
             python_bytecode = None
             if name == "python":
-                from molt.python_environment_location import environment_bytecode_prefix
+                from molt.uv_environment import (
+                    bytecode_prefix as environment_bytecode_prefix,
+                )
 
                 location = identity.get("location")
                 prefix = (
@@ -2431,7 +2433,7 @@ def _validate_python_child_launch(
     authority: Mapping[str, object], intent: Mapping[str, object], *, windows: bool
 ) -> None:
     """Read only captured image policy and the actual prelaunch observation."""
-    from molt.python_environment_location import environment_bytecode_prefix
+    from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
     from molt.python_interpreter import parse_python_invocation
     from tools.proof_command_argv import (
         split_windows_python_command_line,
