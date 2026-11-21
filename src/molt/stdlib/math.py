@@ -13,9 +13,9 @@ import sys as _sys
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 if _sys.version_info >= (3, 15):
+    # The registry serves `math.integer` as an alias of this module
+    # (module_resolution.STDLIB_SUBMODULE_ALIASES); math writes no import state.
     import _math_integer as integer
-
-    _sys.modules["math.integer"] = integer
 
 
 # --- Direct intrinsic bindings (no Python wrapper overhead) ---
