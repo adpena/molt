@@ -3328,11 +3328,18 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(
             (str(part) for part in command if str(part).startswith("tests/")),
             str(command[-1]),
         )
+        if "--collect-only" in command:
+            name = f"collect:{name}"
         ran.append(name)
         if streams is not None:
             for path in streams:
                 path.open("x").close()
-        failing = {"light-1", "light-3", "tests/test_heavy_1.py"}
+        failing = {
+            "light-1",
+            "light-3",
+            "tests/test_heavy_1.py",
+            "collect:tests/test_uncollectable.py",
+        }
         return _gate_outcome(3 if name in failing else 0, "", "", None)
 
     class Progress:
@@ -3373,14 +3380,33 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(
         )
         for index in (1, 2)
     ]
+    uncollectable = SelectedGate(
+        command=("python", "-m", "pytest", "-q", "tests/test_uncollectable.py"),
+        toolchains=("python",),
+        pytest=True,
+        collection_command=(
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_uncollectable.py",
+            "--collect-only",
+        ),
+    )
     with pytest.raises(CandidateFailure) as exc:
         molt_dev_gates.run_selected_gates(
-            [*light, *heavy], runtime, [], host_limit=lambda: 1, keep_going=True
+            [uncollectable, *light, *heavy],
+            runtime,
+            [],
+            host_limit=lambda: 1,
+            keep_going=True,
         )
     message = str(exc.value)
-    assert message.startswith("3 gate(s) failed:")
-    for name in ("light-1", "light-3", "tests/test_heavy_1.py"):
+    assert message.startswith("4 gate(s) failed:")
+    for name in ("light-1", "light-3", "tests/test_heavy_1.py", "test_uncollectable"):
         assert name in message
+    # A gate that does not collect never executes; the others still run.
+    assert "tests/test_uncollectable.py" not in ran
     # Every gate ran after the first failure; the passing ones passed.
     assert {"light-1", "light-2", "light-3"} <= set(ran)
     assert "tests/test_heavy_2.py" in ran

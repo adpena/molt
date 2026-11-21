@@ -670,10 +670,18 @@ def run_selected_gates(
     except OSError as exc:
         raise DriverError(f"cannot retain prerequisite evidence: {exc}") from exc
     ordered = list(enumerate(gates, start=1))
-    for ordinal, gate in ordered:
+    failures: list[CandidateFailure] = []
+    for ordinal, gate in tuple(ordered):
         _check_cancellation(runtime)
         if gate.collection_command is not None:
-            _run_serial_gate(ordinal, gate, runtime, gate_seconds, collection=True)
+            try:
+                _run_serial_gate(ordinal, gate, runtime, gate_seconds, collection=True)
+            except GateFailure as failure:
+                if not keep_going:
+                    raise
+                # A gate whose tests do not collect cannot run them.
+                failures.append(failure)
+                ordered.remove((ordinal, gate))
     light = [
         (ordinal, gate)
         for ordinal, gate in ordered
@@ -691,7 +699,6 @@ def run_selected_gates(
         _run_executor_block(light[:block], runtime, gate_seconds, host_limit())
     else:
         block = 0
-    failures: list[CandidateFailure] = []
     for ordinal, gate in light[block:]:
         _check_cancellation(runtime)
         try:
