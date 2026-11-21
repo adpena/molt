@@ -712,9 +712,14 @@ the store (`init_dominance`), becomes a `static_cell_load` of the cell: one load
 site record, no retain. Every other site keeps `load_method`, and the build diagnostics name
 why (cross-module read, undominated read, non-top-level class).
 
-**Proof.** `method_call` and `bench_class_hierarchy` instructions per iteration on LLVM and
-Cranelift before and after; a sampled profile in which the method load and its guard leave the
-proven sites; identical output; an IR byte-identity check for programs with no proven method call.
+**Measured** (2026-11-21, release, macOS arm64; instructions retired, slope of 1M and 2M
+iterations, best of 3; main fdfb075361 against the slice). A `method_call`-shaped probe (an exact
+`Leaf` receiver, `total = (total + obj.compute(i)) & 16777215`): LLVM 359 -> 268 per iteration
+(-25.3%), Cranelift 513 -> 403 (-21.4%); output identical. `bench_class_hierarchy` is flat (LLVM
+16.02 G -> 16.05 G, Cranelift 18.16 G -> 18.17 G): its `compute` methods use zero-argument
+`super()`, so each holds the `__class__` cell, 5.7 refuses the closure target, and no call in it
+is proven. That benchmark moves only after S4's static `super()` and class-cell targets (the
+revised order in the S4 design), which then read their callees from these cells.
 
 ## 6. Expected effect, stated as removed runtime calls
 
