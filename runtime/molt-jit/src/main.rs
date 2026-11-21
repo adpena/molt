@@ -55,7 +55,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// The runner's own failure (unreadable image, missing runtime image, a
 /// program the JIT tier cannot compile). The AOT main stub uses the same
 /// status when it cannot install its launch environment.
-const EXIT_RUNNER_FAILURE: i32 = 125;
 const EXIT_USAGE: i32 = 2;
 
 // The runner's command line and image format, from the launch ABI's one
@@ -150,7 +149,7 @@ molt_runtime_core::declare_app_bootstrap!(
 
 fn fail(message: impl std::fmt::Display) -> i32 {
     report(format_args!("molt-jit: {message}"));
-    EXIT_RUNNER_FAILURE
+    molt_backend_native::JIT_FAILURE_STATUS
 }
 
 /// The process entry: the C `main`, called by the C runtime with the
@@ -420,8 +419,8 @@ fn run(image_path: &Path, start_receipt: Option<&Path>, argv: &[OsString]) -> Re
     }
     let (api, program) = compiled?;
     let entry = program.entry_points().map_err(|error| error.to_string())?;
-    // The program runs with only its code, the runtime and its launch plan:
-    // the image bytes and the compiler's freed heap go back to the OS first.
+    // Release the image bytes and any freed compiler heap before launch.
+    // The program keeps the code owner for first-call materialization.
     let launch = image.header.launch;
     drop(image.bytes);
     release_compiler_memory();
@@ -435,7 +434,7 @@ fn run(image_path: &Path, start_receipt: Option<&Path>, argv: &[OsString]) -> Re
         signals.restore();
     }
     PROGRAM_ISOLATE_BOOTSTRAP.store(entry.isolate_bootstrap as usize, Ordering::Release);
-    // The program's code lives for the rest of the process.
+    // The program's code and first-call state live for the rest of the process.
     std::mem::forget(program);
     // SAFETY: `entry` belongs to a program compiled against the runtime image
     // `api` was resolved in; the environment is this thread's alone.
@@ -516,9 +515,9 @@ fn write_start_receipt(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot write start receipt {}: {error}", path.display()))
 }
 
-/// Compile the whole program into executable memory against `image`, with
-/// the persistent TIR cache under `tir_cache_root` (the image's, never the
-/// program's environment or current directory).
+/// Prepare stable executable entry points against `image`, with the
+/// persistent cache under `tir_cache_root` (the image's, never the program's
+/// environment or current directory).
 fn compile(
     document: molt_ir::ir::BackendIrDocument,
     image: &Arc<RuntimeImage>,

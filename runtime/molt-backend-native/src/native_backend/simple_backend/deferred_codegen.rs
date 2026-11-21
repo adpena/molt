@@ -40,7 +40,7 @@ pub(in crate::native_backend) fn inspect_native_cfg(name: &str, function: &Funct
     }
 }
 
-fn record_compiled_function(name: &str, function: &Function) {
+pub(super) fn record_compiled_function(name: &str, function: &Function) {
     if backend_env::var(BackendEnv::MOLT_DEBUG_COMPILED_FUNCS).as_deref() == Ok("1") {
         let _ = crate::debug_artifacts::append_debug_artifact(
             "native/compiled_funcs.txt",
@@ -74,6 +74,55 @@ pub(crate) struct DeferredDefine {
     pub(crate) func_id: cranelift_module::FuncId,
     pub(crate) func: cranelift_codegen::ir::Function,
     pub(crate) name: String,
+}
+
+pub(super) struct CompiledDefinition {
+    pub(super) func_id: cranelift_module::FuncId,
+    pub(super) name: String,
+    pub(super) alignment: u64,
+    pub(super) code: Vec<u8>,
+    pub(super) relocs: Vec<cranelift_module::ModuleReloc>,
+}
+
+pub(super) fn assemble_definition(
+    definition: DeferredDefine,
+    isa: &dyn isa::TargetIsa,
+    #[cfg(feature = "jit")] cache: Option<&super::jit::MachineCodeCache>,
+) -> Result<CompiledDefinition, String> {
+    let DeferredDefine {
+        func_id,
+        func,
+        name,
+    } = definition;
+    let mut context = Context::for_function(func);
+    complete_native_control_flow(&mut context, isa, &name);
+    let mut control = cranelift_codegen::control::ControlPlane::default();
+    #[cfg(feature = "jit")]
+    let compile = match cache {
+        Some(cache) => cache.compile(&mut context, isa, &mut control),
+        None => context.compile(isa, &mut control),
+    };
+    #[cfg(not(feature = "jit"))]
+    let compile = context.compile(isa, &mut control);
+    compile.map_err(|error| format!("Cranelift compilation failed for `{name}`: {error:?}"))?;
+    let compiled = context
+        .compiled_code()
+        .expect("successful Cranelift compilation");
+    let alignment = compiled.buffer.min_alignment as u64;
+    let code = compiled.buffer.data().to_vec();
+    let relocs = compiled
+        .buffer
+        .relocs()
+        .iter()
+        .map(|reloc| cranelift_module::ModuleReloc::from_mach_reloc(reloc, &context.func, func_id))
+        .collect();
+    Ok(CompiledDefinition {
+        func_id,
+        name,
+        alignment,
+        code,
+        relocs,
+    })
 }
 
 /// Complete actual CFG ownership after FunctionBuilder has released SSA custody.
@@ -120,7 +169,6 @@ impl SimpleBackend {
     /// Any Cranelift compile failure aborts codegen instead of producing a
     /// partial object file with runtime-aborting placeholders.
     pub(in crate::native_backend::simple_backend) fn flush_deferred_defines(&mut self) {
-        use cranelift_codegen::control::ControlPlane;
         use rayon::prelude::*;
 
         let deferred: Vec<DeferredDefine> = std::mem::take(&mut self.deferred_defines);
@@ -128,25 +176,12 @@ impl SimpleBackend {
             return;
         }
 
-        // Compile all functions in parallel. Each worker gets its own
-        // Context + ControlPlane but shares one rebuilt OwnedTargetIsa.
-        struct CompiledFunc {
-            func_id: cranelift_module::FuncId,
-            name: String,
-            alignment: u64,
-            code: Vec<u8>,
-            relocs: Vec<cranelift_module::ModuleReloc>,
-        }
-
+        // The AOT workers share an immutable ISA and define the bytes in
+        // source order after parallel machine-code compilation.
         let compile_isa = Self::rebuild_owned_isa(self.module.isa(), None)
             .unwrap_or_else(|err| panic!("failed to rebuild TargetIsa for deferred flush: {err}"));
-        #[cfg(feature = "jit")]
-        let machine_cache = match &self.module {
-            super::CodeOwner::ProcessMemory(owner) => owner.machine_cache.as_ref(),
-            super::CodeOwner::Object(_) => None,
-        };
 
-        let results: Vec<CompiledFunc> = {
+        let results: Vec<CompiledDefinition> = {
             // Arc<dyn TargetIsa> contains a raw pointer that isn't marked
             // Send/Sync, but the target ISA is immutable after construction and
             // safe to share across parallel Cranelift compilation workers.
@@ -160,62 +195,27 @@ impl SimpleBackend {
             // The request's pool honors its CPU limit and keeps concurrent
             // compiles within one shared set of threads.
             let pool = molt_tir::tir::pipeline_cache::request_thread_pool();
-            let mut indexed: Vec<(usize, CompiledFunc)> = pool.install(|| {
+            let mut indexed: Vec<(usize, CompiledDefinition)> = pool.install(|| {
                 deferred
                     .into_par_iter()
                     .enumerate()
                     .map(|(idx, item)| {
                         request.enter(|| {
-                            let DeferredDefine {
-                                func_id,
-                                func,
-                                name,
-                            } = item;
                             let isa = compile_isa.clone().0;
-                            let mut ctx = Context::for_function(func);
-                            complete_native_control_flow(&mut ctx, &*isa, &name);
-                            let mut ctrl = ControlPlane::default();
-                            #[cfg(feature = "jit")]
-                            let compile = match machine_cache {
-                                Some(cache) => cache.compile(&mut ctx, &*isa, &mut ctrl),
-                                None => ctx.compile(&*isa, &mut ctrl),
-                            };
-                            #[cfg(not(feature = "jit"))]
-                            let compile = ctx.compile(&*isa, &mut ctrl);
-                            if let Err(err) = compile {
-                                let message =
-                                    format!("Cranelift compilation failed for `{name}`: {err:?}");
+                            let result = assemble_definition(
+                                item,
+                                &*isa,
+                                #[cfg(feature = "jit")]
+                                None,
+                            )
+                            .unwrap_or_else(|message| {
                                 let _ = crate::debug_artifacts::append_debug_artifact(
                                     "native/cranelift_errors.txt",
                                     format!("{message}\n"),
                                 );
                                 panic!("{message}");
-                            }
-                            let compiled = ctx.compiled_code().unwrap_or_else(|| {
-                                panic!("Cranelift produced no compiled code for `{name}`")
                             });
-                            let alignment = compiled.buffer.min_alignment as u64;
-                            let code = compiled.buffer.data().to_vec();
-                            let relocs: Vec<cranelift_module::ModuleReloc> = compiled
-                                .buffer
-                                .relocs()
-                                .iter()
-                                .map(|r| {
-                                    cranelift_module::ModuleReloc::from_mach_reloc(
-                                        r, &ctx.func, func_id,
-                                    )
-                                })
-                                .collect();
-                            (
-                                idx,
-                                CompiledFunc {
-                                    func_id,
-                                    name,
-                                    alignment,
-                                    code,
-                                    relocs,
-                                },
-                            )
+                            (idx, result)
                         })
                     })
                     .collect()

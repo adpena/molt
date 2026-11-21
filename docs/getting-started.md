@@ -165,13 +165,13 @@ bytes as an AOT build:
 uv run molt run examples/hello.py --tier jit
 ```
 
-The first run builds the runner and links the runtime image once. Each run
-compiles the whole program, the stdlib modules it imports included, and so does
-each process that starts the program again (a spawn-mode `multiprocessing`
-worker). The JIT tier is therefore slower than `aot` for any program that
-imports `os`: `import os, sys` compiles for 7-10 s at about 0.7 GB per start,
-where the AOT executable starts in 0.3 s
-([costs](cli-reference.md#molt-run)). `aot` stays the default. The JIT
+The first run builds the runner and links the runtime image once. Each start,
+including a spawn-mode `multiprocessing` worker, prepares the module and its
+stdlib dependencies. Each called body compiles on demand and can reuse its
+cached machine code across runs. `aot` stays the default.
+[Measured JIT costs](cli-reference.md#molt-run)
+
+The JIT
 tier never falls back to an AOT build: a construct it cannot run, such as a
 cross target, the LLVM backend, an installed (non-checkout) Molt or a host
 other than aarch64 macOS, fails before the build starts with a message that
