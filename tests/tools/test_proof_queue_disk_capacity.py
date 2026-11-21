@@ -365,14 +365,15 @@ def test_typed_python_policy_uses_captured_prefix_without_uv_selection(
         environment=environment,
         cwd=tmp_path,
     )
-    assert command[1:5] == [
-        "-B",
+    # The shared environments' bytecode cache beside the environment, selected
+    # as an option -I cannot drop; writes are allowed (one_environment.md).
+    assert command[1:4] == [
         "-X",
-        f"pycache_prefix={selected / 'bytecode'}",
+        f"pycache_prefix={selected.parent / '.bytecode'}",
         "-I",
     ]
-    assert updates["PYTHONPYCACHEPREFIX"] == str(selected / "bytecode")
-    assert updates["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert updates["PYTHONPYCACHEPREFIX"] == str(selected.parent / ".bytecode")
+    assert "PYTHONDONTWRITEBYTECODE" not in updates
     assert "UV_PROJECT_ENVIRONMENT" not in updates
     assert environment["PYTHONPYCACHEPREFIX"] == str(tmp_path / "foreign-cache")
 
