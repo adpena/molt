@@ -180,6 +180,7 @@ def stamp_global_slots(
     static_modules: Collection[str] = (),
     guard_masks: Mapping[str, int] | None = None,
     init_dominated: Mapping[str, Collection[tuple[str, int]]] | None = None,
+    function_cells: Mapping[str, int] | None = None,
 ) -> None:
     """Mark each read and store of a slotted global with its slot
     ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
@@ -237,6 +238,7 @@ def stamp_global_slots(
                 module_var = ops[bind_site[1]]["out"]
                 base = f"static_cells_base_{module_var}"
                 mask = f"static_cells_guards_{module_var}"
+                function_cell_count = f"static_cells_functions_{module_var}"
                 ops[at:at] = [
                     {"kind": "static_cell_base", "s_value": module_name, "out": base},
                     {
@@ -245,9 +247,14 @@ def stamp_global_slots(
                         "out": mask,
                     },
                     {
+                        "kind": "const",
+                        "value": (function_cells or {}).get(module_name, 0),
+                        "out": function_cell_count,
+                    },
+                    {
                         "kind": "call",
                         "s_value": "molt_static_cells_bind",
-                        "args": [module_var, base, mask],
+                        "args": [module_var, base, mask, function_cell_count],
                         "out": f"static_cells_bound_{module_var}",
                     },
                 ]

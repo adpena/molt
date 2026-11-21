@@ -685,6 +685,42 @@ store; then call resolution (union dispatch for polymorphic method sites, functi
 of proven functions). Object lifecycle (inline allocation, reference-count elimination,
 scalar replacement) follows, since its facts are the same exact classes.
 
+### 5.9 Function cells: the proven callee's object in one load (HF-847 S4 step 2; design 2026-11-21)
+
+**The cost.** A proven method call (5.7) still runs `load_method` to hand the callee its own
+function object for its frame record; that load runs the method site's guard and site record,
+and on the `super()` path `molt_load_super_method` (15.9% inclusive in `bench_class_hierarchy`).
+5.7 names the end state: the object stored once when the class statement runs, read by one load.
+
+**The fact.** Key the cell by the callee, not by (class, member). A function symbol `S` whose
+one `func_new` sits in a cell-eligible module's initialization (5.3, `static_module_cells`
+C1-C6), runs unconditionally there, and runs once (the body runs once per process, C6) has
+exactly one function object per process. Every proven call of `S` needs that object and no
+other: `proven_target` already proved the member resolves to `S`, so the cell supplies identity,
+never resolution, and a rebinding the premise would see refuses the call before the cell matters.
+A method body is inline in its class statement's chunk, so a top-level class gives its methods
+this fact; a class in a function or a branch does not, and its calls keep `load_method`.
+
+**The mechanism.** Integration (`static_module_cells`) gives each such `S` a *function cell*: a
+word of module `M`'s static cell block after its layout words. The registry row carries the count
+(`function_cells`), which sizes the block in codegen, the runtime's bind and its shutdown
+retirement; the by-name paths walk only the layout, so the cells are invisible to `dir`,
+`getattr` and star imports. After `S`'s `func_new`, integration inserts the cell store (the
+cell owns one reference, released at retirement, so an `atexit` method call never reads a freed
+object). A proven `load_method` whose call targets `S`, in `M`'s own code that runs only after
+the store (`init_dominance`), becomes a `static_cell_load` of the cell: one load, no guard, no
+site record, no retain. Every other site keeps `load_method`, and the build diagnostics name
+why (cross-module read, undominated read, non-top-level class).
+
+**Measured** (2026-11-21, release, macOS arm64; instructions retired, slope of 1M and 2M
+iterations, best of 3; main fdfb075361 against the slice). A `method_call`-shaped probe (an exact
+`Leaf` receiver, `total = (total + obj.compute(i)) & 16777215`): LLVM 359 -> 268 per iteration
+(-25.3%), Cranelift 513 -> 403 (-21.4%); output identical. `bench_class_hierarchy` is flat (LLVM
+16.02 G -> 16.05 G, Cranelift 18.16 G -> 18.17 G): its `compute` methods use zero-argument
+`super()`, so each holds the `__class__` cell, 5.7 refuses the closure target, and no call in it
+is proven. That benchmark moves only after S4's static `super()` and class-cell targets (the
+revised order in the S4 design), which then read their callees from these cells.
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed

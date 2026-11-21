@@ -347,6 +347,9 @@ def test_module_initializers_solely_own_code_and_globals_publication(
     )
     assert error is None
     assert prepared is not None
+    assert prepared.declarations is not None
+    assert prepared.declarations.module_layouts == state.global_layouts
+    assert not prepared.declarations.callables
     assert prepared.ir["code_slots"] == state.global_code_ids
     assert sorted(prepared.ir["code_slots"].values()) == list(
         range(len(state.global_code_ids))
