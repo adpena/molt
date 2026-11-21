@@ -16,11 +16,17 @@ from typing import Any
 
 import pytest
 
-from molt.cli.closed_world_bindings import ModuleNamespaceFacts
+from molt.cli.closed_world_bindings import (
+    ModuleNamespaceFacts,
+    summarize_module_initializer,
+)
 from molt.cli.frontend_integration import module_global_layout, stamp_global_slots
 from molt.cli.static_module_cells import (
+    FunctionCells,
     InitOnce,
     StaticCellPlan,
+    apply_function_cells,
+    plan_function_cells,
     plan_static_module_cells,
 )
 from molt.compiler_analysis.python_import_redirects import (
@@ -57,11 +63,15 @@ def _facts(
     own_names: frozenset[str] | None | object = _UNSET,
     premise: PythonNamespacePremise | None | object = _UNSET,
     own_namespace_line: int | None | object = _UNSET,
+    initializer_bindings: frozenset[str] = frozenset({"f", "x", "y"}),
+    isolate_spawn_line: int | None = None,
 ) -> ModuleNamespaceFacts:
     return ModuleNamespaceFacts(
         frozenset() if own_names is _UNSET else own_names,  # ty: ignore[invalid-argument-type]
         _premise() if premise is _UNSET else premise,  # ty: ignore[invalid-argument-type]
         0 if own_namespace_line is _UNSET else own_namespace_line,  # ty: ignore[invalid-argument-type]
+        initializer_bindings,
+        isolate_spawn_line,
     )
 
 
@@ -100,7 +110,7 @@ def _plan(
     redirects: ImportRedirects = NO_IMPORT_REDIRECTS,
     dep_closures: dict[str, set[str]] | None = None,
 ) -> StaticCellPlan:
-    layouts = {"mod": module_global_layout(funcs)}
+    layouts = {"mod": module_global_layout(facts.initializer_bindings)}
     return plan_static_module_cells(
         {"mod": funcs},
         {"mod": facts},
@@ -109,11 +119,8 @@ def _plan(
         redirects,
         extension_modules,
         dep_closures=dep_closures,
+        initializers={"mod": summarize_module_initializer("mod", funcs)},
     )
-
-
-def test_layout_names_every_non_dunder_global_the_body_names() -> None:
-    assert module_global_layout([_init()]) == ("f", "x", "y")
 
 
 def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
@@ -224,11 +231,7 @@ def test_program_blockers_withdraw_every_module() -> None:
     plan = _plan([_init()], _facts(), extension_modules=frozenset({"_ext"}))
     assert plan.modules == frozenset()
     assert "extension module _ext" in plan.ineligible["mod"]
-    spawner = _init()
-    spawner["ops"].append(
-        {"kind": "call", "s_value": "molt_thread_spawn", "args": ["p"], "out": "t"}
-    )
-    plan = _plan([spawner], _facts())
+    plan = _plan([_init()], _facts(isolate_spawn_line=4))
     assert "isolate thread" in plan.ineligible["mod"]
 
 
@@ -243,7 +246,7 @@ def test_a_foreign_or_deferred_writer_removes_init_once() -> None:
 def _stamped(cells: bool) -> list[dict[str, Any]]:
     init = _init()
     functions = [init]
-    layouts = {"mod": module_global_layout([init])}
+    layouts = {"mod": module_global_layout(_facts().initializer_bindings)}
     stamp_global_slots(
         functions, {"mod": [init]}, layouts, {"mod"}, {"mod"} if cells else ()
     )
@@ -258,21 +261,24 @@ def test_cell_stamps_and_the_bind_follow_module_creation() -> None:
         {"module": "mod", "index": 1, "cell": True},
         {"module": "mod", "index": 1, "cell": True},
     ]
-    kinds = [op["kind"] for op in ops[:7]]
+    kinds = [op["kind"] for op in ops[:8]]
     assert kinds == [
         "const_str",
         "module_new",
         "check_exception",
         "static_cell_base",
         "const",
+        "const",
         "call",
         "func_new",
     ]
-    # No layout name is a guarded builtin here: the bind records no bit.
+    # No layout name is a guarded builtin here: the bind records no bit, and
+    # no proven method load names a function cell.
     assert ops[4]["value"] == 0
+    assert ops[5]["value"] == 0
     assert ops[3]["s_value"] == "mod"
-    assert ops[5]["s_value"] == "molt_static_cells_bind"
-    assert ops[5]["args"] == ["m", ops[3]["out"], ops[4]["out"]]
+    assert ops[6]["s_value"] == "molt_static_cells_bind"
+    assert ops[6]["args"] == ["m", ops[3]["out"], ops[4]["out"], ops[5]["out"]]
     # The dunder read and the delete keep their by-name ops.
     assert all("global_slot" not in op for op in ops if op.get("args") == ["m", "kn"])
 
@@ -295,7 +301,13 @@ def test_the_bind_records_guard_bits_of_written_builtin_names() -> None:
         {"kind": "const_str", "out": "ka", "s_value": "abs"},
         {"kind": "module_get_global", "args": ["m", "ka"], "out": "ra"},
     ]
-    plan = _plan([init], _facts(premise=_premise(("sorted",))))
+    plan = _plan(
+        [init],
+        _facts(
+            premise=_premise(("sorted",)),
+            initializer_bindings=frozenset({"f", "x", "y", "len"}),
+        ),
+    )
     # len is stored here; abs is only read; sorted is written by another
     # module but is not a global this module names.
     assert plan.guard_masks == {"mod": BUILTIN_BINDING_GUARD_BITS["len"]}
@@ -303,7 +315,7 @@ def test_the_bind_records_guard_bits_of_written_builtin_names() -> None:
 
 def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
     init = _init()
-    layouts = {"mod": module_global_layout([init])}
+    layouts = {"mod": module_global_layout(_facts().initializer_bindings)}
     facts = {"mod": _facts()}
     plan = plan_static_module_cells(
         {"mod": [init]},
@@ -313,6 +325,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib"}},
+        initializers={"mod": summarize_module_initializer("mod", [init])},
     )
     assert plan.modules == {"mod"}
     plan = plan_static_module_cells(
@@ -323,6 +336,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib", "mod"}},
+        initializers={"mod": summarize_module_initializer("mod", [init])},
     )
     assert "lib imports the entry module" in plan.ineligible["mod"]
 
@@ -407,16 +421,39 @@ def _dominance_program() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return funcs, [other]
 
 
+_DOMINANCE_LAYOUT = module_global_layout(
+    {
+        "early",
+        "late",
+        "fact",
+        "shared",
+        "rec",
+        "escaped",
+        "step",
+        "LIMIT",
+        "COND",
+        "AFTER",
+        "LOOPED",
+        "caller",
+        "helper",
+        "_INTERN",
+        "SCALE",
+        "reader",
+    }
+)
+
+
 def _dominance_plan(
     funcs: list[dict[str, Any]], functions: list[dict[str, Any]]
 ) -> StaticCellPlan:
     return plan_static_module_cells(
         {"mod": funcs},
         {"mod": _facts()},
-        {"mod": module_global_layout(funcs)},
+        {"mod": _DOMINANCE_LAYOUT},
         {"mod"},
         NO_IMPORT_REDIRECTS,
         program_functions=functions,
+        initializers={"mod": summarize_module_initializer("mod", funcs)},
     )
 
 
@@ -504,7 +541,7 @@ def test_dominated_reads_carry_init_once_stamps() -> None:
     stamp_global_slots(
         functions,
         {"mod": funcs},
-        {"mod": module_global_layout(funcs)},
+        {"mod": _DOMINANCE_LAYOUT},
         {"mod"},
         plan.modules,
         plan.guard_masks,
@@ -671,7 +708,7 @@ def _prove(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]
     stamp_global_slots(
         functions,
         module_functions,
-        {"mod": module_global_layout(funcs)},
+        {"mod": _DOMINANCE_LAYOUT},
         {"mod"},
         plan.modules,
         plan.guard_masks,
@@ -885,7 +922,7 @@ def _prove_foreign(name: str) -> tuple[dict[str, Any], list[str]]:
     caller = _foreign_caller(name)
     functions = [*funcs, caller]
     module_functions = {"mod": list(funcs), "user": [caller]}
-    layouts = {"mod": module_global_layout(funcs)}
+    layouts = {"mod": _DOMINANCE_LAYOUT}
     stamp_global_slots(
         functions,
         module_functions,
@@ -909,7 +946,7 @@ def test_a_proven_foreign_call_reads_the_cell_and_enters_its_target() -> None:
     assert read["kind"] == "module_get_global"
     assert read["global_slot"] == {
         "module": "mod",
-        "index": module_global_layout(_call_program()[0]).index("helper"),
+        "index": _DOMINANCE_LAYOUT.index("helper"),
         "cell": True,
         "init_once": True,
     }
@@ -976,7 +1013,7 @@ def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     stamp_global_slots(
         functions,
         module_functions,
-        {"mod": module_global_layout(funcs)},
+        {"mod": _DOMINANCE_LAYOUT},
         {"mod"},
         plan.modules,
         plan.guard_masks,
@@ -1123,3 +1160,130 @@ def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publicatio
     )
     plan = _dominance_plan(funcs, funcs + [other])
     assert _lines(funcs, plan.init_dominated["mod"]) == {9, 30, 40, 60}
+
+
+# Function cells (design 78, 5.9).
+
+
+def _method_program(
+    *,
+    makers: int = 1,
+    maker_in_loop: bool = False,
+    run_first: bool = False,
+    pair_read: bool = False,
+) -> list[dict[str, Any]]:
+    """``mod``'s init makes method ``mod__C_m`` (``makers`` times, optionally
+    in a loop) and ``mod__run``, whose body loads ``m`` on an exact receiver
+    and calls it through a proven call."""
+    maker = {"kind": "func_new", "s_value": "mod__C_m", "out": "method"}
+    run_maker = {"kind": "func_new", "s_value": "mod__run", "out": "runner"}
+    ops: list[dict[str, Any]] = [
+        {"kind": "const_str", "out": "nm", "s_value": "mod"},
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        {"kind": "check_exception", "value": 1},
+    ]
+    store_run = [
+        {"kind": "const_str", "out": "kr", "s_value": "run"},
+        {"kind": "module_set_attr", "args": ["m", "kr", "runner"], "out": "none"},
+    ]
+    if run_first:
+        # `run` escapes into the namespace, so it may start, before the
+        # method's maker runs.
+        ops += [run_maker, *store_run]
+    if maker_in_loop:
+        ops += [{"kind": "loop_start"}, maker, {"kind": "loop_end"}]
+    else:
+        ops += [dict(maker, out=f"method{n}") for n in range(makers)]
+    if not run_first:
+        ops += [run_maker, *store_run]
+    body = [
+        {"kind": "load_var", "var": "obj", "out": "receiver"},
+        {
+            "kind": "load_method",
+            "args": ["receiver"],
+            "s_value": "m",
+            "var": "callable",
+            "out": "pair",
+            "proven_target": True,
+        },
+        {"kind": "check_exception", "value": 1},
+        {
+            "kind": "call_guarded",
+            "s_value": "mod__C_m",
+            "args": ["callable", "receiver"],
+            "out": "result",
+            "proven_target": True,
+        },
+    ]
+    if pair_read:
+        body.append({"kind": "load_attr", "args": ["pair"], "out": "leak"})
+    return [
+        {"name": "pyinit.mod", "params": [], "ops": ops},
+        {"name": "mod__run", "params": [], "ops": body},
+    ]
+
+
+def _function_cells(
+    funcs: list[dict[str, Any]],
+) -> tuple[FunctionCells, dict[str, tuple[str, ...]]]:
+    plan = _plan(funcs, _facts())
+    assert plan.modules == frozenset({"mod"})
+    layouts = {"mod": module_global_layout({"run"})}
+    modules = {"mod": funcs}
+    return plan_function_cells(
+        plan,
+        modules,
+        layouts,
+        funcs,
+        {"mod": summarize_module_initializer("mod", funcs)},
+    ), layouts
+
+
+def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell() -> None:
+    funcs = _method_program()
+    cells, layouts = _function_cells(funcs)
+    index = len(layouts["mod"])
+    assert cells.cells == {"mod": {"mod__C_m": index}}
+    assert cells.counts() == {"mod": 1}
+    apply_function_cells(funcs, cells)
+    init_ops, run_ops = funcs[0]["ops"], funcs[1]["ops"]
+    store = next(op for op in init_ops if op["kind"] == "static_cell_set")
+    assert store["args"][1] == "method0"
+    assert store["global_slot"] == {"module": "mod", "index": index, "cell": True}
+    # The store follows the maker; the load becomes one cell read.
+    assert [op["kind"] for op in init_ops[3:6]] == [
+        "func_new",
+        "static_cell_base",
+        "static_cell_set",
+    ]
+    assert "load_method" not in [op["kind"] for op in run_ops]
+    read = next(op for op in run_ops if op["kind"] == "static_cell_load")
+    assert read["out"] == "callable"
+    assert read["global_slot"] == {
+        "module": "mod",
+        "index": index,
+        "cell": True,
+        "init_once": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("program", "reason"),
+    [
+        ({"makers": 2}, "2 func_new ops make mod__C_m"),
+        ({"maker_in_loop": True}, "does not run once"),
+        ({"run_first": True}, "may run before mod__C_m's func_new"),
+        ({"pair_read": True}, "its bound pair is read"),
+    ],
+    ids=["two-makers", "maker-in-loop", "run-made-first", "pair-read"],
+)
+def test_a_load_whose_callee_object_is_not_proven_keeps_load_method(
+    program: dict[str, bool | int], reason: str
+) -> None:
+    funcs = _method_program(**program)  # ty: ignore[invalid-argument-type]
+    cells, _layouts = _function_cells(funcs)
+    assert cells.cells == {}
+    (diagnostic,) = cells.diagnostics
+    assert reason in diagnostic
+    apply_function_cells(funcs, cells)
+    assert "load_method" in [op["kind"] for op in funcs[1]["ops"]]

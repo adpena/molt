@@ -2385,15 +2385,18 @@ def test_the_daily_collection_also_relieves_disk_pressure(tmp_path, monkeypatch)
     monkeypatch.setattr(dg, "_default_free_fn", lambda _root: lambda: 40 * _GB)
     calm = dg.collect(root=ext, env=env)
     # Both owners exist and neither root is past the max age: the GC keeps
-    # them, and the pressure pass does nothing above the high-water mark.
-    assert [result.reclaimed for result in calm] == [[], []]
+    # them, no shared environment is idle, and the pressure pass does nothing
+    # above the high-water mark.
+    assert [result.operation for result in calm] == ["gc", "environments", "pressure"]
+    assert [result.reclaimed for result in calm] == [[], [], []]
     # A high-water mark above any real volume puts the root under pressure.
     pressed = {
         **env,
         DISK_GUARD_HIGH_WATER_ENV: "1000000000",
         dg.ENV_TARGET: "1000000001",
     }
-    gc_result, pressure = dg.collect(root=ext, env=pressed)
+    gc_result, environments, pressure = dg.collect(root=ext, env=pressed)
+    assert environments.reclaimed == []
     assert gc_result.reclaimed == []
     assert _reclaimed(pressure) == _resolved(idle_roots.values())
     assert all(path.is_dir() for path in fresh_roots.values())

@@ -123,8 +123,7 @@ _SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set
 def _global_name_sites(
     funcs: Sequence[Mapping[str, Any]],
 ) -> Iterator[tuple[Mapping[str, Any], str]]:
-    """Every op of a module's own body that names one of its globals, with
-    the name: the single scanner behind its layout and its slot stamps."""
+    """Identify materialized global access sites for slot stamping."""
     for func in funcs:
         constants: dict[str, str] = {}
         globals_dicts: set[str] = set()
@@ -159,17 +158,9 @@ def _global_name_sites(
                 yield op, constants[args[1]]
 
 
-def module_global_layout(funcs: Sequence[dict[str, Any]]) -> tuple[str, ...]:
-    """A module's global slot layout (call_anatomy.md 4.5): every non-dunder
-    name its own code reads, writes or deletes as a module global, sorted.
-
-    The set is a function of the module's lowered body alone, so another
-    module's edit never renumbers it. Names bound only by other modules or
-    through ``globals()`` with a computed key are not slotted; their reads and
-    writes stay on the by-name path, which is always correct.
-    """
-    names = {name for _, name in _global_name_sites(funcs)}
-    return tuple(sorted(name for name in names if not is_dunder_name(name)))
+def module_global_layout(names: Collection[str]) -> tuple[str, ...]:
+    """Sorted slots for names the module's source may write or delete."""
+    return tuple(sorted({name for name in names if not is_dunder_name(name)}))
 
 
 def stamp_global_slots(
@@ -180,6 +171,7 @@ def stamp_global_slots(
     static_modules: Collection[str] = (),
     guard_masks: Mapping[str, int] | None = None,
     init_dominated: Mapping[str, Collection[tuple[str, int]]] | None = None,
+    function_cells: Mapping[str, int] | None = None,
 ) -> None:
     """Mark each read and store of a slotted global with its slot
     ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
@@ -237,6 +229,7 @@ def stamp_global_slots(
                 module_var = ops[bind_site[1]]["out"]
                 base = f"static_cells_base_{module_var}"
                 mask = f"static_cells_guards_{module_var}"
+                function_cell_count = f"static_cells_functions_{module_var}"
                 ops[at:at] = [
                     {"kind": "static_cell_base", "s_value": module_name, "out": base},
                     {
@@ -245,9 +238,14 @@ def stamp_global_slots(
                         "out": mask,
                     },
                     {
+                        "kind": "const",
+                        "value": (function_cells or {}).get(module_name, 0),
+                        "out": function_cell_count,
+                    },
+                    {
                         "kind": "call",
                         "s_value": "molt_static_cells_bind",
-                        "args": [module_var, base, mask],
+                        "args": [module_var, base, mask, function_cell_count],
                         "out": f"static_cells_bound_{module_var}",
                     },
                 ]
@@ -414,7 +412,6 @@ def _integrate_module_frontend_result_with_state(
         integration_state.class_definition_references.setdefault(symbol, owner)
     integration_state.function_digest_seeds.extend(function_digest_seeds)
     integration_state.functions.extend(ir_functions)
-    integration_state.global_layouts[module_name] = module_global_layout(ir_functions)
     integration_state.module_functions[module_name] = ir_functions
     for symbol in sorted(metadata):
         row = metadata[symbol]

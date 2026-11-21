@@ -1224,9 +1224,9 @@ callable_arity = 5
 
 [[import]]
 name = "static_cells_bind"
-type = 4
+type = 6
 runtime_name = "molt_static_cells_bind"
-callable_arity = 3
+callable_arity = 4
 
 [[import]]
 name = "build_class_builtin"
