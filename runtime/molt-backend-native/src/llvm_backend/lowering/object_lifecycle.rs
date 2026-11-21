@@ -10,7 +10,7 @@ use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
     LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
-    generate_release_terminal, generate_type_of,
+    generate_release_fields, generate_release_terminal, generate_type_of,
 };
 use molt_codegen_abi::thread_record::ThreadRecordWord;
 use molt_codegen_abi::word::WordBuilder;
@@ -142,6 +142,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     pub(super) fn release_terminal_helper(&self) -> FunctionValue<'ctx> {
         let free = self.runtime_import(RuntimeFn::HeapFree);
         let cold_fn = self.runtime_import(RuntimeFn::DecRefObj);
+        let release_fields = self.release_fields_helper();
         self.site_helper_placed("__molt_release_terminal", 2, "noinline", |b, words| {
             let &[bits] = words else {
                 unreachable!("the terminal-release helper's parameters")
@@ -172,6 +173,17 @@ impl<'ctx> LlvmBackend<'ctx> {
                         .build_execution_call(free, &[object.into()], "")
                         .unwrap();
                 },
+                |b, pointer, fields| {
+                    let admission = b.admission;
+                    b.words
+                        .builder
+                        .build_execution_call(
+                            release_fields,
+                            &[pointer.into(), fields.into(), admission.into()],
+                            "",
+                        )
+                        .unwrap();
+                },
                 |b| {
                     b.words
                         .builder
@@ -179,6 +191,25 @@ impl<'ctx> LlvmBackend<'ctx> {
                         .unwrap();
                 },
             );
+            b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+        })
+    }
+
+    /// The field release: `(context, pointer, fields, admission) -> None`,
+    /// one `noinline` copy per module, reached only from the terminal
+    /// release; a last reference is `molt_dec_ref_obj`'s.
+    pub(super) fn release_fields_helper(&self) -> FunctionValue<'ctx> {
+        let dec_ref = self.runtime_import(RuntimeFn::DecRefObj);
+        self.site_helper_placed("__molt_release_fields", 3, "noinline", |b, words| {
+            let &[pointer, fields] = words else {
+                unreachable!("the field-release helper's parameters")
+            };
+            generate_release_fields(b, pointer, fields, |b, child| {
+                b.words
+                    .builder
+                    .build_execution_call(dec_ref, &[child.into()], "")
+                    .unwrap();
+            });
             b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
         })
     }

@@ -478,7 +478,7 @@ pub(crate) mod tests {
                     .run_runtime(RuntimeFn::BuiltinType, &words[..1])
                     .expect("a builtin type's miss answers a word"),
                 SiteBody::ObjectAlloc { .. } => unreachable!("taken above"),
-                SiteBody::ReleaseTerminal => {
+                SiteBody::ReleaseTerminal | SiteBody::ReleaseFields => {
                     panic!("the model has no plans for {body:?}")
                 }
             })
