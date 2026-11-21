@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
-from molt.frontend._types import SimpleIROp
+from molt.frontend._types import ClassId, SimpleIROp
+from molt.frontend.class_model import ClassModel
 from molt.frontend.lowering.op_kinds_generated import WireOpKind
 from molt.frontend.lowering.function_metadata import (
     FunctionMetadataEmitter,
@@ -22,6 +23,7 @@ from molt.frontend.lowering.function_metadata import (
 )
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
 from molt.frontend.module_publication import (
+    CallableDeclaration,
     FunctionAssemblyMetadata,
     inspect_source_module_publication,
     parse_function_metadata,
@@ -79,6 +81,13 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class FrontendDeclarationTable:
+    callables: Mapping[str, CallableDeclaration]
+    classes: Mapping[ClassId, ClassModel]
+    module_layouts: Mapping[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
 class _PreparedBackendIR:
     ir: dict[str, Any]
     function_metadata: dict[str, FunctionAssemblyMetadata]
@@ -93,6 +102,7 @@ class _PreparedBackendIR:
     # Static module cells (call_anatomy.md 4.5a): eligible modules, their
     # cells' InitOnce facts and why every other module keeps its dictionary.
     static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
+    declarations: FrontendDeclarationTable | None = None
 
 
 def _build_version_info_ops(
@@ -2651,6 +2661,15 @@ def _prepare_backend_ir(
     )
     return _PreparedBackendIR(
         ir=ir,
+        declarations=FrontendDeclarationTable(
+            callables={
+                symbol: row["callable_declaration"]
+                for symbol, row in integration_state.function_metadata.items()
+                if "callable_declaration" in row
+            },
+            classes=integration_state.known_classes,
+            module_layouts=integration_state.global_layouts,
+        ),
         function_digest_seeds=surviving_seeds,
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}

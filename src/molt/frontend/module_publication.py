@@ -6,6 +6,8 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
+from molt.compiler_analysis.python_function_kind import normalize_function_kind
+
 
 class SourceModulePublication(TypedDict):
     """Backend-assembly facts owned by the source module-init prologue."""
@@ -20,14 +22,65 @@ class SourceModulePublicationData(TypedDict):
     boundary_index: int
 
 
+class CallableDeclaration(TypedDict):
+    """Python signature and closure shape captured at callable publication."""
+
+    execution_kind: str
+    positional_only: list[str]
+    positional_or_keyword: list[str]
+    keyword_only: list[str]
+    vararg: str | None
+    varkw: str | None
+    positional_default_count: int
+    keyword_defaults: list[str]
+    freevars: list[str]
+    cellvars: list[str]
+
+
 class FunctionAssemblyMetadata(TypedDict, total=False):
     source_module_publication: SourceModulePublicationData
+    callable_declaration: CallableDeclaration
     gpu_body_origin: dict[str, Any]
     app_callable_bindings: list[dict[str, Any]]
     constructor_fallbacks: list[str]
 
 
 _FUNCTION_METADATA_FIELDS = frozenset(FunctionAssemblyMetadata.__annotations__)
+
+
+def _validate_callable_declaration(value: object, *, symbol: str) -> None:
+    if (
+        not isinstance(value, dict)
+        or value.keys() != CallableDeclaration.__annotations__.keys()
+    ):
+        raise ValueError(f"invalid callable declaration for function {symbol!r}")
+    if (
+        normalize_function_kind(value["execution_kind"]) is None
+        or type(value["positional_default_count"]) is not int
+        or any(
+            value[key] is not None and not isinstance(value[key], str)
+            for key in ("vararg", "varkw")
+        )
+        or any(
+            not isinstance(value[key], list)
+            or any(not isinstance(name, str) for name in value[key])
+            for key in (
+                "positional_only",
+                "positional_or_keyword",
+                "keyword_only",
+                "keyword_defaults",
+                "freevars",
+                "cellvars",
+            )
+        )
+    ):
+        raise ValueError(f"invalid callable declaration for function {symbol!r}")
+    if not (
+        0
+        <= value["positional_default_count"]
+        <= len(value["positional_only"]) + len(value["positional_or_keyword"])
+    ) or not set(value["keyword_defaults"]).issubset(value["keyword_only"]):
+        raise ValueError(f"invalid defaults for declared function {symbol!r}")
 
 
 @dataclass(frozen=True)
@@ -85,6 +138,8 @@ def parse_function_metadata(
             raise ValueError(f"function metadata has no executable owner {symbol!r}")
         if not isinstance(row, dict) or set(row) - _FUNCTION_METADATA_FIELDS:
             raise ValueError(f"invalid assembly metadata for function {symbol!r}")
+        if "callable_declaration" in row:
+            _validate_callable_declaration(row["callable_declaration"], symbol=symbol)
         if "source_module_publication" in row:
             envelope = row["source_module_publication"]
             if (

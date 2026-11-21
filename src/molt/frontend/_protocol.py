@@ -50,6 +50,7 @@ from molt.frontend._types import (
     ExactClassFact,
     ExactFact,
     FrontendOpKind,
+    FunctionDefaults,
     FunctionDefinitionValues,
     ImportForm,
     LoopScope,
@@ -106,6 +107,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -618,21 +620,21 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         class_node: ast.ClassDef,
         item: ast.AsyncFunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
     ) -> MethodInfo: ...
 
     def _compile_class_generator_method(
         self,
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
     ) -> MethodInfo: ...
 
     def _compile_class_method(
         self,
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
         *,
         bind_receiver: bool = ...,
     ) -> MethodInfo: ...
@@ -1042,7 +1044,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> tuple[MoltValue, MoltValue]: ...
+    ) -> FunctionDefaults: ...
 
     def _emit_function_definition(
         self, node: ast.FunctionDef, definition: FunctionDefinitionValues
@@ -1066,7 +1068,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         kwonly_params: list[str],
         vararg: str | None,
         varkw: str | None,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
         docstring: str | None,
         module_override: str | None = ...,
         execution_kind: FunctionKind = ...,
