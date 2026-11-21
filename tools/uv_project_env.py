@@ -51,12 +51,17 @@ def uv_project_env(
     env: Mapping[str, str] | None = None,
     repo_root: Path = ROOT,
     explicit: str | None = None,
+    create_dirs: bool = True,
 ) -> ProcessEnvironment:
-    """``env`` for a command in ``python``'s shared environment."""
-    from molt.dx import DxConfigError
+    """``env`` for a command in ``python``'s shared environment.
+
+    The child gets the DX artifact roots (Cargo target, session, caches) as
+    every development command does, then the environment's activation.
+    """
+    from molt.dx import DxConfigError, development_artifact_env
     from tools.venv_exec import venv_env
 
-    source = dict(os.environ if env is None else env)
+    source = ProcessEnvironment(os.environ if env is None else env)
     if source.get("MOLT_VENV"):
         raise DxConfigError(
             "managed uv execution cannot replace an explicitly borrowed MOLT_VENV"
@@ -66,7 +71,13 @@ def uv_project_env(
         root = path if path.is_absolute() else (repo_root / path).absolute()
     else:
         root = project_environment_path(python=python, repo_root=repo_root, env=source)
-    return venv_env(venv=root, env=source, managed=True, repo_root=repo_root)
+    resolved = development_artifact_env(
+        repo_root,
+        source.updated({"UV_PROJECT_ENVIRONMENT": str(root)}),
+        session_prefix="uv-project-env",
+        create_dirs=create_dirs,
+    )
+    return venv_env(venv=root, env=resolved, managed=True, repo_root=repo_root)
 
 
 def _parse_command(command: Sequence[str]) -> list[str]:
@@ -115,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_env:
             return 0
         parser.error("command is required after --")
-    return forward_command(resolve_command(command, venv=root), env=env)
+    return forward_command(resolve_command(command, venv=root, managed=True), env=env)
 
 
 if __name__ == "__main__":

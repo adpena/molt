@@ -2787,7 +2787,9 @@ class RunContext:
         if selected is None:
             from molt.checkout_provisioning import PROVISION_HINT
 
-            raise DxConfigError(f"development image not selected; {PROVISION_HINT}")
+            raise DxConfigError(
+                f"development environment not selected; {PROVISION_HINT}"
+            )
         return selected
 
     def canonical_env(
@@ -2908,16 +2910,13 @@ class RunContext:
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
-        shared_environments = ext_root.joinpath(
-            *custody_layout.storage_rule("python-environment").relative
-        )
+        from molt.uv_environment import bytecode_prefix, environments_root
+
         if (
             selected_environment is not None
             and not env.get("MOLT_VENV")
-            and selected_environment.parent == shared_environments
+            and selected_environment.parent == environments_root(self.root, env)
         ):
-            from molt.uv_environment import bytecode_prefix
-
             env["PYTHONPYCACHEPREFIX"] = str(bytecode_prefix(selected_environment))
             env.pop("PYTHONDONTWRITEBYTECODE", None)
         else:

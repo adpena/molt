@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 if TYPE_CHECKING:
     from .file_locks import _FileLockHandle
-    from .process_launch import NativeLaunchResource
 
 from .custody_layout import (
     SCRATCH_DIRNAME,
@@ -227,10 +226,6 @@ def _name_key(kind: CheckoutStateKind, name: str) -> str | None:
         return name if name not in scratch_control_names() else None
     if kind == "build-control":
         return name if _ADDRESS.fullmatch(name) else None
-    if kind == "uv-environment":
-        head, separator, name = name.rpartition("__src-")
-        if not separator or not head:
-            return None
     return name if _COMPONENT.fullmatch(name) else None
 
 
@@ -249,12 +244,6 @@ def _owner_key(kind: CheckoutStateKind, owner: Path) -> str:
 
 
 def _root_key(kind: CheckoutStateKind, root: Path) -> str | None:
-    if kind == "python-environment":
-        return (
-            os.path.normcase(root.parent.name)
-            if _ADDRESS.fullmatch(root.name) and _COMPONENT.fullmatch(root.parent.name)
-            else None
-        )
     if kind == "cargo-target" and os.path.normcase(root.parent.name) == "sessions":
         from .dx import is_session_artifact_component
 
@@ -398,7 +387,7 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     names = tuple(os.path.normcase(part) for part in root.parts)
     containers = (
         *(
-            (*container, "*") if kind == "python-environment" else container
+            container
             for kind, container in CHECKOUT_STATE_CONTAINERS.items()
             if kind != "scratch" or _SCRATCH_ROOT.fullmatch(os.path.normcase(root.name))
         ),
@@ -427,7 +416,7 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
         if checkout_state_kind_of(root, artifact) == "cargo-target":
             return _ManagedStateRoot(root, artifact, "cargo-target")
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
-        depth = len(container) + (kind == "python-environment")
+        depth = len(container)
         if len(root.parents) <= depth:
             continue
         artifact = root.parents[depth]
@@ -474,19 +463,6 @@ def _state_metadata_root(root: Path) -> Path:
             / ".disk_guard"
             / "storage-use"
             / build_state_address(root)
-        )
-    container = CHECKOUT_STATE_CONTAINERS["python-environment"]
-    depth = len(container) + 1
-    if (
-        len(root.parents) > depth
-        and _root_key("python-environment", root) is not None
-        and tuple(os.path.normcase(part) for part in root.parts[-depth - 1 : -2])
-        == container
-    ):
-        from .build_state_layout import build_state_address
-
-        return root.parents[depth].joinpath(
-            *_STATE_LOCK_DIR, "metadata", build_state_address(root)
         )
     return root
 
@@ -571,11 +547,6 @@ def _publish_checkout_use(
     coordinate: _ManagedStateRoot, owner: CheckoutOwner | None, *, create: bool
 ) -> None:
     root = coordinate.root
-    if (
-        coordinate.kind in {"uv-environment", "python-environment"}
-        and not (root / "pyvenv.cfg").is_file()
-    ):
-        return  # uv owns creation of its environment before our control files.
     if owner is not None:
         if create and coordinate.kind == "build-control":
             # Created here, under this use's lock, so the owner is bound
@@ -788,12 +759,7 @@ def checkout_state_environment_roots(
             if not path.is_absolute():
                 path = working / path
             path = path.absolute()
-            roots[path] = (
-                CheckoutOwner(source_root.resolve(), "python-environment")
-                if _state_metadata_root(path) != path
-                and _binds("python-environment", path, source_root.resolve())
-                else None
-            )
+            roots[path] = None
     if any(
         environment.get(key, "").strip() for key in ("WASI_SDK_PATH", "WASI_SDK_PREFIX")
     ):
@@ -829,13 +795,6 @@ def checkout_state_environment_roots(
                 project_root=source_root, cargo_target=target, environment=environment
             )
         roots[control] = CheckoutOwner(target, "build-control")
-    if raw_virtual := environment.get("VIRTUAL_ENV", "").strip():
-        from .process_launch import NativeLaunchResource
-
-        virtual = Path(raw_virtual).expanduser()
-        if not virtual.is_absolute():
-            virtual = working / virtual
-        _retain_python_resources(roots, (NativeLaunchResource(virtual, "directory"),))
     for key in (
         "TMPDIR",
         "TMP",
@@ -885,9 +844,6 @@ def checkout_state_command_roots(
         )
     )
     working = Path.cwd() if cwd is None else Path(cwd).absolute()
-    _retain_python_resources(
-        roots, command_resources(command, environment, cwd=working)
-    )
     # Executing a provisioned tool retains the exact version, rather than
     # pinning every old toolchain merely because MOLT_TARGET_ROOT is set.
     for resource in command_resources(command, environment, cwd=working):
@@ -937,83 +893,6 @@ def _retain_package_environments(
                     owner = read_checkout_owner(path)
                     if owner == CheckoutOwner(checkout, kind):
                         roots[path] = owner
-
-
-def _retain_python_resources(
-    roots: dict[Path, CheckoutOwner | None],
-    resources: Iterable[NativeLaunchResource],
-) -> None:
-    """Optional launch resources confer use only on existing bound images.
-
-    Missing, foreign, unowned or inaccessible search coordinates impose no new
-    launch refusal or materialization intent. Strict admission and retirement
-    retain their existing no-link checks. Resolve only enclosing directories,
-    preserving the environment's lexical interpreter entrypoint symlink.
-    """
-    container = CHECKOUT_STATE_CONTAINERS["python-environment"]
-    qualified: dict[Path, tuple[Path, CheckoutOwner | None] | None] = {}
-
-    def prefixes(member: Path) -> Generator[Path, None, None]:
-        parts = member.parts
-        names = tuple(os.path.normcase(part) for part in parts)
-        for start in range(len(parts) - len(container) - 1):
-            end = start + len(container) + 2
-            if (
-                names[start : start + len(container)] == container
-                and _COMPONENT.fullmatch(names[end - 2]) is not None
-                and _ADDRESS.fullmatch(names[end - 1]) is not None
-            ):
-                yield Path(*parts[:end])
-
-    def retain(root: Path) -> bool:
-        if root in roots:
-            return True  # Already retained by this operation's explicit intent.
-        if root not in qualified:
-            qualified[root] = None
-            try:
-                physical = root.resolve(strict=True)
-                if physical in roots:
-                    qualified[root] = (physical, roots[physical])
-                    return True
-                coordinate = _managed_coordinate(physical)
-                if (
-                    coordinate is not None
-                    and coordinate.kind == "python-environment"
-                    and physical.is_dir()
-                ):
-                    owner = bound_checkout_owner(physical, coordinate.artifact)
-                    if owner is not None and owner.kind == "python-environment":
-                        qualified[root] = (physical, owner)
-            except (OSError, ValueError, RuntimeError):
-                # Optional search membership is not a stricter executable
-                # resolver. The unchanged native launch decides these errors.
-                pass
-        selected = qualified[root]
-        if selected is None:
-            return False
-        physical, owner = selected
-        roots.setdefault(physical, owner)
-        return True
-
-    for resource in resources:
-        member = resource.path
-        names = tuple(os.path.normcase(part) for part in member.parts)
-        if any(part not in names for part in container):
-            continue  # No filesystem probe for an ordinary unmanaged coordinate.
-        normalized = Path(os.path.abspath(member))
-        present = False
-        for lexical in dict.fromkeys((member, normalized)):
-            for root in prefixes(lexical):
-                present = retain(root) or present
-        if not present:
-            continue
-        directory = member if resource.kind == "directory" else member.parent
-        try:
-            physical_directory = directory.resolve(strict=True)
-        except (OSError, ValueError, RuntimeError):
-            continue
-        for root in prefixes(physical_directory):
-            retain(root)
 
 
 def checkout_scratch_state_dir(
@@ -1089,9 +968,6 @@ def scratch_state_root(container: Path, *, owner: Path, create: bool = True) -> 
 def checkout_state_kind_at(parts: tuple[str, ...]) -> CheckoutStateKind | None:
     """The kind of checkout state root at ``parts`` below an artifact root."""
     parts = tuple(os.path.normcase(part) for part in parts)
-    container = CHECKOUT_STATE_CONTAINERS["python-environment"]
-    if len(parts) == len(container) + 2 and parts[:-2] == container:
-        return "python-environment"
     if (
         len(parts) == 5
         and parts[:2] == ("target", "checkouts")
@@ -1132,12 +1008,6 @@ def checkout_state_containers(artifact_root: Path) -> tuple[Path, ...]:
         target / "sessions"
         for target in _directories(targets)
         if _name_key("cargo-target", target.name) is not None
-    )
-    generations = artifact_root.joinpath(
-        *CHECKOUT_STATE_CONTAINERS["python-environment"]
-    )
-    containers.extend(
-        owner for owner in _directories(generations) if _COMPONENT.fullmatch(owner.name)
     )
     return tuple(containers)
 
@@ -1246,8 +1116,6 @@ def checkout_state_roots(
     sessions = _directories(target / "sessions")
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
         parent = artifact.joinpath(*container)
-        if kind == "python-environment":
-            parent /= _owner_key(kind, source)
         if kind == "build-control":
             for owner in (target, *sessions):
                 path = parent / build_state_address(owner)
@@ -1255,9 +1123,7 @@ def checkout_state_roots(
                     roots.append(CheckoutStateRoot(path, kind, owner))
             continue
         candidates = (
-            _directories(parent)
-            if kind in {"uv-environment", "python-environment"}
-            else [target, *sessions]
+            [target, *sessions]
             if kind == "cargo-target"
             else [parent / _owner_key(kind, source)]
         )
@@ -1300,22 +1166,10 @@ def stamp_checkout_state(
     if target_use_artifact_root(selected) is not None:
         record_checkout_target_use(selected, checkout=source_root)
     stamped: list[CheckoutStateRoot] = []
-    selected_python = {
-        Path(raw).expanduser().absolute()
-        for key in ("UV_PROJECT_ENVIRONMENT", "MOLT_VENV")
-        if (raw := environment.get(key, "").strip())
-    }
     for root in checkout_state_roots(source_root, environment):
         if root.kind == "cargo-target" and root.path not in targets:
             continue
         if root.kind == "build-control" and root.owner != selected:
-            continue
-        if root.kind == "python-environment" and root.path not in selected_python:
-            continue
-        if (
-            root.kind in {"uv-environment", "python-environment"}
-            and not (root.path / "pyvenv.cfg").is_file()
-        ):
             continue
         with checkout_state_use(((root.path, CheckoutOwner(root.owner, root.kind)),)):
             stamped.append(root)

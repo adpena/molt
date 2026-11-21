@@ -38,10 +38,9 @@ class VenvExecError(RuntimeError):
 
 
 def _resolve_path(raw: str, *, repo_root: Path) -> Path:
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        path = repo_root / path
-    return path.absolute()
+    # Lexical normalization only: resolving would replace an environment's
+    # entry links with its base interpreter.
+    return Path(os.path.abspath(repo_root / Path(raw).expanduser()))
 
 
 def resolve_venv(
@@ -73,13 +72,20 @@ def venv_bin_dir(venv: Path) -> Path:
 
 
 def venv_python(venv: Path) -> Path:
-    python = uv_environment.python_path(venv)
-    if not python.is_file():
-        raise VenvExecError(
-            f"environment Python not found: {python}; pass --venv/MOLT_VENV or "
-            "unset UV_PROJECT_ENVIRONMENT to use the shared environment"
-        )
-    return python
+    """The interpreter entry of ``venv``; a borrowed one may lack ``python``."""
+    bin_dir = venv_bin_dir(venv)
+    names = (
+        ("python.exe", "python3.exe", "python")
+        if os.name == "nt"
+        else ("python3", "python")
+    )
+    for name in names:
+        if (candidate := bin_dir / name).is_file():
+            return candidate
+    raise VenvExecError(
+        f"environment Python not found under {bin_dir}; pass --venv/MOLT_VENV or "
+        "unset UV_PROJECT_ENVIRONMENT to use the shared environment"
+    )
 
 
 def venv_env(
@@ -98,7 +104,9 @@ def venv_env(
     # diagnostics contain a non-cp1252 character (the recurring M43 class).
     merged["PYTHONUTF8"] = "1"
     merged["PYTHONIOENCODING"] = "utf-8"
-    merged["PATH"] = str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
+    merged["PATH"] = (
+        str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
+    )
     if managed:
         from molt.dx import ensure_repo_src_pythonpath
 
@@ -110,8 +118,14 @@ def venv_env(
     return ProcessEnvironment(merged)
 
 
-def resolve_command(command: Sequence[str], *, venv: Path) -> list[str]:
-    """``command`` with a leading Python alias bound to ``venv``'s interpreter."""
+def resolve_command(
+    command: Sequence[str], *, venv: Path, managed: bool = False
+) -> list[str]:
+    """``command`` with a leading Python alias bound to ``venv``'s interpreter.
+
+    A managed command also selects the environment's shared bytecode cache
+    as an interpreter option, which ``-I`` cannot drop.
+    """
     if not command:
         raise ValueError("command is required")
     resolved = list(command)
@@ -130,6 +144,10 @@ def resolve_command(command: Sequence[str], *, venv: Path) -> list[str]:
                     f"Python executable alias {alias!r} is absent from {venv}"
                 )
             resolved[0] = str(executable)
+        if managed:
+            from tools.proof_command_argv import python_environment_command
+
+            resolved = python_environment_command(resolved, environment_root=venv)
     return resolved
 
 
@@ -158,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
         venv = resolve_venv(explicit=args.venv)
         env = venv_env(venv=venv, managed=managed)
-        return forward_command(resolve_command(command, venv=venv), env=env)
+        return forward_command(
+            resolve_command(command, venv=venv, managed=managed), env=env
+        )
     except (VenvExecError, ValueError) as exc:
         parser.exit(127, f"venv_exec: {exc}\n")
     except FileNotFoundError as exc:

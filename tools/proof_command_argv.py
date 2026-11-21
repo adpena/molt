@@ -137,9 +137,7 @@ def _selected_python_prefix(prefixes: tuple[str, ...], expected: str) -> None:
     if len(prefixes) > 1:
         raise ValueError("Python cache prefix must be selected exactly once")
     if prefixes and prefixes != (expected,):
-        raise ValueError(
-            "Python cache prefix conflicts with the selected environment"
-        )
+        raise ValueError("Python cache prefix conflicts with the selected environment")
 
 
 def python_environment_command(
@@ -177,7 +175,9 @@ def validate_python_environment_command(
     expected = str(bytecode_prefix(environment_root))
     _selected_python_prefix(prefixes, expected)
     if not prefixes and (ignored or environment.get("PYTHONPYCACHEPREFIX") != expected):
-        raise ValueError("Python child does not select the environment's bytecode cache")
+        raise ValueError(
+            "Python child does not select the environment's bytecode cache"
+        )
 
 
 _PYTHON_CONSOLE_MODULES = {

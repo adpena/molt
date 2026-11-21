@@ -502,7 +502,10 @@ def _exact_command(
         selected_venv = env.get("VIRTUAL_ENV")
         if not selected_venv:
             raise ValueError("modeled venv wrapper has no bound environment")
-        argv = venv_exec.resolve_command(argv, venv=Path(selected_venv))
+        managed = not (wrapper.get("venv") or env.get("MOLT_VENV"))
+        argv = venv_exec.resolve_command(
+            argv, venv=Path(selected_venv), managed=managed
+        )
     python = envelope.get("python")
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",

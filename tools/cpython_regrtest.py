@@ -732,7 +732,7 @@ def select_regrtest_host(
             "uv-environment",
             config.repo_root,
             ProcessEnvironment(os.environ).without(
-                ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PURPOSE")
+                ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PYTHON")
             ),
             python=target_release_request(target).selector,
             groups=("dev",),

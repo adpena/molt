@@ -166,7 +166,7 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
         )
         selected = project.uv_project_env_dir(env)
         commands = [
-            resolve_command(cmd, venv=selected) for cmd in commands
+            resolve_command(cmd, venv=selected, managed=True) for cmd in commands
         ]
     except (DxConfigError, VenvExecError, ValueError) as exc:
         if json_output:

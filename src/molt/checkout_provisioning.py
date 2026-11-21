@@ -29,19 +29,16 @@ import sys
 import time
 from typing import TYPE_CHECKING, Literal, assert_never, get_args
 
-from molt import python_environment_contract as _contract
 from molt import process_guard
 from molt.custody_layout import git_directories
 from molt.custody_layout import storage_rule
 from molt.exact_json import (
     ExactJsonError,
-    canonical_json_sha256,
     read_exact,
     write_exact,
 )
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
-from molt.toolchain_identity import StableRegularFileError
 
 if TYPE_CHECKING:
     from molt.python_interpreter import PythonInterpreterRequest
@@ -859,7 +856,7 @@ def ensure_python_release(
             f"uv-environment: CPython {request.selector} names no patch release"
         )
     environment = ProcessEnvironment(environ).without(
-        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PURPOSE")
+        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PYTHON")
     )
     return ensure(
         "uv-environment",

@@ -98,9 +98,7 @@ def pinned_python(checkout: Path) -> str:
         raise UvEnvironmentError(f"cannot read the interpreter pin {path}: {exc}")
 
 
-def resolve_release(
-    selector: str, checkout: Path, environ: Mapping[str, str]
-) -> str:
+def resolve_release(selector: str, checkout: Path, environ: Mapping[str, str]) -> str:
     """The exact release ``selector`` names: itself, or uv's managed match.
 
     A minor selector (``3.13``) resolves to the managed interpreter uv finds
@@ -161,21 +159,25 @@ def lock_digest(checkout: Path) -> str:
         )
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise UvEnvironmentError(f"cannot read the lock inputs: {exc}") from exc
-    declared = {
-        ".".join(path): _table_entry(pyproject, path) for path in _LOCK_INPUTS
-    }
+    declared = {".".join(path): _table_entry(pyproject, path) for path in _LOCK_INPUTS}
     digest = hashlib.sha256(lock)
     digest.update(canonical_json_sha256(declared).encode("ascii"))
     return digest.hexdigest()
 
 
 def environments_root(checkout: Path, environ: Mapping[str, str]) -> Path:
-    """The one directory that holds every checkout's shared environments."""
+    """The one directory that holds every checkout's shared environments.
+
+    It sits below the artifact root's hot-state root when it has one (the
+    internal disk, HF-942), so imports read from the fast volume.
+    """
     from molt.custody_layout import storage_rule
+    from molt.default_paths import hot_path
     from molt.dx import artifact_root
 
-    return artifact_root(checkout, environ).joinpath(
-        *storage_rule("python-environment").relative
+    return hot_path(
+        artifact_root(checkout, environ),
+        *storage_rule("python-environment").relative,
     )
 
 
@@ -242,8 +244,7 @@ def selected(
     """
     explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
     if explicit:
-        path = Path(explicit).expanduser()
-        return (path if path.is_absolute() else checkout / path).absolute()
+        return Path(os.path.abspath(checkout / Path(explicit).expanduser()))
     root = environment_root(checkout, key or default_key(checkout), environ)
     return root if (root / RECORD).is_file() else None
 
@@ -303,7 +304,9 @@ def _run(
     )
     if completed.returncode != 0:
         tail = "\n".join((completed.stderr or "").strip().splitlines()[-20:])
-        raise UvEnvironmentError(f"{what} failed (exit {completed.returncode}):\n{tail}")
+        raise UvEnvironmentError(
+            f"{what} failed (exit {completed.returncode}):\n{tail}"
+        )
     return completed.stdout or ""
 
 

@@ -635,7 +635,7 @@ def prepare_gate_environment(
         if requires_python:
             from molt.checkout_provisioning import PROVISION_HINT
 
-            raise DriverError(f"development image not selected; {PROVISION_HINT}")
+            raise DriverError(f"development environment not selected; {PROVISION_HINT}")
         return GateEnvironment(env, None, False)
     managed = not bool(env.get("MOLT_VENV"))
     try:
@@ -776,7 +776,7 @@ def _gate_environment(
         if python_gate or shell_python:
             from molt.checkout_provisioning import PROVISION_HINT
 
-            raise DriverError(f"development image not selected; {PROVISION_HINT}")
+            raise DriverError(f"development environment not selected; {PROVISION_HINT}")
         return cmd, env
     managed = context.managed
     try:
@@ -814,7 +814,7 @@ def _gate_environment(
                 )
             if not (isinstance(cmd, str) and shell_syntax):
                 cmd = tuple(
-                    venv_exec.resolve_command(words, venv=venv)
+                    venv_exec.resolve_command(words, venv=venv, managed=managed)
                 )
         # An external borrower keeps its explicit contract. Managed roots stay
         # selected as UV images rather than being relabeled as borrowed venvs.

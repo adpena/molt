@@ -45,8 +45,6 @@ LIVE_WORKTREE_LIMIT = 12
 CheckoutStateKind = Literal[
     "cargo-target",
     "proof-supervisor",
-    "uv-environment",
-    "python-environment",
     "pytest-cache",
     "hypothesis-home",
     "build-control",
@@ -78,6 +76,7 @@ ReplacedStorageClass = Literal[
 ]
 StorageClass = Literal[
     CheckoutStateKind,
+    "python-environment",
     EvidenceClass,
     "compile-cache",
     "uv-cache",
@@ -276,13 +275,6 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 "artifact",
                 "native proof-supervisor provisioning",
                 ("proof-supervisor",),
-                Regenerable(month, None),
-            )
-        case "uv-environment":
-            return StorageRule(
-                "artifact",
-                "checkout-provisioning",
-                ("uv-project-envs",),
                 Regenerable(month, None),
             )
         case "python-environment":

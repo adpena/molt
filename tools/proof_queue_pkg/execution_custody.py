@@ -1348,7 +1348,9 @@ def child_policy(
                 continue
             python_bytecode = None
             if name == "python":
-                from molt.uv_environment import bytecode_prefix as environment_bytecode_prefix
+                from molt.uv_environment import (
+                    bytecode_prefix as environment_bytecode_prefix,
+                )
 
                 location = identity.get("location")
                 prefix = (

@@ -97,7 +97,7 @@ def run_uv(
     run_env = venv_env(
         venv=selected.environment_root, env=base_env, managed=True, repo_root=ROOT
     )
-    cmd = resolve_command(args, venv=selected.environment_root)
+    cmd = resolve_command(args, venv=selected.environment_root, managed=True)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     _check_call_guarded(cmd, run_env, limits=limits)
 
@@ -189,7 +189,7 @@ def _run_repo_cmd(cmd: list[str], env: Mapping[str, str], *, tty: bool) -> None:
         # Bounded recipe selection is owned by DX; argument assembly never
         # probes the runtime or mutates the selected published image.
         env = DX.normalized_uv_run_env(env)
-        cmd = resolve_command(cmd, venv=selected)
+        cmd = resolve_command(cmd, venv=selected, managed=True)
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     _check_call_guarded(cmd, env, limits=limits)
