@@ -278,8 +278,7 @@ class TimeoutPolicy:
         if build is None and run is not None:
             build = max(run * 2.0, 300.0)
         phases = [("native", build, run)]
-        # The JIT tier compiles the whole program in its run phase, so its run
-        # cap also covers the compilation an AOT build does in its build phase.
+        # The JIT run budget includes local machine-code emission and relocation.
         for backend, default_build, default_run in (
             ("wasm", 600.0, 60.0),
             ("llvm", 900.0, 60.0),
@@ -1149,11 +1148,11 @@ def twin_stable_text(text: str) -> str:
 
 @dataclass
 class JitAdapter:
-    """The native program run from memory by molt-jit: no object, no link.
+    """The native program run by molt-jit from local bodies and shared images.
 
-    The JIT tier shares the native frontend, backend IR, code generator and
-    runtime bytes with the native adapter; only the code owner differs. Its
-    divergence from the native adapter is therefore a code-owner defect.
+    The JIT and native adapters share frontend lowering, native codegen and
+    the runtime and stdlib image producers. This adapter runs the JIT launch
+    contract, including its start receipt.
     """
 
     name: str = "jit"

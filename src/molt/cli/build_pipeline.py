@@ -168,6 +168,8 @@ def _run_build_pipeline(
                 deterministic=deterministic,
                 trusted=trusted,
                 stdlib_profile=stdlib_profile,
+                cache=cache,
+                cache_dir=cache_dir,
             )
         )
     # MLIR target: run the frontend to produce TIR, then shell out to the

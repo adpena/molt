@@ -9,6 +9,12 @@
 use std::ffi::{CStr, CString, c_void};
 use std::path::Path;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ImageVisibility {
+    Local,
+    ProgramStorage,
+}
+
 /// A loaded runtime image. It is never unloaded: generated code and the
 /// runtime's own threads hold its addresses until the process exits.
 pub(crate) struct RuntimeImage {
@@ -25,13 +31,17 @@ impl RuntimeImage {
     /// Load the image and bind every symbol now, so an image that needs a
     /// missing host symbol fails here instead of in the middle of a run.
     #[cfg(unix)]
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path, visibility: ImageVisibility) -> Result<Self, String> {
         use std::os::unix::ffi::OsStrExt;
         let name = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| format!("runtime image path contains NUL: {}", path.display()))?;
-        // SAFETY: `name` is NUL-terminated; RTLD_LOCAL keeps the image's
-        // symbols out of the global namespace, so only this lookup sees them.
-        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        let scope = match visibility {
+            ImageVisibility::Local => libc::RTLD_LOCAL,
+            ImageVisibility::ProgramStorage => libc::RTLD_GLOBAL,
+        };
+        // SAFETY: `name` is NUL-terminated. Program storage exports the
+        // application's data for the same loader binding as AOT main.
+        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | scope) };
         if handle.is_null() {
             return Err(format!(
                 "cannot load runtime image {}: {}",
@@ -43,11 +53,22 @@ impl RuntimeImage {
     }
 
     #[cfg(not(unix))]
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path, _: ImageVisibility) -> Result<Self, String> {
         Err(format!(
             "the JIT runner loads its runtime image with dlopen; this platform is not supported yet ({})",
             path.display()
         ))
+    }
+
+    pub(crate) fn verify_generation(&self, path: &Path, witness: &str) -> Result<(), String> {
+        if self.symbol(witness).is_some() {
+            Ok(())
+        } else {
+            Err(format!(
+                "native image generation mismatch for {}: missing `{witness}`",
+                path.display(),
+            ))
+        }
     }
 
     /// The address of `name` in the image, or `None` when it defines none.

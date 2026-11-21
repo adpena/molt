@@ -350,6 +350,7 @@ def _prepare_backend_cache_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
+    restore_application_artifact: bool = True,
 ) -> _BackendCacheSetup:
     # Cache identities and archive manifests must use the same admitted target
     # as daemon and direct code generation, including implicit host requests.
@@ -726,21 +727,25 @@ def _prepare_backend_cache_setup(
         cache_candidates.append(("module", cache_path))
     if function_cache_path is not None and function_cache_path != cache_path:
         cache_candidates.append(("function", function_cache_path))
-    cached_output = _try_cached_backend_candidates(
-        project_root=project_root,
-        cache_candidates=cache_candidates,
-        output_artifact=output_artifact,
-        artifact_contract=artifact_contract,
-        cache_key=cache_key,
-        function_cache_key=function_cache_key,
-        cache_path=cache_path,
-        stdlib_object_path=stdlib_object_path,
-        stdlib_object_cache_key=stdlib_object_cache_key,
-        stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_modules=stdlib_modules,
-        warnings=warnings,
-        stdlib_contract_validation_token=stdlib_contract_validation_token,
-        stage_timings_ms=stage_timings_ms,
+    cached_output = (
+        _try_cached_backend_candidates(
+            project_root=project_root,
+            cache_candidates=cache_candidates,
+            output_artifact=output_artifact,
+            artifact_contract=artifact_contract,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_modules=stdlib_modules,
+            warnings=warnings,
+            stdlib_contract_validation_token=stdlib_contract_validation_token,
+            stage_timings_ms=stage_timings_ms,
+        )
+        if restore_application_artifact
+        else None
     )
     cache_hit = cached_output is not None
     cache_hit_tier = cached_output.tier if cached_output is not None else None

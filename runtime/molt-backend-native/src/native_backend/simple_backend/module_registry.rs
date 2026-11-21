@@ -71,20 +71,5 @@ impl SimpleBackend {
         self.module
             .define_data(data_id, &desc)
             .unwrap_or_else(|e| panic!("failed to define {MODULE_REGISTRY_BLOB_SYMBOL}: {e:?}"));
-
-        // The ready block: writable zeroed words the runtime stores borrowed
-        // module pointers into (IC2).
-        let ready_id = self
-            .module
-            .declare_data(molt_ir::MODULE_READY_SYMBOL, Linkage::Export, true, false)
-            .unwrap_or_else(|e| {
-                panic!("failed to declare {}: {e:?}", molt_ir::MODULE_READY_SYMBOL)
-            });
-        let mut ready = DataDescription::new();
-        ready.set_align(8);
-        ready.define_zeroinit(registry.ready_block_bytes());
-        self.module
-            .define_data(ready_id, &ready)
-            .unwrap_or_else(|e| panic!("failed to define {}: {e:?}", molt_ir::MODULE_READY_SYMBOL));
     }
 }

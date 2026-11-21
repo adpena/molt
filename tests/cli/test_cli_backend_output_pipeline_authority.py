@@ -295,6 +295,7 @@ def terminal_build(
             link_input_artifacts=None,
             link_input_observation=None,
             result_inputs=None,
+            shared_images=(),
         ), None
 
     def finalize(**_):

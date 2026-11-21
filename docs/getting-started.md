@@ -155,21 +155,19 @@ for opt-ins and proof/reproducibility constraints.
 
 ## Run From Memory (JIT Tier)
 
-In a source checkout on macOS arm64, `molt run --tier jit` skips object
-emission, the link and the native executable. The build publishes a JIT image
-(`<name>_molt.jit`), and the `molt-jit` runner compiles the program into its
-own memory with the same code generator and runs it against the same runtime
-bytes as an AOT build:
+In a source checkout on macOS arm64, `molt run --tier jit` builds a JIT image
+(`<name>_molt.jit`). The runner compiles called application functions and
+specialized clones into memory. It uses the same compiled runtime and
+standard library as a development AOT build.
 
 ```bash
 uv run molt run examples/hello.py --tier jit
 ```
 
-The first run builds the runner and links the runtime image once. Each start,
-including a spawn-mode `multiprocessing` worker, prepares the module and its
-stdlib dependencies. Each called body compiles on demand and can reuse its
-cached machine code across runs. `aot` stays the default.
-[Measured JIT costs](cli-reference.md#molt-run)
+The first build prepares the runner and links the shared images. Later builds
+reuse matching generations. Each start loads those images. A local body
+compiles on first call and can reuse cached machine code across starts.
+`aot` is the default. [Startup costs](cli-reference.md#molt-run)
 
 The JIT
 tier never falls back to an AOT build: a construct it cannot run, such as a

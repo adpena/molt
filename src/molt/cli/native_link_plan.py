@@ -28,6 +28,16 @@ from molt.native_target_shape import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class SharedStdlibImage:
+    path: Path
+    program_data: tuple[str, ...]
+
+
+def image_generation_witness(path: Path) -> str:
+    return "molt_native_image_generation_" + path.parent.name
+
+
 class NativeLinkerKind(str, Enum):
     SYSTEM = "system"
     LLD = "lld"

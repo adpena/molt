@@ -544,11 +544,9 @@ def test_compiler_fingerprints_track_the_build_inputs_their_crates_declare(
 def test_a_cached_launch_misses_when_an_input_of_its_tier_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A cache hit runs the cached program under the compiler product its tier
-    # runs. Each edit below changes one real input file; the launch key of
-    # every tier that reads it must change, so the next run misses and
-    # rebuilds. A JIT launch never runs molt-backend, so a backend-only edit
-    # keeps its key (and costs it no fingerprint).
+    # Each edit changes a real input file. The launch key changes for every
+    # tier that reads it, so the next run rebuilds. Both tiers use the backend
+    # to prepare the native stdlib partition. Only JIT launches use the runner.
     from dataclasses import replace
     from types import SimpleNamespace
 
@@ -609,7 +607,7 @@ def test_a_cached_launch_misses_when_an_input_of_its_tier_changes(
             {"aot", "jit"},
         ),
         (runner, 'fn main() { println!("changed"); }\n', {"jit"}),
-        (sources["backend"], "pub const BACKEND_EDIT: u8 = 2;\n", {"aot"}),
+        (sources["backend"], "pub const BACKEND_EDIT: u8 = 2;\n", {"aot", "jit"}),
         (runtime, "pub const RUNTIME: u16 = 300;\n", {"aot", "jit"}),
     )
     before = keys()

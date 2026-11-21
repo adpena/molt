@@ -2,10 +2,9 @@
 //! `docs/design/dev_jit_tier.md`).
 //!
 //! The CLI publishes one JIT image per program (`image.rs`). The runner loads
-//! the runtime image it names, compiles the whole program into executable
-//! memory with the codegen that writes AOT objects, and performs the AOT main
-//! stub's launch sequence in process. No object, link or output publication
-//! happens. Stdout, stderr and the exit status are the program's own.
+//! its runtime, stdlib and program data images, emits local terminal bodies
+//! into executable memory, then performs the AOT main stub's launch sequence.
+//! Stdout, stderr and the exit status are the program's own.
 //!
 //! ```text
 //! molt-jit [--start-receipt <path>] --image <image> [args...]
@@ -46,7 +45,7 @@ mod runtime_image;
 use compiler_output::CapturedStderr;
 use image::JitImage;
 use molt_ir::backend_environment::{self, BackendEnv, BackendEnvironment};
-use runtime_image::{RuntimeImage, RuntimeLaunchApi};
+use runtime_image::{ImageVisibility, RuntimeImage, RuntimeLaunchApi};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -417,8 +416,7 @@ fn run(image_path: &Path, start_receipt: Option<&Path>, argv: &[OsString]) -> Re
     if let Some(capture) = capture {
         capture.finish(compiled.is_err());
     }
-    let (api, program) = compiled?;
-    let entry = program.entry_points().map_err(|error| error.to_string())?;
+    let (api, program, entry) = compiled?;
     // Release the image bytes and any freed compiler heap before launch.
     // The program keeps the code owner for first-call materialization.
     let launch = image.header.launch;
@@ -462,9 +460,37 @@ fn load_and_compile(
     image: &JitImage,
     request: Arc<BackendEnvironment>,
     timing: bool,
-) -> Result<(RuntimeLaunchApi, molt_backend_native::JitProgram), String> {
+) -> Result<
+    (
+        RuntimeLaunchApi,
+        molt_backend_native::JitProgram,
+        molt_backend_native::JitEntryPoints,
+    ),
+    String,
+> {
     let started = std::time::Instant::now();
-    let runtime = Arc::new(RuntimeImage::open(&image.header.runtime_image)?);
+    let runtime = Arc::new(RuntimeImage::open(
+        &image.header.runtime_image,
+        ImageVisibility::Local,
+    )?);
+    runtime.verify_generation(
+        &image.header.runtime_image,
+        &image.header.runtime_generation,
+    )?;
+    let stdlib = &image.header.shared_stdlib;
+    let storage = RuntimeImage::open(&stdlib.program_data, ImageVisibility::ProgramStorage)?;
+    storage.verify_generation(&stdlib.program_data, &stdlib.program_data_generation)?;
+    let code = RuntimeImage::open(&stdlib.stdlib_image, ImageVisibility::Local)?;
+    code.verify_generation(&stdlib.stdlib_image, &stdlib.stdlib_generation)?;
+    let ready = storage
+        .symbol(molt_ir::MODULE_READY_SYMBOL)
+        .and_then(|address| std::ptr::NonNull::new(address.cast_mut().cast::<u64>()))
+        .ok_or_else(|| {
+            format!(
+                "program data image defines no `{}`",
+                molt_ir::MODULE_READY_SYMBOL
+            )
+        })?;
     let api = runtime.launch_api()?;
     let loaded = started.elapsed();
     let document = image.program()?;
@@ -476,7 +502,7 @@ fn load_and_compile(
         .spawn(move || {
             let _scope = backend_environment::enter(request);
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                compile(document, &runtime, tir_cache_root)
+                compile(document, runtime, storage, code, tir_cache_root)
             }))
         })
         .map_err(|error| format!("cannot start the compiler thread: {error}"))?;
@@ -499,7 +525,10 @@ fn load_and_compile(
             }
         ));
     }
-    Ok((api, program))
+    let entry = program
+        .entry_points(ready)
+        .map_err(|error| error.to_string())?;
+    Ok((api, program, entry))
 }
 
 /// Record that the program compiled and starts next. Exclusive creation
@@ -519,33 +548,24 @@ fn write_start_receipt(path: &Path) -> Result<(), String> {
 /// persistent cache under `tir_cache_root` (the image's, never the program's
 /// environment or current directory).
 fn compile(
-    document: molt_ir::ir::BackendIrDocument,
-    image: &Arc<RuntimeImage>,
+    document: molt_backend_native::PreparedJitApplication,
+    runtime: Arc<RuntimeImage>,
+    storage: RuntimeImage,
+    code: RuntimeImage,
     tir_cache_root: PathBuf,
 ) -> Result<molt_backend_native::JitProgram, String> {
-    let molt_ir::ir::BackendIrDocument {
-        mut ir,
-        module_registry,
-        code_slots,
-    } = document;
-    molt_backend_native::prepare_native_application_ir(
-        &mut ir,
-        module_registry.as_ref(),
-        &code_slots,
-        false,
-    )
-    .map_err(|diagnostic| format!("program admission failed: {diagnostic}"))?;
-    let lookup_image = Arc::clone(image);
     let mut backend = molt_backend_native::SimpleBackend::new_jit(Arc::new(move |name| {
-        lookup_image.symbol(name)
+        storage
+            .symbol(name)
+            .or_else(|| code.symbol(name))
+            .or_else(|| runtime.symbol(name))
     }));
-    // The JIT owns the whole program: no shared-stdlib partition exists.
-    backend.skip_shared_stdlib_partition = true;
+
     backend.tir_cache =
         molt_backend_native::tir::pipeline_cache::TirCacheLocation::Root(tir_cache_root);
-    backend.module_registry = module_registry;
-    backend.code_slots = Some(code_slots);
-    backend.compile_jit(ir).map_err(|error| error.to_string())
+    backend
+        .compile_prepared_jit(document)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

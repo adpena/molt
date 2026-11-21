@@ -88,7 +88,9 @@ pub use crate::ir::{
     validate_simple_ir,
 };
 #[cfg(feature = "native-backend")]
-pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
+pub use crate::native_backend::{
+    CompileOutput, NativeBackendModuleContext, PreparedJitApplication, SimpleBackend,
+};
 #[cfg(feature = "jit")]
 pub use crate::native_backend::{
     JIT_FAILURE_STATUS, JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup,
