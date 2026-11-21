@@ -3,9 +3,9 @@
 //! The same codegen that writes shipping objects emits into a
 //! `cranelift_jit::JITModule` here. Imported runtime symbols resolve through
 //! the caller's lookup (the runner resolves them in the runtime image it
-//! loaded), and every import must resolve before any generated code runs.
+//! loaded), and every import must resolve before relocating code that uses it.
 
-use super::compile_driver::backend_timing_enabled;
+use super::compile_driver::{NativeCodegenProgram, backend_timing_enabled};
 use super::*;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use molt_ir::PROGRAM_ENTRY_SYMBOL;
@@ -16,8 +16,13 @@ use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod lazy;
+
 /// Resolves an imported symbol to its address in the current process.
 pub type JitSymbolLookup = Arc<dyn Fn(&str) -> Option<*const u8> + Send + Sync>;
+
+/// Status used by the runner for pre-launch and first-call compilation failures.
+pub const JIT_FAILURE_STATUS: i32 = 125;
 
 /// Address space reserved for one program's code and data. The reservation is
 /// `PROT_NONE` until codegen asks for pages, so it costs no memory. One
@@ -28,8 +33,10 @@ const JIT_ARENA_RESERVATION_BYTES: usize = 1 << 30;
 
 pub(crate) struct JitCodeOwner {
     pub(crate) module: JITModule,
-    pub(super) machine_cache: Option<MachineCodeCache>,
+    machine_cache: Option<MachineCodeCache>,
     lookup: JitSymbolLookup,
+    code: Box<lazy::LazyCode>,
+    deferred: BTreeMap<cranelift_module::FuncId, lazy::Entry>,
 }
 
 /// Cranelift caches unrelocated stencils. The cache is namespaced by the
@@ -67,6 +74,16 @@ impl MachineCodeCache {
         count.fetch_add(1, Ordering::Relaxed);
         Ok(compiled)
     }
+
+    fn report_counts(&self) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed)
+        );
+    }
 }
 
 struct CacheAdapter<'a>(&'a MachineCodeCache);
@@ -93,10 +110,10 @@ impl cranelift_codegen::incremental_cache::CacheKvStore for CacheAdapter<'_> {
 /// The application initializer the runtime calls for a fresh isolate.
 const ISOLATE_BOOTSTRAP_SYMBOL: &str = "molt_isolate_bootstrap";
 
-/// A finalized program in executable memory. The memory lives as long as the
-/// process: the runner leaves the program through the runtime's process exit.
+/// A program with finalized entry points in executable memory. The runner
+/// retains this owner, including first-call state, until process exit.
 pub struct JitProgram {
-    module: JITModule,
+    code: Box<lazy::LazyCode>,
 }
 
 /// The program symbols a launcher hands to the runtime, as the AOT main stub
@@ -117,6 +134,11 @@ pub struct JitEntryPoints {
 }
 
 impl JitProgram {
+    #[cfg(test)]
+    pub(super) fn validate_body_relocations(&self) -> Result<(), JitCompileError> {
+        self.code.materialize_all()
+    }
+
     /// Every launch symbol, or the first one this program does not define.
     pub fn entry_points(&self) -> Result<JitEntryPoints, JitCompileError> {
         let function = |name: &'static str| {
@@ -147,6 +169,7 @@ impl JitProgram {
     }
 
     /// The address of a function this program defines.
+    /// Callers must retain this program while they use a returned address.
     pub fn function_address(&self, name: &str) -> Option<*const u8> {
         self.declared_function_address(&compiled_execution_symbol(name))
     }
@@ -154,36 +177,36 @@ impl JitProgram {
     /// Exact physical binding for a genuine host entry, such as the resolver
     /// or the W^X probe. Python callables use `function_address` instead.
     fn declared_function_address(&self, name: &str) -> Option<*const u8> {
-        match self.module.get_name(name)? {
-            cranelift_module::FuncOrDataId::Func(id)
-                if self
-                    .module
-                    .declarations()
-                    .get_function_decl(id)
-                    .linkage
-                    .is_definable() =>
-            {
-                Some(self.module.get_finalized_function(id))
-            }
-            _ => None,
-        }
+        self.code
+            .with_module(|module| match module.get_name(name)? {
+                cranelift_module::FuncOrDataId::Func(id)
+                    if module
+                        .declarations()
+                        .get_function_decl(id)
+                        .linkage
+                        .is_definable() =>
+                {
+                    Some(module.get_finalized_function(id))
+                }
+                _ => None,
+            })
     }
 
     /// The address of a data object this program defines.
     pub fn data_address(&self, name: &str) -> Option<*const u8> {
-        match self.module.get_name(name)? {
-            cranelift_module::FuncOrDataId::Data(id)
-                if self
-                    .module
-                    .declarations()
-                    .get_data_decl(id)
-                    .linkage
-                    .is_definable() =>
-            {
-                Some(self.module.get_finalized_data(id).0)
-            }
-            _ => None,
-        }
+        self.code
+            .with_module(|module| match module.get_name(name)? {
+                cranelift_module::FuncOrDataId::Data(id)
+                    if module
+                        .declarations()
+                        .get_data_decl(id)
+                        .linkage
+                        .is_definable() =>
+                {
+                    Some(module.get_finalized_data(id).0)
+                }
+                _ => None,
+            })
     }
 }
 
@@ -195,7 +218,7 @@ pub enum JitCompileError {
     Admission(molt_ir::ir_schema::FunctionOpShapeDiagnostic),
     /// A function reference in the incoming document cannot be resolved.
     FunctionReferences(String),
-    /// A final TIR body was refused before the code owner finalized it.
+    /// A final TIR body was refused before it could execute.
     Lowering(Vec<String>),
     /// The JIT tier compiles with Cranelift only.
     UnsupportedCodegenBackend(String),
@@ -250,6 +273,7 @@ impl SimpleBackend {
     pub fn new_jit(lookup: JitSymbolLookup) -> Self {
         let isa = Self::native_isa(None, CodePlacement::ProcessMemory);
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        builder.symbol(lazy::MATERIALIZE_SYMBOL, lazy::materializer_address());
         let resolve = Arc::clone(&lookup);
         builder.symbol_lookup_fn(Box::new(move |name| resolve(name)));
         let arena = ArenaMemoryProvider::new_with_size(JIT_ARENA_RESERVATION_BYTES).unwrap_or_else(
@@ -262,12 +286,13 @@ impl SimpleBackend {
             module: JITModule::new(builder),
             machine_cache: None,
             lookup,
+            code: Box::default(),
+            deferred: BTreeMap::new(),
         })))
     }
 
-    /// Compile a whole program into executable memory. The program carries its
-    /// own app resolver, module registry and program slots, as the single
-    /// application object of an AOT build does.
+    /// Prepare declarations, executable entries and application metadata.
+    /// Each local function's entry assembles its body on first call.
     pub fn compile_jit(mut self, ir: SimpleIR) -> Result<JitProgram, JitCompileError> {
         if let Some(backend) = env_setting(BackendEnv::MOLT_BACKEND)
             && backend == "llvm"
@@ -287,16 +312,58 @@ impl SimpleBackend {
         }
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
-        let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
-        let (func_count, total_ops) = self
-            .emit_cranelift_program(program, timing)
-            .map_err(JitCompileError::Lowering)?;
-        let SimpleBackend { module, .. } = self;
+        let NativeCodegenProgram {
+            final_functions,
+            emit_resolver_here,
+            app_callable_manifest,
+        } = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
+        let functions = final_functions.expect("JIT requires final function custody");
+        let table = molt_ir::FunctionTable::of(&functions.ir().functions);
+        let (declarations, linkage) = self.declare_final_functions(&functions, &table);
+        let runtime =
+            crate::runtime_callable_symbols::RuntimeCallableSymbols::capture().runtime_fn_set();
+        let func_count = functions.bodies().count();
+        let total_ops: usize = functions
+            .bodies()
+            .map(crate::tir::TirFunction::operation_count)
+            .sum();
+        eprintln!("MOLT_BACKEND: staging {func_count} JIT entries ({total_ops} terminal ops)");
+        let CodeOwner::ProcessMemory(owner) = &mut self.module else {
+            panic!("JIT compilation requires a process-memory code owner");
+        };
+        let mut unresolved = BTreeSet::new();
+        for (id, definition) in functions.into_local_functions() {
+            owner.admit_explicit_imports(&definition.tir, &mut unresolved);
+            Self::emit_walker_metadata(&mut owner.module, &definition.tir);
+            owner
+                .stage_definition(declarations[id.index()], definition)
+                .map_err(JitCompileError::Finalize)?;
+        }
+        if !unresolved.is_empty() {
+            return Err(JitCompileError::UnresolvedImports(
+                unresolved.into_iter().collect(),
+            ));
+        }
+        self.emit_cranelift_metadata(emit_resolver_here, &app_callable_manifest);
+        let SimpleBackend {
+            module, import_ids, ..
+        } = self;
         let CodeOwner::ProcessMemory(owner) = module else {
             panic!("JIT compilation requires a process-memory code owner");
         };
         let finalize_start = std::time::Instant::now();
-        let program = (*owner).finalize(timing)?;
+        let program = (*owner).finalize(
+            Some(lazy::CodegenInputs {
+                table,
+                linkage,
+                runtime,
+                import_ids,
+            }),
+            timing,
+        )?;
+        if molt_ir::backend_environment::compilation_diagnostics_requested() {
+            program.code.materialize_all()?;
+        }
         if timing {
             eprintln!(
                 "MOLT_BACKEND_TIMING: JIT finalize took {:.2?}",
@@ -312,45 +379,87 @@ impl SimpleBackend {
 }
 
 impl JitCodeOwner {
-    /// Every import must resolve before relocation; `cranelift_jit` would
-    /// otherwise panic on the first missing name, after part of the program
-    /// was already patched.
-    fn finalize(mut self, timing: bool) -> Result<JitProgram, JitCompileError> {
-        let declarations = self.module.declarations();
-        let function_imports = declarations
-            .get_functions()
-            .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
-            .filter_map(|(_, declaration)| declaration.name.as_deref());
-        let data_imports = declarations
-            .get_data_objects()
-            .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
-            .filter_map(|(_, declaration)| declaration.name.as_deref());
-        let mut unresolved: Vec<String> = function_imports
-            .chain(data_imports)
-            .filter(|name| (self.lookup)(name).is_none())
-            .map(str::to_owned)
-            .collect();
-        if !unresolved.is_empty() {
-            unresolved.sort();
-            unresolved.dedup();
-            return Err(JitCompileError::UnresolvedImports(unresolved));
+    fn stage_definition(
+        &mut self,
+        id: cranelift_module::FuncId,
+        definition: NativeFinalFunction,
+    ) -> Result<(), String> {
+        let entry = self.code.stage(&mut self.module, id, definition)?;
+        assert!(self.deferred.insert(id, entry).is_none());
+        Ok(())
+    }
+
+    fn admit_explicit_imports(
+        &self,
+        body: &crate::tir::TirFunction,
+        unresolved: &mut BTreeSet<String>,
+    ) {
+        use crate::tir::ops::{AttrValue, NATIVE_SYMBOL_ATTR, OpCode};
+        for op in body.blocks.values().flat_map(|block| &block.ops) {
+            if let Some(symbol) = crate::tir::call_targets::runtime_call_symbol(op)
+                && op.runtime.is_none()
+            {
+                unresolved.insert(symbol.to_owned());
+            }
+            if matches!(op.opcode, OpCode::NativeSymbolAddr | OpCode::CallNative)
+                && let Some(AttrValue::Str(symbol)) = op.attrs.get(NATIVE_SYMBOL_ATTR)
+                && (self.lookup)(symbol).is_none()
+            {
+                unresolved.insert(symbol.clone());
+            }
         }
+    }
+
+    fn finalize(
+        mut self,
+        inputs: Option<lazy::CodegenInputs>,
+        timing: bool,
+    ) -> Result<JitProgram, JitCompileError> {
+        validate_imports(&self.module, &self.lookup, 0, 0)?;
         self.module
             .finalize_definitions()
             .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
-        // The TIR cache trims this namespace on admission. Machine code uses
-        // the same entry and byte limits; the next run covers new writes.
-        if timing && let Some(cache) = &self.machine_cache {
-            eprintln!(
-                "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
-                cache.hits.load(Ordering::Relaxed),
-                cache.misses.load(Ordering::Relaxed)
-            );
-        }
-        Ok(JitProgram {
-            module: self.module,
-        })
+        self.code.finish(
+            self.module,
+            self.deferred,
+            self.machine_cache,
+            self.lookup,
+            inputs,
+            timing,
+        );
+        Ok(JitProgram { code: self.code })
     }
+}
+
+/// Validate declarations before Cranelift relocates any of their users.
+fn validate_imports(
+    module: &JITModule,
+    lookup: &JitSymbolLookup,
+    previous_functions: usize,
+    previous_data: usize,
+) -> Result<(), JitCompileError> {
+    let declarations = module.declarations();
+    let function_imports = declarations
+        .get_functions()
+        .skip(previous_functions)
+        .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
+        .filter_map(|(_, declaration)| declaration.name.as_deref());
+    let data_imports = declarations
+        .get_data_objects()
+        .skip(previous_data)
+        .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
+        .filter_map(|(_, declaration)| declaration.name.as_deref());
+    let mut unresolved: Vec<String> = function_imports
+        .chain(data_imports)
+        .filter(|name| *name != lazy::MATERIALIZE_SYMBOL && lookup(name).is_none())
+        .map(str::to_owned)
+        .collect();
+    if !unresolved.is_empty() {
+        unresolved.sort();
+        unresolved.dedup();
+        return Err(JitCompileError::UnresolvedImports(unresolved));
+    }
+    Ok(())
 }
 
 /// Prove that this process can write, protect and run generated code (W^X on
@@ -386,7 +495,7 @@ pub fn probe_jit_execution() -> Result<(), JitCompileError> {
     module
         .define_function(id, &mut context)
         .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
-    let program = owner.finalize(false)?;
+    let program = owner.finalize(None, false)?;
     let address = program
         .declared_function_address(PROBE_SYMBOL)
         .ok_or(JitCompileError::MissingProgramSymbol(PROBE_SYMBOL))?;

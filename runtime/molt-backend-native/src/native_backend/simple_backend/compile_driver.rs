@@ -72,6 +72,29 @@ impl SimpleBackend {
         linkage: &BTreeMap<String, NativeFunctionLinkageAbi>,
         runtime: &molt_ir::runtime_callable_symbols::RuntimeFnSet,
     ) -> Result<(), Vec<String>> {
+        let func = Self::lower_cranelift_definition(
+            &mut self.module,
+            &mut self.import_ids,
+            id,
+            definition,
+            table,
+            linkage,
+            runtime,
+        )?;
+        Self::emit_walker_metadata(&mut self.module, &definition.tir);
+        self.queue_compiled_definition(id, &definition.tir.name, func);
+        Ok(())
+    }
+
+    pub(super) fn lower_cranelift_definition(
+        module: &mut dyn Module,
+        import_ids: &mut RuntimeImportIds,
+        id: cranelift_module::FuncId,
+        definition: &NativeFinalFunction,
+        table: &molt_ir::FunctionTable,
+        linkage: &BTreeMap<String, NativeFunctionLinkageAbi>,
+        runtime: &molt_ir::runtime_callable_symbols::RuntimeFnSet,
+    ) -> Result<Function, Vec<String>> {
         use super::super::codegen_builder::NativeCodegen;
         let body = &definition.tir;
         let trace_start = env_setting(BackendEnv::MOLT_TRACE_COMPILE_FUNC)
@@ -100,8 +123,7 @@ impl SimpleBackend {
             );
         }
         let mut function = Function::new();
-        function.signature = self
-            .module
+        function.signature = module
             .declarations()
             .get_function_decl(id)
             .signature
@@ -123,8 +145,8 @@ impl SimpleBackend {
                 words: NativeWords {
                     builder: &mut builder,
                 },
-                module: &mut self.module,
-                import_ids: &mut self.import_ids,
+                module,
+                import_ids,
                 imports: &mut imports,
             },
             crate::codegen_ssa::walk::FunctionInput {
@@ -138,15 +160,8 @@ impl SimpleBackend {
         )?;
         inspect_native_cfg(&body.name, builder.func);
         builder.seal_all_blocks();
-        builder.finalize(self.module.target_config());
-        complete_attached_calls(&self.module, &mut function, execution);
-        if let Some(crate::tir::ops::AttrValue::Int(size)) = body
-            .attrs
-            .get(crate::tir::lower_from_simple::STATEFUL_FRAME_SIZE_ATTR)
-        {
-            define_stateful_frame_size(&mut self.module, &body.name, *size);
-        }
-        self.queue_compiled_definition(id, &body.name, function);
+        builder.finalize(module.target_config());
+        complete_attached_calls(module, &mut function, execution);
         if let Some(start) = trace_start {
             let elapsed = start.elapsed();
             eprintln!(
@@ -158,7 +173,17 @@ impl SimpleBackend {
                 format!("done name={} elapsed={elapsed:.2?}\n", body.name),
             );
         }
-        Ok(())
+        Ok(function)
+    }
+
+    /// A task constructor reads its poll's frame size before calling it.
+    pub(super) fn emit_walker_metadata(module: &mut dyn Module, body: &crate::tir::TirFunction) {
+        if let Some(crate::tir::ops::AttrValue::Int(size)) = body
+            .attrs
+            .get(crate::tir::lower_from_simple::STATEFUL_FRAME_SIZE_ATTR)
+        {
+            define_stateful_frame_size(module, &body.name, *size);
+        }
     }
 
     pub fn compile(self, ir: SimpleIR) -> CompileOutput {
@@ -714,23 +739,13 @@ impl SimpleBackend {
         // `_molt_app_resolve_callable` symbol at link. The threaded manifest
         // covers every name-resolved callable across all objects, including
         // stdlib wrappers compiled into the separate stdlib cache object.
-        if emit_resolver_here {
-            self.emit_app_resolver_function(&app_callable_manifest);
-        }
+        self.emit_cranelift_metadata(emit_resolver_here, &app_callable_manifest);
         //  Module registry blob (import bedrock, design doc 69)
         // Emitted AFTER the main flush so every init function defined in this
         // object already owns a FuncId (reused via `get_name`), and with the
         // same exactly-one-object custody as the app callable resolver: the
         // main stub references `molt_module_registry_blob` and installs it
         // with the runtime before `molt_runtime_init`.
-        if emit_resolver_here {
-            let registry = self.module_registry.take();
-            let bindings = self.code_slots.take();
-            if let Some(registry) = registry.as_ref() {
-                self.emit_module_registry_blob(registry);
-            }
-            self.emit_program_slot_bindings(bindings.as_ref(), registry.as_ref());
-        }
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site
         // declared an impossible overload, a function was skipped, or codegen
@@ -776,17 +791,33 @@ impl SimpleBackend {
             );
         }
 
-        emit_generated_object_abi_anchor(&mut self.module);
         Ok((func_count, total_ops))
+    }
+
+    pub(super) fn emit_cranelift_metadata(
+        &mut self,
+        emit_resolver_here: bool,
+        manifest: &crate::passes::AppCallableManifest,
+    ) {
+        if emit_resolver_here {
+            self.emit_app_resolver_function(manifest);
+            let registry = self.module_registry.take();
+            let bindings = self.code_slots.take();
+            if let Some(registry) = registry.as_ref() {
+                self.emit_module_registry_blob(registry);
+            }
+            self.emit_program_slot_bindings(bindings.as_ref(), registry.as_ref());
+        }
+        emit_generated_object_abi_anchor(&mut self.module);
     }
 }
 
 /// The facts one native compilation carries from program preparation into
 /// codegen, for every code owner.
 pub(in crate::native_backend::simple_backend) struct NativeCodegenProgram {
-    emit_resolver_here: bool,
-    app_callable_manifest: crate::passes::AppCallableManifest,
-    final_functions: Option<NativeFinalFunctions>,
+    pub(super) emit_resolver_here: bool,
+    pub(super) app_callable_manifest: crate::passes::AppCallableManifest,
+    pub(super) final_functions: Option<NativeFinalFunctions>,
 }
 
 /// `MOLT_BACKEND_TIMING` admission, shared by every code owner.

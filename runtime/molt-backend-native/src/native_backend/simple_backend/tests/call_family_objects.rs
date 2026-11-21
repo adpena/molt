@@ -564,9 +564,15 @@ fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation
             }],
             profile: None,
         };
-        // Deliberately absent provider: this exercises admission before any relocation,
-        // without a stub address or execution of unlinked code.
-        let result = SimpleBackend::new_jit(std::sync::Arc::new(|_| None)).compile_jit(ir);
+        // Deliberately absent provider: the first-call compiler must check
+        // the generated declarations before it relocates the body.
+        static ABI_WITNESS: u8 = 0;
+        let result = SimpleBackend::new_jit(std::sync::Arc::new(|name| {
+            (name == molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
+                .then_some(std::ptr::from_ref(&ABI_WITNESS))
+        }))
+        .compile_jit(ir)
+        .and_then(|program| program.validate_body_relocations());
         let Err(crate::native_backend::simple_backend::JitCompileError::UnresolvedImports(symbols)) =
             result
         else {
