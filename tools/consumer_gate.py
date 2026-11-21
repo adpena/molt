@@ -126,9 +126,9 @@ def proven_gates(
 
     A static gate reads only the tree's files, so the receipt's run of the
     same command proves it. A pytest gate is proven when it skips slow
-    tests, as the receipt's run did, and each of its targets is a file the
-    receipt ran as an importer; a ``-k`` or ``-m`` selection only narrows
-    those files. A test that needs landing-built artifacts is never a receipt
+    tests, the receipt explicitly records a canonical presubmit run, and
+    each target is a file that run covered. Custom pytest arguments and
+    older receipts cannot prove a whole file. A test that needs landing-built artifacts is never a receipt
     importer, so its cohort is never proven.
 
     ``exact`` accepts only a receipt whose run saw exactly the tree's files
@@ -147,6 +147,7 @@ def proven_gates(
     statics = frozenset(payload["static_gates"])
     commits = frozenset(payload.get("commit_gates", ()))
     importers = frozenset(payload["importers"])
+    canonical_presubmit: bool = payload.get("canonical_presubmit") is True
     import shlex
 
     from tools.molt_dev_gates import display
@@ -159,7 +160,7 @@ def proven_gates(
         if gate.commit:
             # The same command over the same tree, as for a static gate.
             return display(gate.command) in commits
-        if not gate.pytest:
+        if not gate.pytest or not canonical_presubmit:
             return False
         argv = (
             shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
@@ -451,6 +452,7 @@ def run(
             print(f"  {test}")
     flaky_reruns: list[str] | None = []
     slow_cases: list[tuple[str, float]] = []
+    importer_argv: list[str] = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -492,10 +494,11 @@ def run(
                 )
             print("consumer-gate: " + " ".join(argv), flush=True)
             report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
+            importer_argv = [*argv, f"--junitxml={report}"]
             try:
                 failed = (
                     _COMMANDS.run(
-                        [*argv, f"--junitxml={report}"],
+                        importer_argv,
                         cwd=root,
                         env=env,
                         timeout=IMPORTER_RUN_TIMEOUT_S,
@@ -556,6 +559,8 @@ def run(
         # The lib tests a Rust change reaches (`commit = true`, HF-937).
         "commit_gates": commits,
         "importers": run_now,
+        "canonical_presubmit": pytest_args is None and bool(run_now),
+        "pytest_argv": importer_argv,
         "landing_built_importers": {
             test: list(deps) for test, deps in landing_built.items()
         },
