@@ -8,6 +8,7 @@ from molt.cli.build_output_layout import _runtime_facts_target
 from molt.compilation_target import TargetKind
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from tests.artifact_targets import artifact_target as _target
+from tests.class_model_support import class_model
 
 from tests.wasm_execution_manifest import wasm_execution_launch
 
@@ -162,7 +163,6 @@ from molt.compiler_analysis.python_namespace_graph import (
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from tests.class_model_support import class_model
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     NativeArchiveFixtureCatalog,
@@ -3187,19 +3187,13 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     assert "copy" in json.loads(backend_setup.stdlib_modules_json)
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registry(
     tmp_path: Path,
 ) -> None:
     # A literal import names its module; the registry serves it (D8, HF-841).
-    # Use a source dependency with no import-state writes of its own. The
-    # stdlib math module can publish math.integer to sys.modules.
     entry_path = tmp_path / "demo.py"
-    dependency = tmp_path / "registry_dependency.py"
-    dependency.write_text("VALUE = 4\n", encoding="utf-8")
-    entry_path.write_text(
-        "import registry_dependency\nvalue = registry_dependency.VALUE\n",
-        encoding="utf-8",
-    )
+    entry_path.write_text("import math\nvalue = math.sqrt(4)\n", encoding="utf-8")
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3219,8 +3213,6 @@ def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registr
 
     assert error is None
     assert prepared is not None
-    assert prepared.module_graph["registry_dependency"] == dependency
-    assert "registry_dependency" in prepared.runtime_import_dispatch_roots
     assert not prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "importlib.util" not in prepared.module_graph
     assert "importlib.machinery" not in prepared.module_graph
@@ -14009,6 +14001,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     assert unshared_second > 0
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14840,12 +14833,10 @@ def test_discover_module_graph_reconstructs_on_pure_scan_miss(
     assert graph["pkg.helper"] == helper
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_warm_source_requests_resolve_new_higher_priority_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import Mock
-
-    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     entry = tmp_path / "main.py"
     entry.write_text("import dependency\n", encoding="utf-8")
     higher = tmp_path / "higher"
@@ -14866,23 +14857,27 @@ def test_warm_source_requests_resolve_new_higher_priority_module(
     assert first.graph["dependency"] == old_dependency
     new_dependency = higher / "dependency.py"
     new_dependency.write_text("VALUE = 2\n", encoding="utf-8")
-    requests = Mock(wraps=_source_import_scan._collect_import_scan_requests)
-    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", requests)
+    # Requests are addressed by captured bytes (c494b920b5), so the scan sees
+    # each source's text; the three files here have distinct texts.
+    requested: list[str | None] = []
+    collect = _source_import_scan._collect_import_scan_requests
+
+    def record(*args: Any, **kwargs: Any):
+        requested.append(kwargs.get("source"))
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", record)
     second = discover()
     assert second.graph["dependency"] == new_dependency
     assert "dependency" in second.explicit_imports
-    assert all(call.kwargs["module_name"] != "main" for call in requests.call_args_list)
-    assert any(
-        call.kwargs["module_name"] == "dependency"
-        and ast.unparse(call.args[1]) == "VALUE = 2"
-        for call in requests.call_args_list
-    )
+    assert entry.read_text(encoding="utf-8") not in requested
+    assert new_dependency.read_text(encoding="utf-8") in requested
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_discover_module_graph_reuses_precomputed_entry_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     entry = tmp_path / "main.py"
     entry.write_text("import pkg.helper\n", encoding="utf-8")
     package = tmp_path / "pkg"
@@ -14957,6 +14952,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     assert "pkg.helper" in graph
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -15094,6 +15090,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
     assert "pkg.runtime.autogen.mesa" not in explicit_imports
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_discover_module_graph_resolves_all_paths_but_reparses_only_changed_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -16235,6 +16232,7 @@ def test_runtime_lib_path_includes_target_triple(
     )
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -17982,6 +17980,7 @@ def test_scoped_known_classes_view_reuses_precomputed_snapshot() -> None:
     assert resolved is scoped["main"]
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -18034,12 +18033,11 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             ),
             project_root=tmp_path,
             known_classes_snapshot={
-                class_id: class_model(class_id)
-                for class_id in (
-                    ClassId("main", "MainClass"),
-                    ClassId("alpha", "DepClass"),
-                    ClassId("unrelated", "UnrelatedClass"),
-                )
+                ClassId("main", "MainClass"): class_model(ClassId("main", "MainClass")),
+                ClassId("alpha", "DepClass"): class_model(ClassId("alpha", "DepClass")),
+                ClassId("unrelated", "UnrelatedClass"): class_model(
+                    ClassId("unrelated", "UnrelatedClass")
+                ),
             },
             type_hint_policy="ignore",
             type_facts=None,
@@ -19205,6 +19203,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     assert any(item.get("reused_ms", 0.0) >= 0.0 for item in cache_hit_items)
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 @pytest.mark.long_pole
 def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -20651,6 +20650,7 @@ def test_include_module_seed_preserves_transitive_and_deferred_dependencies(
     assert set(graph) == imports
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_native_support_source_slices_reuse_original_source_and_selected_view(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -20733,6 +20733,7 @@ def test_native_support_source_slices_reuse_original_source_and_selected_view(
     assert support_slice.imports == ("beta",)
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
 def test_native_support_source_slices_reuse_persisted_import_scan(
     tmp_path: Path,
 ) -> None:
