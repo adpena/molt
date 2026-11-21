@@ -10,10 +10,10 @@ import io
 import json
 import os
 import tokenize
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Literal, TYPE_CHECKING, TypeVar
+from typing import Any, BinaryIO, Literal, TYPE_CHECKING
 
 from molt import file_publication
 from molt.cli.atomic_io import _atomic_write_text
@@ -27,40 +27,6 @@ if TYPE_CHECKING:
 
 class PythonSourceChangedError(ValueError):
     """An admitted source generation no longer matches the current file."""
-
-
-_Read = TypeVar("_Read")
-
-
-def _read_source_input(
-    path: Path, consume: Callable[[BinaryIO, int], tuple[_Read, str]]
-) -> _Read:
-    """Read one bounded source generation; reporting owns no semantic bytes."""
-    from molt import input_report
-
-    selector = path.absolute()
-    input_report.report_probe(selector)
-    selected = selector.resolve(strict=True)
-    with input_report.capture_read(selector) as receipt:
-        # Preserve ordinary source-open sharing and permission behavior. Unknown
-        # change-time/selection evidence refuses reuse, not source compilation.
-        with open(selector, "rb") as handle:
-            receipt.opened()
-            before = os.fstat(handle.fileno())
-            value, digest = consume(handle, before.st_size)
-            after = os.fstat(handle.fileno())
-            token = input_report.stat_token(selector, before)
-            if (
-                token is None
-                or token != input_report.stat_token(selector, after)
-                or token != input_report.stat_token(selector)
-                or selector.resolve(strict=True) != selected
-            ):
-                input_report.refuse(f"source generation changed while read: {path}")
-                token = None
-        input_report.report_probe(selector)
-        receipt.complete(token, digest)
-    return value
 
 
 def _sha256_file(path: Path) -> str:
@@ -77,7 +43,7 @@ def _sha256_file(path: Path) -> str:
         value = digest.hexdigest()
         return value, value
 
-    return _read_source_input(path, consume)
+    return input_report.read_consumed_input(path, consume)
 
 
 @dataclass(frozen=True)
@@ -106,7 +72,7 @@ class PythonSourceSnapshot:
             snapshot = cls(path, content)
             return snapshot, snapshot._sha256
 
-        snapshot = _read_source_input(path, consume)
+        snapshot = input_report.read_consumed_input(path, consume)
         snapshot.report_input()
         return snapshot
 
