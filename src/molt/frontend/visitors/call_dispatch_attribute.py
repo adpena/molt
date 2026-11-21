@@ -265,10 +265,10 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             if lookup_class is None or lookup_class not in self.classes:
                 declared = self._declared_class(receiver)
                 lookup_class = declared.class_id if declared is not None else None
-            method_info = None
+            member = None
             if lookup_class is not None and lookup_class in self.classes:
-                method_info, _ = self._resolve_method_info(lookup_class, method)
-            if method_info:
+                member, _ = self._resolve_member(lookup_class, method)
+            if member is not None:
                 # Attribute lookup owns descriptor binding; the actual callable
                 # owns defaults, implicit receiver arguments, and variadic shape.
                 return emit_method_call()

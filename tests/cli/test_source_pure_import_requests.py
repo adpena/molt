@@ -34,9 +34,7 @@ WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
 
 @pytest.fixture(autouse=True)
 def tooling_identity(monkeypatch, isolated_molt_cache):
-    monkeypatch.setattr(
-        records, "_frontend_semantic_tooling_fingerprint", lambda: "requests"
-    )
+    monkeypatch.setattr(records, "_import_scan_tooling_fingerprint", lambda: "requests")
 
 
 def write(path: Path, text: str = "pass\n") -> Path:
@@ -85,6 +83,22 @@ def test_warm_inventory_and_execution_requests_stay_disjoint(tmp_path, inventory
     }
 
 
+def test_intrinsic_evidence_only_warms_inventory_requests(tmp_path: Path) -> None:
+    source = write(tmp_path / "entry.py", "def deferred():\n    import leaf\n")
+    write(tmp_path / "leaf.py")
+    target = TargetPythonVersion(3, 12, 0)
+    records._stdlib_intrinsic_source_facts("entry", source, target_python=target)
+
+    inventory = load(
+        source, purpose=SourceImportPurpose.INVENTORY, target_python=target
+    )
+    assert inventory.cache_hit and inventory.scan.imports == ("leaf",)
+
+    execution = load(source, target_python=target)
+    assert not execution.cache_hit
+    assert execution.scan.imports == ()
+
+
 def test_warm_star_exports_and_child_presence_are_live(tmp_path):
     source = write(tmp_path / "entry.py", "from pkg import *\n")
     package = write(tmp_path / "pkg/__init__.py", "__all__ = ['a']\n")
@@ -124,6 +138,29 @@ def test_loader_existence_is_live(tmp_path, expression):
     assert absent.cache_hit and absent.scan.source_executions == ()
 
 
+def test_relocated_source_reuses_requests_and_resolves_its_own_edges(
+    tmp_path: Path,
+) -> None:
+    text = "import runpy\nrunpy.run_path('loaded.py')\n"
+    original = write(tmp_path / "original/entry.py", text)
+    original_child = write(original.with_name("loaded.py"), "VALUE = 1\n")
+    cold = load(original)
+    assert not cold.cache_hit
+    assert cold.scan.source_executions == ((None, original_child),)
+
+    relocated = write(tmp_path / "relocated/entry.py", text)
+    relocated_child = write(relocated.with_name("loaded.py"), "VALUE = 2\n")
+    warm = load(relocated)
+    assert warm.cache_hit
+    assert warm.scan.source_requests == cold.scan.source_requests
+    assert warm.scan.source_executions == ((None, relocated_child),)
+
+    write(relocated, "import runpy\nrunpy.run_path('absent.py')\n")
+    changed = load(relocated)
+    assert not changed.cache_hit
+    assert changed.scan.source_executions == ()
+
+
 def test_run_path_directory_main_creation_and_deletion(tmp_path):
     source = write(tmp_path / "entry.py", "import runpy\nrunpy.run_path('site')\n")
     assert load(source).scan.source_executions == ()
@@ -133,8 +170,9 @@ def test_run_path_directory_main_creation_and_deletion(tmp_path):
     assert load(source).scan.source_executions == ()
 
 
-def test_path_request_extraction_never_reads_filesystem(tmp_path, monkeypatch):
-    source = tmp_path / "entry.py"
+def test_path_request_extraction_never_reads_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tree = ast.parse(
         "from pathlib import Path\nimport runpy\n"
         "ROOT = Path('link').resolve() / '..'\nrunpy.run_path(ROOT / 'loaded.py')\n"
@@ -147,7 +185,7 @@ def test_path_request_extraction_never_reads_filesystem(tmp_path, monkeypatch):
         for operation in ("resolve", "absolute", "is_file", "is_dir"):
             local.setattr(Path, operation, forbidden)
         requests = _source_import_scan._collect_static_source_execution_requests(
-            tree, source_path=source
+            tree, is_package=False
         )
     assert requests
 
@@ -287,7 +325,7 @@ def test_explicit_join_flavor_matches_host_python(tmp_path, module, joiner, part
     )
     source = tmp_path / "entry.py"
     requests = _source_import_scan._collect_static_source_execution_requests(
-        tree, source_path=source
+        tree, is_package=source.name == "__init__.py"
     )
     assert len(requests) == 1
     from molt.cli.python_import_topology import PythonImportTopology
@@ -1455,17 +1493,19 @@ def test_intrinsic_acquisition_family_preserves_possible_import_demand(source):
     "source,mode,expected",
     [
         ("values = [i for i in range(2)]\n", "full", False),
-        ("import leaf\n", "full", True),
+        ("import leaf\n", "full", False),
+        ("import leaf\n__import__('leaf')\n", "full", True),
         ("raise RuntimeError()\nimport leaf\n", "full", False),
         ("from __future__ import annotations\n", "full", False),
         ("import _intrinsics\n", "full", False),
         ("from pkg._intrinsics import item\n", "full", False),
-        ("from ._intrinsics import item\n", "full", True),
-        ("import pkg._intrinsics\n", "full", True),
+        ("from ._intrinsics import item\n", "full", False),
+        ("import pkg._intrinsics\n", "full", False),
         ("loader = __import__ if flag else None\nloader('leaf')\n", "full", True),
         ("def __import__(*args):\n    pass\n__import__('leaf')\n", "full", False),
         ("def invoke():\n    import leaf\n", "module_init", False),
-        ("def invoke():\n    import leaf\n", "full", True),
+        ("def invoke():\n    __import__('leaf')\n", "module_init", False),
+        ("def invoke():\n    __import__('leaf')\n", "full", True),
     ],
 )
 def test_protocol_and_import_demands_share_execution_regions(
@@ -2433,7 +2473,19 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
         )
     # Resolving foreign relative imports needs a package; own callback names do
     # not. Neither syntax fact depends on owners, arguments or graph premises.
-    assert sorted(collected, key=lambda package: package or "") == [None, "pkg"]
+    assert collected == ["pkg"]
+    relocated = _source_import_scan._collect_imports_for_graph(
+        parsed.tree,
+        "other.entry",
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+        target_python=target,
+        ast_digest_admission=parsed.admission,
+    )
+    assert relocated.namespace_summary.own_names == {"namespace_marker"}
+    assert {write.module for write in relocated.namespace_summary.foreign_writes} == {
+        "other.target"
+    }
+    assert collected == ["pkg", "other"]
 
 
 def test_module_export_fact_qualifies_target_and_namespace_premise():

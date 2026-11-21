@@ -47,7 +47,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2520 s | 120 s | 960 s | `repository-policy` | none | `docs-gates` needs none | 35 |
-| `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 207 |
+| `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 208 |
 | `repository_dev_tests` | pre-push, pr, main | yes | `github-job` | 30 min | 900 s | 120 s | 780 s | `repository-tests` | none | `repository-dev-tests` needs `classify-changes` | 3 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 57 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
@@ -364,7 +364,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `frontend-python` | 1 | 3 |
 | `finding-ids-static` | 1 | 1 |
 | `python-source-dependencies` | 16 | 0 |
-| `frontend-ir-assembly` | 63 | 1 |
+| `frontend-ir-assembly` | 64 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 20 | 0 |
 | `stdlib-intrinsic-contracts` | 7 | 1 |

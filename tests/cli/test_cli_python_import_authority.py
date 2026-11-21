@@ -1990,7 +1990,7 @@ def test_static_source_scanner_uses_completion_reachability(
     )
     requests = _source_import_scan._collect_static_source_execution_requests(
         ast.parse(source),
-        source_path=tmp_path / "entry.py",
+        is_package=False,
         module_name="pkg.entry",
     )
     assert len(requests) == (0 if dead else 1)

@@ -16,11 +16,14 @@ import ast
 from typing import TYPE_CHECKING, Any, Literal
 
 from molt.frontend._mixin_base import GeneratorMixinBase
+from collections.abc import Mapping
+
+from molt.frontend.class_model import ClassModel, ClassView
 from molt.frontend._types import (
     _ClassNsScope,
     AsyncFrameSlot,
     ClassId,
-    ClassInfo,
+    MethodValues,
     CallableId,
     CodeSlotDeclaration,
     CompatibilityReporter,
@@ -317,7 +320,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         direct_call_modules: set[str] | None = None,
-        known_classes: dict[ClassId, ClassInfo] | None = None,
+        known_classes: Mapping[ClassId, ClassModel] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
@@ -356,13 +359,18 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.var_count: int = 0
         self.reserved_python_identifiers: set[str] = set()
         self.state_count: int = 0
-        self.known_classes: dict[ClassId, ClassInfo] = dict(known_classes or {})
-        self.classes: dict[ClassId, ClassInfo] = dict(self.known_classes)
+        # Other modules' sealed class models; this module's classes join as
+        # drafts while their statements lower and as models once sealed.
+        self.known_classes: dict[ClassId, ClassModel] = dict(known_classes or {})
+        self.classes: dict[ClassId, ClassView] = dict(self.known_classes)
+        # Lowering-only values of this module's classes (never published).
+        self.class_method_values: dict[ClassId, dict[str, MethodValues]] = {}
+        self.class_value_names: dict[ClassId, str] = {}
         # Class statements this module lowered, in lowering order.
         self.local_class_ids: list[ClassId] = []
         # The current module's class statements; set by visit_Module.
         self._class_index: ClassDefinitionIndex | None = None
-        # Lowering-time derived class facts; ClassInfo stays frozen.
+        # Lowering-time derived class facts; a sealed ClassModel stays frozen.
         self._exception_subclass_memo: dict[ClassId, bool] = {}
         # Token allocation belongs to the generator, not to a restorable
         # function scope. Restoring an outer scope must never recycle a token

@@ -24,6 +24,7 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
     "_collections_abc",
     "_csv",
     "_json",
+    "_math_integer",
     "_opcode",
     "_opcode_metadata",
     "_operator",
@@ -120,6 +121,14 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_json_encode_basestring_ascii_obj",
         "molt_json_encode_basestring_obj",
         "molt_json_scanstring_obj",
+    ),
+    "_math_integer": (
+        "molt_math_comb",
+        "molt_math_factorial",
+        "molt_math_gcd",
+        "molt_math_isqrt",
+        "molt_math_lcm",
+        "molt_math_perm",
     ),
     "_opcode": (
         "molt_opcode_get_specialization_stats",

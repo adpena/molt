@@ -4,7 +4,6 @@ from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
 import inspect
-from pathlib import Path
 
 import pytest
 
@@ -113,10 +112,8 @@ def test_default_argument_dunder_import_helper_is_in_static_closure() -> None:
 
 
 def test_direct_synthetic_scans_retain_digest_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loaded = tmp_path / "loaded.py"
-    loaded.write_text("VALUE = 1\n", encoding="utf-8")
     tree = ast.parse(
         "from pkg import *\n"
         "from importlib.util import spec_from_file_location\n"
@@ -134,7 +131,7 @@ def test_direct_synthetic_scans_retain_digest_fallback(
     assert "pkg" in _source_import_scan._collect_imports(tree)
     assert _source_import_scan._collect_import_star_modules(tree) == ("pkg",)
     assert _source_import_scan._collect_static_source_execution_requests(
-        tree, source_path=tmp_path / "entry.py"
+        tree, is_package=False
     ) == (_StaticSourceExecutionRequest("loaded", "loaded.py"),)
     assert calls == 3
 

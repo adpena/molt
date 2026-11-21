@@ -54,6 +54,99 @@ binding two-job, 6/24/48 GiB limits, timeouts and isolated spinning-loop procedu
 8. **Imports resolve at compile time.** A module object exists at run time only where the program
    reflects on it; module namespaces are static cells.
 
+### Discovery and summaries (HF-938; owner approval 2026-11-20)
+
+**Measured problem** (2026-11-20, macOS arm64, fresh cache, `import os, sys, json, re,
+collections`): cold module-graph discovery takes 23.1 s and warm takes 3.3 s for 41 modules.
+- 100 whole-module binding fixpoints cost 15.9 s (69%).
+- 26 modules run their fixpoint 2-8 times, about 9 s (40%) in all. Each rerun follows a premise
+  revision (`opaque_activation_sources`, `foreign_namespace_writes`) as discovery finds more
+  writers. Then a replay runs again under the settled premises (HF-926).
+- The early cutoff (`ScanPremiseReads.unchanged_under`) reruns the fixpoint to verify, so it saves
+  only import collection.
+- A scan record's key digests the whole frontend. Any compiler edit voids every stdlib record.
+  The scan producer's static import closure is 477 files: the eager `molt.frontend` package
+  import, and 219 CLI modules.
+
+**Cause.** Discovery runs the precise proof to answer a reachability question, then repeats it
+per premise revision.
+
+**Design.** Each stage lands on its own, with its measurement.
+
+1. *Stdlib summaries are a toolchain artifact.* The stdlib is fixed per toolchain and target. The
+   release build computes each stdlib module's scan summary once and ships it, content-addressed
+   by source digest, target plan and analysis schema. A user's cold build then analyzes only user
+   modules. This is item 3 above applied to discovery, and GraalVM Native Image's build-time
+   initialization applied to analysis.
+   Source request records address the captured bytes, parser, target, package role and premise.
+   Relative source requests stay symbolic in the record. Graph completion resolves them against
+   the current package and filesystem, so byte-identical source can reuse requests after relocation.
+2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
+   (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
+   import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
+   runs once per module, under its settled premise, where lowering needs it. This is the shape of
+   the Go, Zig and rustc module graphs.
+   Entry-driven demand can identify the callable and argument facts an analysis needs before visiting
+   its transitive library bodies. The transfer still needs Molt's existing custody for writes and
+   unresolved calls. [JARVIS, §III](https://arxiv.org/abs/2305.05949)
+   A module scan now captures syntax-only namespace writes before binding analysis. The binding
+   core reads the package-independent own names from this capture, and discovery refines the
+   package-relative foreign writes against the binding results. Both use the same admitted AST.
+3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
+   foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
+   fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
+   assume-guarantee composition, as in IFDS/IDE (Reps, Horwitz, Sagiv 1995) and Datalog solvers.
+   The binding core records whether any member of each queried activation group is opaque.
+   A different activation set can reuse that core when every consumed answer holds and the
+   source and all other flow inputs match. For example, an enclosing function and its closure
+   can supply the same proof of a foreign activation namespace. Its import projections use
+   that core's facts, the module context and the
+   discovery mode, so equivalent flow inputs also share strict and discovery projections. A
+   missing activation set keeps its own cache key. Changed answers and foreign writes still
+   require flow analysis until the global solver can evaluate transfer summaries.
+   Transfer outputs include namespace writes and source demands because callers can observe either
+   before a body returns. On an input revision, a stable output can preserve dependent results.
+   From-scratch graph and scan equality is the acceptance check for demand-driven execution.
+   [Demanded Abstract Interpretation, §§4–6](https://arxiv.org/abs/2104.01270),
+   [Interactive Abstract Interpretation, §3](https://arxiv.org/abs/2209.10445)
+4. *Iteration order.* Premise propagation visits writers before the modules they write, in a
+   weak topological order of the write graph (Bourdoncle 1993). Revisions then reach a module
+   once per strongly connected component, not once per discovered writer.
+   Use the write graph for scheduling once its edges are known. A convergence boundary belongs
+   at each cyclic component exit, including nested components. A graph revision can add a writer
+   edge and require scheduling that component again. [Deterministic Parallel Fixpoint Computation, §§4–7](https://arxiv.org/abs/1909.05951)
+   Revision waves now group known active writers and receivers by component. A component
+   waits while an ancestor component has pending revisions. A new admission or demand can
+   change the order before the next wave. Unrelated components keep the same batch, and the
+   convergence check still covers writes through unknown receivers. Nested convergence
+   boundaries and the summary solver remain open.
+5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
+   imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
+   keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
+   The import-scan fingerprint now covers the scan producer's 32 Python source dependencies,
+   the source decoder and the record codec. The import walk includes function-local imports
+   and rejects dependencies on CLI or frontend code. A real store test keeps a scan after
+   changing frontend bytes and invalidates it after changing a binding producer. See
+   [Frontend semantic fingerprint](../../../../design/frontend_semantic_fingerprint.md).
+6. *Laziness in development.* A development build does not wait for the whole closure: it
+   analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
+   fallback). A release build keeps the full closed-world solve.
+
+**Invariants.**
+- A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).
+- The global solve reaches the same fixpoint as today's replay: differential results and the
+  emitted graph are unchanged.
+- A refused or unknown dynamic import widens to today's conservative edge set, never narrows.
+
+**Proof per stage.**
+- Cold and warm discovery time for the program above and for the five slow tests (HF-938).
+- Fixpoint count: target one per module.
+- Graph identity against the current discovery over the basic and stdlib differential sets.
+
+**Alternatives rejected.**
+- A hand-listed narrow key: unsound, because it misses imports added later.
+- Tuning the binding trie alone: it shrinks a 69% share but keeps the reruns.
+
 ## Non-Negotiable Gates
 1. a required intrinsic that nothing reads hard fails (no anchors, spec 0016).
 2. top-level union coverage hard fail.

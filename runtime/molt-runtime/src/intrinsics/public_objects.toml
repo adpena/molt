@@ -736,6 +736,8 @@ name = "comb"
 qualname = "comb"
 module = "math"
 bindings = ["math.comb"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.comb"
 
 [object.molt_math_copysign]
 kind = "builtin_function_or_method"
@@ -813,6 +815,8 @@ name = "factorial"
 qualname = "factorial"
 module = "math"
 bindings = ["math.factorial"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.factorial"
 
 [object.molt_math_floor]
 kind = "builtin_function_or_method"
@@ -820,6 +824,15 @@ name = "floor"
 qualname = "floor"
 module = "math"
 bindings = ["math.floor"]
+
+[object.molt_math_fma]
+kind = "builtin_function_or_method"
+name = "fma"
+qualname = "fma"
+module = "math"
+bindings = ["math.fma"]
+min_python_minor = 13
+call = { posonly = ["x", "y", "z"] }
 
 [object.molt_math_fmod]
 kind = "builtin_function_or_method"
@@ -876,6 +889,8 @@ name = "isqrt"
 qualname = "isqrt"
 module = "math"
 bindings = ["math.isqrt"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.isqrt"
 
 [object.molt_math_ldexp]
 kind = "builtin_function_or_method"
@@ -1562,6 +1577,8 @@ name = "perm"
 qualname = "perm"
 module = "math"
 bindings = ["math.perm"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.perm"
 
 [object.molt_binascii_crc32]
 kind = "builtin_function_or_method"
@@ -1576,6 +1593,8 @@ name = "gcd"
 qualname = "gcd"
 module = "math"
 bindings = ["math.gcd"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.gcd"
 [object.molt_math_gcd.call]
 vararg = "integers"
 
@@ -1585,6 +1604,8 @@ name = "lcm"
 qualname = "lcm"
 module = "math"
 bindings = ["math.lcm"]
+module_315 = "math.integer"
+publisher_315 = "_math_integer.lcm"
 [object.molt_math_lcm.call]
 vararg = "integers"
 

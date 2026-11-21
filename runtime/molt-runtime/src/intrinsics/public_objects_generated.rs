@@ -107,6 +107,7 @@ pub(crate) enum PublicObjectId {
     MathFabs,
     MathFactorial,
     MathFloor,
+    MathFma,
     MathFmod,
     MathFrexp,
     MathFsum,
@@ -809,6 +810,12 @@ impl PublicObjectId {
                 kind: PublicObjectKind::BuiltinFunctionOrMethod,
                 name: crate::NameId::Floor,
                 qualname: crate::NameId::Floor,
+                module: crate::NameId::Math,
+            },
+            Self::MathFma => PublicObjectIdentity {
+                kind: PublicObjectKind::BuiltinFunctionOrMethod,
+                name: crate::NameId::Fma,
+                qualname: crate::NameId::Fma,
                 module: crate::NameId::Math,
             },
             Self::MathFmod => PublicObjectIdentity {
@@ -1665,6 +1672,24 @@ impl PublicObjectId {
             },
         }
     }
+    pub(crate) fn identity_at(self, py: &crate::PyToken<'_>) -> PublicObjectIdentity {
+        let mut identity = self.identity();
+        let relocated = match self {
+            Self::MathComb => Some(crate::NameId::MathInteger),
+            Self::MathFactorial => Some(crate::NameId::MathInteger),
+            Self::MathIsqrt => Some(crate::NameId::MathInteger),
+            Self::MathPerm => Some(crate::NameId::MathInteger),
+            Self::MathGcd => Some(crate::NameId::MathInteger),
+            Self::MathLcm => Some(crate::NameId::MathInteger),
+            _ => None,
+        };
+        if let Some(module) = relocated
+            && crate::object::ops_sys::runtime_target_minor(py) >= 15
+        {
+            identity.module = module;
+        }
+        identity
+    }
     pub(crate) const fn from_instance_shape(
         shape: molt_runtime_core::ObjectShapeId,
     ) -> Option<Self> {
@@ -2342,6 +2367,7 @@ impl PublicObjectId {
             Self::MathFabs => None,
             Self::MathFactorial => None,
             Self::MathFloor => None,
+            Self::MathFma => None,
             Self::MathFmod => None,
             Self::MathFrexp => None,
             Self::MathFsum => None,
@@ -2494,6 +2520,16 @@ impl PublicObjectId {
                 posonly: 0,
                 vararg: true,
                 varkw: true,
+                defaults: &[],
+                kwonly: &[],
+                kwdefaults: &[],
+            }),
+            Self::MathFma => Some(PublicSignatureSpec {
+                arity: 3,
+                positional: &[b"x", b"y", b"z"],
+                posonly: 3,
+                vararg: false,
+                varkw: false,
                 defaults: &[],
                 kwonly: &[],
                 kwdefaults: &[],

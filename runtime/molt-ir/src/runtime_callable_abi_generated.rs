@@ -13197,6 +13197,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_math_list_swap__molt_context_d1086a27578cda22",
         },
+        "__molt_math_log_index_on_overflow" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22",
+        },
         "__molt_math_lookup_special_method" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_math_lookup_special_method__molt_context_d1086a27578cda22",

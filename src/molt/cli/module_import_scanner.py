@@ -9,7 +9,7 @@ import ntpath
 import os
 import posixpath
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 from molt._intrinsic_symbols import INTRINSIC_RUNTIME_ROOTS
@@ -23,6 +23,7 @@ from molt.cli.models import (
     _RuntimeImportSupportPolicy,
 )
 from molt.compiler_analysis.python_imports import _ImportScanRequests, _StaticSourcePath
+from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from molt.target_python import (
     TargetPythonVersion,
 )
@@ -296,24 +297,44 @@ def _complete_import_scan(
     )
 
 
+def _writes_import_state(write: PythonNamespaceWrite) -> bool:
+    """Whether a namespace write changes what a later import binds: a hook or
+    ``sys.modules`` mutation, or a store of ``builtins.__import__`` (named, or
+    under a computed name)."""
+    if write.construct in ("import_hooks", "import_binding"):
+        return True
+    return write.module == "builtins" and write.name in (None, "__import__")
+
+
 def _module_graph_needs_runtime_import_support(
     *,
     module_graph: Mapping[str, Path],
     scan_authority: _ModuleGraphScanAuthority,
+    namespace_writes: Mapping[str, Collection[PythonNamespaceWrite]],
 ) -> _RuntimeImportSupportPolicy:
-    """Whether the closed graph needs the runtime import protocol.
+    """Whether the closed graph needs the Python import machinery.
 
-    Each scan records whether its reached code imports or may call an import
-    entry point in its execution-region visitor, and discovery ORs that bit
-    into the module's scan authority; a source that was not scanned claims
-    it. The decision reads those bits and no source.
+    A literal import names its module, and the module registry serves it
+    (bedrock §13 D8, HF-841). The machinery is needed only when reached code
+    may call an import entry point (each scan's execution-region bit, which a
+    source that was not scanned claims), or when some module writes the
+    import state (``namespace_writes``, keyed by writer module). The
+    machinery's own modules are exempt from both. The decision reads facts
+    and no source.
     """
     scan_authority.validate_graph(module_graph)
     scan_authority.validate_source_generations()
+    exempt = _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES
     return _RuntimeImportSupportPolicy(
         needs_runtime_import_support=any(
             source.uses_runtime_import_protocol
             for source in scan_authority.sources
-            if source.module_name not in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES
+            if source.module_name not in exempt
+        )
+        or any(
+            _writes_import_state(write)
+            for writer, writes in namespace_writes.items()
+            if writer not in exempt
+            for write in writes
         ),
     )

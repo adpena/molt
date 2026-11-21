@@ -16,6 +16,8 @@ class PublicObjectIdentity:
     qualname: str
     module: str
 
+    module_315: str | None = None
+
 
 PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
     "molt_build_class_builtin": PublicObjectIdentity(
@@ -301,7 +303,11 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "ceil", "ceil", "math"
     ),
     "molt_math_comb": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "comb", "comb", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "comb",
+        "comb",
+        "math",
+        "math.integer",
     ),
     "molt_math_copysign": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "copysign", "copysign", "math"
@@ -334,10 +340,17 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "fabs", "fabs", "math"
     ),
     "molt_math_factorial": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "factorial", "factorial", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "factorial",
+        "factorial",
+        "math",
+        "math.integer",
     ),
     "molt_math_floor": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "floor", "floor", "math"
+    ),
+    "molt_math_fma": PublicObjectIdentity(
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "fma", "fma", "math"
     ),
     "molt_math_fmod": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "fmod", "fmod", "math"
@@ -361,7 +374,11 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "isnan", "isnan", "math"
     ),
     "molt_math_isqrt": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "isqrt", "isqrt", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "isqrt",
+        "isqrt",
+        "math",
+        "math.integer",
     ),
     "molt_math_ldexp": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "ldexp", "ldexp", "math"
@@ -694,16 +711,28 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "tee", "tee", "itertools"
     ),
     "molt_math_perm": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "perm", "perm", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "perm",
+        "perm",
+        "math",
+        "math.integer",
     ),
     "molt_binascii_crc32": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "crc32", "crc32", "binascii"
     ),
     "molt_math_gcd": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "gcd", "gcd", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "gcd",
+        "gcd",
+        "math",
+        "math.integer",
     ),
     "molt_math_lcm": PublicObjectIdentity(
-        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "lcm", "lcm", "math"
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "lcm",
+        "lcm",
+        "math",
+        "math.integer",
     ),
     "molt_math_hypot": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "hypot", "hypot", "math"
@@ -882,6 +911,7 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "math.atanh": "molt_math_atanh",
     "math.ceil": "molt_math_ceil",
     "math.comb": "molt_math_comb",
+    "_math_integer.comb": "molt_math_comb",
     "math.copysign": "molt_math_copysign",
     "math.cos": "molt_math_cos",
     "math.cosh": "molt_math_cosh",
@@ -893,6 +923,7 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "math.expm1": "molt_math_expm1",
     "math.fabs": "molt_math_fabs",
     "math.factorial": "molt_math_factorial",
+    "_math_integer.factorial": "molt_math_factorial",
     "math.floor": "molt_math_floor",
     "math.fmod": "molt_math_fmod",
     "math.frexp": "molt_math_frexp",
@@ -902,6 +933,7 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "math.isinf": "molt_math_isinf",
     "math.isnan": "molt_math_isnan",
     "math.isqrt": "molt_math_isqrt",
+    "_math_integer.isqrt": "molt_math_isqrt",
     "math.ldexp": "molt_math_ldexp",
     "math.lgamma": "molt_math_lgamma",
     "math.log10": "molt_math_log10",
@@ -1000,6 +1032,7 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "time.process_time_ns": "molt_time_process_time_ns",
     "itertools.tee": "molt_itertools_tee",
     "math.perm": "molt_math_perm",
+    "_math_integer.perm": "molt_math_perm",
     "binascii.crc32": "molt_binascii_crc32",
     "select.poll": "molt_select_poll",
 }
@@ -1020,6 +1053,7 @@ PUBLIC_CALL_SIGNATURES: dict[str, PublicCallSignature] = {
     "molt_build_class_builtin": PublicCallSignature(
         (), (), (), (), (), "args", "kwargs"
     ),
+    "molt_math_fma": PublicCallSignature(("x", "y", "z"), (), (), (), (), None, None),
     "molt_math_gcd": PublicCallSignature((), (), (), (), (), "integers", None),
     "molt_math_lcm": PublicCallSignature((), (), (), (), (), "integers", None),
     "molt_math_hypot": PublicCallSignature((), (), (), (), (), "coordinates", None),

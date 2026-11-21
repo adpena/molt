@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,net,thread.spawn,thread.shared
 """Purpose: differential coverage for ssl sni callback basic."""
 
 import os

@@ -14,7 +14,7 @@ Mutation score = killed / (killed + survived).
 Usage examples:
     # Compiler mutation
     uv run python3 tools/mutation_test.py \\
-        --target src/molt/frontend/__init__.py \\
+        --target src/molt/frontend/generator.py \\
         --max-mutations 20 \\
         --test-subset tests/differential/basic \\
         --timeout 120

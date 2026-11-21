@@ -234,6 +234,7 @@ macro_rules! attached_symbol {
     ("__molt_math_intern_static_name") => { "__molt_math_intern_static_name__molt_context_d1086a27578cda22" };
     ("__molt_math_is_truthy") => { "__molt_math_is_truthy__molt_context_d1086a27578cda22" };
     ("__molt_math_list_swap") => { "__molt_math_list_swap__molt_context_d1086a27578cda22" };
+    ("__molt_math_log_index_on_overflow") => { "__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22" };
     ("__molt_math_lookup_special_method") => { "__molt_math_lookup_special_method__molt_context_d1086a27578cda22" };
     ("__molt_math_molt_add") => { "__molt_math_molt_add__molt_context_d1086a27578cda22" };
     ("__molt_math_molt_div") => { "__molt_math_molt_div__molt_context_d1086a27578cda22" };

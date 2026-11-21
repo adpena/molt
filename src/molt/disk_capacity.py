@@ -16,7 +16,7 @@ import shutil
 import stat
 import sys
 import threading
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     import ctypes
@@ -689,3 +689,31 @@ def _require_capacity(
         )
 
     return DiskCapacityReceipt(required_bytes=required_bytes, probes=tuple(probes))
+
+
+# The capacity floor (HF-942): every Molt volume keeps at least this fraction
+# free. APFS slows sharply near full, and the data volume was 96% full on
+# 2026-11-20. Below it, regenerable classes and checkout state give up entries
+# idle at least FLOOR_MIN_IDLE_S by last use, rechecked after each removal.
+# The headroom above (minimum_headroom_bytes) stays the emergency trigger of
+# the disk guard's pressure reclaim; this floor is the standing policy.
+FREE_SPACE_FLOOR = 0.20
+FLOOR_MIN_IDLE_S = 86400.0
+
+
+class _VolumeUsage(Protocol):
+    @property
+    def free(self) -> int: ...
+    @property
+    def total(self) -> int: ...
+
+
+def below_free_space_floor(
+    path: Path, *, usage: Callable[[Path], _VolumeUsage] = shutil.disk_usage
+) -> bool:
+    """Whether ``path``'s volume holds less than ``FREE_SPACE_FLOOR`` free."""
+    try:
+        observed = usage(path)
+    except OSError:
+        return False
+    return observed.free < FREE_SPACE_FLOOR * observed.total

@@ -47,6 +47,7 @@ from molt.cli.command_runtime import (
     _run_completed_command,
 )
 from molt.cli.config_resolution import (
+    _resolve_target_python_version,
     _config_value,
 )
 from molt.cli.deps import _load_toml, _normalize_name
@@ -76,9 +77,6 @@ from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
     _require_molt_root,
-)
-from molt.target_python import (
-    _resolve_target_python_version,
 )
 from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arg_value,

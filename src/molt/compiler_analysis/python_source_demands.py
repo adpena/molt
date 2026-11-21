@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_function_kind import (
+    IMPLICIT_DESCRIPTOR_NAMES,
+    FunctionKind,
+)
 from molt.compiler_analysis.python_binding_facts import (
     PythonFunctionResult,
     PythonSourceCall,
@@ -217,6 +220,9 @@ class PythonSourceDemands:
         # (the receiver fills their first parameter) and through anything else.
         self.receiver_bound_members: dict[SourceValue, set[SourceCandidate]] = {}
         self.unbound_members: dict[SourceValue, set[SourceCandidate]] = {}
+        # Per attribute value: the values a property getter returned to it. A
+        # call of one passes the call's own arguments, never the instance.
+        self._property_results: dict[SourceValue, set[SourceCandidate]] = {}
         # Attribute values whose receiver-binding proof read a candidate set
         # still queued; `drain` decides them once the queue empties.
         self._deferred_receiver_proofs: set[SourceValue] = set()
@@ -769,10 +775,13 @@ class PythonSourceDemands:
                 members = self.select_member(candidate, name, user)
             bound = self.receiver_bound_members.setdefault(user, set())
             unbound = self.unbound_members.setdefault(user, set())
+            property_results = self._property_results.get(user, ())
             for member in members:
                 if (
                     source_class
                     and candidate.kind == "instance"
+                    and name not in IMPLICIT_DESCRIPTOR_NAMES
+                    and member not in property_results
                     and member.kind == "value"
                     and member.identity is None
                     and not member.contained
@@ -1008,17 +1017,17 @@ class PythonSourceDemands:
                         if binding_owner.kind == "instance":
                             # The load is the getter's call; its activation
                             # comes from the class's instance hooks.
-                            result.update(
-                                self.watch(
-                                    (
-                                        candidate.module,
-                                        SourceReturn(
-                                            (candidate.module, candidate.source)
-                                        ),
-                                    ),
-                                    user,
-                                )
+                            returned = self.watch(
+                                (
+                                    candidate.module,
+                                    SourceReturn((candidate.module, candidate.source)),
+                                ),
+                                user,
                             )
+                            self._property_results.setdefault(user, set()).update(
+                                returned
+                            )
+                            result.update(returned)
                         else:
                             result.add(candidate)
                     else:

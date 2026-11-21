@@ -1725,6 +1725,10 @@ fn runtime_exit(code_bits: u64) -> u64 {
     let code = u32::try_from(code_bits).map_or(1, |raw| raw as i32);
     if !PROCESS_EXIT_FINALIZED.swap(true, AtomicOrdering::SeqCst) {
         let gil = GilGuard::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(ptr) = runtime_ready_ptr() {
+            crate::concurrency::isolates::join_non_daemon_threads_for_exit(unsafe { &*ptr });
+        }
         let lifecycle = runtime_lifecycle();
         let owner = thread::current().id();
         let ptr = {

@@ -10,7 +10,6 @@ Run:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -20,24 +19,10 @@ from tools.correspondence_sources import (
     parse_lean_inductive_variants,
     parse_rust_unsigned_constants,
 )
-from tests.process_guard_common import run_guarded_test_process
 
 
-def _find_repo_root() -> Path:
-    try:
-        proc = run_guarded_test_process(
-            ["git", "rev-parse", "--show-toplevel"],
-            prefix="MOLT_FORMAL",
-            text=True,
-            check=True,
-        )
-        out = (proc.stdout or "").strip()
-        return Path(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return Path(__file__).resolve().parents[1]
-
-
-ROOT = _find_repo_root()
+# The checkout root: the parent of tests/. Collection spawns no process.
+ROOT = Path(__file__).resolve().parents[1]
 NANBOX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
 CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"

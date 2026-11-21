@@ -91,7 +91,8 @@ pub use crate::ir::{
 pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 #[cfg(feature = "jit")]
 pub use crate::native_backend::{
-    JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution,
+    JIT_FAILURE_STATUS, JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup,
+    probe_jit_execution,
 };
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, compute_app_callable_manifest,

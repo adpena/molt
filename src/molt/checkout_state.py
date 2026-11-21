@@ -48,6 +48,8 @@ from .custody_layout import (
     git_directories,
     storage_rule,
 )
+from .default_paths import hot_path, lock_stripe
+from .disk_capacity import FLOOR_MIN_IDLE_S
 from .exact_json import ExactJsonError, read_exact, write_exact
 
 EVIDENCE_INDEX_NAME = "storage-index.json"
@@ -444,9 +446,10 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     return None
 
 
-# One lock per checkout-state root, named by its build-state address.
+# One lock stripe per checkout-state root's build-state address (HF-942: one
+# lock per address left 65k files that nothing removed).
 _STATE_LOCK_DIR = ("target", ".disk_guard", "checkout-state-locks")
-_STATE_LOCK_NAME = re.compile(r"[0-9a-f]{64}\.lock")
+_STATE_LOCK_NAME = re.compile(r"[0-9a-f]{3}\.lock")
 
 
 def _state_metadata_root(root: Path) -> Path:
@@ -491,8 +494,8 @@ def _state_metadata_root(root: Path) -> Path:
 def is_checkout_state_lock_file(path: Path) -> bool:
     """Recognize an empty lock that `_state_lock_plan` names, never data.
 
-    Like a publication lock, it leaves only with its whole checkout and is
-    never unlinked to make one look clean: a waiter may hold its inode.
+    A stripe outlives every root it serves and is never unlinked: a waiter
+    may hold its inode. The stripes bound the directory at 4,096 files.
     """
     if (
         _STATE_LOCK_NAME.fullmatch(path.name) is None
@@ -556,8 +559,10 @@ def _state_lock_plan(
         for path in paths:
             known = qualify(path)
             if known is not None and known.root not in locks:
-                locks[known.root] = known.artifact.joinpath(
-                    *_STATE_LOCK_DIR, build_state_address(known.root) + ".lock"
+                locks[known.root] = hot_path(
+                    known.artifact,
+                    *_STATE_LOCK_DIR,
+                    lock_stripe(build_state_address(known.root)) + ".lock",
                 )
     return tuple(bound), locks
 
@@ -1684,6 +1689,10 @@ class RetentionLimits:
     max_age_s: float
     session_idle_s: float
     scratch_idle_s: float = DEFAULT_SCRATCH_IDLE_DAYS * 86400.0
+    # The capacity floor (HF-942): while it holds for the artifact root, a
+    # root idle at least FLOOR_MIN_IDLE_S retires too. None in tests and
+    # readers; the disk guard's GC passes its volume's floor.
+    free_space_low: Callable[[Path], bool] | None = None
 
 
 def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
@@ -2244,7 +2253,7 @@ def _read_walk_cursors(record: Path) -> dict[str, str]:
     return dict(value["cursors"])
 
 
-RetentionReason = Literal["owner-gone", "max-age", "session-idle"]
+RetentionReason = Literal["owner-gone", "max-age", "session-idle", "free-space-floor"]
 
 
 def checkout_state_decision(
@@ -2277,6 +2286,12 @@ def checkout_state_decision(
         return "max-age"
     if idle >= PROTECTION_WINDOW_S and orphaned_checkout_state(root, artifact_root):
         return "owner-gone"
+    if (
+        limits.free_space_low is not None
+        and idle >= FLOOR_MIN_IDLE_S
+        and limits.free_space_low(artifact_root)
+    ):
+        return "free-space-floor"
     return None
 
 

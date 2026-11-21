@@ -18,7 +18,7 @@ from typing import Any, cast
 
 from molt.frontend import MoltValue
 from molt.frontend.dataclass_init import DataclassInitField
-from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
+from molt.frontend import BoundMethodHint, ClassId, ClassModel, DeclaredClass
 from molt.frontend.module_publication import (
     parse_function_metadata,
     inspect_source_module_publication,
@@ -45,9 +45,9 @@ from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
 )
 from molt.cli.build_request import TypeHintPolicy
+from molt.compiler_analysis.python_imports import ImportScanMode
 from molt.cli.models import (
     _RuntimeImportScanCustody,
-    ImportScanMode,
     ModuleExecutionKind,
     ModuleSourceRole,
     _ModuleGraphMetadata,
@@ -90,7 +90,7 @@ class _ModuleLoweringMetadataView:
 class _ModuleLoweringExecutionView:
     metadata: _ModuleLoweringMetadataView
     scoped_inputs: _ScopedLoweringInputView
-    scoped_known_classes: dict[ClassId, ClassInfo]
+    scoped_known_classes: dict[ClassId, ClassModel]
 
 
 def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
@@ -191,9 +191,9 @@ def _scoped_known_classes(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes: Mapping[ClassId, ClassInfo],
+    known_classes: Mapping[ClassId, ClassModel],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-) -> dict[ClassId, ClassInfo]:
+) -> dict[ClassId, ClassModel]:
     scoped_modules = (
         module_dep_closures.get(module_name) if module_dep_closures else None
     )
@@ -428,9 +428,9 @@ def _build_scoped_known_classes_snapshot(
     *,
     module_deps: dict[str, set[str]],
     module_dep_closures: dict[str, frozenset[str]],
-    known_classes_snapshot: Mapping[ClassId, ClassInfo],
-) -> dict[str, dict[ClassId, ClassInfo]]:
-    scoped_known_classes_by_module: dict[str, dict[ClassId, ClassInfo]] = {}
+    known_classes_snapshot: Mapping[ClassId, ClassModel],
+) -> dict[str, dict[ClassId, ClassModel]]:
+    scoped_known_classes_by_module: dict[str, dict[ClassId, ClassModel]] = {}
     for module_name in sorted(module_names):
         scoped_known_classes_by_module[module_name] = _scoped_known_classes(
             module_name,
@@ -445,11 +445,11 @@ def _scoped_known_classes_view(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes_snapshot: Mapping[ClassId, ClassInfo],
+    known_classes_snapshot: Mapping[ClassId, ClassModel],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
-) -> dict[ClassId, ClassInfo]:
+) -> dict[ClassId, ClassModel]:
     if (
         scoped_known_classes_by_module is not None
         and module_name in scoped_known_classes_by_module
@@ -664,11 +664,11 @@ def _module_lowering_execution_view(
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
     type_facts: TypeFacts | None,
-    known_classes_snapshot: Mapping[ClassId, ClassInfo],
+    known_classes_snapshot: Mapping[ClassId, ClassModel],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
     source_modules: Collection[str] | None = None,
     direct_call_modules: Collection[str] | None = None,
@@ -726,7 +726,7 @@ def _frontend_lowering_cache_disabled() -> bool:
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 15
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 12
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 13
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -989,6 +989,14 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
             real_imag = value["__complex__"]
             if len(real_imag) == 2:
                 return complex(real_imag[0], real_imag[1])
+        if "__class_model__" in value and len(value) == 1:
+            record = _decode_cached_json_value_inner(value["__class_model__"])
+            if not isinstance(record, dict):
+                raise ValueError("invalid cached class model")
+            try:
+                return ClassModel.from_cache_record(record)
+            except (KeyError, ValueError, SyntaxError) as exc:
+                raise ValueError("invalid cached class model") from exc
         if "__tuple__" in value and isinstance(value["__tuple__"], list):
             return tuple(
                 _decode_cached_json_value_inner(item) for item in value["__tuple__"]
@@ -1030,14 +1038,15 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
     return value
 
 
-def _known_classes_from_payload(value: object) -> dict[ClassId, ClassInfo]:
-    """Admit a pickled or cache-decoded class table only with ClassId keys."""
+def _known_classes_from_payload(value: object) -> dict[ClassId, ClassModel]:
+    """Admit a pickled or cache-decoded class table: sealed class models keyed
+    by ClassId."""
     if not isinstance(value, dict) or not all(
-        isinstance(class_id, ClassId) and isinstance(class_info, dict)
-        for class_id, class_info in value.items()
+        isinstance(class_id, ClassId) and isinstance(model, ClassModel)
+        for class_id, model in value.items()
     ):
-        raise ValueError("class tables are keyed by ClassId")
-    return cast(dict[ClassId, ClassInfo], value)
+        raise ValueError("class tables map ClassId to ClassModel")
+    return cast(dict[ClassId, ClassModel], value)
 
 
 @_source_tree_fingerprint_transaction()
@@ -1262,7 +1271,7 @@ def _module_lowering_context_payload(
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
     namespace_premise: PythonNamespacePremise | None,
-    known_classes_snapshot: Mapping[ClassId, ClassInfo],
+    known_classes_snapshot: Mapping[ClassId, ClassModel],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1283,9 +1292,9 @@ def _module_lowering_context_payload(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
-    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
+    scoped_known_classes: dict[ClassId, ClassModel] | None = None,
     is_package: bool | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
@@ -1332,7 +1341,7 @@ def _module_lowering_context_payload(
     return {
         # The context owns the captured bytes, not a later file stat/hash.
         # Inline text and raw path bytes are distinct source generations.
-        "version": 8,
+        "version": 9,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1350,8 +1359,8 @@ def _module_lowering_context_payload(
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
         "direct_call_modules": direct_call_modules_sorted,
-        # ClassInfo is frozen after its class statement lowers; lowering-time
-        # derived facts live in generator side tables, never in this payload.
+        # Sealed class models: frozen when their statements complete; lowering
+        # values stay in generator side tables, never in this payload.
         "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": scoped_known_func_defaults,
@@ -1368,7 +1377,7 @@ def _module_lowering_context_payload(
 # dependency closure: encoding the views cost 41 MB and 0.68 s of a 92-module
 # edit-rebuild. Each class statement is digested once and the view digest is
 # a Merkle combination of (class identity, class digest) pairs.
-_CLASS_INFO_DIGESTS: dict[int, tuple[ClassInfo, bytes]] = {}
+_CLASS_INFO_DIGESTS: dict[ClassModel, bytes] = {}
 _CLASS_ID_BYTES: dict[ClassId, bytes] = {}
 _CLASS_DIGEST_LIMIT = 65536
 
@@ -1388,15 +1397,13 @@ def _bounded_put(memo: dict[Any, Any], key: Any, value: Any) -> None:
     memo[key] = value
 
 
-def _class_info_digest(info: ClassInfo) -> bytes:
-    # visit_ClassDef builds a ClassInfo and nothing writes it afterwards, so a
-    # digest stays valid for the object's lifetime; the memo holds the object,
-    # so its id cannot name a different object while the entry exists.
-    cached = _CLASS_INFO_DIGESTS.get(id(info))
-    if cached is not None and cached[0] is info:
-        return cached[1]
-    digest = hashlib.sha256(_canonical_json_bytes(info)).digest()
-    _bounded_put(_CLASS_INFO_DIGESTS, id(info), (info, digest))
+def _class_info_digest(model: ClassModel) -> bytes:
+    # A sealed model is frozen and hashable, so equal models share one digest.
+    cached = _CLASS_INFO_DIGESTS.get(model)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256(_canonical_json_bytes(model.cache_record())).digest()
+    _bounded_put(_CLASS_INFO_DIGESTS, model, digest)
     return digest
 
 
@@ -1414,8 +1421,8 @@ def _class_view_sort_key(class_id: object) -> tuple[str, str, int, int, int]:
     return class_id.sort_key()
 
 
-def _known_classes_digest(classes: Mapping[ClassId, ClassInfo]) -> str:
-    hasher = hashlib.sha256(b"molt.lowering-known-classes.v1\0")
+def _known_classes_digest(classes: Mapping[ClassId, ClassModel]) -> str:
+    hasher = hashlib.sha256(b"molt.lowering-known-classes.v2\0")
     for class_id in sorted(classes, key=_class_view_sort_key):
         identity = _class_id_bytes(class_id)
         hasher.update(len(identity).to_bytes(4, "little"))
@@ -1501,7 +1508,7 @@ def _module_lowering_context_digest_for_module(
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
     namespace_premise: PythonNamespacePremise | None,
-    known_classes_snapshot: Mapping[ClassId, ClassInfo],
+    known_classes_snapshot: Mapping[ClassId, ClassModel],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1522,9 +1529,9 @@ def _module_lowering_context_digest_for_module(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
-    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
+    scoped_known_classes: dict[ClassId, ClassModel] | None = None,
     is_package: bool | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
@@ -1774,7 +1781,7 @@ def _load_cached_module_lowering_result(
     module_source_role: ModuleSourceRole,
     namespace_premise: PythonNamespacePremise | None,
     is_package: bool,
-    known_classes_snapshot: dict[ClassId, ClassInfo],
+    known_classes_snapshot: dict[ClassId, ClassModel],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1794,9 +1801,9 @@ def _load_cached_module_lowering_result(
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
-    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
+    scoped_known_classes: dict[ClassId, ClassModel] | None = None,
     context_digest: str | None = None,
     source_modules: Collection[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1882,7 +1889,7 @@ def _module_worker_payload(
     enable_phi: bool,
     known_modules: Collection[str],
     direct_call_modules: Collection[str] | None = None,
-    known_classes_snapshot: dict[ClassId, ClassInfo],
+    known_classes_snapshot: dict[ClassId, ClassModel],
     stdlib_allowlist_sorted: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
@@ -1896,9 +1903,9 @@ def _module_worker_payload(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
-    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
+    scoped_known_classes: dict[ClassId, ClassModel] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,

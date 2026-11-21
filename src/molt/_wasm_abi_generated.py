@@ -31671,6 +31671,7 @@ RUNTIME_EXECUTION_ABIS: dict[str, RuntimeExecutionAbi] = {
     '__molt_math_is_truthy': RuntimeExecutionAbi('Attached', '__molt_math_is_truthy__molt_context_d1086a27578cda22'),
     '__molt_math_list_len': RuntimeExecutionAbi('Boundary', '__molt_math_list_len'),
     '__molt_math_list_swap': RuntimeExecutionAbi('Attached', '__molt_math_list_swap__molt_context_d1086a27578cda22'),
+    '__molt_math_log_index_on_overflow': RuntimeExecutionAbi('Attached', '__molt_math_log_index_on_overflow__molt_context_d1086a27578cda22'),
     '__molt_math_lookup_special_method': RuntimeExecutionAbi('Attached', '__molt_math_lookup_special_method__molt_context_d1086a27578cda22'),
     '__molt_math_maybe_ptr_from_bits': RuntimeExecutionAbi('Boundary', '__molt_math_maybe_ptr_from_bits'),
     '__molt_math_molt_add': RuntimeExecutionAbi('Attached', '__molt_math_molt_add__molt_context_d1086a27578cda22'),

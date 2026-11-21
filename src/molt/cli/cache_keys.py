@@ -18,6 +18,7 @@ from molt.frontend import (
     MoltValue,
     ReceiverKind,
 )
+from molt.frontend.class_model import ClassModel
 from molt.frontend.dataclass_init import DataclassInitField
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
@@ -48,6 +49,7 @@ _CACHE_JSON_TAGS = frozenset(
         "__molt_value__",
         "__dataclass_init_field__",
         "__class_id__",
+        "__class_model__",
         "__builtin_class__",
         "__declared_class__",
         "__bound_method__",
@@ -155,6 +157,8 @@ def _cache_json_value(value: Any) -> Any:
         return {"__integer_bytes__": list(integer_literal_bytes(value))}
     if isinstance(value, (ClassId, BuiltinClass, DeclaredClass, BoundMethodHint)):
         return _encode_class_identity(value)
+    if isinstance(value, ClassModel):
+        return {"__class_model__": _cache_json_value(value.cache_record())}
     if isinstance(value, dict):
         name_map = all(isinstance(key, str) for key in value)
         if not name_map or any(key in _CACHE_JSON_TAGS for key in value):
@@ -227,6 +231,8 @@ def _json_ir_default(value: Any) -> Any:
         return {tag: items}
     if isinstance(value, (ClassId, BuiltinClass, DeclaredClass, BoundMethodHint)):
         return _encode_class_identity(value)
+    if isinstance(value, ClassModel):
+        return {"__class_model__": _cache_json_value(value.cache_record())}
     if isinstance(value, MoltValue):
         type_hint = value.type_hint
         return {

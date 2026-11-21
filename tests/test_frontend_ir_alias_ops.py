@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from typing import Any
 import sys
 
@@ -1350,6 +1351,25 @@ def test_nullable_method_receiver_serializes_only_as_prefix_operand() -> None:
             metadata={"self_or_null": "nullable"},
         )
     ) == {"kind": "callargs_push_method_receiver", "args": ["builder", "nullable"]}
+
+
+@pytest.mark.parametrize("scope", ["local", "global"])
+def test_super_bound_to_another_builtin_is_an_ordinary_call(scope: str) -> None:
+    # A proof that ``super`` holds *a* builtin is not a proof that it holds
+    # ``super``: ``super = len`` makes ``super().m()`` call ``len()``, which
+    # raises TypeError in CPython. No super method load may be emitted.
+    binding = "    super = len\n" if scope == "global" else ""
+    local = "        super = len\n" if scope == "local" else ""
+    ops = _lowered_ops(
+        binding.replace("    ", "", 1) + "class Base:\n    def m(self): return 1\n"
+        "class Child(Base):\n    def f(self):\n"
+        + local
+        + "        return super().m()\n",
+        namespace_premise=replace(
+            PythonNamespacePremise((), 0, 0, ()), opaque_activation_sources=()
+        ),
+    )
+    assert not any(op["kind"] == "load_super_method" for op in ops)
 
 
 @pytest.mark.parametrize(

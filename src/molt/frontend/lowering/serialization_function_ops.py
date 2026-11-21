@@ -158,8 +158,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
             # Positive finalizer metadata constrains lifetime transformations.
             # Its absence does not prove finalizer freedom: a mutable class
             # can acquire __del__ later. Owned allocation always retains RC.
-            _del_info, _ = self._resolve_method_info(_onb_class, "__del__")
-            if _del_info is not None:
+            _del_member, _ = self._resolve_member(_onb_class, "__del__")
+            if _del_member is not None:
                 _onb_op["defines_del"] = True
             ctx.json_ops.append(_onb_op)
         elif op.kind == FrontendKinds.CLASSMETHOD_NEW:

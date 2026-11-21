@@ -6,10 +6,10 @@ Two contracts keep the per-module lowering cache correct and stable (HF-203):
   qualname, occurrence) to the facts of one class statement. Two modules that
   both define ``P``, or one module that defines ``P`` twice, keep separate
   entries, and the context digest sees every one of them.
-* **Frozen facts.** ``visit_ClassDef`` builds a ``ClassInfo`` and nothing writes
+* **Frozen facts.** ``visit_ClassDef`` seals a ``ClassModel`` and nothing writes
   it afterwards; lowering-time derived facts (such as exception-subclass status)
   live in generator side tables. A dependent module therefore cannot change a
-  shared ``ClassInfo``, so a fresh-lowered and a cache-hydrated snapshot hash
+  shared ``ClassModel``, so a fresh-lowered and a cache-hydrated snapshot hash
   identically without any digest-only projection.
 
 The digest must also be deterministic over ``ClassId`` keys (written in
@@ -24,6 +24,8 @@ import copy
 import dataclasses
 import importlib
 import json
+import sys
+import types
 
 import pytest
 
@@ -126,7 +128,9 @@ def test_real_class_change_still_changes_digest() -> None:
     _generator, classes = _lowered_classes("pkg.base", _BASE_SOURCE)
     point = ClassId("pkg.base", "Point")
     changed = copy.deepcopy(classes)
-    changed[point]["mro"] = (point, BuiltinClass("dict"))
+    changed[point] = dataclasses.replace(
+        changed[point], linearization=(point, BuiltinClass("dict"))
+    )
     assert _digest(changed) != _digest(classes)
 
 
@@ -147,7 +151,7 @@ def test_lowering_a_dependent_module_leaves_known_class_info_frozen() -> None:
     )
     # The consumer derived exception-subclass facts in its own side table.
     assert consumer._exception_subclass_memo
-    assert _snapshot(known) == before, "a dependent module mutated a shared ClassInfo"
+    assert _snapshot(known) == before, "a dependent module mutated a shared ClassModel"
     assert _digest(known) == digest_before
 
 
@@ -172,27 +176,9 @@ class Base:
     )
     namespace = {"__name__": __name__}
     exec(compile(source, "dataclass-oracle", "exec", dont_inherit=True), namespace)
-
-    def expected(cls):
-        return tuple(
-            (
-                field.name,
-                field.init,
-                field.kw_only,
-                isinstance(field.type, dataclasses.InitVar),
-                2
-                if field.default_factory is not dataclasses.MISSING
-                else 1
-                if field.default is not dataclasses.MISSING
-                else 0,
-            )
-            for field in cls.__dataclass_fields__.values()
-        )
-
-    # Keep the only helper call last: a callback can expire binding facts
-    # for subsequent fields, whose projection is deliberately conservative.
+    expected = _dataclass_fields
     _generator, classes = _lowered_classes("pkg.base", source)
-    projection = classes[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+    projection = classes[ClassId("pkg.base", "Base")].dataclass.init_projection
     assert projection is not None
     assert tuple(field.schema() for field in projection) == expected(namespace["Base"])
     hydrated = _round_trip(classes)
@@ -206,10 +192,96 @@ class Child(Base):
     child_definition = ast.parse(child_source).body[-1]
     assert isinstance(child_definition, ast.ClassDef)
     for known in (classes, hydrated):
-        inherited = known[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+        inherited = known[ClassId("pkg.base", "Base")].dataclass.init_projection
         child = project_initializer_fields(child_definition, (inherited,), False, None)
         assert child is not None
         assert tuple(field.schema() for field in child) == expected(namespace["Child"])
+
+
+def _dataclass_fields(cls: type) -> tuple[tuple[str, bool, bool, bool, int], ...]:
+    """CPython's classification of a dataclass's init fields, in the order and
+    form of ``DataclassInitField.schema()``."""
+    return tuple(
+        (
+            field.name,
+            field.init,
+            field.kw_only,
+            field._field_type is dataclasses._FIELD_INITVAR,
+            2
+            if field.default_factory is not dataclasses.MISSING
+            else 1
+            if field.default is not dataclasses.MISSING
+            else 0,
+        )
+        for field in cls.__dataclass_fields__.values()
+        if field._field_type is not dataclasses._FIELD_CLASSVAR
+    )
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 15)])
+@pytest.mark.parametrize(
+    ("prelude", "initvar", "classvar", "kw_only"),
+    [
+        (
+            "from dataclasses import dataclass, InitVar, KW_ONLY\n"
+            "from typing import ClassVar\n",
+            "InitVar[int]",
+            "ClassVar[int]",
+            "KW_ONLY",
+        ),
+        (
+            "import dataclasses, typing\nfrom dataclasses import dataclass\n",
+            "dataclasses.InitVar[int]",
+            "typing.ClassVar[int]",
+            "dataclasses.KW_ONLY",
+        ),
+        (
+            "from __future__ import annotations\n"
+            "from dataclasses import dataclass, InitVar, KW_ONLY\n"
+            "from typing import ClassVar\n",
+            "InitVar[int]",
+            "ClassVar[int]",
+            "KW_ONLY",
+        ),
+    ],
+    ids=["names", "attributes", "future"],
+)
+def test_dataclass_projection_reads_each_marker_as_the_decorator_does(
+    monkeypatch: pytest.MonkeyPatch,
+    target: tuple[int, int],
+    prelude: str,
+    initvar: str,
+    classvar: str,
+    kw_only: str,
+) -> None:
+    # HF-962: a marker's subscription must not expire the facts of the
+    # annotations after it, and a deferred (3.14+) or string annotation is
+    # classified by the value @dataclass reads when the decorator runs.
+    source = prelude + (
+        "@dataclass\n"
+        "class Record:\n"
+        "    required: int\n"
+        f"    transient: {initvar} = 4\n"
+        f"    shared: {classvar} = 1\n"
+        f"    _: {kw_only}\n"
+        "    later: int = 5\n"
+    )
+    # dataclasses resolves a string annotation in its class's module, so the
+    # oracle runs in a module registered under its own name.
+    module = types.ModuleType("hf949_dataclass_oracle")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, "dataclass-oracle", "exec", dont_inherit=True), vars(module))
+    generator = SimpleTIRGenerator(
+        module_name="pkg.record", module_source_role="user", target_python=target
+    )
+    generator.visit(ast.parse(source))
+    dataclass_spec = generator.classes[ClassId("pkg.record", "Record")].dataclass
+    assert dataclass_spec is not None
+    projection = dataclass_spec.init_projection
+    assert projection is not None
+    assert tuple(field.schema() for field in projection) == _dataclass_fields(
+        module.Record
+    )
 
 
 def test_dataclass_cache_tag_does_not_capture_a_metadata_name() -> None:
@@ -259,12 +331,12 @@ def test_dataclass_initializer_projection_round_trips_through_the_cache_codec() 
     context digest off and crashes the persisted module-lowering write."""
     _generator, classes = _lowered_classes("pkg.records", _DATACLASS_SOURCE)
     record_id = ClassId("pkg.records", "Record")
-    projection = classes[record_id]["dataclass_init_projection"]
+    projection = classes[record_id].dataclass.init_projection
     assert projection, "the dataclass transform recorded no initializer projection"
     fresh = _digest(classes)
     assert fresh is not None, "an unencodable projection would switch the cache off"
     hydrated = _round_trip(classes)
-    assert hydrated[record_id]["dataclass_init_projection"] == projection
+    assert hydrated[record_id].dataclass.init_projection == projection
     assert _digest(hydrated) == fresh
 
 
@@ -294,7 +366,7 @@ def test_dataclass_initializer_projection_survives_class_cache_round_trip() -> N
         "    seed: int = 0\n",
     )
     record = ClassId("pkg.records", "Record")
-    fields = classes[record]["dataclass_init_projection"]
+    fields = classes[record].dataclass.init_projection
     assert fields is not None
     assert [field.schema() for field in fields] == [
         ("x", True, False, False, 0),
@@ -303,7 +375,7 @@ def test_dataclass_initializer_projection_survives_class_cache_round_trip() -> N
     ]
     hydrated = _round_trip(classes)
     assert isinstance(hydrated, dict)
-    restored = hydrated[record]["dataclass_init_projection"]
+    restored = hydrated[record].dataclass.init_projection
     assert restored == fields
     assert all(type(field) is DataclassInitField for field in restored)
     assert _digest(hydrated) == _digest(classes)

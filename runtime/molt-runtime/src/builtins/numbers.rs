@@ -1337,6 +1337,14 @@ pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
     integer_from_special(py, bits, crate::NameId::DunderIndex)
 }
 
+/// Test index-slot presence without binding a descriptor or invoking it.
+pub(crate) fn has_index_protocol(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
+    if let Some(native) = native_numeric_object(bits) {
+        return Ok(unsafe { molt_cpython_abi::api::abstract_number::PyIndex_Check(native) } != 0);
+    }
+    unsafe { crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderIndex) }
+}
+
 /// Required index conversion, shared by public operator.index and the private
 /// C-API projection. Diagnostic formatting belongs only to the absent path.
 pub(crate) fn index_from_object(py: &PyToken<'_>, bits: u64) -> u64 {
