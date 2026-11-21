@@ -20,12 +20,18 @@ from molt.default_paths import executable_environment_value, expand_user_path
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.toolchain_identity import (
+    StableRegularFileIdentity,
     find_executable,
     stable_executable_probe,
+    stable_regular_file_identity,
 )
 from molt.rust_toolchain import resolve_rustup_proxy
 from molt.source_root import compiler_source_root
-from molt.llvm_toolchain import selected_wasi_c_abi_plan, selected_wasi_sdk_installation
+from molt.llvm_toolchain import (
+    LlvmToolchainConfigError,
+    selected_wasi_c_abi_plan,
+    selected_wasi_sdk_installation,
+)
 from molt.wasi_sdk_identity import WasiCAbiProjection
 from molt.wasi_sysroot import normalize_wasi_sysroot
 
@@ -37,6 +43,27 @@ def resolve_wasi_c_abi_plan(
     return selected_wasi_c_abi_plan(
         compiler_source_root(), environ=os.environ if env is None else env
     )
+
+
+def wasm_side_module_sdk_archives() -> tuple[StableRegularFileIdentity, ...]:
+    """Bind the side link's lazy LLVM libcalls and compiler-rt providers."""
+    try:
+        plan = resolve_wasi_c_abi_plan()
+    except LlvmToolchainConfigError as exc:
+        raise ValueError(
+            f"WASM side module needs the selected WASI SDK: {exc}"
+        ) from exc
+    records = {role: (path, size, digest) for role, path, size, digest in plan.files}
+    archives = []
+    for role in ("libc", "compiler_rt"):
+        path, size, digest = records[role]
+        identity = stable_regular_file_identity(
+            path.resolve(), label="WASI SDK archive"
+        )
+        if identity.size != size or identity.sha256 != digest:
+            raise ValueError(f"WASI SDK archive differs from the admitted SDK: {path}")
+        archives.append(identity)
+    return tuple(archives)
 
 
 def resolve_wasi_sysroot(*, env: Mapping[str, str] | None = None) -> Path | None:
