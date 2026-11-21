@@ -810,6 +810,7 @@ def _emit_native_link_result(
     link_input_observation: CompilationInputRecord | None = None,
     result_inputs: tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact]
     | None = None,
+    shared_images: tuple[Path, ...] = (),
 ) -> int:
     def emit_finalization_failure(message: str) -> int:
         diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
@@ -931,6 +932,10 @@ def _emit_native_link_result(
                 link_skipped=link_skipped,
                 external_native_artifacts=external_native_artifacts,
             )
+            if shared_images:
+                data["artifacts"].update(
+                    zip(("runtime_image", "stdlib_image"), map(str, shared_images))
+                )
             data["observed_toolchain"] = _observed_build_toolchain(
                 backend_bin=backend_bin,
                 runtime_lib=runtime_lib,

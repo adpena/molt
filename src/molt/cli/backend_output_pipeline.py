@@ -454,7 +454,7 @@ def _emit_backend_pipeline_outputs(
     )
     assert runtime_codegen_binding is not None
     runtime_image: Path | None = None
-    if _link_pipeline._links_shared_runtime_image(
+    if not capture_link_inputs and _link_pipeline._links_shared_runtime_image(
         profile=profile,
         target=native_target,
         external_native_artifacts=bool(native_artifact_plan.artifacts),
@@ -593,6 +593,7 @@ def _emit_backend_pipeline_outputs(
         link_input_artifacts=prepared_native_link.link_input_artifacts,
         link_input_observation=prepared_native_link.link_input_observation,
         result_inputs=prepared_native_link.result_inputs,
+        shared_images=prepared_native_link.shared_images,
         validate_inputs=validate_inputs,
         finalize_inputs=validate_inputs,
     )

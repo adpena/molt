@@ -69,7 +69,6 @@ def terminal_build(
         backend_pipeline,
         build_diagnostics,
         cli_backend_output_pipeline,
-        cli_build_pipeline,
         perf_counter=lambda: clock.now,
     )
     monkeypatch.setattr(
@@ -302,6 +301,7 @@ def terminal_build(
             link_input_artifacts=None,
             link_input_observation=None,
             result_inputs=None,
+            shared_images=(),
         ), None
 
     def finalize(**_):

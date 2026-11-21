@@ -68,8 +68,11 @@ impl JitProgram {
         self.code.materialize_all()
     }
 
-    /// Every launch symbol, or the first one this program does not define.
-    pub fn entry_points(&self) -> Result<JitEntryPoints, JitCompileError> {
+    /// A shared stdlib and its JIT application use the same ready block.
+    pub fn entry_points(
+        &self,
+        ready: std::ptr::NonNull<u64>,
+    ) -> Result<JitEntryPoints, JitCompileError> {
         let function = |name: &'static str| {
             self.declared_function_address(name)
                 .ok_or(JitCompileError::MissingProgramSymbol(name))
@@ -81,13 +84,7 @@ impl JitProgram {
                 .ok_or(JitCompileError::MissingProgramSymbol(
                     super::module_registry::MODULE_REGISTRY_BLOB_SYMBOL,
                 ))?,
-            module_ready: self
-                .data_address(molt_ir::MODULE_READY_SYMBOL)
-                .ok_or(JitCompileError::MissingProgramSymbol(
-                    molt_ir::MODULE_READY_SYMBOL,
-                ))?
-                .cast_mut()
-                .cast::<u64>(),
+            module_ready: ready.as_ptr(),
             main: self
                 .function_address(PROGRAM_ENTRY_SYMBOL)
                 .ok_or(JitCompileError::MissingProgramSymbol(PROGRAM_ENTRY_SYMBOL))?,
@@ -223,27 +220,81 @@ impl SimpleBackend {
     /// Prepare declarations, executable entries and application metadata.
     /// Each local function's entry assembles its body on first call.
     pub fn compile_jit(mut self, ir: SimpleIR) -> Result<JitProgram, JitCompileError> {
-        if let Some(backend) = env_setting(BackendEnv::MOLT_BACKEND)
-            && backend == "llvm"
-        {
-            return Err(JitCompileError::UnsupportedCodegenBackend(backend));
-        }
+        Self::admit_jit_codegen()?;
         let mut ir = ir;
         ir.resolve_function_references()
             .map_err(JitCompileError::FunctionReferences)?;
         self.admit_program(&ir)
             .map_err(JitCompileError::Admission)?;
+        let timing = backend_timing_enabled();
+        let compile_start = std::time::Instant::now();
+        let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
+        self.stage_jit_program(program, timing, compile_start)
+    }
+
+    /// Stage stable entries for the application and its specialized clones.
+    /// Canonical stdlib entries resolve through the loaded image.
+    pub fn compile_prepared_jit(
+        mut self,
+        application: PreparedJitApplication,
+    ) -> Result<JitProgram, JitCompileError> {
+        Self::admit_jit_codegen()?;
+        let start = std::time::Instant::now();
+        let PreparedJitApplication {
+            declarations,
+            bodies,
+            registry,
+            linkage,
+            callables,
+        } = application;
+        let ir = SimpleIR {
+            functions: declarations,
+            profile: None,
+        };
+        let final_functions =
+            super::module_metadata::NativeFinalFunctions::from_jit_artifact(ir, bodies)
+                .map_err(JitCompileError::Finalize)?;
+        final_functions
+            .validate_extern_calls()
+            .map_err(JitCompileError::Finalize)?;
+        self.external_program_storage = true;
+        self.module_registry = Some(registry);
+        self.set_module_context(linkage);
+        self.stage_jit_program(
+            super::compile_driver::NativeCodegenProgram {
+                emit_resolver_here: true,
+                app_callable_manifest: callables,
+                final_functions: Some(final_functions),
+            },
+            backend_timing_enabled(),
+            start,
+        )
+    }
+
+    fn admit_jit_codegen() -> Result<(), JitCompileError> {
+        if let Some(backend) = env_setting(BackendEnv::MOLT_BACKEND)
+            && backend == "llvm"
+        {
+            return Err(JitCompileError::UnsupportedCodegenBackend(backend));
+        }
+        Ok(())
+    }
+
+    fn stage_jit_program(
+        mut self,
+        program: super::compile_driver::NativeCodegenProgram,
+        timing: bool,
+        compile_start: std::time::Instant,
+    ) -> Result<JitProgram, JitCompileError> {
         if let CodeOwner::ProcessMemory(owner) = &mut self.module {
             owner.machine_cache =
                 MachineCodeCache::open(&self.tir_cache, CodePlacement::ProcessMemory);
         }
-        let timing = backend_timing_enabled();
-        let compile_start = std::time::Instant::now();
         let NativeCodegenProgram {
             final_functions,
             emit_resolver_here,
             app_callable_manifest,
-        } = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
+        } = program;
         let functions = final_functions.expect("JIT requires final function custody");
         let table = molt_ir::FunctionTable::of(&functions.ir().functions);
         let (declarations, linkage) = self.declare_final_functions(&functions, &table);

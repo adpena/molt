@@ -568,6 +568,34 @@ impl SimpleBackend {
         CompileOutput { bytes }
     }
 
+    /// Preserve the full program's type flow at preparation time, then omit
+    /// terminal bodies whose canonical entries are already in the image.
+    pub fn prepare_jit_application(
+        &mut self,
+        mut ir: SimpleIR,
+        shared_stdlib: &BTreeSet<String>,
+    ) -> Result<PreparedJitApplication, String> {
+        self.skip_shared_stdlib_partition = true;
+        self.admit_program(&ir).map_err(|error| error.to_string())?;
+        let start = std::time::Instant::now();
+        let program = self.prepare_native_codegen(&mut ir, false, backend_timing_enabled(), &start);
+        let mut final_functions = program.final_functions.expect("prepared native bodies");
+        final_functions.bind_shared_bodies(shared_stdlib);
+        let registry = self
+            .module_registry
+            .take()
+            .ok_or("missing JIT module registry")?;
+        let linkage = self
+            .module_context
+            .take()
+            .ok_or("missing JIT linkage context")?;
+        let mut roots = program.app_callable_manifest.compiled_bodies.clone();
+        roots.extend(registry.init_symbols.iter().cloned());
+        final_functions.retain_reachable(&roots);
+        final_functions.validate_extern_calls()?;
+        final_functions.into_jit_artifact(registry, linkage, program.app_callable_manifest)
+    }
+
     /// Run the shared program preparation for one native compilation and
     /// capture the facts codegen consumes after source bodies retire.
     pub(in crate::native_backend::simple_backend) fn prepare_native_codegen(
@@ -745,12 +773,6 @@ impl SimpleBackend {
         // covers every name-resolved callable across all objects, including
         // stdlib wrappers compiled into the separate stdlib cache object.
         self.emit_cranelift_metadata(emit_resolver_here, &app_callable_manifest);
-        //  Module registry blob (import bedrock, design doc 69)
-        // Emitted AFTER the main flush so every init function defined in this
-        // object already owns a FuncId (reused via `get_name`), and with the
-        // same exactly-one-object custody as the app callable resolver: the
-        // main stub references `molt_module_registry_blob` and installs it
-        // with the runtime before `molt_runtime_init`.
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site
         // declared an impossible overload, a function was skipped, or codegen
@@ -810,8 +832,13 @@ impl SimpleBackend {
             let bindings = self.code_slots.take();
             if let Some(registry) = registry.as_ref() {
                 self.emit_module_registry_blob(registry);
+                if !self.external_program_storage {
+                    self.emit_module_ready_binding(registry);
+                }
             }
-            self.emit_program_slot_bindings(bindings.as_ref(), registry.as_ref());
+            if !self.external_program_storage {
+                self.emit_program_slot_bindings(bindings.as_ref(), registry.as_ref());
+            }
         }
         emit_generated_object_abi_anchor(&mut self.module);
     }

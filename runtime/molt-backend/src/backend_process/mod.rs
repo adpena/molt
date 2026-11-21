@@ -13,6 +13,8 @@ mod native_batch;
 #[cfg(feature = "native-backend")]
 pub(crate) mod origin;
 #[cfg(feature = "native-backend")]
+pub(crate) mod prepare_jit;
+#[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;
 
 pub(crate) use cli_args::*;

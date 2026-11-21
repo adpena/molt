@@ -153,10 +153,9 @@ controls are described in [build-time controls](docs/OPERATIONS.md#build-time).
 For explicit output paths and Windows,
 macOS, and Linux invocation, see
 [build and run](docs/getting-started.md#build-and-run-hello-world). On macOS
-arm64, `molt run --tier jit` runs the program from memory with no object file,
-link or native executable. The runner prepares the module at each start and
-compiles bodies on first call. The JIT tier is opt-in.
-[Run from memory](docs/getting-started.md#run-from-memory-jit-tier)
+arm64, `molt run --tier jit` compiles application functions and specialized
+clones on first call and loads the compiled standard library shared with
+development AOT builds. See [the JIT tier](docs/getting-started.md#run-from-memory-jit-tier).
 
 The frontend lowers Python and serializes the wire IR once. The Rust typed SSA
 pipeline owns SCCP, GVN and dead-code optimization; see the

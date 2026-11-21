@@ -1,14 +1,13 @@
 # Development executables and the shared runtime (HF-634)
 
-Status: slice 2 implemented 2026-11-20 for macOS (verified cell: macOS arm64)
-and ELF Linux (link plan tested, not yet measured on a Linux host). A dev build
-on the host links the shared runtime image; release, external native
-artifacts, BOLT, cross targets and Windows keep the static archive. The
-generation witness below is not yet implemented: the image's exact store entry
-is the rpath, and the store is immutable. The V1 ledger owns completion.
-[The JIT design](dev_jit_tier.md) owns in-memory code generation.
+Host development executables link the runtime and compiled stdlib as shared
+images. The JIT uses those same image products. Release, external native
+artifacts, BOLT, explicit cross targets and Windows use static runtime linkage.
+The observed cell below is macOS arm64. The ELF link plan has link-level
+coverage. The [V1 ledger](../agent/V1_HANDOFF_FINDINGS.md) owns qualification,
+and the [JIT design](dev_jit_tier.md) owns in-memory code generation.
 
-## Measured verdict (2026-11-20)
+## Shared runtime startup before stdlib reuse (2026-11-20)
 
 macOS arm64, a call-heavy program (`list.append`, `len`, `hash` in a 2 M loop),
 the same objects linked both ways from one dev build, load average 7-8:
@@ -34,15 +33,101 @@ image producer, which names it `@rpath/<image>` (Mach-O) or its soname (ELF);
 an rpath to the image's store entry and exports the isolate bootstrap the image
 imports. Only an executable sizes the main thread's stack (`NativeLinkOutput`).
 
+## Shared stdlib startup on macOS arm64 (2026-11-20)
+
+Both programs produced identical stdout on every sampled JIT launch. The
+baseline was `878eeb1632` with the machine-code cache. The candidate was the
+HF-634 working tree on `4195ff78f2` with first-call JIT compilation. A cold
+launch used an empty function-cache root with the runner and linked images
+already built. Warm values are medians of three subsequent launches. Peak RSS
+is in decimal MB. Host load varied across the runs.
+
+| Program | Cold wall before → after | Cold RSS before → after | Warm wall before → after | Warm RSS before → after |
+| --- | ---: | ---: | ---: | ---: |
+| `import os, sys` | 28.03 → 0.29 s | 629 → 37 MB | 6.03 → 0.05 s | 471 → 34 MB |
+| `os_path_basic.py` | 37.97 → 1.33 s | 715 → 48 MB | 6.22 → 0.43 s | 462 → 41 MB |
+
+Both prepared payloads contained five local terminal bodies. The warm
+`os_path_basic.py` trace reported 853 terminal operations across its five
+entries. The program called three of them, with three machine-code cache hits
+and zero misses. For each program, the JIT and dev AOT artifact manifests named
+the same runtime and stdlib image entries. The `os_path_basic.py` stdlib image
+imported 921 readiness and code-slot symbols. Both the dev executable and the
+JIT data image supplied every import.
+
+Substituting the expected stdlib generation in a copy of the JIT image exited
+125. The diagnostic named the missing generation symbol and the start receipt
+stayed absent.
+
+## Development AOT relinks on macOS arm64 (2026-11-20)
+
+Three alternating pairs used the same production app object, runtime image and
+stdlib archive bytes from a single build. The second link used the stdlib
+image built from that archive. Driver wall time and first exec are medians.
+Each link wrote a fresh executable. Every launch matched stdout.
+
+| Program | Executable bytes | Link driver wall | First exec | Warm instructions |
+| --- | ---: | ---: | ---: | ---: |
+| `import os, sys` | 21,106,904 → 262,696 | 4.21 → 0.61 s | 105.62 → 38.32 s | 341.5 → 348.4 M |
+| `os_path_basic.py` | 23,301,112 → 298,680 | 1.36 → 0.09 s | 6.90 → 10.27 s | 447.4 → 456.3 M |
+
+First exec varied from 1.00 to 142.90 s across the pairs. Warm `import os, sys`
+runs were 0.02–0.03 s and warm `os_path_basic.py` runs were 0.02–0.04 s.
+An earlier three-pair `import os, sys` run measured 0.66 → 0.23 s first exec and
+2.52 → 0.09 s link driver wall. The first-exec series remains sensitive to host
+startup stalls.
+
+## Static release control on macOS arm64 (2026-11-20)
+
+The baseline and candidate used trunk `f75c387743`, with the HF-634 patch
+applied for the candidate. The executables used static Molt libraries and
+produced the same stdout. Three subsequent starts alternated the two builds.
+
+| Program | Baseline bytes | Candidate bytes | Warm instructions, baseline → candidate |
+| --- | ---: | ---: | ---: |
+| `import os, sys` | 16,835,032 | 16,818,568 | 120.59 → 120.51 M |
+| `os_path_basic.py` | 17,579,840 | 17,563,360 | 158.97 → 159.22 M |
+
+The integrated first-call candidate on `4195ff78f2` also linked both release
+programs with static Molt libraries. The executables measured 16,818,576 and
+17,563,368 bytes, with median warm instruction counts of 119.57 M and 159.54 M.
+The earlier table controls for source by building the baseline and candidate
+from the same revision.
+
+## Differential qualification on macOS arm64 (2026-11-20–21)
+
+With CPython 3.15.2 as the oracle, the HF-634 working tree on `4195ff78f2`
+passed the same eight class cases, 40 stdlib cases and two thread cases in
+native dev and release. Both thread cases also passed in JIT.
+
+The initial dev cohort had seven mismatches whose output and status matched
+the clean `f75c387743` control. Those cases cover defaultdict subclass insertion,
+dataclass temporary destruction, path callbacks, frame keyword validation and
+three typing behaviors. The selected set covers those stdlib families with
+other CPython comparisons. The revised dev cohort passed 49 cases and
+reproduced the existing HF-813 exception-state failure. Its predeclared
+alternate, `sys_runtime_state.py`, passed in dev and was part of the 50-case
+release run.
+
+## Shared development stdlib links
+
+The backend produces one position-independent stdlib archive for native dev AOT and JIT. The image store links that archive against its admitted runtime generation. The image key binds the archive bytes, runtime image, target, profile, link recipe and linker identity. A development executable links both images through rpaths to their exact store entries. Release executables, external native artifacts, BOLT and cross targets retain their static link paths.
+
+The native loader binds the stdlib partition's application data through the same reverse-relocation boundary as the runtime's isolate bootstrap. The partition already closes over compiled functions. Its link admits only the application-owned data symbols the archive references. AOT exports those definitions from its executable. JIT preparation emits the same data definitions into an application image that the runner loads before the stdlib. Both code owners keep the module registry and callable resolver with the application. The runner passes the same readiness block to the runtime that the loaded stdlib uses.
+
+JIT and AOT assemble the admitted frontend closure through the same bundle entry point. JIT preparation runs the native type-flow pipeline with the complete program in scope. The published application carries terminal TIR for application functions and reachable program-specific clones. Canonical definitions owned by the shared archive become imports. The runner stages the remaining entries at startup and materializes each called body through the existing first-call compiler and machine-code cache.
+
+Each linked image exports a generation-specific witness. The AOT start stub imports each witness through a non-lazy data relocation. The JIT runner checks the expected symbols before code generation and before writing a start receipt. Substitution with another generation fails with the missing witness named in the diagnostic. Builds and cached launches renew these entries through the existing product store.
+
+On Mach-O, ld64's per-symbol `-U` allows the exact reverse imports while the runtime binds through the usual two-level namespace. On ELF, the executable admits the same typed data imports through version-script exports. The [ld64 manual](https://github.com/apple-oss-distributions/ld64/blob/main/doc/man/man1/ld-classic.1) and [GNU ld options](https://sourceware.org/binutils/docs/ld/Options.html) describe the corresponding linker controls.
+
 ## Decision and admission
 
-The proposed development AOT executable contains the application, its compiled
-stdlib partition and its C launch stub. It links the same runtime image that
-the JIT tier already obtains from `jit_runtime_image.py`; there is one image
-producer, product store, generation identity and retention owner. Release
-executables retain static linkage. Profile and target select a typed static
-archive or shared-image dependency in `NativeLinkPlan`, before command
-rendering; neither a failed link nor a failed load selects another linkage.
+The development AOT executable carries application objects and its C launch
+stub. It uses the runtime and stdlib images that the JIT obtains from
+`jit_runtime_image.py`. One product store owns the image generations and their
+retention. Profile and target select typed archive or image dependencies in
+`NativeLinkPlan` before command rendering. Release uses static linkage.
 
 The decision needs unloaded evidence. Measure a fresh executable's first start
 against subsequent starts of that same inode, including output, exit status
@@ -73,9 +158,9 @@ of an unchanged executable alone cannot prove edit/run improvement.
 An image identity must cover the runtime archive digest, its admitted native
 dependency closure, the image link recipe and the selected toolchain. Use the
 existing store's content-derived generation coordinate in the absolute load
-path. On Mach-O give the image that absolute install name; on ELF bind the
-absolute dependency name rather than an ambient library search directory.
-Do not use a mutable `libmolt_runtime` symlink or an environment-selected image.
+path. Mach-O names the image `@rpath/<generation-qualified-name>` and ELF
+uses the generation-qualified SONAME. The executable places the matching
+store directory on its rpath.
 
 A digest in a pathname prevents accidentally choosing another generation,
 but does not detect replacement of the bytes at that pathname. The image

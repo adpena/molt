@@ -552,15 +552,28 @@ def _temporary_artifact_descendant_closure(
             for record in records:
                 row: dict[str, object] = {"path": str(record.path)}
                 guard = record.guard
+                births = () if guard is None else pending[guard.pid]
+                owned = (
+                    guard is not None
+                    and guard.started_at_ns is not None
+                    and guard.started_at_ns in births
+                )
+                # A missing birth on either side leaves the relationship
+                # unknown: a descendant that exited before any sample read its
+                # birth, whose pid an old guard once held. The marker cannot
+                # supply our historical birth.
+                unknown = (
+                    guard is not None
+                    and not owned
+                    and (guard.started_at_ns is None or None in births)
+                )
                 if guard is None:
                     row["error"] = record.error or "guard identity unavailable"
                     closed = False
-                elif None in pending[guard.pid] or guard.started_at_ns is None:
-                    # A missing birth on either side leaves the relationship
-                    # unknown. The marker cannot supply our historical birth.
+                elif unknown and record.error is not None:
                     row["error"] = "guard birth unavailable"
                     closed = False
-                elif guard.started_at_ns not in pending[guard.pid]:
+                elif not owned and not unknown:
                     # A validated publisher envelope proves this is a different
                     # lifetime, even when the custody body is unreadable. Keep
                     # that record protective without importing its uncertainty.
@@ -572,6 +585,12 @@ def _temporary_artifact_descendant_closure(
                     row["error"] = record.error
                     closed = False
                 else:
+                    # Owned, or unknown: either way the snapshot judges this
+                    # record's guard, child and child group. A record whose
+                    # custody is closed holds nothing open, whoever owns it;
+                    # one still live (or ambiguous) keeps closure refused.
+                    if unknown:
+                        row["relationship"] = "publisher_birth_unknown"
                     if host_samples is None:
                         observed_at = time.time()
                         host_samples = sampler()
