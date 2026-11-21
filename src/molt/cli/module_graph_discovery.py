@@ -244,20 +244,31 @@ def _ready_namespace_revisions(
     if not writers:
         return state.scan_revisions.copy()
 
-    components = _module_dependency_authority._module_strongly_connected_components(
-        state.graph, writers
-    )
-    blocked: set[str] = set()
     ready: set[str] = set()
-    for component in components:
-        members = set(component)
-        if any(blocked.intersection(writers.get(member, ())) for member in members):
-            # An unchanged intermediate component can still propagate a
-            # pending writer's effects before downstream work becomes ready.
-            blocked.update(members)
-        elif members & dirty:
-            ready.update(members & dirty)
-            blocked.update(members)
+    pending: list[Collection[str]] = [state.graph.keys()]
+    while pending:
+        components = _module_dependency_authority._module_strongly_connected_components(
+            pending.pop(), writers
+        )
+        blocked: set[str] = set()
+        for component in components:
+            if any(
+                not blocked.isdisjoint(writers.get(member, ())) for member in component
+            ):
+                # A clean component can relay a pending writer's effects.
+                blocked.update(component)
+            elif not dirty.isdisjoint(component):
+                # The admission pass already evaluated the head. During a
+                # revision, settle the interior under that head's output.
+                # A new head result can reawaken the interior on the next wave.
+                head, *interior = component
+                if dirty.isdisjoint(interior):
+                    ready.add(head)
+                else:
+                    pending.append(interior)
+                # No dependent runs until this entire component is clean,
+                # even when only one nested component runs in this wave.
+                blocked.update(component)
     return {job for job in state.scan_revisions if job.module_name in ready}
 
 

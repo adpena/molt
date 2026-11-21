@@ -597,22 +597,9 @@ BUILTIN_LAYOUT_MIN = {
 # these methods, the first parameter (`cls`) is the class itself, not an
 # instance, so attribute assignments through that name must NOT be collected
 # as instance fields or as `__static_attributes__` entries.
-IMPLICIT_CLASSMETHOD_NAMES = frozenset(
-    {
-        "__init_subclass__",
-        "__class_getitem__",
-    }
-)
-
-# Method names that are implicitly staticmethods (CPython treats `__new__` as
-# a staticmethod implicitly).  The first parameter is the class but the method
-# is unbound; same exclusion rules apply for instance-field collection.
-IMPLICIT_STATICMETHOD_NAMES = frozenset(
-    {
-        "__new__",
-        "__init_subclass__",
-        "__class_getitem__",
-    }
+from molt.compiler_analysis.python_function_kind import (  # noqa: E402
+    IMPLICIT_CLASSMETHOD_NAMES as IMPLICIT_CLASSMETHOD_NAMES,
+    IMPLICIT_STATICMETHOD_NAMES as IMPLICIT_STATICMETHOD_NAMES,
 )
 
 
