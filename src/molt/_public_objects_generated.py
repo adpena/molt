@@ -339,6 +339,9 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
     "molt_math_floor": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "floor", "floor", "math"
     ),
+    "molt_math_fma": PublicObjectIdentity(
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "fma", "fma", "math"
+    ),
     "molt_math_fmod": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "fmod", "fmod", "math"
     ),
@@ -1020,6 +1023,7 @@ PUBLIC_CALL_SIGNATURES: dict[str, PublicCallSignature] = {
     "molt_build_class_builtin": PublicCallSignature(
         (), (), (), (), (), "args", "kwargs"
     ),
+    "molt_math_fma": PublicCallSignature(("x", "y", "z"), (), (), (), (), None, None),
     "molt_math_gcd": PublicCallSignature((), (), (), (), (), "integers", None),
     "molt_math_lcm": PublicCallSignature((), (), (), (), (), "integers", None),
     "molt_math_hypot": PublicCallSignature((), (), (), (), (), "coordinates", None),

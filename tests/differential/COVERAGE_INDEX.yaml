@@ -527,6 +527,7 @@ stdlib:
   threading:
     tests:
       - tests/differential/stdlib/threading_basic.py
+      - tests/differential/stdlib/thread_exit_non_daemon.py
       - tests/differential/stdlib/threading_local_isolation.py
       - tests/differential/stdlib/threading_primitives_basic.py
   time:

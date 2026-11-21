@@ -28,6 +28,8 @@ def test_public_object_declaration_matches_cpython_census(version: str) -> None:
     assert fixture["implementation"] == "cpython"
     assert fixture["version"][:2] == [int(part) for part in version.split(".")]
     for symbol, identity in load_public_objects().items():
+        if fixture["version"][1] < identity.min_python_minor:
+            continue
         expected = {
             "kind": identity.kind.value,
             "__name__": identity.name,
@@ -105,9 +107,14 @@ def test_backend_symbol_overrides_file_is_removed() -> None:
 
 def test_public_math_signatures_match_the_independent_host_binder() -> None:
     import inspect
+    import sys
 
     for identity in load_public_objects().values():
-        if identity.module != "math" or identity.call is None:
+        if (
+            identity.module != "math"
+            or identity.call is None
+            or sys.version_info.minor < identity.min_python_minor
+        ):
             continue
         declaration = identity.call
         function = getattr(importlib.import_module("math"), identity.name)

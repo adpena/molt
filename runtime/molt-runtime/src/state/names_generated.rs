@@ -391,6 +391,7 @@ pub(crate) enum NameId {
     Floor,
     Floordiv,
     Flush,
+    Fma,
     Fmod,
     ForkExec,
     Format,
@@ -842,7 +843,7 @@ pub(crate) enum NameId {
     Zipimporter,
 }
 impl NameId {
-    pub(crate) const ALL: [Self; 836] = [
+    pub(crate) const ALL: [Self; 837] = [
         Self::A2bBase64,
         Self::A2bHex,
         Self::A2bQp,
@@ -1230,6 +1231,7 @@ impl NameId {
         Self::Floor,
         Self::Floordiv,
         Self::Flush,
+        Self::Fma,
         Self::Fmod,
         Self::ForkExec,
         Self::Format,
@@ -2069,6 +2071,7 @@ impl NameId {
             Self::Floor => "floor",
             Self::Floordiv => "floordiv",
             Self::Flush => "flush",
+            Self::Fma => "fma",
             Self::Fmod => "fmod",
             Self::ForkExec => "fork_exec",
             Self::Format => "format",
@@ -2909,6 +2912,7 @@ impl NameId {
             b"floor" => Some(Self::Floor),
             b"floordiv" => Some(Self::Floordiv),
             b"flush" => Some(Self::Flush),
+            b"fma" => Some(Self::Fma),
             b"fmod" => Some(Self::Fmod),
             b"fork_exec" => Some(Self::ForkExec),
             b"format" => Some(Self::Format),

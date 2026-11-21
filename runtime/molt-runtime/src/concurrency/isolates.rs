@@ -264,6 +264,9 @@ fn thread_registry_register(
     daemon: bool,
 ) {
     let mut registry = thread_registry(py).lock().unwrap();
+    if registry.entries.len() == registry.entries.capacity() {
+        thread_registry_cleanup_locked(&mut registry);
+    }
     registry.entries.insert(
         Arc::as_ptr(handle).expose_provenance(),
         ThreadRegistryEntry {
@@ -276,6 +279,11 @@ fn thread_registry_register(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_registry_forget(py: &PyToken<'_>, handle: &Arc<MoltThreadHandle>) {
+    // The worker can release its Python Thread while dropping its call.
+    // Keep the weak registration visible until its native custody is gone.
+    if !handle.done.load(AtomicOrdering::Acquire) {
+        return;
+    }
     thread_registry(py)
         .lock()
         .unwrap()
@@ -288,6 +296,48 @@ fn thread_registry_cleanup_locked(registry: &mut ThreadRegistry) {
     registry
         .entries
         .retain(|_, entry| entry.handle.upgrade().is_some());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn join_non_daemon_threads_for_exit(state: &RuntimeState) {
+    let Some(registry) = state.thread_registry.get() else {
+        return;
+    };
+    let current = current_thread_id();
+    let mut lifetime = None;
+    loop {
+        let workers = {
+            let registry = registry.lock().unwrap();
+            if registry.main_ident != current {
+                return;
+            }
+            registry
+                .entries
+                .values()
+                .filter(|entry| !entry.daemon)
+                .filter_map(|entry| entry.handle.upgrade())
+                .filter(|handle| {
+                    !handle.done.load(AtomicOrdering::Acquire)
+                        && handle.ident.load(AtomicOrdering::Acquire) != current
+                })
+                .collect::<Vec<_>>()
+        };
+        if workers.is_empty() {
+            return;
+        }
+        lifetime.get_or_insert_with(|| {
+            RuntimeLifetimeLease::try_acquire()
+                .expect("ready runtime is pinned during worker joins")
+        });
+        // Keep admission open while these workers can still run Python,
+        // including starting another non-daemon worker. Their native done
+        // flag is published after releasing execution and origin custody.
+        let _released = crate::concurrency::GilReleaseGuard::suspend();
+        for handle in workers {
+            handle.wait(None);
+            handle.join();
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

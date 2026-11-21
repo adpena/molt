@@ -164,6 +164,7 @@ class PublicObjectIdentity:
     call_before_314: PublicSignature | None = None
     publisher: str | None = None
     producer: PublicObjectProducer = PublicObjectProducer.INTRINSIC
+    min_python_minor: int = 12
 
 
 DECLARATIONS = (
@@ -196,6 +197,7 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             "call_before_314",
             "publisher",
             "producer",
+            "min_python_minor",
         }:
             raise ValueError(f"{runtime}: incomplete or unknown public identity field")
         if not runtime.isidentifier() or not runtime.startswith("molt_"):
@@ -220,6 +222,9 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             if binding in bindings:
                 raise ValueError(f"duplicate public binding {binding}")
             bindings.add(binding)
+        min_python_minor = row.get("min_python_minor", 12)
+        if type(min_python_minor) is not int or not 12 <= min_python_minor <= 15:
+            raise ValueError(f"{runtime}: invalid minimum Python minor")
         identities[runtime] = PublicObjectIdentity(
             PublicObjectKind(row["kind"]),
             row["name"],
@@ -240,6 +245,7 @@ def load_public_objects(path: Path = DECLARATIONS) -> dict[str, PublicObjectIden
             _signature(row["call_before_314"]) if "call_before_314" in row else None,
             row.get("publisher"),
             PublicObjectProducer(row.get("producer", "intrinsic")),
+            min_python_minor,
         )
         if identities[runtime].producer is PublicObjectProducer.COMPILED and (
             identities[runtime].kind is not PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD

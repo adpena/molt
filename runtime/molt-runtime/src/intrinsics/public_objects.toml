@@ -821,6 +821,15 @@ qualname = "floor"
 module = "math"
 bindings = ["math.floor"]
 
+[object.molt_math_fma]
+kind = "builtin_function_or_method"
+name = "fma"
+qualname = "fma"
+module = "math"
+bindings = ["math.fma"]
+min_python_minor = 13
+call = { posonly = ["x", "y", "z"] }
+
 [object.molt_math_fmod]
 kind = "builtin_function_or_method"
 name = "fmod"
