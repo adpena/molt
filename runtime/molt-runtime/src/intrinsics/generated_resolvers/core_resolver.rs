@@ -105,6 +105,7 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_function_init_metadata_packed" => {
             Some(crate::molt_function_init_metadata_packed as *const ())
         }
+        "molt_function_new_unreachable" => Some(crate::molt_function_new_unreachable as *const ()),
         "molt_cell_new" => Some(crate::molt_cell_new as *const ()),
         "molt_cell_get" => Some(crate::molt_cell_get as *const ()),
         "molt_cell_set" => Some(crate::molt_cell_set as *const ()),

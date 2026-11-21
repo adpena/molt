@@ -26,26 +26,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// alone by class teardown.
 pub(crate) const CLASS_LIFECYCLE_PLAN_WORD: usize = layout::CLASS_NATIVE_NEXT_WORD + 1;
 
-const PRESENT: u64 = 1;
-/// Some MRO member declares `__del__`.
-const FINALIZER: u64 = 1 << 1;
-/// Instances are `TYPE_ID_OBJECT` with shape `Plain` and no native prefix or
-/// intrinsic layout owner; their fields are the contiguous words from offset
-/// 0, and the dictionary word is the tail.
-const PLAIN: u64 = 1 << 2;
-/// Instances are never GC members (the root `object` alone, as in CPython).
-/// An identity fact: set when the class seals and kept by every recompute.
-const UNTRACKED: u64 = 1 << 3;
-/// `object.__new__` may allocate an instance from the plan alone: `PLAIN`,
-/// not abstract, not a poll-adapter class.
-const INLINE_ALLOC: u64 = 1 << 4;
-/// The exact class is a poll adapter, whose instances need a native poll
-/// payload: an identity fact that refuses `INLINE_ALLOC`.
-const POLL_ADAPTER: u64 = 1 << 5;
-const IDENTITY_FACTS: u64 = UNTRACKED | POLL_ADAPTER;
-/// The allocator size class of a plain instance (header and payload).
-const SIZE_CLASS_SHIFT: u32 = 16;
-const FIELD_WORDS_SHIFT: u32 = 32;
+// The plan word's layout is `molt_codegen_abi::object_lifecycle`'s, which
+// compiled allocation and release read inline.
+use molt_codegen_abi::object_lifecycle::{
+    PLAN_FIELD_WORDS_SHIFT as FIELD_WORDS_SHIFT, PLAN_FINALIZER as FINALIZER,
+    PLAN_IDENTITY_FACTS as IDENTITY_FACTS, PLAN_INLINE_ALLOC as INLINE_ALLOC, PLAN_PLAIN as PLAIN,
+    PLAN_POLL_ADAPTER as POLL_ADAPTER, PLAN_PRESENT as PRESENT,
+    PLAN_SIZE_CLASS_SHIFT as SIZE_CLASS_SHIFT, PLAN_UNTRACKED as UNTRACKED,
+};
+const _: () = assert!(
+    CLASS_LIFECYCLE_PLAN_WORD * 8
+        == molt_codegen_abi::object_lifecycle::CLASS_LIFECYCLE_PLAN_OFFSET as usize
+);
 
 /// The facts about a class's identity that no mutation changes, given when
 /// it seals.
@@ -95,7 +87,7 @@ impl ClassLifecyclePlan {
     /// The field word count of a plain class.
     #[inline(always)]
     pub(crate) fn field_words(self) -> usize {
-        (self.0 >> FIELD_WORDS_SHIFT) as usize
+        ((self.0 >> FIELD_WORDS_SHIFT) & 0xFFFF) as usize
     }
 
     /// The payload bytes of a plain instance's layout: its fields and the
@@ -225,13 +217,11 @@ pub(crate) unsafe fn compute(class: *mut u8) -> ClassLifecyclePlan {
             word |= FINALIZER;
         }
         if let Some(words) = plain_field_words(class) {
-            word |= PLAIN | ((words as u64) << FIELD_WORDS_SHIFT);
-            let total =
-                std::mem::size_of::<super::MoltHeader>() + (words + 1) * std::mem::size_of::<u64>();
-            let size_class = super::size_class_for(total);
-            if size_class != 0 && !class_storage::class_is_abstract(class) {
-                word |= INLINE_ALLOC | (u64::from(size_class) << SIZE_CLASS_SHIFT);
-            }
+            // The one formula, which a proven allocation site also compiles in.
+            word |= molt_codegen_abi::object_lifecycle::plain_instance_plan(
+                words,
+                !class_storage::class_is_abstract(class),
+            );
         }
         ClassLifecyclePlan(word)
     }
@@ -247,6 +237,11 @@ pub(crate) unsafe fn publish_sealed(class: *mut u8, identity: ClassIdentity) {
                 0
             };
         let plan = compute(class).with_identity(facts);
+        // Compiled `object()` allocates from the constant root plan.
+        assert!(
+            !identity.root_object || plan.0 == molt_codegen_abi::object_lifecycle::ROOT_OBJECT_PLAN,
+            "the builtin object's plan diverged from ROOT_OBJECT_PLAN"
+        );
         plan_word(class).store(plan.0, Ordering::Release);
     }
 }

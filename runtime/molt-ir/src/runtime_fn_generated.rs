@@ -1144,6 +1144,7 @@ pub enum RuntimeFn {
     FunctionInitMetadataPacked,
     FunctionIsCoroutine,
     FunctionIsGenerator,
+    FunctionNewUnreachable,
     FunctionSetBuiltin,
     FunctionSetDefaults,
     FunctionSetFixedBuiltin,
@@ -1277,6 +1278,8 @@ pub enum RuntimeFn {
     HashDigest,
     HashNew,
     HashUpdate,
+    HeapAlloc,
+    HeapFree,
     HeapqHeapify,
     HeapqHeappop,
     HeapqHeappush,
@@ -3997,6 +4000,7 @@ impl RuntimeFn {
         Self::FunctionInitMetadataPacked,
         Self::FunctionIsCoroutine,
         Self::FunctionIsGenerator,
+        Self::FunctionNewUnreachable,
         Self::FunctionSetBuiltin,
         Self::FunctionSetDefaults,
         Self::FunctionSetFixedBuiltin,
@@ -4130,6 +4134,8 @@ impl RuntimeFn {
         Self::HashDigest,
         Self::HashNew,
         Self::HashUpdate,
+        Self::HeapAlloc,
+        Self::HeapFree,
         Self::HeapqHeapify,
         Self::HeapqHeappop,
         Self::HeapqHeappush,
@@ -5823,7 +5829,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2849;
+    pub const COUNT: usize = 2852;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -20813,6 +20819,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
+        symbol: "molt_function_new_unreachable",
+        linker_symbol: "molt_function_new_unreachable__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFE1CE84EC17,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
         symbol: "molt_function_set_builtin",
         linker_symbol: "molt_function_set_builtin__molt_context_d1086a27578cda22",
         context: RuntimeExecutionContext::Attached,
@@ -22742,6 +22763,30 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         }),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_heap_alloc",
+        linker_symbol: "molt_heap_alloc__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::RawBits,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_heap_free",
+        linker_symbol: "molt_heap_free__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: None,
+        callable: None,
+        result: RuntimeReturnContract::Void,
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

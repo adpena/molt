@@ -497,12 +497,18 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         previous_function = self.current_func_name
         previous_ops = self.current_ops
         previous_state = self._capture_function_state()
+        previous_counters = self.var_count, self.state_count
+        # Operand and block identities belong to the child body. Its
+        # materialization must leave the enclosing body's numbering intact.
+        self.var_count = 0
+        self.state_count = 0
         try:
             yield previous_state
             self.resume_function(previous_function)
         finally:
             self.current_func_name = previous_function
             self.current_ops = previous_ops
+            self.var_count, self.state_count = previous_counters
             self._restore_function_state(previous_state)
 
     def _inherit_free_var_import_resolution(

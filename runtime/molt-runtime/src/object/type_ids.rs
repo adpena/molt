@@ -20,7 +20,8 @@ pub(crate) const TYPE_TAG_SET: i64 = 17;
 pub(crate) const TYPE_TAG_FROZENSET: i64 = 18;
 pub(crate) const TYPE_TAG_COMPLEX: i64 = 19;
 
-pub(crate) const BUILTIN_TAG_OBJECT: i64 = 100;
+// Compiled `BUILTIN_TYPE` reads the `object` tag inline.
+pub(crate) use molt_codegen_abi::object_lifecycle::BUILTIN_TAG_OBJECT;
 pub(crate) const BUILTIN_TAG_TYPE: i64 = 101;
 pub(crate) const BUILTIN_TAG_BASE_EXCEPTION: i64 = 102;
 pub(crate) const BUILTIN_TAG_EXCEPTION: i64 = 103;
@@ -33,33 +34,9 @@ pub(crate) const BUILTIN_TAG_SUPER: i64 = 229;
 // Size-class infrastructure for compact header size encoding
 // ---------------------------------------------------------------------------
 
-/// Predefined size classes (in bytes) for object allocations.
-/// Index 0 is reserved for oversized allocations whose exact size lives in the
-/// immutable aux sidecar.
-/// Indices 1..=N map to common allocation sizes up to 64 KB.
-pub(crate) const SIZE_CLASS_TABLE: &[usize] = &[
-    0, // 0: sentinel / oversized
-    8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160, 176, 192, 208,
-    224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024,
-    1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840, 4096,
-    4608, 5120, 5632, 6144, 6656, 7168, 7680, 8192, 9216, 10240, 11264, 12288, 13312, 14336, 15360,
-    16384, 20480, 24576, 28672, 32768, 40960, 49152, 57344, 65536,
-];
-
-/// Map an allocation size (in bytes) to a `u16` size-class index.
-///
-/// Returns 0 (oversized sentinel) when `size` exceeds the largest class.
-/// Otherwise returns the smallest class index whose value >= `size`.
-pub(crate) fn size_class_for(size: usize) -> u16 {
-    // Linear scan is fine: the table has < 90 entries and this is called
-    // once per allocation, not on the hot refcount path.
-    for (i, &class_size) in SIZE_CLASS_TABLE.iter().enumerate().skip(1) {
-        if class_size >= size {
-            return i as u16;
-        }
-    }
-    0 // oversized
-}
+// The size-class table and its lookup are `molt_codegen_abi`'s: compiled
+// allocation uses the same classes.
+pub(crate) use molt_codegen_abi::object_lifecycle::{SIZE_CLASS_TABLE, size_class_for};
 
 #[cfg(test)]
 mod tests {

@@ -33,7 +33,6 @@ const fn nullary_runtime(kind: OpKind) -> Option<RuntimeFn> {
         OpKind::ConstEllipsis => RuntimeFn::Ellipsis,
         OpKind::ConstNotImplemented => RuntimeFn::NotImplemented,
         OpKind::Missing => RuntimeFn::Missing,
-        OpKind::ObjectNew => RuntimeFn::ObjectNew,
         _ => return None,
     })
 }
@@ -46,8 +45,6 @@ fn positional_runtime(kind: OpKind) -> Option<(RuntimeFn, usize, ResultCustody)>
         OpKind::GenSend => (RuntimeFn::GeneratorSend, 2, OWNED),
         OpKind::GenThrow => (RuntimeFn::GeneratorThrow, 2, OWNED),
         OpKind::GenClose => (RuntimeFn::GeneratorClose, 1, OWNED),
-        OpKind::BuiltinType => (RuntimeFn::BuiltinType, 1, OWNED),
-        OpKind::TypeOf => (RuntimeFn::TypeOf, 1, OWNED),
         OpKind::GetAttrNameDefault => (RuntimeFn::GetAttrNameDefault, 3, OWNED),
         OpKind::Abs => (
             RuntimeFn::AbsBuiltin,
@@ -107,6 +104,20 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return true;
         }
         match kind {
+            // `object()`: the shared lifecycle allocation of the root class.
+            OpKind::ObjectNew => {
+                self.object_alloc(b, op, None);
+                true
+            }
+            // `type(value)` and a builtin class reference: header and thread
+            // record loads, the runtime on a miss.
+            OpKind::TypeOf | OpKind::BuiltinType => {
+                let [operand] = op.operands[..] else {
+                    return false;
+                };
+                self.class_of(b, op, operand, kind == OpKind::TypeOf);
+                true
+            }
             // Representation-identity ops: operand 0 itself, no new value.
             OpKind::Cast | OpKind::Widen | OpKind::StoreVar | OpKind::CopyVar => {
                 self.forward_operand(b, op)
@@ -606,14 +617,17 @@ mod tests {
             "borrowed operands: {:?}",
             run.refcounts
         );
-        let run = lower(preserved(Some(OpKind::TypeOf), 1), &[OBJECT]);
+        // `type(value)` of an immediate takes its site's miss, the runtime
+        // entry, and borrows its operand.
+        let run = lower(preserved(Some(OpKind::TypeOf), 1), &[inline(5)]);
         assert_eq!(
             run.results,
             [Value::Word(literal_word(
                 RuntimeFn::TypeOf,
-                &key(&[OBJECT])
+                &key(&[inline(5)])
             ))]
         );
+        assert!(run.refcounts.is_empty(), "{:?}", run.refcounts);
         // `send` takes two operands: one is refused before any call.
         let run = lower(preserved(Some(OpKind::GenSend), 1), &[OBJECT]);
         assert_eq!(run.fact, (false, None));

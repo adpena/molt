@@ -25182,16 +25182,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         native_artifact_plan=cli_models._EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
 
-    monkeypatch.setattr(
-        BACKEND_IR,
-        "_prepare_backend_ir",
-        lambda **kwargs: (
-            call_order.append("backend_ir")
-            or _PreparedBackendIR(ir={}, function_metadata={}),
-            None,
-        ),
-    )
-
     analysis_owners = []
     analysis = cli_backend_pipeline._backend_ir_analysis_cache
     cached_analysis = analysis._cached_backend_ir_binary_image_analysis_payload
@@ -25312,6 +25302,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         prepared_build_config=build_config,
         resolved_build_entry=resolved_entry,
         prepared_frontend_pipeline_bundle=frontend_bundle,
+        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
         profile="dev",
         json_output=True,
         target=admit_target("native"),
@@ -25330,7 +25321,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
 
     assert result == 2
     assert call_order == [
-        "backend_ir",
         "backend_setup",
         "backend_compile",
         "runtime_ready",

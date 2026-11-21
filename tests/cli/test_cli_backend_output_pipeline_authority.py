@@ -17,6 +17,7 @@ import pytest
 from molt.backend_environment import CodegenSelection
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import (
+    backend_ir,
     backend_pipeline,
     build_diagnostics,
     build_results,
@@ -38,6 +39,7 @@ from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import wasm_facts_tool
+from molt.target_python import _SUPPORTED_TARGET_PYTHON_BY_SHORT
 from tests.process_guard_common import install_module_view
 
 
@@ -186,6 +188,9 @@ def terminal_build(
         capabilities_source=None,
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        target_python=_SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"],
         cargo_timeout=None,
         link_timeout=None,
         codegen=CodegenSelection(),
@@ -232,7 +237,9 @@ def terminal_build(
             molt_root=tmp_path, project_root=tmp_path, sysroot_path=None
         ),
         prepared_build_config=config,
-        resolved_build_entry=SimpleNamespace(source_path=tmp_path / "app.py"),
+        resolved_build_entry=SimpleNamespace(
+            source_path=tmp_path / "app.py", entry_module="app"
+        ),
         output_layout=layout,
         backend_output_destination=destination,
         validate_inputs=_ModuleSourceCatalog({}).validate,
@@ -769,26 +776,30 @@ def test_earlier_pipeline_failure_flushes_without_repeating_error_json(
         cache_report=False,
     )
 
-    def frontend_failure(**_):
+    def frontend_failure(
+        _frontend: object, **_: object
+    ) -> tuple[None, output.CliFailure]:
         case.clock.now += 5.0
-        return output.fail("lowering refused", True, command="build")
+        return None, output.fail("lowering refused", True, command="build")
 
     def backend_failure(**_):
         case.clock.now += 5.0
         return "artifact custody refused"
 
-    monkeypatch.setattr(cli_build_pipeline, "_run_frontend_pipeline", frontend_failure)
+    monkeypatch.setattr(backend_ir, "materialize_tir_closure", frontend_failure)
     monkeypatch.setattr(
         backend_pipeline,
         "_external_native_artifact_output_custody_error",
         backend_failure,
     )
-    run = (
-        cli_build_pipeline._run_build_pipeline
-        if stage == "frontend"
-        else backend_pipeline._run_backend_pipeline
-    )
-    assert run(**args) == 2
+    if stage == "frontend":
+        assert cli_build_pipeline._run_build_pipeline(**args) == 2
+    else:
+        prepared = backend_ir._PreparedBackendIR(ir={}, function_metadata={})
+        assert (
+            backend_pipeline._run_backend_pipeline(prepared_backend_ir=prepared, **args)
+            == 2
+        )
     captured = capsys.readouterr()
     if reporting_failure is None:
         assert captured.err == ""

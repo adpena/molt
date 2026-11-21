@@ -151,3 +151,72 @@ for i in range(1000):
     q = object()
     total += type(q) is object
 print("loop", total)
+
+# Instances compiled code admits and retires itself stay exact GC members:
+# a collection finds their cycles, survivors move to older generations and
+# leave from there, and get_objects sees them.
+
+
+class Node:
+    def __init__(self, name):
+        self.name = name
+        self.other = None
+
+
+gc.collect()
+survivors = [Point(i, i) for i in range(20)]
+gc.collect()  # the survivors move to an older generation
+print("survivors tracked", all(gc.is_tracked(p) for p in survivors))
+print("survivor listed", any(o is survivors[3] for o in gc.get_objects()))
+del survivors  # each leaves its older generation
+collected = 0
+for i in range(30):
+    a = Node("a")
+    b = Node("b")
+    a.other = b
+    b.other = a
+del a, b
+collected = gc.collect()
+print("cycles collected", collected >= 60)
+fresh = [Point(i, 0) for i in range(5)]
+print("fresh tracked", all(gc.is_tracked(p) for p in fresh), len(fresh))
+gc.freeze()
+del fresh  # frozen members leave the permanent generation
+gc.unfreeze()
+print("after freeze", gc.collect() >= 0)
+
+# `type(x)` reads the class an instance names, never `__class__`; the builtin
+# `object` reference is the one class.
+
+
+class Disguised:
+    @property
+    def __class__(self):
+        return int
+
+
+class Items(list):
+    pass
+
+
+class Lazy:
+    def __init__(self):
+        self.ready = True
+
+    def fill(self):
+        self.late = 1
+
+
+print("type of instances", type(Point(1, 2)) is Point, type(Disguised()) is Disguised)
+print("disguise", Disguised().__class__ is int, isinstance(Disguised(), Disguised))
+print("type of builtins", type(Items()) is Items, type(object()) is object, type(3), type("s"))
+print("type of classes", type(Point) is type, type(object) is type, object is type(object()))
+lazy = Lazy()
+try:
+    lazy.late
+except AttributeError as exc:
+    print("unset field", type(exc).__name__)
+lazy.fill()
+print("filled field", lazy.late, lazy.ready)
+kinds = [type(v).__name__ for v in (1, 2.0, None, True, Point(0, 0), object(), [], Items())]
+print("kinds", kinds)

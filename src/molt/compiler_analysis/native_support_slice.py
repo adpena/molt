@@ -6,6 +6,7 @@ import copy
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
 
 SupportDef = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 SupportBinding = SupportDef | ast.Assign | ast.AnnAssign
@@ -29,6 +30,8 @@ class ModuleBodySelection:
 
     kind: Literal["complete_source", "native_support"]
     roots: tuple[str, ...] = ()
+    declaration_only: tuple[PythonSourceKey, ...] = ()
+    plan_seal: str | None = None
 
     def __post_init__(self) -> None:
         roots = canonical_native_support_roots(self.roots)
@@ -40,6 +43,16 @@ class ModuleBodySelection:
                 raise ValueError("native support selection requires binding roots")
         else:
             raise ValueError("invalid module body selection kind")
+        if self.plan_seal is None:
+            if self.declaration_only:
+                raise ValueError("declaration-only entries require a sealed plan")
+        elif (
+            self.kind != "complete_source"
+            or len(self.plan_seal) != 64
+            or any(char not in "0123456789abcdef" for char in self.plan_seal)
+            or tuple(sorted(set(self.declaration_only))) != self.declaration_only
+        ):
+            raise ValueError("invalid sealed module body selection")
         object.__setattr__(self, "roots", roots)
 
     @classmethod
@@ -49,16 +62,37 @@ class ModuleBodySelection:
         return cls("native_support", roots) if roots else cls("complete_source")
 
     def payload(self) -> dict[str, object]:
-        return {"kind": self.kind, "roots": list(self.roots)}
+        payload: dict[str, object] = {"kind": self.kind, "roots": list(self.roots)}
+        if self.plan_seal is not None:
+            payload["plan_seal"] = self.plan_seal
+            payload["declaration_only"] = [list(key) for key in self.declaration_only]
+        return payload
 
     @classmethod
     def from_payload(cls, payload: object) -> ModuleBodySelection:
-        if not isinstance(payload, dict) or set(payload) != {"kind", "roots"}:
+        if not isinstance(payload, dict) or set(payload) not in (
+            {"kind", "roots"},
+            {"kind", "roots", "plan_seal", "declaration_only"},
+        ):
             raise ValueError("missing or invalid module body selection")
         roots = payload["roots"]
         if not isinstance(roots, list):
             raise ValueError("invalid module body selection roots")
-        selection = cls(payload["kind"], tuple(roots))
+        seal = payload.get("plan_seal")
+        keys = payload.get("declaration_only", [])
+        if (seal is not None and type(seal) is not str) or not isinstance(keys, list):
+            raise ValueError("invalid declaration-only selection identity")
+        declaration_only: list[PythonSourceKey] = []
+        for key in keys:
+            if (
+                not isinstance(key, list)
+                or len(key) != 5
+                or any(type(coordinate) is not int for coordinate in key[:4])
+                or key[4] != "FunctionDef"
+            ):
+                raise ValueError("invalid declaration-only source identity")
+            declaration_only.append((key[0], key[1], key[2], key[3], key[4]))
+        selection = cls(payload["kind"], tuple(roots), tuple(declaration_only), seal)
         if selection.payload() != payload:
             raise ValueError("noncanonical module body selection")
         return selection
