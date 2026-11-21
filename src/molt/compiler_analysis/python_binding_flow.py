@@ -5218,9 +5218,19 @@ class _Analyzer:
                     static_value = cast(str | int, result_override.value)
                 if shape.invokes_python:
                     member_effects |= EXECUTES_ARBITRARY_PYTHON
+                    subscription_owner = assignment_target.owner_result
+                    deferred_execution |= frozenset(
+                        DeferredExecution(source, "class_subscription")
+                        for source in subscription_owner.source_origins
+                        | frozenset(
+                            ref.source
+                            for ref in subscription_owner.deferred
+                            if ref.phase in {"class", "escape"}
+                        )
+                    )
                     deferred_execution |= _operand_dispatch_deferred(
                         EXECUTES_ARBITRARY_PYTHON,
-                        assignment_target.owner_result,
+                        subscription_owner,
                         *(
                             assignment_target.slice_parts
                             or (assignment_target.index_result,)
@@ -9485,13 +9495,34 @@ class _BindingRevisions:
         policy = analyzer.policy
         active = analyzer._opaque_activation_sources
         assert active is not None
-        key = (analyzer.source_digest, replace(policy, opaque_activation_sources=()))
+        arguments = analyzer._activation_argument_values
+        key = (
+            analyzer.source_digest,
+            replace(
+                policy, opaque_activation_sources=(), activation_argument_values=()
+            ),
+        )
         with self._lock:
             prior = self._recent.get(key, ())
         checkpoints: list[_BindingCheckpoint] = []
         cursor = 0
         for checkpoint in reversed(prior):
             prefix = checkpoint.prefix
+            previous_arguments = prefix._activation_argument_values
+            if previous_arguments != arguments:
+                changed_arguments = {
+                    parameter
+                    for parameter in previous_arguments.keys() | arguments.keys()
+                    if previous_arguments.get(parameter) != arguments.get(parameter)
+                }
+                # The completed jobs own the only reads of activation
+                # arguments. A revised parameter in a pending job is safe.
+                if any(
+                    python_node_source_key(parameter) in changed_arguments
+                    for owner in prefix.source_parameter_owners.values()
+                    for parameter in function_parameter_nodes(owner.args)
+                ):
+                    continue
             if all(
                 answer == (not owners.isdisjoint(active))
                 for owners, answer in prefix._opaque_activation_reads.items()
@@ -9499,6 +9530,7 @@ class _BindingRevisions:
                 analyzer = prefix._fork_at_deferred_boundary()
                 analyzer.policy = policy
                 analyzer._opaque_activation_sources = active
+                analyzer._activation_argument_values = arguments.copy()
                 cursor = checkpoint.completed_jobs
                 checkpoints.extend(
                     item for item in prior if item.completed_jobs <= cursor
