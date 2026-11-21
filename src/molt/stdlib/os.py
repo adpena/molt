@@ -1191,12 +1191,38 @@ class _Path:
         return _MOLT_OS_PATH_REALPATH(path)
 
 
-_path_impl = _Path()
 path = _types.ModuleType("os.path")
-for _name in dir(_path_impl):
-    if _name.startswith("_"):
-        continue
-    setattr(path, _name, getattr(_path_impl, _name))
+# Named stores, one per public function. A store under a computed name may
+# write `__class__` for all the whole-program analysis can tell, so the old
+# `setattr(path, _name, ...)` loop made every constructor result non-exact in
+# every program that imports os.
+path.join = _Path.join
+path.isabs = _Path.isabs
+path.dirname = _Path.dirname
+path.basename = _Path.basename
+path.split = _Path.split
+path.splitext = _Path.splitext
+path.normpath = _Path.normpath
+path.expandvars = _Path.expandvars
+path.abspath = _Path.abspath
+path.relpath = _Path.relpath
+path.expanduser = _Path.expanduser
+path.exists = _Path.exists
+path.isdir = _Path.isdir
+path.isfile = _Path.isfile
+path.islink = _Path.islink
+path.unlink = _Path.unlink
+path.rmdir = _Path.rmdir
+path.commonpath = _Path.commonpath
+path.commonprefix = _Path.commonprefix
+path.getatime = _Path.getatime
+path.getctime = _Path.getctime
+path.getmtime = _Path.getmtime
+path.getsize = _Path.getsize
+path.samefile = _Path.samefile
+path.samestat = _Path.samestat
+path.sameopenfile = _Path.sameopenfile
+path.realpath = _Path.realpath
 path.sep = sep
 path.pathsep = pathsep
 path.extsep = extsep

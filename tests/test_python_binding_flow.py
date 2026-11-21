@@ -6966,3 +6966,82 @@ def test_type_of_a_bound_value_in_a_function_runs_no_code() -> None:
     fact = index.statement_fact(tree.body[4].body[0])
     assert fact is not None
     assert not fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
+@pytest.mark.parametrize(
+    ("source", "writes", "reuses_initializer"),
+    [
+        (
+            "def run():\n    value = 'known'\n    callback()\n    return value\n",
+            (),
+            True,
+        ),
+        (
+            "class C:\n    value = 1\ndef run():\n    local = C\n"
+            "    callback()\n    return local\n",
+            ("synthetic",),
+            True,
+        ),
+        (
+            "observed = provider\ndef run():\n    return observed\n",
+            ("provider",),
+            False,
+        ),
+        (
+            "import importlib\ncallback()\n"
+            "value = importlib.import_module('.child', __package__)\n"
+            "def run():\n    return value\n",
+            ("__package__",),
+            False,
+        ),
+        (
+            "from provider import mutable\ncallback()\nraise Exception()\n",
+            ("mutable",),
+            False,
+        ),
+    ],
+)
+def test_initializer_revision_matches_fresh_binding_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    writes: tuple[str, ...],
+    reuses_initializer: bool,
+) -> None:
+    flow = python_binding_flow
+    initializers = 0
+    analyze = flow._Analyzer._analyze_module
+
+    def observe(
+        analyzer: python_binding_flow._Analyzer,
+        tree: ast.Module,
+        *,
+        ast_digest_admission: python_binding_flow._PythonAstDigestAdmission | None,
+    ) -> None:
+        nonlocal initializers
+        initializers += 1
+        analyze(analyzer, tree, ast_digest_admission=ast_digest_admission)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_module", observe)
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    initial = PythonBindingPolicy(
+        target_python=(3, 15),
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset((*writes, "C", "callback", "provider")),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+        frame_locals_writer=None,
+    )
+    revised = replace(
+        initial, frame_locals_writer="frame writer", foreign_namespace_writes=writes
+    )
+    with flow.python_binding_revision_scope():
+        analyze_python_source_bindings(source, policy=initial)
+        result = analyze_python_source_bindings(source, policy=revised)
+    assert initializers == (1 if reuses_initializer else 2)
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=revised)
+    assert (
+        replace(result, state_count=fresh.state_count, telemetry=fresh.telemetry)
+        == fresh
+    )
