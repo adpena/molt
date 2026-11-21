@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.backend_protocol import BackendEmissionOrigin, validate_emission_scope
 
 from molt.compilation_target import target_name
+from molt.default_paths import lock_stripe
 
 from molt.compilation_target import Target
 
@@ -1304,7 +1305,7 @@ def _prepare_backend_compile(
 
     compile_lock = (
         _shared_cache_lock(
-            f"compile.{cache_key}",
+            f"compile.{lock_stripe(cache_key)}",
             cache_root=cache_path.parent if cache_path is not None else None,
         )
         if cache_enabled and cache_key is not None

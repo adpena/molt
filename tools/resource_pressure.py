@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import functools
 import os
+from pathlib import Path
+import statistics
+import time
 from molt import host_capacity
 from molt.guard_scope import require_guard_stem
 
@@ -50,6 +54,9 @@ class ResourcePressurePlan:
     diff_global_gb: float
     diff_tree_gb: float
     reason: str
+    # Median seconds of a 100-byte read plus a one-line append in the run's
+    # temporary directory; disk-heavy job counts scale down above the target.
+    disk_latency_s: float = 0.0
 
     def to_json_dict(self) -> dict[str, object]:
         return {
@@ -168,6 +175,46 @@ def scheduler_max_jobs(
     return max(1, int(min(tree_gb, global_gb) // max(0.001, per_job)))
 
 
+# Disk-heavy work (differential builds, Cargo) is admitted against the measured
+# latency of the volume it writes, not the CPU count (HF-942): on 2026-11-20 a
+# 100-byte read plus a one-line append took 0.53 s on the saturated data
+# volume, and builds sat in disk wait for 20+ minutes at full job counts.
+DISK_LATENCY_TARGET_S = 0.02
+
+
+@functools.cache
+def disk_latency_s(directory: str) -> float:
+    """Median of five timed 100-byte reads plus one-line appends in ``directory``.
+
+    Measured once per process; an unwritable directory measures 0 (no cap).
+    """
+    probe = Path(directory) / f".molt-disk-latency-{os.getpid()}"
+    samples = []
+    try:
+        for _ in range(5):
+            started = time.perf_counter()
+            with open(probe, "ab") as stream:
+                stream.write(b"x\n")
+            with open(probe, "rb") as stream:
+                stream.read(100)
+            samples.append(time.perf_counter() - started)
+    except OSError:
+        return 0.0
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return statistics.median(samples)
+
+
+def disk_admitted_jobs(jobs: int, latency_s: float) -> int:
+    """``jobs`` scaled by ``DISK_LATENCY_TARGET_S / latency_s`` above the target."""
+    if latency_s <= DISK_LATENCY_TARGET_S:
+        return jobs
+    return max(1, int(jobs * DISK_LATENCY_TARGET_S / latency_s))
+
+
 def plan_resource_pressure(
     *,
     prefix: str,
@@ -189,6 +236,7 @@ def plan_resource_pressure(
     diff_tree_gb: float | None = None,
     diff_global_gb: float | None = None,
     diff_mem_per_job_gb: float | None = None,
+    disk_latency: float = 0.0,
 ) -> ResourcePressurePlan:
     env = os.environ if environ is None else environ
     stem = require_guard_stem(prefix)
@@ -243,6 +291,10 @@ def plan_resource_pressure(
         cpu_count=cpus,
         explicit_per_job_gb=diff_mem_per_job_gb,
     )
+    # Disk-heavy callers pass ``disk_latency_s(<their output directory>)``.
+    latency = disk_latency
+    cargo_jobs = disk_admitted_jobs(cargo_jobs, latency)
+    diff_jobs = disk_admitted_jobs(diff_jobs, latency)
 
     measured_gb = memory_budget.available_gb
     measured_label = "available"
@@ -266,7 +318,8 @@ def plan_resource_pressure(
         f"cargo_per_job={cargo_per_job:.2f}GB "
         f"cargo_memory={cargo_memory_label} "
         f"compile_slots={compile_slots}/{compile_slots_cap} "
-        f"diff_jobs={diff_jobs} diff_per_job={per_job_gb:.2f}GB"
+        f"diff_jobs={diff_jobs} diff_per_job={per_job_gb:.2f}GB "
+        f"disk_latency={latency * 1000:.1f}ms"
     )
 
     return ResourcePressurePlan(
@@ -296,4 +349,5 @@ def plan_resource_pressure(
         diff_global_gb=global_gb,
         diff_tree_gb=tree_gb,
         reason=reason,
+        disk_latency_s=latency,
     )

@@ -728,3 +728,74 @@ def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
         yield
     finally:
         _release_file_lock(handle)
+
+
+def retire_unheld_lock_files(
+    directory: Path, name: re.Pattern[str], *, min_idle_s: float, apply: bool = True
+) -> tuple[int, int]:
+    """Unlink empty lock files of a retired per-key lock family (HF-942).
+
+    A file goes only while this process holds it exclusively, after at least
+    ``min_idle_s`` since its last change, and only if the name still names the
+    held inode, so no holder or waiter of a live lock loses it. Returns
+    (removed, kept); without ``apply`` it counts idle files as removable and
+    changes nothing. POSIX only: on Windows an open handle blocks the unlink,
+    and the retired families there simply stay until their directory goes.
+    """
+    if os.name == "nt":
+        return 0, 0
+    import fcntl
+
+    removed = kept = 0
+    now = time.time()
+    try:
+        entries = os.scandir(directory)
+    except OSError:
+        return 0, 0
+    with entries:
+        for entry in entries:
+            if name.fullmatch(entry.name) is None:
+                continue
+            # The entry's own stat screens size and age; only a candidate is
+            # opened and locked (157k legacy files on a saturated volume).
+            try:
+                seen = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if seen.st_size or now - seen.st_mtime < min_idle_s:
+                kept += 1
+                continue
+            if not apply:
+                removed += 1
+                continue
+            path = Path(entry.path)
+            try:
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            except OSError:
+                continue
+            try:
+                held = os.fstat(fd)
+                if held.st_size or now - held.st_mtime < min_idle_s:
+                    kept += 1
+                    continue
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    kept += 1
+                    continue
+                try:
+                    named = path.lstat()
+                except OSError:
+                    continue
+                if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
+                    kept += 1
+                    continue
+                try:
+                    path.unlink()
+                except OSError:
+                    kept += 1
+                    continue
+                removed += 1
+            finally:
+                os.close(fd)
+    return removed, kept

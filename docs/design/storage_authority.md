@@ -16,6 +16,7 @@ when a capacity-selected output volume changes.
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
 | Native proof-supervisor store | Artifact root `proof-supervisor/<implementation-source-key>` | Thirty days since last use; existing checkout-state lifetime locks protect provisioning and readers |
 | Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
+| Hot state (HF-942) | `~/.molt/hot-state/<artifact-root key>`, named by the artifact root's `hot-state.v1.json` and bound only when home is another volume; mirrors the artifact root's relative paths | Lock stripes (cache, checkout-state), the file-digest store and the frontend record files; cache retention trims hot entries by last use to the record's cap and keeps the home volume 50 GiB free |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
 | Browser/Edgebox package environments | Existing checkout-provisioning paths | Lock-file producer admission, shared use through child closure, last-use budget |
@@ -432,3 +433,43 @@ fine-grained dependencies), Swift's request evaluator, Buck2 DICE, Go
 `GOCACHE` (action ID to output ID, content-addressed files, hourly mtime),
 Bazel AC plus CAS, uv's content-addressed store with clonefile/hardlink,
 ccache and the Nix store.
+
+## Hot state and capacity (HF-942, 2026-11-20)
+
+Measured: the external data volume was 96% full (81-92 GiB free of 1.8 TiB),
+about 900 ops/s at saturation, a 100-byte read plus a one-line append took
+17.8 ms (median) and up to 0.53 s, and creating a lock in the compile cache's
+lock directory took 76.7 ms (median, 157k entries). Every regenerable class
+had `max_bytes: null`, so nothing reacted to bytes or free space.
+
+1. Locks: the publication, compile and checkout-state families name one of
+   4,096 stripes (`default_paths.lock_stripe`) instead of one file per key,
+   so the directories stay bounded. No path takes two keys of one family at
+   once, so a stripe can only serialize two holders. The daily cache
+   retention and `storage trim` unlink a retired per-key file only while
+   holding it exclusively, after a day idle, and only if the name still names
+   the held inode. A lane on an older commit can still name a per-key lock in
+   the transition; checkout-state retirement also requires the root's last
+   use to be old, so the lock is a second fence there, not the only one.
+2. Placement: `default_paths.hot_state` reads one record in the artifact root
+   (`storage migrate` writes it when home is another volume). Lock
+   directories, the file-digest store and the frontend record files resolve
+   below it under their artifact-relative paths (`hot_path`), so placement
+   changes a prefix and never a name. Without a record (tests, plain clones,
+   one volume) nothing moves. The Python build environments and warm Cargo
+   targets are the next moves, each measured before it lands.
+3. Capacity: every Molt volume keeps 20% free (`disk_capacity.FREE_SPACE_FLOOR`).
+   Below it, checkout state (the disk guard's daily GC, reason
+   `free-space-floor`) and the regenerable classes `storage trim` sizes give up
+   entries a day idle by last use, rechecked after each removal; the day keeps
+   a volume shared with other data from making every lane rebuild cold. The
+   disk guard's absolute headroom stays the emergency trigger. The home volume
+   keeps 50 GiB free and the hot root stays under its cap, trimmed by last use
+   in the daily cache retention. Lane start only reports a volume below its
+   floor (one statfs): a synchronous trim there stalled lane starts. Checkout
+   state carries no byte budget because sizing it walks hundreds of GB (the
+   `target/checkouts` census did not finish in 10 minutes); the floor is its
+   cheap capacity control.
+4. Admission: differential and Cargo job counts scale by
+   `20 ms / measured latency` of a 100-byte read plus a one-line append in the
+   run's temporary directory (`resource_pressure.disk_admitted_jobs`).
