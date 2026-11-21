@@ -53,30 +53,29 @@ const _: () = {
 };
 static WORK_WORD: AtomicU32 = AtomicU32::new(0);
 static RECURSION_LIMIT: u64 = 1000;
-/// Compiled code writes the record (frame top, recursion depth), so it lives
-/// in writable memory.
-#[repr(transparent)]
-struct Writable(std::cell::UnsafeCell<FixtureThreadRecord>);
-// SAFETY: one test thread runs the compiled code at a time.
-unsafe impl Sync for Writable {}
-static THREAD_RECORD: Writable = Writable(std::cell::UnsafeCell::new(FixtureThreadRecord {
-    exception_pending: 0,
-    pending_invocation: 0,
-    pending_work: &WORK_WORD,
-    words: [0; 6],
-    recursion_limit: &RECURSION_LIMIT,
-}));
-
 #[repr(C)]
 struct FixtureContext {
-    thread_record: &'static Writable,
+    thread_record: *mut FixtureThreadRecord,
 }
-static CONTEXT: FixtureContext = FixtureContext {
-    thread_record: &THREAD_RECORD,
-};
+
+thread_local! {
+    // Compiled code writes the frame and recursion state of the caller.
+    static THREAD_RECORD: std::cell::UnsafeCell<FixtureThreadRecord> = const {
+        std::cell::UnsafeCell::new(FixtureThreadRecord {
+            exception_pending: 0,
+            pending_invocation: 0,
+            pending_work: &WORK_WORD,
+            words: [0; 6],
+            recursion_limit: &RECURSION_LIMIT,
+        })
+    };
+    static CONTEXT: FixtureContext = FixtureContext {
+        thread_record: THREAD_RECORD.with(std::cell::UnsafeCell::get),
+    };
+}
 
 fn context() -> u64 {
-    std::ptr::addr_of!(CONTEXT) as u64
+    CONTEXT.with(|context| std::ptr::from_ref(context) as u64)
 }
 fn assert_context(actual: u64) {
     assert_eq!(actual, context());
@@ -214,7 +213,7 @@ fn executable_memory_probe_runs_generated_code() {
 }
 
 #[test]
-fn jit_program_calls_its_imports_through_the_lookup() {
+fn concurrent_first_calls_share_the_body_and_call_its_imports() {
     let program = backend(provider())
         .compile_jit(program())
         .expect("compile the probe program into memory");
@@ -223,7 +222,22 @@ fn jit_program_calls_its_imports_through_the_lookup() {
         .expect("the program defines its entry");
     // SAFETY: the compiled entry takes its live context before Python args.
     let entry: extern "C" fn(u64) -> u64 = unsafe { std::mem::transmute(entry) };
-    assert_eq!(entry(context()), SENTINEL);
+    let ready = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let context = context();
+                ready.wait();
+                assert_eq!(entry(context), SENTINEL);
+                assert_eq!(entry(context), SENTINEL);
+            });
+        }
+    });
+    assert_eq!(
+        program.function_address(ENTRY),
+        Some(entry as *const u8),
+        "materialization preserves the published entry address"
+    );
 }
 
 #[test]

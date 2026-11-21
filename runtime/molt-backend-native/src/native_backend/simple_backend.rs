@@ -48,7 +48,10 @@ mod compile_driver;
 #[cfg(feature = "jit")]
 mod jit;
 #[cfg(feature = "jit")]
-pub use jit::{JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution};
+pub use jit::{
+    JIT_FAILURE_STATUS, JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup,
+    probe_jit_execution,
+};
 
 /// Output of a native compilation pass.
 ///

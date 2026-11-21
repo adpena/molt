@@ -62,7 +62,7 @@ pub(crate) fn set_contains(
         return Err(());
     };
     let found = if ensure_hashable(py, item_bits, HashContext::SetElement) {
-        unsafe { set_find_entry(py, ptr, item_bits) }
+        unsafe { set_find_entry(py, ptr, item_bits, HashContext::SetElement) }
     } else {
         Err(())
     };
@@ -92,7 +92,9 @@ pub(crate) fn set_contains(
     if obj_from_bits(frozen.bits()).is_none() {
         return Err(());
     }
-    unsafe { set_find_entry(py, ptr, frozen.bits()).map(|found| found.is_some()) }
+    unsafe {
+        set_find_entry(py, ptr, frozen.bits(), HashContext::SetElement).map(|found| found.is_some())
+    }
 }
 
 /// Specialized Python `in` shares the builtin descriptor's key policy.
@@ -1230,7 +1232,7 @@ unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoin
             if !ensure_hashable(py, item.bits, HashContext::SetElement) {
                 return Err(molt_runtime_core::ErrorIndicatorSet);
             }
-            let found = unsafe { set_find_entry(py, set, item.bits) };
+            let found = unsafe { set_find_entry(py, set, item.bits, HashContext::SetElement) };
             drop(item);
             let found = found.map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
             if found.is_some() == disjoint {
