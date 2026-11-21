@@ -65,13 +65,22 @@ class _Unmergeable(Exception):
     """The rows cannot be keyed; merge the file as text."""
 
 
+# Class tables by header, each with its own key namespace.
+_CLASS_TABLES = {
+    "| Row | V1 class |": "membership",
+    "| Row | v0.1 class |": "v0.1 class",
+}
+
+
 def _row_key(line: str, table: str = "") -> str | None:
     """The merge key of a findings row or a family row, else None."""
     if not line.startswith("| "):
         return None
-    if table == "| Row | V1 class |":
+    if table in _CLASS_TABLES:
+        # A class table lists each row once; its rows share ids with the
+        # findings table, so each table keys its own namespace.
         match = _ROW.match(line)
-        return f"membership {match['key'].strip()}" if match else None
+        return f"{_CLASS_TABLES[table]} {match['key'].strip()}" if match else None
     if table == "| From | To | Reason |":
         columns, _ = _cells(line)
         if columns == ["From", "To", "Reason"]:

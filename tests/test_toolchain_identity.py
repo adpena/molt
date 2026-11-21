@@ -1471,13 +1471,15 @@ def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
-def test_digest_inventory_amortizes_connections_without_retaining_native_handles(
-    tmp_path, monkeypatch
-):
-    import sqlite3
-
+def test_digest_inventory_reads_through_one_connection_per_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-20: a connection per page closed the WAL store 6,301 times in one
+    # environment capture (70 of its 84 s). A process keeps one reader; an
+    # autocommit SELECT holds no snapshot, so the reader blocks no writer.
     monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
     paths = [_settled_file(tmp_path / f"{i:03}", b"runtime") for i in range(200)]
+    unrecorded = [_settled_file(tmp_path / f"new{i:03}", b"fresh") for i in range(50)]
     store = tmp_path / "digests.sqlite"
     first = identity.FileDigestCache(store, max_age_ns=10**18)
     expected = [first.identity(path, label="file") for path in paths]
@@ -1493,17 +1495,18 @@ def test_digest_inventory_amortizes_connections_without_retaining_native_handles
 
     monkeypatch.setattr(cache, "_connect", counted)
     _no_rehash(monkeypatch)
-    observed = []
-    for path in paths:
-        observed.append(cache.identity(path, label="file"))
-        for connection in connections:
-            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-                connection.execute("SELECT 1")
+    observed = [cache.identity(path, label="file") for path in paths]
     assert observed == expected
-    assert len(connections) <= 8
-    for connection in connections:
-        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-            connection.execute("SELECT 1")
+    # Misses (an environment the store never saw) reuse the same reader.
+    for path in unrecorded:
+        assert cache.lookup(path, expected_path_stat=path.lstat(), label="file") is None
+    assert len(connections) == 1
+    # A forked child never uses its parent's SQLite handle: a reader recorded
+    # under another process id is replaced, not reused.
+    cache._reader_pid = os.getpid() + 1
+    probe = _settled_file(tmp_path / "after-fork", b"child")
+    assert cache.lookup(probe, expected_path_stat=probe.lstat(), label="file") is None
+    assert len(connections) == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
