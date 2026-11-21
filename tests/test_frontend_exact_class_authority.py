@@ -658,15 +658,16 @@ def test_synthesized_layout_guards_name_their_class_statement(operation: str) ->
 
 
 def test_optional_layout_identity_does_not_change_explicit_source_name() -> None:
-    ops = _ops(
-        "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
-    )
+    source = "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
+    ops = _ops(source, function="py.exact_class_authority.Point_read")
     strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     assert any(
         op.kind == "MODULE_GET_GLOBAL" and strings.get(op.args[1].name) == "Point"
         for op in ops
     )
     # The guard names the statement; only the explicit source read loads it.
+    # (The class's PEP 649 ``__annotate__`` reads its own namespace for
+    # ``int``; that evaluator is not this method's guard.)
     assert not any(op.kind == "DICT_GET" for op in ops)
     assert any(
         (op.metadata or {}).get("class_definition") == POINT.definition_symbol

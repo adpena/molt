@@ -92,6 +92,43 @@ class InlineBody:
         default=None, compare=False, hash=False
     )
 
+    @classmethod
+    def of(
+        cls,
+        params: tuple[str, ...],
+        returns: ast.expr | None,
+        init_assigns: tuple[tuple[str, ast.expr], ...] | None,
+    ) -> InlineBody:
+        """The body with its source identity: an exact structural encoding of
+        its expressions (``ast_identity``)."""
+        source = ast_identity(
+            (
+                returns,
+                None
+                if init_assigns is None
+                else tuple((name, expr) for name, expr in init_assigns),
+            )
+        )
+        return cls(params, source, returns, init_assigns)
+
+
+def ast_identity(value: object) -> str:
+    """An exact, deterministic text of an AST value: node types and fields in
+    order, integers in hex. ``ast.unparse`` and ``ast.dump`` render integers in
+    decimal, which raises past ``sys.get_int_max_str_digits()``; hex has no
+    such limit."""
+    if isinstance(value, ast.AST):
+        fields = ",".join(
+            f"{name}={ast_identity(getattr(value, name, None))}"
+            for name in value._fields
+        )
+        return f"{type(value).__name__}({fields})"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(ast_identity(item) for item in value) + "]"
+    if type(value) is int:
+        return hex(value)
+    return repr(value)
+
 
 @dataclass(frozen=True, slots=True)
 class Member:
@@ -543,19 +580,7 @@ def member_from_method_info(info: MethodInfo) -> Member:
         returns = info.get("inline_return")
         assigns = info.get("inline_init_assigns")
         init_assigns = tuple(assigns) if assigns is not None else None
-        inline = InlineBody(
-            params=tuple(inline_params),
-            source=repr(
-                (
-                    None if returns is None else ast.unparse(returns),
-                    None
-                    if init_assigns is None
-                    else tuple((name, ast.unparse(expr)) for name, expr in init_assigns),
-                )
-            ),
-            returns=returns,
-            init_assigns=init_assigns,
-        )
+        inline = InlineBody.of(tuple(inline_params), returns, init_assigns)
     return Member(
         kind=MemberKind(info["descriptor"]),
         symbol=symbol,

@@ -32,6 +32,8 @@ task #39 pattern):
 
 from __future__ import annotations
 
+from molt.frontend.class_model import InlineBody, Member, MemberKind
+from tests.class_model_support import class_model
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
@@ -67,18 +69,22 @@ def _digest(payload: dict[str, object]) -> str | None:
 
 
 def _payload_with_ast(node: ast.AST) -> dict[str, object]:
-    # A minimal stand-in for the class-metadata shape that carries AST values on
-    # the lowering context path (``known_classes`` -> class -> inline_init_assigns).
+    # The class metadata that carries AST values on the lowering context path
+    # (``known_classes`` -> class -> ``__init__``'s inline field stores).
+    class_id = ClassId("pkg.mod", "C")
     return {
         "module_name": "pkg.mod",
         "known_classes": {
-            ClassId("pkg.mod", "C"): {
-                "methods": {
-                    "__init__": {
-                        "inline_init_assigns": [["attr", node]],
-                    }
-                }
-            }
+            class_id: class_model(
+                class_id,
+                members={
+                    "__init__": Member(
+                        MemberKind.FUNCTION,
+                        symbol="pkg__mod__C___init__",
+                        inline=InlineBody.of(("self",), None, (("attr", node),)),
+                    )
+                },
+            )
         },
     }
 

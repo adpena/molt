@@ -112,11 +112,7 @@ _FIXED_POINT_CASES: dict[str, object] = {
                 "__init__": Member(
                     MemberKind.FUNCTION,
                     symbol="C___init__",
-                    inline=InlineBody(
-                        params=("self",),
-                        source=repr((None, (("attr", ast.unparse(_NODE)),))),
-                        init_assigns=(("attr", _NODE),),
-                    ),
+                    inline=InlineBody.of(("self",), None, (("attr", _NODE),)),
                 )
             },
             dataclass_projection=(DataclassInitField("x", True, False, False, 0),),
