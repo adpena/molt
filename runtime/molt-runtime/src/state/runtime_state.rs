@@ -1531,12 +1531,16 @@ pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
         .set(state.map_or(0, |state| state.recursion_limit.as_ptr() as u64));
     tls.object_class
         .set(state.map_or(0, builtin_object_class_bits));
-    // A free-threaded build tracks through the runtime only.
-    tls.gc_record.set(if cfg!(feature = "free-threaded") {
-        0
-    } else {
-        state.map_or(0, |state| std::ptr::from_ref(&state.gc) as u64)
-    });
+    // A free-threaded build tracks through the runtime only, and so does a
+    // target whose pointers are not 64 bits: the GC record's layout
+    // (`molt_codegen_abi::object_lifecycle`) is the 64-bit one.
+    tls.gc_record.set(
+        if cfg!(feature = "free-threaded") || !cfg!(target_pointer_width = "64") {
+            0
+        } else {
+            state.map_or(0, |state| std::ptr::from_ref(&state.gc) as u64)
+        },
+    );
     tls.missing_slot
         .set(state.map_or(0, |state| state.canonical_objects.missing_slot_address()));
     tls.profile_enabled

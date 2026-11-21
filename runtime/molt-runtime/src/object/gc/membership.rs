@@ -226,6 +226,10 @@ pub(crate) struct Membership {
     watched_retired: usize,
 }
 
+// The GC record is the 64-bit layout. A target with narrower pointers lends no
+// record (`state::runtime_state::bind_execution_state`), so compiled code
+// leaves tracking to the runtime there.
+#[cfg(target_pointer_width = "64")]
 const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(size_of::<GcMember>() == 16 && offset_of!(GcMember, ordinal) == 8);
