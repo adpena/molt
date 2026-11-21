@@ -41,6 +41,7 @@ from molt.compiler_analysis.python_effects_generated import (
     effect_mask_satisfies_capability,
 )
 from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
     python_ast_digest,
     python_node_source_key,
     python_source_digest,
@@ -2531,6 +2532,64 @@ def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
         for ref in reopened.expression_fact(statement.value).deferred_execution
     )
     assert flow.python_binding_core_computations() == 2
+
+
+@pytest.mark.parametrize(("changed", "reused"), [(2, 0), (70, 64), ("nested", 64)])
+def test_binding_revision_keeps_only_a_proven_deferred_prefix(
+    monkeypatch: pytest.MonkeyPatch, changed: int | str, reused: int
+) -> None:
+    flow = python_binding_flow
+    jobs: list[PythonSourceKey] = []
+    analyze_job = flow._Analyzer._analyze_function_job
+
+    def observe_job(
+        analyzer: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        state: int,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        analyze_job(analyzer, job, state)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_function_job", observe_job)
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "\n".join(
+        f"def function_{index}(): return len([{index}])" for index in range(80)
+    )
+    if changed == "nested":
+        source = (
+            "def holder(value):\n"
+            "    def read(): return len([value])\n"
+            "    def write(other):\n"
+            "        nonlocal value\n"
+            "        value = other\n"
+            "    return read, write\n"
+        ) + source
+        owner = ast.parse(source).body[0].body[0]
+    else:
+        assert isinstance(changed, int)
+        owner = ast.parse(source).body[changed]
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    reopened = replace(
+        policy, opaque_activation_sources=(python_node_source_key(owner),)
+    )
+    with flow.python_binding_revision_scope():
+        closed = analyze_python_source_bindings(source, policy=policy)
+        cold_jobs = len(jobs)
+        jobs.clear()
+        actual = analyze_python_source_bindings(source, policy=reopened)
+        assert len(jobs) == cold_jobs - reused
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    expected = analyze_python_source_bindings(source, policy=reopened)
+    assert replace(actual, telemetry=expected.telemetry) == expected
+    call = owner.body[0].value
+    assert closed.expression_fact(call.func).exact_builtin_name() == "len"
+    assert actual.expression_fact(call.func).exact_builtin_name() is None
 
 
 def test_context_cache_lifetime_is_owned_and_bounded_by_core(
