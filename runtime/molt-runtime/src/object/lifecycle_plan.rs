@@ -223,9 +223,10 @@ pub(crate) unsafe fn compute(class: *mut u8) -> ClassLifecyclePlan {
             let total =
                 std::mem::size_of::<super::MoltHeader>() + (words + 1) * std::mem::size_of::<u64>();
             let size_class = super::size_class_for(total);
-            if size_class != 0 && !class_storage::class_is_abstract(class) {
-                let object_bytes = super::SIZE_CLASS_TABLE[size_class as usize] as u64;
-                debug_assert!(object_bytes < 1 << 16);
+            let object_bytes = super::SIZE_CLASS_TABLE[size_class as usize] as u64;
+            // The plan records the object bytes in 16 bits.
+            if size_class != 0 && object_bytes < 1 << 16 && !class_storage::class_is_abstract(class)
+            {
                 word |= INLINE_ALLOC
                     | (u64::from(size_class) << SIZE_CLASS_SHIFT)
                     | (object_bytes << OBJECT_BYTES_SHIFT);
@@ -245,6 +246,11 @@ pub(crate) unsafe fn publish_sealed(class: *mut u8, identity: ClassIdentity) {
                 0
             };
         let plan = compute(class).with_identity(facts);
+        // Compiled `object()` allocates from the constant root plan.
+        assert!(
+            !identity.root_object || plan.0 == molt_codegen_abi::object_lifecycle::ROOT_OBJECT_PLAN,
+            "the builtin object's plan diverged from ROOT_OBJECT_PLAN"
+        );
         plan_word(class).store(plan.0, Ordering::Release);
     }
 }

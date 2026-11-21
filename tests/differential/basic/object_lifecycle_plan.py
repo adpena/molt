@@ -151,3 +151,36 @@ for i in range(1000):
     q = object()
     total += type(q) is object
 print("loop", total)
+
+# Instances compiled code admits and retires itself stay exact GC members:
+# a collection finds their cycles, survivors move to older generations and
+# leave from there, and get_objects sees them.
+
+
+class Node:
+    def __init__(self, name):
+        self.name = name
+        self.other = None
+
+
+gc.collect()
+survivors = [Point(i, i) for i in range(20)]
+gc.collect()  # the survivors move to an older generation
+print("survivors tracked", all(gc.is_tracked(p) for p in survivors))
+print("survivor listed", any(o is survivors[3] for o in gc.get_objects()))
+del survivors  # each leaves its older generation
+collected = 0
+for i in range(30):
+    a = Node("a")
+    b = Node("b")
+    a.other = b
+    b.other = a
+del a, b
+collected = gc.collect()
+print("cycles collected", collected >= 60)
+fresh = [Point(i, 0) for i in range(5)]
+print("fresh tracked", all(gc.is_tracked(p) for p in fresh), len(fresh))
+gc.freeze()
+del fresh  # frozen members leave the permanent generation
+gc.unfreeze()
+print("after freeze", gc.collect() >= 0)

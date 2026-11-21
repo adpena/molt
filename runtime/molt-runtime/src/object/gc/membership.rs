@@ -23,13 +23,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(super) const GENERATION_LISTS: usize = NUM_GENERATIONS + 1;
 
 /// Bytes reserved before the `MoltHeader` of a head-bearing allocation.
-pub(crate) const GC_HEAD_BYTES: usize = 8;
+pub(crate) const GC_HEAD_BYTES: usize = molt_codegen_abi::object_lifecycle::GC_HEAD_BYTES as usize;
 
 // Head word: bit 0 = tracked, bits 1..=2 = generation, bits 3.. = position.
-const HEAD_TRACKED: u64 = 1;
-const HEAD_GENERATION_SHIFT: u32 = 1;
-const HEAD_GENERATION_MASK: u64 = 0b11;
-const HEAD_POSITION_SHIFT: u32 = 3;
+// Compiled code reads and writes it with the same layout.
+use molt_codegen_abi::object_lifecycle::{
+    GC_HEAD_GENERATION_MASK as HEAD_GENERATION_MASK,
+    GC_HEAD_GENERATION_SHIFT as HEAD_GENERATION_SHIFT,
+    GC_HEAD_POSITION_SHIFT as HEAD_POSITION_SHIFT, GC_HEAD_TRACKED as HEAD_TRACKED,
+};
 
 const _: () = assert!(GC_HEAD_BYTES == std::mem::size_of::<GcHead>());
 const _: () = assert!(GC_HEAD_BYTES.is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES));
@@ -113,28 +115,148 @@ impl Generation {
 /// One tracked object and its allocation ordinal. Ordinals are unique per
 /// runtime, so an ordinal names one tracking lifetime of one object.
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub(super) struct GcMember {
     pub(super) slot: PtrSlot,
     pub(super) ordinal: u64,
 }
 
+/// One generation's members as a vector with a fixed layout: compiled code
+/// pushes and swap-removes generation-0 members inline at fixed offsets
+/// (`molt_codegen_abi::object_lifecycle`, GC record). The buffer is a
+/// `Vec<GcMember>`'s, taken apart; growth reassembles it.
+#[repr(C)]
+pub(super) struct MemberList {
+    ptr: *mut GcMember,
+    len: usize,
+    cap: usize,
+}
+
+impl MemberList {
+    pub(super) const fn new() -> Self {
+        Self {
+            ptr: std::ptr::NonNull::<GcMember>::dangling().as_ptr(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
+    /// Run `body` on the vector the parts describe, then take it apart again.
+    fn with_vec<R>(&mut self, body: impl FnOnce(&mut Vec<GcMember>) -> R) -> R {
+        // SAFETY: the parts always describe a live `Vec<GcMember>` buffer
+        // (or the empty dangling one), and no other owner exists.
+        let mut vec = unsafe { Vec::from_raw_parts(self.ptr, self.len, self.cap) };
+        let result = body(&mut vec);
+        let mut vec = std::mem::ManuallyDrop::new(vec);
+        self.ptr = vec.as_mut_ptr();
+        self.len = vec.len();
+        self.cap = vec.capacity();
+        result
+    }
+
+    #[inline(always)]
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline(always)]
+    pub(super) fn as_slice(&self) -> &[GcMember] {
+        // SAFETY: `len` initialized members at `ptr`.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    #[inline(always)]
+    pub(super) fn push(&mut self, member: GcMember) {
+        if self.len == self.cap {
+            self.with_vec(|vec| vec.reserve(1));
+        }
+        // SAFETY: capacity exceeds the length.
+        unsafe { self.ptr.add(self.len).write(member) };
+        self.len += 1;
+    }
+
+    #[inline(always)]
+    pub(super) fn swap_remove(&mut self, position: usize) -> GcMember {
+        assert!(position < self.len, "member position out of range");
+        self.len -= 1;
+        // SAFETY: both positions are within the initialized prefix.
+        unsafe {
+            let member = self.ptr.add(position).read();
+            if position != self.len {
+                self.ptr.add(position).write(self.ptr.add(self.len).read());
+            }
+            member
+        }
+    }
+
+    pub(super) fn extend_from_slice(&mut self, members: &[GcMember]) {
+        self.with_vec(|vec| vec.extend_from_slice(members));
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    pub(super) fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::new())
+    }
+}
+
+impl Drop for MemberList {
+    fn drop(&mut self) {
+        self.with_vec(|vec| std::mem::take(vec));
+    }
+}
+
 /// A runtime's tracked-object membership. Collection snapshots sort members by
 /// ordinal, so vector order (which swap-removal permutes) never reaches
-/// finalizer, weakref or clear order.
+/// finalizer, weakref or clear order. The member lists, the ordinal counter and
+/// the watch word lead a fixed layout that compiled code reads and writes
+/// inline (`molt_codegen_abi::object_lifecycle`, the GC record).
+#[repr(C)]
 pub(crate) struct Membership {
-    members: [Vec<GcMember>; GENERATION_LISTS],
+    members: [MemberList; GENERATION_LISTS],
     next_ordinal: u64,
+    /// Nonzero while a retirement watch is armed: compiled code then leaves
+    /// every untrack to the runtime, which counts watched retirements.
+    watch_armed: u64,
     // Retirement watch for one collection: the sorted ordinals of its first
     // unreachable members, and how many of them left membership since armed.
     watched: Vec<u64>,
     watched_retired: usize,
 }
 
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<GcMember>() == 16 && offset_of!(GcMember, ordinal) == 8);
+    assert!(size_of::<MemberList>() == 24);
+    assert!(offset_of!(MemberList, ptr) == 0);
+    assert!(offset_of!(MemberList, len) == 8);
+    assert!(offset_of!(MemberList, cap) == 16);
+    assert!(offset_of!(Membership, members) == 0);
+    use molt_codegen_abi::object_lifecycle::{
+        GC_GENERATION_LISTS, GC_MEMBER_BYTES, GC_MEMBER_LIST_BYTES, GC_RECORD_MEMBERS_OFFSET,
+        GC_RECORD_NEXT_ORDINAL_OFFSET, GC_RECORD_WATCH_ARMED_OFFSET,
+    };
+    assert!(GENERATION_LISTS == GC_GENERATION_LISTS as usize);
+    assert!(size_of::<GcMember>() == GC_MEMBER_BYTES as usize);
+    assert!(size_of::<MemberList>() == GC_MEMBER_LIST_BYTES as usize);
+    assert!(
+        offset_of!(Membership, next_ordinal)
+            == (GC_RECORD_NEXT_ORDINAL_OFFSET - GC_RECORD_MEMBERS_OFFSET) as usize
+    );
+    assert!(
+        offset_of!(Membership, watch_armed)
+            == (GC_RECORD_WATCH_ARMED_OFFSET - GC_RECORD_MEMBERS_OFFSET) as usize
+    );
+};
+
 impl Membership {
     pub(crate) const fn new() -> Self {
         Self {
-            members: [const { Vec::new() }; GENERATION_LISTS],
+            members: [const { MemberList::new() }; GENERATION_LISTS],
             next_ordinal: 1,
+            watch_armed: 0,
             watched: Vec::new(),
             watched_retired: 0,
         }
@@ -195,11 +317,11 @@ impl Membership {
         if from == to {
             return;
         }
-        let mut moved = std::mem::take(&mut self.members[from.list()]);
+        let mut moved = self.members[from.list()].take();
         let list = &mut self.members[to.list()];
         let base = list.len();
-        list.extend_from_slice(&moved);
-        for (offset, member) in moved.iter().enumerate() {
+        list.extend_from_slice(moved.as_slice());
+        for (offset, member) in moved.as_slice().iter().enumerate() {
             // SAFETY: every member is a live, head-bearing tracked object.
             unsafe { GcHead::of(member.slot) }.set_place(to, base + offset);
         }
@@ -234,7 +356,7 @@ impl Membership {
     pub(super) unsafe fn ordinal(&self, slot: PtrSlot) -> Option<u64> {
         let (generation, position) = unsafe { GcHead::of(slot) }.place()?;
         self.assert_member(generation, position, slot);
-        Some(self.members[generation.list()][position].ordinal)
+        Some(self.members[generation.list()].as_slice()[position].ordinal)
     }
 
     /// Untrack every member and release all capacity, for embedded-runtime
@@ -244,7 +366,7 @@ impl Membership {
     pub(super) fn release_all(&mut self) -> usize {
         let released = self.len();
         for list in &self.members {
-            for member in list {
+            for member in list.as_slice() {
                 // SAFETY: every member is a live, head-bearing tracked object.
                 unsafe { GcHead::of(member.slot) }.clear();
             }
@@ -256,11 +378,11 @@ impl Membership {
     /// The exact members of one generation, in no particular order.
     #[inline]
     pub(super) fn members(&self, generation: Generation) -> &[GcMember] {
-        &self.members[generation.list()]
+        self.members[generation.list()].as_slice()
     }
 
     pub(super) fn len(&self) -> usize {
-        self.members.iter().map(Vec::len).sum()
+        self.members.iter().map(MemberList::len).sum()
     }
 
     /// Reserve the retirement watch for a collection of `candidates` members,
@@ -295,12 +417,14 @@ impl Membership {
         }
         self.watched.sort_unstable();
         self.watched_retired = 0;
+        self.watch_armed = 1;
         ended
     }
 
     /// Disarm the watch; how many watched members left membership.
     pub(super) fn disarm_watch(&mut self) -> usize {
         self.watched.clear();
+        self.watch_armed = 0;
         std::mem::take(&mut self.watched_retired)
     }
 
@@ -310,6 +434,7 @@ impl Membership {
         // to another runtime, or membership is corrupt.
         assert!(
             self.members[generation.list()]
+                .as_slice()
                 .get(position)
                 .is_some_and(|member| member.slot == slot),
             "GC membership crossed runtime ownership"
@@ -338,7 +463,7 @@ impl Membership {
         self.assert_member(generation, position, slot);
         let list = &mut self.members[generation.list()];
         let member = list.swap_remove(position);
-        if let Some(moved) = list.get(position) {
+        if let Some(moved) = list.as_slice().get(position) {
             unsafe { GcHead::of(moved.slot) }.set_place(generation, position);
         }
         member

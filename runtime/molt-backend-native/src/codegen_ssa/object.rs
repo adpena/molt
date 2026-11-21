@@ -147,13 +147,17 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 
     /// `object()` (`class` None) or a proven `C()` allocation: the shared
     /// lifecycle allocation (`SiteBody::ObjectAlloc`), whose miss is the
-    /// runtime constructor. Only `object()` reaches it until compiled code
-    /// admits GC members inline (S4).
+    /// runtime constructor.
     pub(crate) fn object_alloc(&mut self, b: &mut B, op: &TirOp, class: Option<ValueId>) {
         let profile = b.profile_enabled();
         let admission = b.refcount_admission();
-        let (root, class) = match class {
-            Some(class) => (false, RuntimeArg::Operand(class)),
+        // The builtin `object` cannot change, so its plan is a constant.
+        let (root, plan, class) = match class {
+            Some(class) => (
+                false,
+                molt_codegen_abi::object_lifecycle::PlanSource::Guarded,
+                RuntimeArg::Operand(class),
+            ),
             None => {
                 let thread = b.thread_record_word();
                 let thread = b.word_to_address(thread);
@@ -161,7 +165,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                     thread,
                     molt_codegen_abi::thread_record::ThreadRecordWord::ObjectClass.offset(),
                 );
-                (true, RuntimeArg::Word(b.word_value(class)))
+                (
+                    true,
+                    molt_codegen_abi::object_lifecycle::PlanSource::Proven(
+                        molt_codegen_abi::object_lifecycle::ROOT_OBJECT_PLAN,
+                    ),
+                    RuntimeArg::Word(b.word_value(class)),
+                )
             }
         };
         let args = [
@@ -172,11 +182,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let word = self.operands().call(
             b,
             // The closed-world class model's proven plan replaces the guarded
-            // load where it holds (design step 7).
-            CallTarget::Site(SiteBody::ObjectAlloc {
-                root,
-                plan: molt_codegen_abi::object_lifecycle::PlanSource::Guarded,
-            }),
+            // load of a heap class where it holds (design step 7).
+            CallTarget::Site(SiteBody::ObjectAlloc { root, plan }),
             &args,
             false,
             "object_new",

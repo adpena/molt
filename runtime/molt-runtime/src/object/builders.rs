@@ -78,21 +78,22 @@ pub(crate) fn molt_heap_alloc_attached_body(_py: &crate::PyToken<'_>, bytes: u64
     base as u64
 }
 
-/// Free storage compiled code allocated with [`molt_heap_alloc_attached_body`]
-/// or the runtime allocated for a planned object, after an inline terminal
-/// release proved nothing can observe the death.
-pub(crate) fn molt_heap_free_attached_body(_py: &crate::PyToken<'_>, base: u64, bytes: u64) {
-    let bytes = bytes as usize;
-    // A debug runtime registers object identities; an inline free retires the
-    // object's as the runtime's own free does. Compiled frees reach only
-    // untracked objects, whose header starts the allocation.
-    #[cfg(debug_assertions)]
-    molt_obj_model::release_ptr((base as *mut u8).wrapping_add(std::mem::size_of::<MoltHeader>()));
-    crate::resource::release_allocation(bytes);
-    // SAFETY: `base` came from the allocator with this size and alignment.
+/// Free a planned plain instance after an inline terminal release proved
+/// nothing can observe its death (`molt_codegen_abi::object_lifecycle`). The
+/// header still names the allocation's size class and GC head; the collector
+/// state is already retired. A C program pays the same `free`.
+pub(crate) fn molt_heap_free_attached_body(_py: &crate::PyToken<'_>, object: u64) {
+    let data = object as *mut u8;
     unsafe {
+        let header = super::header_from_obj_ptr(data);
+        let flags = (*header).load_metadata_flags();
+        let head = super::gc_head_bytes_for_flags(flags);
+        let bytes = super::SIZE_CLASS_TABLE[usize::from((*header).size_class)] + head;
+        #[cfg(debug_assertions)]
+        molt_obj_model::release_ptr(data);
+        crate::resource::release_allocation(bytes);
         std::alloc::dealloc(
-            base as *mut u8,
+            header.cast::<u8>().sub(head),
             std::alloc::Layout::from_size_align_unchecked(
                 bytes,
                 molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES,
@@ -1415,6 +1416,12 @@ pub(crate) struct CanonicalObjectCache {
 }
 
 impl CanonicalObjectCache {
+    /// The address of the missing singleton's slot, which compiled allocation
+    /// reads through the thread record (`THREAD_RECORD_MISSING_SLOT_OFFSET`).
+    pub(crate) fn missing_slot_address(&self) -> u64 {
+        std::ptr::from_ref(&self.missing) as u64
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             singleton_init: std::sync::Mutex::new(()),

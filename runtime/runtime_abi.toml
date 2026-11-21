@@ -528,7 +528,7 @@ type = 2
 
 [[import]]
 name = "heap_free"
-type = 5
+type = 1
 
 [[import]]
 name = "object_publish_initialized"

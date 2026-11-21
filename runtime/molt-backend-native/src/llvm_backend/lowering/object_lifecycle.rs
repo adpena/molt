@@ -5,6 +5,7 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+use inkwell::values::IntValue;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
     LifecycleWords, PlanSource, generate_object_alloc, generate_release_terminal,
@@ -13,6 +14,28 @@ use molt_codegen_abi::thread_record::ThreadRecordWord;
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> LlvmBackend<'ctx> {
+    /// The thread-record words the lifecycle generators read, in the function
+    /// `builder` is positioned in.
+    fn lifecycle_words(
+        &self,
+        builder: &inkwell::builder::Builder<'ctx>,
+        profile_enabled: IntValue<'ctx>,
+    ) -> LifecycleWords<IntValue<'ctx>> {
+        LifecycleWords {
+            profile_enabled,
+            gc_record: self.load_thread_record_word(
+                builder,
+                ThreadRecordWord::GcRecord,
+                "gc_record",
+            ),
+            missing_slot: self.load_thread_record_word(
+                builder,
+                ThreadRecordWord::MissingSlot,
+                "missing_slot",
+            ),
+        }
+    }
+
     /// The allocation body: `(context, class, profile, admission) -> owned
     /// object`; its miss is `molt_object_new` (`root`) or
     /// `molt_object_new_bound(class)`.
@@ -37,11 +60,12 @@ impl<'ctx> LlvmBackend<'ctx> {
             let &[class, profile_enabled] = words else {
                 unreachable!("the allocation helper's parameters")
             };
+            let words = self.lifecycle_words(b.words.builder, profile_enabled);
             generate_object_alloc(
                 b,
                 class,
                 plan,
-                LifecycleWords { profile_enabled },
+                words,
                 ListLocking::BUILD,
                 |b, bytes| {
                     b.words
@@ -80,6 +104,7 @@ impl<'ctx> LlvmBackend<'ctx> {
                 ThreadRecordWord::ProfileEnabled,
                 "profile_enabled",
             );
+            let words = self.lifecycle_words(b.words.builder, profile_enabled);
             let terminal_release = self.load_thread_record_word(
                 b.words.builder,
                 ThreadRecordWord::TerminalRelease,
@@ -88,13 +113,13 @@ impl<'ctx> LlvmBackend<'ctx> {
             generate_release_terminal(
                 b,
                 bits,
-                LifecycleWords { profile_enabled },
+                words,
                 terminal_release,
                 ListLocking::BUILD,
-                |b, base, bytes| {
+                |b, object| {
                     b.words
                         .builder
-                        .build_execution_call(free, &[base.into(), bytes.into()], "")
+                        .build_execution_call(free, &[object.into()], "")
                         .unwrap();
                 },
                 |b| {

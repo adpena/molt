@@ -9,6 +9,7 @@
 use crate::attached_context_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET;
 use crate::word::{WordBuilder, WordComparison};
 use crate::{
+    THREAD_RECORD_GC_RECORD_OFFSET, THREAD_RECORD_MISSING_SLOT_OFFSET,
     THREAD_RECORD_OBJECT_CLASS_OFFSET, THREAD_RECORD_PROFILE_ENABLED_OFFSET,
     THREAD_RECORD_RECURSION_DEPTH_OFFSET, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
     THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET, THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
@@ -25,6 +26,10 @@ pub enum ThreadRecordWord {
     TerminalRelease,
     /// The bound runtime's builtin `object` class, boxed.
     ObjectClass,
+    /// The bound runtime's GC record address.
+    GcRecord,
+    /// The address of the bound runtime's canonical missing-singleton slot.
+    MissingSlot,
 }
 
 impl ThreadRecordWord {
@@ -34,6 +39,8 @@ impl ThreadRecordWord {
             Self::ProfileEnabled => THREAD_RECORD_PROFILE_ENABLED_OFFSET,
             Self::TerminalRelease => THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
             Self::ObjectClass => THREAD_RECORD_OBJECT_CLASS_OFFSET,
+            Self::GcRecord => THREAD_RECORD_GC_RECORD_OFFSET,
+            Self::MissingSlot => THREAD_RECORD_MISSING_SLOT_OFFSET,
         }
     }
 }

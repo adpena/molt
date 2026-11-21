@@ -28,7 +28,7 @@ pub(crate) fn emit_object_alloc(
     sites: NativeFrameSites,
     class: Value,
     plan: PlanSource,
-    profile_enabled: Value,
+    words: LifecycleWords<Value>,
     allocate: FuncRef,
     cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
 ) -> Value {
@@ -37,7 +37,7 @@ pub(crate) fn emit_object_alloc(
         &mut b,
         class,
         plan,
-        LifecycleWords { profile_enabled },
+        words,
         ListLocking::BUILD,
         |b, bytes| {
             let call = b.words.builder.ins().call(allocate, &[bytes]);
@@ -53,7 +53,7 @@ pub(crate) fn emit_release_terminal(
     builder: &mut FunctionBuilder<'_>,
     sites: NativeFrameSites,
     bits: Value,
-    profile_enabled: Value,
+    words: LifecycleWords<Value>,
     terminal_release: Value,
     free: FuncRef,
     cold: impl FnOnce(&mut FunctionBuilder<'_>),
@@ -62,11 +62,11 @@ pub(crate) fn emit_release_terminal(
     generate_release_terminal(
         &mut b,
         bits,
-        LifecycleWords { profile_enabled },
+        words,
         terminal_release,
         ListLocking::BUILD,
-        |b, base, bytes| {
-            b.words.builder.ins().call(free, &[base, bytes]);
+        |b, object| {
+            b.words.builder.ins().call(free, &[object]);
         },
         |b| cold(&mut *b.words.builder),
     );

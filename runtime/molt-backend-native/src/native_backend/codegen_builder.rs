@@ -61,6 +61,24 @@ impl<'b> NativeCodegen<'_, 'b> {
         self.words.builder.ins()
     }
 
+    /// The thread-record words the lifecycle generators read.
+    fn lifecycle_words(
+        &mut self,
+        profile_enabled: Value,
+    ) -> molt_codegen_abi::object_lifecycle::LifecycleWords<Value> {
+        use molt_codegen_abi::thread_record::ThreadRecordWord;
+        let record = self.thread_record_word();
+        let word = |this: &mut Self, word: ThreadRecordWord| {
+            this.ins()
+                .load(types::I64, MemFlagsData::trusted(), record, word.offset())
+        };
+        molt_codegen_abi::object_lifecycle::LifecycleWords {
+            profile_enabled,
+            gc_record: word(self, ThreadRecordWord::GcRecord),
+            missing_slot: word(self, ThreadRecordWord::MissingSlot),
+        }
+    }
+
     fn frame_sites(&mut self) -> NativeFrameSites {
         NativeFrameSites {
             retain: self.refcount_site(RefcountOperation::Retain),
@@ -677,6 +695,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 )
             }
             (SiteBody::ObjectAlloc { root, plan }, &[class, profile, _]) => {
+                let words = self.lifecycle_words(profile);
                 let allocate = self.runtime_callee(RuntimeFn::HeapAlloc);
                 let cold = self.runtime_callee(if root {
                     RuntimeFn::ObjectNew
@@ -688,7 +707,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     sites,
                     class,
                     plan,
-                    profile,
+                    words,
                     allocate,
                     |builder| {
                         let call = if root {
@@ -704,6 +723,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let free = self.runtime_callee(RuntimeFn::HeapFree);
                 let cold = self.runtime_callee(RuntimeFn::DecRefObj);
                 let profile = self.profile_enabled();
+                let words = self.lifecycle_words(profile);
                 let record = self.thread_record_word();
                 let terminal_release = self.ins().load(
                     types::I64,
@@ -715,7 +735,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     self.words.builder,
                     sites,
                     bits,
-                    profile,
+                    words,
                     terminal_release,
                     free,
                     |builder| {

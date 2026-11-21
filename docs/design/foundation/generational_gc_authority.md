@@ -73,9 +73,10 @@ follows the same layout rule with one word:
   call_anatomy.md 4.5, "Implementation (object lifecycle)"); every other heap-class instance
   is a member from allocation, as in CPython. Heap, arena and frame storage
   all reserve it. The 24-byte header, `HEADER_SIZE_BYTES` and every codegen
-  offset are unchanged; compiled code allocates and frees inline only an
-  untracked plain instance (`molt_codegen_abi::object_lifecycle`), which has
-  no head, and C-API views are separate allocations. The size class still describes header and
+  offset are unchanged; compiled code allocates and frees a plain instance
+  inline (`molt_codegen_abi::object_lifecycle`), tracking and untracking a
+  heap-class instance through the GC record below, and C-API views are
+  separate allocations. The size class still describes header and
   payload; deallocation frees from the head with the extra 8 bytes, and the
   resource tracker and allocation profile count them.
 - **Head word.** Zero when untracked; otherwise generation (2 bits) and the
@@ -86,6 +87,13 @@ follows the same layout rule with one word:
   head; untrack swap-removes and rewrites the head of the member that moved;
   promotion, `freeze()` and `unfreeze()` move members between vectors. No hash,
   no lock: a `PyToken` proves the runtime GIL on every access.
+- **GC record.** `GcRuntimeState` is `#[repr(C)]` and leads with the
+  thresholds, the counts and the membership (fixed-layout member lists, the
+  ordinal counter and a watch word): compiled code admits a planned instance
+  to generation 0 and untracks a dying one at these offsets, through the record
+  address each runtime's binding lends in the thread record
+  (`THREAD_RECORD_GC_RECORD_OFFSET`). It goes to the runtime when a list has no
+  room, when count 0 reaches threshold 0 or when a retirement watch is armed.
 - **Ownership.** An isolate's objects are members of its own state. Every
   removal asserts that the head's position names the object in the current
   runtime's list, so a cross-runtime free or a corrupt head fails loud.

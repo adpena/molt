@@ -115,23 +115,11 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 self.unpack_sequence_op(b, op),
                 "verified UnpackSequence must lower through the canonical runtime ABI"
             ),
-            // A heap class's instances are GC members, which compiled code
-            // does not yet admit inline (object lifecycle S4): the runtime's
-            // plan allocation.
             OpCode::ObjectNewBound => {
                 let Some(&class) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };
-                let callee = b.runtime_callee(RuntimeFn::ObjectNewBound);
-                self.runtime_call(
-                    b,
-                    op,
-                    CallTarget::Callee(callee),
-                    &[RuntimeArg::Operand(class)],
-                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
-                    "object_new_bound",
-                    "object_new_bound",
-                );
+                self.object_alloc(b, op, Some(class));
             }
             OpCode::GetIter => {
                 let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)

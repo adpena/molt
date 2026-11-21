@@ -61,6 +61,12 @@ pub(crate) struct ExecutionTls {
     /// (`THREAD_RECORD_OBJECT_CLASS_OFFSET`); published with `bound_state`
     /// and when the builtin classes initialize.
     pub(crate) object_class: Cell<u64>,
+    /// The bound runtime's GC record (`THREAD_RECORD_GC_RECORD_OFFSET`), or
+    /// zero; published with `bound_state`.
+    pub(crate) gc_record: Cell<u64>,
+    /// The address of the bound runtime's missing-singleton slot
+    /// (`THREAD_RECORD_MISSING_SLOT_OFFSET`), or zero.
+    pub(crate) missing_slot: Cell<u64>,
     /// GIL custody depth held by this thread.
     pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
@@ -120,6 +126,7 @@ const _: () = {
         THREAD_RECORD_RECURSION_DEPTH_OFFSET, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
         THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET, THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
     };
+    use molt_codegen_abi::{THREAD_RECORD_GC_RECORD_OFFSET, THREAD_RECORD_MISSING_SLOT_OFFSET};
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
     assert!(!std::mem::needs_drop::<ExecutionTls>());
@@ -155,6 +162,8 @@ const _: () = {
         offset_of!(ExecutionTls, terminal_release) as i32 == THREAD_RECORD_TERMINAL_RELEASE_OFFSET
     );
     assert!(offset_of!(ExecutionTls, object_class) as i32 == THREAD_RECORD_OBJECT_CLASS_OFFSET);
+    assert!(offset_of!(ExecutionTls, gc_record) as i32 == THREAD_RECORD_GC_RECORD_OFFSET);
+    assert!(offset_of!(ExecutionTls, missing_slot) as i32 == THREAD_RECORD_MISSING_SLOT_OFFSET);
 };
 
 /// An input of the refcount admission word. Any code reads it; only the
@@ -240,6 +249,8 @@ thread_local! {
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
             object_class: Cell::new(0),
+            gc_record: Cell::new(0),
+            missing_slot: Cell::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_gil: crate::concurrency::gil::GilMutexCustody::new(),
             attached_context: molt_codegen_abi::AttachedExecutionContextStorage::new(),

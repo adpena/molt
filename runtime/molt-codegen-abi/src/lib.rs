@@ -246,6 +246,14 @@ pub const THREAD_RECORD_TERMINAL_RELEASE_OFFSET: i32 = 80;
 /// u64: the bound runtime's builtin `object` class, boxed, or zero; published
 /// with the runtime execution binding. Compiled `object()` allocates it.
 pub const THREAD_RECORD_OBJECT_CLASS_OFFSET: i32 = 88;
+/// u64: the bound runtime's GC record (`object_lifecycle::GC_RECORD_*`), or
+/// zero; published with the runtime execution binding. Compiled code tracks and
+/// untracks a plain instance through it.
+pub const THREAD_RECORD_GC_RECORD_OFFSET: i32 = 96;
+/// u64: address of the bound runtime's canonical missing-singleton slot (a
+/// data pointer, null until created), or zero; published with the binding.
+/// Compiled allocation fills a field with the missing word it names.
+pub const THREAD_RECORD_MISSING_SLOT_OFFSET: i32 = 104;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home
