@@ -359,6 +359,140 @@ unsafe fn apply_descriptor_mutation(
     }
 }
 
+/// Validate and replace a Python function's code through its native getset.
+/// Direct descriptor calls and ordinary attribute writes share this transaction:
+/// callable ABI, closure shape, and ownership are checked before publication.
+pub(crate) unsafe fn replace_function_code(
+    py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    value: Option<u64>,
+) -> Result<(), ()> {
+    unsafe {
+        let Some(val_bits) = value else {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "function __code__ must be a code object",
+            );
+            return Err(());
+        };
+        if builtin_classes(py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                &format!(
+                    "'{}' object has no attribute '__code__'",
+                    type_name(py, MoltObject::from_ptr(obj_ptr)),
+                ),
+            );
+            return Err(());
+        }
+        let val_obj = obj_from_bits(val_bits);
+        let Some(val_ptr) = val_obj.as_ptr() else {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "function __code__ must be a code object",
+            );
+            return Err(());
+        };
+        if object_type_id(val_ptr) != TYPE_ID_CODE {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "function __code__ must be a code object",
+            );
+            return Err(());
+        }
+        let Some(code_identity) = crate::object::layout::code_callable_identity(val_ptr) else {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::ValueError,
+                "function __code__ must have a published callable identity",
+            );
+            return Err(());
+        };
+        if !code_identity.call_abi.is_reconstructible() {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "cannot assign opaque runtime-context code to a Python function",
+            );
+            return Err(());
+        }
+        let function_abi = function_call_abi(obj_ptr);
+        if !function_abi.is_reconstructible() {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "cannot replace code on an opaque runtime-context function",
+            );
+            return Err(());
+        }
+        if function_abi != code_identity.call_abi {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::ValueError,
+                "function and code object use different callable context ABIs",
+            );
+            return Err(());
+        }
+        let closure_bits = function_closure_bits(obj_ptr);
+        let closure_len = if closure_bits == 0 || obj_from_bits(closure_bits).is_none() {
+            0
+        } else {
+            let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits) else {
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "function closure is not a tuple",
+                );
+                return Err(());
+            };
+            if closure.first_non_cell.is_some() {
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "function closure contains a non-cell value",
+                );
+                return Err(());
+            }
+            closure.len
+        };
+        let freevars_bits = code_freevars_bits(val_ptr);
+        let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "code freevars metadata is not a tuple",
+            );
+            return Err(());
+        };
+        if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "code freevars metadata is not a tuple",
+            );
+            return Err(());
+        }
+        let freevars_len = crate::object::seq_access::len(freevars_ptr);
+        if closure_len != freevars_len {
+            let name = string_obj_to_owned(obj_from_bits(function_name_bits(py, obj_ptr)))
+                .unwrap_or_else(|| "<function>".to_string());
+            let msg = format!(
+                "{name}() requires a code object with {closure_len} free vars, not {freevars_len}"
+            );
+            raise_exception::<()>(py, BuiltinExc::ValueError, &msg);
+            return Err(());
+        }
+        if !crate::builtins::functions::function_replace_code_bits(py, obj_ptr, val_bits) {
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
 /// Callable class descriptors share one mutation dispatch. Managed execution
 /// fields retain their typed setters; ordinary attributes, including __dict__,
 /// reach this descriptor tier before dictionary insertion or deletion.
@@ -729,124 +863,6 @@ unsafe fn set_attr_ptr_with_name(
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
                 return Err(());
-            }
-            if attr_name == "__code__" {
-                if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::AttributeError,
-                        &format!(
-                            "'{}' object has no attribute '__code__'",
-                            type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                        ),
-                    );
-                    return Err(());
-                }
-                let val_obj = obj_from_bits(val_bits);
-                let Some(val_ptr) = val_obj.as_ptr() else {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        "function __code__ must be a code object",
-                    );
-                    return Err(());
-                };
-                if object_type_id(val_ptr) != TYPE_ID_CODE {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        "function __code__ must be a code object",
-                    );
-                    return Err(());
-                }
-                let Some(code_identity) = crate::object::layout::code_callable_identity(val_ptr)
-                else {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::ValueError,
-                        "function __code__ must have a published callable identity",
-                    );
-                    return Err(());
-                };
-                if !code_identity.call_abi.is_reconstructible() {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        "cannot assign opaque runtime-context code to a Python function",
-                    );
-                    return Err(());
-                }
-                let function_abi = function_call_abi(obj_ptr);
-                if !function_abi.is_reconstructible() {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        "cannot replace code on an opaque runtime-context function",
-                    );
-                    return Err(());
-                }
-                if function_abi != code_identity.call_abi {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::ValueError,
-                        "function and code object use different callable context ABIs",
-                    );
-                    return Err(());
-                }
-                let closure_bits = function_closure_bits(obj_ptr);
-                let closure_len = if closure_bits == 0 || obj_from_bits(closure_bits).is_none() {
-                    0
-                } else {
-                    let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits)
-                    else {
-                        raise_exception::<()>(
-                            _py,
-                            BuiltinExc::SystemError,
-                            "function closure is not a tuple",
-                        );
-                        return Err(());
-                    };
-                    if closure.first_non_cell.is_some() {
-                        raise_exception::<()>(
-                            _py,
-                            BuiltinExc::SystemError,
-                            "function closure contains a non-cell value",
-                        );
-                        return Err(());
-                    }
-                    closure.len
-                };
-                let freevars_bits = code_freevars_bits(val_ptr);
-                let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::SystemError,
-                        "code freevars metadata is not a tuple",
-                    );
-                    return Err(());
-                };
-                if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
-                    raise_exception::<()>(
-                        _py,
-                        BuiltinExc::SystemError,
-                        "code freevars metadata is not a tuple",
-                    );
-                    return Err(());
-                }
-                let freevars_len = crate::object::seq_access::len(freevars_ptr);
-                if closure_len != freevars_len {
-                    let name = string_obj_to_owned(obj_from_bits(function_name_bits(_py, obj_ptr)))
-                        .unwrap_or_else(|| "<function>".to_string());
-                    let msg = format!(
-                        "{name}() requires a code object with {closure_len} free vars, not {freevars_len}"
-                    );
-                    raise_exception::<()>(_py, BuiltinExc::ValueError, &msg);
-                    return Err(());
-                }
-                if !crate::builtins::functions::function_replace_code_bits(_py, obj_ptr, val_bits) {
-                    return Err(());
-                }
-                return Ok(());
             }
             if attr_name == "__closure__" {
                 raise_exception::<()>(_py, BuiltinExc::AttributeError, "readonly attribute");

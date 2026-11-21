@@ -103,8 +103,6 @@ fn ensure_debug_sigtrap_handler() {}
 
 pub(crate) struct SpecialCache {
     pub(crate) awaitable_await: AtomicU64,
-    pub(crate) function_code_descriptor: AtomicU64,
-    pub(crate) function_globals_descriptor: AtomicU64,
     pub(crate) weakref_callback_descriptor: AtomicU64,
     /// CPython 3.15 shares one `__dict__` and one `__weakref__` getset,
     /// declared on `object`, among every heap type that adds the capability.
@@ -298,8 +296,6 @@ impl SpecialCache {
     fn new() -> Self {
         Self {
             awaitable_await: AtomicU64::new(0),
-            function_code_descriptor: AtomicU64::new(0),
-            function_globals_descriptor: AtomicU64::new(0),
             weakref_callback_descriptor: AtomicU64::new(0),
             instance_dict_descriptor: AtomicU64::new(0),
             instance_weakref_descriptor: AtomicU64::new(0),
