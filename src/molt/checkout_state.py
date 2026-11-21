@@ -48,7 +48,8 @@ from .custody_layout import (
     git_directories,
     storage_rule,
 )
-from .default_paths import lock_stripe
+from .default_paths import hot_path, lock_stripe
+from .disk_capacity import FLOOR_MIN_IDLE_S
 from .exact_json import ExactJsonError, read_exact, write_exact
 
 EVIDENCE_INDEX_NAME = "storage-index.json"
@@ -558,7 +559,8 @@ def _state_lock_plan(
         for path in paths:
             known = qualify(path)
             if known is not None and known.root not in locks:
-                locks[known.root] = known.artifact.joinpath(
+                locks[known.root] = hot_path(
+                    known.artifact,
                     *_STATE_LOCK_DIR,
                     lock_stripe(build_state_address(known.root)) + ".lock",
                 )
@@ -1687,6 +1689,10 @@ class RetentionLimits:
     max_age_s: float
     session_idle_s: float
     scratch_idle_s: float = DEFAULT_SCRATCH_IDLE_DAYS * 86400.0
+    # The capacity floor (HF-942): while it holds for the artifact root, a
+    # root idle at least FLOOR_MIN_IDLE_S retires too. None in tests and
+    # readers; the disk guard's GC passes its volume's floor.
+    free_space_low: Callable[[Path], bool] | None = None
 
 
 def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
@@ -2247,7 +2253,7 @@ def _read_walk_cursors(record: Path) -> dict[str, str]:
     return dict(value["cursors"])
 
 
-RetentionReason = Literal["owner-gone", "max-age", "session-idle"]
+RetentionReason = Literal["owner-gone", "max-age", "session-idle", "free-space-floor"]
 
 
 def checkout_state_decision(
@@ -2280,6 +2286,12 @@ def checkout_state_decision(
         return "max-age"
     if idle >= PROTECTION_WINDOW_S and orphaned_checkout_state(root, artifact_root):
         return "owner-gone"
+    if (
+        limits.free_space_low is not None
+        and idle >= FLOOR_MIN_IDLE_S
+        and limits.free_space_low(artifact_root)
+    ):
+        return "free-space-floor"
     return None
 
 

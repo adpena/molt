@@ -15,7 +15,8 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from dataclasses import replace
+from dataclasses import dataclass, replace
+import json
 from typing import Literal
 
 from .process_environment import ProcessEnvironment
@@ -400,14 +401,91 @@ def backend_cache_publication_lock_name(artifact: Path) -> str:
     return f"immutable-publish.{lock_stripe(str(artifact.resolve()))}"
 
 
+HOT_STATE_RECORD = "hot-state.v1.json"
+# The home volume keeps at least this much free whatever the hot root holds
+# (HF-942: the internal SSD was 93-96% full while it served builds).
+HOT_STATE_MIN_FREE_BYTES = 50 * 1024**3
+HOT_STATE_SCHEMA = "molt.hot-state.v1"
+
+
+@dataclass(frozen=True)
+class HotState:
+    """Where one artifact root keeps its small, constantly touched state."""
+
+    root: Path
+    budget_bytes: int
+
+
+_HOT_STATES: dict[Path, HotState | None] = {}
+
+
+def hot_state(artifact_root: Path) -> HotState | None:
+    """The internal-disk root of ``artifact_root``'s hot state, or None (HF-942).
+
+    One record in the artifact root (``hot-state.v1.json``, written by
+    ``molt_dev.py storage migrate``) names it. Lock directories and the file
+    digest store live there, under the same relative paths they have below
+    the artifact root, so placement changes a prefix and never a name. A
+    root without the record (a test cache, a plain clone, one volume) keeps
+    them in place. Resolved once per process; a malformed record is an error.
+    """
+    key = artifact_root.absolute()
+    if key in _HOT_STATES:
+        return _HOT_STATES[key]
+    record = key / HOT_STATE_RECORD
+    try:
+        text = record.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _HOT_STATES[key] = None
+        return None
+    data = json.loads(text)
+    root = Path(data["root"]) if isinstance(data, dict) and "root" in data else None
+    budget = data.get("budget_bytes") if isinstance(data, dict) else None
+    if (
+        data.get("schema") != HOT_STATE_SCHEMA
+        or root is None
+        or not root.is_absolute()
+        or type(budget) is not int
+        or budget <= 0
+    ):
+        raise ValueError(f"malformed hot-state record: {record}")
+    state = _HOT_STATES[key] = HotState(root, budget)
+    return state
+
+
+def forget_hot_state(artifact_root: Path) -> None:
+    """Drop this process's resolution, after the record was written."""
+    _HOT_STATES.pop(artifact_root.absolute(), None)
+
+
+def hot_path(artifact_root: Path, *relative: str) -> Path:
+    """``artifact_root / relative``, below the hot-state root when it has one."""
+    state = hot_state(artifact_root)
+    return (artifact_root if state is None else state.root).joinpath(*relative)
+
+
+FRONTEND_RECORD_FILES_LAYOUT = "v1"
+FRONTEND_RECORD_INDEX_SUFFIX = ".idx"
+
+
+def frontend_record_files_root(cache_root: Path) -> Path:
+    """The record files' root, below the hot-state root when bound (HF-942)."""
+    return hot_path(
+        cache_root.parent,
+        cache_root.name,
+        FRONTEND_RECORD_FILES_DIRECTORY,
+        FRONTEND_RECORD_FILES_LAYOUT,
+    )
+
+
 def cache_control_root(cache_root: Path) -> Path:
     """Persistent lock ownership within one selected cache namespace."""
-    return cache_root / "locks"
+    return hot_path(cache_root.parent, cache_root.name, "locks")
 
 
 def file_digest_cache_path(cache_root: Path) -> Path:
     """The host's stat-keyed file digest store within one cache namespace."""
-    return cache_root / "file-digests" / "v3.sqlite"
+    return hot_path(cache_root.parent, cache_root.name, "file-digests", "v3.sqlite")
 
 
 def toolchain_fact_store_path(cache_root: Path) -> Path:

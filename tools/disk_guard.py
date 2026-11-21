@@ -1379,7 +1379,9 @@ def gc(
     scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     now = now_fn()
-    limits = retention_limits(env)
+    from molt.disk_capacity import below_free_space_floor
+
+    limits = replace(retention_limits(env), free_space_low=below_free_space_floor)
     agent_evidence_idle_s(env)
     free_fn = _default_free_fn(resolved_root)
     free_before = free_fn()

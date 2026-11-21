@@ -39,6 +39,7 @@ from molt.custody_layout import (
     storage_rule,
     PackageEnvironmentKind,
 )
+from molt.disk_capacity import FLOOR_MIN_IDLE_S, below_free_space_floor
 from molt.dx import artifact_root, storage_path, storage_location
 from molt.file_locks import (
     _file_lock_owned_operation,
@@ -58,20 +59,30 @@ CONTROLLER_IDLE_S = _CONTROLLER_RETENTION.max_idle_s
 
 
 def allocated_bytes(root: Path) -> int:
-    """Allocated bytes, without following links or traversing other volumes."""
-    if not root.exists():
+    """Allocated bytes, without following links or traversing other volumes.
+
+    One ``scandir`` entry stat per node (no Path objects, no second lstat).
+    """
+    try:
+        info = root.lstat()
+    except FileNotFoundError:
         return 0
-    device = root.lstat().st_dev
-    total = 0
-    stack = [root]
+    device = info.st_dev
+    total = getattr(info, "st_blocks", (info.st_size + 511) // 512) * 512
+    if not stat.S_ISDIR(info.st_mode):
+        return total
+    stack = [os.fspath(root)]
     while stack:
-        path = stack.pop()
-        info = path.lstat()
-        if info.st_dev != device:
-            raise ValueError(f"storage inventory crossed a volume: {path}")
-        total += getattr(info, "st_blocks", (info.st_size + 511) // 512) * 512
-        if stat.S_ISDIR(info.st_mode):
-            stack.extend(path.iterdir())
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if info.st_dev != device:
+                    raise ValueError(
+                        f"storage inventory crossed a volume: {entry.path}"
+                    )
+                total += getattr(info, "st_blocks", (info.st_size + 511) // 512) * 512
+                if stat.S_ISDIR(info.st_mode):
+                    stack.append(entry.path)
     return total
 
 
@@ -492,6 +503,7 @@ def trim(
                 live_protection=lambda path: guards.protects(
                     path, artifact_root(repo, environment), recorded_owner=repo
                 ),
+                free_space_low=below_free_space_floor,
             )
         )
     versions = tool_root / "toolchains"
@@ -522,16 +534,14 @@ def trim(
                 live_protection=lambda path: guards.protects(
                     path, tool_root, recorded_owner=repo
                 ),
+                free_space_low=below_free_space_floor,
             )
         )
     uv_root = storage_path(repo, "uv-cache", environment)
-    uv_policy = storage_rule("uv-cache").retention
-    assert isinstance(uv_policy, Regenerable)
-    assert uv_policy.max_bytes is not None
-    size = allocated_bytes(uv_root)
-    if size:
-        # uv's internal objects and locks are exclusively its protocol. Never
-        # unlink them to enforce Molt's budget. Report unsatisfied residual.
+    if uv_root.is_dir():
+        # uv's objects and locks are its own protocol and its prune collects
+        # them; Molt never walks the cache to size it (HF-942: that walk held
+        # a dry-run trim on the saturated data volume for hours).
         if apply:
             proc = _COMMANDS.run(
                 ["uv", "cache", "prune", "--cache-dir", str(uv_root)],
@@ -546,10 +556,8 @@ def trim(
         result.append(
             {
                 "class": "uv-cache",
-                "action": "provider-prune",
-                "bytes": size,
-                "budget": uv_policy.max_bytes,
-                "remaining": allocated_bytes(uv_root) if apply else size,
+                "path": str(uv_root),
+                "action": "provider-prune" if apply else "provider-prune-planned",
             }
         )
     for kind in ("pip-cache", "ruff-cache"):
@@ -565,14 +573,19 @@ def trim(
                 )
                 continue
             result.extend(
-                retire_regenerable([cache], kind=kind, now=time.time(), apply=apply)
+                retire_regenerable(
+                    [cache],
+                    kind=kind,
+                    now=time.time(),
+                    apply=apply,
+                    free_space_low=below_free_space_floor,
+                )
             )
     # The per-key lock families the stripes replaced (HF-942): unheld files go.
     from molt.default_paths import (
         RETIRED_CACHE_LOCK_NAMES,
         RETIRED_CHECKOUT_STATE_LOCK_NAMES,
         RETIRED_LOCK_MIN_IDLE_S,
-        cache_control_root,
     )
     from molt.file_locks import retire_unheld_lock_files
 
@@ -585,7 +598,7 @@ def trim(
             RETIRED_CHECKOUT_STATE_LOCK_NAMES,
         ),
         (
-            cache_control_root(storage_path(repo, "compile-cache", environment)),
+            storage_path(repo, "compile-cache", environment) / "locks",
             RETIRED_CACHE_LOCK_NAMES,
         ),
     ):
@@ -624,8 +637,12 @@ def retire_regenerable(
     apply: bool,
     current: frozenset[Path] = frozenset(),
     live_protection: Callable[[Path], bool] | None = None,
+    free_space_low: Callable[[Path], bool] | None = None,
 ) -> list[dict[str, object]]:
     """LRU byte/idle budget under the same locks held by command execution.
+
+    ``free_space_low`` is the volume floor (``below_free_space_floor`` in a
+    real sweep): while it holds, entries a day idle are eligible too.
 
     Discovery is explicit and class-specific. This routine cannot authorize
     evidence deletion. Unknown links and current selections remain untouched.
@@ -684,6 +701,15 @@ def retire_regenerable(
         eligible = root not in kept and (
             now - last_use >= policy.max_idle_s
             or (policy.max_bytes is not None and total > policy.max_bytes)
+            # Rechecked after each removal: the sweep stops once the volume
+            # is back above its free-space floor (HF-942). The floor only
+            # takes entries a day idle, so a full volume shared with other
+            # data cannot make every lane rebuild cold.
+            or (
+                free_space_low is not None
+                and now - last_use >= FLOOR_MIN_IDLE_S
+                and free_space_low(root)
+            )
         )
         # A two-hour grace covers the existing one-hour use-stamp resolution.
         eligible = eligible and now - last_use >= PROTECTION_WINDOW_S
@@ -1372,6 +1398,70 @@ def _legacy_temp_plan(
             )
         )
     return rows
+
+
+# The hot root's cap; the cache retention also keeps the home volume at least
+# default_paths.HOT_STATE_MIN_FREE_BYTES (50 GiB) free, which binds first on a
+# full disk (139 GiB free on 2026-11-20).
+HOT_STATE_BUDGET_BYTES = 40 * 1024**3
+
+
+def provision_hot_state(artifact: Path, *, apply: bool) -> list[dict[str, object]]:
+    """Bind ``artifact``'s hot state to the home volume when it is another one.
+
+    Lock stripes and the file digest store move there (``default_paths.hot_state``).
+    One volume needs no binding. The record is the only configuration.
+    """
+    from molt.default_paths import (
+        HOT_STATE_RECORD,
+        HOT_STATE_SCHEMA,
+        forget_hot_state,
+        hot_state,
+    )
+    from molt.file_publication import atomic_write_bytes
+
+    state = hot_state(artifact)
+    if state is not None:
+        return [
+            {
+                "class": "hot-state",
+                "path": str(state.root),
+                "action": "bound",
+                "budget_bytes": state.budget_bytes,
+            }
+        ]
+    home = Path.home()
+    try:
+        same_volume = os.stat(home).st_dev == os.stat(artifact).st_dev
+    except OSError:
+        return [{"class": "hot-state", "path": str(home), "action": "no-home"}]
+    if same_volume:
+        return [{"class": "hot-state", "path": str(artifact), "action": "same-volume"}]
+    key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[:16]
+    root = home / ".molt" / "hot-state" / key
+    if apply:
+        root.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(
+            artifact / HOT_STATE_RECORD,
+            json.dumps(
+                {
+                    "schema": HOT_STATE_SCHEMA,
+                    "root": str(root),
+                    "budget_bytes": HOT_STATE_BUDGET_BYTES,
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+            exclusive=True,
+        )
+        forget_hot_state(artifact)
+    return [
+        {
+            "class": "hot-state",
+            "path": str(root),
+            "action": "bound" if apply else "bindable",
+            "budget_bytes": HOT_STATE_BUDGET_BYTES,
+        }
+    ]
 
 
 def migrate(
