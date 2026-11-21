@@ -2,6 +2,11 @@
 
 # Op-Kind Single-Source-of-Truth Registry
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 **Status:** The registry generates the closed Rust wire type, Python `FrontendOpKind`/`WireOpKind` Literal types, and their typed facts. Step 4b is implemented on `lane/opkind-step4b-python`; local qualification and integration are distinct. The producer census remains in `tools/op_kinds/census.py`; `tools/audit_op_kinds.py` retains normalized runtime ABI checks. Python membership source scrapers are retired in favor of `ty`. Current V1 qualification and burndown belong to [the V1 ledger](../../agent/V1_HANDOFF_FINDINGS.md).
 
 **Bug class killed:** cross-component op-"kind"-string drift — molt's most prolific silent-miscompile family (5 proven instances; see "Motivation").

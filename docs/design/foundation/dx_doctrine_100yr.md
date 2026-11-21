@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- 100-year world-class DX doctrine + layered architecture. Principal-architect synthesis of read-only research workflow wo98z6t05, 2026-06-27. -->
 
 Source verification complete. Every load-bearing claim in the three reports is confirmed at the file level, with two refinements that materially improve the recommendation. Here is the foundational design document.

@@ -1746,7 +1746,7 @@ stubs, compatibility shims, or debt.
 - Agents are explicitly authorized and strongly encouraged to proactively use subagents and current web research for recent arXiv papers, PL/compiler conference papers, production compiler/runtime talks, trade-conference presentations, and toolchain release notes when they may surface concrete optimization, correctness, verification, or DX opportunities for Molt.
 - Research must be actionable: map each useful finding to Molt subsystems, files, experiments, tests, benchmark gates, or roadmap/spec updates. Do not accumulate passive reading notes.
 - Prefer recent, primary, and technically specific sources. Validate source dates and provenance, and cite links in any user-facing research summary.
-- Convert interesting and useful findings into implementation work aggressively, while preserving all non-negotiable project gates: tinygrad/DFlash fidelity, CPython 3.12+ supported-subset parity, no host-CPython fallback, no hacks/workarounds, native/WASM/LLVM/Luau parity, deterministic verification, and memory/OOM safeguards.
+- Convert interesting and useful findings into implementation work aggressively, while preserving all non-negotiable project gates: tinygrad/DFlash fidelity, CPython 3.12+ supported-subset parity, no host-CPython fallback, no hacks/workarounds, native (Cranelift, LLVM) and WASM (LLVM wasm32) parity, deterministic verification, and memory/OOM safeguards.
 - If a finding implies a major architecture shift or conflict with current specs, write the closure plan first and update the relevant spec/roadmap documents in the same change before implementing.
 
 ## Multi-Agent Workflow

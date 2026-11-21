@@ -2,6 +2,11 @@
 
 # Generator Fusion — Complete Implementation Blueprint
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 The current module driver admits only polls outside the shared call graph's
 recursion-capable set. Opaque Python callbacks, including marked asynchronous
 work observations and unknown-value finalization, retain that conservative

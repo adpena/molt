@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- Foundation blueprint 66. Arc: full deterministic CPython >=3.12 PARITY across ALL
 backends (native/WASM/LLVM/Luau). Author: portfolio-architect. Date: 2026-06-23.
 Status: partially implemented; retained as the long-horizon completion plan. Assigned path:

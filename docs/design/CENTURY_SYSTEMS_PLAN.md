@@ -172,7 +172,7 @@ an ecosystem lane may not clone an upstream package.
 - Decompose by stable architectural boundaries so changing one stdlib family,
   pass family, or backend stage recompiles only that unit. No god-files or
   cyclic ownership.
-- Native, LLVM, WASM, Luau, MLIR, WebGPU, and future backends share semantics
+- Native (Cranelift, LLVM), WASM (LLVM wasm32), MLIR, WebGPU, and future backends share semantics
   and differ only in explicit capability/cost/lowering policy. Unsupported
   lowering fails before artifact production. Every backend compiles against the
   same closed typed contract: it implements an op or returns a typed refusal.

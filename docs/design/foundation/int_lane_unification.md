@@ -1,5 +1,10 @@
 # Int-Lane Unification: One Carrier Authority
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Status: DESIGN (ready_to_implement; lands in the build slot freed by the modulo point fix)
 Scope: the raw-i64-vs-boxed carrier-classification fragmentation that produced the
 loop-IV modulo P0 (silent wrong answer), and its permanent structural cure.

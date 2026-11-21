@@ -1,5 +1,10 @@
 # 76. One SimpleIR optimization pipeline for every target
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Status: implemented 2026-10-11 (HF-87 follow-up). Owner: compiler midend. Each pass in the table
 retires when TIR covers its fact family and backends consume typed IR
 ([77_architecture_convergence.md](77_architecture_convergence.md)).

@@ -1,5 +1,10 @@
 # Inline asynchronous-work safepoints (HF-657)
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Compiled call-return and loop-backedge observations read a runtime-scoped
 pending-work word before entering the runtime. The word summarizes readiness;
 the signal slots, GC scheduler, stopped-pool FIFO and C pending-call ring retain

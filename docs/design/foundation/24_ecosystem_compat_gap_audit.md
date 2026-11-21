@@ -4,6 +4,11 @@
 
 # Ecosystem Compatibility Gap Audit (Dynamism-Bounded, Planning-Grade)
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 > **Note (2026-10-17, HF-280):** `tools/check_satellite_parity.py`, its baseline and the
 > `runtime/molt-runtime/tests/satellite_parity.rs` test are deleted. Every in-tree/satellite
 > pair was deleted or single-sourced by 2026-06-27, so the guard's `PAIRS` table was empty
