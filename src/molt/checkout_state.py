@@ -807,19 +807,6 @@ def checkout_state_environment_roots(
 
     if include_current_process:
         roots[Path(sys.prefix).absolute()] = None
-    raw_prefix = environment.get("PYTHONPYCACHEPREFIX", "").strip()
-    if raw_prefix:
-        from .python_environment_location import environment_bytecode_prefix
-
-        prefix = Path(raw_prefix).expanduser()
-        if not prefix.is_absolute():
-            prefix = working / prefix
-        image = prefix.absolute().parent
-        if (
-            prefix.absolute() == environment_bytecode_prefix(image)
-            and _state_metadata_root(image) != image
-        ):
-            roots.setdefault(image, None)
     raw_target = environment.get("CARGO_TARGET_DIR", "").strip()
     if raw_target:
         target = Path(raw_target).expanduser()

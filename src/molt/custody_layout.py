@@ -286,10 +286,12 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 Regenerable(month, None),
             )
         case "python-environment":
+            # One shared directory of uv environments, one per key and lock
+            # digest (molt.uv_environment); every checkout selects from it.
             return StorageRule(
                 "artifact",
-                "checkout-provisioning",
-                ("build-environments", "development"),
+                "uv_environment",
+                ("python-environments",),
                 Regenerable(month, None),
             )
         case "browser-environment":

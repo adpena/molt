@@ -21,7 +21,6 @@ from pathlib import Path
 from threading import RLock
 from typing import Literal, Mapping, Sequence, cast, get_args
 
-from molt import python_environment_contract as _contract
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 from molt.cargo_execution_policy import (
@@ -664,11 +663,6 @@ def checkout_component(source_root: Path) -> str:
     source = source_root.expanduser().resolve()
     digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
     return f"{uv_project_env_component(source.name)[:24]}-{digest}"
-
-
-# Interpreter/group intent is declared by the project. Its exact immutable
-# image is selected by checkout_provisioning's bounded Git control projection.
-DEFAULT_UV_PROJECT_PURPOSE = "dx"
 
 
 def selected_uv_project_environment(
@@ -2914,22 +2908,18 @@ class RunContext:
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
-        from molt.checkout_state import checkout_state_kind_of
-
-        managed_python = (
+        shared_environments = ext_root.joinpath(
+            *custody_layout.storage_rule("python-environment").relative
+        )
+        if (
             selected_environment is not None
             and not env.get("MOLT_VENV")
-            and checkout_state_kind_of(selected_environment, ext_root)
-            == "python-environment"
-        )
-        if managed_python:
-            assert selected_environment is not None
-            from molt.python_environment_location import environment_bytecode_prefix
+            and selected_environment.parent == shared_environments
+        ):
+            from molt.uv_environment import bytecode_prefix
 
-            env["PYTHONPYCACHEPREFIX"] = str(
-                environment_bytecode_prefix(selected_environment)
-            )
-            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            env["PYTHONPYCACHEPREFIX"] = str(bytecode_prefix(selected_environment))
+            env.pop("PYTHONDONTWRITEBYTECODE", None)
         else:
             install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
         install_default("TMPDIR", run_scratch)
@@ -3146,44 +3136,19 @@ class DxProject:
         return RunContext(self.root).uv_project_env_dir(env)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
-        from molt.python_environment_location import environment_python_path
+        from molt.uv_environment import python_path
 
-        return environment_python_path(
-            self.uv_project_env_dir(os.environ if env is None else env)
-        )
+        return python_path(self.uv_project_env_dir(os.environ if env is None else env))
 
-    def normalized_uv_run_env(
-        self,
-        env: Mapping[str, str],
-        *,
-        python: str | None,
-    ) -> ProcessEnvironment:
-        from molt.source_build_environment_selection import (
-            read_development_environment_selection,
-        )
-
-        selected = self.uv_project_env_dir(env)
-        try:
-            image = read_development_environment_selection(
-                selected,
-                repo_root=self.root,
-                python=python,
-                groups=self.dependency_groups(),
-            )
-        except (OSError, ValueError, _contract.SourceBuildEnvironmentError) as exc:
-            raise DxConfigError(str(exc)) from exc
-        return self.projected_uv_run_env(env, root=image.root)
+    def normalized_uv_run_env(self, env: Mapping[str, str]) -> ProcessEnvironment:
+        """``env`` for a command in the selected shared environment."""
+        return self.projected_uv_run_env(env, root=self.uv_project_env_dir(env))
 
     def projected_uv_run_env(
         self, env: Mapping[str, str], *, root: Path
     ) -> ProcessEnvironment:
-        """Assemble a selection; the consuming operation owns its admission.
-
-        The no-site guardian uses this before its existing selected-image
-        capture. Equipped callers use normalized_uv_run_env for cheap recipe
-        validation. Neither path starts another interpreter here.
-        """
-        from molt.python_environment_location import environment_bytecode_prefix
+        """``env`` for a command in the environment ``root``; starts nothing."""
+        from molt.uv_environment import bytecode_prefix
 
         root = Path(os.path.abspath(root))
         run_env = ProcessEnvironmentBuilder(env)
@@ -3191,8 +3156,8 @@ class DxProject:
         run_env["UV_PROJECT_ENVIRONMENT"] = str(root)
         run_env["VIRTUAL_ENV"] = str(root)
         run_env["UV_NO_SYNC"] = "1"
-        run_env["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(root))
-        run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        run_env["PYTHONPYCACHEPREFIX"] = str(bytecode_prefix(root))
+        run_env.pop("PYTHONDONTWRITEBYTECODE", None)
         for name in ("PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
         return ProcessEnvironment(run_env)

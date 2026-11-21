@@ -84,7 +84,6 @@ if not __package__:
     _bootstrap_root = str(_selected_package.parent)
     sys.path.insert(0, _bootstrap_root)
 
-from molt import python_environment_contract as _contract  # noqa: E402
 from molt.guard_stems_generated import GuardStem  # noqa: E402
 from molt.python_identity_common import (  # noqa: E402
     PythonEnvironmentIdentityError as PythonEnvironmentIdentityError,
@@ -112,21 +111,7 @@ def _parse_arguments():
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
     parser.add_argument("--admit-site-bootstrap", action="append", default=[])
     parser.add_argument("--admit-external-root", type=Path, action="append", default=[])
-    parser.add_argument("--admit-published-environment", action="store_true")
-    parser.add_argument("--development-checkout", type=Path)
-    parser.add_argument("--development-python")
-    parser.add_argument("--development-group", action="append", default=[])
     args = parser.parse_args()
-    if (
-        args.development_checkout is not None
-        or args.development_python is not None
-        or args.development_group
-    ) and (not args.admit_published_environment or args.development_checkout is None):
-        parser.error("development intent requires admission and a checkout")
-    if args.admit_published_environment and (
-        not (args.capture_environment or args.capture_active_environment)
-    ):
-        parser.error("published admission requires a read-only environment capture")
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
@@ -152,8 +137,6 @@ def _parse_arguments():
 
 
 _arguments = _parse_arguments() if __name__ == "__main__" else None
-# Set once this child seals a legacy image, so a refusal can say so truthfully.
-_sealed_before_admission = False
 if _arguments is not None and (
     _arguments.locate_active_environment or _arguments.editable_project
 ):
@@ -553,7 +536,6 @@ def _serve_runtime_session(payload, context, *, requests, responses) -> None:
 
 
 def _main() -> None:
-    global _sealed_before_admission
     args = _arguments
     assert args is not None
     from molt import input_report
@@ -571,34 +553,6 @@ def _main() -> None:
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
         from molt.toolchain_facts import host_file_digest_cache
-
-        if args.admit_published_environment:
-            from molt.exact_json import loads_exact
-            from molt.python_environment_location import (
-                _active_environment_prefix,
-                attestation_records_writable_installation,
-                seal_environment_installation,
-            )
-
-            # Sealing is an intentional permission transition. Seal a legacy
-            # attestation's image before opening the capture fence; admission
-            # compares the sealed live identity against the original
-            # attestation inside that fence. A sealed or unreadable attestation
-            # skips the walk and admission reports its own refusal.
-            sealed_root = args.capture_environment or _active_environment_prefix()
-            try:
-                attestation = loads_exact(
-                    (
-                        sealed_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-                    ).read_text(encoding="utf-8")
-                )
-            except (OSError, ValueError):
-                attestation = None
-            if isinstance(attestation, Mapping) and (
-                attestation_records_writable_installation(attestation)
-            ):
-                seal_environment_installation(sealed_root)
-                _sealed_before_admission = True
 
         with PythonFileCaptureContext(
             hash_workers=args.hash_workers, digest_cache=host_file_digest_cache()
@@ -633,39 +587,12 @@ def _main() -> None:
                 if args.admit_virtualenv_bootstrap:
                     bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
 
-                def check_published_identity(realized: Mapping[str, object]) -> None:
-                    # The source-bound guardian has no site dependencies. This
-                    # selected-image child already captured their exact bytes;
-                    # keep recipe/lock/WHEEL checks in their existing owner and
-                    # imports after the capture's loaded-native-image census.
-                    from molt.source_build_environment import (
-                        admit_published_environment,
-                    )
-
-                    intent = (
-                        _contract.DevelopmentEnvironmentRequest(
-                            args.development_checkout.resolve(strict=True),
-                            args.development_python,
-                            tuple(args.development_group),
-                        )
-                        if args.development_checkout is not None
-                        else None
-                    )
-                    admit_published_environment(
-                        root, realized, development_admission=intent
-                    )
-
                 payload = capture_current_python_environment(
                     root,
                     admitted_site_bootstrap_paths=bootstrap,
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,
                     with_custody=args.with_custody,
-                    final_checks=(
-                        check_published_identity
-                        if args.admit_published_environment
-                        else None
-                    ),
                 )
             if args.runtime_session:
                 _serve_runtime_session(
@@ -679,7 +606,4 @@ if __name__ == "__main__":
     try:
         _main()
     except (OSError, ValueError) as exc:
-        detail = str(exc)
-        if _sealed_before_admission:
-            detail = "published image sealing preceded admission: " + detail
-        _probe_error(detail)
+        _probe_error(str(exc))

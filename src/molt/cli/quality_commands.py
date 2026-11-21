@@ -157,7 +157,7 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
             raise DxConfigError(
                 "managed lint execution cannot replace an explicitly borrowed MOLT_VENV"
             )
-        env = project.normalized_uv_run_env(env, python=None)
+        env = project.normalized_uv_run_env(env)
         project.require_project_python("lint", env)
         commands = project.split_command_sequence(
             project.commands().get("lint"),
@@ -166,7 +166,7 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
         )
         selected = project.uv_project_env_dir(env)
         commands = [
-            resolve_command(cmd, venv=selected, managed=True) for cmd in commands
+            resolve_command(cmd, venv=selected) for cmd in commands
         ]
     except (DxConfigError, VenvExecError, ValueError) as exc:
         if json_output:
@@ -239,7 +239,6 @@ def test(
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     from molt.checkout_provisioning import ProvisioningError, ensure
-    from molt.python_environment_location import environment_bytecode_arguments
 
     try:
         if env.get("MOLT_VENV"):
@@ -252,8 +251,7 @@ def test(
         environment = project.normalized_uv_run_env(
             ProcessEnvironment(env).updated(
                 {"UV_PROJECT_ENVIRONMENT": str(selected.environment_root)}
-            ),
-            python=None,
+            )
         )
         project_python = str(project.project_python(environment))
     except (ProvisioningError, DxConfigError) as exc:
@@ -264,10 +262,7 @@ def test(
         else:
             print(f"test: {exc}", file=sys.stderr)
         return 2
-    python_command = [
-        project_python,
-        *environment_bytecode_arguments(selected.environment_root),
-    ]
+    python_command = [project_python]
     if suite == "dev":
         cmd = [*python_command, "tools/dev.py", "test"]
     elif suite == "diff":

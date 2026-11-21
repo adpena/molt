@@ -656,25 +656,6 @@ def _validate_gate_image(repo: Path, context: GateEnvironment) -> None:
     """
     if context.python_root is None:
         return
-    if context.managed:
-        from molt.dx import DxConfigError, DxProject
-        from molt.source_build_environment_selection import (
-            read_development_environment_selection,
-        )
-
-        try:
-            read_development_environment_selection(
-                context.python_root,
-                repo_root=repo,
-                groups=DxProject(repo).dependency_groups(),
-            )
-        except (
-            DxConfigError,
-            _contract.SourceBuildEnvironmentError,
-            OSError,
-            ValueError,
-        ) as exc:
-            raise DriverError(f"managed development image refused: {exc}") from exc
     try:
         venv_exec.venv_python(context.python_root)
     except (venv_exec.VenvExecError, ValueError) as exc:
@@ -833,7 +814,7 @@ def _gate_environment(
                 )
             if not (isinstance(cmd, str) and shell_syntax):
                 cmd = tuple(
-                    venv_exec.resolve_command(words, venv=venv, managed=managed)
+                    venv_exec.resolve_command(words, venv=venv)
                 )
         # An external borrower keeps its explicit contract. Managed roots stay
         # selected as UV images rather than being relabeled as borrowed venvs.

@@ -726,7 +726,7 @@ def select_regrtest_host(
         raise ValueError("regrtest interpreter and pinned source targets differ")
     if config.use_uv:
         from molt.checkout_provisioning import ensure
-        from molt.python_environment_location import environment_python_path
+        from molt.uv_environment import python_path as environment_python_path
 
         image = ensure(
             "uv-environment",

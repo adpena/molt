@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from molt import python_environment_contract as _contract  # noqa: E402
 from molt.llvm_toolchain import (
     capture_wasi_sdk_selection,
     llvm_toolchain_environment_name,
@@ -503,10 +502,7 @@ def _exact_command(
         selected_venv = env.get("VIRTUAL_ENV")
         if not selected_venv:
             raise ValueError("modeled venv wrapper has no bound environment")
-        managed = not (wrapper.get("venv") or env.get("MOLT_VENV"))
-        argv = venv_exec.resolve_command(
-            argv, venv=Path(selected_venv), managed=managed
-        )
+        argv = venv_exec.resolve_command(argv, venv=Path(selected_venv))
     python = envelope.get("python")
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",
@@ -667,37 +663,11 @@ def _python_auxiliary_command(
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
 
-def _development_admission(
-    envelope: Mapping[str, object],
-    env: Mapping[str, str],
-    *,
-    source_root: Path,
-) -> _contract.DevelopmentEnvironmentRequest | None:
-    """Recover managed wrapper intent without importing semantic dependencies."""
-    from molt.dx import DxProject
-
-    wrapper = envelope.get("wrapper")
-    if not isinstance(wrapper, Mapping):
-        return None
-    kind = wrapper.get("kind")
-    if kind == "venv" and (wrapper.get("venv") or env.get("MOLT_VENV")):
-        return None
-    if kind not in {"venv", "uv-project"}:
-        return None
-    return _contract.DevelopmentEnvironmentRequest(
-        source_root,
-        str(wrapper["python"]) if kind == "uv-project" else None,
-        DxProject(source_root).dependency_groups(),
-    )
-
-
 def _python_probe_command(
     executable: Path,
     *,
     verifier_bytecode_prefix: Path,
     source_root: Path,
-    admit_published_environment: bool,
-    development_admission: _contract.DevelopmentEnvironmentRequest | None = None,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -715,16 +685,6 @@ def _python_probe_command(
                 "--hash-workers",
                 str(hash_workers),
                 "--admit-virtualenv-bootstrap",
-                *(
-                    ("--admit-published-environment",)
-                    if admit_published_environment or development_admission is not None
-                    else ()
-                ),
-                *(
-                    development_admission.intent_arguments()
-                    if development_admission is not None
-                    else ()
-                ),
                 *(
                     value
                     for root in admitted_roots
@@ -848,16 +808,6 @@ def _python_identity(
     if any(selection.get(key) != value for key, value in expected.items()):
         raise ValueError("proof Python selection differs from its location receipt")
     executable_raw = str(expected["executable"])
-    prefix = Path(str(location["prefix"]))
-    from molt.checkout_state import checkout_state_kind_of
-
-    managed = (
-        len(prefix.parents) > 3
-        and checkout_state_kind_of(prefix, prefix.parents[3]) == "python-environment"
-    )
-    published_admission = (
-        managed or (prefix / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
-    )
     # Selection ran the exact uv/py launcher before arming. Repeating uv run
     # here can sync or close its writable environment lock before full capture
     # has admitted that lock. Preserve the lexical venv launcher (not its base
@@ -867,10 +817,6 @@ def _python_identity(
             Path(executable_raw),
             verifier_bytecode_prefix=verifier.prefix,
             source_root=source_root,
-            admit_published_environment=published_admission,
-            development_admission=_development_admission(
-                envelope, env, source_root=source_root
-            ),
             external_roots=[
                 Path(value) for value in cast(list[str], selected_external_roots)
             ],

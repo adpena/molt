@@ -85,26 +85,19 @@ def run_uv(
         # provisions a managed image nor asks uv to select or sync a project.
         selected_root = resolve_venv(repo_root=ROOT, env=base_env)
         run_env = venv_env(venv=selected_root, env=base_env, managed=False)
-        cmd = resolve_command(args, venv=selected_root, managed=False)
+        cmd = resolve_command(args, venv=selected_root)
         limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
         _check_call_guarded(cmd, run_env, limits=limits)
         return
 
     from molt.checkout_provisioning import ensure
-    from tools.proof_command_argv import uv_environment_command
 
     selected = ensure("uv-environment", ROOT, base_env, python=python)
     assert selected.environment_root is not None
-    run_env = DX.normalized_uv_run_env(
-        base_env.updated({"UV_PROJECT_ENVIRONMENT": str(selected.environment_root)}),
-        python=None,
+    run_env = venv_env(
+        venv=selected.environment_root, env=base_env, managed=True, repo_root=ROOT
     )
-    payload = resolve_command(args, venv=selected.environment_root, managed=True)
-    cmd = uv_environment_command(
-        ["uv", "run", "--", *payload],
-        repo_root=ROOT,
-        environment_root=selected.environment_root,
-    )
+    cmd = resolve_command(args, venv=selected.environment_root)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     _check_call_guarded(cmd, run_env, limits=limits)
 
@@ -195,8 +188,8 @@ def _run_repo_cmd(cmd: list[str], env: Mapping[str, str], *, tty: bool) -> None:
         selected = DX.uv_project_env_dir(env)
         # Bounded recipe selection is owned by DX; argument assembly never
         # probes the runtime or mutates the selected published image.
-        env = DX.normalized_uv_run_env(env, python=None)
-        cmd = resolve_command(cmd, venv=selected, managed=True)
+        env = DX.normalized_uv_run_env(env)
+        cmd = resolve_command(cmd, venv=selected)
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     _check_call_guarded(cmd, env, limits=limits)
@@ -481,15 +474,7 @@ def main() -> None:
         )
         _log(f"PYTHONPATH={env['PYTHONPATH']}")
         if env.get("MOLT_VENV"):
-            raise RuntimeError("the version matrix requires managed development images")
-        if env.get("UV_PROJECT_ENVIRONMENT"):
-            from molt.source_build_environment_selection import (
-                read_development_environment_selection,
-            )
-
-            read_development_environment_selection(
-                Path(env["UV_PROJECT_ENVIRONMENT"]), repo_root=ROOT
-            )
+            raise RuntimeError("the version matrix requires the shared environments")
         env.pop("UV_PROJECT_ENVIRONMENT", None)
         for index, python in enumerate(
             target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
