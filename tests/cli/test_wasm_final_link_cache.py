@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from molt import artifact_publication
+from molt import artifact_publication, process_guard
 from molt.cli import wasm_final_link_cache as cache
 from molt.cli import wasm_link_cache
 
@@ -29,6 +31,10 @@ def _link_cmd(
         "--optimize-level",
         "O1",
     ]
+
+
+def _miss() -> None:
+    raise RuntimeError("cache miss")
 
 
 def _inputs(tmp_path: Path) -> Path:
@@ -97,20 +103,23 @@ def test_result_roundtrips_and_a_tampered_entry_is_a_miss(
         path.write_bytes(f"{role} bytes".encode())
     fresh = {role: tmp_path / "gen-b" / path.name for role, path in produced.items()}
 
-    assert not cache.restore_final_link_result(entry, fresh)
-    cache.publish_final_link_result(entry, produced)
-    assert cache.restore_final_link_result(entry, fresh)
+    assert not cache.ensure_final_link_result(entry, produced, lambda: None).reused
+    assert cache.ensure_final_link_result(
+        entry, fresh, lambda: pytest.fail("unexpected producer")
+    ).reused
     assert {role: path.read_bytes() for role, path in fresh.items()} == {
         role: path.read_bytes() for role, path in produced.items()
     }
 
     # A request for a different output family never matches this entry.
-    assert not cache.restore_final_link_result(entry, {"linked": fresh["linked"]})
+    with pytest.raises(RuntimeError, match="cache miss"):
+        cache.ensure_final_link_result(entry, {"linked": fresh["linked"]}, _miss)
 
-    cache.publish_final_link_result(entry, produced)
+    cache.ensure_final_link_result(entry, produced, lambda: None)
     (entry.root / "roles" / "linked").write_bytes(b"tampered")
     again = {role: tmp_path / "gen-c" / path.name for role, path in produced.items()}
-    assert not cache.restore_final_link_result(entry, again)
+    with pytest.raises(RuntimeError, match="cache miss"):
+        cache.ensure_final_link_result(entry, again, _miss)
     assert not any(path.exists() for path in again.values())
     assert not entry.metadata.exists()
 
@@ -123,7 +132,7 @@ def test_bundle_transfer_preserves_a_colliding_unowned_stage(
     source = tmp_path / "source.wasm"
     source.write_bytes(b"complete generation")
     entry = cache.final_link_cache_entry("d" * 64)
-    cache.publish_final_link_result(entry, {"linked": source})
+    cache.ensure_final_link_result(entry, {"linked": source}, lambda: None)
     prior_metadata = entry.metadata.read_bytes()
     destination = tmp_path / "result.wasm"
     destination.write_bytes(b"previous output")
@@ -135,9 +144,12 @@ def test_bundle_transfer_preserves_a_colliding_unowned_stage(
     )
     with pytest.raises(FileExistsError):
         if operation == "publish":
-            cache.publish_final_link_result(entry, {"linked": source})
+            with cache._locked_wasm_link_cache_entry(entry):
+                wasm_link_cache._publish_wasm_link_cache_bundle(
+                    entry, {"linked": source}
+                )
         else:
-            cache.restore_final_link_result(entry, {"linked": destination})
+            cache.ensure_final_link_result(entry, {"linked": destination}, _miss)
     assert stage.read_bytes() == b"another owner's bytes"
     assert stage.stat().st_ino == prior_stage.st_ino
     assert destination.read_bytes() == b"previous output"
@@ -153,7 +165,7 @@ def test_bundle_transfer_rejects_bytes_changed_after_admission(
     source = tmp_path / "source.wasm"
     source.write_bytes(b"original generation")
     entry = cache.final_link_cache_entry("e" * 64)
-    cache.publish_final_link_result(entry, {"linked": source})
+    cache.ensure_final_link_result(entry, {"linked": source}, lambda: None)
     metadata = entry.metadata.read_bytes()
     destination = tmp_path / "result.wasm"
     destination.write_bytes(b"previous output")
@@ -176,9 +188,12 @@ def test_bundle_transfer_rejects_bytes_changed_after_admission(
     )
     with pytest.raises(ValueError, match="source changed while staging verified copy"):
         if operation == "publish":
-            cache.publish_final_link_result(entry, {"linked": source})
+            with cache._locked_wasm_link_cache_entry(entry):
+                wasm_link_cache._publish_wasm_link_cache_bundle(
+                    entry, {"linked": source}
+                )
         else:
-            cache.restore_final_link_result(entry, {"linked": destination})
+            cache.ensure_final_link_result(entry, {"linked": destination}, _miss)
     assert mutations == [target]
     assert destination.read_bytes() == b"previous output"
     assert entry.metadata.read_bytes() == metadata
@@ -208,3 +223,122 @@ def test_failure_evidence_destination_is_not_a_link_content_input(
         cache.final_link_cache_key(command, cwd=tmp_path, tool_facts=changed_source)
         != expected
     )
+
+
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_matching_requests_have_one_locked_producer_and_retry_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_fails: bool
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    entry = cache.final_link_cache_entry("7" * 64)
+    entered, release, waiter_started = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+    calls: list[str] = []
+    first = {role: tmp_path / "first" / role for role in ("linked", "optimizer")}
+    second = {role: tmp_path / "second" / role for role in first}
+
+    def write(outputs: dict[str, Path]) -> None:
+        for role, path in outputs.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((role + " admitted bytes").encode())
+
+    def produce_first() -> None:
+        calls.append("first")
+        entered.set()
+        assert release.wait(300)
+        if first_fails:
+            first["linked"].parent.mkdir(parents=True, exist_ok=True)
+            first["linked"].write_bytes(b"partial rejected product")
+            raise ValueError("first producer rejected")
+        write(first)
+
+    def produce_second() -> None:
+        calls.append("second")
+        assert not entry.metadata.exists()
+        write(second)
+
+    def waiter() -> cache.FinalLinkResult:
+        waiter_started.set()
+        return cache.ensure_final_link_result(entry, second, produce_second)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(
+            cache.ensure_final_link_result, entry, first, produce_first
+        )
+        try:
+            assert entered.wait(300)
+            # A separate interpreter has no in-process lock registry: this is
+            # an independent witness that the producer holds the OS key lock.
+            probe = process_guard.run_completed_command(
+                [
+                    sys.executable,
+                    "-c",
+                    """
+import sys
+from pathlib import Path
+from molt.file_locks import _acquire_file_lock, _release_file_lock, FileLockTimeout
+try:
+    handle = _acquire_file_lock(Path(sys.argv[1]), timeout_s=0.1, timeout_message="held")
+except FileLockTimeout:
+    print("held")
+else:
+    _release_file_lock(handle)
+    raise AssertionError("producer released its OS lock")
+""",
+                    str(entry.lock),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=300,
+            )
+            assert probe.stdout == "held\n"
+            competitor = executor.submit(waiter)
+            assert waiter_started.wait(300)
+            # Another key completes while this producer remains suspended.
+            other = cache.final_link_cache_entry("8" * 64)
+            unrelated = {"linked": tmp_path / "unrelated"}
+            assert not cache.ensure_final_link_result(
+                other, unrelated, lambda: write(unrelated)
+            ).reused
+            assert not release.is_set()
+        finally:
+            release.set()
+        if first_fails:
+            with pytest.raises(ValueError, match="first producer rejected"):
+                owner.result(timeout=300)
+        else:
+            assert not owner.result(timeout=300).reused
+        result = competitor.result(timeout=300)
+    assert result.reused is not first_fails
+    assert calls == (["first", "second"] if first_fails else ["first"])
+    assert {role: path.read_bytes() for role, path in second.items()} == {
+        role: (role + " admitted bytes").encode() for role in second
+    }
+    replay = {role: tmp_path / "replay" / role for role in second}
+    assert cache.ensure_final_link_result(entry, replay, _miss).reused
+    assert {role: path.read_bytes() for role, path in replay.items()} == {
+        role: path.read_bytes() for role, path in second.items()
+    }
+
+
+def test_cache_publication_failure_keeps_admitted_private_product(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    entry = cache.final_link_cache_entry("9" * 64)
+    output = tmp_path / "private"
+
+    def produce() -> None:
+        output.write_bytes(b"admitted")
+
+    def refuse(_entry: wasm_link_cache.WasmLinkCacheEntry, _outputs: object) -> None:
+        raise OSError("cache unavailable")
+
+    monkeypatch.setattr(cache, "_publish_wasm_link_cache_bundle", refuse)
+    result = cache.ensure_final_link_result(entry, {"linked": output}, produce)
+    assert not result.reused and isinstance(result.publication_error, OSError)
+    assert output.read_bytes() == b"admitted"
+    assert not entry.metadata.exists()

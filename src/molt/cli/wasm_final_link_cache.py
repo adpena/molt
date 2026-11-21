@@ -12,7 +12,8 @@ checkout) cost a copy instead of a link.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import sys
@@ -96,12 +97,23 @@ def final_link_cache_entry(key: str) -> WasmLinkCacheEntry:
     return _wasm_link_cache_entry(FINAL_LINK_CACHE_FAMILY, FINAL_LINK_CACHE_SCHEMA, key)
 
 
-def restore_final_link_result(
-    entry: WasmLinkCacheEntry, outputs: Mapping[str, Path]
-) -> bool:
-    """Materialize a cached result into ``outputs``; False on a miss.
+@dataclass(frozen=True)
+class FinalLinkResult:
+    reused: bool
+    publication_error: OSError | ValueError | None = None
 
-    A present but invalid entry is removed so the next link republishes it.
+
+def ensure_final_link_result(
+    entry: WasmLinkCacheEntry,
+    outputs: Mapping[str, Path],
+    produce: Callable[[], None],
+) -> FinalLinkResult:
+    """Restore or produce one admitted output family under its existing key lock.
+
+    The nonrecursive producer must return only after all input, selection and
+    optimizer admission succeeds. Its exceptions publish nothing and release
+    the lock so a waiter can retry. Publication errors leave the admitted private
+    outputs available and are returned for the caller's existing warning policy.
     """
     with _locked_wasm_link_cache_entry(entry):
         cached = _read_wasm_link_cache_bundle(entry, outputs.keys())
@@ -109,19 +121,15 @@ def restore_final_link_result(
             case WasmLinkCacheBundleMiss(reason=reason):
                 if reason is WasmLinkCacheBundleMissReason.CORRUPT:
                     _invalidate_wasm_link_cache_bundle(entry)
-                return False
             case WasmLinkCacheBundleHit(files=files):
-                # Transfer the verified generation before its lock releases.
                 for role, path in outputs.items():
                     _transfer_file(files[role], path)
-                return True
+                return FinalLinkResult(reused=True)
             case _:
                 assert_never(cached)
-
-
-def publish_final_link_result(
-    entry: WasmLinkCacheEntry, outputs: Mapping[str, Path]
-) -> None:
-    """Record the complete private output family of one successful link."""
-    with _locked_wasm_link_cache_entry(entry):
-        _publish_wasm_link_cache_bundle(entry, outputs)
+        produce()
+        try:
+            _publish_wasm_link_cache_bundle(entry, outputs)
+        except (OSError, ValueError) as exc:
+            return FinalLinkResult(reused=False, publication_error=exc)
+        return FinalLinkResult(reused=False)
