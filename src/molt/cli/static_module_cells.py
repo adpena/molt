@@ -520,9 +520,7 @@ def _function_entries(
                         found.update(_object_entries(ops, user, index))
                     else:
                         found.add(((user, index), False))
-                elif name in created_in_chain and (
-                    kind in _OBJECT_MEDIATED
-                ):
+                elif name in created_in_chain and (kind in _OBJECT_MEDIATED):
                     # This op holds the function's object, which exists only
                     # after the chain published it: already an entry.
                     continue

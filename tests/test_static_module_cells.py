@@ -1107,7 +1107,9 @@ def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
     )
 
 
-def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publication() -> None:
+def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publication() -> (
+    None
+):
     """Another module that calls ``shared`` through its object (a guarded call
     whose callee word is the function) can only do so after ``mod`` published
     that object, which follows LIMIT's store; a call by symbol alone (the
