@@ -1457,8 +1457,6 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = vec![
         &state.special_cache.awaitable_await,
-        &state.special_cache.function_code_descriptor,
-        &state.special_cache.function_globals_descriptor,
         &state.special_cache.weakref_callback_descriptor,
         &state.special_cache.instance_dict_descriptor,
         &state.special_cache.instance_weakref_descriptor,
@@ -1471,8 +1469,8 @@ pub(crate) mod shutdown_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{THREAD_LOCAL_DROP_TEST_TRACE, clear_special_cache, clear_worker_thread_state};
-    use crate::{MoltObject, alloc_string, runtime_state};
+    use super::{THREAD_LOCAL_DROP_TEST_TRACE, clear_worker_thread_state};
+    use crate::{MoltObject, runtime_state};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -2044,44 +2042,6 @@ pub(crate) mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_worker_thread_state(_py);
-        });
-    }
-
-    #[test]
-    fn clear_special_cache_releases_function_descriptor_slots() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            clear_special_cache(_py, state);
-
-            let code_ptr = alloc_string(_py, b"__code__ descriptor sentinel");
-            assert!(!code_ptr.is_null());
-            let globals_ptr = alloc_string(_py, b"__globals__ descriptor sentinel");
-            assert!(!globals_ptr.is_null());
-            state
-                .special_cache
-                .function_code_descriptor
-                .store(MoltObject::from_ptr(code_ptr).bits(), Ordering::Release);
-            state
-                .special_cache
-                .function_globals_descriptor
-                .store(MoltObject::from_ptr(globals_ptr).bits(), Ordering::Release);
-
-            clear_special_cache(_py, state);
-            assert_eq!(
-                state
-                    .special_cache
-                    .function_code_descriptor
-                    .load(Ordering::Acquire),
-                0
-            );
-            assert_eq!(
-                state
-                    .special_cache
-                    .function_globals_descriptor
-                    .load(Ordering::Acquire),
-                0
-            );
         });
     }
 }

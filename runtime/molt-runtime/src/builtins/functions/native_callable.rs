@@ -84,47 +84,66 @@ pub(crate) fn molt_native_callable_reduce_attached_body(
     })
 }
 
-/// Declared callable attributes: mutable tail fields or a read-only projection
-/// of an owner that already lives in the function prefix. Projected attributes
-/// cannot enter the physical metadata mutation or GC-storage APIs.
+/// Declared callable attributes: mutable tail fields or projections of owners
+/// that already live in the function prefix. Projected writes use their own
+/// validated mutation; they never enter metadata-tail or GC-storage APIs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CallableMetadata {
     Stored(Field),
     Builtins,
+    Code,
+    Globals,
 }
 
 impl CallableMetadata {
+    const PROJECTIONS: [Self; 3] = [Self::Builtins, Self::Code, Self::Globals];
     const BUILTINS_OPERATION: u32 = Field::ALL.len() as u32;
-    pub(crate) const PUBLIC_FUNCTION: [Self; Field::PUBLIC_FUNCTION.len() + 1] = {
-        let mut fields = [Self::Builtins; Field::PUBLIC_FUNCTION.len() + 1];
+    const CODE_OPERATION: u32 = Self::BUILTINS_OPERATION + 1;
+    const GLOBALS_OPERATION: u32 = Self::CODE_OPERATION + 1;
+    pub(crate) const PUBLIC_FUNCTION: [Self; Field::PUBLIC_FUNCTION.len() + 3] = {
+        let mut fields = [Self::Builtins; Field::PUBLIC_FUNCTION.len() + 3];
         let mut index = 0;
         while index < Field::PUBLIC_FUNCTION.len() {
             fields[index] = Self::Stored(Field::PUBLIC_FUNCTION[index]);
             index += 1;
         }
+        fields[index + 1] = Self::Code;
+        fields[index + 2] = Self::Globals;
         fields
     };
 
     pub(crate) fn from_operation(operation: u32) -> Option<Self> {
         if operation == Self::BUILTINS_OPERATION {
             Some(Self::Builtins)
+        } else if operation == Self::CODE_OPERATION {
+            Some(Self::Code)
+        } else if operation == Self::GLOBALS_OPERATION {
+            Some(Self::Globals)
         } else {
             Field::from_operation(operation).map(Self::Stored)
         }
     }
 
     pub(crate) fn from_id(name: crate::NameId) -> Option<Self> {
-        if name == Self::Builtins.name_id() {
-            Some(Self::Builtins)
-        } else {
-            Field::from_id(name).map(Self::Stored)
-        }
+        Self::PROJECTIONS
+            .into_iter()
+            .find(|field| field.name_id() == name)
+            .or_else(|| Field::from_id(name).map(Self::Stored))
+    }
+
+    pub(crate) fn all() -> impl Iterator<Item = Self> {
+        Field::ALL
+            .into_iter()
+            .map(Self::Stored)
+            .chain(Self::PROJECTIONS)
     }
 
     pub(crate) const fn operation(self) -> u32 {
         match self {
             Self::Stored(field) => field as u32,
             Self::Builtins => Self::BUILTINS_OPERATION,
+            Self::Code => Self::CODE_OPERATION,
+            Self::Globals => Self::GLOBALS_OPERATION,
         }
     }
 
@@ -132,6 +151,8 @@ impl CallableMetadata {
         match self {
             Self::Stored(field) => field.name_id(),
             Self::Builtins => crate::NameId::DunderBuiltins,
+            Self::Code => crate::NameId::DunderCode,
+            Self::Globals => crate::NameId::DunderGlobals,
         }
     }
 

@@ -18,20 +18,19 @@ use crate::builtins::exceptions::{
     molt_exception_last_pending_attached_body,
 };
 use crate::{
-    ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
-    TYPE_ID_CLASSMETHOD, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER,
-    TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
-    TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
-    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
-    alloc_property_obj, alloc_string, alloc_tuple, builtin_class_method_bits, builtin_classes,
-    builtin_func_bits, call_callable0, call_callable1, call_callable2, call_callable3,
-    class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
-    class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, exception_last_bits_noinc, exception_pending,
-    inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_bound_method_new_attached_body, obj_from_bits, object_class_bits, object_type_id,
-    profile_hit_unchecked, raise_exception, runtime_state, string_bytes, string_len,
-    string_obj_to_owned, type_name, type_of_bits,
+    FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
+    TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FOREIGN,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_MAP,
+    TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs, alloc_string, alloc_tuple,
+    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable0, call_callable1,
+    call_callable2, call_callable3, class_bases_bits, class_bases_vec, class_dict_bits,
+    class_layout_version_bits, class_mro_pinned, class_mro_view, class_name_bits, clear_exception,
+    dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_last_bits_noinc,
+    exception_pending, inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_bound_method_new_attached_body, obj_from_bits, object_class_bits,
+    object_type_id, profile_hit_unchecked, raise_exception, runtime_state, string_bytes,
+    string_len, string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -706,80 +705,6 @@ pub(crate) unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn function_code_descriptor_bits(_py: &PyToken<'_>) -> u64 {
-    init_atomic_bits(
-        _py,
-        &runtime_state(_py).special_cache.function_code_descriptor,
-        || {
-            let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-                _py,
-                fn_ref!(molt_function_get_code),
-                1,
-            );
-            if getter_ptr.is_null() {
-                return 0;
-            }
-            unsafe {
-                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                if !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    getter_ptr,
-                    builtin_bits,
-                    ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(getter_ptr).bits());
-                    return 0;
-                }
-            }
-            let getter_bits = MoltObject::from_ptr(getter_ptr).bits();
-            let none_bits = MoltObject::none().bits();
-            let prop_ptr = alloc_property_obj(_py, getter_bits, none_bits, none_bits);
-            dec_ref_bits(_py, getter_bits);
-            if prop_ptr.is_null() {
-                return 0;
-            }
-            MoltObject::from_ptr(prop_ptr).bits()
-        },
-    )
-}
-
-fn function_globals_descriptor_bits(_py: &PyToken<'_>) -> u64 {
-    init_atomic_bits(
-        _py,
-        &runtime_state(_py).special_cache.function_globals_descriptor,
-        || {
-            let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-                _py,
-                fn_ref!(molt_function_get_globals),
-                1,
-            );
-            if getter_ptr.is_null() {
-                return 0;
-            }
-            unsafe {
-                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                if !crate::object::object_init_class_edge_unpublished(
-                    _py,
-                    getter_ptr,
-                    builtin_bits,
-                    ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(getter_ptr).bits());
-                    return 0;
-                }
-            }
-            let getter_bits = MoltObject::from_ptr(getter_ptr).bits();
-            let none_bits = MoltObject::none().bits();
-            let prop_ptr = alloc_property_obj(_py, getter_bits, none_bits, none_bits);
-            dec_ref_bits(_py, getter_bits);
-            if prop_ptr.is_null() {
-                return 0;
-            }
-            MoltObject::from_ptr(prop_ptr).bits()
-        },
-    )
-}
-
 fn weakref_callback_descriptor_bits(py: &PyToken<'_>) -> u64 {
     init_atomic_bits(
         py,
@@ -867,28 +792,16 @@ pub(crate) unsafe fn class_namespace_lookup_raw(
     class: *mut u8,
     name: u64,
 ) -> Result<Option<u64>, ()> {
-    unsafe {
-        class_namespace_lookup_stage(py, class, name)
-            .map(|member| match member {
-                ClassNamespaceLookup::Namespace(value) => value,
-                ClassNamespaceLookup::RuntimeRoot(value) => Some(value),
-            })
-            .map_err(|_| ())
-    }
+    unsafe { class_namespace_lookup_stage(py, class, name).map_err(|_| ()) }
 }
 
 /// Borrow one member of the actual declaring namespace. Native declarations
 /// materialize only the requested name into that same dictionary.
-enum ClassNamespaceLookup {
-    Namespace(Option<u64>),
-    RuntimeRoot(u64),
-}
-
 unsafe fn class_namespace_lookup_stage(
     py: &PyToken<'_>,
     class: *mut u8,
     name: u64,
-) -> Result<ClassNamespaceLookup, ClassNamespaceFailure> {
+) -> Result<Option<u64>, ClassNamespaceFailure> {
     unsafe {
         crate::gil_assert();
         // Internal name interning reports allocation failure with raw zero.
@@ -897,52 +810,30 @@ unsafe fn class_namespace_lookup_stage(
             return Err(ClassNamespaceFailure::Preparation);
         }
         let Some(dictionary) = obj_from_bits(class_dict_bits(class)).as_ptr() else {
-            return Ok(ClassNamespaceLookup::Namespace(None));
+            return Ok(None);
         };
         if object_type_id(dictionary) != TYPE_ID_DICT {
-            return Ok(ClassNamespaceLookup::Namespace(None));
+            return Ok(None);
         }
         if let Some(value) = dict_get_in_place(py, dictionary, name)
             .map_err(|()| ClassNamespaceFailure::Dictionary)?
         {
-            return Ok(ClassNamespaceLookup::Namespace(Some(value)));
+            return Ok(Some(value));
         }
         let bits = MoltObject::from_ptr(class).bits();
-        let is_function = bits == builtin_classes(py).function;
         let builtin_namespace = !crate::object::class_storage::class_declares(
             class,
             crate::object::class_storage::ClassDeclaration::NativeNamespacePublished,
         ) && (is_builtin_class_bits(py, bits)
             || crate::builtins::exceptions::is_builtin_exception_class_bits(py, bits));
-        // Only function and unpublished native namespaces need known identity;
-        // the original dynamic name was already used for the dictionary probe.
-        if !is_function && !builtin_namespace {
-            return Ok(ClassNamespaceLookup::Namespace(None));
+        // Published class dictionaries already hold their declared descriptors.
+        if !builtin_namespace {
+            return Ok(None);
         }
         let Some(identity) = crate::NameId::from_bits(py, name) else {
-            return Ok(ClassNamespaceLookup::Namespace(None));
+            return Ok(None);
         };
-        if is_function {
-            let value = if identity == crate::NameId::DunderCode {
-                Some(function_code_descriptor_bits(py))
-            } else if identity == crate::NameId::DunderGlobals {
-                Some(function_globals_descriptor_bits(py))
-            } else {
-                None
-            };
-            if let Some(value) = value {
-                return if value == 0 {
-                    Err(ClassNamespaceFailure::Preparation)
-                } else {
-                    Ok(ClassNamespaceLookup::RuntimeRoot(value))
-                };
-            }
-        }
-        if !builtin_namespace {
-            return Ok(ClassNamespaceLookup::Namespace(None));
-        }
         builtin_class_method_bits(py, bits, identity)
-            .map(ClassNamespaceLookup::Namespace)
             .map_err(|()| ClassNamespaceFailure::Preparation)
     }
 }
@@ -1048,10 +939,7 @@ unsafe fn resolve_class_namespace_mro(
                     continue;
                 }
                 if let Some(value) = match class_namespace_lookup_stage(py, owner, name) {
-                    Ok(ClassNamespaceLookup::Namespace(value)) => value,
-                    Ok(ClassNamespaceLookup::RuntimeRoot(value)) => {
-                        return Ok(MroResolution::Uncacheable(Some(value)));
-                    }
+                    Ok(value) => value,
                     Err(ClassNamespaceFailure::Dictionary) => {
                         // _PyType_Lookup stops the MRO and clears a probing error;
                         // instance dictionaries and lazy declaration preparation do not.
@@ -1068,10 +956,7 @@ unsafe fn resolve_class_namespace_mro(
         let mut current = class;
         for _ in 0..=64 {
             if let Some(value) = match class_namespace_lookup_stage(py, current, name) {
-                Ok(ClassNamespaceLookup::Namespace(value)) => value,
-                Ok(ClassNamespaceLookup::RuntimeRoot(value)) => {
-                    return Ok(MroResolution::Uncacheable(Some(value)));
-                }
+                Ok(value) => value,
                 Err(ClassNamespaceFailure::Dictionary) => {
                     // _PyType_Lookup stops the MRO and clears a probing error;
                     // instance dictionaries and lazy declaration preparation do not.

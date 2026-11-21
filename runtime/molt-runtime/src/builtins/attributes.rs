@@ -2328,7 +2328,17 @@ mod tests {
                     Some(Declared::Stored(Stored::BindKind))
                 );
                 assert_eq!(Declared::from_operation(15), Some(Declared::Builtins));
-                assert!(Declared::from_operation(16).is_none());
+                for field in Declared::all() {
+                    assert_eq!(Declared::from_operation(field.operation()), Some(field));
+                    assert_eq!(Declared::from_id(field.name_id()), Some(field));
+                }
+                let first_unknown = Declared::all()
+                    .map(Declared::operation)
+                    .max()
+                    .expect("callable metadata is nonempty")
+                    + 1;
+                assert!(Declared::from_operation(first_unknown).is_none());
+                assert!(Declared::from_operation(u32::MAX).is_none());
                 assert!(
                     Stored::from_operation(15).is_none(),
                     "the projected attribute has no mutable storage operation"
