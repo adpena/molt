@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import tempfile
 import platform
 import signal
 import subprocess
@@ -1487,6 +1488,10 @@ def _diff_resource_pressure_plan(
         diff_tree_gb=config.max_tree_gb,
         diff_global_gb=config.global_gb,
         diff_mem_per_job_gb=_parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB"),
+        # Admitted against the latency of the volume its builds write (HF-942).
+        disk_latency=resource_pressure.disk_latency_s(
+            os.environ.get("TMPDIR") or tempfile.gettempdir()
+        ),
     )
 
 

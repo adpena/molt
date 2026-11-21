@@ -1365,8 +1365,13 @@ def gc(
     now_fn: Callable[[], float] = time.time,
     apply: bool = True,
     log: bool = True,
+    free_space_low: Callable[[Path], bool] | None = None,
 ) -> ReclaimResult:
     """Retire every root that the retention policy selects (design 56, 2.6).
+
+    ``free_space_low`` is the capacity floor (HF-942,
+    ``disk_capacity.below_free_space_floor`` in the daily and CLI sweeps):
+    while it holds, checkout state a day idle retires too.
 
     `checkout_state_decision` selects checkout state and scratch past their
     idle limits or with a removed owner, and idle pinned session targets; a held
@@ -1379,7 +1384,7 @@ def gc(
     scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     now = now_fn()
-    limits = retention_limits(env)
+    limits = replace(retention_limits(env), free_space_low=free_space_low)
     agent_evidence_idle_s(env)
     free_fn = _default_free_fn(resolved_root)
     free_before = free_fn()
@@ -2459,7 +2464,12 @@ def collect(
     mark and otherwise evicts the least recently used reclaimable roots until
     the free target is met, as BuildKit keeps a minimum of free space.
     """
-    return [gc(root=root, env=env), ensure_free(root=root, env=env)]
+    from molt.disk_capacity import below_free_space_floor
+
+    return [
+        gc(root=root, env=env, free_space_low=below_free_space_floor),
+        ensure_free(root=root, env=env),
+    ]
 
 
 def collect_due(
@@ -3408,7 +3418,14 @@ def main(argv: list[str] | None = None) -> int:
     apply = not args.dry_run
 
     if args.gc:
-        result = gc(root=args.root, config=config, apply=apply)
+        from molt.disk_capacity import below_free_space_floor
+
+        result = gc(
+            root=args.root,
+            config=config,
+            apply=apply,
+            free_space_low=below_free_space_floor,
+        )
         _print_result(result, as_json=args.json)
         return 0
 

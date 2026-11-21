@@ -31,13 +31,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, get_args
 
-from molt.default_paths import FRONTEND_RECORD_FILES_DIRECTORY, _default_molt_cache
+from molt.default_paths import (
+    FRONTEND_RECORD_INDEX_SUFFIX as INDEX_SUFFIX,
+    _default_molt_cache,
+    frontend_record_files_root,
+)
 from molt.file_publication import PublicationDurability, atomic_write_bytes
 
 FrontendRecordKind = Literal["import-scan", "module-analysis"]
 _KINDS: Final = frozenset(get_args(FrontendRecordKind))
-LAYOUT: Final = "v1"
-INDEX_SUFFIX: Final = ".idx"
 _INDEX_HEADER: Final = b"molt-frontend-record-index v1\n"
 _DIGEST: Final = re.compile(r"[0-9a-f]{64}")
 _KEY: Final = re.compile(r"[0-9a-f]{16,64}")
@@ -71,10 +73,6 @@ class FrontendRecord:
 
 def record_digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-def frontend_record_files_root(cache_root: Path) -> Path:
-    return cache_root / FRONTEND_RECORD_FILES_DIRECTORY / LAYOUT
 
 
 def parse_index(data: bytes) -> dict[tuple[str, str], str] | None:

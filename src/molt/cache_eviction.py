@@ -21,6 +21,13 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from molt.default_paths import (
     BUILD_ARTIFACTS_CACHE_DIRECTORY,
     FRONTEND_RECORD_FILES_DIRECTORY,
+    FRONTEND_RECORD_FILES_LAYOUT,
+    FRONTEND_RECORD_INDEX_SUFFIX,
+    frontend_record_files_root,
+    RETIRED_CACHE_LOCK_NAMES,
+    HOT_STATE_MIN_FREE_BYTES,
+    RETIRED_LOCK_MIN_IDLE_S,
+    hot_state,
     build_artifacts_entry,
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
@@ -118,6 +125,11 @@ def _background_disk_priority() -> Generator[None]:
             restore()
 
 
+def _hot_volume_free(root: Path) -> int:
+    """Free bytes on the hot-state root's volume."""
+    return shutil.disk_usage(root).free
+
+
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -170,6 +182,8 @@ class PruneCompleted(TypedDict):
     protected_state: list[str]
     legacy_native_state: list[str]
     legacy_source_record_state: list[str]
+    # Unheld files of the per-key lock families the stripes replaced (HF-942).
+    retired_lock_files_removed: int
 
 
 class PruneSkipped(TypedDict):
@@ -477,43 +491,8 @@ def _collect_entries(
                             continue
                         append(entry_root, lock)
             continue
-        if child.name == FRONTEND_RECORD_FILES_DIRECTORY and _is_direct_directory(
-            child
-        ):
-            # Immutable blobs and index files: a reader that loses one misses
-            # and recomputes, so each file is its own entry and needs no lock.
-            # Future layouts and stages have no eviction authority here.
-            from molt.cli.frontend_record_files import (
-                INDEX_SUFFIX,
-                frontend_record_files_root,
-            )
-
-            layout = frontend_record_files_root(cache_root)
-            blobs, index = layout / "blobs", layout / "index"
-            if _is_direct_directory(blobs):
-                for shard in _children(blobs):
-                    if not (
-                        _is_direct_directory(shard) and _HEX2.fullmatch(shard.name)
-                    ):
-                        continue
-                    for leaf in _children(shard):
-                        if (
-                            _HEX64.fullmatch(leaf.name)
-                            and leaf.name.startswith(shard.name)
-                            and leaf.is_file()
-                            and not leaf.is_symlink()
-                        ):
-                            append(leaf)
-            if _is_direct_directory(index):
-                for leaf in _children(index):
-                    if (
-                        leaf.name.endswith(INDEX_SUFFIX)
-                        and _HEX64.fullmatch(leaf.name.removesuffix(INDEX_SUFFIX))
-                        and leaf.is_file()
-                        and not leaf.is_symlink()
-                    ):
-                        append(leaf)
-            continue
+        if child.name == FRONTEND_RECORD_FILES_DIRECTORY:
+            continue  # Collected below at their resolved root.
         if child.name == SHARED_SOURCE_RECORDS_DIRECTORY and _is_direct_directory(
             child
         ):
@@ -558,6 +537,40 @@ def _collect_entries(
                 )
         # Unknown namespaces may own live mutable stages or persistent controls.
         # Their root is never an inferred recursive eviction unit.
+    # Immutable record blobs and index files, at their resolved root (the
+    # hot-state root when bound) and in the cache's own former layout: a
+    # reader that loses one misses and recomputes, so each file is its own
+    # entry and needs no lock. Future layouts and stages have no authority.
+    for layout in sorted(
+        {
+            frontend_record_files_root(cache_root),
+            cache_root / FRONTEND_RECORD_FILES_DIRECTORY / FRONTEND_RECORD_FILES_LAYOUT,
+        }
+    ):
+        blobs, index = layout / "blobs", layout / "index"
+        if _is_direct_directory(blobs):
+            for shard in _children(blobs):
+                if not (_is_direct_directory(shard) and _HEX2.fullmatch(shard.name)):
+                    continue
+                for leaf in _children(shard):
+                    if (
+                        _HEX64.fullmatch(leaf.name)
+                        and leaf.name.startswith(shard.name)
+                        and leaf.is_file()
+                        and not leaf.is_symlink()
+                    ):
+                        append(leaf)
+        if _is_direct_directory(index):
+            for leaf in _children(index):
+                if (
+                    leaf.name.endswith(FRONTEND_RECORD_INDEX_SUFFIX)
+                    and _HEX64.fullmatch(
+                        leaf.name.removesuffix(FRONTEND_RECORD_INDEX_SUFFIX)
+                    )
+                    and leaf.is_file()
+                    and not leaf.is_symlink()
+                ):
+                    append(leaf)
     return entries
 
 
@@ -958,6 +971,30 @@ def _prune_locked(
         def over_budget(size: int) -> bool:
             return budget_limit is not None and size > budget_limit
 
+        # The hot-state root (HF-942) has its own cap and keeps its volume at
+        # least HOT_STATE_MIN_FREE_BYTES free: under that pressure its own
+        # entries go first by last use, as kache trims to its cap.
+        hot = hot_state(cache_root.parent)
+        hot_bytes = (
+            0
+            if hot is None
+            else sum(
+                item.size_bytes
+                for item in entries
+                if item.path.is_relative_to(hot.root)
+            )
+        )
+
+        def hot_pressure() -> bool:
+            if hot is None:
+                return False
+            if hot_bytes > hot.budget_bytes:
+                return True
+            try:
+                return _hot_volume_free(hot.root) < HOT_STATE_MIN_FREE_BYTES
+            except OSError:
+                return False
+
         for entry in heapq.merge(sorted(entries, key=order), rows(), key=order):
             is_file = isinstance(entry, CacheEntry)
             if is_file:
@@ -966,10 +1003,19 @@ def _prune_locked(
                 continue
             mtime = entry.mtime if is_file else entry.used_ns / 1e9
             expired = cutoff is not None and mtime < cutoff
-            if not expired and not over_budget(total - pending_bytes):
+            hot_entry = (
+                is_file and hot is not None and entry.path.is_relative_to(hot.root)
+            )
+            if (
+                not expired
+                and not (hot_entry and hot_pressure())
+                and not over_budget(total - pending_bytes)
+            ):
                 flush_rows()
                 if not over_budget(total):
-                    break
+                    if not hot_pressure():
+                        break
+                    continue  # Only the hot root is under pressure.
             if is_file:
                 outcome = _remove_entry(
                     entry,
@@ -981,6 +1027,8 @@ def _prune_locked(
                     removed_count += 1
                     removed_bytes += entry.size_bytes
                     total -= entry.size_bytes
+                    if hot_entry:
+                        hot_bytes -= entry.size_bytes
                 else:
                     busy += outcome == "busy"
                     failures += outcome == "failed"
@@ -1009,7 +1057,18 @@ def _prune_locked(
                 failures += 1
     if store is not None:
         physical_after = store.physical_bytes()
+    from molt.file_locks import retire_unheld_lock_files
+
+    # The retired per-key names live in the cache's own lock directory, where
+    # producers wrote them before the stripes and the hot-state root.
+    retired_locks, _kept = retire_unheld_lock_files(
+        cache_root / "locks",
+        RETIRED_CACHE_LOCK_NAMES,
+        min_idle_s=RETIRED_LOCK_MIN_IDLE_S,
+        apply=not dry_run,
+    )
     return {
+        "retired_lock_files_removed": retired_locks,
         "status": "completed",
         "cache_root": str(cache_root),
         "entries_before": before_count,
