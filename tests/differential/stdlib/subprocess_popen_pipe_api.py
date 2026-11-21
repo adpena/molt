@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec
 """Purpose: differential coverage for subprocess.Popen pipe API wrappers."""
 
 import subprocess

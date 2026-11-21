@@ -60,7 +60,6 @@ STDLIB_STUB_MARKER = (
 # or outside the union, so the set can only shrink.
 UNAVAILABLE_STDLIB_MODULES: frozenset[str] = frozenset(
     {
-        "_math_integer",
         "_pyrepl.content",
         "_pyrepl.fancycompleter",
         "_pyrepl.layout",

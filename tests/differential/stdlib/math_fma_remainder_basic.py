@@ -15,6 +15,9 @@ def main() -> None:
         print("fma_basic", math.fma(1.0, 2.0, 3.0))
         print("fma_inf", math.fma(1.0, 2.0, float("inf")))
         print("fma_nan", math.fma(float("nan"), 2.0, 3.0))
+        print("fma builtin", type(math.fma).__name__, math.fma.__module__, math.fma.__reduce__())
+        show("fma_invalid", lambda: math.fma(0.0, float("inf"), 1.0))
+        show("fma_overflow", lambda: math.fma(1e308, 2.0, 0.0))
     else:
         print("fma_missing")
 

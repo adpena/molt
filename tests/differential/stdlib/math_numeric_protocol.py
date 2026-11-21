@@ -1,6 +1,7 @@
 """Shared math conversion: storage, protocol dispatch, warnings, and lifetime."""
 
 import math
+import sys
 import warnings
 
 
@@ -113,14 +114,55 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     for operation in (math.sqrt, math.log, math.log2, math.log10, math.isfinite):
         events.clear()
-        try:
-            operation(HugeIndex())
-        except OverflowError as exc:
-            assert str(exc) == "int too large to convert to float"
-            assert events == ["index result released"]
-            print(operation.__name__, "index overflow", events)
+        if sys.version_info >= (3, 15) and operation in (math.log, math.log2, math.log10):
+            expected = operation(1 << 1200)
+            assert operation(HugeIndex()) == expected
+            assert events == ["index result released", "index result released"]
+            print(operation.__name__, "index overflow retry", events)
         else:
-            raise AssertionError("protocol integer incorrectly used arbitrary-int log")
+            try:
+                operation(HugeIndex())
+            except OverflowError as exc:
+                assert str(exc) == "int too large to convert to float"
+                assert events == ["index result released"]
+                print(operation.__name__, "index overflow", events)
+            else:
+                raise AssertionError("protocol integer incorrectly used arbitrary-int log")
+
+
+overflow = OverflowError("conversion overflow")
+
+
+class FloatOverflow:
+    def __float__(self):
+        raise overflow
+
+
+class FloatOverflowWithIndex(FloatOverflow):
+    def __index__(self):
+        return 8
+
+
+for operation in (math.log, math.log2, math.log10):
+    try:
+        operation(FloatOverflow())
+    except OverflowError as exc:
+        assert exc is overflow
+    else:
+        raise AssertionError("lost overflow with no index slot")
+    if sys.version_info >= (3, 15):
+        assert operation(FloatOverflowWithIndex()) == operation(8)
+    else:
+        try:
+            operation(FloatOverflowWithIndex())
+        except OverflowError as exc:
+            assert exc is overflow
+        else:
+            raise AssertionError("retried with an index slot on an older Python target")
+print("float overflow retry boundary")
+
+large_odd = 17 << 1020
+print("large integer log rounding", math.log(large_odd).hex(), math.log10(large_odd).hex())
 
 
 class Argument:

@@ -1501,6 +1501,7 @@ tests/differential/stdlib/math_fma_remainder_basic.py
 tests/differential/stdlib/math_fsum_prod_basic.py
 tests/differential/stdlib/math_gamma_lgamma_errors.py
 tests/differential/stdlib/math_hypot_dist_basic.py
+tests/differential/stdlib/math_integer_module_identity.py
 tests/differential/stdlib/math_intrinsics_basic.py
 tests/differential/stdlib/math_intrinsics_full.py
 tests/differential/stdlib/math_intrinsics_more.py
@@ -1928,6 +1929,7 @@ tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
 tests/differential/stdlib/textwrap_basic.py
 tests/differential/stdlib/this_basic.py
+tests/differential/stdlib/thread_exit_non_daemon.py
 tests/differential/stdlib/thread_interrupt_inline_poll.py
 tests/differential/stdlib/thread_lock_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py

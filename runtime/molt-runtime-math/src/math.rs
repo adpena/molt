@@ -316,7 +316,7 @@ fn render_float(_py: &PyToken, value: f64) -> Option<String> {
 // The integer logarithm branch mirrors CPython's PyLong_Check path. Normal
 // integers use the same rounded double conversion as PyLong_AsDouble; only
 // overflow needs the mantissa/exponent decomposition used by _PyLong_Frexp.
-fn log_bigint(value: &BigInt, function: fn(f64) -> f64) -> f64 {
+fn log_bigint(_py: &PyToken, value: &BigInt, function: fn(f64) -> f64) -> f64 {
     if let Some(value) = value.to_f64().filter(|value| value.is_finite()) {
         return function(value);
     }
@@ -332,7 +332,13 @@ fn log_bigint(value: &BigInt, function: fn(f64) -> f64) -> f64 {
         mantissa = 0.5;
         exponent += 1;
     }
-    function(mantissa) + function(2.0) * exponent as f64
+    let fraction = function(mantissa);
+    let scale = function(2.0);
+    if target_minor(_py) >= 15 {
+        math_fma(scale, exponent as f64, fraction)
+    } else {
+        fraction + scale * exponent as f64
+    }
 }
 
 fn logarithm(_py: &PyToken, bits: u64, function: fn(f64) -> f64) -> u64 {
@@ -350,13 +356,19 @@ fn logarithm(_py: &PyToken, bits: u64, function: fn(f64) -> f64) -> u64 {
                 if value.is_negative() || value.is_zero() {
                     return log_domain_error(_py, None);
                 }
-                return molt_runtime_core::rt_float_result_bits(_py, log_bigint(&value, function));
+                return molt_runtime_core::rt_float_result_bits(
+                    _py,
+                    log_bigint(_py, &value, function),
+                );
             }
             Ok(None) => {}
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         }
     }
     let Some(value) = float_as_double(_py, bits) else {
+        if let Some(index) = log_index_on_overflow(_py, bits) {
+            return logarithm(_py, index.bits(), function);
+        }
         return MoltObject::none().bits();
     };
     if value <= 0.0 {
@@ -754,7 +766,14 @@ pub fn molt_math_fma_attached_body(
         let Some(z) = float_as_double(_py, z_bits) else {
             return MoltObject::none().bits();
         };
-        molt_runtime_core::rt_float_result_bits(_py, math_fma(x, y, z))
+        let result = math_fma(x, y, z);
+        if result.is_nan() && !x.is_nan() && !y.is_nan() && !z.is_nan() {
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid operation in fma");
+        }
+        if result.is_infinite() && x.is_finite() && y.is_finite() && z.is_finite() {
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "overflow in fma");
+        }
+        molt_runtime_core::rt_float_result_bits(_py, result)
     })
 }
 

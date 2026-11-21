@@ -8,7 +8,7 @@
 //! alternate import dispatcher lives here.
 
 use super::*;
-use crate::BuiltinExc;
+use crate::{BuiltinExc, NameId};
 use std::cell::RefCell;
 
 struct SysModulesSwap {
@@ -651,11 +651,11 @@ pub(super) fn module_metadata_store(
         crate::object::ops_format::with_string_bytes(
             obj_from_bits(attr_bits),
             |bytes| match bytes {
-                b"__name__" => Some("__name__"),
-                b"__file__" => Some("__file__"),
-                b"__package__" => Some("__package__"),
-                b"__path__" => Some("__path__"),
-                b"__spec__" => Some("__spec__"),
+                b"__name__" => Some(NameId::DunderName),
+                b"__file__" => Some(NameId::DunderFile),
+                b"__package__" => Some(NameId::DunderPackage),
+                b"__path__" => Some(NameId::DunderPath),
+                b"__spec__" => Some(NameId::DunderSpec),
                 _ => None,
             },
         )
@@ -673,16 +673,23 @@ pub(super) fn module_metadata_store(
         if ctx.runtime_id != runtime_id || ctx.module_bits != module_bits {
             return None;
         }
+        let pending = ctx.metadata_override_pending;
+        if attr == NameId::DunderSpec {
+            // The prologue admits the spec after its other metadata. The body
+            // owns every later store, including the first __name__ assignment
+            // when the prologue used MODULE_NEW to set the initial name.
+            ctx.metadata_override_pending = 0;
+        }
         let (bit, value) = match (&ctx.metadata, attr) {
-            (_, "__name__") => (
+            (_, NameId::DunderName) => (
                 EXECUTION_NAME_PENDING,
                 MetadataOverride::Text(Some(ctx.run_name.clone())),
             ),
-            (ExecutionMetadata::ScriptFile(path), "__file__") => (
+            (ExecutionMetadata::ScriptFile(path), NameId::DunderFile) => (
                 SCRIPT_FILE_PENDING,
                 MetadataOverride::Text(Some(path.clone())),
             ),
-            (ExecutionMetadata::ScriptFile(_), "__package__") => (
+            (ExecutionMetadata::ScriptFile(_), NameId::DunderPackage) => (
                 SCRIPT_PACKAGE_PENDING,
                 MetadataOverride::Text(Some(
                     ctx.run_name
@@ -691,38 +698,31 @@ pub(super) fn module_metadata_store(
                         .unwrap_or_default(),
                 )),
             ),
-            (ExecutionMetadata::ScriptFile(_), "__spec__") => {
+            (ExecutionMetadata::ScriptFile(_), NameId::DunderSpec) => {
                 (SCRIPT_SPEC_PENDING, MetadataOverride::Text(None))
             }
-            (ExecutionMetadata::ImportContainer(_), "__package__") => (
+            (ExecutionMetadata::ImportContainer(_), NameId::DunderPackage) => (
                 SCRIPT_PACKAGE_PENDING,
                 MetadataOverride::Text(Some(String::new())),
             ),
-            (ExecutionMetadata::LoaderNamespace { .. }, "__file__") => {
+            (ExecutionMetadata::LoaderNamespace { .. }, NameId::DunderFile) => {
                 (SCRIPT_FILE_PENDING, MetadataOverride::Existing)
             }
-            (ExecutionMetadata::LoaderNamespace { .. }, "__package__") => {
+            (ExecutionMetadata::LoaderNamespace { .. }, NameId::DunderPackage) => {
                 (SCRIPT_PACKAGE_PENDING, MetadataOverride::Existing)
             }
-            (ExecutionMetadata::LoaderNamespace { .. }, "__path__") => {
+            (ExecutionMetadata::LoaderNamespace { .. }, NameId::DunderPath) => {
                 (LOADER_PATH_PENDING, MetadataOverride::Existing)
             }
-            (ExecutionMetadata::LoaderNamespace { .. }, "__spec__") => {
+            (ExecutionMetadata::LoaderNamespace { .. }, NameId::DunderSpec) => {
                 (SCRIPT_SPEC_PENDING, MetadataOverride::Existing)
             }
             _ => return None,
         };
-        if ctx.metadata_override_pending & bit == 0 {
+        if pending & bit == 0 {
             return None;
         }
         ctx.metadata_override_pending &= !bit;
-        if bit == SCRIPT_SPEC_PENDING {
-            // The compiler prologue stores `__file__`, `__package__` and a
-            // located package's `__path__` before its spec admission.
-            // Admission ends that window: a later store is the body's own.
-            ctx.metadata_override_pending &=
-                !(SCRIPT_FILE_PENDING | SCRIPT_PACKAGE_PENDING | LOADER_PATH_PENDING);
-        }
         Some(value)
     });
     let Some(metadata_override) = metadata_override else {

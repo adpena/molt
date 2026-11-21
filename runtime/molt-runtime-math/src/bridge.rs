@@ -381,6 +381,8 @@ unsafe extern "C" {
         ptr: *mut *const u8,
         len: *mut usize,
     ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_log_index_on_overflow")]
+    fn __molt_math_log_index_on_overflow(__molt_context: u64, bits: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("__molt_math_target_minor")]
     fn __molt_math_target_minor(__molt_context: u64) -> i64;
 }
@@ -446,6 +448,12 @@ pub fn integer_storage(
 
 pub fn target_minor(_py: &PyToken) -> i64 {
     unsafe { __molt_math_target_minor(_py.attached_context()) }
+}
+
+pub fn log_index_on_overflow(_py: &PyToken, bits: u64) -> Option<OwnedRuntimeValue<'_>> {
+    let index = unsafe { __molt_math_log_index_on_overflow(_py.attached_context(), bits) };
+    (!obj_from_bits(index).is_none())
+        .then(|| unsafe { OwnedRuntimeValue::from_owned_bits(_py, index) })
 }
 
 pub fn to_f64(obj: MoltObject) -> Option<f64> {

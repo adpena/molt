@@ -487,11 +487,13 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
 
 @dataclass(frozen=True, slots=True)
 class _OpaqueActivationReads:
-    present: frozenset[PythonSourceKey]
+    present: tuple[frozenset[PythonSourceKey], ...]
     absent: frozenset[PythonSourceKey]
 
     def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
-        return self.present <= opaque and self.absent.isdisjoint(opaque)
+        return self.absent.isdisjoint(opaque) and all(
+            not group.isdisjoint(opaque) for group in self.present
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2698,7 +2700,8 @@ class _Analyzer:
             if policy.opaque_activation_sources is None
             else frozenset(policy.opaque_activation_sources)
         )
-        self._opaque_activation_reads: set[PythonSourceKey] = set()
+        self._opaque_activation_reads: dict[frozenset[PythonSourceKey], bool] = {}
+        self._opaque_lexical_activations: dict[int, bool] = {}
         self._foreign_universe = policy.foreign_namespace_universe
         self.source_digest = source_digest
         self.states = _StatePool()
@@ -3328,11 +3331,26 @@ class _Analyzer:
         )
         return scope.namespace_can_call(name, write=write, namespace_tainted=tainted)
 
-    def _activation_source_is_opaque(self, source: PythonSourceKey) -> bool:
+    def _activation_group_is_opaque(self, sources: frozenset[PythonSourceKey]) -> bool:
         opaque = self._opaque_activation_sources
         assert opaque is not None
-        self._opaque_activation_reads.add(source)
-        return source in opaque
+        answer = self._opaque_activation_reads.get(sources)
+        if answer is None:
+            answer = not sources.isdisjoint(opaque)
+            self._opaque_activation_reads[sources] = answer
+        return answer
+
+    def _lexical_activation_is_opaque(self, scope: _Scope) -> bool:
+        answer = self._opaque_lexical_activations.get(scope.scope_id)
+        if answer is None:
+            sources: set[PythonSourceKey] = set()
+            owner: _Scope | None = scope
+            while owner is not None and owner.kind != "module":
+                sources.add(owner.source)
+                owner = owner.parent
+            answer = self._activation_group_is_opaque(frozenset(sources))
+            self._opaque_lexical_activations[scope.scope_id] = answer
+        return answer
 
     def _name_uses_activation_namespace(
         self, state_id: int, scope: _Scope, name: str
@@ -3349,12 +3367,7 @@ class _Analyzer:
                 # global value. Exposed code/callables can instead run with
                 # another globals dictionary; that fact belongs to the same
                 # source-value demand worklist, including enclosing recreations.
-                owner: _Scope | None = scope
-                while owner is not None and owner.kind != "module":
-                    if self._activation_source_is_opaque(owner.source):
-                        return True
-                    owner = owner.parent
-                return False
+                return self._lexical_activation_is_opaque(scope)
             return True
         owner = scope.namespace_lookup_owner(name)
         return owner is not None and bool(
@@ -5524,8 +5537,10 @@ class _Analyzer:
                 and callee_result.result.source_origins
                 and all(
                     source[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
-                    and not self._activation_source_is_opaque(source)
                     for source in callee_result.result.source_origins
+                )
+                and not self._activation_group_is_opaque(
+                    callee_result.result.source_origins
                 )
             ):
                 # The existing call/formal graph owns uses of these arguments.
@@ -9335,10 +9350,19 @@ class _Analyzer:
             flow_required,
             (
                 None
-                if (opaque := self._opaque_activation_sources) is None
+                if self._opaque_activation_sources is None
                 else _OpaqueActivationReads(
-                    frozenset(self._opaque_activation_reads & opaque),
-                    frozenset(self._opaque_activation_reads - opaque),
+                    tuple(
+                        group
+                        for group, answer in self._opaque_activation_reads.items()
+                        if answer
+                    ),
+                    frozenset(
+                        source
+                        for group, answer in self._opaque_activation_reads.items()
+                        if not answer
+                        for source in group
+                    ),
                 )
             ),
         )

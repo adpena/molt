@@ -360,6 +360,34 @@ pub extern "C" fn __molt_math_integer_storage(
     }
 }
 
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_log_index_on_overflow"))]
+pub extern "C" fn __molt_math_log_index_on_overflow(__molt_context: u64, bits: u64) -> u64 {
+    let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+    let none = MoltObject::none().bits();
+    if crate::object::ops_sys::runtime_target_minor(py) < 15 {
+        return none;
+    }
+    let overflow = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::OverflowError);
+    if !crate::builtins::exceptions::pending_exception_matches_type(py, overflow) {
+        return none;
+    }
+    let mut present = false;
+    let probed = crate::builtins::exceptions::with_saved_raised_exception(py, || {
+        match crate::builtins::numbers::has_index_protocol(py, bits) {
+            Ok(value) => {
+                present = value;
+                true
+            }
+            Err(()) => false,
+        }
+    });
+    if !probed || !present {
+        return none;
+    }
+    crate::clear_exception(py);
+    crate::builtins::numbers::index_from_object(py, bits)
+}
+
 #[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_target_minor"))]
 pub extern "C" fn __molt_math_target_minor(__molt_context: u64) -> i64 {
     {

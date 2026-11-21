@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_MODULE_ROOTS=tests/differential/basic
 """Purpose: importing the entry module yields a distinct module object."""
 
 import importlib

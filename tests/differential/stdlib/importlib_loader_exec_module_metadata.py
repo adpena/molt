@@ -36,6 +36,7 @@ plain_spec = importlib.util.spec_from_file_location(
 bare = types.ModuleType(PLAIN)
 plain_spec.loader.exec_module(bare)
 print("file loader, bare module", metadata(bare), bare.value)
+print("body module name", bare.__name__)
 
 # The import system's loader for the package, with __path__ but no __spec__.
 package_spec = importlib.util.find_spec("importlib_loader_exec_metadata_pkg")
