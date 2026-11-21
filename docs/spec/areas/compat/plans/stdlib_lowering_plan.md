@@ -125,7 +125,9 @@ per premise revision.
    change the order before the next wave. Unrelated components keep the same batch, and the
    convergence check still covers writes through unknown receivers. For revisions within a
    cycle, remove its already evaluated head and settle its nested components before revisiting
-   the head. Dependent components wait for the outer exit. The summary solver remains open.
+   the head. Dependent components wait for the outer exit. A consumer known to escape a callable
+   is also an opaque-activation premise producer for the defining module. The revision order
+   includes that dependency. The summary solver remains open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.

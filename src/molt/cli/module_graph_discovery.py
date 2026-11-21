@@ -228,12 +228,16 @@ class _ModuleGraphDiscovery:
 def _ready_namespace_revisions(
     state: _ModuleGraphDiscovery,
 ) -> set[_SourceScanJob]:
-    """Wake dependent revisions once their currently known writers settle."""
+    """Wake dependent revisions once their currently known premise inputs settle."""
     dirty = {job.module_name for job in state.scan_revisions}
     if len(dirty) < 2:
         return state.scan_revisions.copy()
 
     writers: dict[str, set[str]] = {}
+    if state.demands is not None:
+        for receiver, producers in state.demands.opaque_activation_producers().items():
+            if receiver in state.graph and (admitted := producers & state.graph.keys()):
+                writers[receiver] = admitted
     for writer, writes in state.namespace_writes.items():
         active = state.active_owners.get(writer, ())
         for write in writes:

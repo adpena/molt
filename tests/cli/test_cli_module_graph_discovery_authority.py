@@ -1204,6 +1204,42 @@ def test_nested_writer_revisions_hold_receivers_until_the_outer_exit(
     assert not state.scan_revisions
 
 
+def test_opaque_activation_revision_follows_the_escaping_consumer(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+    )
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    state.demands = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    for module in ("consumer", "provider", "unrelated"):
+        state.graph[module] = tmp_path / f"{module}.py"
+        state.scan_revisions.add(discovery._SourceScanJob(module, None))
+    state.demands.activate(
+        SourceCandidate("provider", (1, 0, 2, 8, "FunctionDef")),
+        "escape",
+        consumer="consumer",
+    )
+
+    first = discovery._ready_namespace_revisions(state)
+    assert {job.module_name for job in first} == {"consumer", "unrelated"}
+    state.scan_revisions.difference_update(first)
+    assert discovery._ready_namespace_revisions(state) == {
+        discovery._SourceScanJob("provider", None)
+    }
+
+
 @pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("write_kind", ["named", "computed", "canonical-member"])
 def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
