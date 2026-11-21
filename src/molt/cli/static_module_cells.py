@@ -957,6 +957,11 @@ def fold_init_once_constants(
 # Function cells (design 78, 5.9).
 
 
+# The loads that hand a proven call its callee's function object: a method
+# load on an exact receiver (5.7) and a static ``super()`` selection (5.10).
+_METHOD_LOADS = frozenset({"load_method", "load_super_method"})
+
+
 @dataclass(frozen=True)
 class FunctionCells:
     """Each cell-eligible module's function cells: the words after its layout
@@ -1021,7 +1026,7 @@ def plan_function_cells(
             name = func.get("name", "")
             ops = func.get("ops", ())
             for index, op in enumerate(ops):
-                if op.get("kind") != "load_method" or not op.get("proven_target"):
+                if op.get("kind") not in _METHOD_LOADS or not op.get("proven_target"):
                     continue
                 callable_var = op.get("var")
                 call = (
@@ -1101,7 +1106,7 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
         for op in func.get("ops", ()):
             callable_var = op.get("var")
             if (
-                op.get("kind") == "load_method"
+                op.get("kind") in _METHOD_LOADS
                 and op.get("proven_target")
                 and callable_var in reads
             ):

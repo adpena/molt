@@ -367,6 +367,12 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # Lowering-only values of this module's classes (never published).
         self.class_method_values: dict[ClassId, dict[str, MethodValues]] = {}
         self.class_value_names: dict[ClassId, str] = {}
+        # Each compiled method symbol's defining class: the `C` of a
+        # zero-argument `super()` in its body (design 78, 5.10 step 4).
+        self.method_classes: dict[str, ClassId] = {}
+        # Class statements whose body holds a `nonlocal __class__`: a function
+        # there may rebind or empty the shared `__class__` cell.
+        self.class_cell_rebound: set[ClassId] = set()
         # Class statements this module lowered, in lowering order.
         self.local_class_ids: list[ClassId] = []
         # The current module's class statements; set by visit_Module.

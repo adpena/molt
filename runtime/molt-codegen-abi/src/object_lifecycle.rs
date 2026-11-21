@@ -26,13 +26,17 @@
 //!     p = unbox(bits)
 //!     require plain storage and plain admission, count(p) == 1
 //!     require type_id(p) == TYPE_ID_OBJECT
-//!     require flags(p) & OBSERVED == 0, aux kind CLASS_INLINE, owned class
+//!     require flags(p) & (OBSERVED - HAS_PTRS) == 0, aux kind CLASS_INLINE,
+//!       owned class
 //!     plan = load [class + CLASS_LIFECYCLE_PLAN_OFFSET]
 //!     require plan is plain without a finalizer
 //!     require no terminal release active on the thread, profile word == 0
 //!     accounted: require a head, a GC record and no retirement watch;
 //!       a tracked head swap-removes its member (the moved member's head
 //!       follows); count 0 falls by one, never below zero
+//!     HAS_PTRS: require no dictionary; out of line, each field's reference
+//!       falls by one, a last one (or one in runtime custody) by the runtime
+//!       release, which bounds the nested frees
 //!     free(p); release class
 //!   else: cold                                   ; molt_dec_ref_obj
 //! ```
@@ -46,7 +50,9 @@
 //!    runtime's own planned allocation writes the same words.
 //! 3. A free requires everything the runtime's terminal fast path requires
 //!    (`free_plain_leaf`): no observer can see the death, and the bounded
-//!    release would run it now.
+//!    release would run it now. Pointer fields are the one extension: their
+//!    references drop in field order before the free, as CPython's
+//!    `subtype_dealloc` clears slots, and a last reference is the runtime's.
 //! 4. The GC record (`GC_RECORD_*`) is the head of the bound runtime's
 //!    collector state; each isolate's thread record lends its own. The layout
 //!    is the 64-bit one: a free-threaded runtime, or one whose pointers are
@@ -60,12 +66,13 @@ use crate::inline_refcount::{CompiledRefcountAdmission, RefcountStorage};
 use crate::list_item::ListLocking;
 use crate::word::WordComparison;
 use crate::{
-    HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_OFFSET, HEADER_AUX_OFFSET,
-    HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED, HEADER_FLAG_DEALLOCATING,
-    HEADER_FLAG_GC_ACCOUNTED, HEADER_FLAG_GC_HEAD, HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_HAS_PTRS,
+    COMPILED_PLAIN_REFCOUNT_WINDOW, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_OFFSET,
+    HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED,
+    HEADER_FLAG_DEALLOCATING, HEADER_FLAG_GC_ACCOUNTED, HEADER_FLAG_GC_HEAD,
+    HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_HAS_INSTANCE_DICT, HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_HAS_WEAKREF, HEADER_FLAG_SCOPED, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAGS_OFFSET,
-    HEADER_REFCOUNT_OFFSET, HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, POINTER_MASK, QNAN, TAG_PTR,
-    TYPE_ID_FOREIGN, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    HEADER_REFCOUNT_OFFSET, HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, IMMORTAL_REFCOUNT,
+    POINTER_MASK, QNAN, TAG_PTR, TYPE_ID_FOREIGN, TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 /// The allocator size classes: index 0 is the oversized sentinel.
@@ -459,9 +466,13 @@ pub fn generate_object_alloc<B: FrameBuilder>(
 /// reaches here for every release it does not decide inline: under runtime
 /// admission, in a hardened or atomic build, and for a count outside the
 /// plain window, so the free itself requires plain storage, the invocation's
-/// plain admission (`admission`) and a count of exactly 1. A GC member leaves its list as the runtime's untrack
-/// does (swap-remove, the moved member's head rewritten) and count 0 falls by
-/// one. `free(object)` calls the runtime allocator entry, which reads the
+/// plain admission (`admission`) and a count of exactly 1. A GC member leaves
+/// its list as the runtime's untrack does (swap-remove, the moved member's head
+/// rewritten) and count 0 falls by one. An instance whose fields may hold
+/// references (`HAS_PTRS`, no dictionary) drops each field's reference first
+/// through `release_fields(pointer, fields)`, an out-of-line body of
+/// [`generate_release_fields`], so compiled code never nests frees.
+/// `free(object)` calls the runtime allocator entry, which reads the
 /// allocation's extent and head from the header.
 /// `terminal_release` is the thread record's terminal-release word, nonzero
 /// while a terminal release runs on the thread.
@@ -475,6 +486,7 @@ pub fn generate_release_terminal<B: FrameBuilder>(
     locking: ListLocking,
     storage: RefcountStorage,
     free: impl FnOnce(&mut B, B::Word),
+    release_fields: impl FnOnce(&mut B, B::Word, B::Word),
     cold: impl FnOnce(&mut B),
 ) {
     use WordComparison::*;
@@ -502,7 +514,13 @@ pub fn generate_release_terminal<B: FrameBuilder>(
             b.require(object);
             let header = b.load_word(pointer, HEADER_FLAGS_OFFSET);
             // Flags in the low 32 bits, the aux kind in the high 16.
-            let flag_mask = OBSERVED_DEATH_FLAGS as u64 | (0xFFFF_u64 << AUX_KIND_SHIFT);
+            // Pointer fields are released below, so `HAS_PTRS` alone does not
+            // make the death observable; an instance that ever had a
+            // dictionary does (the runtime sets that bit when it publishes
+            // one and never clears it, so a clear bit proves no dictionary).
+            let flag_mask = ((OBSERVED_DEATH_FLAGS & !HEADER_FLAG_HAS_PTRS)
+                | HEADER_FLAG_HAS_INSTANCE_DICT) as u64
+                | (0xFFFF_u64 << AUX_KIND_SHIFT);
             let unobserved = masked_equals(
                 b,
                 header,
@@ -525,6 +543,10 @@ pub fn generate_release_terminal<B: FrameBuilder>(
             b.require(outermost);
             let quiet = compare_immediate(b, Equal, words.profile_enabled, 0);
             b.require(quiet);
+            // An instance whose fields may hold references (the flag test
+            // above refused one that ever had a dictionary).
+            let has_ptrs = b.and(header, HEADER_FLAG_HAS_PTRS as u64);
+            let has_ptrs = compare_immediate(b, NotEqual, has_ptrs, 0);
             // A GC member's state: an accounted allocation has a head.
             let accounted = b.and(header, HEADER_FLAG_GC_ACCOUNTED as u64);
             let accounted = compare_immediate(b, NotEqual, accounted, 0);
@@ -586,11 +608,62 @@ pub fn generate_release_terminal<B: FrameBuilder>(
                     b.store_word(gc, GC_RECORD_COUNT0_OFFSET, count);
                 });
             });
+            // Each field's reference drops before the free, out of line
+            // (`generate_release_fields`), so the instance without references
+            // keeps a lean path.
+            b.if_then(has_ptrs, |b| {
+                let fields = b.shift_right_arithmetic(plan, PLAN_FIELD_WORDS_SHIFT);
+                let fields = b.and(fields, 0xFFFF);
+                release_fields(b, pointer, fields);
+            });
             free(b, pointer);
             b.release(class_bits);
         },
         |b| cold(b),
     );
+}
+
+/// Drop each field reference of the dying plain instance at `pointer`, whose
+/// first `fields` payload words are its fields, in field order, as CPython's
+/// `subtype_dealloc` clears slots before it frees: a count that stays
+/// positive falls inline; `release_child(word)`, the runtime release, takes a
+/// last reference (or one in runtime custody) and bounds the nested frees.
+/// An immediate and an immortal object are untouched. The terminal release
+/// calls this out of line (`release_fields`), under plain storage and plain
+/// admission.
+pub fn generate_release_fields<B: FrameBuilder>(
+    b: &mut B,
+    pointer: B::Word,
+    fields: B::Word,
+    mut release_child: impl FnMut(&mut B, B::Word),
+) {
+    use WordComparison::*;
+    b.counted_loop(fields, false, |b, index| {
+        let offset = b.shift_left(index, 3);
+        let at = b.add(pointer, offset);
+        let word = b.load_word(at, 0);
+        let is_pointer = generate_has_tag(b, word, BoxTag::Ptr);
+        b.if_then(is_pointer, |b| {
+            let child = b.and(word, POINTER_MASK);
+            let count = b.load_header_u32(child, HEADER_REFCOUNT_OFFSET);
+            let index = b.add_immediate(count, -2);
+            let plain =
+                compare_immediate(b, UnsignedLessThan, index, COMPILED_PLAIN_REFCOUNT_WINDOW);
+            b.if_then(plain, |b| {
+                // The count is the high half of the header's first word,
+                // beside the type id.
+                let first = b.load_word(child, HEADER_TYPE_ID_OFFSET);
+                let first = b.add_immediate(first, -(1_i64 << 32));
+                b.store_word(child, HEADER_TYPE_ID_OFFSET, first);
+            });
+            let last = b.constant(COMPILED_PLAIN_REFCOUNT_WINDOW - 1);
+            let outside = b.compare(UnsignedLessThan, last, index);
+            b.if_then(outside, |b| {
+                let mortal = compare_immediate(b, NotEqual, count, IMMORTAL_REFCOUNT as u64);
+                b.if_then(mortal, |b| release_child(b, word));
+            });
+        });
+    });
 }
 
 /// `type(value)`, owned: the class an object names in its inline class word

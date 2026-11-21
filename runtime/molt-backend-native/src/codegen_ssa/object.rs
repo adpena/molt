@@ -654,6 +654,32 @@ impl super::builder::HelperBody for ReleaseTerminalBody {
     }
 }
 
+/// The body of the program's one field-release helper: the terminal release
+/// of an instance whose fields may hold references calls it out of line
+/// (`object_lifecycle::generate_release_fields`), so the release of an
+/// instance without references keeps a lean path. Its words are the dying
+/// instance's data address and its field count.
+pub(crate) struct ReleaseFieldsBody;
+
+/// The helper's name; one per program.
+pub(crate) const RELEASE_FIELDS_HELPER: &str = "molt_release_fields";
+
+impl super::builder::HelperBody for ReleaseFieldsBody {
+    fn build<H: super::task::TaskPlacement>(&self, h: &mut H, params: &[H::Word]) -> H::Word {
+        let &[pointer, fields] = params else {
+            unreachable!("the field-release helper takes two words")
+        };
+        let admission = h.refcount_admission();
+        let args = [
+            h.word_value(pointer),
+            h.word_value(fields),
+            h.word_value(admission),
+        ];
+        let answer = h.site(SiteBody::ReleaseFields, &args);
+        h.expect_word(answer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! The object family on the interpreting builder and as Cranelift

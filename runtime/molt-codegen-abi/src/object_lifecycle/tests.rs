@@ -200,8 +200,25 @@ impl Machine {
                     m.events.push(Event::Call("heap_free", std::vec![object]));
                 }
             },
+            |m, pointer, fields| {
+                generate_release_fields(m, pointer, fields, |m, child| {
+                    if !m.bailed {
+                        m.events.push(Event::Call("dec_ref", std::vec![child]));
+                    }
+                })
+            },
             |m| m.events.push(Event::Cold),
         );
+    }
+
+    /// An object at `address` with a mortal `count`, or the immortal count.
+    fn child(&mut self, address: u64, count: u64) {
+        self.write_bytes(address, HEADER_TYPE_ID_OFFSET, TYPE_ID_STRING.into(), 4);
+        self.write_bytes(address, HEADER_REFCOUNT_OFFSET, count, 4);
+    }
+
+    fn count(&self, address: u64) -> u64 {
+        self.read_bytes(address, HEADER_REFCOUNT_OFFSET, 4)
     }
 }
 
@@ -368,9 +385,9 @@ fn an_observable_death_takes_the_runtime() {
             0,
         ),
         (
-            "pointer field",
+            "pointer fields and a dictionary",
             TYPE_ID_OBJECT,
-            HEADER_FLAG_HAS_PTRS,
+            HEADER_FLAG_HAS_PTRS | crate::HEADER_FLAG_HAS_INSTANCE_DICT,
             HEADER_AUX_KIND_CLASS_INLINE,
             boxed(CLASS),
             root_plan(),
@@ -836,4 +853,83 @@ fn only_the_last_plainly_admitted_reference_frees_inline() {
         m.release_with(OBJECT, 0, 0, admission, storage);
         assert_eq!(m.events, std::vec![Event::Cold], "{label}");
     }
+}
+
+const SHARED: u64 = 0xA_0000;
+const LAST: u64 = 0xB_0000;
+const IMMORTAL: u64 = 0xC_0000;
+
+/// A dying `Point` whose two fields hold `first` and `second`, with the
+/// extra header `flags`.
+fn dying_point(m: &mut Machine, first: u64, second: u64, flags: u32) {
+    m.class(point_plan());
+    m.dying(
+        TYPE_ID_OBJECT,
+        HEADER_FLAG_HAS_PTRS | flags,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        boxed(CLASS),
+    );
+    m.write_word(OBJECT, 0, first);
+    m.write_word(OBJECT, 8, second);
+}
+
+#[test]
+fn pointer_fields_release_in_field_order_before_the_free() {
+    // The oracle: CPython's `subtype_dealloc`, which drops each slot's
+    // reference before it frees the instance. A shared child's count falls
+    // by one; an immortal child and an immediate are untouched.
+    let mut m = Machine::default();
+    m.child(SHARED, 3);
+    m.child(IMMORTAL, crate::IMMORTAL_REFCOUNT as u64);
+    dying_point(&mut m, boxed(SHARED), boxed(IMMORTAL), 0);
+    m.release_terminal(0, 0);
+    assert_eq!(m.count(SHARED), 2);
+    assert_eq!(m.count(IMMORTAL), crate::IMMORTAL_REFCOUNT as u64);
+    assert_eq!(
+        m.events,
+        std::vec![
+            Event::Call("heap_free", std::vec![OBJECT]),
+            Event::Release(boxed(CLASS)),
+        ]
+    );
+    let mut m = Machine::default();
+    m.child(SHARED, 2);
+    dying_point(&mut m, QNAN | crate::TAG_INT | 5, boxed(SHARED), 0);
+    m.release_terminal(0, 0);
+    assert_eq!(m.count(SHARED), 1);
+}
+
+#[test]
+fn a_last_child_reference_is_the_runtimes_release() {
+    // Two fields naming one child with a count of 2: the first falls inline,
+    // the second is the last reference and the runtime releases it (and
+    // whatever it frees, bounded by the runtime); the instance still frees.
+    let mut m = Machine::default();
+    m.child(LAST, 2);
+    dying_point(&mut m, boxed(LAST), boxed(LAST), 0);
+    m.release_terminal(0, 0);
+    assert_eq!(
+        m.events,
+        std::vec![
+            Event::Call("dec_ref", std::vec![boxed(LAST)]),
+            Event::Call("heap_free", std::vec![OBJECT]),
+            Event::Release(boxed(CLASS)),
+        ]
+    );
+    assert_eq!(m.count(LAST), 1, "the runtime owns the last transition");
+}
+
+#[test]
+fn an_instance_with_a_dictionary_takes_the_runtime() {
+    let mut m = Machine::default();
+    m.child(SHARED, 3);
+    dying_point(
+        &mut m,
+        boxed(SHARED),
+        boxed(SHARED),
+        crate::HEADER_FLAG_HAS_INSTANCE_DICT,
+    );
+    m.release_terminal(0, 0);
+    assert_eq!(m.events, std::vec![Event::Cold]);
+    assert_eq!(m.count(SHARED), 3, "nothing changed before the refusal");
 }
