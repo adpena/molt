@@ -21,14 +21,23 @@ from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
 from bisect import bisect_left
 from collections import OrderedDict, deque
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field, fields, replace
 from threading import Event, RLock
 from types import MappingProxyType
-from typing import Final, Literal, Sequence, assert_never, cast
+from typing import TYPE_CHECKING, Final, Literal, Sequence, assert_never, cast, overload
+
+if TYPE_CHECKING:
+    from _collections_abc import dict_items, dict_keys, dict_values
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_RETURN_CAPTURES,
@@ -803,6 +812,33 @@ class _BindingState:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _BindingEntryState:
+    environment: _BindingEnvironment
+    taint_epoch: int
+    maybe_invalidated_members: MemberMask
+    definitely_invalidated_members: MemberMask
+    namespace_values_unknown: bool
+    taint_domain: int
+    callback_deletions: int
+
+    def open(self) -> tuple[_StatePool, int]:
+        pool = _StatePool()
+        entry = _BindingState(
+            parents=(0,),
+            taint_epoch=self.taint_epoch,
+            maybe_invalidated_members=self.maybe_invalidated_members,
+            definitely_invalidated_members=self.definitely_invalidated_members,
+            namespace_values_unknown=self.namespace_values_unknown,
+        )
+        pool._states.append(entry)
+        pool._ids[entry] = 1
+        pool._binding_environments.append(self.environment)
+        pool._taint_domain_mask = self.taint_domain
+        pool._callback_deletion_mask = self.callback_deletions
+        return pool, 1
+
+
 class _StatePool:
     def __init__(self) -> None:
         initial = _BindingState()
@@ -853,6 +889,18 @@ class _StatePool:
         if slots != self._taint_domain_mask:
             self._taint_domain_mask = slots
             self.taint_domain_generation += 1
+
+    def deferred_entry(self, state_id: int) -> _BindingEntryState:
+        state = self._states[state_id]
+        return _BindingEntryState(
+            self._binding_environments[state_id],
+            state.taint_epoch,
+            state.maybe_invalidated_members,
+            state.definitely_invalidated_members,
+            state.namespace_values_unknown,
+            self._taint_domain_mask,
+            self._callback_deletion_mask,
+        )
 
     def add_callback_deletions(self, slots: int) -> None:
         """Record lexical slots some reachable code deletes through `nonlocal`.
@@ -2774,6 +2822,283 @@ class _ObservedStateFrame:
         return self.accumulator
 
 
+class _BindingReplayRefused(Exception):
+    """A recorded transfer cannot reproduce this abstract execution."""
+
+
+@dataclass(slots=True)
+class _BindingFactAccess:
+    reads: set[object] = field(default_factory=set)
+    writes: set[object] = field(default_factory=set)
+    reads_existing: bool = False
+    enumerates: bool = False
+
+
+class _ObservedBindingTable[K, V](dict[K, V]):
+    """Record each job's access to facts supplied by earlier transfers."""
+
+    def __init__(
+        self,
+        values: Mapping[K, V],
+        *,
+        prior: tuple[Mapping[object, object], _BindingFactAccess | None] | None = None,
+    ) -> None:
+        super().__init__(values)
+        self.observing = False
+        self.access: _BindingFactAccess | None = None
+        self.prior = prior
+
+    def _access(self) -> _BindingFactAccess:
+        access = self.access
+        if access is None:
+            self.access = access = _BindingFactAccess()
+        return access
+
+    def _read(self, key: object) -> _BindingFactAccess:
+        access = self._access()
+        if key in access.writes:
+            return access
+        if self.prior is not None:
+            table, old_access = self.prior
+            if key in table and (old_access is None or key not in old_access.writes):
+                raise _BindingReplayRefused
+        access.reads.add(key)
+        access.reads_existing |= super().__contains__(key)
+        return access
+
+    def _enumerate(self) -> None:
+        if self.prior is not None:
+            raise _BindingReplayRefused
+        self._access().enumerates = True
+
+    def __getitem__(self, key: K) -> V:
+        if self.observing:
+            self._read(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key: object) -> bool:
+        if self.observing:
+            self._read(key)
+        return super().__contains__(key)
+
+    @overload
+    def get(self, key: object, default: None = None, /) -> V | None: ...
+
+    @overload
+    def get(self, key: object, default: V, /) -> V: ...
+
+    @overload
+    def get[D](self, key: object, default: D, /) -> V | D: ...
+
+    def get[D](self, key: object, default: D | None = None, /) -> V | D | None:
+        if self.observing:
+            self._read(key)
+        return super().get(key, default)
+
+    def setdefault(self, key: K, default: V, /) -> V:
+        if self.observing:
+            access = self._read(key)
+            if not super().__contains__(key):
+                access.writes.add(key)
+        return super().setdefault(key, default)
+
+    def __setitem__(self, key: K, value: V) -> None:
+        if self.observing:
+            self._read(key).writes.add(key)
+        super().__setitem__(key, value)
+
+    def __iter__(self) -> Iterator[K]:
+        if self.observing:
+            self._enumerate()
+        return super().__iter__()
+
+    def __len__(self) -> int:
+        if self.observing:
+            self._enumerate()
+        return super().__len__()
+
+    def copy(self) -> dict[K, V]:
+        if self.observing:
+            self._enumerate()
+        return super().copy()
+
+    def keys(self) -> dict_keys[K, V]:
+        if self.observing:
+            self._enumerate()
+        return super().keys()
+
+    def items(self) -> dict_items[K, V]:
+        if self.observing:
+            self._enumerate()
+        return super().items()
+
+    def values(self) -> dict_values[K, V]:
+        if self.observing:
+            self._enumerate()
+        return super().values()
+
+
+@dataclass
+class _BindingTransferFacts:
+    """Source facts accumulated by the initializer and deferred jobs before projection."""
+
+    expressions: dict[PythonNodeKey, PythonExpressionFact] = field(default_factory=dict)
+    class_builder_reads: dict[PythonNodeKey, IdentityMask] = field(default_factory=dict)
+    decoration_annotation_heads: dict[PythonNodeKey, IdentityMask] = field(
+        default_factory=dict
+    )
+    source_attributes: dict[PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]] = (
+        field(default_factory=dict)
+    )
+    source_elements: dict[PythonSourceKey, PythonSourceElement] = field(
+        default_factory=dict
+    )
+    source_calls: dict[PythonSourceKey, PythonSourceCall] = field(default_factory=dict)
+    source_native_initializers: dict[PythonSourceKey, PythonNativeInitializerSource] = (
+        field(default_factory=dict)
+    )
+    source_classes: dict[PythonSourceKey, PythonSourceClass] = field(
+        default_factory=dict
+    )
+    source_callables: dict[PythonSourceKey, IdentityMask] = field(default_factory=dict)
+    source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = field(
+        default_factory=dict
+    )
+    source_parameter_owners: dict[
+        PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ] = field(default_factory=dict)
+    source_function_results: dict[PythonSourceKey, PythonFunctionResult] = field(
+        default_factory=dict
+    )
+    source_namespaces: dict[PythonSourceKey, dict[str, frozenset[PythonSourceKey]]] = (
+        field(default_factory=dict)
+    )
+    source_bases: dict[PythonSourceKey, frozenset[PythonSourceKey]] = field(
+        default_factory=dict
+    )
+    source_namespace_exposure: dict[PythonSourceKey, frozenset[PythonSourceKey]] = (
+        field(default_factory=dict)
+    )
+    _builtin_guard_reads: dict[PythonNodeKey, str] = field(default_factory=dict)
+    statements: dict[PythonNodeKey, PythonStatementFact] = field(default_factory=dict)
+    iterations: dict[PythonNodeKey, PythonIterationFact] = field(default_factory=dict)
+    assignment_effects: dict[PythonNodeKey, EffectMask] = field(default_factory=dict)
+    calls: dict[PythonNodeKey, PythonCallSiteFact] = field(default_factory=dict)
+
+    def tables(self) -> tuple[dict[object, object], ...]:
+        return tuple(getattr(self, item.name) for item in fields(self))
+
+    def watch_tables(
+        self,
+        prior: tuple[tuple[Mapping[object, object], _BindingFactAccess | None], ...]
+        | None = None,
+    ) -> tuple[_ObservedBindingTable[object, object], ...]:
+        watched = []
+        for index, item in enumerate(fields(self)):
+            table = _ObservedBindingTable(
+                getattr(self, item.name),
+                prior=None if prior is None else prior[index],
+            )
+            setattr(self, item.name, table)
+            watched.append(table)
+        return tuple(watched)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredJobState:
+    entry: _BindingEntryState
+    scope_count: int
+    slot_count: int
+    observation_epoch: int
+    next_owner_token: int
+    callback_slots: int
+    callback_module_slots: int
+    callback_module_names: frozenset[str] | None
+    import_flow_required: bool
+    read_slots_prepared: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredJobReads:
+    activation_groups: frozenset[frozenset[PythonSourceKey]]
+    facts: tuple[_BindingFactAccess | None, ...]
+    earlier_scope_writes: frozenset[int]
+    state: _DeferredJobState | None
+    slot_end: int
+    next_owner_token: int
+    callback_slots: int
+    callback_deletions: int
+    import_flow_required: bool
+    read_slots_prepared: bool
+
+
+class _DeferredJobRecorder:
+    def __init__(self, analyzer: _Analyzer) -> None:
+        self.tables = analyzer.transfer.watch_tables()
+        self.initializer_reads = analyzer._opaque_activation_reads.copy()
+        self.jobs: list[_DeferredJobReads] = []
+
+    def run(self, analyzer: _Analyzer, job: _FunctionJob, state_id: int) -> None:
+        scope_count = len(analyzer.scopes)
+        slot_count = len(analyzer.slot_names)
+        queue_generation = analyzer._deferred_queue_generation
+        state: _DeferredJobState | None = _DeferredJobState(
+            analyzer.states.deferred_entry(state_id),
+            scope_count,
+            slot_count,
+            analyzer._namespace_observation_epoch,
+            analyzer._next_owner_token,
+            analyzer.callback_slot_mask,
+            analyzer.callback_module_slot_mask,
+            analyzer._callback_module_names,
+            analyzer._module_import_flow_required,
+            analyzer._module_read_slots_prepared,
+        )
+        for table in self.tables:
+            table.observing = True
+        groups: set[frozenset[PythonSourceKey]] = set()
+        earlier_scope_writes: set[int] = set()
+        analyzer._recorded_activation_groups = groups
+        analyzer._deferred_scope_writes = (scope_count, earlier_scope_writes)
+        try:
+            analyzer._analyze_function_job(job, state_id)
+        finally:
+            analyzer._recorded_activation_groups = None
+            analyzer._deferred_scope_writes = None
+            accesses = tuple(table.access for table in self.tables)
+            for table in self.tables:
+                table.observing = False
+                table.access = None
+        # A replay may append only this job's lexical scope and local slots.
+        if (
+            not groups
+            or earlier_scope_writes
+            or len(analyzer.scopes) != scope_count + 1
+            or analyzer._deferred_queue_generation != queue_generation
+            or analyzer.callback_module_slot_mask != state.callback_module_slots
+            or any(
+                access.reads_existing or access.enumerates
+                for access in accesses
+                if access is not None
+            )
+        ):
+            state = None
+        self.jobs.append(
+            _DeferredJobReads(
+                frozenset(groups),
+                accesses,
+                frozenset(earlier_scope_writes),
+                state,
+                len(analyzer.slot_names),
+                analyzer._next_owner_token,
+                analyzer.callback_slot_mask,
+                analyzer.states._callback_deletion_mask,
+                analyzer._module_import_flow_required,
+                analyzer._module_read_slots_prepared,
+            )
+        )
+
+
 class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
@@ -2784,7 +3109,10 @@ class _Analyzer:
             else frozenset(policy.opaque_activation_sources)
         )
         self._opaque_activation_reads: dict[frozenset[PythonSourceKey], bool] = {}
-        self._opaque_lexical_activations: dict[int, bool] = {}
+        self._opaque_lexical_activations: dict[
+            int, tuple[frozenset[PythonSourceKey], bool]
+        ] = {}
+        self._recorded_activation_groups: set[frozenset[PythonSourceKey]] | None = None
         self._foreign_universe = policy.foreign_namespace_universe
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
@@ -2792,6 +3120,7 @@ class _Analyzer:
         self._has_empty_module_expiry = False
         self.source_digest = source_digest
         self.states = _StatePool()
+        self.transfer = _BindingTransferFacts()
         self.scopes: list[_Scope] = []
         self.slot_names: list[str] = []
         self.slot_owner_scope_ids: list[int] = []
@@ -2800,48 +3129,19 @@ class _Analyzer:
         # Each class's implicit `__class__` cell (PEP 3135), by class scope id.
         self._class_cell_slots: dict[int, int] = {}
         self._class_cell_slot_mask = 0
-        self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
-        self.class_builder_reads: dict[PythonNodeKey, IdentityMask] = {}
-        self.decoration_annotation_heads: dict[PythonNodeKey, IdentityMask] = {}
-        self.source_attributes: dict[
-            PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
-        ] = {}
-        self.source_elements: dict[PythonSourceKey, PythonSourceElement] = {}
-        self.source_calls: dict[PythonSourceKey, PythonSourceCall] = {}
-        self.source_native_initializers: dict[
-            PythonSourceKey, PythonNativeInitializerSource
-        ] = {}
-        self.source_classes: dict[PythonSourceKey, PythonSourceClass] = {}
-        self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
-        self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
         # `id` of each call that is an attribute load's receiver expression.
         self._super_attribute_receivers: set[int] = set()
-        self.source_parameter_owners: dict[
-            PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-        ] = {}
-        self.source_function_results: dict[PythonSourceKey, PythonFunctionResult] = {}
-        self.source_namespaces: dict[
-            PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
-        ] = {}
-        self.source_bases: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
-        self.source_namespace_exposure: dict[
-            PythonSourceKey, frozenset[PythonSourceKey]
-        ] = {}
         # Star-import aliases of this module. A star import binds names that no
         # source node spells, so a module-namespace read selects its name from
         # each star-imported module instead of exposing those modules whole.
         self._star_import_origins: frozenset[PythonSourceKey] = frozenset()
-        # Builtin-name reads in an activation scope; the guard bit is projected
-        # once the module's final bindings are known (HF-79).
-        self._builtin_guard_reads: dict[PythonNodeKey, str] = {}
-        self.statements: dict[PythonNodeKey, PythonStatementFact] = {}
-        self.iterations: dict[PythonNodeKey, PythonIterationFact] = {}
-        self.assignment_effects: dict[PythonNodeKey, EffectMask] = {}
         self._namespace_observation_epoch = 0
         self._future_annotations = False
         self._dependency_authority: PythonDependencyAuthority | None = None
-        self.calls: dict[PythonNodeKey, PythonCallSiteFact] = {}
         self.function_jobs: list[_FunctionJob] = []
+        self._deferred_queue_generation = 0
+        self._replaying_deferred = False
+        self._deferred_scope_writes: tuple[int, set[int]] | None = None
         self._queued_function_jobs: dict[
             tuple[PythonNodeKey, int, bool], _FunctionJob
         ] = {}
@@ -2909,6 +3209,9 @@ class _Analyzer:
             and (python_node_source_key(node) in self.policy.declaration_only)
         ):
             return
+        if self._replaying_deferred:
+            raise _BindingReplayRefused
+        self._deferred_queue_generation += 1
         module_bindings, lexical_bindings = self._activation_slot_bindings(
             node,
             scope,
@@ -3147,6 +3450,7 @@ class _Analyzer:
         )
         existing = self._source_scopes.get(key)
         if existing is not None:
+            self._record_deferred_scope_write(existing)
             return existing
         scope = _Scope(
             scope_id=len(self.scopes),
@@ -3202,6 +3506,7 @@ class _Analyzer:
         if existing is not None:
             return existing
         assert self.module_scope is not None
+        self._record_deferred_scope_write(self.module_scope)
         slot = len(self.slot_names)
         self.module_scope.slots[name] = slot
         self.slot_names.append(f"{self.module_scope.scope_id}:{name}")
@@ -3218,6 +3523,13 @@ class _Analyzer:
         self.states.set_taint_domain(self._callback_taint_domain())
         self._scope_slot_cache.clear()
         return slot
+
+    def _record_deferred_scope_write(self, scope: _Scope) -> None:
+        # Execution mutates the scope that _new_scope returned. Slot admission
+        # and annotation capture also write directly to an existing owner.
+        observed = self._deferred_scope_writes
+        if observed is not None and scope.scope_id < observed[0]:
+            observed[1].add(scope.scope_id)
 
     def _foreign_name_known(self, name: str) -> bool:
         """Whether the policy states if other code writes ``name``: always for
@@ -3449,18 +3761,25 @@ class _Analyzer:
         if answer is None:
             answer = not sources.isdisjoint(opaque)
             self._opaque_activation_reads[sources] = answer
+        if self._recorded_activation_groups is not None:
+            self._recorded_activation_groups.add(sources)
         return answer
 
     def _lexical_activation_is_opaque(self, scope: _Scope) -> bool:
-        answer = self._opaque_lexical_activations.get(scope.scope_id)
-        if answer is None:
+        cached = self._opaque_lexical_activations.get(scope.scope_id)
+        if cached is None:
             sources: set[PythonSourceKey] = set()
             owner: _Scope | None = scope
             while owner is not None and owner.kind != "module":
                 sources.add(owner.source)
                 owner = owner.parent
-            answer = self._activation_group_is_opaque(frozenset(sources))
-            self._opaque_lexical_activations[scope.scope_id] = answer
+            group = frozenset(sources)
+            answer = self._activation_group_is_opaque(group)
+            self._opaque_lexical_activations[scope.scope_id] = (group, answer)
+        else:
+            group, answer = cached
+            if self._recorded_activation_groups is not None:
+                self._recorded_activation_groups.add(group)
         return answer
 
     def _name_uses_activation_namespace(
@@ -3527,8 +3846,9 @@ class _Analyzer:
             else:
                 continue
             key = self._node_key(head)
-            self.decoration_annotation_heads[key] = (
-                self.decoration_annotation_heads.get(key, NO_IDENTITIES) | identities
+            self.transfer.decoration_annotation_heads[key] = (
+                self.transfer.decoration_annotation_heads.get(key, NO_IDENTITIES)
+                | identities
             )
 
     def _plain_class_base(self, base: ast.expr) -> bool:
@@ -3540,7 +3860,7 @@ class _Analyzer:
         The read is a class statement's value when its binding is not
         invalidated and its one source origin is that statement, as a source
         callable's read is its own origin (`exact_builtin_name`)."""
-        fact = self.expressions.get(self._node_key(base))
+        fact = self.transfer.expressions.get(self._node_key(base))
         if (
             fact is None
             or fact.binding_invalidated
@@ -3562,14 +3882,14 @@ class _Analyzer:
             if owner in seen:
                 continue
             seen.add(owner)
-            source_class = self.source_classes.get(owner)
+            source_class = self.transfer.source_classes.get(owner)
             if (
                 source_class is None
                 or not source_class.plain_metaclass
-                or "__init_subclass__" in self.source_namespaces.get(owner, {})
+                or "__init_subclass__" in self.transfer.source_namespaces.get(owner, {})
             ):
                 return False
-            pending.extend(self.source_bases.get(owner, frozenset()))
+            pending.extend(self.transfer.source_bases.get(owner, frozenset()))
         return True
 
     def _read_name_resolution(
@@ -3824,11 +4144,13 @@ class _Analyzer:
                 return None
         owner = python_node_source_key(expression)
         protocol = PythonElementProtocol(capture[1])
-        previous = self.source_elements.get(owner)
+        previous = self.transfer.source_elements.get(owner)
         origins = function.source_origins | (
             previous.origins if previous else frozenset()
         )
-        self.source_elements[owner] = PythonSourceElement(owner, protocol, origins)
+        self.transfer.source_elements[owner] = PythonSourceElement(
+            owner, protocol, origins
+        )
         return StaticExpressionResult(
             identities=int(capture[0]),
             source_origins=frozenset({owner}),
@@ -3857,8 +4179,8 @@ class _Analyzer:
             )
         ):
             return selected
-        previous = self.source_elements.get(source)
-        self.source_elements[source] = PythonSourceElement(
+        previous = self.transfer.source_elements.get(source)
+        self.transfer.source_elements[source] = PythonSourceElement(
             source,
             protocol,
             owner.source_origins
@@ -3918,8 +4240,8 @@ class _Analyzer:
         if isinstance(node, ast.Attribute) and result.source_origins:
             source_key = python_node_source_key(node)
             origins = self._known_expression_result(node.value).exposed_source_origins
-            previous = self.source_attributes.get(source_key)
-            self.source_attributes[source_key] = (
+            previous = self.transfer.source_attributes.get(source_key)
+            self.transfer.source_attributes[source_key] = (
                 node.attr,
                 origins | (previous[1] if previous else frozenset()),
             )
@@ -3928,8 +4250,9 @@ class _Analyzer:
             # Canonical callable producers join the existing source-value graph.
             # This is positive provenance, never a proof that OTHER is absent.
             source = python_node_source_key(node)
-            self.source_callables[source] = (
-                self.source_callables.get(source, NO_IDENTITIES) | callable_identities
+            self.transfer.source_callables[source] = (
+                self.transfer.source_callables.get(source, NO_IDENTITIES)
+                | callable_identities
             )
             result = replace(result, source_origins=result.source_origins | {source})
         if identities and not _identity_can_release(identities):
@@ -3944,7 +4267,8 @@ class _Analyzer:
         if isinstance(node, ast.Name):
             slot = self._slot_for_name(scope, node.id)
             if (owner := scope.namespace_lookup_owner(node.id)) is not None:
-                if scope.annotation_evaluator:
+                if scope.annotation_evaluator and not owner.needs_annotation_namespace:
+                    self._record_deferred_scope_write(owner)
                     owner.needs_annotation_namespace = True
                 # Class locals use globals on a mapping miss, never an outer
                 # same-spelled local or the method's captured type parameter.
@@ -3971,7 +4295,7 @@ class _Analyzer:
                     and scope.kind in {"function", "lambda", "comprehension"}
                     and node.id in BUILTIN_BINDING_GUARD_BITS
                 ):
-                    self._builtin_guard_reads[key] = node.id
+                    self.transfer._builtin_guard_reads[key] = node.id
             if (
                 self._star_import_origins
                 and isinstance(node.ctx, ast.Load)
@@ -3984,12 +4308,12 @@ class _Analyzer:
                 result = replace(
                     result, source_origins=result.source_origins | {source_key}
                 )
-                self.source_attributes[source_key] = (
+                self.transfer.source_attributes[source_key] = (
                     node.id,
                     self._star_import_origins,
                 )
-        previous = self.expressions.get(key)
-        self.expressions[key] = PythonExpressionFact(
+        previous = self.transfer.expressions.get(key)
+        self.transfer.expressions[key] = PythonExpressionFact(
             key,
             scope.scope_id,
             effects | (previous.effects if previous is not None else NO_EFFECTS),
@@ -4022,10 +4346,10 @@ class _Analyzer:
         )
         scope.deferred_execution |= deferred_execution
         scope.module_metadata_effects |= module_metadata_effects
-        return self.expressions[key].result
+        return self.transfer.expressions[key].result
 
     def _known_expression_result(self, node: ast.expr) -> StaticExpressionResult:
-        fact = self.expressions.get(self._node_key(node))
+        fact = self.transfer.expressions.get(self._node_key(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
     def _widen_exposed_bindings(self, state_id: int) -> int:
@@ -4258,7 +4582,7 @@ class _Analyzer:
                 if method in {"__getitem__", "pop"}
                 else inert_none
             )
-            key_fact = self.expressions.get(self._node_key(node.args[0]))
+            key_fact = self.transfer.expressions.get(self._node_key(node.args[0]))
             key = None if key_fact is None else key_fact.static_value
             selected = self._current_globals_item(state_id, key, default)
             if selected is None:
@@ -4354,8 +4678,8 @@ class _Analyzer:
         else:
             return None
         key = self._node_key(node)
-        self.assignment_effects[key] = (
-            self.assignment_effects.get(key, NO_EFFECTS) | effects
+        self.transfer.assignment_effects[key] = (
+            self.transfer.assignment_effects.get(key, NO_EFFECTS) | effects
         )
         return _CallSemantics(
             result.identities,
@@ -4430,8 +4754,8 @@ class _Analyzer:
                     and type(argument_results[1].value) is str
                     else None
                 )
-                prior = self.source_elements.get(selected)
-                self.source_elements[selected] = PythonSourceElement(
+                prior = self.transfer.source_elements.get(selected)
+                self.transfer.source_elements[selected] = PythonSourceElement(
                     selected,
                     PythonElementProtocol.SUBSCRIPT,
                     owner.source_origins | (prior.origins if prior else frozenset()),
@@ -4588,8 +4912,8 @@ class _Analyzer:
             selected = python_source_projection_key(
                 node, PythonSourceProjection.CALL_ATTRIBUTE
             )
-            previous = self.source_attributes.get(selected)
-            self.source_attributes[selected] = (
+            previous = self.transfer.source_attributes.get(selected)
+            self.transfer.source_attributes[selected] = (
                 attribute_read[1],
                 owner.source_origins | (previous[1] if previous else frozenset()),
             )
@@ -4613,8 +4937,8 @@ class _Analyzer:
             mapping = python_source_projection_key(
                 node, PythonSourceProjection.CALL_ATTRIBUTE
             )
-            previous = self.source_attributes.get(mapping)
-            self.source_attributes[mapping] = (
+            previous = self.transfer.source_attributes.get(mapping)
+            self.transfer.source_attributes[mapping] = (
                 "__dict__",
                 owner.source_origins | (previous[1] if previous else frozenset()),
             )
@@ -4623,8 +4947,8 @@ class _Analyzer:
             )
             name = argument_results[name_index]
             key = name.value if name.value_known and type(name.value) is str else None
-            prior = self.source_elements.get(selected)
-            self.source_elements[selected] = PythonSourceElement(
+            prior = self.transfer.source_elements.get(selected)
+            self.transfer.source_elements[selected] = PythonSourceElement(
                 selected,
                 PythonElementProtocol.SUBSCRIPT,
                 frozenset({mapping}) | (prior.origins if prior else frozenset()),
@@ -4659,8 +4983,8 @@ class _Analyzer:
             builtins = python_source_projection_key(
                 node, PythonSourceProjection.CALL_NATIVE_BUILTINS
             )
-            prior_builtins = self.source_attributes.get(builtins)
-            self.source_attributes[builtins] = (
+            prior_builtins = self.transfer.source_attributes.get(builtins)
+            self.transfer.source_attributes[builtins] = (
                 "__dict__",
                 items[DataclassInitSpecField.BUILTINS].result.source_origins
                 | (prior_builtins[1] if prior_builtins else frozenset()),
@@ -4761,7 +5085,7 @@ class _Analyzer:
                 and all(row is not None and len(row) == 2 for row in post_rows)
                 else None,
             )
-            previous = self.source_native_initializers.get(selected)
+            previous = self.transfer.source_native_initializers.get(selected)
             if previous is not None:
                 projection = projection._replace(
                     receiver=projection.receiver | previous.receiver,
@@ -4785,7 +5109,7 @@ class _Analyzer:
                     if projection.post_inputs == previous.post_inputs
                     else None,
                 )
-            self.source_native_initializers[selected] = projection
+            self.transfer.source_native_initializers[selected] = projection
             source_result_projected = True
             result_fact = StaticExpressionResult(source_origins=frozenset({selected}))
             # Preserve construction/factory, failure and retirement effects.
@@ -4835,11 +5159,11 @@ class _Analyzer:
         }:
             deleting = callee == int(PythonIdentity.GLOBALS_DELITEM)
             if globals_mutation_call_identity(node, callee) is not None:
-                key_fact = self.expressions.get(self._node_key(node.args[0]))
+                key_fact = self.transfer.expressions.get(self._node_key(node.args[0]))
                 value_fact = (
                     None
                     if deleting
-                    else self.expressions.get(self._node_key(node.args[1]))
+                    else self.transfer.expressions.get(self._node_key(node.args[1]))
                 )
                 state_id, mutation_effects = self._store_namespace_key(
                     state_id,
@@ -4856,8 +5180,9 @@ class _Analyzer:
                     scope=scope,
                 )
                 key = self._node_key(node)
-                self.assignment_effects[key] = (
-                    self.assignment_effects.get(key, NO_EFFECTS) | mutation_effects
+                self.transfer.assignment_effects[key] = (
+                    self.transfer.assignment_effects.get(key, NO_EFFECTS)
+                    | mutation_effects
                 )
                 # Callee/arguments have executed; publication applies only its
                 # own release effects. Reapplying aggregate namespace writes
@@ -4927,8 +5252,8 @@ class _Analyzer:
             # from a joined replacement callee's ordinary call-result site.
             selected = python_node_source_key(node.args[1])
             source_result_projected = True
-            previous = self.source_attributes.get(selected)
-            self.source_attributes[selected] = (
+            previous = self.transfer.source_attributes.get(selected)
+            self.transfer.source_attributes[selected] = (
                 member,
                 owner.source_origins | (previous[1] if previous else frozenset()),
             )
@@ -5060,8 +5385,8 @@ class _Analyzer:
         name on the instance selects, so the source demands must see it."""
         if not owner.exposed_source_origins:
             return frozenset()
-        previous = self.source_attributes.get(store)
-        self.source_attributes[store] = (
+        previous = self.transfer.source_attributes.get(store)
+        self.transfer.source_attributes[store] = (
             member,
             owner.exposed_source_origins
             | (previous[1] if previous is not None else frozenset()),
@@ -5088,7 +5413,7 @@ class _Analyzer:
             or scope.kind != "function"
         ):
             return frozenset()
-        owner = self.source_parameter_owners.get(scope.source)
+        owner = self.transfer.source_parameter_owners.get(scope.source)
         if owner is None:
             return frozenset()
         positional = (*owner.args.posonlyargs, *owner.args.args)
@@ -5100,7 +5425,7 @@ class _Analyzer:
         return self.states.result(state_id, slot).source_origins
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
-        fact = self.expressions.get(self._node_key(node))
+        fact = self.transfer.expressions.get(self._node_key(node))
         return fact.identities if fact is not None else OTHER_IDENTITY
 
     def _eval_truth_test(
@@ -5123,10 +5448,10 @@ class _Analyzer:
             else INVOKES_COMPARISON_CALLBACK | RAISES
         )
         key = self._node_key(node)
-        fact = self.expressions[key]
+        fact = self.transfer.expressions[key]
         deferred_execution = _operand_dispatch_deferred(truth_effects, result.result)
         scope.deferred_execution |= deferred_execution
-        self.expressions[key] = replace(
+        self.transfer.expressions[key] = replace(
             fact,
             truth_effects=fact.truth_effects | truth_effects,
             deferred_execution=fact.deferred_execution | deferred_execution,
@@ -5159,9 +5484,11 @@ class _Analyzer:
             else:
                 captured = reads.pop(slot, ())
             for key in captured:
-                fact = self.expressions[key]
+                fact = self.transfer.expressions[key]
                 if not fact.binding_capture_required:
-                    self.expressions[key] = replace(fact, binding_capture_required=True)
+                    self.transfer.expressions[key] = replace(
+                        fact, binding_capture_required=True
+                    )
 
     def _eval_expr(
         self, node: ast.expr, state_id: int, scope: _Scope
@@ -5455,7 +5782,7 @@ class _Analyzer:
                 for ref in callee_result.result.deferred
                 if ref.phase in {"call", "escape"}
             )
-            callee_fact = self.expressions.get(self._node_key(node.func))
+            callee_fact = self.transfer.expressions.get(self._node_key(node.func))
             incomplete_module_callee = not callee_result.result.deferred_complete and (
                 bool(callee_result.identities & _USER_CALLABLE_IDENTITIES)
                 or bool(callee_result.result.deferred)
@@ -5519,7 +5846,7 @@ class _Analyzer:
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
                 call_source = python_node_source_key(node)
-                previous_call = self.source_calls.get(call_source)
+                previous_call = self.transfer.source_calls.get(call_source)
                 first_starred = next(
                     (
                         index
@@ -5550,7 +5877,7 @@ class _Analyzer:
                             source_arguments, previous_call.arguments, strict=True
                         )
                     )
-                self.source_calls[call_source] = PythonSourceCall(
+                self.transfer.source_calls[call_source] = PythonSourceCall(
                     call_source,
                     callee_result.result.source_origins
                     | (
@@ -5594,8 +5921,8 @@ class _Analyzer:
                 )
                 if receiver_origins:
                     super_source = python_node_source_key(node)
-                    previous_super = self.source_elements.get(super_source)
-                    self.source_elements[super_source] = PythonSourceElement(
+                    previous_super = self.transfer.source_elements.get(super_source)
+                    self.transfer.source_elements[super_source] = PythonSourceElement(
                         super_source,
                         PythonElementProtocol.SUPER,
                         receiver_origins
@@ -5735,7 +6062,8 @@ class _Analyzer:
                 bound_receivers = (
                     receiver_result.source_origins
                     if isinstance(node.func, ast.Attribute)
-                    and python_node_source_key(node.func) in self.source_attributes
+                    and python_node_source_key(node.func)
+                    in self.transfer.source_attributes
                     else frozenset()
                 )
                 deferred_execution |= frozenset(
@@ -5883,7 +6211,7 @@ class _Analyzer:
                 )
             effects = evaluation_effects | invocation_effects | cleanup_effects
             key = self._node_key(node)
-            previous_call = self.calls.get(key)
+            previous_call = self.transfer.calls.get(key)
             builtin_specializations = NO_IDENTITIES
             candidates = callee_result.identities & _BUILTIN_SHAPE_IDENTITY_MASK
             while candidates:
@@ -5902,7 +6230,7 @@ class _Analyzer:
             if previous_call is not None:
                 builtin_specializations &= previous_call.builtin_specializations
             after = self.states.get(state_id)
-            self.calls[key] = PythonCallSiteFact(
+            self.transfer.calls[key] = PythonCallSiteFact(
                 key,
                 scope.scope_id,
                 callee_result.identities
@@ -6271,8 +6599,8 @@ class _Analyzer:
                     )
                     if result.result.source_origins:
                         source = python_node_source_key(node)
-                        self.source_completions[source] = (
-                            self.source_completions.get(source, frozenset())
+                        self.transfer.source_completions[source] = (
+                            self.transfer.source_completions.get(source, frozenset())
                             | result.result.source_origins
                         )
                         result_override = replace(
@@ -6358,7 +6686,7 @@ class _Analyzer:
         self._record_state(state_id)
         if isinstance(node, ast.Name):
             key = self._node_key(node)
-            fact = self.expressions[key]
+            fact = self.transfer.expressions[key]
             slot = self._slot_for_name(scope, node.id)
             if (
                 slot is not None
@@ -6464,8 +6792,8 @@ class _Analyzer:
                     evaluated[step.index], boundary
                 )
                 scope.deferred_execution |= iteration.deferred_execution
-                previous = self.iterations.get(iteration_key)
-                self.iterations[iteration_key] = (
+                previous = self.transfer.iterations.get(iteration_key)
+                self.transfer.iterations[iteration_key] = (
                     iteration if previous is None else previous.merge(iteration)
                 )
                 if step.action == "kwstar":
@@ -6538,7 +6866,7 @@ class _Analyzer:
                 or self._dependency_authority.summary(node).contains_await
             ):
                 generator_kind = FunctionKind.ASYNC_GENERATOR
-            self.source_function_results.setdefault(
+            self.transfer.source_function_results.setdefault(
                 python_node_source_key(node),
                 PythonFunctionResult(
                     python_node_source_key(node),
@@ -6639,7 +6967,7 @@ class _Analyzer:
                     key_result = evaluated.result
             if isinstance(node, ast.GeneratorExp):
                 source = python_node_source_key(node)
-                previous = self.source_function_results.get(
+                previous = self.transfer.source_function_results.get(
                     source,
                     PythonFunctionResult(
                         source,
@@ -6650,7 +6978,7 @@ class _Analyzer:
                         frozenset(),
                     ),
                 )
-                self.source_function_results[source] = previous._replace(
+                self.transfer.source_function_results[source] = previous._replace(
                     yielded=previous.yielded | key_result.source_origins,
                     yielded_exposed=previous.yielded_exposed
                     | key_result.exposed_source_origins,
@@ -6793,8 +7121,8 @@ class _Analyzer:
                 ),
             )
             key = self._node_key(generator)
-            previous = self.iterations.get(key)
-            self.iterations[key] = (
+            previous = self.transfer.iterations.get(key)
+            self.transfer.iterations[key] = (
                 iteration if previous is None else previous.merge(iteration)
             )
             return self._merge_flows(prefix, loop)
@@ -7125,15 +7453,15 @@ class _Analyzer:
             owner_token=owner_token,
         )
         key = self._node_key(target)
-        self.assignment_effects[key] = (
-            self.assignment_effects.get(key, NO_EFFECTS) | assignment[1]
+        self.transfer.assignment_effects[key] = (
+            self.transfer.assignment_effects.get(key, NO_EFFECTS) | assignment[1]
         )
         scope.module_metadata_effects |= assignment[1] & WRITES_MODULE_METADATA
         if isinstance(target, (ast.Tuple, ast.List)):
             iteration = PythonIterationFact.from_result(result, assignment[1])
             scope.deferred_execution |= iteration.deferred_execution
-            previous = self.iterations.get(key)
-            self.iterations[key] = (
+            previous = self.transfer.iterations.get(key)
+            self.transfer.iterations[key] = (
                 iteration if previous is None else previous.merge(iteration)
             )
         return assignment
@@ -7252,8 +7580,8 @@ class _Analyzer:
     ) -> tuple[int, EffectMask]:
         result = self._delete_target(target, state_id, scope)
         key = self._node_key(target)
-        self.assignment_effects[key] = (
-            self.assignment_effects.get(key, NO_EFFECTS) | result[1]
+        self.transfer.assignment_effects[key] = (
+            self.transfer.assignment_effects.get(key, NO_EFFECTS) | result[1]
         )
         scope.module_metadata_effects |= result[1] & WRITES_MODULE_METADATA
         return result
@@ -7353,7 +7681,9 @@ class _Analyzer:
         ):
             # Another importer may observe a publication before a later overwrite
             # or deletion. Deferred function writes are admitted by body demand.
-            namespace = self.source_namespaces.setdefault(self._module_source, {})
+            namespace = self.transfer.source_namespaces.setdefault(
+                self._module_source, {}
+            )
             namespace[name] = (
                 namespace.get(name, frozenset()) | result.exposed_source_origins
             )
@@ -7367,7 +7697,7 @@ class _Analyzer:
             # A custom mapping can discard or replace the value, so this is
             # candidate availability only. Preserve its named publication even
             # when the storage/type authority must forget the selected value.
-            namespace = self.source_namespaces.setdefault(scope.source, {})
+            namespace = self.transfer.source_namespaces.setdefault(scope.source, {})
             namespace[name] = (
                 namespace.get(name, frozenset()) | result.exposed_source_origins
             )
@@ -7604,7 +7934,7 @@ class _Analyzer:
         if not flow.completions & PythonCompletion.NORMAL:
             self._module_import_flow_required = True
         key = self._node_key(node)
-        previous = self.statements.get(key)
+        previous = self.transfer.statements.get(key)
         deferred_execution = executed_deferred
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for decorator in node.decorator_list:
@@ -7613,14 +7943,16 @@ class _Analyzer:
                 ).exposed_deferred
         elif isinstance(node, ast.AugAssign):
             scope.module_metadata_effects |= (
-                self.assignment_effects.get(self._node_key(node.target), NO_EFFECTS)
+                self.transfer.assignment_effects.get(
+                    self._node_key(node.target), NO_EFFECTS
+                )
                 & WRITES_MODULE_METADATA
             )
         # Implicit context protocol calls are projected at their own execution
         # phases. Escaping the receiver here would execute unrelated methods
         # and erase the distinction between entry, binding and exit handlers.
         scope.deferred_execution |= deferred_execution
-        self.statements[key] = PythonStatementFact(
+        self.transfer.statements[key] = PythonStatementFact(
             key,
             scope.scope_id,
             flow.effects | (previous.effects if previous is not None else NO_EFFECTS),
@@ -7628,7 +7960,7 @@ class _Analyzer:
             or (previous is not None and previous.module_namespace_observable),
             flow.completions
             | (previous.completions if previous is not None else PythonCompletion.NONE),
-            self.iterations.get(key),
+            self.transfer.iterations.get(key),
             module_metadata
             if previous is None
             else module_metadata.intersect(previous.module_metadata_at_entry),
@@ -7799,8 +8131,8 @@ class _Analyzer:
             # publication. Transport only actual namespace mutation together
             # with the store/release effects for names and retained members.
             target_key = self._node_key(node.target)
-            self.assignment_effects[target_key] = (
-                self.assignment_effects.get(target_key, NO_EFFECTS)
+            self.transfer.assignment_effects[target_key] = (
+                self.transfer.assignment_effects.get(target_key, NO_EFFECTS)
                 | namespace_effects
                 | target_effects
             )
@@ -8097,8 +8429,9 @@ class _Analyzer:
             if custom_builtins_possible:
                 builder |= OTHER_IDENTITY
             builder_key = self._node_key(node)
-            self.class_builder_reads[builder_key] = (
-                self.class_builder_reads.get(builder_key, NO_IDENTITIES) | builder
+            self.transfer.class_builder_reads[builder_key] = (
+                self.transfer.class_builder_reads.get(builder_key, NO_IDENTITIES)
+                | builder
             )
             if builder != int(PythonIdentity.BUILTIN_BUILD_CLASS):
                 # A custom builtins mapping can run __getitem__ at this read.
@@ -8133,7 +8466,7 @@ class _Analyzer:
                 else self._known_expression_result(base)
                 for base in node.bases
             )
-            self.source_bases[owner_key] = self.source_bases.get(
+            self.transfer.source_bases[owner_key] = self.transfer.source_bases.get(
                 owner_key, frozenset()
             ) | frozenset().union(*(base.source_origins for base in base_results))
             assert self._dependency_authority is not None
@@ -8279,14 +8612,15 @@ class _Analyzer:
                         # A property is a data descriptor: an instance store of
                         # its name runs its setter.
                         and not any(
-                            (element := self.source_elements.get(origin)) is not None
+                            (element := self.transfer.source_elements.get(origin))
+                            is not None
                             and element.protocol is PythonElementProtocol.PROPERTY
                             for origin in value.source_origins
                         )
                     )
                 )
-                prior_class = self.source_classes.get(owner_key)
-                self.source_classes[owner_key] = PythonSourceClass(
+                prior_class = self.transfer.source_classes.get(owner_key)
+                self.transfer.source_classes[owner_key] = PythonSourceClass(
                     owner_key,
                     plain_preparation
                     and (prior_class is None or prior_class.plain_metaclass),
@@ -8296,14 +8630,16 @@ class _Analyzer:
                         if prior_class is None or name in prior_class.plain_attributes
                     ),
                 )
-                source_namespace = self.source_namespaces.setdefault(owner_key, {})
+                source_namespace = self.transfer.source_namespaces.setdefault(
+                    owner_key, {}
+                )
                 for name, result in namespace.items():
                     source_namespace[name] = (
                         source_namespace.get(name, frozenset())
                         | result.exposed_source_origins
                     )
-                self.source_namespace_exposure[owner_key] = (
-                    self.source_namespace_exposure.get(owner_key, frozenset())
+                self.transfer.source_namespace_exposure[owner_key] = (
+                    self.transfer.source_namespace_exposure.get(owner_key, frozenset())
                     | class_scope.escaped_source_origins
                     | frozenset().union(
                         *(value.exposed_source_origins for value in argument_results)
@@ -8348,7 +8684,7 @@ class _Analyzer:
                     DeferredExecution(owner, "descriptor")
                     for result in namespace_values
                     for owner in result.source_origins
-                    if (element := self.source_elements.get(owner)) is not None
+                    if (element := self.transfer.source_elements.get(owner)) is not None
                     and element.protocol is PythonElementProtocol.PROPERTY
                 )
                 inherited_hooks = tuple(
@@ -8694,8 +9030,8 @@ class _Analyzer:
                 ),
             )
             assert iteration_key is not None
-            previous = self.iterations.get(iteration_key)
-            self.iterations[iteration_key] = (
+            previous = self.transfer.iterations.get(iteration_key)
+            self.transfer.iterations[iteration_key] = (
                 iteration if previous is None else previous.merge(iteration)
             )
         return self._merge_flows(
@@ -8899,12 +9235,12 @@ class _Analyzer:
         )
 
     def _call_evidence(self, call: ast.Call) -> CallEvidence | None:
-        fact = self.calls.get(PythonNodeKey.from_node(call))
+        fact = self.transfer.calls.get(PythonNodeKey.from_node(call))
         if fact is None:
             return None
         return CallEvidence(
             fact.callee_identities,
-            python_node_source_key(call) in self.source_calls,
+            python_node_source_key(call) in self.transfer.source_calls,
         )
 
     def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
@@ -8912,7 +9248,7 @@ class _Analyzer:
         arguments = node.args
         parameters = function_parameter_names(arguments)
         parameter_nodes = function_parameter_nodes(arguments)
-        self.source_parameter_owners[python_node_source_key(node)] = node
+        self.transfer.source_parameter_owners[python_node_source_key(node)] = node
         body = (
             node.body
             if isinstance(node.body, list)
@@ -8987,7 +9323,7 @@ class _Analyzer:
                 if isinstance(node, ast.AsyncFunctionDef)
                 else (FunctionKind.GENERATOR if has_yield else FunctionKind.SYNC)
             )
-            previous = self.source_function_results.get(
+            previous = self.transfer.source_function_results.get(
                 source,
                 PythonFunctionResult(
                     source,
@@ -8998,7 +9334,7 @@ class _Analyzer:
                     frozenset(),
                 ),
             )
-            self.source_function_results[source] = previous._replace(
+            self.transfer.source_function_results[source] = previous._replace(
                 returned=previous.returned | scope.returned_source_origins,
                 returned_exposed=previous.returned_exposed
                 | scope.returned_exposed_source_origins,
@@ -9038,16 +9374,16 @@ class _Analyzer:
         # metadata mutation. The escaped callee/receiver summary includes all
         # source-owned values it can return or expose.
         result_sources = {
-            source: call.callees for source, call in self.source_calls.items()
+            source: call.callees for source, call in self.transfer.source_calls.items()
         }
         result_sources.update(
             (source, element.origins)
-            for source, element in self.source_elements.items()
+            for source, element in self.transfer.source_elements.items()
         )
-        result_sources.update(self.source_completions)
+        result_sources.update(self.transfer.source_completions)
         result_sources.update(
             (source, origins)
-            for source, (_name, origins) in self.source_attributes.items()
+            for source, (_name, origins) in self.transfer.source_attributes.items()
         )
         result_indices: dict[PythonSourceKey, int] = {}
         for source in result_sources:
@@ -9135,7 +9471,7 @@ class _Analyzer:
                 return replace(fact, module_metadata_effects=resolved)
             return fact
 
-        iterations = {key: seal(fact) for key, fact in self.iterations.items()}
+        iterations = {key: seal(fact) for key, fact in self.transfer.iterations.items()}
 
         def project_statement(
             fact: PythonStatementFact,
@@ -9156,7 +9492,7 @@ class _Analyzer:
         )
         statements = tuple(
             sorted(
-                map(project_statement, self.statements.values()),
+                map(project_statement, self.transfer.statements.values()),
                 key=lambda fact: fact.node,
             )
         )
@@ -9228,8 +9564,8 @@ class _Analyzer:
         module binds would fail its guard on every call, so it gets none.
         """
         assert self.module_scope is not None
-        for key, fact in self.expressions.items():
-            name = self._builtin_guard_reads.get(key)
+        for key, fact in self.transfer.expressions.items():
+            name = self.transfer._builtin_guard_reads.get(key)
             if (
                 name is None
                 or self._module_slot(name) is not None
@@ -9327,7 +9663,9 @@ class _Analyzer:
         try:
             module_flow = self.exec_statements(tree.body, entry_state, module)
             if module_flow.normal is not None:
-                namespace = self.source_namespaces.setdefault(self._module_source, {})
+                namespace = self.transfer.source_namespaces.setdefault(
+                    self._module_source, {}
+                )
                 if (
                     self._foreign_reads is not None
                     and self.states.get(module_flow.normal).taint_epoch
@@ -9349,7 +9687,9 @@ class _Analyzer:
             self._observed_stack.pop()
         self._active_lexical_history = None
 
-    def _run_deferred_job(self, job: _FunctionJob) -> None:
+    def _run_deferred_job(
+        self, job: _FunctionJob, recorder: _DeferredJobRecorder | None
+    ) -> None:
         # Deferred bodies can run after any observed module state. Parent
         # function state supplies closure cells and the module summary widens
         # the globals used in this activation.
@@ -9380,19 +9720,26 @@ class _Analyzer:
         previous_module_states = self._active_module_states
         self._active_module_states = (job_outer,)
         try:
-            self._analyze_function_job(job, job_outer)
+            if recorder is None:
+                self._analyze_function_job(job, job_outer)
+            else:
+                recorder.run(self, job, job_outer)
         finally:
             self._active_module_states = previous_module_states
 
     def _finish_analysis(
-        self, cursor: int, *, capture: Callable[[_Analyzer, int], None] | None = None
+        self,
+        cursor: int,
+        *,
+        capture: Callable[[_Analyzer, int], None] | None = None,
+        recorder: _DeferredJobRecorder | None = None,
     ) -> _BindingAnalysis:
         while cursor < len(self.function_jobs):
             # Exponential spacing bounds checkpoints in each deferred suffix.
             # The retention policy admits early boundaries on small sources.
             if capture is not None and cursor >= 2 and not cursor & (cursor - 1):
                 capture(self, cursor)
-            self._run_deferred_job(self.function_jobs[cursor])
+            self._run_deferred_job(self.function_jobs[cursor], recorder)
             cursor += 1
         return self._project_analysis()
 
@@ -9430,52 +9777,62 @@ class _Analyzer:
         # are projected: every target family records its effects here.
         import_relevant_assignment_effects = any(
             effects & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA)
-            for effects in self.assignment_effects.values()
+            for effects in self.transfer.assignment_effects.values()
         )
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
-            class_builder_reads=self.class_builder_reads,
-            decoration_annotation_heads=self.decoration_annotation_heads,
+            class_builder_reads=self.transfer.class_builder_reads,
+            decoration_annotation_heads=self.transfer.decoration_annotation_heads,
             callbacks_rewrite_metadata=self._callback_module_names is None
             or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(
                 (
                     owner,
                     tuple(sorted(namespace.items())),
-                    self.source_namespace_exposure.get(owner, frozenset()),
+                    self.transfer.source_namespace_exposure.get(owner, frozenset()),
                 )
-                for owner, namespace in sorted(self.source_namespaces.items())
+                for owner, namespace in sorted(self.transfer.source_namespaces.items())
             ),
             source_attributes=tuple(
                 (owner, name, origins)
-                for owner, (name, origins) in sorted(self.source_attributes.items())
+                for owner, (name, origins) in sorted(
+                    self.transfer.source_attributes.items()
+                )
             ),
-            source_bases=tuple(sorted(self.source_bases.items())),
+            source_bases=tuple(sorted(self.transfer.source_bases.items())),
             source_elements=tuple(
-                value for _owner, value in sorted(self.source_elements.items())
+                value for _owner, value in sorted(self.transfer.source_elements.items())
             ),
-            source_calls=tuple(value for _, value in sorted(self.source_calls.items())),
+            source_calls=tuple(
+                value for _, value in sorted(self.transfer.source_calls.items())
+            ),
             source_native_initializers=tuple(
-                value for _, value in sorted(self.source_native_initializers.items())
+                value
+                for _, value in sorted(self.transfer.source_native_initializers.items())
             ),
             source_classes=tuple(
-                value for _, value in sorted(self.source_classes.items())
+                value for _, value in sorted(self.transfer.source_classes.items())
             ),
-            source_callables=tuple(sorted(self.source_callables.items())),
+            source_callables=tuple(sorted(self.transfer.source_callables.items())),
             source_parameters=tuple(
                 self._source_parameters(owner, node)
-                for owner, node in sorted(self.source_parameter_owners.items())
+                for owner, node in sorted(self.transfer.source_parameter_owners.items())
             ),
             source_function_results=tuple(
-                value for _owner, value in sorted(self.source_function_results.items())
+                value
+                for _owner, value in sorted(
+                    self.transfer.source_function_results.items()
+                )
             ),
-            source_completions=tuple(sorted(self.source_completions.items())),
+            source_completions=tuple(sorted(self.transfer.source_completions.items())),
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
             expressions=expressions,
             statements=statements,
             iterations=iterations,
-            calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
+            calls=tuple(
+                sorted(self.transfer.calls.values(), key=lambda fact: fact.node)
+            ),
             scopes=scope_facts,
             class_annotation_namespaces=frozenset(
                 source_key
@@ -9520,7 +9877,7 @@ class _Analyzer:
             # Source demand proofs may require a projection even when strict
             # metadata is invariant. Preserve canonical no-effect assignments;
             # dropping them would turn harmless stores into unknown callbacks.
-            MappingProxyType(dict(self.assignment_effects)),
+            MappingProxyType(dict(self.transfer.assignment_effects)),
             flow_required or import_relevant_assignment_effects,
             (
                 None
@@ -9551,7 +9908,7 @@ class _Analyzer:
             ),
         )
 
-    def _fork_at_deferred_boundary(self) -> _Analyzer:
+    def _fork_at_deferred_boundary(self, *, empty_transfer: bool = False) -> _Analyzer:
         """Fork a drained prefix without sharing mutable scope or job owners."""
         assert self.module_scope is not None and self._dependency_authority is not None
         assert not self._observed_stack and not self._binding_read_scopes
@@ -9566,9 +9923,14 @@ class _Analyzer:
         result._dependency_authority = _copy_analysis_containers(
             self._dependency_authority
         )
-        result.source_namespaces = {
-            owner: names.copy() for owner, names in self.source_namespaces.items()
-        }
+        if empty_transfer:
+            result.transfer = _BindingTransferFacts()
+        else:
+            result.transfer = _copy_analysis_containers(self.transfer)
+            result.transfer.source_namespaces = {
+                owner: names.copy()
+                for owner, names in self.transfer.source_namespaces.items()
+            }
         result._history_summaries = {}
 
         scopes: list[_Scope] = []
@@ -9615,23 +9977,219 @@ def _copy_analysis_containers[T](owner: T) -> T:
 
 
 @dataclass(frozen=True, slots=True)
+class _RecordedBindingTransfer:
+    analyzer: _Analyzer
+    state_count: int
+    telemetry: PythonBindingTelemetry
+    initializer_reads: Mapping[frozenset[PythonSourceKey], bool]
+    jobs: tuple[_DeferredJobReads, ...]
+
+    def revise(self, policy: PythonBindingFlowPolicy) -> _BindingAnalysis | None:
+        activation_sources = policy.opaque_activation_sources
+        if (
+            activation_sources is None
+            or replace(
+                self.analyzer.policy, opaque_activation_sources=activation_sources
+            )
+            != policy
+        ):
+            return None
+        active = frozenset(activation_sources)
+
+        def differs(group: frozenset[PythonSourceKey]) -> bool:
+            return self.analyzer._opaque_activation_reads[group] != (
+                not group.isdisjoint(active)
+            )
+
+        if any(differs(group) for group in self.initializer_reads):
+            return None
+        changed = [
+            index
+            for index, record in enumerate(self.jobs)
+            if any(differs(group) for group in record.activation_groups)
+        ]
+        if not changed or any(self.jobs[index].state is None for index in changed):
+            return None
+        work = self.analyzer._fork_at_deferred_boundary()
+        work.policy = policy
+        work._opaque_activation_sources = active
+        work._opaque_activation_reads = {
+            group: not group.isdisjoint(active)
+            for group in work._opaque_activation_reads
+        }
+        try:
+            for index in changed:
+                self._refresh_job(work, index)
+        except _BindingReplayRefused:
+            return None
+        result = work._project_analysis()
+        # A refreshed result shares the unaffected transfer's state statistics.
+        return replace(
+            result,
+            facts=replace(
+                result.facts,
+                state_count=self.state_count,
+                telemetry=self.telemetry,
+            ),
+        )
+
+    def _refresh_job(self, work: _Analyzer, index: int) -> None:
+        record = self.jobs[index]
+        state = record.state
+        assert state is not None
+        later = self.jobs[index + 1 :]
+        if any(
+            scope_id <= state.scope_count
+            for other in later
+            for scope_id in other.earlier_scope_writes
+        ):
+            raise _BindingReplayRefused
+        for later_job in work.function_jobs[index + 1 :]:
+            parent: _Scope | None = later_job.parent_scope
+            while parent is not None:
+                if parent.scope_id == state.scope_count:
+                    raise _BindingReplayRefused
+                parent = parent.parent
+
+        leaf = work._fork_at_deferred_boundary(empty_transfer=True)
+        job = leaf.function_jobs[index]
+        leaf.scopes = leaf.scopes[: state.scope_count]
+        leaf._source_scopes = {
+            key: scope
+            for key, scope in leaf._source_scopes.items()
+            if scope.scope_id < state.scope_count
+        }
+        leaf.slot_names = leaf.slot_names[: state.slot_count]
+        leaf.slot_owner_scope_ids = leaf.slot_owner_scope_ids[: state.slot_count]
+        leaf._class_cell_slots = {
+            owner: slot
+            for owner, slot in leaf._class_cell_slots.items()
+            if slot < state.slot_count
+        }
+        leaf._class_namespace_slots = {
+            owner: slot
+            for owner, slot in leaf._class_namespace_slots.items()
+            if slot < state.slot_count
+        }
+        leaf._class_cell_slot_mask &= (1 << state.slot_count) - 1
+        leaf.callback_slot_mask = state.callback_slots
+        leaf.callback_module_slot_mask = state.callback_module_slots
+        leaf._callback_module_names = state.callback_module_names
+        leaf._namespace_observation_epoch = state.observation_epoch
+        leaf._next_owner_token = state.next_owner_token
+        leaf._module_import_flow_required = state.import_flow_required
+        leaf._module_read_slots_prepared = state.read_slots_prepared
+        leaf._super_attribute_receivers.difference_update(map(id, ast.walk(job.node)))
+        leaf._scope_slot_cache.clear()
+        leaf._opaque_lexical_activations.clear()
+        leaf._replaying_deferred = True
+        earlier_scope_writes: set[int] = set()
+        leaf._deferred_scope_writes = (state.scope_count, earlier_scope_writes)
+
+        work_tables = work.transfer.tables()
+        watched = leaf.transfer.watch_tables(
+            tuple(zip(work_tables, record.facts, strict=True))
+        )
+        for table in watched:
+            table.observing = True
+        leaf.states, entry = state.entry.open()
+        leaf._active_module_states = (entry,)
+        try:
+            leaf._analyze_function_job(job, entry)
+        finally:
+            leaf._active_module_states = None
+            leaf._deferred_scope_writes = None
+            for table in watched:
+                table.observing = False
+                table.access = None
+
+        if (
+            len(leaf.scopes) != state.scope_count + 1
+            or leaf.slot_names != work.slot_names[: record.slot_end]
+            or leaf.slot_owner_scope_ids != work.slot_owner_scope_ids[: record.slot_end]
+            or leaf._next_owner_token != record.next_owner_token
+            or leaf.callback_module_slot_mask != state.callback_module_slots
+            or leaf._callback_module_names != state.callback_module_names
+            or leaf.callback_slot_mask != record.callback_slots
+            or leaf.states._callback_deletion_mask != record.callback_deletions
+            or leaf._module_import_flow_required != record.import_flow_required
+            or leaf._module_read_slots_prepared != record.read_slots_prepared
+            or earlier_scope_writes
+        ):
+            raise _BindingReplayRefused
+        scope = leaf.scopes[-1]
+        old_scope = work.scopes[state.scope_count]
+        if (
+            scope.source != old_scope.source
+            or scope.kind != old_scope.kind
+            or scope.slots != old_scope.slots
+        ):
+            raise _BindingReplayRefused
+
+        for table_index, (table, old, new) in enumerate(
+            zip(work_tables, record.facts, watched, strict=True)
+        ):
+            keys = new.keys() if old is None else old.writes | new.keys()
+            changed = {
+                key
+                for key in keys
+                if (key in table) != (key in new) or table.get(key) != new.get(key)
+            }
+            if any(
+                access is not None
+                and (
+                    access.enumerates
+                    or not changed.isdisjoint(access.reads)
+                    or not changed.isdisjoint(access.writes)
+                )
+                for other in later
+                if changed
+                for access in (other.facts[table_index],)
+            ):
+                raise _BindingReplayRefused
+            for key in changed:
+                if key in new:
+                    table[key] = new[key]
+                else:
+                    del table[key]
+
+        scope.parent = old_scope.parent
+        work.scopes[state.scope_count] = scope
+        for key, prior_scope in work._source_scopes.items():
+            if prior_scope is old_scope:
+                work._source_scopes[key] = scope
+        work._opaque_activation_reads.update(leaf._opaque_activation_reads)
+        if work._foreign_reads is not None and leaf._foreign_reads is not None:
+            work._foreign_reads.update(leaf._foreign_reads)
+        work._has_empty_module_expiry |= leaf._has_empty_module_expiry
+        work._module_import_flow_required |= leaf._module_import_flow_required
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingCheckpoint:
     completed_jobs: int
     prefix: _Analyzer
 
 
 def _binding_checkpoint_size(analyzer: _Analyzer) -> int:
-    return len(analyzer.states) + len(analyzer.expressions) + len(analyzer.statements)
+    return (
+        len(analyzer.states)
+        + len(analyzer.transfer.expressions)
+        + len(analyzer.transfer.statements)
+    )
 
 
 class _BindingRevisions:
-    """Operation-local prefixes for adjacent policies of the same source."""
+    """Operation-local transfers for adjacent policies of the same source."""
 
     def __init__(self) -> None:
         self._lock = RLock()
         self._recent: OrderedDict[
             tuple[str, PythonBindingFlowPolicy], tuple[_BindingCheckpoint, ...]
         ] = OrderedDict()
+        self._recorded: dict[
+            tuple[str, PythonBindingFlowPolicy], _RecordedBindingTransfer
+        ] = {}
 
     def analyze(
         self,
@@ -9652,6 +10210,11 @@ class _BindingRevisions:
         )
         with self._lock:
             prior = self._recent.get(key, ())
+            recorded = self._recorded.get(key)
+        if recorded is not None:
+            revised = recorded.revise(policy)
+            if revised is not None:
+                return revised
         checkpoints: list[_BindingCheckpoint] = []
         cursor = 0
         for checkpoint in reversed(prior):
@@ -9667,7 +10230,7 @@ class _BindingRevisions:
                 # arguments. A revised parameter in a pending job is safe.
                 if any(
                     python_node_source_key(parameter) in changed_arguments
-                    for owner in prefix.source_parameter_owners.values()
+                    for owner in prefix.transfer.source_parameter_owners.values()
                     for parameter in function_parameter_nodes(owner.args)
                 ):
                     continue
@@ -9712,9 +10275,34 @@ class _BindingRevisions:
             and _binding_checkpoint_size(analyzer) <= 512
         ):
             capture(analyzer, 0)
-        result = analyzer._finish_analysis(cursor, capture=capture)
+        recorder = None
+        if (
+            cursor == 0
+            and recorded is None
+            and analyzer._foreign_universe is not None
+            and 1 < len(analyzer.function_jobs) <= 256
+            and _binding_checkpoint_size(analyzer) <= 8192
+        ):
+            recorder = _DeferredJobRecorder(analyzer)
+        result = analyzer._finish_analysis(cursor, capture=capture, recorder=recorder)
         with self._lock:
             self._recent.pop(key, None)
+            if (
+                checkpoints
+                and recorder is not None
+                and len(recorder.jobs) <= 256
+                and any(job.state is not None for job in recorder.jobs)
+            ):
+                # A leaf retains its persistent entry environment. The state
+                # arena belongs to the completed transfer and need not stay live.
+                analyzer.states = _StatePool()
+                self._recorded[key] = _RecordedBindingTransfer(
+                    analyzer,
+                    result.facts.state_count,
+                    result.facts.telemetry,
+                    recorder.initializer_reads,
+                    tuple(recorder.jobs),
+                )
             if checkpoints:
                 self._recent[key] = tuple(checkpoints)
                 large: list[tuple[str, PythonBindingFlowPolicy]] = []
@@ -9731,6 +10319,9 @@ class _BindingRevisions:
                 # their own quota. Short captures cannot evict a large prefix.
                 for evicted in (*large[:-4], *small_closed[:-8], *small_escaped[:-8]):
                     del self._recent[evicted]
+                    self._recorded.pop(evicted, None)
+            else:
+                self._recorded.pop(key, None)
         return result
 
 
