@@ -91,6 +91,11 @@ per premise revision.
    cache, including the exact parser, target plan and namespace premise. The importing program
    completes admitted requests against its own topology. A revised premise or a demanded body
    can still require binding analysis.
+   On the five-import workload, the installed archive leaves 790 deferred stdlib scan requests.
+   Twelve already use the release activation premise. Holding other inputs fixed and clearing
+   the opaque-activation set left 523 of the other 778 raw request projections identical.
+   Changes include source demands and value summaries. Shipping a single
+   concrete body result would therefore leave many requests to solve on the importing machine.
 2. *Reachability is separate from proof.* Discovery's edges come from a syntactic import scan
    (milliseconds per module, parallel, cached by source digest). Only dynamic import sites (the
    import callables, `__import__`, `importlib`) consult the binding facts. The precise fixpoint
@@ -102,6 +107,10 @@ per premise revision.
    A module scan now captures syntax-only namespace writes before binding analysis. The binding
    core reads the package-independent own names from this capture, and discovery refines the
    package-relative foreign writes against the binding results. Both use the same admitted AST.
+   Under HF-926, a replay can have no settled premise. If an import reaches the only writer that
+   invalidates its own resolution, including and excluding that writer alternate. Discovery
+   currently retains the accumulated graph in such cases, including earlier publications from a
+   continued invocation.
 3. *Parametric summaries.* A module's scan summary is a function of its premise inputs: the
    foreign writes and the exposed functions it reads, as logged by `ScanPremiseReads`. The global
    fixpoint iterates over these small summaries and never reruns a module fixpoint. This is
@@ -144,6 +153,11 @@ per premise revision.
    reflection already exposes its callback namespace. In that case both premises use the
    same open callback domain. The explicit `__builtins__` writer, observed activation
    answers and relevant frame-local exposure must still agree.
+   The bounded revision cache can keep one continuation after the first initializer
+   statement. Its witness covers the completed statement, and the continuation retains
+   the interpreter's abstract completion and lexical observations. A failed full-initializer
+   reuse can then resume at the second statement under the new premise. This skips rebuilding
+   the initial scope while leaving the rest of the initializer to the canonical transfer.
    A scan can reuse the transfer after adding a foreign writer for a module slot no executed
    transfer looked up or allocated. The scan still projects the slot into the complete layout
    and records its possible presence if a callback expired the namespace by module exit.
