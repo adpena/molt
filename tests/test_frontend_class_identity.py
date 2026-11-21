@@ -205,7 +205,7 @@ def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
 
     Layout consumers read ``dynamic`` and stay on for an exposed class:
     guarded field access in its methods and its statement stamp. Consumers of
-    unguarded facts read ``class_namespace_closed`` and decline: constructor
+    unguarded facts read ``namespace_closed`` and decline: constructor
     folding with inline ``__init__``, the unguarded store of a layout-stable
     exact instance, the default allocation protocol that types the result,
     """

@@ -4,6 +4,7 @@ import ast
 
 import pytest
 
+from molt.frontend.class_model import MemberKind
 from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
 from molt.frontend import ClassId, SimpleTIRGenerator
 from tools.check_ir_structure import verify_frontend_tir
@@ -55,8 +56,9 @@ def test_repeated_method_definitions_create_distinct_functions_in_source_order()
     methods = [fn for fn in ir["functions"] if "Owner_method" in fn["name"]]
     assert len(methods) == 2
     assert len({fn["name"] for fn in methods}) == 2
-    attrs = generator.classes[OWNER]["methods"]
-    assert attrs["method"]["func"].type_hint.endswith(methods[-1]["name"])
+    member = generator.classes[OWNER].member("method")
+    assert member is not None and member.symbol is not None
+    assert member.symbol.endswith(methods[-1]["name"])
 
 
 def test_method_decorator_expression_precedes_default_evaluation():
@@ -76,7 +78,9 @@ def test_method_rebinding_retires_compiler_method_identity(mutation):
     generator, _ir = _compile(
         "class Owner:\n    def method(self): return 1\n    " + mutation + "\n"
     )
-    assert "method" not in generator.classes[OWNER]["methods"]
+    member = generator.classes[OWNER].member("method")
+    # ``method = 7`` rebinds the name to data; ``del method`` unbinds it.
+    assert member is None or member.kind is MemberKind.DATA
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,8 @@ import ast
 
 import pytest
 
+from molt.frontend.class_model import InlineBody, Member, MemberKind
+from tests.class_model_support import class_model
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
@@ -61,14 +63,7 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
         self.events: list[str] = []
         self.locals = {"x": MoltValue("caller_x", type_hint="str")}
         self.free_vars = {"x": 0}
-        self.classes = {
-            C: {
-                "fields": {"first": 0, "second": 8},
-                "methods": {},
-                "dynamic": False,
-                "definition_exposed": False,
-            }
-        }
+        self.classes = {C: class_model(C, fields={"first": 0, "second": 8})}
 
     def visit(self, node: ast.Constant) -> MoltValue:
         assert isinstance(node, ast.Constant)
@@ -96,7 +91,10 @@ def test_inline_parameter_never_resolves_through_callers_local_or_cell() -> None
     argument = MoltValue("argument", type_hint="int")
     before = harness.locals
     result = harness._try_inline_method_call(
-        {"inline_return": expression("x"), "inline_params": ["self", "x"]},
+        Member(
+            MemberKind.FUNCTION,
+            inline=InlineBody.of(("self", "x"), expression("x"), None),
+        ),
         MoltValue("receiver", type_hint=DeclaredClass(C)),
         [argument],
     )
@@ -109,10 +107,12 @@ def test_inline_parameter_never_resolves_through_callers_local_or_cell() -> None
 def test_rejected_inline_emits_no_prefix_before_fallback() -> None:
     harness = InlineHarness()
     result = harness._try_inline_method_call(
-        {
-            "inline_return": expression("side_effect() + super().value()"),
-            "inline_params": ["self"],
-        },
+        Member(
+            MemberKind.FUNCTION,
+            inline=InlineBody.of(
+                ("self",), expression("side_effect() + super().value()"), None
+            ),
+        ),
         MoltValue("receiver", type_hint=DeclaredClass(C)),
         [],
     )
@@ -150,7 +150,11 @@ def test_constructor_never_bypasses_custom_setattr_or_reuses_initialization_stor
     for custom_setattr in (False, True):
         harness = InlineHarness()
         if custom_setattr:
-            harness.classes[C]["class_attrs"] = {"__setattr__": object()}
+            harness.classes[C] = class_model(
+                C,
+                fields={"first": 0, "second": 8},
+                members={"__setattr__": Member(MemberKind.DATA)},
+            )
             assignments = [("first", expression("1"))]
         else:
             assignments = [("first", expression("1")), ("first", expression("2"))]
