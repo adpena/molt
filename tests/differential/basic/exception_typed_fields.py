@@ -190,6 +190,34 @@ constructor_error(
     lambda: UnicodeEncodeError("utf-8", "x", 0, 1, "reason", bad=1),
 )
 constructor_error("unicode-wrong-arity", lambda: UnicodeEncodeError("utf-8", "x", 0, 1))
+
+
+# Exact inline positions and index conversion must retain the same field
+# values. Index callbacks run in order before validation of the final string.
+class UnicodePosition:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        print("unicode-index", self.value)
+        return self.value
+
+
+unicode_indexed = UnicodeEncodeError(
+    "utf-8", "x", UnicodePosition(-1), UnicodePosition(2), "reason"
+)
+print("unicode-index-fields", unicode_indexed.start, unicode_indexed.end)
+constructor_error(
+    "unicode-invalid-reason",
+    lambda: UnicodeEncodeError(
+        "utf-8", "x", UnicodePosition(0), UnicodePosition(1), 42
+    ),
+)
+constructor_error(
+    "unicode-index-overflow",
+    lambda: UnicodeEncodeError("utf-8", "x", 1 << 100, UnicodePosition(1), "reason"),
+)
+
 unicode_reinit = UnicodeEncodeError("utf-8", "x", 0, 1, "old")
 UnicodeEncodeError.__init__(unicode_reinit, "ascii", "yz", 1, 2, "new")
 fields("unicode-reinit", unicode_reinit, unicode_names)

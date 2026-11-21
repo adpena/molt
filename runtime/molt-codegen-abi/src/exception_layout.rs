@@ -58,6 +58,109 @@ pub const fn exception_field_slot(
 pub const MAX_EXCEPTION_TYPED_FIELDS: usize = max_exception_typed_fields();
 pub const MAX_EXCEPTION_TYPED_TAIL_WORDS: usize = max_exception_typed_tail_words();
 
+/// Positional constructor forms for the concrete Unicode error roots.
+/// Argument positions are shared by materialization and field projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnicodeErrorConstructor {
+    Encode,
+    Decode,
+    Translate,
+}
+
+pub struct UnicodeErrorArguments<T> {
+    pub encoding: Option<T>,
+    pub object: T,
+    pub start: T,
+    pub end: T,
+    pub reason: T,
+}
+
+impl UnicodeErrorConstructor {
+    pub const fn for_root(root: ExceptionLayoutRoot) -> Option<Self> {
+        match root {
+            ExceptionLayoutRoot::UnicodeEncodeError => Some(Self::Encode),
+            ExceptionLayoutRoot::UnicodeDecodeError => Some(Self::Decode),
+            ExceptionLayoutRoot::UnicodeTranslateError => Some(Self::Translate),
+            _ => None,
+        }
+    }
+
+    pub const fn positional_count(self) -> usize {
+        match self {
+            Self::Encode | Self::Decode => 5,
+            Self::Translate => 4,
+        }
+    }
+
+    pub const fn object_index(self) -> usize {
+        self.positional_count() - 4
+    }
+
+    /// Returns None for a wrong number of arguments. Value validation stays
+    /// in constructor order: encoding, object, positions, reason, buffer.
+    pub fn arguments<T: Copy>(self, args: &[T]) -> Option<UnicodeErrorArguments<T>> {
+        if args.len() != self.positional_count() {
+            return None;
+        }
+        let object = self.object_index();
+        Some(UnicodeErrorArguments {
+            encoding: (object != 0).then(|| args[0]),
+            object: args[object],
+            start: args[object + 1],
+            end: args[object + 2],
+            reason: args[object + 3],
+        })
+    }
+}
+
+/// Arguments that initialize OSError's typed fields. Other arities keep
+/// the fields at their defaults and retain the original args unchanged.
+pub struct OSErrorArguments<T> {
+    pub errno: T,
+    pub strerror: T,
+    pub third: Option<T>,
+    pub winerror: Option<T>,
+    pub filename2: Option<T>,
+}
+
+pub enum OSErrorThird<T> {
+    CharactersWritten(T),
+    Filename(T),
+}
+
+impl<T: Copy> OSErrorArguments<T> {
+    pub fn from_positional(args: &[T]) -> Option<Self> {
+        if !(2..=5).contains(&args.len()) {
+            return None;
+        }
+        Some(Self {
+            errno: args[0],
+            strerror: args[1],
+            third: args.get(2).copied(),
+            winerror: args.get(3).copied(),
+            filename2: args.get(4).copied(),
+        })
+    }
+
+    /// A three-argument exact BlockingIOError puts an integral third argument
+    /// in characters_written. Every other non-None third argument is a filename.
+    pub fn third_field(
+        &self,
+        exact_blocking: bool,
+        is_integral: impl FnOnce(T) -> bool,
+        is_none: impl FnOnce(T) -> bool,
+    ) -> Option<OSErrorThird<T>> {
+        let third = self.third?;
+        if exact_blocking && self.winerror.is_none() && is_integral(third) {
+            Some(OSErrorThird::CharactersWritten(third))
+        } else if !is_none(third) {
+            Some(OSErrorThird::Filename(third))
+        } else {
+            None
+        }
+    }
+}
+
 /// Physical payload family after the common `BaseException` fields.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
