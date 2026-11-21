@@ -41,6 +41,7 @@ from tools.molt_dev_common import _say, _warn  # noqa: E402
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
+    from molt.host_capacity import HostWorkDemand
     from tools.proof_plan import ToolchainPolicy
 
 # Local always gates share the repository-policy resource class with their CI
@@ -61,6 +62,8 @@ LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
 # 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
 CONCURRENT_GATE_BYTES = 1 << 30
+# Postsubmit's pytest gates declare up to 2.5 GB per worker; its share books 2 GiB.
+POSTSUBMIT_BYTES_PER_WORKER = 2 << 30
 
 
 class CancelReason(StrEnum):
@@ -486,6 +489,21 @@ def gate_failure(
     return failure
 
 
+def postsubmit_demand() -> HostWorkDemand:
+    """Postsubmit's share of the development class: half the host.
+
+    Postsubmit qualifies landed main in the background after every landing;
+    holding the whole class made every lane's consumer gate wait for its full
+    run (HF-937). A share leaves the other half to interactive gates.
+    """
+    from molt import host_capacity
+
+    return host_capacity.HostWorkDemand(
+        workers=max(1, host_capacity.cpu_count() // 2),
+        bytes_per_worker=POSTSUBMIT_BYTES_PER_WORKER,
+    )
+
+
 def concurrent_gate_limit() -> int:
     """Gates this host runs at once, from the host capacity authority."""
     from molt import host_capacity
@@ -725,11 +743,20 @@ def run_selected_gates(
                 else host_capacity.HostWorkClass.DEVELOPMENT
             ),
             say=runtime.say,
-        ):
+            demand=(
+                postsubmit_demand() if runtime.mode is LandingMode.POSTSUBMIT else None
+            ),
+        ) as admission:
+            grant = admission.grant
+            limit = (
+                host_limit
+                if grant is None
+                else (lambda: max(1, min(host_limit(), grant.workers)))
+            )
             remaining = heavy
             while remaining:
                 try:
-                    _run_heavy_gates(remaining, runtime, gate_seconds, host_limit)
+                    _run_heavy_gates(remaining, runtime, gate_seconds, limit)
                     break
                 except (GateFailure, GateMemoryPressure) as failure:
                     if not keep_going or runtime.cancelled():
