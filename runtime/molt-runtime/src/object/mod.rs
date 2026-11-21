@@ -3395,9 +3395,13 @@ pub(crate) unsafe fn class_finish_definition(
         prepared.publish(_py, class_ptr);
         finish_guard.complete();
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let root_object =
-            builtin_classes_if_initialized(_py).is_some_and(|classes| classes.object == class_bits);
-        lifecycle_plan::publish_sealed(class_ptr, root_object);
+        let identity = builtin_classes_if_initialized(_py)
+            .map(|classes| lifecycle_plan::ClassIdentity {
+                root_object: classes.object == class_bits,
+                poll_adapter: classes.is_poll_adapter_class(class_bits),
+            })
+            .unwrap_or_default();
+        lifecycle_plan::publish_sealed(class_ptr, identity);
         // Old namespace/map contents may release callback-capable values only
         // after every descriptor, row, size and finished policy is coherent.
         drop(prepared);
@@ -4516,7 +4520,10 @@ unsafe fn free_plain_leaf(
         {
             return false;
         }
-        gc::gc_untrack(py, ptr, TYPE_ID_OBJECT, gc::GcUntrackReason::Deallocation);
+        // Only an accounted allocation has GC state to retire.
+        if header_flags & HEADER_FLAG_GC_ACCOUNTED != 0 {
+            gc::gc_untrack(py, ptr, TYPE_ID_OBJECT, gc::GcUntrackReason::Deallocation);
+        }
         #[cfg(debug_assertions)]
         molt_obj_model::release_ptr(ptr);
         let total_size =
