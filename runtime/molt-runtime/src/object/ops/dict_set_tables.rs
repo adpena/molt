@@ -1412,14 +1412,10 @@ pub(crate) unsafe fn dict_find_entry(
         let key = obj_from_bits(key_bits);
         if let Some(bytes) = exact_string_bytes(py, key_bits) {
             let hash = crate::object::ops_hash::hash_string(py, key.as_ptr().unwrap()) as u64;
-            match dict_exact_string_lookup(py, dict, bytes, hash) {
-                ExactStringLookup::Found(index) => return Ok(Some(index)),
-                ExactStringLookup::Absent => return Ok(None),
-                ExactStringLookup::Undecided => {}
-            }
+            return dict_find_entry_with_key_bytes(py, dict, key_bits, hash, Some(bytes));
         }
         let hash = dict_key_hash(py, key_bits).ok_or(())?;
-        dict_find_entry_with_hash(py, dict, key_bits, hash)
+        dict_find_entry_with_key_bytes(py, dict, key_bits, hash, None)
     }
 }
 
@@ -1680,7 +1676,29 @@ pub(crate) unsafe fn dict_find_entry_with_hash(
     key: u64,
     hash: u64,
 ) -> Result<Option<usize>, ()> {
-    unsafe { dict_probe_with_hash(py, dict, key, hash).map(|probe| probe.map(|probe| probe.row)) }
+    unsafe { dict_find_entry_with_key_bytes(py, dict, key, hash, exact_string_bytes(py, key)) }
+}
+
+#[inline]
+unsafe fn dict_find_entry_with_key_bytes(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+    hash: u64,
+    exact_str: Option<&[u8]>,
+) -> Result<Option<usize>, ()> {
+    unsafe {
+        if let Some(bytes) = exact_str {
+            match dict_exact_string_lookup(py, dict, bytes, hash) {
+                ExactStringLookup::Found(index) => return Ok(Some(index)),
+                ExactStringLookup::Absent => return Ok(None),
+                ExactStringLookup::Undecided => {}
+            }
+        }
+        // The exact probe does not run equality, so the live general probe
+        // still owns the first callback and any restart after it.
+        dict_probe_with_hash(py, dict, key, hash).map(|probe| probe.map(|probe| probe.row))
+    }
 }
 
 unsafe fn dict_probe_with_hash(
@@ -2074,12 +2092,13 @@ unsafe fn dict_set_with_hash_deferred<'a, 'py>(
         }
         // Exact strings never require conversion. Select the non-string
         // phase once, before equality may clear or replace the live table.
-        let convert_after_lookup = exact_string_bytes(_py, key_bits).is_none()
-            && crate::object::ops_sys::runtime_target_at_least(_py, 3, 13);
-        if !convert_after_lookup && !dict_prepare_key(_py, ptr, key_bits) {
+        let exact_str = exact_string_bytes(_py, key_bits);
+        let convert_after_lookup =
+            exact_str.is_none() && crate::object::ops_sys::runtime_target_at_least(_py, 3, 13);
+        if exact_str.is_none() && !convert_after_lookup && !dict_prepare_key(_py, ptr, key_bits) {
             return Err(());
         }
-        let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get())?;
+        let found = dict_find_entry_with_key_bytes(_py, ptr, key_bits, hash.get(), exact_str)?;
         if let Some(entry_idx) = found {
             let val_idx = entry_idx;
             return Ok(dict_commit_value_replacement(_py, ptr, val_idx, val_bits));
@@ -2145,12 +2164,17 @@ pub(crate) unsafe fn dict_setdefault_with_hash_in_place(
         let hash = admit_stored_hash(py, hash)?;
         // Frozen layout maps permit an existing-value read, but no physical
         // key-table conversion. The absent path still uses write admission.
-        let convert_after_lookup = exact_string_bytes(py, key).is_none()
-            && crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
-        if !convert_after_lookup && !dict_layout_frozen(dict) && !dict_prepare_key(py, dict, key) {
+        let exact_str = exact_string_bytes(py, key);
+        let convert_after_lookup =
+            exact_str.is_none() && crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+        if exact_str.is_none()
+            && !convert_after_lookup
+            && !dict_layout_frozen(dict)
+            && !dict_prepare_key(py, dict, key)
+        {
             return None;
         }
-        let found = dict_find_entry_with_hash(py, dict, key, hash.get()).ok()?;
+        let found = dict_find_entry_with_key_bytes(py, dict, key, hash.get(), exact_str).ok()?;
         if let Some(index) = found {
             let value = dict_entries(dict)[index].value;
             inc_ref_bits(py, value);
