@@ -9010,7 +9010,14 @@ class _Analyzer:
             self._active_lexical_history = previous_history
             self._observed_stack.pop()
 
-    def _seal_deferred_execution(self) -> None:
+    def _seal_deferred_execution(
+        self,
+    ) -> tuple[
+        tuple[PythonExpressionFact, ...],
+        tuple[PythonStatementFact, ...],
+        tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
+        bool,
+    ]:
         # Two finite summaries per existing lexical scope: direct execution,
         # and an escaped value that may expose descendants/returned callables.
         # Build reverse edges once; each effect bit traverses each edge once.
@@ -9110,47 +9117,55 @@ class _Analyzer:
                     if target not in queued:
                         queued.add(target)
                         pending.append(target)
-        for scope in self.scopes:
-            scope.module_metadata_effects = effects[2 * scope.scope_id]
+        module_import_flow_required = self._module_import_flow_required
 
-        def seal_collection[
+        def seal[
             Fact: PythonExpressionFact | PythonIterationFact | PythonStatementFact
-        ](
-            collection: dict[PythonNodeKey, Fact],
-            project: Callable[[PythonNodeKey, Fact], Fact] | None = None,
-        ) -> None:
-            # Value replacement does not change the dictionary's key set.
-            for key, original in collection.items():
-                fact = original if project is None else project(key, original)
-                resolved = fact.module_metadata_effects
-                for ref in fact.deferred_execution:
-                    targets = indices(ref)
-                    if not targets:
-                        resolved |= WRITES_MODULE_METADATA
-                    for target in targets:
-                        resolved |= effects[target]
-                if resolved != fact.module_metadata_effects:
-                    fact = replace(fact, module_metadata_effects=resolved)
-                if fact is not original:
-                    collection[key] = fact
-                self._module_import_flow_required |= bool(resolved)
+        ](fact: Fact) -> Fact:
+            nonlocal module_import_flow_required
+            resolved = fact.module_metadata_effects
+            for ref in fact.deferred_execution:
+                targets = indices(ref)
+                if not targets:
+                    resolved |= WRITES_MODULE_METADATA
+                for target in targets:
+                    resolved |= effects[target]
+            module_import_flow_required |= bool(resolved)
+            if resolved != fact.module_metadata_effects:
+                return replace(fact, module_metadata_effects=resolved)
+            return fact
+
+        iterations = {key: seal(fact) for key, fact in self.iterations.items()}
 
         def project_statement(
-            key: PythonNodeKey, fact: PythonStatementFact
+            fact: PythonStatementFact,
         ) -> PythonStatementFact:
-            if fact.iteration is None:
-                return fact
-            iteration = self.iterations.get(key, fact.iteration)
-            return (
-                fact
-                if iteration is fact.iteration
-                else replace(fact, iteration=iteration)
-            )
+            if fact.iteration is not None:
+                iteration = iterations.get(fact.node, fact.iteration)
+                if iteration is not fact.iteration:
+                    fact = replace(fact, iteration=iteration)
+            return seal(fact)
 
-        seal_collection(self.expressions)
-        seal_collection(self.iterations)
-        # Statements must project the already sealed iteration facts.
-        seal_collection(self.statements, project_statement)
+        # Transfer facts and scope effects remain available for another
+        # projection after a deferred input changes.
+        expressions = tuple(
+            sorted(
+                (seal(fact) for fact in self._project_builtin_guard_bits()),
+                key=lambda fact: fact.node,
+            )
+        )
+        statements = tuple(
+            sorted(
+                map(project_statement, self.statements.values()),
+                key=lambda fact: fact.node,
+            )
+        )
+        return (
+            expressions,
+            statements,
+            tuple(sorted(iterations.items())),
+            module_import_flow_required,
+        )
 
     def _overlay_future_states(
         self,
@@ -9334,50 +9349,57 @@ class _Analyzer:
             self._observed_stack.pop()
         self._active_lexical_history = None
 
+    def _run_deferred_job(self, job: _FunctionJob) -> None:
+        # Deferred bodies can run after any observed module state. Parent
+        # function state supplies closure cells and the module summary widens
+        # the globals used in this activation.
+        module_states = job.module_states
+        if module_states is None:
+            assert job.module_history_start is not None
+            module_states = self._module_history
+            module_state_start = min(
+                job.module_history_start, len(self._module_history)
+            )
+        else:
+            # Only (job_outer,) and unions of such nonempty tuples are minted.
+            assert module_states, "deferred module-state authority is nonempty"
+            module_state_start = 0
+        job_outer = self._overlay_future_states(
+            job.outer_state_id,
+            module_states,
+            module_state_start,
+            job.module_base_bindings,
+        )
+        if job.lexical_history is not None:
+            job_outer = self._overlay_future_states(
+                job_outer,
+                job.lexical_history,
+                job.lexical_history_start,
+                job.lexical_base_bindings,
+            )
+        previous_module_states = self._active_module_states
+        self._active_module_states = (job_outer,)
+        try:
+            self._analyze_function_job(job, job_outer)
+        finally:
+            self._active_module_states = previous_module_states
+
     def _finish_analysis(
         self, cursor: int, *, capture: Callable[[_Analyzer, int], None] | None = None
     ) -> _BindingAnalysis:
         while cursor < len(self.function_jobs):
-            # Exponential spacing keeps retained work logarithmic in the
-            # number of deferred jobs. Small bodies cost less to replay.
-            if capture is not None and cursor >= 64 and not cursor & (cursor - 1):
+            # Exponential spacing bounds checkpoints in each deferred suffix.
+            # The retention policy admits early boundaries on small sources.
+            if capture is not None and cursor >= 2 and not cursor & (cursor - 1):
                 capture(self, cursor)
-            job = self.function_jobs[cursor]
+            self._run_deferred_job(self.function_jobs[cursor])
             cursor += 1
-            # Deferred bodies can run after any observed module state.  Parent
-            # function state is retained for closure cells; module globals are
-            # widened by the shared summary through the join.
-            module_states = job.module_states
-            if module_states is None:
-                assert job.module_history_start is not None
-                module_states = self._module_history
-                module_state_start = min(
-                    job.module_history_start, len(self._module_history)
-                )
-            else:
-                # Only (job_outer,) and unions of such nonempty tuples are minted.
-                assert module_states, "deferred module-state authority is nonempty"
-                module_state_start = 0
-            job_outer = self._overlay_future_states(
-                job.outer_state_id,
-                module_states,
-                module_state_start,
-                job.module_base_bindings,
-            )
-            if job.lexical_history is not None:
-                job_outer = self._overlay_future_states(
-                    job_outer,
-                    job.lexical_history,
-                    job.lexical_history_start,
-                    job.lexical_base_bindings,
-                )
-            previous_module_states = self._active_module_states
-            self._active_module_states = (job_outer,)
-            try:
-                self._analyze_function_job(job, job_outer)
-            finally:
-                self._active_module_states = previous_module_states
-        self._seal_deferred_execution()
+        return self._project_analysis()
+
+    def _project_analysis(self) -> _BindingAnalysis:
+        expressions, statements, iterations, flow_required = (
+            self._seal_deferred_execution()
+        )
         scope_facts = tuple(
             PythonScopeFact(
                 scope.scope_id,
@@ -9450,13 +9472,9 @@ class _Analyzer:
             source_completions=tuple(sorted(self.source_completions.items())),
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
-            expressions=tuple(
-                sorted(self._project_builtin_guard_bits(), key=lambda fact: fact.node)
-            ),
-            statements=tuple(
-                sorted(self.statements.values(), key=lambda fact: fact.node)
-            ),
-            iterations=tuple(sorted(self.iterations.items())),
+            expressions=expressions,
+            statements=statements,
+            iterations=iterations,
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
             class_annotation_namespaces=frozenset(
@@ -9497,16 +9515,13 @@ class _Analyzer:
             ),
             slot_names=tuple(self.slot_names),
         )
-        flow_required = (
-            self._module_import_flow_required or import_relevant_assignment_effects
-        )
         return _BindingAnalysis(
             facts,
             # Source demand proofs may require a projection even when strict
             # metadata is invariant. Preserve canonical no-effect assignments;
             # dropping them would turn harmless stores into unknown callbacks.
             MappingProxyType(dict(self.assignment_effects)),
-            flow_required,
+            flow_required or import_relevant_assignment_effects,
             (
                 None
                 if self._opaque_activation_sources is None
@@ -9605,6 +9620,10 @@ class _BindingCheckpoint:
     prefix: _Analyzer
 
 
+def _binding_checkpoint_size(analyzer: _Analyzer) -> int:
+    return len(analyzer.states) + len(analyzer.expressions) + len(analyzer.statements)
+
+
 class _BindingRevisions:
     """Operation-local prefixes for adjacent policies of the same source."""
 
@@ -9673,9 +9692,11 @@ class _BindingRevisions:
                 return
             # Bound retention on large sources as well as on many small
             # sources. Exact analysis still runs after a refused checkpoint.
-            if (
-                len(owner.states) + len(owner.expressions) + len(owner.statements)
-                > 32768
+            size = _binding_checkpoint_size(owner)
+            if size > 32768:
+                return
+            if 0 < completed_jobs < 64 and (
+                not checkpoints or checkpoints[0].completed_jobs != 0 or size > 1200
             ):
                 return
             checkpoints.append(
@@ -9684,12 +9705,32 @@ class _BindingRevisions:
             if len(checkpoints) > 8:
                 del checkpoints[0]
 
+        if (
+            cursor == 0
+            and not checkpoints
+            and analyzer.function_jobs
+            and _binding_checkpoint_size(analyzer) <= 512
+        ):
+            capture(analyzer, 0)
         result = analyzer._finish_analysis(cursor, capture=capture)
         with self._lock:
-            self._recent[key] = tuple(checkpoints)
-            self._recent.move_to_end(key)
-            if len(self._recent) > 4:
-                self._recent.popitem(last=False)
+            self._recent.pop(key, None)
+            if checkpoints:
+                self._recent[key] = tuple(checkpoints)
+                large: list[tuple[str, PythonBindingFlowPolicy]] = []
+                small_closed: list[tuple[str, PythonBindingFlowPolicy]] = []
+                small_escaped: list[tuple[str, PythonBindingFlowPolicy]] = []
+                for retained_key, retained in self._recent.items():
+                    if retained[-1].completed_jobs >= 64:
+                        large.append(retained_key)
+                    elif retained[0].prefix._opaque_activation_sources:
+                        small_escaped.append(retained_key)
+                    else:
+                        small_closed.append(retained_key)
+                # Newly exposed modules and modules with existing escapes have
+                # their own quota. Short captures cannot evict a large prefix.
+                for evicted in (*large[:-4], *small_closed[:-8], *small_escaped[:-8]):
+                    del self._recent[evicted]
         return result
 
 

@@ -472,3 +472,55 @@ def test_module_ast_digest_follows_source_content(tmp_path) -> None:
     edited = fresh.module_ast_digest(path, native_roots=(), target_python=target)
     assert edited == python_ast_digest(ast.parse("value = 2\n")) != first
     assert fresh.source_parse_count == 1
+
+
+def test_runtime_owned_modules_resolve_from_the_selected_compiler(
+    tmp_path: Path,
+) -> None:
+    # HF-970: `molt run` of a program outside any project built with only the
+    # program's directory as a root, so `molt.gpu` compiled out and the binary
+    # raised ModuleNotFoundError at run time.
+    sources = tmp_path / "toolchain" / "src"
+    stdlib_root = sources / "molt" / "stdlib"
+    for package in (stdlib_root, sources / "molt" / "gpu", sources / "molt" / "cli"):
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (sources / "molt" / "__init__.py").write_text("", encoding="utf-8")
+    (sources / "molt" / "gpu" / "kv_cache.py").write_text("", encoding="utf-8")
+    program = tmp_path / "program"
+    program.mkdir()
+    roots = [program]
+
+    for name in ("molt", "molt.gpu", "molt.gpu.kv_cache", "molt.stdlib.json"):
+        # The toolchain is the fallback after the program's own roots.
+        assert module_resolution._roots_for_module(name, roots, stdlib_root, set()) == [
+            program,
+            sources,
+        ], name
+    assert (
+        module_resolution._resolve_module_path(
+            "molt.gpu.kv_cache",
+            module_resolution._roots_for_module(
+                "molt.gpu.kv_cache", roots, stdlib_root, set()
+            ),
+        )
+        == sources / "molt" / "gpu" / "kv_cache.py"
+    )
+    # A program that provides its own `molt` keeps it.
+    (program / "molt").mkdir()
+    (program / "molt" / "__init__.py").write_text("", encoding="utf-8")
+    assert (
+        module_resolution._resolve_module_path(
+            "molt",
+            module_resolution._roots_for_module("molt", roots, stdlib_root, set()),
+        )
+        == program / "molt" / "__init__.py"
+    )
+    # The compiler's own packages stay out of a program's reach.
+    assert (
+        module_resolution._roots_for_module("molt.cli", roots, stdlib_root, set())
+        == roots
+    )
+    assert (
+        module_resolution._roots_for_module("moltx", roots, stdlib_root, set()) == roots
+    )
