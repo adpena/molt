@@ -9,10 +9,12 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import os
+import ast
 import time
 import sqlite3
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -31,6 +33,7 @@ from molt.cli.source_record_store import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from tests.source_record_test_support import source_records, replace_source_record
 from molt.cli.module_source import PythonSourceSnapshot, _ModuleSourceLease
+from molt.cli.module_resolution import _ModuleResolutionCache
 
 
 # --------------------------------------------------------------------------
@@ -108,9 +111,185 @@ def test_analysis_record_key_is_session_independent(tmp_path, monkeypatch):
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     _use_session(monkeypatch, "alpha")
-    alpha = MC._module_analysis_record_key(path, **options)
+    alpha = MC._module_analysis_record_key(
+        MC._module_analysis_record_identity(
+            MC.PythonSourceSnapshot.capture(path), **options
+        )
+    )
     _use_session(monkeypatch, "beta")
-    assert MC._module_analysis_record_key(path, **options) == alpha
+    assert (
+        MC._module_analysis_record_key(
+            MC._module_analysis_record_identity(
+                MC.PythonSourceSnapshot.capture(path), **options
+            )
+        )
+        == alpha
+    )
+
+
+def test_analysis_reuses_undo_and_relocation_from_one_admitted_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = "def f(value=11): return value\nasync def g(): return 29\n"
+    path = _write_module(tmp_path, "app", source)
+    collected: list[str] = []
+    collect_defaults = MC._collect_func_defaults
+
+    def collect(tree: ast.AST) -> dict[str, dict[str, object]]:
+        collected.append(ast.dump(tree))
+        return collect_defaults(tree)
+
+    monkeypatch.setattr(MC, "_collect_func_defaults", collect)
+
+    def analyze(path: Path) -> tuple[object, ...]:
+        snapshot = PythonSourceSnapshot.capture(path)
+        capture = PythonSourceSnapshot.capture
+
+        def capture_other(source_path: Path) -> PythonSourceSnapshot:
+            if source_path.resolve() == path.resolve():
+                pytest.fail("recaptured admitted source")
+            return capture(source_path)
+
+        with monkeypatch.context() as admitted:
+            admitted.setattr(
+                PythonSourceSnapshot,
+                "capture",
+                staticmethod(capture_other),
+            )
+            return MC._load_module_analysis(
+                path,
+                module_name="app",
+                is_package=False,
+                import_scan_mode="full",
+                namespace_premise=None,
+                source=None,
+                source_snapshot=snapshot,
+                logical_source_path=str(path),
+                resolution_cache=_ModuleResolutionCache(),
+                project_root=path.parent,
+                roots=(path.parent,),
+                stdlib_root=path.parent / "stdlib",
+                stdlib_allowlist=set(),
+                retain_source=False,
+                retain_tree=False,
+            )
+
+    first = analyze(path)
+    assert first[2]["f"]["defaults"] == [{"const": True, "value": 11}]
+    assert first[3] == {"f": "sync", "g": "async"}
+    path.write_text(source.replace("11", "17"), encoding="utf-8")
+    changed = analyze(path)
+    assert changed[2]["f"]["defaults"] == [{"const": True, "value": 17}]
+    assert len(collected) == 2, "changed bytes require fresh analysis"
+    path.write_text(source, encoding="utf-8")
+    assert analyze(path)[2:4] == first[2:4]
+    assert len(collected) == 2, "undo must reuse the existing A summary"
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    moved = _write_module(relocated, "app", source)
+    os.utime(moved, (1_000_000_000, 1_000_000_000))
+    assert analyze(moved)[2:4] == first[2:4]
+    assert len(collected) == 2, "relocation must reuse the existing summary"
+    snapshot = PythonSourceSnapshot.capture(moved)
+    key = MC._module_analysis_record_key(
+        MC._module_analysis_record_identity(
+            snapshot,
+            module_name="app",
+            is_package=False,
+            import_scan_mode="full",
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+    )
+    record = frontend_record_files().get(
+        "module-analysis", key, max_bytes=MC.SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
+    assert record is not None
+    published = record.payload
+    assert "mtime_ns" not in json.loads(published)
+    MC._write_persisted_module_analysis(
+        moved,
+        module_name="app",
+        is_package=False,
+        import_scan_mode="full",
+        func_defaults=first[2],
+        func_kinds=first[3],
+        snapshot=snapshot,
+    )
+    rewritten = frontend_record_files().get(
+        "module-analysis", key, max_bytes=MC.SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
+    assert rewritten is not None and rewritten.payload == published
+    moved.unlink()
+    assert (
+        MC._read_persisted_module_analysis(
+            moved,
+            module_name="app",
+            is_package=False,
+            import_scan_mode="full",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("parser", ["other", "parser"]),
+        ("module_name", "other"),
+        ("is_package", 0),
+        ("target_python", "other"),
+        ("body_selection", {"kind": "native_support", "roots": ["f"]}),
+        ("compiler_fingerprint", "other"),
+        ("source_sha256", "00" * 32),
+    ],
+)
+def test_analysis_payload_admits_exact_request_identity(
+    tmp_path: Path,
+    field: Literal[
+        "parser",
+        "module_name",
+        "is_package",
+        "target_python",
+        "body_selection",
+        "compiler_fingerprint",
+        "source_sha256",
+    ],
+    value: object,
+) -> None:
+    path = _write_module(tmp_path, "m", "def f(value=11): return value\n")
+    snapshot = PythonSourceSnapshot.capture(path)
+    MC._write_persisted_module_analysis(
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="full",
+        func_defaults=MC._collect_func_defaults(ast.parse(snapshot.text)),
+        func_kinds={"f": "sync"},
+        snapshot=snapshot,
+    )
+    key = MC._module_analysis_record_key(
+        MC._module_analysis_record_identity(
+            snapshot,
+            module_name="m",
+            is_package=False,
+            import_scan_mode="full",
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+    )
+    payload = source_records("module-analysis")[key]
+    assert payload is not None
+    payload[field] = value
+    replace_source_record("module-analysis", key, payload)
+    assert (
+        MC._read_persisted_module_analysis(
+            path,
+            module_name="m",
+            is_package=False,
+            import_scan_mode="full",
+            snapshot=snapshot,
+        )
+        is None
+    )
 
 
 def test_lowering_records_separate_context_digests(tmp_path):
@@ -224,11 +403,13 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
         snapshot=PythonSourceSnapshot.capture(path),
     )
     key = MC._module_analysis_record_key(
-        path,
-        module_name="m",
-        is_package=False,
-        import_scan_mode="module_init",
-        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        MC._module_analysis_record_identity(
+            MC.PythonSourceSnapshot.capture(path),
+            module_name="m",
+            is_package=False,
+            import_scan_mode="module_init",
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
     )
     # Module analyses are immutable record files (cache frontier step 2): a
     # hit in another session reads the same blob, republishes nothing and
