@@ -19,7 +19,7 @@ from pathlib import Path
 import re
 from typing import Any, TypedDict
 
-from molt.exact_json import canonical_json_sha256, capture_exact, read_exact
+from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.host_tool_products import HostToolProduct
 from molt.portable_paths import (
@@ -31,14 +31,15 @@ from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from molt.source_root import MANIFEST_NAME, installed_distribution_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
+    capture_stable_regular_file,
     stable_regular_file_content_identity,
     stable_regular_file_identity,
 )
 from molt.verified_subset import current_host_coordinate
 
-MANIFEST_SCHEMA = "molt.release-compiler-source.v7"
-STDLIB_NAMESPACE_SYNTAX_PATH = "share/molt/stdlib-namespace-syntax.json"
-MAX_STDLIB_NAMESPACE_SYNTAX_BYTES = 16 * 1024 * 1024
+MANIFEST_SCHEMA = "molt.release-compiler-source.v8"
+STDLIB_SOURCE_SUMMARIES_PATH = "share/molt/stdlib-source-summaries.zip"
+MAX_STDLIB_SOURCE_SUMMARIES_BYTES = 64 * 1024 * 1024
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
@@ -48,7 +49,7 @@ MAX_SOURCE_FILES = 25_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 
 
-class StdlibNamespaceSyntaxRecord(TypedDict):
+class StdlibSourceSummariesRecord(TypedDict):
     path: str
     size: int
     sha256: str
@@ -442,7 +443,7 @@ class InstalledCompiler:
     wasm_facts: dict[str, Any]
     files: tuple[dict[str, Any], ...]
     runtime: dict[str, Any]
-    stdlib_namespace_syntax: StdlibNamespaceSyntaxRecord
+    stdlib_source_summaries: StdlibSourceSummariesRecord
 
     @property
     def binary(self) -> Path:
@@ -514,34 +515,37 @@ class InstalledCompiler:
             self.source_root, self.files, manifest_name=MANIFEST_NAME
         )
         identity = stable_regular_file_identity(
-            self._stdlib_namespace_syntax_path(),
-            label="installed stdlib namespace syntax",
+            self._stdlib_source_summaries_path(),
+            label="installed stdlib source summaries",
         )
-        self._verify_stdlib_namespace_syntax_identity(identity)
+        self._verify_stdlib_source_summaries_identity(identity)
 
-    def _stdlib_namespace_syntax_path(self) -> Path:
+    def _stdlib_source_summaries_path(self) -> Path:
         return resolve_owned_path(
-            self.source_root.parent / STDLIB_NAMESPACE_SYNTAX_PATH
+            self.source_root.parent / STDLIB_SOURCE_SUMMARIES_PATH
         )
 
-    def capture_stdlib_namespace_syntax(self) -> object:
-        identity, value = capture_exact(
-            self._stdlib_namespace_syntax_path(),
-            max_bytes=MAX_STDLIB_NAMESPACE_SYNTAX_BYTES,
-            label="installed stdlib namespace syntax",
+    def capture_stdlib_source_summaries(self) -> bytes:
+        from molt import input_report
+
+        identity, value = capture_stable_regular_file(
+            self._stdlib_source_summaries_path(),
+            max_bytes=MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
+            label="installed stdlib source summaries",
         )
-        self._verify_stdlib_namespace_syntax_identity(identity)
+        self._verify_stdlib_source_summaries_identity(identity)
+        input_report.report_consumed_buffer(identity.path, value)
         return value
 
-    def _verify_stdlib_namespace_syntax_identity(
+    def _verify_stdlib_source_summaries_identity(
         self, identity: StableRegularFileIdentity
     ) -> None:
         if (
-            identity.sha256 != self.stdlib_namespace_syntax["sha256"]
-            or identity.size != self.stdlib_namespace_syntax["size"]
+            identity.sha256 != self.stdlib_source_summaries["sha256"]
+            or identity.size != self.stdlib_source_summaries["size"]
         ):
             raise ValueError(
-                "Installed stdlib namespace syntax differs from its manifest"
+                "Installed stdlib source summaries differ from their manifest"
             )
 
     @property
@@ -616,7 +620,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
             "launcher",
             "wasm_facts",
             "runtime",
-            "stdlib_namespace_syntax",
+            "stdlib_source_summaries",
         }
         or payload["schema"] != MANIFEST_SCHEMA
     ):
@@ -679,16 +683,16 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     )
     if runtime["source"] != git:
         raise ValueError("Installed runtime cells come from different source")
-    syntax = payload["stdlib_namespace_syntax"]
+    summaries = payload["stdlib_source_summaries"]
     if (
-        not isinstance(syntax, dict)
-        or set(syntax) != {"path", "size", "sha256"}
-        or syntax["path"] != STDLIB_NAMESPACE_SYNTAX_PATH
-        or type(syntax["size"]) is not int
-        or not 0 < syntax["size"] <= MAX_STDLIB_NAMESPACE_SYNTAX_BYTES
-        or not _digest(syntax["sha256"])
+        not isinstance(summaries, dict)
+        or set(summaries) != {"path", "size", "sha256"}
+        or summaries["path"] != STDLIB_SOURCE_SUMMARIES_PATH
+        or type(summaries["size"]) is not int
+        or not 0 < summaries["size"] <= MAX_STDLIB_SOURCE_SUMMARIES_BYTES
+        or not _digest(summaries["sha256"])
     ):
-        raise ValueError("Invalid installed stdlib namespace syntax manifest record")
+        raise ValueError("Invalid installed stdlib source summaries manifest record")
     return InstalledCompiler(
         source_root,
         git["commit"],
@@ -697,7 +701,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         wasm_facts,
         tuple(files),
         runtime,
-        StdlibNamespaceSyntaxRecord(
-            path=syntax["path"], size=syntax["size"], sha256=syntax["sha256"]
+        StdlibSourceSummariesRecord(
+            path=summaries["path"], size=summaries["size"], sha256=summaries["sha256"]
         ),
     )

@@ -818,7 +818,7 @@ def stage_compilation_inputs(
         compiler.record,
         compiler.launcher,
         compiler.wasm_facts,
-        compiler.stdlib_namespace_syntax,
+        compiler.stdlib_source_summaries,
     ):
         stage(compiler.source_root.parent / entry["path"], entry)
     for cell in runtime["cells"]:

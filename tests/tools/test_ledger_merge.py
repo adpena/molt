@@ -149,6 +149,30 @@ def test_a_duplicated_row_key_falls_back_to_a_text_merge() -> None:
         _merge(base, _ledger(["HF-1", "HF-1"], ["HF-0"]), base)
 
 
+def test_class_tables_key_their_rows_apart_from_the_findings() -> None:
+    # 2026-11-20: the `| Row | v0.1 class |` table repeats finding ids; keyed by
+    # bare id its rows collided with the findings rows ("row V1-01 appears
+    # twice") and sent every ledger merge to a text merge with conflicts.
+    def ledger(rows: list[str]) -> str:
+        return (
+            "# Ledger\n\n## Open\n\n| ID | Finding |\n|----|---------|\n"
+            + "".join(f"| {row} | x |\n" for row in rows)
+            + "\n## Classes\n\n| Row | V1 class |\n|----|---------|\n"
+            + "".join(f"| {row} | release_blocking |\n" for row in rows)
+            + "\n| Row | v0.1 class |\n|----|---------|\n"
+            + "".join(f"| {row} | post_v0_1 |\n" for row in rows)
+        )
+
+    result = _merge(
+        ledger(["HF-1"]), ledger(["HF-2", "HF-1"]), ledger(["HF-3", "HF-1"])
+    )
+    assert not result.conflicts
+    for row in ("HF-2", "HF-3"):
+        assert f"| {row} | x |" in result.text
+        assert f"| {row} | release_blocking |" in result.text
+        assert f"| {row} | post_v0_1 |" in result.text
+
+
 def _git(repo: Path, *args: str):
     return run_guarded_test_process(
         ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True

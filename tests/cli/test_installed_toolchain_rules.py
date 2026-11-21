@@ -21,7 +21,7 @@ from molt.cli import toolchain_validation, wasm_toolchain
 from molt.cli.installation_diagnostics import installation_checks
 from tests.cli.test_installed_runtime import bundle as bundle
 from tests.process_guard_common import current_thread_only
-from tests.release_lane_fixtures import stage_stdlib_namespace_syntax_fixture
+from tests.release_lane_fixtures import stage_stdlib_source_summaries_fixture
 
 # These cases build synthetic projects and assert developer-host roots;
 # hosted custody has its own cases in tests/test_dx_run_context.py.
@@ -272,7 +272,7 @@ def _installed_with_package(tmp_path: Path, files: dict[str, bytes]):
         {},
         inventory,
         {},
-        stage_stdlib_namespace_syntax_fixture(bundle),
+        stage_stdlib_source_summaries_fixture(bundle),
     )
 
 

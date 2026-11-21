@@ -124,10 +124,13 @@ permission to omit cells or raise every timeout without diagnosis.
    The bundle
    ships them under `runtime/<cell-id>/`, declared in
    `release-compiler-source.json`. The same manifest binds
-   `share/molt/stdlib-namespace-syntax.json`. The release builder derives these
-   syntax summaries from the sealed stdlib sources for each supported guest
-   Python target. A cold installed scan can reuse a row when the admitted source
-   bytes, package, target, AST, and analysis producer match.
+   `share/molt/stdlib-source-summaries.zip`. The release builder derives namespace
+   syntax and initializer requests from the sealed stdlib sources for each
+   supported guest Python target. Initializer requests use the compiler's
+   import-scan record key and codec. They are produced for the bundle's native
+   platform, WASI, and source targets without a selected OS. A cold installed
+   build reuses a matching request under the exact parser and namespace premise
+   and resolves it against the importing program's topology.
    `COMPILER_BUNDLE_DIRECTORIES` in
    `molt.compiler_distribution` owns the top-level directory projection; the
    bundle builder checks it and the Homebrew renderer consumes it. Installers

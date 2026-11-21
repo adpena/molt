@@ -62,7 +62,7 @@ from tests.runtime_build_identity_helper import (
 )
 from tests.release_lane_fixtures import (
     stage_release_lane_authorities,
-    stage_stdlib_namespace_syntax_fixture,
+    stage_stdlib_source_summaries_fixture,
 )
 
 _SOURCE_FILES = (
@@ -221,7 +221,7 @@ def _installed_bundle(
         shutil.copyfile(path, destination)
     payload = {
         "schema": distribution.MANIFEST_SCHEMA,
-        "stdlib_namespace_syntax": stage_stdlib_namespace_syntax_fixture(root),
+        "stdlib_source_summaries": stage_stdlib_source_summaries_fixture(root),
         "git": dict(_GIT),
         "files": records,
         "compiler": {

@@ -2086,6 +2086,13 @@ def _load_module_import_scan(
             target_python=target_python,
         )
 
+    shipped_stdlib = (
+        persist_scan
+        and source_owner is None
+        and not native_support_function_roots
+        and stdlib_root is not None
+        and resolution_cache.is_stdlib_path(path, stdlib_root)
+    )
     if persist_scan:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
             path,
@@ -2101,6 +2108,11 @@ def _load_module_import_scan(
             native_support_function_roots=native_support_function_roots,
             runtime_catalog_owner=runtime_catalog_owner,
             target_sys_platform=resolution_cache.target_sys_platform,
+            installed_initializer=(
+                resolution_cache.installed_stdlib_initializer
+                if shipped_stdlib and not runtime_catalog_owner
+                else None
+            ),
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -2137,12 +2149,9 @@ def _load_module_import_scan(
         )
         tree, ast_digest_admission = selected.tree, selected.admission
     elif (
-        persist_scan
+        shipped_stdlib
         and snapshot is not None
-        and source_owner is None
-        and stdlib_root is not None
-        and resolution_cache.is_stdlib_path(path, stdlib_root)
-        and (syntax := resolution_cache.installed_stdlib_namespace_syntax) is not None
+        and (syntax := resolution_cache.installed_stdlib_source_summaries) is not None
     ):
         syntax.seed(
             snapshot,

@@ -1,11 +1,13 @@
 """Finite source policy fixtures; never compiler/execution evidence."""
 
 import hashlib
+import io
 from pathlib import Path
 import tomllib
+from zipfile import ZipFile, ZipInfo
 from molt.compiler_distribution import (
-    STDLIB_NAMESPACE_SYNTAX_PATH,
-    StdlibNamespaceSyntaxRecord,
+    STDLIB_SOURCE_SUMMARIES_PATH,
+    StdlibSourceSummariesRecord,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,15 +61,23 @@ def stage_release_lane_authorities(root: Path) -> None:
         (dest / "lane_fixture.py").write_bytes(b"# synthetic transport fixture\n")
 
 
-def stage_stdlib_namespace_syntax_fixture(
+def stage_stdlib_source_summaries_fixture(
     root: Path,
-    data: bytes = b'{"producer":"fixture","rows":[],"schema":"molt.stdlib-namespace-syntax.v1"}\n',
-) -> StdlibNamespaceSyntaxRecord:
-    path = root / STDLIB_NAMESPACE_SYNTAX_PATH
+    data: bytes | None = None,
+) -> StdlibSourceSummariesRecord:
+    if data is None:
+        buffer = io.BytesIO()
+        with ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                ZipInfo("namespace-syntax.json"),
+                b'{"producer":"fixture","rows":[],"schema":"molt.stdlib-namespace-syntax.v1"}',
+            )
+        data = buffer.getvalue()
+    path = root / STDLIB_SOURCE_SUMMARIES_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return {
-        "path": STDLIB_NAMESPACE_SYNTAX_PATH,
+        "path": STDLIB_SOURCE_SUMMARIES_PATH,
         "size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
     }
