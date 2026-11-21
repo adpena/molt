@@ -9485,13 +9485,34 @@ class _BindingRevisions:
         policy = analyzer.policy
         active = analyzer._opaque_activation_sources
         assert active is not None
-        key = (analyzer.source_digest, replace(policy, opaque_activation_sources=()))
+        arguments = analyzer._activation_argument_values
+        key = (
+            analyzer.source_digest,
+            replace(
+                policy, opaque_activation_sources=(), activation_argument_values=()
+            ),
+        )
         with self._lock:
             prior = self._recent.get(key, ())
         checkpoints: list[_BindingCheckpoint] = []
         cursor = 0
         for checkpoint in reversed(prior):
             prefix = checkpoint.prefix
+            previous_arguments = prefix._activation_argument_values
+            if previous_arguments != arguments:
+                changed_arguments = {
+                    parameter
+                    for parameter in previous_arguments.keys() | arguments.keys()
+                    if previous_arguments.get(parameter) != arguments.get(parameter)
+                }
+                # The completed jobs own the only reads of activation
+                # arguments. A revised parameter in a pending job is safe.
+                if any(
+                    python_node_source_key(parameter) in changed_arguments
+                    for owner in prefix.source_parameter_owners.values()
+                    for parameter in function_parameter_nodes(owner.args)
+                ):
+                    continue
             if all(
                 answer == (not owners.isdisjoint(active))
                 for owners, answer in prefix._opaque_activation_reads.items()
@@ -9499,6 +9520,7 @@ class _BindingRevisions:
                 analyzer = prefix._fork_at_deferred_boundary()
                 analyzer.policy = policy
                 analyzer._opaque_activation_sources = active
+                analyzer._activation_argument_values = arguments.copy()
                 cursor = checkpoint.completed_jobs
                 checkpoints.extend(
                     item for item in prior if item.completed_jobs <= cursor
