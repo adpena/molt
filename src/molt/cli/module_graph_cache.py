@@ -22,6 +22,7 @@ import os
 import sys
 from dataclasses import asdict
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     RuntimeCatalogDeferral,
     SourceImportSite,
     SourceImportCall,
@@ -39,6 +40,7 @@ from molt.cli.source_record_store import SourceRecord, shared_source_records
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
+    _import_scan_tooling_fingerprint,
     _operation_resolved,
     _source_tree_fingerprint_transaction,
 )
@@ -67,7 +69,6 @@ from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
     python_package_name,
 )
-from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
     _SourceValueDemand,
@@ -660,6 +661,16 @@ def _intrinsic_source_identity(
     }
 
 
+def _intrinsic_facts_record_key(identity: Mapping[str, object]) -> str:
+    # The syntax-only projection may read the latest facts for this source
+    # regardless of the premise used to prove its intrinsic custody.
+    inputs = {
+        key: value for key, value in identity.items() if key != "namespace_premise"
+    }
+    encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
 @_source_tree_fingerprint_transaction()
 def _stdlib_intrinsic_namespace_summary(
     module_name: str,
@@ -675,14 +686,8 @@ def _stdlib_intrinsic_namespace_summary(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    record_key = _import_scan_cache_key(
-        path,
-        module_name=module_name,
-        is_package=path.name == "__init__.py",
-        import_scan_mode="full",
-        target_python=target_python,
-    )
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
+    record_key = _intrinsic_facts_record_key(expected)
     record = _read_intrinsic_facts_record(record_key)
     payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None:
@@ -748,16 +753,10 @@ def _stdlib_intrinsic_source_facts(
             f"stdlib intrinsic import evidence ({module_name}: {path}, "
             f"Python {target_python.short}) cannot read source: {exc}"
         ) from exc
-    record_key = _import_scan_cache_key(
-        path,
-        module_name=module_name,
-        is_package=path.name == "__init__.py",
-        import_scan_mode="full",
-        target_python=target_python,
-    )
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
+    record_key = _intrinsic_facts_record_key(identity)
     record = _read_intrinsic_facts_record(record_key)
     payload = _decode_source_record_json(None if record is None else record.payload)
     if payload is not None and payload.get("identity") == identity:
@@ -777,6 +776,7 @@ def _stdlib_intrinsic_source_facts(
                 namespace_premise=namespace_premise,
                 snapshot=snapshot,
                 target_python=target_python,
+                purpose=SourceImportPurpose.INVENTORY,
             )
             if scan is None:
                 raise ValueError("intrinsic metadata lacks current source requests")
@@ -810,6 +810,7 @@ def _stdlib_intrinsic_source_facts(
             scan=facts.import_evidence.source_scan,
             snapshot=snapshot,
             target_python=target_python,
+            purpose=SourceImportPurpose.INVENTORY,
         )
     except OSError as exc:
         failure: str | None = str(exc)
@@ -913,8 +914,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-# 51: a scan row no longer copies its key's premise view; the key alone names it.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 52
+# 53: source-only requests address their source bytes independently of location.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 53
 
 
 def _import_scan_cache_key(
@@ -927,6 +928,7 @@ def _import_scan_cache_key(
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
+    snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
@@ -934,21 +936,33 @@ def _import_scan_cache_key(
 ) -> str:
     if type(purpose) is not SourceImportPurpose:
         raise TypeError("source import scan cache requires a typed purpose")
-    key_parts = [
+    captured = snapshot or _module_source.PythonSourceSnapshot.capture(path)
+    if captured.path != path:
+        raise ValueError("source scan snapshot path mismatch")
+    identity = (
+        _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
+        (sys.implementation.name, sys.version),
+        captured.sha256,
         module_name,
-        "pkg" if is_package else "mod",
+        is_package,
+        # Execution requests still use the lexical initializer role. It can
+        # differ from the graph's package role for an explicitly supplied AST.
+        path.name == "__init__.py",
         import_scan_mode,
         purpose.value,
-        "runtime-owner" if runtime_catalog_owner else "strict",
-        repr(source_owner),
-        repr(source_arguments),
-        repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
-        repr(_namespace_premise_cache_identity(namespace_premise)),
+        runtime_catalog_owner,
+        source_owner,
+        source_arguments,
+        ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
+        _namespace_premise_cache_identity(namespace_premise),
         target_python.tag,
-        repr(target_sys_platform),
-        _frontend_semantic_tooling_fingerprint(),
-    ]
-    return _resolved_module_cache_key(os.fspath(path), *key_parts)
+        target_sys_platform,
+        _import_scan_tooling_fingerprint(),
+    )
+    encoded = json.dumps(identity, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
 
 
 def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | None:
@@ -1054,6 +1068,7 @@ def _write_persisted_import_scan_alias(
             source_arguments=source_arguments,
             namespace_premise=premise,
             native_support_function_roots=native_support_function_roots,
+            snapshot=snapshot,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
             runtime_catalog_owner=runtime_catalog_owner,
@@ -1077,13 +1092,19 @@ def _read_persisted_import_scan_record(
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
-    path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportScanRequests | None:
+    if snapshot is None:
+        try:
+            snapshot = _module_source.PythonSourceSnapshot.capture(path)
+        except OSError:
+            return None
+    if snapshot.path != path:
+        return None
     record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
@@ -1093,6 +1114,7 @@ def _read_persisted_import_scan_record(
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
+        snapshot=snapshot,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
@@ -1154,8 +1176,7 @@ def _read_persisted_import_scan_record(
         return None
     if (
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint")
-        != _frontend_semantic_tooling_fingerprint()
+        or payload.get("compiler_fingerprint") != _import_scan_tooling_fingerprint()
         or payload.get("module_name") != module_name
         or payload.get("is_package") != is_package
         or payload.get("body_selection")
@@ -1172,21 +1193,11 @@ def _read_persisted_import_scan_record(
         or payload.get("source_arguments") != list(source_arguments)
     ):
         return None
-    if snapshot is not None:
-        if (
-            snapshot.path != path
-            or payload.get("size") != len(snapshot.content)
-            or payload.get("source_sha256") != snapshot.sha256
-        ):
-            return None
-    else:
-        try:
-            if path_stat is None:
-                path_stat = path.stat()
-        except OSError:
-            return None
-        if not _module_source._payload_source_matches(payload, path, path_stat):
-            return None
+    if (
+        payload.get("size") != len(snapshot.content)
+        or payload.get("source_sha256") != snapshot.sha256
+    ):
+        return None
     fields = (
         "imports",
         "star_modules",
@@ -1661,7 +1672,7 @@ def _write_persisted_import_scan(
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "parser": [sys.implementation.name, sys.version],
-        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
+        "compiler_fingerprint": _import_scan_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
         "body_selection": ModuleBodySelection.from_requested_roots(
@@ -1815,6 +1826,7 @@ def _write_persisted_import_scan(
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
+        snapshot=snapshot,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,

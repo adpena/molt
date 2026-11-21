@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.compilation_target import Target, is_wasm_target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     SourceImportSite,
     ModuleSourceRole,
     SourceAllExports,
@@ -101,7 +102,6 @@ if TYPE_CHECKING:
         SourceExtensionLinkRequirements,
     )
 
-ImportScanMode = Literal["full", "module_init"]
 BinaryImageKind = Literal[
     "entry_script",
     "entry_module",

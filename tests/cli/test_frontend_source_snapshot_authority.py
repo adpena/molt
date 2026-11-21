@@ -4,6 +4,7 @@ from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
 )
@@ -33,7 +34,6 @@ from molt.cli.frontend_record_files import FrontendRecordFiles
 from tests.source_record_test_support import replace_source_record, source_records
 from tests.cli.test_installed_compiler import installation as installation
 from molt.cli.models import (
-    ImportScanMode,
     _CompleteImportScan,
     _ImportAdmissionPolicy,
     _ModuleGraphScanAuthority,
@@ -173,6 +173,19 @@ def compiler_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     driver = root / "src" / "molt" / "cli" / "module_source.py"
     driver.parent.mkdir(parents=True)
     driver.write_text("VALUE = 1\n", encoding="utf-8")
+    package = driver.parents[1]
+    (package / "__init__.py").touch()
+    analysis = package / "compiler_analysis"
+    analysis.mkdir()
+    (analysis / "__init__.py").touch()
+    (analysis / "python_import_scan.py").write_text(
+        "from molt.compiler_analysis.python_binding_flow import VALUE\n",
+        encoding="utf-8",
+    )
+    (analysis / "python_binding_flow.py").write_text("VALUE = 1\n", encoding="utf-8")
+    driver.with_name("module_graph_cache.py").write_text(
+        "SCHEMA = 1\n", encoding="utf-8"
+    )
 
     def compiler_root() -> Path:
         return root
@@ -386,10 +399,10 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
         snapshot=PythonSourceSnapshot.capture(source),
         **options,
     )
-    assert counts == {"paths": 1, "bytes": 1}
+    assert counts == {"paths": 0, "bytes": 1}
     counts.update(paths=0, bytes=0)
     assert scans._read_persisted_import_scan_record(source, **options) is not None
-    assert counts == {"paths": 1, "bytes": 1}
+    assert counts == {"paths": 0, "bytes": 1}
     with fingerprints._source_tree_fingerprint_transaction():
         assert scans._read_persisted_import_scan_record(source, **options) is not None
         stat = source.stat()
@@ -397,6 +410,34 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
         os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         # Only compiler tooling is frozen, never the scanned application.
         assert scans._read_persisted_import_scan_record(source, **options) is None
+
+
+def test_scan_record_tracks_producer_closure_across_frontend_edits(
+    tmp_path: Path, compiler_sources: Path, isolated_molt_cache: Path
+) -> None:
+    source = tmp_path / "program.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    package = compiler_sources.parents[1]
+    frontend = package / "frontend" / "__init__.py"
+    frontend.parent.mkdir()
+    frontend.write_text("VALUE = 1\n", encoding="utf-8")
+
+    def load() -> bool:
+        return discovery._load_module_import_scan(
+            source,
+            purpose=SourceImportPurpose.EXECUTION,
+            **_scan_options("program"),
+            resolution_cache=module_resolution._ModuleResolutionCache(),
+            project_root=tmp_path,
+        ).cache_hit
+
+    assert not load()
+    assert load()
+    frontend.write_text("VALUE = 2\n", encoding="utf-8")
+    assert load()
+    producer = package / "compiler_analysis" / "python_binding_flow.py"
+    producer.write_text("VALUE = 2\n", encoding="utf-8")
+    assert not load()
 
 
 @pytest.mark.parametrize("warm_operation", ["scan", "native_support"])
@@ -476,7 +517,7 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
         assert native_counts["native_support_source_parses"] == 1
     assert "importlib.util" in imports
     assert reads == [support] and writes == [support]
-    assert counts == {"paths": 1, "bytes": 1}
+    assert counts == {"paths": 0, "bytes": 1}
 
     def discover() -> _DiscoveredModuleGraph:
         return discovery._discover_module_graph_from_paths(
@@ -502,7 +543,7 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
     # completed record. The next matching discovery rewrites nothing.
     assert reads == [entry, support, target.resolve()]
     assert writes == [entry, support, target.resolve()]
-    assert counts == {"paths": 1, "bytes": 1}
+    assert counts == {"paths": 0, "bytes": 1}
 
     reads.clear()
     writes.clear()
@@ -763,12 +804,12 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         outer = fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
         graph_outer = source_closure._GRAPH_TRANSACTION.get()
         assert outer is not None and graph_outer is not None
-        before = fingerprints._frontend_semantic_tooling_snapshot()
+        before = fingerprints._import_scan_tooling_fingerprint()
         with pytest.raises(OSError, match="publication interrupted"):
             write()
         assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is outer
         assert source_closure._GRAPH_TRANSACTION.get() is graph_outer
-        assert fingerprints._frontend_semantic_tooling_snapshot() is before
+        assert fingerprints._import_scan_tooling_fingerprint() == before
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
     assert source_closure._GRAPH_TRANSACTION.get() is None
 
@@ -778,7 +819,7 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         write()
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
     assert source_closure._GRAPH_TRANSACTION.get() is None
-    compiler_sources.with_name("module_graph.py").write_text(
+    compiler_sources.with_name("module_graph_cache.py").write_text(
         "VALUE = 1\n", encoding="utf-8"
     )
     with pytest.raises(OSError, match="publication interrupted"):
@@ -787,7 +828,7 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
     assert source_closure._GRAPH_TRANSACTION.get() is None
     assert published_fingerprints[0] == published_fingerprints[1]
     assert published_fingerprints[2] != published_fingerprints[1]
-    assert counts == {"paths": 3, "bytes": 3}
+    assert counts == {"paths": 0, "bytes": 3}
 
 
 def test_artifact_owned_source_retains_precomputed_execution_root_without_scanning(

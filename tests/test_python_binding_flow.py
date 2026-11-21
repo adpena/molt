@@ -32,6 +32,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
 )
+from molt.compiler_analysis.python_imports import ModuleImportContext
 
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
@@ -2360,7 +2361,16 @@ def test_context_projections_share_complete_facts_and_preserve_import_flow(
             assert getattr(index, item.name) is getattr(core, item.name)
         fresh = flow._Analyzer(context.flow_policy(), digest).analyze(ast.parse(source))
         expected = flow._project_binding_index(
-            fresh, context, lambda: ast.parse(source)
+            fresh,
+            ModuleImportContext(
+                module_name=context.module_name,
+                is_package=context.module_is_package,
+                spec_name=context.module_spec_name,
+                target_python=context.target_python,
+                execution_kind=context.module_execution_kind,
+            ),
+            lambda: ast.parse(source),
+            include_import_discovery=context.include_import_discovery,
         )
         assert index == expected
     assert flow.python_binding_core_computations() == 1
@@ -2427,7 +2437,7 @@ def test_binding_core_reuses_only_unread_opaque_activation_inputs(
             policy, opaque_activation_sources=(python_node_source_key(unused),)
         ),
     )
-    assert closed == irrelevant
+    assert closed is irrelevant
     assert irrelevant.expression_fact(read).exact_builtin_name() == "len"
     assert flow.python_binding_core_computations() == 1
 

@@ -79,6 +79,7 @@ def is_compiler_intrinsics_module(module_name: str | None) -> bool:
     )
 
 
+ImportScanMode = Literal["full", "module_init"]
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]

@@ -30,7 +30,6 @@ from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ModuleReason,
     UnresolvedRoot,
-    ImportScanMode,
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
@@ -39,6 +38,7 @@ from molt.cli.models import (
     _RuntimeImportScanCustody,
 )
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     _ImportDiscoveryProjection,
     _ImportScanRequests,
 )
@@ -222,6 +222,43 @@ class _ModuleGraphDiscovery:
                     raise _module_source.PythonSourceChangedError(
                         f"source changed during deferred discovery: {snapshot.path}"
                     )
+
+
+def _ready_namespace_revisions(
+    state: _ModuleGraphDiscovery,
+) -> set[_SourceScanJob]:
+    """Wake dependent revisions once their currently known writers settle."""
+    dirty = {job.module_name for job in state.scan_revisions}
+    if len(dirty) < 2:
+        return state.scan_revisions.copy()
+
+    writers: dict[str, set[str]] = {}
+    for writer, writes in state.namespace_writes.items():
+        active = state.active_owners.get(writer, ())
+        for write in writes:
+            target = state.graph.get(write.module) if write.module is not None else None
+            if target is not None and write.source_owner in active:
+                for name in state.modules_by_source[target]:
+                    if writer != name:
+                        writers.setdefault(name, set()).add(writer)
+    if not writers:
+        return state.scan_revisions.copy()
+
+    components = _module_dependency_authority._module_strongly_connected_components(
+        state.graph, writers
+    )
+    blocked: set[str] = set()
+    ready: set[str] = set()
+    for component in components:
+        members = set(component)
+        if any(blocked.intersection(writers.get(member, ())) for member in members):
+            # An unchanged intermediate component can still propagate a
+            # pending writer's effects before downstream work becomes ready.
+            blocked.update(members)
+        elif members & dirty:
+            ready.update(members & dirty)
+            blocked.update(members)
+    return {job for job in state.scan_revisions if job.module_name in ready}
 
 
 class _LoadedModuleImportScan(NamedTuple):
@@ -1366,11 +1403,11 @@ def _discovery_pass(
                 release_deferred_bodies(module, forced=True)
             continue
         if not queue:
-            # A revision wave retains the same typed source jobs and receipts.
-            # New work discovered by a revision takes priority over the rest
-            # of this wave; further revisions wait for the next drained wave.
+            # Recompute readiness after new demands and admissions drain:
+            # those can introduce another active writer or close a cycle.
+            ready_revisions = _ready_namespace_revisions(state)
             revisions: list[_SourceScanJob] = sorted(
-                scan_revisions,
+                ready_revisions,
                 key=lambda item: (
                     item.module_name,
                     item.source is not None,
@@ -1379,8 +1416,8 @@ def _discovery_pass(
                 ),
             )
             queue.extend(reversed(revisions))
-            queued_scans.update(scan_revisions)
-            scan_revisions.clear()
+            queued_scans.update(ready_revisions)
+            scan_revisions.difference_update(ready_revisions)
         job = queue.pop()
         if isinstance(job, _SourceScanJob):
             queued_scans.discard(job)
@@ -2207,7 +2244,7 @@ def _collect_module_import_scan(
     requests = _source_import_scan._collect_import_scan_requests(
         import_projection,
         tree,
-        source_path=path,
+        is_package=path.name == "__init__.py",
         module_name=module_name,
         import_scan_mode=import_scan_mode,
         source_owner=source_owner,

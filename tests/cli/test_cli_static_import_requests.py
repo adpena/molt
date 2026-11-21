@@ -272,9 +272,6 @@ def test_import_callable_mutation_disables_static_projection(source: str) -> Non
     assert "should_not_be_static" not in _imports(source)
 
 
-# A cold whole-stdlib module-graph discovery (127 s in the 2026-11-20
-# landing gate); postsubmit runs it until HF-938 makes discovery fast.
-@pytest.mark.slow
 def test_module_graph_consumes_relative_fromlist_request_projection(
     tmp_path: Path,
 ) -> None:

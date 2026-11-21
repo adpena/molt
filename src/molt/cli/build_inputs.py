@@ -79,11 +79,11 @@ from molt.cli.project_roots import (
     _has_project_markers,
     _require_molt_root,
 )
+from molt.cli.config_resolution import _resolve_target_python_version
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,
-    _resolve_target_python_version,
 )
 
 

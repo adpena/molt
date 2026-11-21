@@ -119,6 +119,9 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "g"
     )
     source = tmp_path / "café.py"
+    monkeypatch.setattr(
+        module_graph_cache, "_import_scan_tooling_fingerprint", lambda: "scan-g"
+    )
     source.write_bytes(b"raise ImportError\n")
     # This actual producer publishes both its source import scan and its facts.
     module_graph_cache._stdlib_intrinsic_source_facts(
@@ -140,6 +143,7 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
         assert isinstance(decoded, dict)
         if kind == "import-scan":
             assert decoded["module_name"] == "café"
-            assert decoded["compiler_fingerprint"] == "g"
+            assert decoded["compiler_fingerprint"] == "scan-g"
         else:
             assert set(decoded) == {"identity", "facts"}
+            assert decoded["identity"]["compiler_fingerprint"] == "g"

@@ -16,6 +16,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import models as cli_models
 from molt.cli import output as cli_output
 from molt import target_python as molt_target_python
+from molt.cli import config_resolution
 from molt import target_python_policy
 
 DEFAULT = target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
@@ -64,7 +65,7 @@ def test_newer_target_diagnostic_names_source_and_installed_commands(
 def test_target_python_without_configuration_uses_the_default_target(
     tmp_path: Path,
 ) -> None:
-    target = molt_target_python._resolve_target_python_version(
+    target = config_resolution._resolve_target_python_version(
         explicit=None, build_config=None, project_root=tmp_path
     )
     assert target.short == target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
@@ -90,7 +91,7 @@ def test_target_python_is_the_default_or_newest_target_requires_python_admits(
         encoding="utf-8",
     )
 
-    target = molt_target_python._resolve_target_python_version(
+    target = config_resolution._resolve_target_python_version(
         explicit=None,
         build_config=None,
         project_root=tmp_path,
@@ -105,7 +106,7 @@ def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    target = molt_target_python._resolve_target_python_version(
+    target = config_resolution._resolve_target_python_version(
         explicit="3.13",
         build_config=None,
         project_root=tmp_path,
@@ -122,7 +123,7 @@ def test_target_python_build_config_overrides_project_requires_python(
         encoding="utf-8",
     )
 
-    target = molt_target_python._resolve_target_python_version(
+    target = config_resolution._resolve_target_python_version(
         explicit=None,
         build_config={"python-version": "3.14"},
         project_root=tmp_path,
@@ -138,7 +139,7 @@ def test_target_python_rejects_invalid_pyproject_toml(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="invalid pyproject.toml"):
-        molt_target_python._resolve_target_python_version(
+        config_resolution._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,
@@ -153,7 +154,7 @@ def test_target_python_rejects_non_string_project_requires_python(
     )
 
     with pytest.raises(ValueError, match="project.requires-python"):
-        molt_target_python._resolve_target_python_version(
+        config_resolution._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,
@@ -164,7 +165,7 @@ def test_target_python_rejects_non_string_build_config_version(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="python-version"):
-        molt_target_python._resolve_target_python_version(
+        config_resolution._resolve_target_python_version(
             explicit=None,
             build_config={"python-version": 3.14},
             project_root=tmp_path,
@@ -173,7 +174,7 @@ def test_target_python_rejects_non_string_build_config_version(
 
 def test_target_python_rejects_empty_build_config_version(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="python-version"):
-        molt_target_python._resolve_target_python_version(
+        config_resolution._resolve_target_python_version(
             explicit=None,
             build_config={"python-version": "  "},
             project_root=tmp_path,
@@ -189,13 +190,13 @@ def test_target_python_micro_release_selects_minor_line() -> None:
 def test_project_patch_requirement_uses_the_selected_source_release() -> None:
     target = molt_target_python._parse_target_python_version("3.12")
     assert (
-        molt_target_python._target_python_from_requires_python(
+        config_resolution._target_python_from_requires_python(
             f">={target.short}.{target.micro},<3.13"
         )
         == target
     )
     with pytest.raises(ValueError, match="does not admit"):
-        molt_target_python._target_python_from_requires_python(
+        config_resolution._target_python_from_requires_python(
             f">{target.short}.{target.micro},<3.13"
         )
 
@@ -206,7 +207,7 @@ def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="does not admit"):
-        molt_target_python._resolve_target_python_version(
+        config_resolution._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,

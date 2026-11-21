@@ -24,7 +24,6 @@ from molt.cli.models import (
     ModuleReason,
     UnresolvedRoot,
     RuntimeImportMachinery,
-    ImportScanMode,
     ModuleExecutionKind,
     ModuleSourceRole,
     _ModuleGraphScanAuthority,
@@ -57,6 +56,7 @@ from molt.compiler_analysis.python_import_redirects import (
 )
 from molt.python_canonical_ast import canonical_module_digest
 from molt.compiler_analysis.python_imports import (
+    ImportScanMode,
     ModuleImportContext,
     StaticImportRequest,
     analyze_module_import_flow,
