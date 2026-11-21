@@ -16422,7 +16422,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     stat = module_path.stat()
     source_sha256 = cli_module_source._source_content_sha256(module_path, stat)
     assert source_sha256 is not None
-    from molt.cli.source_record_store import shared_source_records
+    from molt.cli.frontend_record_files import frontend_record_files
 
     key = cli_module_cache._module_analysis_record_key(
         module_path,
@@ -16431,7 +16431,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
         import_scan_mode="full",
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    assert shared_source_records().put(
+    assert frontend_record_files().put(
         "module-analysis",
         key,
         json.dumps(
@@ -16449,7 +16449,6 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
                 "func_defaults": {"g": {"params": 0, "defaults": []}},
             }
         ).encode(),
-        generation=CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
     )
 
     (

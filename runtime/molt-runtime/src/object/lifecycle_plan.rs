@@ -36,8 +36,26 @@ const PLAIN: u64 = 1 << 2;
 /// Instances are never GC members (the root `object` alone, as in CPython).
 /// An identity fact: set when the class seals and kept by every recompute.
 const UNTRACKED: u64 = 1 << 3;
-const IDENTITY_FACTS: u64 = UNTRACKED;
+/// `object.__new__` may allocate an instance from the plan alone: `PLAIN`,
+/// not abstract, not a poll-adapter class.
+const INLINE_ALLOC: u64 = 1 << 4;
+/// The exact class is a poll adapter, whose instances need a native poll
+/// payload: an identity fact that refuses `INLINE_ALLOC`.
+const POLL_ADAPTER: u64 = 1 << 5;
+const IDENTITY_FACTS: u64 = UNTRACKED | POLL_ADAPTER;
+/// The allocator size class of a plain instance (header and payload).
+const SIZE_CLASS_SHIFT: u32 = 16;
 const FIELD_WORDS_SHIFT: u32 = 32;
+
+/// The facts about a class's identity that no mutation changes, given when
+/// it seals.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ClassIdentity {
+    /// The builtin `object`.
+    pub(crate) root_object: bool,
+    /// One of the builtin poll-adapter classes.
+    pub(crate) poll_adapter: bool,
+}
 
 /// One class's lifecycle plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +85,44 @@ impl ClassLifecyclePlan {
     pub(crate) fn instances_untracked(self) -> bool {
         self.0 & UNTRACKED != 0
     }
+
+    /// `object.__new__` allocates from the plan alone.
+    #[inline(always)]
+    pub(crate) fn allocates_inline(self) -> bool {
+        self.0 & INLINE_ALLOC != 0
+    }
+
+    /// The field word count of a plain class.
+    #[inline(always)]
+    pub(crate) fn field_words(self) -> usize {
+        (self.0 >> FIELD_WORDS_SHIFT) as usize
+    }
+
+    /// The payload bytes of a plain instance's layout: its fields and the
+    /// dictionary word.
+    #[inline(always)]
+    pub(crate) fn payload_bytes(self) -> usize {
+        (self.field_words() + 1) * std::mem::size_of::<u64>()
+    }
+
+    /// The allocator size class of a plain instance, nonzero when the plan
+    /// allocates inline.
+    #[inline(always)]
+    pub(crate) fn size_class(self) -> u16 {
+        (self.0 >> SIZE_CLASS_SHIFT) as u16
+    }
+
+    /// Apply the identity facts to a computed plan.
+    fn with_identity(self, identity: u64) -> Self {
+        if !self.is_present() {
+            return Self::ABSENT;
+        }
+        let mut word = self.0 | identity;
+        if word & PLAIN == 0 || word & POLL_ADAPTER != 0 {
+            word &= !INLINE_ALLOC;
+        }
+        Self(word)
+    }
 }
 
 #[inline(always)]
@@ -83,8 +139,8 @@ pub(crate) unsafe fn plan(class: *mut u8) -> ClassLifecyclePlan {
     #[cfg(debug_assertions)]
     if plan.is_present() {
         assert_eq!(
-            plan.0 & !IDENTITY_FACTS,
-            unsafe { compute(class) }.0 & !IDENTITY_FACTS,
+            plan,
+            unsafe { compute(class) }.with_identity(plan.0 & IDENTITY_FACTS),
             "stale class lifecycle plan"
         );
     }
@@ -171,19 +227,27 @@ pub(crate) unsafe fn compute(class: *mut u8) -> ClassLifecyclePlan {
         }
         if let Some(words) = plain_field_words(class) {
             word |= PLAIN | ((words as u64) << FIELD_WORDS_SHIFT);
+            let total =
+                std::mem::size_of::<super::MoltHeader>() + (words + 1) * std::mem::size_of::<u64>();
+            let size_class = super::size_class_for(total);
+            if size_class != 0 && !class_storage::class_is_abstract(class) {
+                word |= INLINE_ALLOC | (u64::from(size_class) << SIZE_CLASS_SHIFT);
+            }
         }
         ClassLifecyclePlan(word)
     }
 }
 
-/// Publish the plan of a class that just sealed. `root_object` names the
-/// builtin `object`, whose instances CPython never tracks.
-pub(crate) unsafe fn publish_sealed(class: *mut u8, root_object: bool) {
+/// Publish the plan of a class that just sealed, with its identity facts.
+pub(crate) unsafe fn publish_sealed(class: *mut u8, identity: ClassIdentity) {
     unsafe {
-        let mut plan = compute(class);
-        if plan.is_present() && root_object {
-            plan.0 |= UNTRACKED;
-        }
+        let facts = if identity.root_object { UNTRACKED } else { 0 }
+            | if identity.poll_adapter {
+                POLL_ADAPTER
+            } else {
+                0
+            };
+        let plan = compute(class).with_identity(facts);
         plan_word(class).store(plan.0, Ordering::Release);
     }
 }
@@ -203,12 +267,7 @@ pub(crate) unsafe fn refresh(class: *mut u8) {
     unsafe {
         let word = plan_word(class);
         let identity = word.load(Ordering::Acquire) & IDENTITY_FACTS;
-        let plan = compute(class);
-        let next = if plan.is_present() {
-            plan.0 | identity
-        } else {
-            0
-        };
-        word.store(next, Ordering::Release);
+        let plan = compute(class).with_identity(identity);
+        word.store(plan.0, Ordering::Release);
     }
 }

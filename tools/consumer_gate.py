@@ -411,6 +411,7 @@ def run(
         for test in tests:
             print(f"  {test}")
     flaky_reruns: list[str] | None = []
+    slow_cases: list[tuple[str, float]] = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -470,6 +471,14 @@ def run(
                     file=sys.stderr,
                 )
                 return 1
+            slow_cases = _slow_cases(report)
+            for name, seconds in slow_cases:
+                print(
+                    f"consumer-gate: unmarked slow test ({seconds:.0f} s): {name}; "
+                    "mark it @pytest.mark.slow or make it fast",
+                    file=sys.stderr,
+                    flush=True,
+                )
             preexisting: list[str] = []
             if failed:
                 flaky_reruns, still_failing = _rerun_failures_alone(root, report, env)
@@ -479,6 +488,16 @@ def run(
                     failed = preexisting != still_failing
         if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
+            return 1
+        refused = [
+            name for name, seconds in slow_cases if seconds >= SLOW_TEST_REFUSE_S
+        ]
+        if refused:
+            print(
+                f"consumer-gate: {len(refused)} unmarked test(s) ran "
+                f"{SLOW_TEST_REFUSE_S:.0f} s or more; no receipt",
+                file=sys.stderr,
+            )
             return 1
     if commit_tree(root, paths) != tree:
         print("consumer-gate: the change moved while its tests ran", file=sys.stderr)
@@ -503,6 +522,8 @@ def run(
         # Tests that fail on the base commit too (Chromium's "without patch"
         # retry): main's defects, not this change's; their owners fix main.
         "preexisting_failures": preexisting if run_now else [],
+        # Unmarked tests that ran SLOW_TEST_S or more (AGENTS.md 60 s rule).
+        "slow_unmarked": [[name, round(seconds, 1)] for name, seconds in slow_cases],
         # The owner's bounded bypass: its reason and the importers not run here.
         "bypass": bypass_importers,
         "bypassed_importers": bypassed,
@@ -517,6 +538,38 @@ def run(
 
 # More failures than this are a broken change, not load: no rerun.
 RERUN_LIMIT = 10
+
+
+# AGENTS.md: a test whose median is 60 s or more is marked `slow` and runs in
+# postsubmit. Presubmit skips marked tests, so a case that reaches the limit
+# here is unmarked. One run is not a median, so the gate names a case from
+# SLOW_TEST_S and withholds its receipt only from SLOW_TEST_REFUSE_S.
+SLOW_TEST_S = 60.0
+SLOW_TEST_REFUSE_S = 2 * SLOW_TEST_S
+
+
+def _slow_cases(report: Path) -> list[tuple[str, float]]:
+    """Each test case in a JUnit report that ran at least SLOW_TEST_S, with its
+    time, slowest first; an unreadable report names none."""
+    import xml.etree.ElementTree as ElementTree
+
+    try:
+        cases = ElementTree.parse(report).getroot().iter("testcase")
+    except (OSError, ElementTree.ParseError):
+        return []
+    slow: list[tuple[str, float]] = []
+    for case in cases:
+        if case.find("skipped") is not None:
+            continue
+        try:
+            seconds = float(case.get("time", "0"))
+        except ValueError:
+            continue
+        if seconds >= SLOW_TEST_S:
+            slow.append(
+                (f"{case.get('classname', '')}::{case.get('name', '')}", seconds)
+            )
+    return sorted(slow, key=lambda item: -item[1])
 
 
 def _failed_node_ids(root: Path, report: Path) -> list[str] | None:

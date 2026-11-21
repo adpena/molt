@@ -683,6 +683,7 @@ pub(crate) fn molt_issubclass_attached_body(
 
 pub(crate) fn molt_object_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        // `object()`: the sealed root class allocates from its lifecycle plan.
         let class_bits = builtin_classes(_py).object;
         let obj_bits = crate::object::builders::alloc_class_instance(
             _py,
@@ -692,15 +693,7 @@ pub(crate) fn molt_object_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
         let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            // `OBJECT_NEW` is also the generic default-`object.__new__` seed:
-            // class construction may replace this edge before publishing the
-            // instance to user code. Select CLASS_INLINE at allocation instead
-            // of trying to mutate the immutable aux representation later.
-            (*crate::object::header_from_obj_ptr(obj_ptr))
-                .fetch_or_flags(crate::object::HEADER_FLAG_RAW_ALLOC);
-            crate::object::gc::gc_publish_initialized(_py, obj_ptr);
-        }
+        unsafe { crate::object::gc::gc_publish_initialized(_py, obj_ptr) };
         obj_bits
     })
 }
@@ -735,6 +728,16 @@ pub(crate) fn molt_object_new_bound_attached_body(_py: &crate::PyToken<'_>, cls_
                     BuiltinExc::TypeError,
                     "object.__new__ expects type",
                 );
+            }
+            // A sealed plain class that is not abstract allocates from its
+            // lifecycle plan, which every admission below already decided.
+            let plan = crate::object::lifecycle_plan::plan(cls_ptr);
+            if plan.allocates_inline() {
+                let bits = crate::object::builders::alloc_planned_instance(_py, cls_ptr, plan);
+                if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                    crate::object::gc::gc_publish_initialized(_py, ptr);
+                }
+                return bits;
             }
             if crate::object::class_finish_definition(_py, cls_ptr).is_err() {
                 return MoltObject::none().bits();

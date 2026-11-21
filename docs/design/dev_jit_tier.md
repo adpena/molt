@@ -326,10 +326,30 @@ key. Each start applies its own function parameters and relocations.
 The candidate reused all 908 stencils on all four warm starts. The first start was
 38.16 s against 32.64 s for the baseline, with 868 misses and 40 within-program hits.
 Every start exited zero with identical stdout and empty guest stderr. Codegen diagnostics
-were captured separately. All function bodies still go through TIR and Cranelift IR
-construction. Linking the AOT stdlib archive also needs a binding for application-owned
-data such as the module readiness block and program slots. Lazy materialization and the
-40-case comparison against native AOT remain open.
+were captured separately. At this stage all function bodies still went through TIR and
+Cranelift IR construction.
+
+### Shared stdlib and first-call assembly prototype (2026-11-20)
+
+The prototype linked the existing AOT stdlib archive into a second image and assembled
+application bodies on first call. The comparison used the dev compiler on macOS arm64,
+CPython 3.12.16 as the oracle, and Python 3.12 as the compiler target. A fixed set of 40
+differential cases covered `os`, `sys`, `collections`, `dataclasses`, and `typing`, with
+eight cases per family. Each case ran serially in both tiers. The first pass alternated
+the order across cases and the second reversed every pair with warmed caches. The guard
+measured the complete build and run. The one-minute load ranged from 4.33 to 15.53 in
+the first pass and 4.62 to 23.10 in the warmed pass.
+
+| Metric, median / nearest-rank p90 | First-pass native | First-pass JIT | Warm native | Warm JIT |
+| --- | ---: | ---: | ---: | ---: |
+| Wall time per case, s | 25.70 / 119.40 | 20.09 / 140.67 | 19.33 / 44.57 | 20.17 / 58.57 |
+| Peak process RSS, KiB | 659,920 / 823,008 | 636,592 / 861,888 | 619,584 / 740,096 | 612,280 / 728,960 |
+| Peak process-tree RSS, KiB | 827,832 / 1,143,040 | 960,896 / 1,594,176 | 802,368 / 947,248 | 830,576 / 1,026,048 |
+
+Warm JIT was 4.3% slower at the median and 31.4% slower at p90. Keep the existing
+explicit JIT selector. The comparison measures a prototype. The stdlib-image lane
+owns the shared image, and the common per-function cache needs its own proof before
+first-call assembly is integrated.
 
 ### Whole-program compilation baseline (2026-10-21)
 
@@ -452,6 +472,15 @@ stdlib set into the runtime image and compile only the application partition.
 
 ## Verification
 
+- The 40-case prototype comparison matched stdout, stderr and exit status on all 37
+  native CPython passers in each pass. The remaining three agreed between Molt tiers
+  and disagreed with CPython. Both emitted a bare `StopIteration` in
+  `collections_chainmap_protocol.py` where CPython reported `RuntimeError` with the
+  original exception as its cause. Both raised `AttributeError` for `__qualname__` in
+  `sys_getframe_fields.py` where CPython rejected a positional-only keyword with
+  `TypeError`. Both accepted `"C" | None` in `typing_forwardref.py` where CPython raised
+  `TypeError` while evaluating that forward reference. This bounds the parity claim to
+  the tested macOS arm64 dev configuration.
 - Step 1: identical object bytes before and after the generic-module change (12 of 12
   objects, 389199062) and after the code-owner change (hello object and archive).
 - Code owner: `runtime/molt-jit/tests/jit_code_owner.rs` compiles the program that

@@ -1326,10 +1326,15 @@ fail closed; the inventory itself makes no claim about current file bytes.
   callable identity. Repeated solves are observations, not additional sites.
   This observer changes no IR and leaves the existing pass-delta JSONL schema
   and its readers unchanged.
-- Import scans, intrinsic source facts, module analyses and binary module
+- Import scans and module analyses are immutable content-addressed record
+  files under `<Molt cache>/frontend_records/v1` (`molt.cli.frontend_record_files`):
+  blobs named by their SHA-256 and per-operation index files; readers take no
+  lock and open no database, and eviction treats each file as one entry under
+  the same byte/age budget ([storage authority](design/storage_authority.md),
+  "Compile cache"). Intrinsic source facts and binary module
   lowerings share `<schema digest>/records.sqlite`, named by the DDL digest,
   under `<Molt cache>/toolchain_source_records`
-  (`molt.cli.source_record_store`). Every project/session uses that store;
+  (`molt.cli.source_record_store`); its `CHECK` admits only those two kinds. Every project/session uses that store;
   no project copy is hydrated. Each SQLite connection holds one shared
   cache-control lifetime lock; warm record operations add no lock syscall.
   Other recognized namespaces retire only under an exclusive lifetime lock
@@ -1342,7 +1347,7 @@ fail closed; the inventory itself makes no claim about current file bytes.
   GC closes SQLite without writing advisory renewals and defers only the lifetime
   lease until safe normal-context release. Exact compiler generation remains
   part of read admission; retention belongs solely to the configured global
-  byte/age cache budget for all four kinds. There is no generation trim or
+  byte/age cache budget for both kinds. There is no generation trim or
   in-place migration. Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
