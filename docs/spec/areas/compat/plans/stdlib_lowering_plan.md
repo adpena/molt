@@ -117,9 +117,16 @@ per premise revision.
    opaque-activation and argument answer read by that prefix still agrees. The completed
    jobs identify the parameters that can have read an argument. A revision to a pending job
    leaves the prefix reusable. The checkpoint shares immutable state, copies the scope and
-   history owners before resuming, and retains a bounded amount of recent work. A changed
-   foreign-write set or a changed answer before any saved boundary starts the analysis from
-   the source. The whole-graph transfer-summary solver remains open.
+   history owners before resuming, and retains a bounded amount of recent work.
+   A scan can reuse the transfer after adding a foreign writer for a module slot no executed
+   transfer looked up or allocated. The scan still projects the slot into the complete layout
+   and records its possible presence if a callback expired the namespace by module exit.
+   Reuse requires the same consumed activation answers, the same remaining policy and the same
+   module-wide expiry behavior. Other foreign-write changes and changed answers before any
+   saved boundary start analysis from the source. The whole-graph transfer-summary solver
+   remains open.
+   A body scan records the explicit global and nonlocal declarations it uses to recognize
+   publication. Changes to unrelated slot layout leave that declaration projection reusable.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
