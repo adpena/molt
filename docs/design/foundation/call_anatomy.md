@@ -1,5 +1,10 @@
 # Call anatomy: why compiled Python runs like an interpreter, and the architecture that fixes it
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Status: accepted design, 2026-10-29, for ledger family J (runtime execution context), with I
 (frames and exceptions), A (runtime-call ABI) and P (mid-end facts). Ledger rows: HF-185 (frame
 cost, staged here), HF-561 (raise and catch) and the exception `__init__` descriptor row. Section 9

@@ -3,6 +3,8 @@
 > 2026-11-16: the `overflow_peel` pass this design extends is deleted. `checked_int_loops.rs`
 > (HF-857) versions accumulator loops with exact transfer instead of replay, so `CheckedAdd` and
 > `CheckedMul` accumulators work in any loop body. See `int_lane_unification.md`.
+> The Luau and direct-WASM arms below went with those backends (Luau 2026-11-12; WASM now builds
+> through LLVM wasm32).
 
 Design output of the `keystone-design-loop-scalar-unbox` orchestration (2026-06-25,
 4 investigators + synthesis). Implementation-ready for STEP 0-1; STEP 3 is the gate.

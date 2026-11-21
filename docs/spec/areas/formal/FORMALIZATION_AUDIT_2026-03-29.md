@@ -1,5 +1,10 @@
 # Molt Formalization Suite — Comprehensive Audit
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 **Date:** 2026-03-29
 **Scope:** Full-stack review of Lean 4 proofs, Quint models, Rust TIR implementation, Python frontend, all backends, test infrastructure
 **Method:** 10-agent parallel audit covering every layer

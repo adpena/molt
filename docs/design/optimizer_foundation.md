@@ -999,7 +999,7 @@ separate integrator-owned facts.
   LLVM, but JIT warmup + its own language): molt's typed-IR/`Repr` work is the specialization half;
   the **inliner + SROA** are the other half — delivered AOT (no warmup) over the Python ecosystem.
 - **vs Mojo** (MLIR progressive lowering, ownership, SIMD/GPU, zero-cost abstractions, but NOT real
-  Python): molt already has progressive lowering (TIR→SimpleIR→Cranelift/LLVM/wasm/luau), `vectorize`/
+  Python): molt already has progressive lowering (TIR→final TIR→Cranelift/LLVM (LLVM also emits wasm32)), `vectorize`/
   `polyhedral`, and the tinygrad GPU lane — on REAL Python. SROA supplies the zero-cost abstractions.
 
 All four converge on one root cause and one fix.

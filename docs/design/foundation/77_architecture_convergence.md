@@ -1,5 +1,10 @@
 # 77. Architecture convergence: one typed IR and one runtime boundary
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Status: accepted 2026-10-14; staged per workstream below. Owner: compiler and
 runtime integrators. Ledger: HF-197 to HF-213, HF-185, HF-490, HF-190, HF-195,
 HF-198.

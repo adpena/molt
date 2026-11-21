@@ -573,8 +573,8 @@ premise after callbacks, an exact module-scope read lowers the same way. In a
 loop that mixes proved and unproved reads, the proved reads lower to their
 values in both arms of the guard that the unproved reads still open.
 
-There is no new op, runtime entry, cache or registry. Native, LLVM, WASM, Luau
-and Rust backends already lower `BUILTIN_TYPE`, `BUILTIN_FUNC` (with the
+There is no new op, runtime entry, cache or registry. Every shipped backend (Cranelift and LLVM, which also emits WASM)
+already lowers `BUILTIN_TYPE`, `BUILTIN_FUNC` (with the
 manifest ABIs `molt_isinstance`, `molt_issubclass`), `ISINSTANCE` and the
 counted loop; the frontend already emitted these operations before this change.
 

@@ -1,5 +1,10 @@
 # 22 — Bug-Hunt Sweep, Wave 1
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 Status: COMPLETE (wave 1). Two agents (predecessor + continuation) ran the
 three-lens sweep — PROFILE / WIRING AUDIT / GAP CENSUS — against
 `worktree-agent-a0c76397aae710ddd` (base `178966d17`, secured HEAD `33589e5b4`).
