@@ -2535,20 +2535,21 @@ def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
 
 
 @pytest.mark.parametrize(
-    ("changed", "reused", "specialize_argument"),
+    ("changed", "reused_prefix", "specialize_argument"),
     [
-        (0, 0, False),
-        (2, 2, False),
-        (70, 64, False),
-        ("nested", 64, False),
+        (0, None, False),
+        (2, None, False),
+        (70, None, False),
+        ("nested", None, False),
+        ("nested-parent", 0, False),
         (2, 2, True),
         (70, 64, True),
     ],
 )
-def test_binding_revision_keeps_only_a_proven_deferred_prefix(
+def test_binding_revision_matches_fresh_facts_after_leaf_or_prefix_reuse(
     monkeypatch: pytest.MonkeyPatch,
     changed: int | str,
-    reused: int,
+    reused_prefix: int | None,
     specialize_argument: bool,
 ) -> None:
     flow = python_binding_flow
@@ -2568,16 +2569,18 @@ def test_binding_revision_keeps_only_a_proven_deferred_prefix(
     source = "\n".join(
         f"def function_{index}(value): return len([value])" for index in range(80)
     )
-    if changed == "nested":
+    if changed in {"nested", "nested-parent"}:
         source = (
             "def holder(value):\n"
+            "    len([value])\n"
             "    def read(): return len([value])\n"
             "    def write(other):\n"
             "        nonlocal value\n"
             "        value = other\n"
             "    return read, write\n"
         ) + source
-        owner = ast.parse(source).body[0].body[0]
+        holder = ast.parse(source).body[0]
+        owner = holder if changed == "nested-parent" else holder.body[1]
     else:
         assert isinstance(changed, int)
         owner = ast.parse(source).body[changed]
@@ -2602,11 +2605,17 @@ def test_binding_revision_keeps_only_a_proven_deferred_prefix(
         cold_jobs = len(jobs)
         jobs.clear()
         actual = analyze_python_source_bindings(source, policy=revised)
-        assert len(jobs) == cold_jobs - reused
+        if reused_prefix is None:
+            assert jobs == [python_node_source_key(owner)]
+        else:
+            assert len(jobs) == cold_jobs - reused_prefix
 
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     expected = analyze_python_source_bindings(source, policy=revised)
-    assert replace(actual, telemetry=expected.telemetry) == expected
+    assert (
+        replace(actual, state_count=expected.state_count, telemetry=expected.telemetry)
+        == expected
+    )
     call = owner.body[0].value
     if specialize_argument:
         argument = call.args[0].elts[0]
@@ -2647,7 +2656,7 @@ def test_unread_foreign_slots_project_exact_namespace_and_layout(
     assert projected.scopes[0].binding_slots == fresh.scopes[0].binding_slots
 
 
-def test_small_binding_revision_reuses_initializer_and_earlier_jobs(
+def test_small_binding_revision_reuses_initializer_and_independent_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = python_binding_flow
@@ -2680,7 +2689,7 @@ def test_small_binding_revision_reuses_initializer_and_earlier_jobs(
         "def second(): return len([1, 2])\n"
         "def revised(): return len([1, 2, 3])\n"
     )
-    changed = ast.parse(source).body[-1]
+    changed = ast.parse(source).body[0]
     policy = PythonBindingPolicy(
         foreign_namespace_writes=(),
         foreign_namespace_universe=frozenset({"len"}),
@@ -2700,7 +2709,10 @@ def test_small_binding_revision_reuses_initializer_and_earlier_jobs(
 
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     fresh = analyze_python_source_bindings(source, policy=revised)
-    assert replace(actual, telemetry=fresh.telemetry) == fresh
+    assert (
+        replace(actual, state_count=fresh.state_count, telemetry=fresh.telemetry)
+        == fresh
+    )
     assert eager.expressions != actual.expressions
 
 
@@ -2856,7 +2868,7 @@ def test_completed_assignment_effects_do_not_alias_mutable_analyzer() -> None:
     assert analysis.module_import_flow_required
     expected = dict(analysis.assignment_effects)
     assert expected
-    analyzer.assignment_effects.clear()
+    analyzer.transfer.assignment_effects.clear()
     assert dict(analysis.assignment_effects) == expected
     with pytest.raises(TypeError):
         analysis.assignment_effects[next(iter(expected))] = 0
@@ -5516,7 +5528,7 @@ def test_finite_namespace_mutation_publishes_one_batch_without_key_branches(
     class ObservedAnalyzer(python_binding_flow._Analyzer):
         def _current_globals_method(self, state_id, scope, node, *args):
             key = (
-                self.expressions.get(self._node_key(node.args[0]))
+                self.transfer.expressions.get(self._node_key(node.args[0]))
                 if node.args
                 else None
             )
