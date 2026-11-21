@@ -74,7 +74,12 @@ def _own_host_records(root: Path) -> set[str]:
     prefix = f"guard-{os.getpid()}-"
     return {
         path.name
-        for directory in (root / "active", root / "retired")
+        for directory in (
+            root / "active",
+            memory_guard_paths.retired_guard_marker_pid_dir(
+                root / "active", str(os.getpid())
+            ),
+        )
         if directory.is_dir()
         for path in directory.iterdir()
         if path.name.startswith(prefix)
@@ -89,7 +94,7 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
     assert os.environ[memory_guard_paths.STATE_ROOT_ENV] == str(roots.state_root)
     assert roots.state_root != roots.host_state_root
     retired = roots.state_root / "retired"
-    before = set(retired.glob("guard-*.json")) if retired.is_dir() else set()
+    before = set(retired.glob("*/guard-*.json"))
     own_before = _own_host_records(roots.host_state_root)
 
     # One guard in this process, then a guard started as a child process.
@@ -106,13 +111,20 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
         check=True,
     )
 
-    created = set(retired.glob("guard-*.json")) - before
+    created = set(retired.glob("*/guard-*.json")) - before
     pids = {int(path.name.split("-")[1]) for path in created}
     assert os.getpid() in pids and len(pids) >= 2, sorted(created)
     for marker in created:
+        pid = marker.name.split("-")[1]
+        assert marker.parent.name == pid
         token = marker.stem.rsplit("-", 1)[1]
         assert not (roots.host_state_root / "active" / marker.name).exists()
-        assert not (roots.host_state_root / "retired" / marker.name).exists()
+        assert not (
+            memory_guard_paths.retired_guard_marker_pid_dir(
+                roots.host_state_root / "active", pid
+            )
+            / marker.name
+        ).exists()
         assert not (roots.host_scratch_root / token).exists()
     assert _own_host_records(roots.host_state_root) == own_before
     # Their scratch generations lived and ended in the session root.
