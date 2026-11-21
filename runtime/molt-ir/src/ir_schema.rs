@@ -660,7 +660,9 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.proven_target
         && !matches!(
             op.kind,
-            crate::OpKind::CallGuarded | crate::OpKind::LoadMethod
+            crate::OpKind::CallGuarded
+                | crate::OpKind::LoadMethod
+                | crate::OpKind::LoadSuperMethod
         )
     {
         return Err(format!("op `{}` cannot carry proven_target", op.kind));

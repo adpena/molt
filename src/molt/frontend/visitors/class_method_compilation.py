@@ -486,6 +486,13 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         if descriptor == "property":
             property_field = self._property_field_from_method(item)
         method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+        defining_class = self._class_id_for_definition(class_node)
+        self.method_classes[method_symbol] = defining_class
+        if any(
+            isinstance(node, ast.Nonlocal) and "__class__" in node.names
+            for node in ast.walk(class_node)
+        ):
+            self.class_cell_rebound.add(defining_class)
         self._record_func_default_specs(method_symbol, item.args)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(item.args)
         posonly_names = [arg.arg for arg in posonly]

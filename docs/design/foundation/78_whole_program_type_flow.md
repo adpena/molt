@@ -795,6 +795,39 @@ receiver whose `compute` names `__class__` (2M iterations): LLVM 2.32 G -> 1.145
 Cranelift: `bench_class_hierarchy` 18.15 G -> 15.02 G (-17.2%), the probe 2.82 G -> 1.565 G
 (-44.6%).
 
+**Step 4. Static `super()` (as built, 2026-11-21).** `_proven_super_member` decides
+`super().m(args)` in a method of class `C` at compile time when all of these hold, else the
+runtime `load_super_method` stays:
+- The `__class__` cell holds `C`. `C` has no custom metaclass, so `type.__new__` fills the cell
+  before `__set_name__` or `__init_subclass__` can run Python. `C`'s body holds no
+  `nonlocal __class__` (`class_cell_rebound`). The graph names no reflective cell writer: the
+  new premise field `cell_writer` is the first named `cell_contents` store or delete, a
+  computed-name attribute store, a frame-locals writer (a PEP 667 proxy writes free variables)
+  or a native extension. A new writer is a global premise change. One stdlib module writes a
+  cell: `dataclasses._update_func_cell_for__class__` (for `slots=True`), so a program that
+  imports `dataclasses` keeps every `super()` dynamic. Narrowing that writer to the cells of
+  the classes it decorates is open.
+- The first parameter holds exactly class `E` (an `exact_receivers` row), and `C` is on `E`'s
+  MRO, so the selection walks `E`'s MRO after `C`.
+- Every class on that MRO is namespace-closed with a proven binding and no custom metaclass,
+  and no builtin class but `object` follows `C` (`resolve` skips builtin namespaces).
+- The member is a plain function (a classmethod, staticmethod or property keeps the descriptor
+  protocol), called positionally with its exact arity, its entry adopts its arguments, and no
+  code object is reachable (`code_rebinding`).
+- The `super` name is the builtin (HF-955 proves it before this runs).
+
+The proven load carries `proven_target` (`ir_schema` admits it on `LoadSuperMethod`;
+`op_instance_effects_for_op` gives it the same effect-free, nothrow rule as a proven
+`load_method`), and the call is a proven `call_guarded`. Function cells (5.9) read the callee
+for a proven `load_super_method` as they do for a `load_method`, so the runtime selection
+leaves the loop; a closure callee is entered as 5a describes.
+
+**Measured** (2026-11-21, release, macOS arm64, instructions retired, best of 3; outputs
+identical). `bench_class_hierarchy` LLVM 13.02 G (5a) -> 8.80 G (-32.4%); against main before
+S4, 16.02 G -> 8.80 G (-45.1%), 3,204 -> 1,760 per iteration, below CPython 3.15's 2,528. The
+remaining `super()` call is in `Mid.compute`, whose receiver is the later subclass `Leaf`
+(step 3).
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed
