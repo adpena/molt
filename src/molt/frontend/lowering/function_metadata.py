@@ -29,6 +29,7 @@ from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     CodeSlotDeclaration,
+    FunctionDefaults,
     FunctionDefinitionValues,
     MoltOp,
     MoltValue,
@@ -39,6 +40,7 @@ from molt.frontend.diagnostics import (
     FrontendDiagnostic as Diagnostic,
     FrontendRejection,
 )
+from molt.frontend.module_publication import CallableDeclaration
 from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     normalize_function_kind,
@@ -396,7 +398,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> tuple[MoltValue, MoltValue]:
+    ) -> FunctionDefaults:
         if default_exprs:
             default_vals: list[MoltValue] = []
             for expr in default_exprs:
@@ -415,11 +417,13 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=defaults_none))
             defaults_val = defaults_none
 
+        default_names: list[str] = []
         if kw_default_exprs and kwonly_params:
             kw_pairs: list[MoltValue] = []
             for name, expr in zip(kwonly_params, kw_default_exprs):
                 if expr is None:
                     continue
+                default_names.append(name)
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
                 val = self.visit(expr)
@@ -439,7 +443,9 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
             kwdefaults_val = kw_defaults_none
-        return defaults_val, kwdefaults_val
+        return FunctionDefaults(
+            defaults_val, kwdefaults_val, len(default_exprs), tuple(default_names)
+        )
 
     def _emit_function_metadata(
         self,
@@ -455,7 +461,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         kwonly_params: list[str],
         vararg: str | None,
         varkw: str | None,
-        defaults: tuple[MoltValue, MoltValue],
+        defaults: FunctionDefaults,
         docstring: str | None,
         module_override: str | None = None,
         execution_kind: FunctionKind = FunctionKind.SYNC,
@@ -479,7 +485,11 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         emit_materialized_function_metadata(
             _FrontendFunctionMetadataEmitter(self),
             function=func_val,
-            materialize_defaults=lambda function: (function, *defaults),
+            materialize_defaults=lambda function: (
+                function,
+                defaults.positional,
+                defaults.keyword,
+            ),
             metadata=MaterializedFunctionMetadata(
                 name=name,
                 qualname=qualname,
@@ -503,6 +513,18 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         )
         if code_symbol is None:
             return None
+        self.callable_declarations[code_symbol] = CallableDeclaration(
+            execution_kind=execution_kind.value,
+            positional_only=list(posonly_params),
+            positional_or_keyword=list(pos_or_kw_params),
+            keyword_only=list(kwonly_params),
+            vararg=vararg,
+            varkw=varkw,
+            positional_default_count=defaults.positional_count,
+            keyword_defaults=list(defaults.keyword_names),
+            freevars=list(freevars),
+            cellvars=list(cellvars),
+        )
         return CodeSlotDeclaration(
             parameters=tuple(parameters),
             varnames=tuple(varnames_list),

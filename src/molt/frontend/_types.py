@@ -459,11 +459,21 @@ class TypeParameterBinding:
 
 
 @dataclass(frozen=True)
+class FunctionDefaults:
+    """Both definition-time values and their parameter shape."""
+
+    positional: MoltValue
+    keyword: MoltValue
+    positional_count: int
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FunctionDefinitionValues:
     """Definition inputs evaluated in Python order before the body closure."""
 
     decorators: tuple[MoltValue, ...]
-    defaults: tuple[MoltValue, MoltValue]
+    defaults: FunctionDefaults
     type_params: tuple[MoltValue, ...]
     type_parameter_bindings: dict[str, TypeParameterBinding]
 
