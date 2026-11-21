@@ -31,6 +31,7 @@ pub(crate) use refcount::*;
 mod backend_selection;
 mod config;
 mod deferred_codegen;
+mod machine_code_cache;
 mod thread_record;
 pub(in crate::native_backend) use deferred_codegen::inspect_native_cfg;
 #[cfg(test)]

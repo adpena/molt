@@ -192,14 +192,15 @@ unsafe fn plain_field_words(class: *mut u8) -> Option<usize> {
         let (_, rows) = class_layout::projection_parts(record);
         let rows = obj_from_bits(rows).as_ptr()?;
         let words = seq_access::with_immutable_tuple_slice(rows, |rows| {
-            let (rows, _) = rows.as_chunks::<3>();
-            for (index, row) in rows.iter().enumerate() {
+            let mut count = 0usize;
+            for (index, row) in rows.as_chunks::<3>().0.iter().enumerate() {
                 let field = class_layout::decode_row(row);
                 if field.kind.is_intrinsic() || field.offset != index * std::mem::size_of::<u64>() {
                     return None;
                 }
+                count = index + 1;
             }
-            Some(rows.len())
+            Some(count)
         })??;
         // The fields, then the one dictionary word.
         (size == (words + 1) * std::mem::size_of::<u64>()).then_some(words)

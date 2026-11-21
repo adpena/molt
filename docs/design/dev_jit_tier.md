@@ -295,8 +295,14 @@ because the JIT tier already owns its program's call graph:
    further 41% with it
    ([incremental_cache](https://docs.wasmtime.dev/api/cranelift_codegen/incremental_cache/index.html),
    [Zed](https://git.secluded.site/zed/commit/4ece4a635fb7f525aaafc5fd4f3926f04e4172a8)).
-   Cranelift calls it experimental, so it enters behind a differential gate. The AOT backend
-   can use the same cache, which shortens every build, not only JIT runs.
+   Cranelift AOT and JIT share the existing bounded compilation store. Its namespace
+   names the Cranelift version, and each relocation kind has its own entries. The key
+   combines the generated native data and call ABI with Cranelift's digest of the final
+   CLIF stencil, including callee signatures, global declarations, the target, ISA and
+   effective codegen flags. A hit skips instruction selection, register allocation and
+   encoding. The compiler still completes the module phase and builds CLIF. Each owner
+   applies relocations against the current declarations. LLVM retains its whole-module
+   artifact cache.
 3. **Patched calls.** A persistent development session (`molt run --watch`) keeps the runner
    and its compiled code. Calls go through Molt-owned call slots; after an edit the session
    recompiles only functions whose digest changed, points their slots at the new code, and
@@ -356,6 +362,57 @@ Host load was 6.30–16.67. Times cover the complete build and run through
 | Peak process-tree RSS, KiB | 823,928 / 1,115,952 | 689,512 / 1,201,664 |
 
 The JIT was 13.8% slower at the median. Keep the existing explicit JIT selector.
+
+### Round two shared Cranelift cache (2026-11-20)
+
+With Slice A at `4cc66c10ec` as the base, both builds primed a cache and then
+changed `handle.write("x")` to `handle.write("xy")` in `os_path_basic.py`.
+Every prime and edit returned zero with identical stdout and empty stderr.
+The edit timings cover the CLI build. The same pinned LLVM SDK served both
+release builds.
+
+| Edited build | Before | Shared cache |
+| --- | ---: | ---: |
+| Dev Cranelift wall, s | 71.44 | 34.09 |
+| Dev Cranelift machine-code flush, ms | 7.43 | 22.68 |
+| Release LLVM wall, s | 56.10 | 62.02 |
+| Release LLVM optimization and codegen, ms | 289.70 | 272.35 |
+
+The dev edit reused four of five stencils. One-minute load was 11.01–14.61
+before and 34.36–36.63 after for dev, and 27.96–29.21 before and 37.16–46.94
+after for release. The per-edit wall samples show elapsed time under those
+loads. The backend measurements establish reuse with a higher flush time in
+this sample. LLVM continues to compile one whole module on a module-artifact miss.
+
+Two release-built runners started one identical JIT image, with a cold pair
+and three alternating warm pairs. One-minute load was 21.70–49.29. All eight
+starts matched in stdout, stderr and exit status.
+
+| Runner start, macOS arm64 | Slice A | Shared cache |
+| --- | ---: | ---: |
+| Cold wall time, s | 49.47 | 33.64 |
+| Cold peak RSS, KiB | 659,616 | 600,064 |
+| Warm wall time, median / p90, s | 61.85 / 76.32 | 26.08 / 29.30 |
+| Warm peak RSS, median / p90, KiB | 482,064 / 482,256 | 417,664 / 419,040 |
+
+These starts share the guest image and runtime image. The host load varied
+across pairs, and both runners already had JIT machine-code reuse. Treat the
+wall differences as observations under the recorded loads.
+
+The final 40-case run used the Slice B patch on `3888c722d2`, with three
+workers and alternating native/JIT order per case. Host load was 8.75–33.96.
+Timings include the full build and run under `molt_diff`, and RSS is sampled
+by the process guard.
+
+| Per test, median / p90 | Native AOT | Shared-cache JIT |
+| --- | ---: | ---: |
+| Wall time, s | 39.28 / 95.52 | 46.97 / 104.17 |
+| Peak process RSS, KiB | 641,512 / 758,592 | 615,872 / 837,200 |
+| Peak process-tree RSS, KiB | 783,128 / 1,033,344 | 673,840 / 1,130,736 |
+
+JIT was 19.6% slower at the median. Keep the existing opt-in selector. The
+whole-module phase remains the largest measured component of the original
+warm JIT start.
 
 ### Cranelift machine-code reuse (2026-11-20)
 
@@ -516,6 +573,13 @@ compiled stdlib as development AOT.
 - WASM targets: not applicable.
 
 ## Verification
+
+- The shared-cache run matched native and JIT on stdout, stderr and exit status
+  for all 40 fixed cases. Both tiers matched CPython on 37 and reproduced the three
+  known disagreements below. The cache tests compare persisted and forced compilation
+  results including relocation metadata, rebind a cache hit to the current callee ID,
+  and change the body, callee signature, data declaration, ABI witness, relocation
+  kind, target, optimization level and codegen version one at a time.
 
 - The production first-call runner matched native AOT byte-for-byte on stdout
   and stderr and returned the same status on all 40 fixed cases. Both tiers

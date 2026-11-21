@@ -6,15 +6,12 @@
 //! loaded), and every import must resolve before relocating code that uses it.
 
 use super::compile_driver::{NativeCodegenProgram, backend_timing_enabled};
+use super::machine_code_cache::MachineCodeCache;
 use super::*;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use molt_ir::PROGRAM_ENTRY_SYMBOL;
 use molt_ir::backend_environment::BackendEnv;
-use molt_ir::content_digest::CompilationCacheKey;
-use molt_tir::tir::cache::{CompilationCache, CompilationCacheWriteError};
-use std::borrow::Cow;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 mod lazy;
 
@@ -37,74 +34,6 @@ pub(crate) struct JitCodeOwner {
     lookup: JitSymbolLookup,
     code: Box<lazy::LazyCode>,
     deferred: BTreeMap<cranelift_module::FuncId, lazy::Entry>,
-}
-
-/// Cranelift caches unrelocated stencils. The cache is namespaced by the
-/// runner generation, and Cranelift keys each stencil by its IR and ISA.
-/// A hit still applies this program's parameters and relocates its code.
-pub(super) struct MachineCodeCache {
-    artifacts: Mutex<CompilationCache>,
-    hits: AtomicUsize,
-    misses: AtomicUsize,
-}
-
-impl MachineCodeCache {
-    fn open(root: std::path::PathBuf) -> Self {
-        Self {
-            artifacts: Mutex::new(CompilationCache::open_backend_namespace_under(root)),
-            hits: AtomicUsize::new(0),
-            misses: AtomicUsize::new(0),
-        }
-    }
-
-    fn key(clif_key: &[u8]) -> String {
-        let mut key = CompilationCacheKey::new(b"molt-cranelift-machine-code-v1");
-        key.field(b"cranelift-stencil", clif_key);
-        key.finish_hex()
-    }
-
-    pub(super) fn compile<'a>(
-        &self,
-        context: &'a mut Context,
-        isa: &dyn cranelift_codegen::isa::TargetIsa,
-        control: &mut cranelift_codegen::control::ControlPlane,
-    ) -> Result<&'a cranelift_codegen::CompiledCode, cranelift_codegen::CompileError<'a>> {
-        let (compiled, hit) = context.compile_with_cache(isa, &mut CacheAdapter(self), control)?;
-        let count = if hit { &self.hits } else { &self.misses };
-        count.fetch_add(1, Ordering::Relaxed);
-        Ok(compiled)
-    }
-
-    fn report_counts(&self) {
-        use std::io::Write;
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "MOLT_BACKEND_TIMING: JIT machine-code cache: {} hits, {} misses",
-            self.hits.load(Ordering::Relaxed),
-            self.misses.load(Ordering::Relaxed)
-        );
-    }
-}
-
-struct CacheAdapter<'a>(&'a MachineCodeCache);
-
-impl cranelift_codegen::incremental_cache::CacheKvStore for CacheAdapter<'_> {
-    fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
-        self.0
-            .artifacts
-            .lock()
-            .unwrap()
-            .get(&MachineCodeCache::key(key))
-            .map(|bytes| Cow::Owned(bytes.to_vec()))
-    }
-
-    fn insert(&mut self, key: &[u8], value: Vec<u8>) {
-        let key = MachineCodeCache::key(key);
-        let stored = self.0.artifacts.lock().unwrap().put(&key, &value);
-        if let Err(CompilationCacheWriteError::Integrity(error)) = stored {
-            panic!("Cranelift machine-code cache integrity failure: {error}");
-        }
-    }
 }
 
 /// The application initializer the runtime calls for a fresh isolate.
@@ -357,11 +286,9 @@ impl SimpleBackend {
         timing: bool,
         compile_start: std::time::Instant,
     ) -> Result<JitProgram, JitCompileError> {
-        if let CodeOwner::ProcessMemory(owner) = &mut self.module
-            && let molt_tir::tir::pipeline_cache::TirCacheLocation::Root(root) = &self.tir_cache
-            && !molt_ir::backend_environment::compilation_diagnostics_requested()
-        {
-            owner.machine_cache = Some(MachineCodeCache::open(root.clone()));
+        if let CodeOwner::ProcessMemory(owner) = &mut self.module {
+            owner.machine_cache =
+                MachineCodeCache::open(&self.tir_cache, CodePlacement::ProcessMemory);
         }
         let NativeCodegenProgram {
             final_functions,

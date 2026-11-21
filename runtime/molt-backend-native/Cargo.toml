@@ -79,6 +79,7 @@ default = ["native-backend"]
 free-threaded = ["native-backend", "molt-codegen-abi/free-threaded"]
 native-backend = [
     "dep:cranelift-codegen",
+    "cranelift-codegen/incremental-cache",
     "dep:cranelift-frontend",
     "dep:cranelift-module",
     "dep:cranelift-object",
@@ -88,7 +89,7 @@ native-backend = [
     "molt-tir/native-backend",
 ]
 # Emit Cranelift code into process memory instead of an object (molt-jit).
-jit = ["native-backend", "dep:cranelift-jit", "cranelift-codegen/incremental-cache"]
+jit = ["native-backend", "dep:cranelift-jit"]
 llvm = ["dep:inkwell", "inkwell/llvm22-1-no-llvm-linking", "dep:molt-llvm-link", "molt-llvm-link/native-link", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]
 

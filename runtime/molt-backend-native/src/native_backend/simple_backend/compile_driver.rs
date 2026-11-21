@@ -1,4 +1,5 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
+use super::machine_code_cache::MachineCodeCache;
 use super::*;
 use molt_ir::backend_environment::BackendEnv;
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
@@ -664,6 +665,7 @@ impl SimpleBackend {
             .sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} terminal ops)");
         let codegen_start = std::time::Instant::now();
+        let machine_cache = MachineCodeCache::open(&self.tir_cache, CodePlacement::Object);
         let mut compiled = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
         // Progress reporting: pick interval based on function count so the
@@ -703,7 +705,7 @@ impl SimpleBackend {
             if should_flush_deferred_codegen(self.deferred_defines.len(), deferred_codegen_ops) {
                 let deferred_count = self.deferred_defines.len();
                 let flush_start = std::time::Instant::now();
-                self.flush_deferred_defines();
+                self.flush_deferred_defines(machine_cache.as_ref());
                 if timing {
                     let flush_elapsed = flush_start.elapsed();
                     eprintln!(
@@ -743,7 +745,7 @@ impl SimpleBackend {
             if deferred_count > 0 {
                 let deferred_ops = deferred_codegen_ops;
                 let flush_start = std::time::Instant::now();
-                self.flush_deferred_defines();
+                self.flush_deferred_defines(machine_cache.as_ref());
                 if timing {
                     let flush_elapsed = flush_start.elapsed();
                     eprintln!(
@@ -751,6 +753,9 @@ impl SimpleBackend {
                     );
                 }
             }
+        }
+        if timing && let Some(cache) = &machine_cache {
+            cache.report_counts();
         }
         //  Per-app callable resolver
         // Emit `molt_app_resolve_callable` AFTER the main flush so every runtime
