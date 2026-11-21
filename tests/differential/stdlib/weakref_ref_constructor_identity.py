@@ -63,16 +63,12 @@ callback_events = []
 old_unraisablehook = sys.unraisablehook
 sys.unraisablehook = callback_events.append
 callback_target = Box()
-if sys.version_info >= (3, 15):
-    try:
-        weakref.ref(callback_target, 42)
-    except TypeError as exc:
-        print("noncallable-callback-rejected", type(exc).__name__, str(exc))
-else:
-    noncallable_ref = weakref.ref(callback_target, 42)
-    print("noncallable-callback-retained", noncallable_ref.__callback__ == 42)
-    del callback_target
-    gc.collect()
+# Every target accepts a non-callable callback (CPython 3.15.2 included) and
+# reports its failed call as unraisable when the referent dies.
+noncallable_ref = weakref.ref(callback_target, 42)
+print("noncallable-callback-retained", noncallable_ref.__callback__ == 42)
+del callback_target
+gc.collect()
 sys.unraisablehook = old_unraisablehook
 if callback_events:
     print(

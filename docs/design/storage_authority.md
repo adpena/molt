@@ -394,6 +394,38 @@ asyncio program did not change measurably (one run each): cold 450/440 s wall, s
 96/102 s. Two costs remain for slices 2 and 3: the first no-change rebuild
 after a cold build takes 31-35 s, and a one-line edit of a user module 96-102 s.
 
+Slice 2 (`molt.cli.frontend_record_files`): an import scan or module analysis
+is a blob named by the SHA-256 of its bytes (`frontend_records/v1/blobs`), and
+index files map keys to digests (`frontend_records/v1/index/<digest>.idx`); one
+frontend operation publishes one index file. A reader loads the index files
+once, rescans only when a miss finds the index directory changed, lets the most
+recently published entry win (a key names its source by path, so a changed
+source publishes a newer entry), and reads a blob with one `os.read` whose bytes
+must hash to its name. A reader merges more than 64 index files into one. An
+HF-926 alias is an index entry naming the equal scan's blob. A consumer renews a
+blob's mtime, at most hourly, only after it admits the record. Eviction lists
+each blob and index file as an entry under the compile-cache budget and sweeps
+at background disk priority (`setiopolicy_np` throttle, `ioprio_set` idle class,
+`THREAD_MODE_BACKGROUND_BEGIN`). The SQLite table's `CHECK` admits only
+`intrinsic-facts` and `module-lowering`; the schema change moves it to a new
+namespace, so the old store, with its millions of import-scan rows, retires
+through the existing superseded-namespace path.
+
+Why index files and not one action file per key: HF-F267 moved these records
+from one JSON file each into SQLite because 10,937 file reads cost 1.03 s
+against 0.40 s. Warm reads of 6,955 real asyncio import-scan payloads (78 MB,
+loaded host) cost 3.9-5.3 us each from bare SQLite, 19-25 us from one file per
+key, 39-52 us from an action file plus a blob, and 14.3 us from a loaded index
+plus one blob `os.read`; the store's real keyed read was 24 us (HF-F267).
+
+Slice 2 result (interleaved discovery A/B against 132ef07f42, fresh cache, 2
+runs): `import asyncio` stored 21.37 MB in 3,168 blobs and 2 index files against
+25.09 MB in 6,259 rows; `import unittest` 20.80 MB in 2,220 blobs against
+28.55 MB in 6,585 rows (aliases and equal results share blobs). Warm and
+one-edit discovery CPU stayed within run spread (asyncio warm 11.0/9.4 s on main,
+10.7/9.4 s with the change); graph and authority dumps were byte-identical in
+every phase.
+
 Prior art: rustc incremental queries (dep graph, red/green), Salsa (tracked
 reads, revisions, backdating), Zig incremental compilation (InternPool,
 fine-grained dependencies), Swift's request evaluator, Buck2 DICE, Go
