@@ -176,9 +176,18 @@ after validating declarations, demanded frame layouts, referenced definitions an
 against the sealed plan. Release compilation and whole-program diagnostics select every body
 through the same frontend operation.
 
-Integration's static module cell planner, function cell planner (design 78 §5.9) and proven-call
-planner treat the demanded set as the whole program. That is sound only when every
-body the runtime can enter is demanded. Qualify the closure by comparing every demanded function's
+The analysis summaries own writer and binding facts in both eager and demanded builds.
+Static module cells, InitOnce constant folding, function cells (design 78 §5.9) and proven
+calls use this shared authority independently of which bodies the frontend lowers.
+The summaries describe declarations and every possible execution in the closed program.
+
+A published callable can remain declaration-only while the closed graph proves that no reader
+can obtain its object. A global or attribute read, escape, import selection or admitted reflection
+demands its body. The declaration-only object's code slot names one shared unreachable trap.
+The trap has no source body, frame layout or per-body digest. The JIT image and runner admit the
+declaration and bind its slot before entry.
+
+Qualify the closure by comparing every demanded function's
 final TIR byte for byte with the eager build, along with its diagnostics. Exercise implicit entry
 through each of the rules above, escaped and import-selected callables, closures, resumable frames
 and concurrent first calls. Verify an unreachable body stays unanalyzed.

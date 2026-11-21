@@ -4828,6 +4828,7 @@ class _Analyzer:
             effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
             selected_deferred = self._attribute_dispatch(owner, effects)
             if callee == int(PythonIdentity.BUILTIN_GETATTR):
+                selected_deferred |= frozenset({DeferredExecution(selected, "read")})
                 result = self._member_value(state_id, owner.identities, member, owner)
                 result_fact = StaticExpressionResult(
                     source_origins=frozenset({selected}), evaluation_required=True

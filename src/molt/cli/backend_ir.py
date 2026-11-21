@@ -54,7 +54,10 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
-from molt.cli.closed_world_bindings import bind_closed_world_calls
+from molt.cli.closed_world_bindings import (
+    bind_closed_world_calls,
+    summarize_program_initializers,
+)
 from molt.cli.static_module_cells import (
     FunctionCells,
     StaticCellPlan,
@@ -2465,12 +2468,14 @@ def _prepare_backend_ir(
     # Closed-world bindings (call_anatomy.md 4.5): proven module attribute
     # calls become direct intrinsic calls; every frontend module guess is
     # consumed here, on every lane.
+    initializers = summarize_program_initializers(integration_state.module_functions)
     binding_diagnostics = bind_closed_world_calls(
         functions,
         integration_state.module_functions,
         integration_state.module_namespace_facts,
         integration_state.module_dep_closures,
         integration_state.import_redirects,
+        initializers,
     )
     # Class calls the frontend could not allocate inline name their refused
     # fact here, beside the other closed-world fallbacks.
@@ -2518,12 +2523,14 @@ def _prepare_backend_ir(
             entry_module=entry_module,
             dep_closures=integration_state.module_dep_closures,
             program_functions=functions,
+            initializers=initializers,
         )
         function_cells = plan_function_cells(
             static_cells,
             integration_state.module_functions,
             integration_state.global_layouts,
             functions,
+            initializers,
         )
         binding_diagnostics.extend(function_cells.diagnostics)
         stamp_global_slots(
