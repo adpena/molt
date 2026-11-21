@@ -20,7 +20,7 @@ build diagnostic without restating the rule.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
@@ -29,7 +29,7 @@ from molt.frontend._types import BuiltinClass, ClassId, ClassRef, TypeHint
 from molt.frontend.dataclass_init import DataclassInitField
 
 if TYPE_CHECKING:
-    from molt.frontend._types import MoltValue
+    from molt.frontend._types import MethodInfo, MoltValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,8 +93,6 @@ class Member:
     # The compiled function's symbol for a def; None for data.
     symbol: str | None = None
     shape: Shape | None = None
-    # Each default's evaluation spec, in order, as the call binder needs it.
-    default_specs: tuple[Mapping[str, object], ...] = ()
     closure: Closure = Closure.NONE
     returns_none: bool = False
     inline: InlineBody | None = None
@@ -380,3 +378,42 @@ def resolve(
             return Unresolved(ResolveRefusal.SHADOWED_BY_DATA, owner)
         return Resolved(member, owner)
     return Unresolved(ResolveRefusal.NOT_FOUND)
+
+
+def member_from_method_info(info: MethodInfo) -> Member:
+    """The one translation of a compiled method's lowering record into its
+    class member fact. ``func``'s type hint names the compiled symbol
+    (``Func:<symbol>``); the SSA values stay with the defining module."""
+    hint = info["func"].type_hint
+    symbol = (
+        hint.split(":", 1)[1]
+        if isinstance(hint, str) and hint.startswith("Func:")
+        else None
+    )
+    inline_params = info.get("inline_params")
+    inline = (
+        InlineBody(
+            params=tuple(inline_params),
+            returns=info.get("inline_return"),
+            init_assigns=tuple(info.get("inline_init_assigns") or ()),
+        )
+        if inline_params is not None
+        else None
+    )
+    return Member(
+        kind=MemberKind(info["descriptor"]),
+        symbol=symbol,
+        shape=Shape(
+            params=info["param_count"],
+            posonly=info["posonly_count"],
+            kwonly=info["kwonly_count"],
+            defaults=len(info["defaults"]),
+            vararg=info["has_vararg"],
+            varkw=info["has_varkw"],
+        ),
+        closure=Closure.CELLS if info["has_closure"] else Closure.NONE,
+        returns_none=bool(info.get("returns_none")),
+        inline=inline,
+        property_field=info.get("property_field"),
+        property_update=info.get("property_update"),
+    )

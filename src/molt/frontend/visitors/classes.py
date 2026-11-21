@@ -794,8 +794,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # An observable namespace can acquire structural attributes through a
         # callback. Keep generic instance/layout facts while still using the
         # canonical constructor when the metaclass and bases are proved.
-        dynamic = (
-            dynamic_build or len(bases) > 1 or not body_has_no_callbacks_or_reflection
+        # The first reason the runtime must own the instance layout, or None.
+        layout_refusal: LayoutRefusal | None = (
+            LayoutRefusal.METACLASS
+            if has_metaclass_kw or inherits_custom_meta
+            else LayoutRefusal.DYNAMIC_BUILD
+            if dynamic_build
+            else LayoutRefusal.MULTIPLE_BASES
+            if len(bases) > 1
+            else LayoutRefusal.OBSERVABLE_BODY
+            if not body_has_no_callbacks_or_reflection
+            else None
         )
         constructor_binding_proven = (
             self.namespace_premise is not None
@@ -812,11 +821,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         for base_ref in bases:
             if isinstance(base_ref, BuiltinClass):
                 continue
-            base_info = self.classes.get(base_ref)
-            if base_info is None or not class_namespace_closed(base_info):
-                dynamic = True
+            base_view = self.classes.get(base_ref)
+            if base_view is None or not namespace_closed(base_view):
+                layout_refusal = layout_refusal or LayoutRefusal.OPEN_BASE
         if class_id in self.mutated_classes:
-            dynamic = True
+            layout_refusal = layout_refusal or LayoutRefusal.VISIBLE_MUTATION
         # ``static`` marks a module-level top-level class whose global binding
         # can supply optional identity for its methods' layout guards. A missing
         # or rebound binding must leave generic instance access available.
@@ -846,7 +855,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             and not (isinstance(entry, ClassId) and entry in self.classes)
             for entry in mro[1:]
         ):
-            dynamic = True
+            layout_refusal = layout_refusal or LayoutRefusal.NATIVE_BASE
 
         init_options = dataclass_opts
         discard_init_proposal = False
@@ -988,7 +997,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 # Runtime declarations may be computed, repeated, or shadow an
                 # ancestor slot. The runtime owns physical slot placement and
                 # admission; a name-keyed inferred-field table cannot encode it.
-                dynamic = True
+                layout_refusal = layout_refusal or LayoutRefusal.SLOTS
 
             methods_in_body = [
                 item for item in method_nodes if isinstance(item, ast.FunctionDef)
@@ -1003,7 +1012,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 }
                 for method in methods_in_body
             ):
-                dynamic = True
+                layout_refusal = layout_refusal or LayoutRefusal.ATTRIBUTE_HOOKS
 
             if methods_in_body:
 
@@ -1082,7 +1091,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             min_layout = self._builtin_min_layout(mro)
             reserved_tail = self._class_reserved_tail_size(mro)
             base_size = (
-                (len(field_order) * 8 + reserved_tail) if not dynamic else reserved_tail
+                (len(field_order) * 8 + reserved_tail)
+                if layout_refusal is None
+                else reserved_tail
             )
             size = max(base_size, min_layout)
             self.classes[class_id] = ClassInfo(
