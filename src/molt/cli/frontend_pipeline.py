@@ -6,8 +6,11 @@ import ast
 import json
 import os
 import time
-from dataclasses import dataclass, replace
+from _thread import LockType
+from concurrent.futures import Future
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Lock
 from typing import (
     Any,
     Callable,
@@ -101,6 +104,7 @@ from molt.cli.output import fail as _fail
 from molt.target_python import TargetPythonVersion
 
 if TYPE_CHECKING:
+    from molt.cli.backend_ir import _PreparedBackendIR
     from molt.frontend.lowering.exception_lowering import SyntaxErrorName
     from molt.frontend import ClassId, ClassModel
 
@@ -155,6 +159,15 @@ class _PreparedBuildCallbacks:
     record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
 
 
+@dataclass(slots=True)
+class _FrontendMaterialization:
+    lock: LockType = field(default_factory=Lock, repr=False)
+    request: tuple[object, ...] | None = None
+    outcome: Future[tuple[_PreparedBackendIR | None, _CliFailure | None]] = field(
+        default_factory=Future, repr=False
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedFrontendPipelineBundle:
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket
@@ -171,6 +184,12 @@ class _PreparedFrontendPipelineBundle:
     record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
     artifacts_root: Path
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
+    namespace_declarations: Mapping[str, SourceModuleNames] = field(
+        default_factory=dict
+    )
+    materialization: _FrontendMaterialization = field(
+        default_factory=_FrontendMaterialization, compare=False, repr=False
+    )
 
 
 def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
@@ -1267,6 +1286,7 @@ def _prepare_frontend_pipeline(
             record_binary_image_analysis=record_binary_image_analysis,
             artifacts_root=artifacts_root,
             native_artifact_plan=import_plan.native_artifact_plan,
+            namespace_declarations=prepared_frontend_analysis.namespace_declarations,
         ),
         None,
     )

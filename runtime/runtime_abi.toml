@@ -1142,6 +1142,12 @@ runtime_name = "molt_function_init_metadata_packed"
 callable_arity = 4
 
 [[import]]
+name = "function_new_unreachable"
+type = 2
+runtime_name = "molt_function_new_unreachable"
+callable_arity = 1
+
+[[import]]
 name = "cell_new"
 type = 2
 runtime_name = "molt_cell_new"

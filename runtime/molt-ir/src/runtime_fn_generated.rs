@@ -1144,6 +1144,7 @@ pub enum RuntimeFn {
     FunctionInitMetadataPacked,
     FunctionIsCoroutine,
     FunctionIsGenerator,
+    FunctionNewUnreachable,
     FunctionSetBuiltin,
     FunctionSetDefaults,
     FunctionSetFixedBuiltin,
@@ -3997,6 +3998,7 @@ impl RuntimeFn {
         Self::FunctionInitMetadataPacked,
         Self::FunctionIsCoroutine,
         Self::FunctionIsGenerator,
+        Self::FunctionNewUnreachable,
         Self::FunctionSetBuiltin,
         Self::FunctionSetDefaults,
         Self::FunctionSetFixedBuiltin,
@@ -5823,7 +5825,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2849;
+    pub const COUNT: usize = 2850;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -20810,6 +20812,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable: None,
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_function_new_unreachable",
+        linker_symbol: "molt_function_new_unreachable__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFE1CE84EC17,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

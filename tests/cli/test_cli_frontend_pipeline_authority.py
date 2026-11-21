@@ -4,6 +4,8 @@ import inspect
 import json
 from pathlib import Path
 import shutil
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,9 @@ from molt.compilation_target import admit_target
 
 import molt.cli as cli
 from molt.cli import frontend_pipeline
+from molt.cli import backend_ir, backend_pipeline
+from molt.cli.function_records import encode_function_body
+from molt.cli.output import CliFailure
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     wasm_loader_asset_payloads,
@@ -34,6 +39,113 @@ def test_cli_frontend_pipeline_authority_is_single_home() -> None:
     cli_source = inspect.getsource(cli)
     for name in _FRONTEND_PIPELINE_NAMES:
         assert f"def {name}(" not in cli_source
+
+
+def test_demanded_release_closure_preserves_live_function_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import provider\n"
+        "from provider import selected\n"
+        "provider.attribute\n"
+        "getattr(provider, 'reflected')\n"
+        "value = 42\n"
+        "def _unused(argument=1, *, keyword=2):\n"
+        "    global value\n"
+        "    value = argument\n"
+        "    return keyword\n"
+        "def _other_unused(): return None\n"
+        "def _callback(): return 3\n"
+        "callbacks = [_callback]\n"
+        "def closure(argument):\n"
+        "    def capture(): return argument\n"
+        "    return capture\n"
+        "def resumable(): yield 7\n"
+        "class Iterable:\n"
+        "    def __iter__(self): return iter((8,))\n"
+        "def live(): return value\n"
+        "print(live(), selected(), callbacks[0](), closure(5)(), "
+        "next(resumable()), next(iter(Iterable())))\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "provider.py").write_text(
+        "def selected(): return 2\n"
+        "def attribute(): return 1\n"
+        "def reflected(): return 2\n",
+        encoding="utf-8",
+    )
+    materialize = backend_ir.materialize_tir_closure
+    results: list[backend_ir._PreparedBackendIR] = []
+
+    def capture(
+        *, prepared_backend_ir: backend_ir._PreparedBackendIR, **kwargs: object
+    ) -> int:
+        results.append(prepared_backend_ir)
+        return 0
+
+    monkeypatch.setattr(backend_pipeline, "_run_backend_pipeline", capture)
+    for mode in ("eager", "demanded"):
+
+        def select(
+            frontend: frontend_pipeline._PreparedFrontendPipelineBundle,
+            **kwargs: object,
+        ) -> tuple[backend_ir._PreparedBackendIR | None, CliFailure | None]:
+            request = {**kwargs, "mode": mode}
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                twins = [
+                    executor.submit(materialize, frontend, **request) for _ in range(2)
+                ]
+                left, right = [future.result() for future in twins]
+            assert left is right
+            return left
+
+        monkeypatch.setattr(backend_ir, "materialize_tir_closure", select)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "molt",
+                "build",
+                "--release",
+                "--python-version",
+                "3.12",
+                "--stdlib-profile",
+                "micro",
+                "--emit",
+                "obj",
+                "--output",
+                str(tmp_path / f"{mode}.o"),
+                str(entry),
+            ],
+        )
+        assert cli.main() == 0
+    eager, demanded = results
+    assert eager.declarations is not None
+    assert demanded.declarations is not None
+    omitted = {"py.entry._other_unused", "py.entry._unused"}
+    assert not eager.declarations.declaration_only
+    assert demanded.declarations.declaration_only == omitted
+    assert demanded.declarations.callables == eager.declarations.callables
+    assert eager.ir["code_slots"] == demanded.ir["code_slots"]
+    assert eager.plan_seal != demanded.plan_seal
+    assert omitted.isdisjoint(
+        seed.function["name"] for seed in demanded.function_digest_seeds
+    )
+    eager_functions = {function["name"]: function for function in eager.ir["functions"]}
+    demanded_functions = {
+        function["name"]: function for function in demanded.ir["functions"]
+    }
+    assert eager_functions.keys() - demanded_functions.keys() == omitted
+    for symbol in demanded.declarations.callables.keys() - omitted:
+        assert encode_function_body(demanded_functions[symbol]) == encode_function_body(
+            eager_functions[symbol]
+        ), symbol
+    assert sum(
+        op.get("s_value") == "molt_function_new_unreachable"
+        for function in demanded_functions.values()
+        for op in function["ops"]
+    ) == len(omitted)
 
 
 def _frontend_args(source_root: Path, *, target: str, split_runtime: bool):

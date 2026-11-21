@@ -205,6 +205,7 @@ class SourceModuleNames:
     universe: frozenset[str]
     initializer_bindings: frozenset[str]
     isolate_spawn_line: int | None
+    callable_candidates: tuple[tuple[PythonSourceKey, str], ...]
 
 
 @typed_cache(maxsize=512)
@@ -241,6 +242,10 @@ def python_source_module_names(text: str) -> SourceModuleNames | None:
             names.update(
                 name.id for name in ast.walk(annotation) if isinstance(name, ast.Name)
             )
+    from molt.compiler_analysis.python_body_materialization import (
+        flat_callable_declarations,
+    )
+
     return SourceModuleNames(
         frozenset(names),
         frozenset(
@@ -249,6 +254,7 @@ def python_source_module_names(text: str) -> SourceModuleNames | None:
             if symbol.is_assigned() or symbol.is_imported() or symbol.is_namespace()
         ),
         isolate_spawn_line,
+        flat_callable_declarations(tree),
     )
 
 

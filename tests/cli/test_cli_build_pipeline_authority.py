@@ -8,6 +8,8 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import build_pipeline
+from molt.cli.backend_ir import _PreparedBackendIR
+from molt.target_python import _SUPPORTED_TARGET_PYTHON_BY_SHORT
 
 _BUILD_PIPELINE_NAMES = ("_run_build_pipeline",)
 
@@ -60,11 +62,21 @@ def _capture_pipeline(
     monkeypatch.setattr(
         build_pipeline, "_emit_build_diagnostics_for_result", lambda result, **_: result
     )
+    prepared = _PreparedBackendIR(ir={}, function_metadata={})
+
+    def materialize(
+        _frontend: object, **kwargs: object
+    ) -> tuple[_PreparedBackendIR, None]:
+        calls.append("frontend")
+        assert kwargs["entry_module"] == "app"
+        return prepared, None
+
     monkeypatch.setattr(
-        build_pipeline, "_run_frontend_pipeline", lambda **_: calls.append("frontend")
+        build_pipeline._backend_ir, "materialize_tir_closure", materialize
     )
 
-    def backend_pipeline(**kwargs):
+    def backend_pipeline(**kwargs: object) -> int:
+        assert kwargs["prepared_backend_ir"] is prepared
         calls.append(("backend", kwargs["capture_link_inputs"]))
         return 0
 
@@ -76,8 +88,13 @@ def _capture_pipeline(
             diagnostics_enabled=False, resolved_diagnostics_verbosity="summary"
         ),
         prepared_build_roots=None,
-        prepared_build_config=SimpleNamespace(codegen=SimpleNamespace(backend=backend)),
-        resolved_build_entry=None,
+        prepared_build_config=SimpleNamespace(
+            codegen=SimpleNamespace(backend=backend),
+            target_python=_SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"],
+            pgo_profile_summary=None,
+            runtime_feedback_summary=None,
+        ),
+        resolved_build_entry=SimpleNamespace(entry_module="app"),
         prepared_frontend_pipeline_bundle=SimpleNamespace(
             output_layout=layout,
             prepared_frontend_run_ticket=None,

@@ -27,6 +27,16 @@ pub unsafe extern "C" fn molt_func_new_builtin(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_func_new_builtin_attached_body(_py, key, target, trampoline_ptr, arity)
 }
+#[unsafe(export_name = "molt_function_new_unreachable__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_function_new_unreachable(__context: u64, arity_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_function_new_unreachable,
+    );
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_function_new_unreachable_attached_body(_py, arity_bits)
+}
 #[unsafe(export_name = "molt_func_new_builtin_named__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_func_new_builtin_named(

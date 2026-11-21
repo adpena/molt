@@ -259,6 +259,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                     module_spec_name=self.module_spec_name,
                     module_is_package=self.module_is_package,
                     module_execution_kind=self.module_execution_kind,
+                    declaration_only=self.module_body_selection.declaration_only,
                 ),
                 self.namespace_premise,
                 lowering=True,
