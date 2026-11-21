@@ -29,8 +29,10 @@ from molt.compiler_analysis.python_source_keys import python_ast_digest
 _INTEGRAL_CERTIFICATE_KINDS_1: frozenset[WireOpKind] = frozenset(
     {"index", "store_index"}
 )
+# Value-preserving moves: a read or store of a local, a frame-home store, and
+# a binding alias (the frontend's copy of a read it releases at last use).
 _PROJECT_KINDS_1: frozenset[WireOpKind] = frozenset(
-    {"load_var", "store_var", "frame_home_store"}
+    {"load_var", "store_var", "frame_home_store", "binding_alias"}
 )
 _INTEGRAL_CERTIFICATE_KINDS_2: frozenset[WireOpKind] = frozenset(
     {"mul", "sub", "lt", "add"}
@@ -235,6 +237,9 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
     require(ops[1].get("value") in labels, "entry error escapes generated tail")
 
     aliases: dict[str, str] = {}
+    # A local kept in a frame home (call-anatomy stage 1): each home's last
+    # stored value. A read of the home aliases that value.
+    homes: dict[int, str] = {}
     strings: dict[str, str] = {}
     none: set[str] = set()
     constants: dict[str, int] = {}
@@ -285,12 +290,20 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
             source = aliases.get(source, source)
             target = _required_name(op["var"] if kind == WireKinds.STORE_VAR else out)
             require(source in values or source in bindings, "unsupported kernel alias")
-            # Conditional assignment needs a merge, not an unconditional alias.
+            # Conditional assignment needs a merge, not an unconditional alias;
+            # a read, or a binding alias of one, assigns nothing.
             require(
-                not conditions or kind == WireKinds.LOAD_VAR,
+                not conditions or kind in {WireKinds.LOAD_VAR, WireKinds.BINDING_ALIAS},
                 "conditional local mutation requires a shader merge",
             )
             aliases[target] = source
+            if kind == WireKinds.FRAME_HOME_STORE:
+                homes[op["value"]] = source
+        elif kind == WireKinds.FRAME_HOME_LOAD:
+            target = _required_name(out)
+            home = op.get("value")
+            require(home in homes, "kernel reads a frame home it never stored")
+            aliases[target] = homes[home]
         elif kind == WireKinds.MODULE_GET_GLOBAL:
             out = _required_name(out)
             require(
