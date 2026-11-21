@@ -129,7 +129,15 @@ with `refs/molt/last-green`; when that ref is absent it selects all tracked sour
 inputs rather than inventing a passing baseline. Rule tokens that require a Git
 base bind to the selected head for this initial full-source run.
 
-`_run_postsubmit_gates` uses the ordinary gate preparation and executor. Pytest
+A queued landing starts the runner, and since HF-937 a fast landing does too,
+after its push is confirmed (`molt_dev_land_fast._start_postsubmit`): main took
+hundreds of fast landings while postsubmit last ran on 2026-11-16.
+
+`_run_postsubmit_gates` uses the ordinary gate preparation and executor with
+`keep_going`: every selected gate runs, read-only checks one at a time, and one
+`CandidateFailure` names each failed gate. A first-failure stop let a red static
+check hide every later gate; no run from 2026-11-01 to 2026-11-16 reached a
+Cargo gate (HF-937). Runner, custody and cancellation faults still stop at once. Pytest
 writes JUnit beside each gate's logs, using its built-in `--junitxml` and xunit1
 file attributes. The aggregate `<head>.<run>.postsubmit-result.json` receipt records
 the outcome, test node IDs, prior green, suspect commits, exact restoration

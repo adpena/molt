@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import re
 from typing import Final, TypedDict
 
@@ -67,27 +66,6 @@ def source_build_environment_contract_matches(value: object) -> bool:
             for key, item in expected.items()
         )
     )
-
-
-@dataclass(frozen=True)
-class DevelopmentEnvironmentRequest:
-    """Checkout/Python/group intent, independent of selection or proof role."""
-
-    repo_root: Path
-    python: str | None
-    groups: tuple[str, ...]
-
-    def intent_arguments(self) -> tuple[str, ...]:
-        return (
-            "--development-checkout",
-            str(self.repo_root),
-            *(() if self.python is None else ("--development-python", self.python)),
-            *(
-                value
-                for group in self.groups
-                for value in ("--development-group", group)
-            ),
-        )
 
 
 @dataclass(frozen=True, slots=True)

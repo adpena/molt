@@ -480,6 +480,9 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    state carries no byte budget because sizing it walks hundreds of GB (the
    `target/checkouts` census did not finish in 10 minutes); the floor is its
    cheap capacity control.
+   Bound on the integrator's host 2026-11-21 while lanes built. The same
+   probe build went from 23.3-35.9 s warm to 26.2 s once cold, then 10.2-11.0 s
+   warm (backend_prepare 13.2 -> 5.6 s, link 4.6 -> 1.0 s).
 4. Admission: differential and Cargo job counts scale by
    `20 ms / measured latency` of a 100-byte read plus a one-line append in the
    run's temporary directory (`resource_pressure.disk_admitted_jobs`).

@@ -308,7 +308,7 @@ def _run_postsubmit_gates(
         deferred=prepared.deferred,
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
-    run_selected_gates(gates, runtime, [])
+    run_selected_gates(gates, runtime, [], keep_going=True)
     for ordinal, gate in enumerate(gates, start=1):
         if (
             gate_runs_pytest(gate, repo=repo)

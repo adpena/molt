@@ -41,6 +41,7 @@ from molt.compiler_analysis.python_effects_generated import (
     effect_mask_satisfies_capability,
 )
 from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
     python_ast_digest,
     python_node_source_key,
     python_source_digest,
@@ -2531,6 +2532,88 @@ def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
         for ref in reopened.expression_fact(statement.value).deferred_execution
     )
     assert flow.python_binding_core_computations() == 2
+
+
+@pytest.mark.parametrize(
+    ("changed", "reused", "specialize_argument"),
+    [
+        (2, 0, False),
+        (70, 64, False),
+        ("nested", 64, False),
+        (2, 0, True),
+        (70, 64, True),
+    ],
+)
+def test_binding_revision_keeps_only_a_proven_deferred_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    changed: int | str,
+    reused: int,
+    specialize_argument: bool,
+) -> None:
+    flow = python_binding_flow
+    jobs: list[PythonSourceKey] = []
+    analyze_job = flow._Analyzer._analyze_function_job
+
+    def observe_job(
+        analyzer: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        state: int,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        analyze_job(analyzer, job, state)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_function_job", observe_job)
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "\n".join(
+        f"def function_{index}(value): return len([value])" for index in range(80)
+    )
+    if changed == "nested":
+        source = (
+            "def holder(value):\n"
+            "    def read(): return len([value])\n"
+            "    def write(other):\n"
+            "        nonlocal value\n"
+            "        value = other\n"
+            "    return read, write\n"
+        ) + source
+        owner = ast.parse(source).body[0].body[0]
+    else:
+        assert isinstance(changed, int)
+        owner = ast.parse(source).body[changed]
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    revised = (
+        replace(
+            policy,
+            activation_argument_values=(
+                (python_node_source_key(owner.args.args[0]), "leaf"),
+            ),
+        )
+        if specialize_argument
+        else replace(policy, opaque_activation_sources=(python_node_source_key(owner),))
+    )
+    with flow.python_binding_revision_scope():
+        closed = analyze_python_source_bindings(source, policy=policy)
+        cold_jobs = len(jobs)
+        jobs.clear()
+        actual = analyze_python_source_bindings(source, policy=revised)
+        assert len(jobs) == cold_jobs - reused
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    expected = analyze_python_source_bindings(source, policy=revised)
+    assert replace(actual, telemetry=expected.telemetry) == expected
+    call = owner.body[0].value
+    if specialize_argument:
+        argument = call.args[0].elts[0]
+        assert closed.static_value(argument) != "leaf"
+        assert actual.static_value(argument) == "leaf"
+    else:
+        assert closed.expression_fact(call.func).exact_builtin_name() == "len"
+        assert actual.expression_fact(call.func).exact_builtin_name() is None
 
 
 def test_context_cache_lifetime_is_owned_and_bounded_by_core(
