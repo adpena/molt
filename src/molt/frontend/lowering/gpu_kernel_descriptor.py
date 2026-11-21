@@ -302,7 +302,8 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
         elif kind == WireKinds.FRAME_HOME_LOAD:
             target = _required_name(out)
             home = op.get("value")
-            require(home in homes, "kernel reads a frame home it never stored")
+            if not isinstance(home, int) or home not in homes:
+                raise UnsupportedKernel("kernel reads a frame home it never stored")
             aliases[target] = homes[home]
         elif kind == WireKinds.MODULE_GET_GLOBAL:
             out = _required_name(out)
