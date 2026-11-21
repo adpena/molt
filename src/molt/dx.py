@@ -712,7 +712,13 @@ def cargo_target_dir_for_artifact_root(
     source = source_root.expanduser().resolve()
     target = artifact / "target"
     if artifact != source:
-        target = target / "checkouts" / checkout_component(source)
+        from molt.default_paths import hot_path
+
+        # HF-942: on the hot volume when the artifact root binds one, beside
+        # the kache store, so a restore clones instead of copying: a full
+        # molt-runtime dev-fast restore took 8.9-11.6 s there and 73.8-200.1 s
+        # on the shared data volume.
+        target = hot_path(artifact, "target", "checkouts", checkout_component(source))
     return session_scoped_target_dir(target, session_id)
 
 
