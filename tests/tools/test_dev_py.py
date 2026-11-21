@@ -677,9 +677,14 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     explicit_cache = tmp_path / "cache"
     shared = shared_environment(tmp_path, clone, explicit_root)
     # Alias preservation is part of dispatch: `python3` runs the environment's
-    # own `python3` entry (a link to its `python`, as uv makes it).
-    alias = shared / "bin" / "python3"
+    # own `python3` entry (a link to its `python`, which uv makes before the
+    # environment's directories are sealed).
+    scripts = shared / "bin"
+    mode = scripts.stat().st_mode
+    scripts.chmod(mode | 0o200)
+    alias = scripts / "python3"
     alias.symlink_to("python")
+    scripts.chmod(mode)
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
         del limits

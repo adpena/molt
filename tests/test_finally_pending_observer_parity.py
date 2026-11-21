@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 
 import json
 import os
@@ -83,7 +83,7 @@ def _run_cpython_oracle(
     build = run_native_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             str(FIXTURE / "build_cpython.py"),
             str(oracle_root),
@@ -98,7 +98,7 @@ def _run_cpython_oracle(
     oracle = run_native_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             "import runpy, sys; sys.path.insert(0, sys.argv[1]); "

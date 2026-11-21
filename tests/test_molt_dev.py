@@ -44,7 +44,7 @@ Hazard -> proving test(s):
 """
 
 from __future__ import annotations
-from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_interpreter import readonly_bytecode_arguments
 from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 
 import argparse
@@ -12010,7 +12010,7 @@ raise SystemExit(0)
     completed = run_guarded_test_process(
         [
             str(venv_python(cache / ".venv")),
-            *environment_bytecode_arguments(cache / ".venv"),
+            *readonly_bytecode_arguments(cache / ".venv"),
             "-I",
             "-c",
             code,
@@ -12103,7 +12103,7 @@ print("lazy-temporary-state")
     completed = run_guarded_test_process(
         [
             sys.executable,
-            *environment_bytecode_arguments(Path(sys.prefix)),
+            *readonly_bytecode_arguments(Path(sys.prefix)),
             "-I",
             "-c",
             code,
@@ -12641,8 +12641,12 @@ version_pattern = '^Python 3\\.'
         str(shared.parent / ".bytecode"),
     ]
     # The context is a plan. Remove the environment's interpreter after
-    # preparation: the next child must refuse before overwriting output.
+    # preparation: the next child must refuse before overwriting output. The
+    # environment's directories are sealed; open its scripts directory first.
+    mode = expected.parent.stat().st_mode
+    expected.parent.chmod(mode | 0o200)
     expected.unlink()
+    expected.parent.chmod(mode)
     output.write_text("must survive", encoding="utf-8")
     with pytest.raises(DriverError, match="environment Python not found"):
         drv.run_gate(command, repo, context)
