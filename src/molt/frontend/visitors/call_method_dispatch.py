@@ -7,16 +7,21 @@ import ast
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
+from molt.frontend.class_model import (
+    ClassView,
+    Closure,
+    Member,
+    MemberKind,
+    defines,
+    namespace_closed,
+)
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     OBJECT_CLASS,
     BuiltinClass,
     ClassId,
-    ClassInfo,
-    MethodInfo,
     MoltOp,
     MoltValue,
-    class_namespace_closed,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -25,35 +30,28 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class CallMethodDispatchMixin(GeneratorMixinBase):
     def _class_resolves_default_object_new(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> bool:
-        if not class_namespace_closed(class_info):
+        if not namespace_closed(view):
             return False
         for base in self._class_mro(class_id):
             if base == OBJECT_CLASS:
                 return True
             if isinstance(base, BuiltinClass):
                 return False
-            base_info = self.classes.get(base)
-            if base_info is None or not class_namespace_closed(base_info):
+            base_view = self.classes.get(base)
+            if base_view is None or not namespace_closed(base_view):
                 return False
-            methods = base_info.get("methods", {})
-            class_attrs = base_info.get("class_attrs", {})
-            pending = base_info.get("pending_methods")
-            if (
-                "__new__" in methods
-                or "__new__" in class_attrs
-                or (pending and "__new__" in pending)
-            ):
+            if defines(base_view, "__new__"):
                 return False
         return False
 
     def _class_new_policy(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> tuple[bool, bool]:
-        if self._class_resolves_default_object_new(class_id, class_info):
+        if self._class_resolves_default_object_new(class_id, view):
             return False, False
-        if not class_namespace_closed(class_info):
+        if not namespace_closed(view):
             return True, True
         for base in self._class_mro(class_id):
             if base == OBJECT_CLASS:
@@ -62,17 +60,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
                 # A builtin type owns its ``__new__``; a builtin exception's
                 # constructor result stays opaque.
                 return True, base.name not in BUILTIN_TYPE_TAGS
-            base_info = self.classes.get(base)
-            if base_info is None:
+            base_view = self.classes.get(base)
+            if base_view is None:
                 return True, True
-            methods = base_info.get("methods", {})
-            class_attrs = base_info.get("class_attrs", {})
-            pending = base_info.get("pending_methods")
-            if (
-                "__new__" in methods
-                or "__new__" in class_attrs
-                or (pending and "__new__" in pending)
-            ):
+            if defines(base_view, "__new__"):
                 return True, True
         return False, False
 
@@ -147,17 +138,18 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
 
     def _try_inline_method_call(
         self,
-        method_info: MethodInfo,
+        member: Member,
         receiver: MoltValue,
         call_args: list[MoltValue],
     ) -> MoltValue | None:
         """Validate the whole frame-elision proof before emitting any operation."""
-        expression = method_info.get("inline_return")
-        parameters = method_info.get("inline_params")
+        inline = member.inline
+        expression = inline.returns if inline is not None else None
+        parameters = inline.params if inline is not None else None
         if (
             expression is None
             or parameters is None
-            or method_info.get("has_closure")
+            or member.closure is not Closure.NONE
             or len(parameters) != 1 + len(call_args)
             or not inline_expression_is_frame_independent(expression, parameters)
         ):
@@ -180,29 +172,25 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         """
         if len(inline_params) != 1 + len(call_args):
             return False
-        class_info = self.classes.get(class_id)
-        if class_info is None:
+        view = self.classes.get(class_id)
+        if view is None:
             return False
         if (
-            not class_namespace_closed(class_info)
-            or class_info.get("dataclass")
-            or class_info.get("custom_metaclass")
-            or class_info.get("decorated")
+            not namespace_closed(view)
+            or view.dataclass is not None
+            or view.custom_metaclass
+            or view.decorated
         ):
             return False
         for owner in self._class_mro(class_id):
             if owner == OBJECT_CLASS:
                 continue
-            owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if owner_info is None or not class_namespace_closed(owner_info):
+            owner_view = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if owner_view is None or not namespace_closed(owner_view):
                 return False
-            if (
-                "__setattr__" in owner_info.get("methods", {})
-                or "__setattr__" in owner_info.get("class_attrs", {})
-                or "__setattr__" in (owner_info.get("pending_methods") or ())
-            ):
+            if defines(owner_view, "__setattr__"):
                 return False
-        fields = class_info.get("fields", {})
+        fields = {item.name: item.offset for item in view.layout.fields}
         seen: set[str] = set()
         for name, expression in init_assigns:
             if (
@@ -255,64 +243,49 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         class_id = self._exact_class_for_name(obj_name, fields=True)
         if class_id is None:
             return None
-        class_info = self.classes.get(class_id)
-        if class_info is None:
+        view = self.classes.get(class_id)
+        if view is None:
             return None
         # Conservative bail-outs: anything that touches the descriptor /
         # attribute-resolution machinery other than a vanilla bound-method
         # binding.
-        if not class_namespace_closed(class_info) or not class_info.get(
-            "constructor_binding_proven"
-        ):
+        if not namespace_closed(view) or not view.binding_proven:
             return None
-        if class_info.get("dataclass"):
+        if view.dataclass is not None:
             return None
         method_name = attr_node.attr
-        method_info, owner_class = self._resolve_method_info(class_id, method_name)
-        if method_info is None or owner_class is None:
+        member, owner_class = self._resolve_member(class_id, method_name)
+        if member is None or owner_class is None:
             return None
-        if method_info.get("descriptor") != "function":
+        if member.kind is not MemberKind.FUNCTION:
             return None
         # Closures require their real lexical cell transport and executing frame.
-        target_is_closure = bool(method_info.get("has_closure"))
-        if target_is_closure:
+        if member.closure is not Closure.NONE:
             return None
-        if method_info.get("has_vararg"):
-            return None
-        if method_info.get("has_varkw"):
+        shape = member.shape
+        if shape is None or shape.vararg or shape.varkw:
             return None
         # Honour __getattribute__ overrides: the runtime path goes
         # through the override and could observe the bound-method
         # construction.  Skip the fold for those.
-        getattribute_info, _ = self._resolve_method_info(class_id, "__getattribute__")
-        if getattribute_info is not None:
+        getattribute_member, _ = self._resolve_member(class_id, "__getattribute__")
+        if getattribute_member is not None:
             return None
         # Same for __getattr__ (only fires when normal lookup misses,
         # but a fold that bypasses the BoundMethod allocation could
         # observably skip the lookup ordering).
-        getattr_info, _ = self._resolve_method_info(class_id, "__getattr__")
-        if getattr_info is not None:
+        getattr_member, _ = self._resolve_member(class_id, "__getattr__")
+        if getattr_member is not None:
             return None
         if node.keywords:
             return None
         for arg in node.args:
             if isinstance(arg, ast.Starred):
                 return None
-        param_count = method_info.get("param_count")
-        if param_count is None:
+        if shape.defaults or shape.kwonly or len(node.args) != shape.params - 1:
             return None
-        if (
-            method_info.get("defaults")
-            or method_info.get("kwonly_count")
-            or len(node.args) != param_count - 1
-        ):
-            return None
-        function = method_info.get("func")
-        function_hint = function.type_hint if function is not None else None
-        if not isinstance(function_hint, str) or not function_hint.startswith("Func:"):
-            return None
-        method_symbol = function_hint.split(":", 1)[1]
-        if method_symbol not in self.func_symbol_names:
+        method_symbol = member.symbol
+        if method_symbol is None or method_symbol not in self.func_symbol_names:
             return None
         # ``m.__code__ = other.__code__`` would replace the body this call
         # enters; with no code object reachable (``code_rebinding``), no code
@@ -333,7 +306,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
                 Diagnostic.OPERAND_VALUE, "Unsupported method receiver"
             )
         call_args = self._emit_call_args(list(node.args))
-        inlined = self._try_inline_method_call(method_info, receiver, call_args)
+        inlined = self._try_inline_method_call(member, receiver, call_args)
         if inlined is not None:
             return inlined
         # The method's function object, which the entry's frame record holds:

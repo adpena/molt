@@ -23,11 +23,11 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from molt.frontend.class_model import ClassView
 from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
     ClassId,
-    ClassInfo,
     CodeSlotDeclaration,
     ComprehensionBinding,
     ExactClassFact,
@@ -89,7 +89,7 @@ class _GeneratorProtocolAttrs(Protocol):
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
     class_definition_pending: set[ClassId]
-    classes: dict[ClassId, ClassInfo]
+    classes: dict[ClassId, ClassView]
     closure_locals: set[str]
     code_slots_emitted: Any
     comp_shadow_locals: set[str]

@@ -33,6 +33,8 @@ from typing import (
 from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs
 from contextlib import contextmanager
 
+from collections.abc import Mapping
+from molt.frontend.class_model import ClassModel, ClassView, Member
 from molt.frontend._types import (
     ActiveException,
     AsyncContextExit,
@@ -42,7 +44,7 @@ from molt.frontend._types import (
     BuiltinLayout,
     CallableId,
     ClassId,
-    ClassInfo,
+    MethodValues,
     ClassRef,
     CodeSlotDeclaration,
     CompilerLocalHome,
@@ -110,7 +112,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_generator: Any
     instance_attr_mutations: dict[ClassId, set[str]]
     is_entry_module: bool
-    known_classes: dict[ClassId, ClassInfo]
+    known_classes: dict[ClassId, ClassModel]
+    class_method_values: dict[ClassId, dict[str, MethodValues]]
+    class_value_names: dict[ClassId, str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -211,7 +215,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
-        known_classes: dict[ClassId, ClassInfo] | None = ...,
+        known_classes: Mapping[ClassId, ClassModel] | None = ...,
         stdlib_allowlist: set[str] | None = ...,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = ...,
         known_func_kinds: dict[str, dict[str, str]] | None = ...,
@@ -416,7 +420,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_binding_is_the_class(self, class_id: ClassId) -> bool: ...
 
     def _class_constructor_refusal(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> str | None: ...
 
     def _class_decorator_plan(
@@ -453,7 +457,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_mutation_targets(self, node: ast.expr) -> frozenset[ClassId]: ...
 
     def _class_new_policy(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> tuple[bool, bool]: ...
 
     def _class_ns_delete(self, scope: "_ClassNsScope", name: str) -> None: ...
@@ -475,7 +479,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _class_reserved_tail_size(self, mro: tuple[ClassRef, ...]) -> int: ...
 
     def _class_resolves_default_object_new(
-        self, class_id: ClassId, class_info: ClassInfo
+        self, class_id: ClassId, view: ClassView
     ) -> bool: ...
 
     def _clear_exact_bindings(self, names: set[str]) -> None: ...
@@ -1209,7 +1213,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.Call,
         class_id: ClassId,
-        class_info: ClassInfo,
+        view: ClassView,
         class_ref: MoltValue,
     ) -> MoltValue | str: ...
 
@@ -2262,9 +2266,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None: ...
 
-    def _resolve_method_info(
-        self, class_id: ClassId, method: str
-    ) -> tuple[MethodInfo | None, ClassId | None]: ...
+    def _resolve_member(
+        self, class_id: ClassId, name: str
+    ) -> tuple[Member | None, ClassId | None]: ...
+
+    def _member_values(self, owner: ClassId, name: str) -> MethodValues | None: ...
 
     def _restore_class_import_state(
         self,
@@ -2546,7 +2552,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> bool: ...
 
     def _try_inline_method_call(
-        self, method_info: MethodInfo, receiver: MoltValue, call_args: list[MoltValue]
+        self, member: Member, receiver: MoltValue, call_args: list[MoltValue]
     ) -> MoltValue | None: ...
 
     def _try_lower_intrinsic_lookup_call(

@@ -168,8 +168,6 @@ class DataclassSpec:
 class ConstructorPlan:
     """``C(args)`` allocates inline and runs ``__init__`` directly."""
 
-    binding_proven: bool
-
 
 @dataclass(frozen=True, slots=True)
 class ConstructorRefusal:
@@ -196,6 +194,8 @@ class ClassView(Protocol):
     def module_level(self) -> bool: ...
     @property
     def definition_exposed(self) -> bool: ...
+    @property
+    def binding_proven(self) -> bool: ...
     @property
     def custom_metaclass(self) -> bool: ...
     @property
@@ -229,6 +229,9 @@ class ClassModel:
     module_level: bool
     # Code the program cannot see may hold the class or one of its methods.
     definition_exposed: bool
+    # No code the closed program holds rebinds the class name or a member
+    # (a closed namespace premise and an unexposed definition).
+    binding_proven: bool
     custom_metaclass: bool
     decorated: bool
     # The layout version the runtime computes for the class; guards compare it.
@@ -290,6 +293,9 @@ class ClassDraft:
     layout: InstanceLayout
     module_level: bool
     definition_exposed: bool
+    # No code the closed program holds rebinds the class name or a member
+    # (a closed namespace premise and an unexposed definition).
+    binding_proven: bool
     custom_metaclass: bool
     decorated: bool
     layout_version: int
@@ -333,6 +339,7 @@ class ClassDraft:
             layout=self.layout,
             module_level=self.module_level,
             definition_exposed=self.definition_exposed,
+            binding_proven=self.binding_proven,
             custom_metaclass=self.custom_metaclass,
             decorated=self.decorated,
             layout_version=self.layout_version,
@@ -450,3 +457,9 @@ def member_from_method_info(info: MethodInfo) -> Member:
         property_field=info.get("property_field"),
         property_update=info.get("property_update"),
     )
+
+
+def defines(view: ClassView, name: str) -> bool:
+    """Whether the class body binds ``name``: a def, data, or a binding that
+    has not run yet."""
+    return view.member(name) is not None or view.pending(name)

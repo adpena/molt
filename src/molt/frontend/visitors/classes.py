@@ -138,7 +138,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         return 1 + int(static_fields) + class_attr_count + method_count
 
     def _class_constructor_refusal(
-        self, class_id: ClassId, view: ClassView, binding_proven: bool
+        self, class_id: ClassId, view: ClassView
     ) -> str | None:
         """Why ``C(args)`` cannot allocate inline, or None when it can.
 
@@ -152,7 +152,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         """
         if class_id.module != self.module_name:
             return f"the class is defined in module {class_id.module}"
-        if not binding_proven:
+        if not view.binding_proven:
             if view.definition_exposed:
                 return (
                     "the class statement reaches code the whole-program analysis "
@@ -898,6 +898,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 ),
                 module_level=is_static,
                 definition_exposed=definition_exposed,
+                binding_proven=constructor_binding_proven,
                 custom_metaclass=has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
@@ -1083,6 +1084,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 ),
                 module_level=is_static,
                 definition_exposed=definition_exposed,
+                binding_proven=constructor_binding_proven,
                 custom_metaclass=has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
@@ -1907,13 +1909,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             and (draft.dataclass is None or not draft.dataclass.option("slots"))
         ):
             self.class_value_names[class_id] = class_val.name
-            refusal = self._class_constructor_refusal(
-                class_id, draft, constructor_binding_proven
-            )
+            refusal = self._class_constructor_refusal(class_id, draft)
             draft.constructor = (
-                ConstructorPlan(binding_proven=constructor_binding_proven)
-                if refusal is None
-                else ConstructorRefusal(refusal)
+                ConstructorPlan() if refusal is None else ConstructorRefusal(refusal)
             )
         else:
             self.class_value_names.pop(class_id, None)

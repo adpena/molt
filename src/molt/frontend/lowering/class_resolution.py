@@ -27,6 +27,12 @@ from molt.compiler_analysis.python_source_keys import (
     python_node_source_key,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.class_model import (
+    Member,
+    Resolved,
+    namespace_closed,
+    resolve,
+)
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
     BUILTIN_TYPE_TAGS,
@@ -35,12 +41,11 @@ from molt.frontend._types import (
     ClassId,
     ClassRef,
     DeclaredClass,
-    MethodInfo,
+    MethodValues,
     MoltOp,
     MoltValue,
     ReceiverKind,
     TypeHint,
-    class_namespace_closed,
     layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -283,10 +288,10 @@ class ClassResolutionMixin(GeneratorMixinBase):
         binding that several class statements write exports nothing.
         """
         candidates: dict[tuple[str, str], list[ClassId]] = {}
-        for class_id, info in self.known_classes.items():
-            if class_id.module == self.module_name or not info.get("static"):
+        for class_id, model in self.known_classes.items():
+            if class_id.module == self.module_name or not model.module_level:
                 continue
-            key = (class_id.module, info["binding_name"])
+            key = (class_id.module, model.binding_name)
             candidates.setdefault(key, []).append(class_id)
         return {
             key: class_ids[0]
@@ -299,13 +304,10 @@ class ClassResolutionMixin(GeneratorMixinBase):
         if class_id.module == self.module_name:
             index = self._class_index
             return index is not None and class_id not in index.excluded
-        info = self.known_classes.get(class_id)
-        if info is None or info.get("decorated"):
+        model = self.known_classes.get(class_id)
+        if model is None or model.decorated:
             return False
-        return not (
-            info.get("dataclass")
-            and info.get("dataclass_params", {}).get("slots", False)
-        )
+        return model.dataclass is None or not model.dataclass.option("slots")
 
     def _imported_binding_class(self, name: str) -> ClassId | None:
         """The exported class an import binding names, through the import tables."""
@@ -415,10 +417,10 @@ class ClassResolutionMixin(GeneratorMixinBase):
     # ── Layout and guards ───────────────────────────────────────────────
 
     def _class_layout_stable(self, class_id: ClassId) -> bool:
-        class_info = self.classes.get(class_id)
-        if not class_info:
+        view = self.classes.get(class_id)
+        if view is None:
             return False
-        if not class_namespace_closed(class_info) or class_info.get("dataclass"):
+        if not namespace_closed(view) or view.dataclass is not None:
             return False
         if class_id in self.mutated_classes:
             return False
@@ -435,10 +437,10 @@ class ClassResolutionMixin(GeneratorMixinBase):
         the same facts. ``None``: no statement stamps the class, so the
         consumer emits the generic path.
         """
-        class_info = self.classes.get(class_id)
-        if class_info is None:
+        view = self.classes.get(class_id)
+        if view is None:
             return None
-        return layout_definition_symbol(class_id, class_info)
+        return layout_definition_symbol(class_id, view)
 
     def _current_module_static_class_ref(self, class_id: ClassId) -> MoltValue | None:
         if self.current_func_name != "molt_main":
@@ -449,17 +451,17 @@ class ClassResolutionMixin(GeneratorMixinBase):
             return None
         if class_id in self.class_definition_pending:
             return None
-        class_info = self.classes.get(class_id)
-        if class_info is None:
+        view = self.classes.get(class_id)
+        if view is None:
             return None
-        binding_name = class_info["binding_name"]
+        binding_name = view.binding_name
         if binding_name in self.module_global_mutations:
             return None
-        if class_info.get("decorated"):
+        if view.decorated:
             return None
         if not self._class_layout_stable(class_id):
             return None
-        static_name = class_info.get("class_value_name")
+        static_name = self.class_value_names.get(class_id)
         if not static_name:
             return None
         current = self.globals.get(binding_name)
@@ -487,10 +489,10 @@ class ClassResolutionMixin(GeneratorMixinBase):
         its own one-entry MRO."""
         if isinstance(class_ref, BuiltinClass):
             return (class_ref,)
-        info = self.classes.get(class_ref)
-        if info is None:
+        view = self.classes.get(class_ref)
+        if view is None:
             return (class_ref,)
-        return info.get("mro", (class_ref,))
+        return view.linearization
 
     def _class_is_exception_subclass(self, class_id: ClassId) -> bool:
         # BuiltinClass entries in a source base's MRO are proof-backed. The
@@ -511,31 +513,23 @@ class ClassResolutionMixin(GeneratorMixinBase):
         self._exception_subclass_memo[class_id] = result
         return result
 
-    def _resolve_method_info(
-        self, class_id: ClassId, method: str
-    ) -> tuple[MethodInfo | None, ClassId | None]:
+    def _resolve_member(
+        self, class_id: ClassId, name: str
+    ) -> tuple[Member | None, ClassId | None]:
+        """The member ``name`` resolves to through ``class_id``'s MRO, and its
+        owner; ``(None, owner)`` when the class that stops the lookup defines
+        it later in its body or shadows it with data, and ``(None, None)``
+        while the class statement itself is still being registered."""
         if class_id in self.class_definition_pending:
             return None, None
-        for owner in self._class_mro(class_id):
-            if isinstance(owner, BuiltinClass):
-                continue
-            info = self.classes.get(owner)
-            if not info:
-                continue
-            methods = info.get("methods", {})
-            class_attrs = info.get("class_attrs", {})
-            pending = info.get("pending_methods")
-            # Avoid early binding to base methods when the current class
-            # defines the method later in the class body.
-            if pending and method in pending and method not in methods:
-                return None, owner
-            # Avoid binding to base methods when a class-level assignment
-            # overrides the attribute with a non-method value.
-            if method in class_attrs and method not in methods:
-                return None, owner
-            if method in methods:
-                return methods[method], owner
-        return None, None
+        result = resolve(self._class_mro(class_id), name, self.classes.get)
+        if isinstance(result, Resolved):
+            return result.member, result.owner
+        return None, result.owner
+
+    def _member_values(self, owner: ClassId, name: str) -> MethodValues | None:
+        """A method's SSA values, for a class this module defines."""
+        return self.class_method_values.get(owner, {}).get(name)
 
     # ── Declared classes ────────────────────────────────────────────────
 
