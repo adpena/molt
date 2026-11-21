@@ -1206,7 +1206,7 @@ pub(crate) fn note_hash_context(py: &PyToken<'_>, key_bits: u64, ctx: HashContex
     let message = crate::builtins::exceptions::format_exception_message(py, exception_ptr);
     let name = type_name(py, obj_from_bits(key_bits));
     crate::clear_exception(py);
-    let _ = raise_exception::<()>(
+    raise_exception::<()>(
         py,
         BuiltinExc::TypeError,
         &format!("cannot use '{name}' as a {word} ({message})"),
@@ -1240,7 +1240,7 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
                 || (declaration == HashDeclaration::Builtin && is_unhashable_type(type_id))
             {
                 let name = type_name(_py, obj);
-                let _ = raise_exception::<()>(
+                raise_exception::<()>(
                     _py,
                     BuiltinExc::TypeError,
                     &format!("unhashable type: '{name}'"),

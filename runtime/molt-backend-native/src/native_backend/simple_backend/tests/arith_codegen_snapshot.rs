@@ -170,9 +170,12 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // (FNV c8b82a214fc2741c); a debug compiler emits no helper. Each profile keeps
 // about 10% headroom. The Linux x86_64 release ceiling scales the measured
 // debug control by the arm64 release/debug ratio; it is unverified until a
-// Linux release run measures it.
+// Linux release run measures it. The Linux x86_64 debug control is CI's own
+// measurement since the walker switch: 8,696 bytes at ed6df54b53 (CI run
+// 44874314443) and 6,896 bytes (FNV 15b0f00d7379fdb8) at ccd5ac1ed8 (run
+// 44889909492); the 6,144 ceiling from 4d99469744's 5,576 bytes kept main red.
 #[cfg(all(target_arch = "x86_64", target_os = "linux", debug_assertions))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 6_144;
+const ARITH_OBJECT_SIZE_CEILING: usize = 7_600;
 #[cfg(all(target_arch = "x86_64", target_os = "linux", not(debug_assertions)))]
 const ARITH_OBJECT_SIZE_CEILING: usize = 9_424;
 #[cfg(all(

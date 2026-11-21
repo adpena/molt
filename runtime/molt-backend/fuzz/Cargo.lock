@@ -523,6 +523,7 @@ dependencies = [
  "libfuzzer-sys",
  "molt-backend",
  "molt-codegen-abi",
+ "molt-ir",
 ]
 
 [[package]]

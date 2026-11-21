@@ -13,6 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 molt-backend = { path = ".." }
 molt-codegen-abi = { path = "../../molt-codegen-abi" }
+molt-ir = { path = "../../molt-ir" }
 arbitrary = { version = "1", features = ["derive"] }
 
 # Prevent this from interfering with workspace, if any

@@ -243,6 +243,8 @@ impl ReadyCode {
             )
             .map_err(|error| JitCompileError::Lowering(vec![error]))
         })?;
+        let finalize_error =
+            |error| JitCompileError::Finalize(format!("`{}`: {error}", compiled.name));
         module
             .define_function_bytes(
                 body_id,
@@ -250,8 +252,8 @@ impl ReadyCode {
                 &compiled.code,
                 &compiled.relocs,
             )
-            .and_then(|()| module.finalize_definitions())
-            .map_err(|error| JitCompileError::Finalize(format!("`{}`: {error}", compiled.name)))?;
+            .map_err(finalize_error)?;
+        module.finalize_definitions().map_err(finalize_error)?;
         let address = module.get_finalized_function(body_id) as usize;
         // Publish after code and its relocations are executable on all cores.
         entry.address.store(address, Ordering::Release);

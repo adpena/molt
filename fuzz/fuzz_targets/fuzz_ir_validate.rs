@@ -122,11 +122,6 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                         } else {
                             None
                         },
-                        stack_eligible: if u.arbitrary()? {
-                            Some(u.arbitrary()?)
-                        } else {
-                            None
-                        },
                         task_kind: None,
                         container_type: None,
                         type_hint: None,
