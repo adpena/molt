@@ -407,7 +407,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `typed-facts-gate` | 2 | 0 |
 | `apparatus-hooks` | 9 | 1 |
 | `apparatus-learning-protection` | 4 | 1 |
-| `performance-measurement` | 35 | 1 |
+| `performance-measurement` | 35 | 0 |
 | `apparatus-a11` | 10 | 3 |
 | `apparatus-a8-a12-disk-reclaim` | 13 | 1 |
 | `import-symbol-gate` | 2 | 1 |
