@@ -256,9 +256,11 @@ def commit_message(subject: str, receipt: Mapping[str, Any]) -> str:
             + str(gate["command"])
             + (f": {_counts_text(counts)}." if counts else ": exit 0.")
         )
+    # A fast landing pushes directly: no queue batch runs what it waived, so
+    # postsubmit on main is the only run left (HF-937).
     waived = list(receipt.get("waived", ()))
     lines.append(
-        "Waived to the queue batch: " + ("; ".join(waived) if waived else "none") + "."
+        "Waived to postsubmit: " + ("; ".join(waived) if waived else "none") + "."
     )
     for label, key in (("Narrowed", "narrowed"), ("Unverified here", "unverified")):
         items = list(receipt.get(key, ()))

@@ -7608,7 +7608,7 @@ def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
     assert receipt["waived"] == [f"echo batch >> {shlex.quote(str(counter))}"]
     message = _git(lane, "log", "-1", "--format=%B", landed).stdout
     assert message.startswith("Land the fast lane\n\nLanded by molt_dev.py land --fast")
-    assert "Waived to the queue batch: echo batch >>" in message
+    assert "Waived to postsubmit: echo batch >>" in message
     assert message.rstrip().endswith(
         f"Receipt: landing-receipts/{receipt['tree']}.{late}.json"
     )

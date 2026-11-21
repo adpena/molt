@@ -294,7 +294,7 @@ def test_commit_message_is_projected_from_the_receipt_alone() -> None:
         "Static gates: 1 passed.\n"
         "Ran python tools/check_changed_crate_tests.py --base\n"
         "  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: 618 passed, 4 skipped.\n"
-        "Waived to the queue batch: cargo test --locked --profile release-fast -p\n"
+        "Waived to postsubmit: cargo test --locked --profile release-fast -p\n"
         "  molt-backend --lib.\n"
         "Narrowed: features of unselected packages not applied:\n"
         "  molt-wasm-facts/host-tool.\n"

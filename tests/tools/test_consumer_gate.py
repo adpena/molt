@@ -426,6 +426,72 @@ def test_a_receipt_proves_the_gates_it_ran_and_no_other(
     )
 
 
+def test_a_failing_commit_gate_blocks_the_receipt_and_a_passing_one_proves_itself(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ())
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": []
+    )
+    failing = 'python -c "import sys; sys.exit(4)"'
+    passing = 'python -c "pass"'
+    commits = [failing]
+    monkeypatch.setattr(
+        consumer_gate, "commit_gates", lambda root, tree, base="HEAD": list(commits)
+    )
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+
+    assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 1
+    assert consumer_gate.proven_gates(repo, tree) is None
+    commits[:] = [passing]
+    assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 0
+    receipt = json.loads(
+        consumer_gate.receipt_path(repo, tree).read_text(encoding="utf-8")
+    )
+    assert receipt["commit_gates"] == [passing]
+    proven = consumer_gate.proven_gates(repo, tree)
+    assert proven is not None
+    cargo = ("python", "rustc", "cargo")
+    assert proven(SelectedGate(command=passing, toolchains=cargo, commit=True))
+    assert not proven(SelectedGate(command=failing, toolchains=cargo, commit=True))
+    # A Cargo gate the plan does not run before commits stays unproven.
+    assert not proven(SelectedGate(command=passing, toolchains=cargo))
+
+
+def test_a_runtime_change_selects_the_reached_lib_tests_before_commit() -> None:
+    # HF-937: no molt-runtime lib test ran on any path to main. The plan's
+    # `commit = true` rules make the consumer gate run them.
+    root = consumer_gate.ROOT
+    path = "runtime/molt-runtime/src/math_bridge.rs"
+    with tempfile.TemporaryDirectory() as scratch:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
+        changed = (root / path).read_bytes() + b"\n// probe\n"
+        blob = (
+            run_guarded_test_process(
+                ["git", "-C", str(root), "hash-object", "-w", "--stdin"],
+                input=changed,
+                text=False,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        for argv in (
+            ["read-tree", "HEAD"],
+            ["update-index", "--cacheinfo", f"100644,{blob},{path}"],
+        ):
+            run_guarded_test_process(
+                ["git", "-C", str(root), *argv], env=env, check=True
+            )
+        tree = run_guarded_test_process(
+            ["git", "-C", str(root), "write-tree"], env=env, check=True
+        ).stdout.strip()
+    selected = consumer_gate.commit_gates(root, tree)
+    assert any("tools/run_runtime_test_gate.py" in command for command in selected)
+    assert any("tools/check_changed_crate_tests.py" in command for command in selected)
+
+
 def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
