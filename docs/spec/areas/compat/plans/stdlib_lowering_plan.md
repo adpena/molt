@@ -125,6 +125,8 @@ per premise revision.
    module-wide expiry behavior. Other foreign-write changes and changed answers before any
    saved boundary start analysis from the source. The whole-graph transfer-summary solver
    remains open.
+   A body scan records the explicit global and nonlocal declarations it uses to recognize
+   publication. Changes to unrelated slot layout leave that declaration projection reusable.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.

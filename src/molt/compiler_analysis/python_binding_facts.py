@@ -1051,6 +1051,11 @@ class PythonBindingFacts:
     def statement_fact(self, node: ast.stmt) -> PythonStatementFact | None:
         return self._statement_lookup.get(PythonNodeKey.from_node(node))
 
+    @property
+    def enclosing_binding_declarations(self) -> tuple[tuple[str, ...], ...]:
+        """Explicit global and nonlocal declarations in source scope order."""
+        return tuple(scope.global_names + scope.nonlocal_names for scope in self.scopes)
+
     def iteration_fact(self, node: ast.AST) -> PythonIterationFact | None:
         """Return the canonical executed iterator/item fact for a loop clause."""
 
