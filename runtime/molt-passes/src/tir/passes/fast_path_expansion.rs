@@ -249,7 +249,9 @@ enum Expansion {
     GuardedCall,
     /// A guarded call whose callee integration proved (HF-846 slice 2).
     /// `closure`: the target takes its function's closure tuple first.
-    ProvenCall { closure: bool },
+    ProvenCall {
+        closure: bool,
+    },
 }
 
 /// What the stage needs of a guarded call's target, from its linkage row.

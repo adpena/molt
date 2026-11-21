@@ -502,14 +502,92 @@ class _OpaqueActivationReads:
 
 
 @dataclass(frozen=True, slots=True)
+class _ForeignNamespaceReads:
+    names: frozenset[str]
+    declaration_end: int
+    callback_end: int
+    tainted_exit: PythonSourceKey | None
+    has_empty_module_expiry: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonNodeKey, EffectMask]
     module_import_flow_required: bool
     opaque_activation_reads: _OpaqueActivationReads | None
+    foreign_namespace_reads: _ForeignNamespaceReads | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
+
+    def with_added_foreign_slots(
+        self, names: frozenset[str]
+    ) -> _BindingAnalysis | None:
+        """Project slots the transfer never looked up into their revised layout."""
+        reads = self.foreign_namespace_reads
+        if (
+            reads is None
+            or reads.has_empty_module_expiry
+            or not reads.names.isdisjoint(names)
+        ):
+            return None
+        slots = self.facts.slot_names
+        additions = {name: f"0:{name}" for name in names}
+        if not set(additions.values()).isdisjoint(slots):
+            return None
+        # Source declarations came first, followed by sorted callback slots.
+        # Later allocations keep their relative order in the revised layout.
+        callback_layout = tuple(
+            sorted(
+                (
+                    *slots[reads.declaration_end : reads.callback_end],
+                    *additions.values(),
+                )
+            )
+        )
+        new_slots = (
+            *slots[: reads.declaration_end],
+            *callback_layout,
+            *slots[reads.callback_end :],
+        )
+        indices = {name: index for index, name in enumerate(new_slots)}
+        scopes: list[PythonScopeFact] = []
+        for scope in self.facts.scopes:
+            bindings = {
+                name: indices[slots[slot]] for name, slot in scope.binding_slots
+            }
+            if scope.scope_id == 0:
+                bindings.update(
+                    (name, indices[slot]) for name, slot in additions.items()
+                )
+            scopes.append(replace(scope, binding_slots=tuple(sorted(bindings.items()))))
+        # A callback can make an absent slot possibly present at module exit.
+        # Only its namespace row changes, since the transfer made no use of it.
+        empty_origins: frozenset[PythonSourceKey] = frozenset()
+        namespaces = tuple(
+            (
+                owner,
+                tuple(sorted((*bindings, *((name, empty_origins) for name in names))))
+                if owner == reads.tainted_exit
+                else bindings,
+                exposure,
+            )
+            for owner, bindings, exposure in self.facts.source_namespaces
+        )
+        return replace(
+            self,
+            facts=replace(
+                self.facts,
+                slot_names=new_slots,
+                scopes=tuple(scopes),
+                source_namespaces=namespaces,
+            ),
+            foreign_namespace_reads=replace(
+                reads, callback_end=reads.callback_end + len(names)
+            ),
+            projections=_BindingCache(max_entries=8),
+        )
 
 
 _BINDING_CHUNK_SHIFT: Final = 5
@@ -2708,6 +2786,10 @@ class _Analyzer:
         self._opaque_activation_reads: dict[frozenset[PythonSourceKey], bool] = {}
         self._opaque_lexical_activations: dict[int, bool] = {}
         self._foreign_universe = policy.foreign_namespace_universe
+        self._foreign_reads: set[str] | None = None
+        self._foreign_slot_bounds = (0, 0)
+        self._foreign_tainted_exit: PythonSourceKey | None = None
+        self._has_empty_module_expiry = False
         self.source_digest = source_digest
         self.states = _StatePool()
         self.scopes: list[_Scope] = []
@@ -2922,7 +3004,7 @@ class _Analyzer:
         module_slots: set[int] = {
             slot
             for name in dependencies.globals
-            if (slot := self.module_scope.slots.get(name)) is not None
+            if (slot := self._module_slot(name)) is not None
         }
         lexical_slots: set[int] = set()
         for name in dependencies.lexical:
@@ -3116,10 +3198,10 @@ class _Analyzer:
 
     def _ensure_module_slot(self, name: str) -> int:
         """One slot authority for global declarations and reflective item writes."""
-        assert self.module_scope is not None
-        existing = self.module_scope.slots.get(name)
+        existing = self._module_slot(name)
         if existing is not None:
             return existing
+        assert self.module_scope is not None
         slot = len(self.slot_names)
         self.module_scope.slots[name] = slot
         self.slot_names.append(f"{self.module_scope.scope_id}:{name}")
@@ -3144,6 +3226,8 @@ class _Analyzer:
         return universe is None or name in universe
 
     def _callback_rebinds_module_name(self, name: str) -> bool:
+        if self._foreign_reads is not None:
+            self._foreign_reads.add(name)
         names = self._callback_module_names
         return names is None or name in names or not self._foreign_name_known(name)
 
@@ -3167,6 +3251,13 @@ class _Analyzer:
             else self.callback_module_slot_mask
         )
         return module | self.callback_slot_mask
+
+    def _taint_module_slots(self, state_id: int) -> int:
+        # A new foreign slot would change whether this operation advances the
+        # shared callback epoch, even if that particular name had no reader.
+        if self._foreign_reads is not None and not self.callback_module_slot_mask:
+            self._has_empty_module_expiry = True
+        return self.states.taint_slots(state_id, self.module_slot_mask)
 
     def _configure_callback_namespace(
         self,
@@ -3198,6 +3289,8 @@ class _Analyzer:
             self.callback_module_slot_mask |= 1 << self._ensure_module_slot(name)
 
     def _module_slot(self, name: str) -> int | None:
+        if self._foreign_reads is not None:
+            self._foreign_reads.add(name)
         assert self.module_scope is not None
         return self.module_scope.slots.get(name)
 
@@ -3216,11 +3309,14 @@ class _Analyzer:
         self, state_id: int, scope: _Scope
     ) -> PythonModuleMetadataProof:
         """Read callback custody and loader-pristine slots from raw storage."""
+        assert self.module_scope is not None
+        module_slots = self.module_scope.slots
         epoch = self.states.get(state_id).taint_epoch
         clean = True
         pristine: set[str] = set()
         for name in _METADATA_NAMES:
-            slot = self._module_slot(name)
+            # The foreign-write footprint already includes this entire family.
+            slot = module_slots.get(name)
             if slot is None:
                 # A bounded namespace gains no name a callback could bind.
                 clean &= epoch == 0 or self._callback_module_names is not None
@@ -3266,6 +3362,8 @@ class _Analyzer:
             # Class global directives carry into class-visible annotation
             # scopes, but never override a current scope's own type parameter.
             slot = self._module_slot(name)
+        elif scope.kind == "module":
+            slot = self._module_slot(name)
         else:
             slot = scope.slots.get(name)
             if slot is None:
@@ -3290,6 +3388,8 @@ class _Analyzer:
         cell, as CPython's symtable passes `__class__` to a class's children.
         """
         while parent is not None:
+            if parent.kind == "module":
+                return self._module_slot(name)
             if parent.kind != "class" or parent is annotation_owner:
                 slot = parent.slots.get(name)
                 if slot is not None:
@@ -6959,7 +7059,7 @@ class _Analyzer:
         if not strings:
             self._ensure_module_read_slots()
             state_id = self.states.invalidate_namespace_values(state_id)
-            state_id = self.states.taint_slots(state_id, self.module_slot_mask)
+            state_id = self._taint_module_slots(state_id)
             return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
         effects = RAISES
         if self.states.get(state_id).namespace_values_unknown:
@@ -7801,7 +7901,7 @@ class _Analyzer:
                 # IMPORT_STAR writes this module now, independently of which
                 # globals later callbacks are allowed to replace.
                 self._namespace_observation_epoch += 1
-                state_id = self.states.taint_slots(state_id, self.module_slot_mask)
+                state_id = self._taint_module_slots(state_id)
             for alias in node.names:
                 if alias.name == "*":
                     continue
@@ -9187,7 +9287,14 @@ class _Analyzer:
         self._module_read_slots_prepared = False
         self.module_slots = set(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
+        declared_slots = len(self.slot_names)
         self._configure_callback_namespace(tree, ast_digest_admission)
+        if (
+            self._foreign_universe is not None
+            and self._callback_module_names is not None
+        ):
+            self._foreign_reads = set(_METADATA_NAMES)
+            self._foreign_slot_bounds = (declared_slots, len(self.slot_names))
         if self._star_import_origins:
             # Star imports can shadow otherwise undeclared globals, including
             # builtin fallbacks. Give actual global reads storage so the
@@ -9205,9 +9312,12 @@ class _Analyzer:
         try:
             module_flow = self.exec_statements(tree.body, entry_state, module)
             if module_flow.normal is not None:
-                namespace = self.source_namespaces.setdefault(
-                    python_node_source_key(tree), {}
-                )
+                namespace = self.source_namespaces.setdefault(self._module_source, {})
+                if (
+                    self._foreign_reads is not None
+                    and self.states.get(module_flow.normal).taint_epoch
+                ):
+                    self._foreign_tainted_exit = self._module_source
                 for name, slot in module.slots.items():
                     if (
                         self.states.binding(module_flow.normal, slot)
@@ -9412,6 +9522,16 @@ class _Analyzer:
                         if not answer
                         for source in group
                     ),
+                )
+            ),
+            (
+                None
+                if self._foreign_reads is None
+                else _ForeignNamespaceReads(
+                    frozenset(self._foreign_reads),
+                    *self._foreign_slot_bounds,
+                    self._foreign_tainted_exit,
+                    self._has_empty_module_expiry,
                 )
             ),
         )
@@ -9716,7 +9836,7 @@ class _BindingCache[T]:
         key: tuple[object, ...],
         compute: Callable[[], T],
         *,
-        reusable: Callable[[tuple[object, ...], T], bool] | None = None,
+        reuse: Callable[[tuple[object, ...], T], T | None] | None = None,
     ) -> T:
         owner = False
         with self._lock:
@@ -9725,11 +9845,11 @@ class _BindingCache[T]:
                 return cached
             pending = self._pending.get(key)
             if pending is None:
-                if reusable is not None:
+                if reuse is not None:
                     for prior_key, result in reversed(self._ready.items()):
-                        if reusable(prior_key, result):
-                            self._remember_ready(key, result)
-                            return result
+                        if (revised := reuse(prior_key, result)) is not None:
+                            self._remember_ready(key, revised)
+                            return revised
                 pending = _PendingAnalysis()
                 self._pending[key] = pending
                 self._computations += 1
@@ -9837,26 +9957,42 @@ def _binding_analysis(
         raise TypeError("binding fixpoint requires an exact flow-only policy")
     key = (_ANALYSIS_SCHEMA, source_digest, policy)
 
-    def reusable(prior_key: tuple[object, ...], result: _BindingAnalysis) -> bool:
+    def reuse(
+        prior_key: tuple[object, ...], result: _BindingAnalysis
+    ) -> _BindingAnalysis | None:
         if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
-            return False
+            return None
         prior = cast(PythonBindingFlowPolicy, prior_key[2])
         opaque = policy.opaque_activation_sources
         assert opaque is not None
         # A deterministic transfer observes the same branches while every
-        # consumed activation query agrees. Keep the rest of the policy exact.
-        return replace(
-            prior, opaque_activation_sources=opaque
-        ) == policy and result.opaque_activation_reads.unchanged_under(
-            frozenset(opaque)
+        # consumed activation query agrees. Named additions may alter unused
+        # namespace slots. All other input families keep their exact identity.
+        prior = replace(prior, opaque_activation_sources=opaque)
+        if not result.opaque_activation_reads.unchanged_under(frozenset(opaque)):
+            return None
+        if prior == policy:
+            return result
+        former, current = (
+            prior.foreign_namespace_writes,
+            policy.foreign_namespace_writes,
         )
+        if (
+            policy.foreign_namespace_universe is None
+            or former is None
+            or current is None
+            or not frozenset(former).issubset(current)
+            or replace(prior, foreign_namespace_writes=current) != policy
+        ):
+            return None
+        return result.with_added_foreign_slots(frozenset(current).difference(former))
 
     return _CORE_CACHE.get_or_compute(
         key,
         lambda: _Analyzer(policy, source_digest).analyze(
             tree(), ast_digest_admission=ast_digest_admission
         ),
-        reusable=reusable if policy.opaque_activation_sources is not None else None,
+        reuse=reuse if policy.opaque_activation_sources is not None else None,
     )
 
 

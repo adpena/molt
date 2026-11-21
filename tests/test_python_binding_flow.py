@@ -2616,6 +2616,78 @@ def test_binding_revision_keeps_only_a_proven_deferred_prefix(
         assert actual.expression_fact(call.func).exact_builtin_name() is None
 
 
+@pytest.mark.parametrize("initializer", ["", "external_callback()\n"])
+def test_unread_foreign_slots_project_exact_namespace_and_layout(
+    monkeypatch: pytest.MonkeyPatch, initializer: str
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = (
+        initializer + "def public(argument):\n    local = argument\n    return local\n"
+    )
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"extra", "first"}),
+        opaque_activation_sources=(),
+    )
+    analyze_python_source_bindings(source, policy=policy)
+    analyze_python_source_bindings(
+        source, policy=replace(policy, foreign_namespace_writes=("first",))
+    )
+    revised = replace(policy, foreign_namespace_writes=("extra", "first"))
+    projected = analyze_python_source_bindings(source, policy=revised)
+    assert flow.python_binding_core_computations() == 1
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=revised)
+    assert replace(projected, telemetry=fresh.telemetry) == fresh
+    names = {name for _, bindings, _ in fresh.source_namespaces for name, _ in bindings}
+    assert ("extra" in names) == bool(initializer)
+    assert projected.scopes[0].binding_slots == fresh.scopes[0].binding_slots
+
+
+def test_foreign_writer_to_previously_unbound_name_reopens_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "def public():\n    return len([1, 2])\n"
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    closed = analyze_python_source_bindings(source, policy=policy)
+    with_writer = analyze_python_source_bindings(
+        source, policy=replace(policy, foreign_namespace_writes=("len",))
+    )
+    load = ast.parse(source).body[0].body[0].value.func
+    assert closed.expression_fact(load).exact_builtin_name() == "len"
+    assert with_writer.expression_fact(load).exact_builtin_name() is None
+    assert flow.python_binding_core_computations() == 2
+
+
+def test_first_foreign_slot_reopens_module_wide_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "from provider import *\n"
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"unused"}),
+        opaque_activation_sources=(),
+    )
+    analyze_python_source_bindings(source, policy=policy)
+    revised = replace(policy, foreign_namespace_writes=("unused",))
+    actual = analyze_python_source_bindings(source, policy=revised)
+    assert flow.python_binding_core_computations() == 2
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    assert actual == analyze_python_source_bindings(source, policy=revised)
+
+
 def test_context_cache_lifetime_is_owned_and_bounded_by_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
