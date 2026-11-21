@@ -824,7 +824,8 @@ leaves the loop; a closure callee is entered as 5a describes.
 
 **Measured** (2026-11-21, release, macOS arm64, instructions retired, best of 3; outputs
 identical). `bench_class_hierarchy` LLVM 13.02 G (5a) -> 8.80 G (-32.4%); against main before
-S4, 16.02 G -> 8.80 G (-45.1%), 3,204 -> 1,760 per iteration, below CPython 3.15's 2,528. The
+S4, 16.02 G -> 8.80 G (-45.1%), 3,204 -> 1,760 per iteration, below CPython 3.15's 2,528.
+Cranelift 15.03 G -> 10.87 G (-27.7%; 18.15 G before S4). The
 remaining `super()` call is in `Mid.compute`, whose receiver is the later subclass `Leaf`
 (step 3).
 
