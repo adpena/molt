@@ -779,9 +779,10 @@ pub struct OpIR {
     /// entry custody. The late lowering enters the target directly, without
     /// the admission call or the code guard. The frontend proves the same of
     /// a method call on an exact receiver (design 78, 3.8): the callee is the
-    /// `load_method` of a plain function of a namespace-closed class. On that
-    /// `load_method` the flag says the selection runs no code and cannot
-    /// fail, so a load nothing reads is dead.
+    /// `load_method` of a plain function of a namespace-closed class, or the
+    /// `load_super_method` of a zero-argument `super()` the frontend resolved
+    /// (5.9 B). On either load the flag says the selection runs no code and
+    /// cannot fail, so a load nothing reads is dead.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub proven_target: bool,
     /// A `func_new` of a def with positional parameters only (synchronous, or

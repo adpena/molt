@@ -1185,6 +1185,7 @@ def _method_program(
     run_first: bool = False,
     pair_read: bool = False,
     maker_kind: Literal["func_new", "func_new_closure"] = "func_new",
+    load_kind: Literal["load_method", "load_super_method"] = "load_method",
 ) -> list[dict[str, Any]]:
     """``mod``'s init makes method ``mod__C_m`` (``makers`` times, optionally
     in a loop) and ``mod__run``, whose body loads ``m`` on an exact receiver
@@ -1213,7 +1214,7 @@ def _method_program(
     body = [
         {"kind": "load_var", "var": "obj", "out": "receiver"},
         {
-            "kind": "load_method",
+            "kind": load_kind,
             "args": ["receiver"],
             "s_value": "m",
             "var": "callable",
@@ -1253,13 +1254,16 @@ def _function_cells(
     ), layouts
 
 
+@pytest.mark.parametrize("load_kind", ["load_method", "load_super_method"])
 @pytest.mark.parametrize("maker_kind", ["func_new", "func_new_closure"])
 def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
     maker_kind: Literal["func_new", "func_new_closure"],
+    load_kind: Literal["load_method", "load_super_method"],
 ) -> None:
     # A closure method's object (a `__class__` cell, design 78 5.10) is one
-    # per process too: the proven call reads its environment from it.
-    funcs = _method_program(maker_kind=maker_kind)
+    # per process too: the proven call reads its environment from it. A
+    # static `super()` selection (5.10 step 4) reads its callee the same way.
+    funcs = _method_program(maker_kind=maker_kind, load_kind=load_kind)
     cells, layouts = _function_cells(funcs)
     index = len(layouts["mod"])
     assert cells.cells == {"mod": {"mod__C_m": index}}
@@ -1275,7 +1279,7 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
         "static_cell_base",
         "static_cell_set",
     ]
-    assert "load_method" not in [op["kind"] for op in run_ops]
+    assert load_kind not in [op["kind"] for op in run_ops]
     read = next(op for op in run_ops if op["kind"] == "static_cell_load")
     assert read["out"] == "callable"
     assert read["global_slot"] == {

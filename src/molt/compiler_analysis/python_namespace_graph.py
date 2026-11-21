@@ -115,6 +115,14 @@ class PythonNamespacePremise:
     # then lists only those, and the binding analysis treats any other name a
     # computed key reaches as foreign-written (HF-926).
     foreign_universe: frozenset[str] | None = None
+    # The first site that may write a closure cell behind the code that owns
+    # it: a named ``cell_contents`` store or delete anywhere in the graph, a
+    # computed-name attribute store, a frame-locals writer (a PEP 667 proxy
+    # writes free variables), or a native extension. None: a cell changes only
+    # through a ``nonlocal`` or class-statement binding its own scope spells,
+    # so a method's ``__class__`` cell holds its class once the class statement
+    # creates it (design 78, 5.10 step 4: static ``super()``).
+    cell_writer: str | None = None
 
     def scan_view(
         self, universe: frozenset[str] | None = None
@@ -126,7 +134,7 @@ class PythonNamespacePremise:
         export check, so the view keeps the ``_BINDING_POLICY_FIELDS`` and
         every other field takes its default. Lowering-only facts
         (``exact_receivers``, escape writer sites, namespace reflection, code
-        rebinding, the instance-class writer) therefore never revise or re-key
+        rebinding, the instance-class and cell writers) therefore never revise or re-key
         a scan. With ``universe`` (``python_namespace_name_universe``) the
         foreign names shrink to those the source can spell: the binding
         analysis reaches any other name only through a computed key, and then
@@ -374,6 +382,12 @@ class PythonGraphNamespaceWrites:
                 self.member_stores, self.computed_member_store, native_code
             ),
             _frame_locals_writer(self.frame_locals_writer, native_code),
+            _cell_writer(
+                self.member_stores,
+                self.computed_member_store,
+                self.frame_locals_writer,
+                native_code,
+            ),
         )
 
 
@@ -394,6 +408,18 @@ def _instance_class_writer(
         return stores["__class__"]
     if computed is not None:
         return computed
+    return "a native extension module" if native_code else None
+
+
+def _cell_writer(
+    stores: Mapping[str, str],
+    computed: str | None,
+    frame_locals: str | None,
+    native_code: bool,
+) -> str | None:
+    for site in (stores.get("cell_contents"), computed, frame_locals):
+        if site is not None:
+            return site
     return "a native extension module" if native_code else None
 
 
@@ -479,6 +505,7 @@ def _namespace_premise(
     escape_writes: tuple[tuple[str, str], ...] = (),
     instance_class_writer: str | None = None,
     frame_locals_writer: str | None = None,
+    cell_writer: str | None = None,
 ) -> PythonNamespacePremise:
     return PythonNamespacePremise(
         None
@@ -495,6 +522,7 @@ def _namespace_premise(
         escape_writes,
         instance_class_writer,
         frame_locals_writer,
+        cell_writer=cell_writer,
     )
 
 
@@ -538,6 +566,7 @@ def join_python_namespace_premises(
         left.instance_class_writer or right.instance_class_writer,
         left.frame_locals_writer or right.frame_locals_writer,
         tuple(sorted(set(left.exact_receivers) & set(right.exact_receivers))),
+        cell_writer=left.cell_writer or right.cell_writer,
     )
 
 
@@ -579,8 +608,9 @@ class PythonGraphNamespaceIndex:
             self.local_definition_stores, batch.local_definition_stores
         )
         self.local_definition_stores.update(new_local_stores)
-        # The instance class writer is one fact of every premise.
-        escape_global = "__class__" in new_stores
+        # The instance class writer and the cell writer are facts of every
+        # premise.
+        escape_global = "__class__" in new_stores or "cell_contents" in new_stores
         if batch.computed_member_store is not None and (
             self.computed_member_store is None
         ):
@@ -698,6 +728,12 @@ class PythonGraphNamespaceIndex:
                 self.member_stores, self.computed_member_store, native_code
             ),
             _frame_locals_writer(self.frame_locals_writer, native_code),
+            _cell_writer(
+                self.member_stores,
+                self.computed_member_store,
+                self.frame_locals_writer,
+                native_code,
+            ),
         )
 
 

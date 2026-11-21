@@ -242,6 +242,7 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "escape_writes": expected.escape_writes,
             "instance_class_writer": expected.instance_class_writer,
             "frame_locals_writer": expected.frame_locals_writer,
+            "cell_writer": expected.cell_writer,
             "exact_receivers": expected.exact_receivers,
             "foreign_universe": expected.foreign_universe,
         }

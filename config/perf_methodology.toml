@@ -72,8 +72,8 @@ schema = "molt-perf-methodology-v1"
 # v47: binding flow retains precise initializer and deferred binding
 # boundaries (fd913b5589), so admitted facts can move; it landed without the
 # lock (2026-11-21). Earlier reports retain their recorded class.
-version = 47
-content_sha256 = "e1c1c7f728641265ded83067d6efd289f7e422ee47a859c2a6393a62540ed91b"
+version = 48
+content_sha256 = "4dbeb658bb224db51c1c3447982abdacd80314c7df0bc43874e28054fc8ad40a"
 
 [[methodology]]
 path = "tools/safe_run.py"
