@@ -1651,6 +1651,77 @@ def test_quarantined_incremental_state_of_every_cargo_target_retires(tmp_path):
     assert (live / "artifact.bin").is_file()
 
 
+def test_stale_toolchain_partitions_retire_and_the_newest_stays(tmp_path: Path) -> None:
+    """HF-942: a toolchain or resource change starts a new partition in the
+    target, and nothing retired the old ones (slot-07: 9, 22.9 GiB)."""
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    target = _checkout_state(ext, checkout)["cargo-target"]
+    checkout_state.stamp_checkout_state(checkout, env)
+    now = time.time()
+    partitions = target / ".molt-toolchains"
+    old = partitions / ("a" * 64)
+    recent = partitions / ("b" * 64)
+    newest = partitions / ("c" * 64)
+    _make_dir(old, size_bytes=_GB, age_s=8 * DAY, now=now)
+    _make_dir(recent, size_bytes=_GB, age_s=2 * DAY, now=now)
+    _make_dir(newest, size_bytes=_GB, age_s=60, now=now)
+    not_a_partition = partitions / "notes"
+    _make_dir(not_a_partition, size_bytes=_GB, age_s=30 * DAY, now=now)
+
+    assert dg._is_reclaimable(old, ext, dg.DEFAULT_LANE_GLOBS) == "toolchain-partition"
+    assert dg._is_reclaimable(not_a_partition, ext, dg.DEFAULT_LANE_GLOBS) is None
+    assert dg.stale_toolchain_partitions(target, now=now) == [old]
+    reclaimed = _reclaimed(_gc(ext, env, now))
+    assert old.resolve() in {Path(path) for path in reclaimed}
+    assert not old.exists()
+    for kept in (recent, newest, not_a_partition):
+        assert kept.is_dir()
+    # The target's own owner and use metadata survive its partition's removal.
+    assert dg.checkout_state_kind_of(target, ext) == "cargo-target"
+
+
+def test_a_lone_old_partition_is_its_targets_newest_and_stays(tmp_path: Path) -> None:
+    import time
+
+    target = tmp_path / "target"
+    lone = target / ".molt-toolchains" / ("d" * 64)
+    lone.mkdir(parents=True)
+    old = time.time() - 30 * DAY
+    os.utime(lone, (old, old))
+    assert dg.stale_toolchain_partitions(target, now=time.time()) == []
+
+
+def test_a_hot_mirror_is_governed_with_its_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from molt import default_paths
+
+    monkeypatch.setattr(default_paths, "_HOT_STATES", {})
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "home" / "hot"
+    hot.mkdir(parents=True)
+    (artifact / default_paths.HOT_STATE_RECORD).write_text(
+        json.dumps(
+            {
+                "schema": default_paths.HOT_STATE_SCHEMA,
+                "root": str(hot),
+                "budget_bytes": 1 << 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert hot.resolve() in dg.reclaim_roots(artifact)
+
+
 def test_live_use_keeps_checkout_state_from_every_reclaim(tmp_path):
     import time
 

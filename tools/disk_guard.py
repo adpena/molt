@@ -185,8 +185,23 @@ ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 # `molt.checkout_state` judges the last-use classes by their last use, so
 # pressure reclaim spares them within its protection window.
 CandidateKind = Literal[
-    "checkout-state", "session-target", "lane", "quarantine", "cargo-target", "scratch"
+    "checkout-state",
+    "session-target",
+    "lane",
+    "quarantine",
+    "cargo-target",
+    "scratch",
+    "toolchain-partition",
 ]
+# A Cargo target keeps one intermediate graph per external-input identity
+# (`RuntimeCargoPlan.build_directory`, `.molt-toolchains/<digest>`). A
+# toolchain or resource change starts a new one, and nothing retired the old
+# ones: slot-07's target held 9 (22.9 GiB of its 32.0 GiB, HF-942). A partition
+# other than its target's newest retires once idle this long; a wrong guess
+# costs one kache restore (8.9-11.6 s for molt-runtime on the hot volume).
+TOOLCHAIN_PARTITION_IDLE_S = 7 * 86400.0
+_TOOLCHAIN_PARTITIONS = ".molt-toolchains"
+_TOOLCHAIN_PARTITION = re.compile(r"[0-9a-f]{64}")
 ReclaimOperation = Literal["gc", "pressure", "checkout-retirement", "retired-backlog"]
 ReclaimPhase = Literal[
     "setup",
@@ -556,11 +571,41 @@ def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
 
 
 def reclaim_roots(root: Path) -> tuple[Path, ...]:
-    """All artifact roots governed by one canonical disk-guard invocation."""
+    """All artifact roots governed by one canonical disk-guard invocation.
+
+    A root's hot mirror (HF-942, ``default_paths.hot_state``) holds the same
+    layout on the home volume, so it is governed with its root.
+    """
+    from molt.default_paths import hot_state
+
     resolved = root.resolve()
     scope = custody_root(resolved)
     roots = {resolved, scope, *registered_worktree_roots(resolved)}
+    for path in tuple(roots):
+        if (hot := hot_state(path)) is not None:
+            roots.add(hot.root.resolve())
     return tuple(sorted((path for path in roots if path.is_dir()), key=_norm))
+
+
+def stale_toolchain_partitions(target: Path, *, now: float) -> list[Path]:
+    """The toolchain partitions of ``target`` other than its newest, idle past
+    ``TOOLCHAIN_PARTITION_IDLE_S``."""
+    partitions = [
+        path
+        for path in _iter_dir(target / _TOOLCHAIN_PARTITIONS)
+        if _TOOLCHAIN_PARTITION.fullmatch(path.name) is not None
+        and path.is_dir()
+        and not path.is_symlink()
+    ]
+    if len(partitions) < 2:
+        return []
+    activity = {path: _newest_activity_mtime(path) for path in partitions}
+    newest = max(partitions, key=lambda path: activity[path])
+    return [
+        path
+        for path in partitions
+        if path != newest and now - activity[path] >= TOOLCHAIN_PARTITION_IDLE_S
+    ]
 
 
 def _is_reclaimable(
@@ -596,6 +641,13 @@ def _is_reclaimable(
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
         return "quarantine"
+    if (
+        len(parts) >= 3
+        and parts[0] == "target"
+        and parts[-2] == _TOOLCHAIN_PARTITIONS
+        and _TOOLCHAIN_PARTITION.fullmatch(parts[-1]) is not None
+    ):
+        return "toolchain-partition"
     return legacy_target_kind_of(rp, root, lane_globs)
 
 
@@ -641,8 +693,12 @@ def _retire_candidate(
     """
     from molt.checkout_state import checkout_state_retirement
 
+    # A toolchain partition retires under its target's exclusive lock, so no
+    # managed build of that target runs; the target's own metadata stays.
+    partition = candidate.kind == "toolchain-partition"
     with checkout_state_retirement(
-        candidate.path, purged_root=candidate.path
+        candidate.path.parent.parent if partition else candidate.path,
+        purged_root=None if partition else candidate.path,
     ) as exclusive:
         if not exclusive:
             return False, None, "state-in-use"
@@ -2547,6 +2603,18 @@ def _retention_candidates(
         is not None
     ]
     if not build_control:
+        for target in _cargo_target_roots(owner_root):
+            for partition in stale_toolchain_partitions(target, now=now):
+                candidates.append(
+                    Candidate(
+                        path=partition,
+                        kind="toolchain-partition",
+                        guard_active=guards.protects(partition, owner_root),
+                        mtime=_newest_activity_mtime(partition),
+                        lock_held=_lock_held(partition),
+                        owner_root=owner_root,
+                    )
+                )
         # An interrupted build's quarantined incremental state is never used
         # again, and its receipt keeps the evidence: it retires once idle past
         # the session limit, as a pinned session's transient target does.
