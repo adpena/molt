@@ -112,8 +112,12 @@ per premise revision.
    can supply the same proof of a foreign activation namespace. Its import projections use
    that core's facts, the module context and the
    discovery mode, so equivalent flow inputs also share strict and discovery projections. A
-   missing activation set keeps its own cache key. Changed answers and foreign writes still
-   require flow analysis until the global solver can evaluate transfer summaries.
+   missing activation set keeps its own cache key. Within one discovery operation, a revision
+   can resume from a deferred-job boundary if the source and other flow inputs match and every
+   opaque-activation answer read by that prefix still agrees. The checkpoint shares immutable
+   state, copies the scope and history owners before resuming, and retains a bounded amount of
+   recent work. A changed foreign-write set or a changed answer before any saved boundary
+   starts the analysis from the source. The whole-graph transfer-summary solver remains open.
    Transfer outputs include namespace writes and source demands because callers can observe either
    before a body returns. On an input revision, a stable output can preserve dependent results.
    From-scratch graph and scan equality is the acceptance check for demand-driven execution.
