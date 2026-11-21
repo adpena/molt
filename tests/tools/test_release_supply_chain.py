@@ -52,7 +52,7 @@ from tests.release_lane_fixtures import (
     EXPECTED_LANES,
     LANE_FIELDS,
     stage_release_lane_authorities,
-    stage_stdlib_namespace_syntax_fixture,
+    stage_stdlib_source_summaries_fixture,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1090,8 +1090,8 @@ def _prepare_release_source(
     )
     monkeypatch.setattr(
         compiler_payload,
-        "_stage_stdlib_namespace_syntax",
-        lambda bundle, _source: stage_stdlib_namespace_syntax_fixture(bundle),
+        "_stage_stdlib_source_summaries",
+        lambda bundle, _source: stage_stdlib_source_summaries_fixture(bundle),
     )
 
     return snapshot

@@ -16,7 +16,7 @@ from molt.compiler_analysis.python_binding_facts import (
 
 from collections import deque
 from enum import StrEnum
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_imports import (
@@ -178,6 +178,7 @@ class PythonSourceDemands:
         # wakes only source scans whose globals-custody proof has changed.
         self._opaque_activation_sources: dict[str, set[PythonSourceKey]] = {}
         self._opaque_activation_changes: set[str] = set()
+        self._opaque_activation_producers: dict[str, set[str]] = {}
         self.modules: set[str] = set()
         self.owner_demands: dict[
             tuple[str, PythonSourceKey],
@@ -570,6 +571,10 @@ class PythonSourceDemands:
         self, module_name: str
     ) -> tuple[PythonSourceKey, ...]:
         return tuple(sorted(self._opaque_activation_sources.get(module_name, ())))
+
+    def opaque_activation_producers(self) -> Mapping[str, set[str]]:
+        """Map the defining module to consumers known to escape its sources."""
+        return self._opaque_activation_producers
 
     def exact_receivers(
         self,
@@ -1152,6 +1157,10 @@ class PythonSourceDemands:
                 "ClassDef",
             }
         ):
+            if consumer != origin.module:
+                self._opaque_activation_producers.setdefault(origin.module, set()).add(
+                    consumer
+                )
             known = self._opaque_activation_sources.setdefault(origin.module, set())
             if origin.source not in known:
                 known.add(origin.source)

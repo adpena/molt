@@ -529,12 +529,14 @@ def run(
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
         refused = [
-            name for name, seconds in slow_cases if seconds >= SLOW_TEST_REFUSE_S
+            name
+            for name, seconds in slow_cases
+            if seconds >= SLOW_TEST_REFUSE_S and _case_in_paths(name, paths)
         ]
         if refused:
             print(
-                f"consumer-gate: {len(refused)} unmarked test(s) ran "
-                f"{SLOW_TEST_REFUSE_S:.0f} s or more; no receipt",
+                f"consumer-gate: {len(refused)} unmarked test(s) this change "
+                f"touches ran {SLOW_TEST_REFUSE_S:.0f} s or more; no receipt",
                 file=sys.stderr,
             )
             return 1
@@ -584,9 +586,26 @@ RERUN_LIMIT = 10
 # AGENTS.md: a test whose median is 60 s or more is marked `slow` and runs in
 # postsubmit. Presubmit skips marked tests, so a case that reaches the limit
 # here is unmarked. One run is not a median, so the gate names a case from
-# SLOW_TEST_S and withholds its receipt only from SLOW_TEST_REFUSE_S.
+# SLOW_TEST_S and withholds its receipt only from SLOW_TEST_REFUSE_S, and only
+# when the change touches that test's file: one run of another file's test on
+# a loaded host says nothing about this change (2026-11-21: 3,039 importer
+# tests passed and ten untouched ones, WASM link checks among them, ran
+# 120-163 s at load average 10).
 SLOW_TEST_S = 60.0
 SLOW_TEST_REFUSE_S = 2 * SLOW_TEST_S
+
+
+def _case_in_paths(name: str, paths: Sequence[str]) -> bool:
+    """Whether the JUnit case ``name`` (``classname::name``) lives in one of
+    ``paths``: its class name is a changed test module or a class inside one."""
+    classname = name.split("::", 1)[0]
+    for path in paths:
+        if not path.endswith(".py"):
+            continue
+        module = path[: -len(".py")].replace("/", ".")
+        if classname == module or classname.startswith(f"{module}."):
+            return True
+    return False
 
 
 def _slow_cases(report: Path) -> list[tuple[str, float]]:
