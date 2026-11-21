@@ -455,6 +455,15 @@ pub(crate) mod tests {
                 SiteBody::ClosureLoad | SiteBody::ClosureStore => {
                     panic!("the model has no closure payloads")
                 }
+                // `type(value)` of a value with no inline class word.
+                SiteBody::TypeOf => self
+                    .run_runtime(RuntimeFn::TypeOf, &words[..1])
+                    .expect("type(value)'s miss answers a word"),
+                SiteBody::ObjectAlloc { .. }
+                | SiteBody::ReleaseTerminal
+                | SiteBody::BuiltinType => {
+                    panic!("the model has no classes for {body:?}")
+                }
             })
         }
         fn static_cell_block(&mut self, module: &str) -> Value {

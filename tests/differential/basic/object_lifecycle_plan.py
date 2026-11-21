@@ -184,3 +184,39 @@ gc.freeze()
 del fresh  # frozen members leave the permanent generation
 gc.unfreeze()
 print("after freeze", gc.collect() >= 0)
+
+# `type(x)` reads the class an instance names, never `__class__`; the builtin
+# `object` reference is the one class.
+
+
+class Disguised:
+    @property
+    def __class__(self):
+        return int
+
+
+class Items(list):
+    pass
+
+
+class Lazy:
+    def __init__(self):
+        self.ready = True
+
+    def fill(self):
+        self.late = 1
+
+
+print("type of instances", type(Point(1, 2)) is Point, type(Disguised()) is Disguised)
+print("disguise", Disguised().__class__ is int, isinstance(Disguised(), Disguised))
+print("type of builtins", type(Items()) is Items, type(object()) is object, type(3), type("s"))
+print("type of classes", type(Point) is type, type(object) is type, object is type(object()))
+lazy = Lazy()
+try:
+    lazy.late
+except AttributeError as exc:
+    print("unset field", type(exc).__name__)
+lazy.fill()
+print("filled field", lazy.late, lazy.ready)
+kinds = [type(v).__name__ for v in (1, 2.0, None, True, Point(0, 0), object(), [], Items())]
+print("kinds", kinds)

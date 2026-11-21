@@ -20,7 +20,8 @@ pub(crate) const TYPE_TAG_SET: i64 = 17;
 pub(crate) const TYPE_TAG_FROZENSET: i64 = 18;
 pub(crate) const TYPE_TAG_COMPLEX: i64 = 19;
 
-pub(crate) const BUILTIN_TAG_OBJECT: i64 = 100;
+// Compiled `BUILTIN_TYPE` reads the `object` tag inline.
+pub(crate) use molt_codegen_abi::object_lifecycle::BUILTIN_TAG_OBJECT;
 pub(crate) const BUILTIN_TAG_TYPE: i64 = 101;
 pub(crate) const BUILTIN_TAG_BASE_EXCEPTION: i64 = 102;
 pub(crate) const BUILTIN_TAG_EXCEPTION: i64 = 103;

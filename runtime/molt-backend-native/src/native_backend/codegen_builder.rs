@@ -744,6 +744,27 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 );
                 self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
             }
+            (SiteBody::TypeOf, &[value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::TypeOf);
+                emit_type_of(self.words.builder, sites, value, |builder| {
+                    let call = builder.ins().call(cold, &[value]);
+                    builder.inst_results(call)[0]
+                })
+            }
+            (SiteBody::BuiltinType, &[tag, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::BuiltinType);
+                let record = self.thread_record_word();
+                let object_class = self.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    record,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::ObjectClass.offset(),
+                );
+                emit_builtin_type(self.words.builder, sites, tag, object_class, |builder| {
+                    let call = builder.ins().call(cold, &[tag]);
+                    builder.inst_results(call)[0]
+                })
+            }
             (SiteBody::ClosureLoad, &[owner, offset, _]) => {
                 emit_closure_load(self.words.builder, sites, owner, offset)
             }

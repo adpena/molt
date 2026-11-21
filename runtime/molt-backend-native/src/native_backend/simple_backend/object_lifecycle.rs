@@ -5,7 +5,8 @@
 use super::*;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
-    LifecycleWords, PlanSource, generate_object_alloc, generate_release_terminal,
+    LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
+    generate_release_terminal, generate_type_of,
 };
 
 fn lifecycle_builder<'a, 'b>(
@@ -45,6 +46,30 @@ pub(crate) fn emit_object_alloc(
         },
         |b| cold(&mut *b.words.builder),
     )
+}
+
+/// `type(value)`, owned; `cold(builder)` is `molt_type_of(value)`.
+pub(crate) fn emit_type_of(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    value: Value,
+    cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
+) -> Value {
+    let mut b = lifecycle_builder(builder, sites);
+    generate_type_of(&mut b, value, |b| cold(&mut *b.words.builder))
+}
+
+/// `BUILTIN_TYPE(tag)`, owned; `object_class` is the thread record's
+/// `ObjectClass` word and `cold(builder)` is `molt_builtin_type(tag)`.
+pub(crate) fn emit_builtin_type(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    tag: Value,
+    object_class: Value,
+    cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
+) -> Value {
+    let mut b = lifecycle_builder(builder, sites);
+    generate_builtin_type(&mut b, tag, object_class, |b| cold(&mut *b.words.builder))
 }
 
 /// The release of `bits` after its count read 1. `free` is

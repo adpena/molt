@@ -19,14 +19,15 @@ const BASE: u64 = 0x2_0000;
 const OBJECT: u64 = BASE + HEADER_SIZE_BYTES as u64;
 const COLD: u64 = 0xC01D;
 const BYTES: u64 = 32;
-const SIZE_CLASS: u64 = 3;
+/// `SIZE_CLASS_TABLE[SIZE_CLASS] == BYTES`.
+const SIZE_CLASS: u64 = 4;
 const GC: u64 = 0x4_0000;
 const MEMBERS: u64 = 0x5_0000;
 const MISSING_SLOT: u64 = 0x6_0000;
 const MISSING: u64 = 0x7_0000;
 /// A `Point` instance: two fields and the dictionary word, 48 object bytes.
 const POINT_BYTES: u64 = 48;
-const POINT_SIZE_CLASS: u64 = 5;
+const POINT_SIZE_CLASS: u64 = 6;
 /// A tracked object's data address: past its head and header.
 const TRACKED: u64 = BASE + (GC_HEAD_BYTES + HEADER_SIZE_BYTES) as u64;
 
@@ -625,4 +626,142 @@ fn an_armed_retirement_watch_leaves_untracking_to_the_runtime() {
     assert_eq!(m.events, std::vec![Event::Cold]);
     assert_eq!(m.list_len(0), 2);
     assert_eq!(m.read_bytes(GC, GC_RECORD_COUNT0_OFFSET, 8), 10);
+}
+
+#[test]
+fn plain_instance_plans_match_the_runtime_formula() {
+    // The oracles: the root plan and the two-field plan written out above,
+    // whose size classes are the table's.
+    assert_eq!(SIZE_CLASS_TABLE[SIZE_CLASS as usize] as u64, BYTES);
+    assert_eq!(
+        SIZE_CLASS_TABLE[POINT_SIZE_CLASS as usize] as u64,
+        POINT_BYTES
+    );
+    assert_eq!(plain_instance_plan(0, true) | PLAN_UNTRACKED, root_plan());
+    assert_eq!(ROOT_OBJECT_PLAN, root_plan());
+    assert_eq!(plain_instance_plan(2, true), point_plan());
+    // An abstract class keeps its layout facts and never allocates inline.
+    assert_eq!(
+        plain_instance_plan(2, false),
+        PLAN_PRESENT | PLAN_PLAIN | (2 << PLAN_FIELD_WORDS_SHIFT)
+    );
+    // Past the largest size class nothing allocates inline.
+    assert_eq!(plain_instance_plan(1 << 14, true) & PLAN_INLINE_ALLOC, 0);
+}
+
+impl Machine {
+    fn type_of(&mut self, value: u64) -> u64 {
+        generate_type_of(self, value, |m| {
+            m.events.push(Event::Cold);
+            COLD
+        })
+    }
+}
+
+#[test]
+fn type_of_an_instance_is_its_inline_class_word() {
+    let mut m = Machine::default();
+    m.class(point_plan());
+    m.dying(
+        TYPE_ID_OBJECT,
+        0,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        boxed(CLASS),
+    );
+    assert_eq!(m.type_of(boxed(OBJECT)), boxed(CLASS));
+    assert_eq!(m.events, std::vec![Event::Retain(boxed(CLASS))]);
+    // A borrowed class edge names the same class.
+    let mut m = Machine::default();
+    m.class(point_plan());
+    m.dying(
+        TYPE_ID_OBJECT,
+        0,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        boxed(CLASS) | HEADER_CLASS_WORD_BORROWED,
+    );
+    assert_eq!(m.type_of(boxed(OBJECT)), boxed(CLASS));
+}
+
+#[test]
+fn type_of_anything_else_takes_the_runtime() {
+    // An immediate, an object without an inline class (a builtin layout or a
+    // sidecar), a native object, an empty class word and a class word that
+    // names no class all belong to the runtime's `type(value)`.
+    let cases: [(&str, u64, u32, u16, u64); 5] = [
+        (
+            "immediate",
+            QNAN | TAG_INT | 7,
+            TYPE_ID_OBJECT,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+        ),
+        (
+            "sidecar",
+            boxed(OBJECT),
+            TYPE_ID_OBJECT,
+            HEADER_AUX_KIND_SIDECAR,
+            boxed(CLASS),
+        ),
+        (
+            "builtin",
+            boxed(OBJECT),
+            TYPE_ID_STRING,
+            crate::HEADER_AUX_KIND_NONE,
+            0,
+        ),
+        (
+            "empty",
+            boxed(OBJECT),
+            TYPE_ID_OBJECT,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            0,
+        ),
+        (
+            "foreign",
+            boxed(OBJECT),
+            crate::TYPE_ID_FOREIGN,
+            HEADER_AUX_KIND_CLASS_INLINE,
+            boxed(CLASS),
+        ),
+    ];
+    for (label, value, type_id, aux_kind, class_word) in cases {
+        let mut m = Machine::default();
+        m.class(point_plan());
+        m.dying(type_id, 0, aux_kind, class_word);
+        assert_eq!(m.type_of(value), COLD, "{label}");
+        assert_eq!(m.events, std::vec![Event::Cold], "{label}");
+    }
+    // A class word whose object is not a class.
+    let mut m = Machine::default();
+    m.write_bytes(CLASS, HEADER_TYPE_ID_OFFSET, TYPE_ID_STRING.into(), 4);
+    m.dying(
+        TYPE_ID_OBJECT,
+        0,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        boxed(CLASS),
+    );
+    assert_eq!(m.type_of(boxed(OBJECT)), COLD);
+}
+
+#[test]
+fn builtin_object_reads_the_lent_class() {
+    let object_tag = crate::box_int_bits(BUILTIN_TAG_OBJECT) as u64;
+    let mut m = Machine::default();
+    let run = |m: &mut Machine, tag: u64, lent: u64| {
+        generate_builtin_type(m, tag, lent, |m| {
+            m.events.push(Event::Cold);
+            COLD
+        })
+    };
+    assert_eq!(run(&mut m, object_tag, boxed(CLASS)), boxed(CLASS));
+    assert_eq!(m.events, std::vec![Event::Retain(boxed(CLASS))]);
+    // Before the builtin classes exist, and for every other tag, the runtime.
+    let mut m = Machine::default();
+    assert_eq!(run(&mut m, object_tag, 0), COLD);
+    let mut m = Machine::default();
+    assert_eq!(
+        run(&mut m, crate::box_int_bits(1) as u64, boxed(CLASS)),
+        COLD
+    );
+    assert_eq!(m.events, std::vec![Event::Cold]);
 }

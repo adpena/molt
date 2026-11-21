@@ -153,9 +153,23 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let admission = b.refcount_admission();
         // The builtin `object` cannot change, so its plan is a constant.
         let (root, plan, class) = match class {
+            // A class whose layout the frontend proved carries its field word
+            // count; its plan is then the shared formula's constant.
             Some(class) => (
                 false,
-                molt_codegen_abi::object_lifecycle::PlanSource::Guarded,
+                match op.attrs.get(molt_ir::class_identity::RELEASE_PLAN_ATTR) {
+                    Some(&AttrValue::Int(words)) => {
+                        let words = u16::try_from(words)
+                            .expect("a release plan's field words come from a u16");
+                        molt_codegen_abi::object_lifecycle::PlanSource::Proven(
+                            molt_codegen_abi::object_lifecycle::plain_instance_plan(
+                                usize::from(words),
+                                true,
+                            ),
+                        )
+                    }
+                    _ => molt_codegen_abi::object_lifecycle::PlanSource::Guarded,
+                },
                 RuntimeArg::Operand(class),
             ),
             None => {
@@ -189,6 +203,36 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             "object_new",
             "object_alloc",
         );
+        self.bind_owned(b, op, b.word_value(word));
+    }
+
+    /// `type(operand)` (`type_of`) or `BUILTIN_TYPE(operand)`: the shared
+    /// class reads (`SiteBody::TypeOf`, `SiteBody::BuiltinType`), whose miss
+    /// is the runtime entry.
+    pub(crate) fn class_of(&mut self, b: &mut B, op: &TirOp, operand: ValueId, type_of: bool) {
+        let admission = b.refcount_admission();
+        let (site, args, label) = if type_of {
+            (
+                SiteBody::TypeOf,
+                [
+                    RuntimeArg::Operand(operand),
+                    RuntimeArg::Word(b.word_value(admission)),
+                ],
+                "type_of",
+            )
+        } else {
+            (
+                SiteBody::BuiltinType,
+                [
+                    RuntimeArg::Operand(operand),
+                    RuntimeArg::Word(b.word_value(admission)),
+                ],
+                "builtin_type",
+            )
+        };
+        let word = self
+            .operands()
+            .call(b, CallTarget::Site(site), &args, false, label, label);
         self.bind_owned(b, op, b.word_value(word));
     }
 

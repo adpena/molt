@@ -47,7 +47,9 @@
 //!    (`free_plain_leaf`): no observer can see the death, and the bounded
 //!    release would run it now.
 //! 4. The GC record (`GC_RECORD_*`) is the head of the bound runtime's
-//!    collector state; each isolate's thread record lends its own. A member
+//!    collector state; each isolate's thread record lends its own. The layout
+//!    is the 64-bit one: a free-threaded runtime, or one whose pointers are
+//!    narrower, lends no record and keeps tracking in the runtime. A member
 //!    list with no room, a count at its threshold and an armed retirement
 //!    watch are the runtime's, which grows, schedules and counts.
 
@@ -60,8 +62,8 @@ use crate::{
     HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED, HEADER_FLAG_DEALLOCATING,
     HEADER_FLAG_GC_ACCOUNTED, HEADER_FLAG_GC_HEAD, HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_HAS_WEAKREF, HEADER_FLAG_SCOPED, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAGS_OFFSET,
-    HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, POINTER_MASK, QNAN, TAG_PTR, TYPE_ID_OBJECT,
-    TYPE_ID_TYPE,
+    HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, POINTER_MASK, QNAN, TAG_PTR, TYPE_ID_FOREIGN,
+    TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 /// The allocator size classes: index 0 is the oversized sentinel.
@@ -97,19 +99,33 @@ pub const fn size_class_for(size: usize) -> u16 {
     0 // oversized
 }
 
+/// The plan of a class whose instances are plain: `field_words` contiguous
+/// field words, then the dictionary word; no finalizer and no identity facts.
+/// It is the one formula: the runtime publishes it for such a class when the
+/// class seals (molt-runtime `lifecycle_plan::compute`), and an allocation
+/// whose class layout the frontend proved compiles it in (`PlanSource::Proven`).
+/// `may_inline` is false for an abstract class. Instances too large for a size
+/// class (or for the plan's 16-bit fields) never allocate inline.
+pub const fn plain_instance_plan(field_words: usize, may_inline: bool) -> u64 {
+    let word =
+        PLAN_PRESENT | PLAN_PLAIN | (((field_words as u64) & 0xFFFF) << PLAN_FIELD_WORDS_SHIFT);
+    if !may_inline || field_words >= 1 << 16 {
+        return word;
+    }
+    let size_class = size_class_for(HEADER_SIZE_BYTES as usize + (field_words + 1) * 8);
+    let object_bytes = SIZE_CLASS_TABLE[size_class as usize] as u64;
+    if size_class == 0 || object_bytes >= 1 << 16 {
+        return word;
+    }
+    word | PLAN_INLINE_ALLOC
+        | ((size_class as u64) << PLAN_SIZE_CLASS_SHIFT)
+        | (object_bytes << PLAN_OBJECT_BYTES_SHIFT)
+}
+
 /// The plan of the builtin `object`, which no code can change (its class is
 /// immutable): a 32-byte untracked instance with no fields. The runtime
 /// asserts it when the class seals; compiled `object()` allocates from it.
-pub const ROOT_OBJECT_PLAN: u64 = {
-    let bytes = HEADER_SIZE_BYTES as usize + 8;
-    let size_class = size_class_for(bytes);
-    PLAN_PRESENT
-        | PLAN_PLAIN
-        | PLAN_INLINE_ALLOC
-        | PLAN_UNTRACKED
-        | ((size_class as u64) << PLAN_SIZE_CLASS_SHIFT)
-        | ((SIZE_CLASS_TABLE[size_class as usize] as u64) << PLAN_OBJECT_BYTES_SHIFT)
-};
+pub const ROOT_OBJECT_PLAN: u64 = plain_instance_plan(0, true) | PLAN_UNTRACKED;
 
 /// Byte offset of the lifecycle plan word in a `TYPE_ID_TYPE` payload.
 pub const CLASS_LIFECYCLE_PLAN_OFFSET: i32 = 16 * 8;
@@ -554,6 +570,95 @@ pub fn generate_release_terminal<B: FrameBuilder>(
         },
         |b| cold(b),
     );
+}
+
+/// `type(value)`, owned: the class an object names in its inline class word
+/// (retained), else what `cold` answers, the runtime's `type(value)`
+/// (`molt_type_of`), which owns immediates, builtin layouts without a class
+/// word, sidecars, native objects and failures. The runtime reads the same
+/// word (`object_class_bits`): the bits under the class tag, when they name a
+/// class object.
+pub fn generate_type_of<B: FrameBuilder>(
+    b: &mut B,
+    value: B::Word,
+    cold: impl FnOnce(&mut B) -> B::Word,
+) -> B::Word {
+    use WordComparison::*;
+    let result = b.local();
+    b.attempt(
+        |b| {
+            let pointer = generate_has_tag(b, value, BoxTag::Ptr);
+            b.require(pointer);
+            let object = b.and(value, POINTER_MASK);
+            let header = b.load_word(object, HEADER_FLAGS_OFFSET);
+            let aux_kind = b.and(header, 0xFFFF << AUX_KIND_SHIFT);
+            let inline = compare_immediate(
+                b,
+                Equal,
+                aux_kind,
+                (HEADER_AUX_KIND_CLASS_INLINE as u64) << AUX_KIND_SHIFT,
+            );
+            b.require(inline);
+            // A native object's type is its native type's wrapper.
+            let type_id = b.load_header_u32(object, HEADER_TYPE_ID_OFFSET);
+            let native = compare_immediate(b, NotEqual, type_id, TYPE_ID_FOREIGN as u64);
+            b.require(native);
+            let class_word = b.load_word(object, HEADER_AUX_OFFSET);
+            let class_bits = b.and(class_word, HEADER_CLASS_WORD_BITS_MASK);
+            let class_pointer = generate_has_tag(b, class_bits, BoxTag::Ptr);
+            b.require(class_pointer);
+            let class = b.and(class_bits, POINTER_MASK);
+            let class_kind = b.load_header_u32(class, HEADER_TYPE_ID_OFFSET);
+            let is_class = compare_immediate(b, Equal, class_kind, TYPE_ID_TYPE as u64);
+            b.require(is_class);
+            b.retain(class_bits);
+            b.set(result, class_bits);
+        },
+        |b| {
+            let value = cold(b);
+            b.set(result, value);
+        },
+    );
+    b.get(result)
+}
+
+/// The builtin-type tag of `object` (`BUILTIN_TYPE` operand; the frontend's
+/// `BUILTIN_TYPE_TAGS`, the runtime's `builtin_type_bits`).
+pub const BUILTIN_TAG_OBJECT: i64 = 100;
+
+/// `BUILTIN_TYPE(tag)`, owned: the builtin `object` class the thread record
+/// lends (`ThreadRecordWord::ObjectClass`, retained) when `tag` is the boxed
+/// `object` tag, else what `cold` answers (`molt_builtin_type`). A constant
+/// tag folds the test away.
+pub fn generate_builtin_type<B: FrameBuilder>(
+    b: &mut B,
+    tag: B::Word,
+    object_class: B::Word,
+    cold: impl FnOnce(&mut B) -> B::Word,
+) -> B::Word {
+    use WordComparison::*;
+    let result = b.local();
+    b.attempt(
+        |b| {
+            let object_tag = compare_immediate(
+                b,
+                Equal,
+                tag,
+                crate::box_int_bits(BUILTIN_TAG_OBJECT) as u64,
+            );
+            b.require(object_tag);
+            // Zero until the builtin classes exist.
+            let lent = compare_immediate(b, NotEqual, object_class, 0);
+            b.require(lent);
+            b.retain(object_class);
+            b.set(result, object_class);
+        },
+        |b| {
+            let value = cold(b);
+            b.set(result, value);
+        },
+    );
+    b.get(result)
 }
 
 #[cfg(test)]

@@ -8,7 +8,8 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use inkwell::values::IntValue;
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::object_lifecycle::{
-    LifecycleWords, PlanSource, generate_object_alloc, generate_release_terminal,
+    LifecycleWords, PlanSource, generate_builtin_type, generate_object_alloc,
+    generate_release_terminal, generate_type_of,
 };
 use molt_codegen_abi::thread_record::ThreadRecordWord;
 use molt_codegen_abi::word::WordBuilder;
@@ -87,6 +88,51 @@ impl<'ctx> LlvmBackend<'ctx> {
                         .into_int_value()
                 },
             )
+        })
+    }
+
+    /// `type(value)`: `(context, value, admission) -> owned class`; its miss
+    /// is `molt_type_of(value)`.
+    pub(super) fn type_of_helper(&self) -> FunctionValue<'ctx> {
+        let cold_fn = self.runtime_import(RuntimeFn::TypeOf);
+        self.site_helper("__molt_type_of", 2, |b, words| {
+            let &[value] = words else {
+                unreachable!("the type_of helper's parameters")
+            };
+            generate_type_of(b, value, |b| {
+                b.words
+                    .builder
+                    .build_execution_call(cold_fn, &[value.into()], "type_of_miss")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value()
+            })
+        })
+    }
+
+    /// `BUILTIN_TYPE(tag)`: `(context, tag, admission) -> owned class`; its
+    /// miss is `molt_builtin_type(tag)`.
+    pub(super) fn builtin_type_helper(&self) -> FunctionValue<'ctx> {
+        let cold_fn = self.runtime_import(RuntimeFn::BuiltinType);
+        self.site_helper("__molt_builtin_type", 2, |b, words| {
+            let &[tag] = words else {
+                unreachable!("the builtin_type helper's parameters")
+            };
+            let object_class = self.load_thread_record_word(
+                b.words.builder,
+                ThreadRecordWord::ObjectClass,
+                "object_class",
+            );
+            generate_builtin_type(b, tag, object_class, |b| {
+                b.words
+                    .builder
+                    .build_execution_call(cold_fn, &[tag.into()], "builtin_type_miss")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value()
+            })
         })
     }
 

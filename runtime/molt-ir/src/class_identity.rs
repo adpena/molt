@@ -65,6 +65,10 @@ pub fn check_class_identities(functions: &[FunctionIR]) -> Result<(), String> {
 /// slots (`OpIR::exact_field_slots`).
 pub const EXACT_FIELD_SLOTS_ATTR: &str = "exact_field_slots";
 
+/// The TIR attribute that carries an allocation's proven instance plan, the
+/// field word count (`OpIR::release_plan`).
+pub const RELEASE_PLAN_ATTR: &str = "release_plan";
+
 /// Encode `(name, offset)` field slots as the bytes of one TIR attribute:
 /// per slot, the name's length (u32 little endian), its UTF-8 bytes, then the
 /// offset (i64 little endian). [`decode_field_slots`] is the only reader.

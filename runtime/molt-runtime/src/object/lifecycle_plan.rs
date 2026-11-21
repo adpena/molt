@@ -30,8 +30,7 @@ pub(crate) const CLASS_LIFECYCLE_PLAN_WORD: usize = layout::CLASS_NATIVE_NEXT_WO
 // compiled allocation and release read inline.
 use molt_codegen_abi::object_lifecycle::{
     PLAN_FIELD_WORDS_SHIFT as FIELD_WORDS_SHIFT, PLAN_FINALIZER as FINALIZER,
-    PLAN_IDENTITY_FACTS as IDENTITY_FACTS, PLAN_INLINE_ALLOC as INLINE_ALLOC,
-    PLAN_OBJECT_BYTES_SHIFT as OBJECT_BYTES_SHIFT, PLAN_PLAIN as PLAIN,
+    PLAN_IDENTITY_FACTS as IDENTITY_FACTS, PLAN_INLINE_ALLOC as INLINE_ALLOC, PLAN_PLAIN as PLAIN,
     PLAN_POLL_ADAPTER as POLL_ADAPTER, PLAN_PRESENT as PRESENT,
     PLAN_SIZE_CLASS_SHIFT as SIZE_CLASS_SHIFT, PLAN_UNTRACKED as UNTRACKED,
 };
@@ -219,18 +218,11 @@ pub(crate) unsafe fn compute(class: *mut u8) -> ClassLifecyclePlan {
             word |= FINALIZER;
         }
         if let Some(words) = plain_field_words(class) {
-            word |= PLAIN | ((words as u64) << FIELD_WORDS_SHIFT);
-            let total =
-                std::mem::size_of::<super::MoltHeader>() + (words + 1) * std::mem::size_of::<u64>();
-            let size_class = super::size_class_for(total);
-            let object_bytes = super::SIZE_CLASS_TABLE[size_class as usize] as u64;
-            // The plan records the object bytes in 16 bits.
-            if size_class != 0 && object_bytes < 1 << 16 && !class_storage::class_is_abstract(class)
-            {
-                word |= INLINE_ALLOC
-                    | (u64::from(size_class) << SIZE_CLASS_SHIFT)
-                    | (object_bytes << OBJECT_BYTES_SHIFT);
-            }
+            // The one formula, which a proven allocation site also compiles in.
+            word |= molt_codegen_abi::object_lifecycle::plain_instance_plan(
+                words,
+                !class_storage::class_is_abstract(class),
+            );
         }
         ClassLifecyclePlan(word)
     }

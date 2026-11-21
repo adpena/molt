@@ -165,6 +165,12 @@ pub(crate) enum SiteBody {
     /// words `[bits]`; the miss is `molt_dec_ref_obj`. Only the backend's
     /// release refcount sites reach it, through their slow call.
     ReleaseTerminal,
+    /// `type(value)`, owned (`object_lifecycle::generate_type_of`); words
+    /// `[value]`; the miss is `molt_type_of`.
+    TypeOf,
+    /// `BUILTIN_TYPE(tag)`, owned (`object_lifecycle::generate_builtin_type`);
+    /// words `[tag]`; the miss is `molt_builtin_type`.
+    BuiltinType,
 }
 
 /// One step of the inline recursion charge of a direct call.

@@ -45,8 +45,6 @@ fn positional_runtime(kind: OpKind) -> Option<(RuntimeFn, usize, ResultCustody)>
         OpKind::GenSend => (RuntimeFn::GeneratorSend, 2, OWNED),
         OpKind::GenThrow => (RuntimeFn::GeneratorThrow, 2, OWNED),
         OpKind::GenClose => (RuntimeFn::GeneratorClose, 1, OWNED),
-        OpKind::BuiltinType => (RuntimeFn::BuiltinType, 1, OWNED),
-        OpKind::TypeOf => (RuntimeFn::TypeOf, 1, OWNED),
         OpKind::GetAttrNameDefault => (RuntimeFn::GetAttrNameDefault, 3, OWNED),
         OpKind::Abs => (
             RuntimeFn::AbsBuiltin,
@@ -109,6 +107,15 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // `object()`: the shared lifecycle allocation of the root class.
             OpKind::ObjectNew => {
                 self.object_alloc(b, op, None);
+                true
+            }
+            // `type(value)` and a builtin class reference: header and thread
+            // record loads, the runtime on a miss.
+            OpKind::TypeOf | OpKind::BuiltinType => {
+                let [operand] = op.operands[..] else {
+                    return false;
+                };
+                self.class_of(b, op, operand, kind == OpKind::TypeOf);
                 true
             }
             // Representation-identity ops: operand 0 itself, no new value.

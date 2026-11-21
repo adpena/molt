@@ -95,6 +95,9 @@ class SimpleIROp(TypedDict):
     # A ``call_guarded`` whose callee the program proves (HF-846 slice 2;
     # a resolved method of an exact receiver, design 78 3.8).
     proven_target: NotRequired[bool]
+    # An ``object_new_bound`` whose class layout proves its instance plan
+    # (``class_model.release_plan``): the field word count (OpIR::release_plan).
+    release_plan: NotRequired[int]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]
     native_callable_export: NotRequired[Any]
