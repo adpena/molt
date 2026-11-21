@@ -193,7 +193,7 @@ unsafe fn plain_field_words(class: *mut u8) -> Option<usize> {
         let rows = obj_from_bits(rows).as_ptr()?;
         let words = seq_access::with_immutable_tuple_slice(rows, |rows| {
             let mut count = 0usize;
-            for (index, row) in rows.chunks_exact(3).enumerate() {
+            for (index, row) in rows.as_chunks::<3>().0.iter().enumerate() {
                 let field = class_layout::decode_row(row);
                 if field.kind.is_intrinsic() || field.offset != index * std::mem::size_of::<u64>() {
                     return None;

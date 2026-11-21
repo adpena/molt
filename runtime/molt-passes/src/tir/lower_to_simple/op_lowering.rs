@@ -354,6 +354,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         | OpCode::BoxInlineInt
         | OpCode::CodeIs
         | OpCode::DirectCall
+        | OpCode::FunctionClosure
         | OpCode::RecursionAdmits
         | OpCode::RecursionCount
         | OpCode::RecursionRelease

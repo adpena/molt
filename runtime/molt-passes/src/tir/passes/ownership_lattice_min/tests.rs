@@ -1523,7 +1523,7 @@ fn static_cell_views_are_retained_at_each_escape() {
     entry.terminator = Terminator::Return { values: vec![view] };
     let aliases = build_alias_union_find(&f);
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
-    assert!(root_facts.is_static_cell_view_root(view));
+    assert!(root_facts.is_held_view_root(view));
     assert!(!root_facts.is_drop_owned_root_candidate(view));
     assert!(!OwnershipRootFacts::result_holds_own_reference(
         &load(view),

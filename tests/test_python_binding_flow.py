@@ -2537,10 +2537,11 @@ def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
 @pytest.mark.parametrize(
     ("changed", "reused", "specialize_argument"),
     [
-        (2, 0, False),
+        (0, 0, False),
+        (2, 2, False),
         (70, 64, False),
         ("nested", 64, False),
-        (2, 0, True),
+        (2, 2, True),
         (70, 64, True),
     ],
 )
@@ -2614,6 +2615,135 @@ def test_binding_revision_keeps_only_a_proven_deferred_prefix(
     else:
         assert closed.expression_fact(call.func).exact_builtin_name() == "len"
         assert actual.expression_fact(call.func).exact_builtin_name() is None
+
+
+@pytest.mark.parametrize("initializer", ["", "external_callback()\n"])
+def test_unread_foreign_slots_project_exact_namespace_and_layout(
+    monkeypatch: pytest.MonkeyPatch, initializer: str
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = (
+        initializer + "def public(argument):\n    local = argument\n    return local\n"
+    )
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"extra", "first"}),
+        opaque_activation_sources=(),
+    )
+    analyze_python_source_bindings(source, policy=policy)
+    analyze_python_source_bindings(
+        source, policy=replace(policy, foreign_namespace_writes=("first",))
+    )
+    revised = replace(policy, foreign_namespace_writes=("extra", "first"))
+    projected = analyze_python_source_bindings(source, policy=revised)
+    assert flow.python_binding_core_computations() == 1
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=revised)
+    assert replace(projected, telemetry=fresh.telemetry) == fresh
+    names = {name for _, bindings, _ in fresh.source_namespaces for name, _ in bindings}
+    assert ("extra" in names) == bool(initializer)
+    assert projected.scopes[0].binding_slots == fresh.scopes[0].binding_slots
+
+
+def test_small_binding_revision_reuses_initializer_and_earlier_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    starts: list[str] = []
+    jobs: list[PythonSourceKey] = []
+    analyze_module = flow._Analyzer._analyze_module
+    analyze_job = flow._Analyzer._analyze_function_job
+
+    def observe_module(
+        owner: python_binding_flow._Analyzer,
+        tree: ast.Module,
+        ast_digest_admission: python_binding_flow._PythonAstDigestAdmission | None,
+    ) -> None:
+        starts.append(owner.source_digest)
+        analyze_module(owner, tree, ast_digest_admission=ast_digest_admission)
+
+    def observe_job(
+        owner: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        state: int,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        analyze_job(owner, job, state)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_module", observe_module)
+    monkeypatch.setattr(flow._Analyzer, "_analyze_function_job", observe_job)
+    source = (
+        "def first(): return len([1])\n"
+        "def second(): return len([1, 2])\n"
+        "def revised(): return len([1, 2, 3])\n"
+    )
+    changed = ast.parse(source).body[-1]
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    revised = replace(
+        policy, opaque_activation_sources=(python_node_source_key(changed),)
+    )
+    with flow.python_binding_revision_scope():
+        eager = analyze_python_source_bindings(source, policy=policy)
+        assert len(jobs) == 3
+        jobs.clear()
+        actual = analyze_python_source_bindings(source, policy=revised)
+        assert len(starts) == 1
+        assert jobs == [python_node_source_key(changed)]
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=revised)
+    assert replace(actual, telemetry=fresh.telemetry) == fresh
+    assert eager.expressions != actual.expressions
+
+
+def test_foreign_writer_to_previously_unbound_name_reopens_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "def public():\n    return len([1, 2])\n"
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    closed = analyze_python_source_bindings(source, policy=policy)
+    with_writer = analyze_python_source_bindings(
+        source, policy=replace(policy, foreign_namespace_writes=("len",))
+    )
+    load = ast.parse(source).body[0].body[0].value.func
+    assert closed.expression_fact(load).exact_builtin_name() == "len"
+    assert with_writer.expression_fact(load).exact_builtin_name() is None
+    assert flow.python_binding_core_computations() == 2
+
+
+def test_first_foreign_slot_reopens_module_wide_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "from provider import *\n"
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"unused"}),
+        opaque_activation_sources=(),
+    )
+    analyze_python_source_bindings(source, policy=policy)
+    revised = replace(policy, foreign_namespace_writes=("unused",))
+    actual = analyze_python_source_bindings(source, policy=revised)
+    assert flow.python_binding_core_computations() == 2
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    assert actual == analyze_python_source_bindings(source, policy=revised)
 
 
 def test_context_cache_lifetime_is_owned_and_bounded_by_core(

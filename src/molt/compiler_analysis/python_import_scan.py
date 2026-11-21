@@ -50,6 +50,7 @@ from molt.compiler_analysis.static_truth import (
     static_expression_result,
 )
 from molt.compiler_analysis.python_binding_facts import (
+    EnclosingBindingDeclarations,
     PythonParameterRef,
     PythonStringAlternatives,
 )
@@ -2049,7 +2050,10 @@ def _collect_imports(
                         )
                     )
 
+    declarations: EnclosingBindingDeclarations | None = None
+
     def publishes_binding(node: ast.AST, name: str) -> bool:
+        nonlocal declarations
         fact = (
             binding_index.statement_fact(node)
             if isinstance(node, ast.stmt)
@@ -2059,8 +2063,9 @@ def _collect_imports(
         )
         if fact is None:
             return False
-        scope = binding_index.scopes[fact.scope_id]
-        return name in scope.global_names or name in scope.nonlocal_names
+        if declarations is None:
+            declarations = binding_index.enclosing_binding_declarations
+        return declarations.publishes(fact.scope_id, name)
 
     def publishes_target(node: ast.stmt, target: ast.AST) -> bool:
         if isinstance(target, ast.Name):

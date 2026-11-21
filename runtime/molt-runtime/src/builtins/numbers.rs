@@ -1338,6 +1338,7 @@ pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
 }
 
 /// Test index-slot presence without binding a descriptor or invoking it.
+#[cfg(feature = "stdlib_math")]
 pub(crate) fn has_index_protocol(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
     if let Some(native) = native_numeric_object(bits) {
         return Ok(unsafe { molt_cpython_abi::api::abstract_number::PyIndex_Check(native) } != 0);

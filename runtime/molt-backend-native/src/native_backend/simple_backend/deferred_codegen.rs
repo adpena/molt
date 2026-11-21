@@ -1,3 +1,4 @@
+use super::machine_code_cache::MachineCodeCache;
 use super::*;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
@@ -87,7 +88,7 @@ pub(super) struct CompiledDefinition {
 pub(super) fn assemble_definition(
     definition: DeferredDefine,
     isa: &dyn isa::TargetIsa,
-    #[cfg(feature = "jit")] cache: Option<&super::jit::MachineCodeCache>,
+    cache: Option<&MachineCodeCache>,
 ) -> Result<CompiledDefinition, String> {
     let DeferredDefine {
         func_id,
@@ -97,13 +98,10 @@ pub(super) fn assemble_definition(
     let mut context = Context::for_function(func);
     complete_native_control_flow(&mut context, isa, &name);
     let mut control = cranelift_codegen::control::ControlPlane::default();
-    #[cfg(feature = "jit")]
     let compile = match cache {
         Some(cache) => cache.compile(&mut context, isa, &mut control),
         None => context.compile(isa, &mut control),
     };
-    #[cfg(not(feature = "jit"))]
-    let compile = context.compile(isa, &mut control);
     compile.map_err(|error| format!("Cranelift compilation failed for `{name}`: {error:?}"))?;
     let compiled = context
         .compiled_code()
@@ -168,7 +166,10 @@ impl SimpleBackend {
     /// then define the resulting bytes sequentially via `define_function_bytes`.
     /// Any Cranelift compile failure aborts codegen instead of producing a
     /// partial object file with runtime-aborting placeholders.
-    pub(in crate::native_backend::simple_backend) fn flush_deferred_defines(&mut self) {
+    pub(in crate::native_backend::simple_backend) fn flush_deferred_defines(
+        &mut self,
+        cache: Option<&MachineCodeCache>,
+    ) {
         use rayon::prelude::*;
 
         let deferred: Vec<DeferredDefine> = std::mem::take(&mut self.deferred_defines);
@@ -202,19 +203,14 @@ impl SimpleBackend {
                     .map(|(idx, item)| {
                         request.enter(|| {
                             let isa = compile_isa.clone().0;
-                            let result = assemble_definition(
-                                item,
-                                &*isa,
-                                #[cfg(feature = "jit")]
-                                None,
-                            )
-                            .unwrap_or_else(|message| {
-                                let _ = crate::debug_artifacts::append_debug_artifact(
-                                    "native/cranelift_errors.txt",
-                                    format!("{message}\n"),
-                                );
-                                panic!("{message}");
-                            });
+                            let result =
+                                assemble_definition(item, &*isa, cache).unwrap_or_else(|message| {
+                                    let _ = crate::debug_artifacts::append_debug_artifact(
+                                        "native/cranelift_errors.txt",
+                                        format!("{message}\n"),
+                                    );
+                                    panic!("{message}");
+                                });
                             (idx, result)
                         })
                     })

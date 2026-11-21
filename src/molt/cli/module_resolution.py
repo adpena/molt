@@ -1004,17 +1004,39 @@ def _roots_for_module(
             if os.environ.get("MOLT_REGRTEST_CPYTHON_DIR"):
                 return roots
         return [stdlib_root]
+    if _is_runtime_owned_module(module_name, stdlib_root):
+        # The selected compiler ships these with its stdlib; a program that
+        # does not provide them imports them from it (HF-970: `molt run` of a
+        # program outside a project built with only the program's directory
+        # as a root, so `molt.gpu` compiled out and failed at run time).
+        toolchain_sources = stdlib_root.parent.parent
+        return [
+            *(root for root in roots if root != toolchain_sources),
+            toolchain_sources,
+        ]
     return roots
 
 
-def _runtime_owned_module_roots() -> tuple[Path, ...]:
-    stdlib_root = _stdlib_root_path().resolve()
+def _runtime_owned_module_roots(stdlib_root: Path | None = None) -> tuple[Path, ...]:
+    stdlib_root = (stdlib_root or _stdlib_root_path()).resolve()
     package_root = stdlib_root.parent
     return (
         stdlib_root,
         package_root / "gpu",
         package_root / "lib",
     )
+
+
+def _is_runtime_owned_module(module_name: str, stdlib_root: Path) -> bool:
+    """``molt`` itself, or a module of a package the toolchain ships."""
+    if module_name == "molt":
+        return True
+    sources = stdlib_root.resolve().parent.parent
+    for root in _runtime_owned_module_roots(stdlib_root):
+        package = ".".join(root.relative_to(sources).parts)
+        if module_name == package or module_name.startswith(package + "."):
+            return True
+    return False
 
 
 def _is_runtime_owned_module_path(module_path: Path) -> bool:

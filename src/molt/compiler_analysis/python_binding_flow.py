@@ -502,14 +502,92 @@ class _OpaqueActivationReads:
 
 
 @dataclass(frozen=True, slots=True)
+class _ForeignNamespaceReads:
+    names: frozenset[str]
+    declaration_end: int
+    callback_end: int
+    tainted_exit: PythonSourceKey | None
+    has_empty_module_expiry: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonNodeKey, EffectMask]
     module_import_flow_required: bool
     opaque_activation_reads: _OpaqueActivationReads | None
+    foreign_namespace_reads: _ForeignNamespaceReads | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
+
+    def with_added_foreign_slots(
+        self, names: frozenset[str]
+    ) -> _BindingAnalysis | None:
+        """Project slots the transfer never looked up into their revised layout."""
+        reads = self.foreign_namespace_reads
+        if (
+            reads is None
+            or reads.has_empty_module_expiry
+            or not reads.names.isdisjoint(names)
+        ):
+            return None
+        slots = self.facts.slot_names
+        additions = {name: f"0:{name}" for name in names}
+        if not set(additions.values()).isdisjoint(slots):
+            return None
+        # Source declarations came first, followed by sorted callback slots.
+        # Later allocations keep their relative order in the revised layout.
+        callback_layout = tuple(
+            sorted(
+                (
+                    *slots[reads.declaration_end : reads.callback_end],
+                    *additions.values(),
+                )
+            )
+        )
+        new_slots = (
+            *slots[: reads.declaration_end],
+            *callback_layout,
+            *slots[reads.callback_end :],
+        )
+        indices = {name: index for index, name in enumerate(new_slots)}
+        scopes: list[PythonScopeFact] = []
+        for scope in self.facts.scopes:
+            bindings = {
+                name: indices[slots[slot]] for name, slot in scope.binding_slots
+            }
+            if scope.scope_id == 0:
+                bindings.update(
+                    (name, indices[slot]) for name, slot in additions.items()
+                )
+            scopes.append(replace(scope, binding_slots=tuple(sorted(bindings.items()))))
+        # A callback can make an absent slot possibly present at module exit.
+        # Only its namespace row changes, since the transfer made no use of it.
+        empty_origins: frozenset[PythonSourceKey] = frozenset()
+        namespaces = tuple(
+            (
+                owner,
+                tuple(sorted((*bindings, *((name, empty_origins) for name in names))))
+                if owner == reads.tainted_exit
+                else bindings,
+                exposure,
+            )
+            for owner, bindings, exposure in self.facts.source_namespaces
+        )
+        return replace(
+            self,
+            facts=replace(
+                self.facts,
+                slot_names=new_slots,
+                scopes=tuple(scopes),
+                source_namespaces=namespaces,
+            ),
+            foreign_namespace_reads=replace(
+                reads, callback_end=reads.callback_end + len(names)
+            ),
+            projections=_BindingCache(max_entries=8),
+        )
 
 
 _BINDING_CHUNK_SHIFT: Final = 5
@@ -2708,6 +2786,10 @@ class _Analyzer:
         self._opaque_activation_reads: dict[frozenset[PythonSourceKey], bool] = {}
         self._opaque_lexical_activations: dict[int, bool] = {}
         self._foreign_universe = policy.foreign_namespace_universe
+        self._foreign_reads: set[str] | None = None
+        self._foreign_slot_bounds = (0, 0)
+        self._foreign_tainted_exit: PythonSourceKey | None = None
+        self._has_empty_module_expiry = False
         self.source_digest = source_digest
         self.states = _StatePool()
         self.scopes: list[_Scope] = []
@@ -2922,7 +3004,7 @@ class _Analyzer:
         module_slots: set[int] = {
             slot
             for name in dependencies.globals
-            if (slot := self.module_scope.slots.get(name)) is not None
+            if (slot := self._module_slot(name)) is not None
         }
         lexical_slots: set[int] = set()
         for name in dependencies.lexical:
@@ -3116,10 +3198,10 @@ class _Analyzer:
 
     def _ensure_module_slot(self, name: str) -> int:
         """One slot authority for global declarations and reflective item writes."""
-        assert self.module_scope is not None
-        existing = self.module_scope.slots.get(name)
+        existing = self._module_slot(name)
         if existing is not None:
             return existing
+        assert self.module_scope is not None
         slot = len(self.slot_names)
         self.module_scope.slots[name] = slot
         self.slot_names.append(f"{self.module_scope.scope_id}:{name}")
@@ -3144,6 +3226,8 @@ class _Analyzer:
         return universe is None or name in universe
 
     def _callback_rebinds_module_name(self, name: str) -> bool:
+        if self._foreign_reads is not None:
+            self._foreign_reads.add(name)
         names = self._callback_module_names
         return names is None or name in names or not self._foreign_name_known(name)
 
@@ -3167,6 +3251,13 @@ class _Analyzer:
             else self.callback_module_slot_mask
         )
         return module | self.callback_slot_mask
+
+    def _taint_module_slots(self, state_id: int) -> int:
+        # A new foreign slot would change whether this operation advances the
+        # shared callback epoch, even if that particular name had no reader.
+        if self._foreign_reads is not None and not self.callback_module_slot_mask:
+            self._has_empty_module_expiry = True
+        return self.states.taint_slots(state_id, self.module_slot_mask)
 
     def _configure_callback_namespace(
         self,
@@ -3198,6 +3289,8 @@ class _Analyzer:
             self.callback_module_slot_mask |= 1 << self._ensure_module_slot(name)
 
     def _module_slot(self, name: str) -> int | None:
+        if self._foreign_reads is not None:
+            self._foreign_reads.add(name)
         assert self.module_scope is not None
         return self.module_scope.slots.get(name)
 
@@ -3216,11 +3309,14 @@ class _Analyzer:
         self, state_id: int, scope: _Scope
     ) -> PythonModuleMetadataProof:
         """Read callback custody and loader-pristine slots from raw storage."""
+        assert self.module_scope is not None
+        module_slots = self.module_scope.slots
         epoch = self.states.get(state_id).taint_epoch
         clean = True
         pristine: set[str] = set()
         for name in _METADATA_NAMES:
-            slot = self._module_slot(name)
+            # The foreign-write footprint already includes this entire family.
+            slot = module_slots.get(name)
             if slot is None:
                 # A bounded namespace gains no name a callback could bind.
                 clean &= epoch == 0 or self._callback_module_names is not None
@@ -3266,6 +3362,8 @@ class _Analyzer:
             # Class global directives carry into class-visible annotation
             # scopes, but never override a current scope's own type parameter.
             slot = self._module_slot(name)
+        elif scope.kind == "module":
+            slot = self._module_slot(name)
         else:
             slot = scope.slots.get(name)
             if slot is None:
@@ -3290,6 +3388,8 @@ class _Analyzer:
         cell, as CPython's symtable passes `__class__` to a class's children.
         """
         while parent is not None:
+            if parent.kind == "module":
+                return self._module_slot(name)
             if parent.kind != "class" or parent is annotation_owner:
                 slot = parent.slots.get(name)
                 if slot is not None:
@@ -6959,7 +7059,7 @@ class _Analyzer:
         if not strings:
             self._ensure_module_read_slots()
             state_id = self.states.invalidate_namespace_values(state_id)
-            state_id = self.states.taint_slots(state_id, self.module_slot_mask)
+            state_id = self._taint_module_slots(state_id)
             return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
         effects = RAISES
         if self.states.get(state_id).namespace_values_unknown:
@@ -7801,7 +7901,7 @@ class _Analyzer:
                 # IMPORT_STAR writes this module now, independently of which
                 # globals later callbacks are allowed to replace.
                 self._namespace_observation_epoch += 1
-                state_id = self.states.taint_slots(state_id, self.module_slot_mask)
+                state_id = self._taint_module_slots(state_id)
             for alias in node.names:
                 if alias.name == "*":
                     continue
@@ -8910,7 +9010,14 @@ class _Analyzer:
             self._active_lexical_history = previous_history
             self._observed_stack.pop()
 
-    def _seal_deferred_execution(self) -> None:
+    def _seal_deferred_execution(
+        self,
+    ) -> tuple[
+        tuple[PythonExpressionFact, ...],
+        tuple[PythonStatementFact, ...],
+        tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
+        bool,
+    ]:
         # Two finite summaries per existing lexical scope: direct execution,
         # and an escaped value that may expose descendants/returned callables.
         # Build reverse edges once; each effect bit traverses each edge once.
@@ -9010,47 +9117,55 @@ class _Analyzer:
                     if target not in queued:
                         queued.add(target)
                         pending.append(target)
-        for scope in self.scopes:
-            scope.module_metadata_effects = effects[2 * scope.scope_id]
+        module_import_flow_required = self._module_import_flow_required
 
-        def seal_collection[
+        def seal[
             Fact: PythonExpressionFact | PythonIterationFact | PythonStatementFact
-        ](
-            collection: dict[PythonNodeKey, Fact],
-            project: Callable[[PythonNodeKey, Fact], Fact] | None = None,
-        ) -> None:
-            # Value replacement does not change the dictionary's key set.
-            for key, original in collection.items():
-                fact = original if project is None else project(key, original)
-                resolved = fact.module_metadata_effects
-                for ref in fact.deferred_execution:
-                    targets = indices(ref)
-                    if not targets:
-                        resolved |= WRITES_MODULE_METADATA
-                    for target in targets:
-                        resolved |= effects[target]
-                if resolved != fact.module_metadata_effects:
-                    fact = replace(fact, module_metadata_effects=resolved)
-                if fact is not original:
-                    collection[key] = fact
-                self._module_import_flow_required |= bool(resolved)
+        ](fact: Fact) -> Fact:
+            nonlocal module_import_flow_required
+            resolved = fact.module_metadata_effects
+            for ref in fact.deferred_execution:
+                targets = indices(ref)
+                if not targets:
+                    resolved |= WRITES_MODULE_METADATA
+                for target in targets:
+                    resolved |= effects[target]
+            module_import_flow_required |= bool(resolved)
+            if resolved != fact.module_metadata_effects:
+                return replace(fact, module_metadata_effects=resolved)
+            return fact
+
+        iterations = {key: seal(fact) for key, fact in self.iterations.items()}
 
         def project_statement(
-            key: PythonNodeKey, fact: PythonStatementFact
+            fact: PythonStatementFact,
         ) -> PythonStatementFact:
-            if fact.iteration is None:
-                return fact
-            iteration = self.iterations.get(key, fact.iteration)
-            return (
-                fact
-                if iteration is fact.iteration
-                else replace(fact, iteration=iteration)
-            )
+            if fact.iteration is not None:
+                iteration = iterations.get(fact.node, fact.iteration)
+                if iteration is not fact.iteration:
+                    fact = replace(fact, iteration=iteration)
+            return seal(fact)
 
-        seal_collection(self.expressions)
-        seal_collection(self.iterations)
-        # Statements must project the already sealed iteration facts.
-        seal_collection(self.statements, project_statement)
+        # Transfer facts and scope effects remain available for another
+        # projection after a deferred input changes.
+        expressions = tuple(
+            sorted(
+                (seal(fact) for fact in self._project_builtin_guard_bits()),
+                key=lambda fact: fact.node,
+            )
+        )
+        statements = tuple(
+            sorted(
+                map(project_statement, self.statements.values()),
+                key=lambda fact: fact.node,
+            )
+        )
+        return (
+            expressions,
+            statements,
+            tuple(sorted(iterations.items())),
+            module_import_flow_required,
+        )
 
     def _overlay_future_states(
         self,
@@ -9187,7 +9302,14 @@ class _Analyzer:
         self._module_read_slots_prepared = False
         self.module_slots = set(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
+        declared_slots = len(self.slot_names)
         self._configure_callback_namespace(tree, ast_digest_admission)
+        if (
+            self._foreign_universe is not None
+            and self._callback_module_names is not None
+        ):
+            self._foreign_reads = set(_METADATA_NAMES)
+            self._foreign_slot_bounds = (declared_slots, len(self.slot_names))
         if self._star_import_origins:
             # Star imports can shadow otherwise undeclared globals, including
             # builtin fallbacks. Give actual global reads storage so the
@@ -9205,9 +9327,12 @@ class _Analyzer:
         try:
             module_flow = self.exec_statements(tree.body, entry_state, module)
             if module_flow.normal is not None:
-                namespace = self.source_namespaces.setdefault(
-                    python_node_source_key(tree), {}
-                )
+                namespace = self.source_namespaces.setdefault(self._module_source, {})
+                if (
+                    self._foreign_reads is not None
+                    and self.states.get(module_flow.normal).taint_epoch
+                ):
+                    self._foreign_tainted_exit = self._module_source
                 for name, slot in module.slots.items():
                     if (
                         self.states.binding(module_flow.normal, slot)
@@ -9224,50 +9349,57 @@ class _Analyzer:
             self._observed_stack.pop()
         self._active_lexical_history = None
 
+    def _run_deferred_job(self, job: _FunctionJob) -> None:
+        # Deferred bodies can run after any observed module state. Parent
+        # function state supplies closure cells and the module summary widens
+        # the globals used in this activation.
+        module_states = job.module_states
+        if module_states is None:
+            assert job.module_history_start is not None
+            module_states = self._module_history
+            module_state_start = min(
+                job.module_history_start, len(self._module_history)
+            )
+        else:
+            # Only (job_outer,) and unions of such nonempty tuples are minted.
+            assert module_states, "deferred module-state authority is nonempty"
+            module_state_start = 0
+        job_outer = self._overlay_future_states(
+            job.outer_state_id,
+            module_states,
+            module_state_start,
+            job.module_base_bindings,
+        )
+        if job.lexical_history is not None:
+            job_outer = self._overlay_future_states(
+                job_outer,
+                job.lexical_history,
+                job.lexical_history_start,
+                job.lexical_base_bindings,
+            )
+        previous_module_states = self._active_module_states
+        self._active_module_states = (job_outer,)
+        try:
+            self._analyze_function_job(job, job_outer)
+        finally:
+            self._active_module_states = previous_module_states
+
     def _finish_analysis(
         self, cursor: int, *, capture: Callable[[_Analyzer, int], None] | None = None
     ) -> _BindingAnalysis:
         while cursor < len(self.function_jobs):
-            # Exponential spacing keeps retained work logarithmic in the
-            # number of deferred jobs. Small bodies cost less to replay.
-            if capture is not None and cursor >= 64 and not cursor & (cursor - 1):
+            # Exponential spacing bounds checkpoints in each deferred suffix.
+            # The retention policy admits early boundaries on small sources.
+            if capture is not None and cursor >= 2 and not cursor & (cursor - 1):
                 capture(self, cursor)
-            job = self.function_jobs[cursor]
+            self._run_deferred_job(self.function_jobs[cursor])
             cursor += 1
-            # Deferred bodies can run after any observed module state.  Parent
-            # function state is retained for closure cells; module globals are
-            # widened by the shared summary through the join.
-            module_states = job.module_states
-            if module_states is None:
-                assert job.module_history_start is not None
-                module_states = self._module_history
-                module_state_start = min(
-                    job.module_history_start, len(self._module_history)
-                )
-            else:
-                # Only (job_outer,) and unions of such nonempty tuples are minted.
-                assert module_states, "deferred module-state authority is nonempty"
-                module_state_start = 0
-            job_outer = self._overlay_future_states(
-                job.outer_state_id,
-                module_states,
-                module_state_start,
-                job.module_base_bindings,
-            )
-            if job.lexical_history is not None:
-                job_outer = self._overlay_future_states(
-                    job_outer,
-                    job.lexical_history,
-                    job.lexical_history_start,
-                    job.lexical_base_bindings,
-                )
-            previous_module_states = self._active_module_states
-            self._active_module_states = (job_outer,)
-            try:
-                self._analyze_function_job(job, job_outer)
-            finally:
-                self._active_module_states = previous_module_states
-        self._seal_deferred_execution()
+        return self._project_analysis()
+
+    def _project_analysis(self) -> _BindingAnalysis:
+        expressions, statements, iterations, flow_required = (
+            self._seal_deferred_execution()
+        )
         scope_facts = tuple(
             PythonScopeFact(
                 scope.scope_id,
@@ -9340,13 +9472,9 @@ class _Analyzer:
             source_completions=tuple(sorted(self.source_completions.items())),
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
-            expressions=tuple(
-                sorted(self._project_builtin_guard_bits(), key=lambda fact: fact.node)
-            ),
-            statements=tuple(
-                sorted(self.statements.values(), key=lambda fact: fact.node)
-            ),
-            iterations=tuple(sorted(self.iterations.items())),
+            expressions=expressions,
+            statements=statements,
+            iterations=iterations,
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
             class_annotation_namespaces=frozenset(
@@ -9387,16 +9515,13 @@ class _Analyzer:
             ),
             slot_names=tuple(self.slot_names),
         )
-        flow_required = (
-            self._module_import_flow_required or import_relevant_assignment_effects
-        )
         return _BindingAnalysis(
             facts,
             # Source demand proofs may require a projection even when strict
             # metadata is invariant. Preserve canonical no-effect assignments;
             # dropping them would turn harmless stores into unknown callbacks.
             MappingProxyType(dict(self.assignment_effects)),
-            flow_required,
+            flow_required or import_relevant_assignment_effects,
             (
                 None
                 if self._opaque_activation_sources is None
@@ -9412,6 +9537,16 @@ class _Analyzer:
                         if not answer
                         for source in group
                     ),
+                )
+            ),
+            (
+                None
+                if self._foreign_reads is None
+                else _ForeignNamespaceReads(
+                    frozenset(self._foreign_reads),
+                    *self._foreign_slot_bounds,
+                    self._foreign_tainted_exit,
+                    self._has_empty_module_expiry,
                 )
             ),
         )
@@ -9485,6 +9620,10 @@ class _BindingCheckpoint:
     prefix: _Analyzer
 
 
+def _binding_checkpoint_size(analyzer: _Analyzer) -> int:
+    return len(analyzer.states) + len(analyzer.expressions) + len(analyzer.statements)
+
+
 class _BindingRevisions:
     """Operation-local prefixes for adjacent policies of the same source."""
 
@@ -9553,9 +9692,11 @@ class _BindingRevisions:
                 return
             # Bound retention on large sources as well as on many small
             # sources. Exact analysis still runs after a refused checkpoint.
-            if (
-                len(owner.states) + len(owner.expressions) + len(owner.statements)
-                > 32768
+            size = _binding_checkpoint_size(owner)
+            if size > 32768:
+                return
+            if 0 < completed_jobs < 64 and (
+                not checkpoints or checkpoints[0].completed_jobs != 0 or size > 1200
             ):
                 return
             checkpoints.append(
@@ -9564,12 +9705,32 @@ class _BindingRevisions:
             if len(checkpoints) > 8:
                 del checkpoints[0]
 
+        if (
+            cursor == 0
+            and not checkpoints
+            and analyzer.function_jobs
+            and _binding_checkpoint_size(analyzer) <= 512
+        ):
+            capture(analyzer, 0)
         result = analyzer._finish_analysis(cursor, capture=capture)
         with self._lock:
-            self._recent[key] = tuple(checkpoints)
-            self._recent.move_to_end(key)
-            if len(self._recent) > 4:
-                self._recent.popitem(last=False)
+            self._recent.pop(key, None)
+            if checkpoints:
+                self._recent[key] = tuple(checkpoints)
+                large: list[tuple[str, PythonBindingFlowPolicy]] = []
+                small_closed: list[tuple[str, PythonBindingFlowPolicy]] = []
+                small_escaped: list[tuple[str, PythonBindingFlowPolicy]] = []
+                for retained_key, retained in self._recent.items():
+                    if retained[-1].completed_jobs >= 64:
+                        large.append(retained_key)
+                    elif retained[0].prefix._opaque_activation_sources:
+                        small_escaped.append(retained_key)
+                    else:
+                        small_closed.append(retained_key)
+                # Newly exposed modules and modules with existing escapes have
+                # their own quota. Short captures cannot evict a large prefix.
+                for evicted in (*large[:-4], *small_closed[:-8], *small_escaped[:-8]):
+                    del self._recent[evicted]
         return result
 
 
@@ -9716,7 +9877,7 @@ class _BindingCache[T]:
         key: tuple[object, ...],
         compute: Callable[[], T],
         *,
-        reusable: Callable[[tuple[object, ...], T], bool] | None = None,
+        reuse: Callable[[tuple[object, ...], T], T | None] | None = None,
     ) -> T:
         owner = False
         with self._lock:
@@ -9725,11 +9886,11 @@ class _BindingCache[T]:
                 return cached
             pending = self._pending.get(key)
             if pending is None:
-                if reusable is not None:
+                if reuse is not None:
                     for prior_key, result in reversed(self._ready.items()):
-                        if reusable(prior_key, result):
-                            self._remember_ready(key, result)
-                            return result
+                        if (revised := reuse(prior_key, result)) is not None:
+                            self._remember_ready(key, revised)
+                            return revised
                 pending = _PendingAnalysis()
                 self._pending[key] = pending
                 self._computations += 1
@@ -9837,26 +9998,42 @@ def _binding_analysis(
         raise TypeError("binding fixpoint requires an exact flow-only policy")
     key = (_ANALYSIS_SCHEMA, source_digest, policy)
 
-    def reusable(prior_key: tuple[object, ...], result: _BindingAnalysis) -> bool:
+    def reuse(
+        prior_key: tuple[object, ...], result: _BindingAnalysis
+    ) -> _BindingAnalysis | None:
         if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
-            return False
+            return None
         prior = cast(PythonBindingFlowPolicy, prior_key[2])
         opaque = policy.opaque_activation_sources
         assert opaque is not None
         # A deterministic transfer observes the same branches while every
-        # consumed activation query agrees. Keep the rest of the policy exact.
-        return replace(
-            prior, opaque_activation_sources=opaque
-        ) == policy and result.opaque_activation_reads.unchanged_under(
-            frozenset(opaque)
+        # consumed activation query agrees. Named additions may alter unused
+        # namespace slots. All other input families keep their exact identity.
+        prior = replace(prior, opaque_activation_sources=opaque)
+        if not result.opaque_activation_reads.unchanged_under(frozenset(opaque)):
+            return None
+        if prior == policy:
+            return result
+        former, current = (
+            prior.foreign_namespace_writes,
+            policy.foreign_namespace_writes,
         )
+        if (
+            policy.foreign_namespace_universe is None
+            or former is None
+            or current is None
+            or not frozenset(former).issubset(current)
+            or replace(prior, foreign_namespace_writes=current) != policy
+        ):
+            return None
+        return result.with_added_foreign_slots(frozenset(current).difference(former))
 
     return _CORE_CACHE.get_or_compute(
         key,
         lambda: _Analyzer(policy, source_digest).analyze(
             tree(), ast_digest_admission=ast_digest_admission
         ),
-        reusable=reusable if policy.opaque_activation_sources is not None else None,
+        reuse=reuse if policy.opaque_activation_sources is not None else None,
     )
 
 

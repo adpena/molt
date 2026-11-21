@@ -147,6 +147,28 @@ def test_guard_scratch_follows_the_hot_record_and_names_the_former_root(
     assert scratch.former_scratch_root(lane, selected) is None
 
 
+def test_stdlib_family_locks_stay_where_the_backend_takes_them(
+    tmp_path: Path,
+) -> None:
+    # HF-970: the Rust backend names <cache_root>/locks/<family>.<xx>.lock and
+    # does not read the hot record; a hot mirror for these split one lock in two.
+    artifact = tmp_path / "artifact"
+    cache = artifact / ".molt_cache"
+    cache.mkdir(parents=True)
+    _bind(artifact, tmp_path / "home" / "hot")
+    key = "ab" + "0" * 62
+    for select, family in (
+        (default_paths.shared_stdlib_cache_entry, "shared-stdlib"),
+        (default_paths.native_stdlib_archive_cache_entry, "native-stdlib-archive"),
+        (default_paths.native_stdlib_object_cache_entry, "native-stdlib-object"),
+    ):
+        assert select(cache, key)[1] == cache / "locks" / f"{family}.ab.lock"
+    # Python-only locks still follow the record.
+    assert default_paths.shared_cache_lock_path(cache, "prune").is_relative_to(
+        tmp_path / "home" / "hot"
+    )
+
+
 def test_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
     from molt import dx
 
