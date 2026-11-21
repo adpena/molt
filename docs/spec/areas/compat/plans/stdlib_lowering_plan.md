@@ -118,8 +118,9 @@ per premise revision.
    Revision waves now group known active writers and receivers by component. A component
    waits while an ancestor component has pending revisions. A new admission or demand can
    change the order before the next wave. Unrelated components keep the same batch, and the
-   convergence check still covers writes through unknown receivers. Nested convergence
-   boundaries and the summary solver remain open.
+   convergence check still covers writes through unknown receivers. For revisions within a
+   cycle, remove its already evaluated head and settle its nested components before revisiting
+   the head. Dependent components wait for the outer exit. The summary solver remains open.
 5. *Incremental records.* The scan producer becomes a leaf of `compiler_analysis` with no CLI
    imports, and the `molt.frontend` package import becomes lazy (PEP 562). Each record kind is
    keyed by its producer's own import closure, so a frontend edit keeps scan records valid.
@@ -131,6 +132,36 @@ per premise revision.
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.
+
+#### Development source-to-TIR materialization
+
+Proposed for integrator review.
+
+The frontend owns an operation that materializes a body by its function identity in a frozen
+compilation plan. The plan seals source bytes, target, settled namespace facts and declaration
+identities. Declarations carry signatures and the metadata needed to create function objects,
+closures and tasks. The entry and module initializers seed demand. Calls, value escapes, import
+custody and observable metadata add demands through the existing source-value graph. An unresolved
+selection demands every eligible body in its current conservative set.
+
+One owner produces final TIR and its existing function digest for each demanded definition.
+Concurrent requests share its result or its diagnostic. The compiler publishes the result only
+after it has validated the declaration, frame layout, referenced definitions and runtime symbols
+against the sealed plan. Whole-program diagnostics demand every body through the same operation.
+Release compilation does the full solve through this operation as well.
+
+The first integration settles source demands during compilation and passes the sealed TIR closure
+to the existing JIT image and first-call code owner. Every runtime-visible function and launch
+descriptor must have custody before publication. The runner keeps stable entries, launch
+metadata and first-call native compilation. Deferring source-to-TIR work beyond launch would
+require a runner-owned materializer for sealed inputs that can execute independently of the
+frontend host process. The current directly executable image contract requires that independence.
+
+Discovery owns the demand plan and the minimum frontend entry points. The JIT lane owns acceptance
+at `jit_pipeline.py` and the image and runner contracts. Qualification compares demanded TIR and
+diagnostics with the eager build, checks that an unreachable body stays unanalyzed, and exercises
+an escaped callable, an import-selected callable, a closure, a resumable frame and concurrent
+first calls. Measure launch and first-call latency separately.
 
 **Invariants.**
 - A summary is a pure function of (source digest, target plan, analysis schema, premise inputs).
