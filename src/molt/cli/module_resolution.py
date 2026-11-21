@@ -1017,6 +1017,13 @@ def _roots_for_module(
     return roots
 
 
+# Submodules a non-package stdlib module publishes from another module's body.
+# A registry alias row serves each (``backend_ir`` registry construction), so
+# the publisher writes no import state (HF-841, bedrock §13 D8): CPython 3.15's
+# math publishes ``_math_integer`` as ``math.integer``.
+STDLIB_SUBMODULE_ALIASES: dict[str, str] = {"math.integer": "_math_integer"}
+
+
 def _runtime_owned_module_roots(stdlib_root: Path | None = None) -> tuple[Path, ...]:
     stdlib_root = (stdlib_root or _stdlib_root_path()).resolve()
     package_root = stdlib_root.parent

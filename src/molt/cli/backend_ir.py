@@ -87,6 +87,7 @@ from molt.cli.module_registry import (
     runtime_builtin_kind,
 )
 from molt.cli.output import CliFailure as _CliFailure
+from molt.cli.module_resolution import STDLIB_SUBMODULE_ALIASES
 from molt.cli import required_features as _required_features
 from molt.cli import runtime_features as _runtime_features
 from molt.target_python import TargetPythonVersion
@@ -574,6 +575,19 @@ def _build_module_registry(
                 fixed=not import_redirects.closed_writers(name),
             )
         )
+    for alias, target in sorted(STDLIB_SUBMODULE_ALIASES.items()):
+        if target in module_order_set and alias not in module_order_set:
+            entries.append(
+                ModuleRegistryEntry(
+                    name=alias,
+                    kind="alias",
+                    has_location=False,
+                    is_stdlib_provider=True,
+                    alias_of=target,
+                    origin=f"<static:{alias}>",
+                    fixed=not import_redirects.closed_writers(alias),
+                )
+            )
     for name, portions in sorted(namespace_portions_by_module.items()):
         entries.append(
             ModuleRegistryEntry(
