@@ -1,5 +1,10 @@
 # RC Ownership & Drop Insertion Substrate (Design 20)
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 **Document status**: Implemented ownership model with historical activation notes;
 current consolidation changes still require source-bound target execution.
 **Scope**: All refcounting backends — native/Cranelift, LLVM, WASM. Luau is GC-managed (no-op). This is a complete structural arc, not a partial fix.

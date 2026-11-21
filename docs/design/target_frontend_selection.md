@@ -190,7 +190,7 @@ adds no second publisher, registry or cache.
    `PYTHONDONTWRITEBYTECODE=1`, `UV_NO_SYNC=1`, a default
    `PYTHONUNBUFFERED`, and no `PYTHONHOME` or conda variables. Every compiler
    launch uses it: the native build and the batch compile server in
-   `tests/molt_diff.py`, and the WASM, LLVM, JIT and Luau `molt.cli build`
+   `tests/molt_diff.py`, and the WASM, LLVM and JIT `molt.cli build`
    commands in `tools/compat/backends.py`. The JIT runner, which compiles
    inside its run phase, is a Rust guest-side binary and stays unprojected.
    `BackendExecutionContext.molt_cli_python` stays as the one executable; the
@@ -343,7 +343,7 @@ Unit tests (independent oracles):
 - `_compiler_frontend` refuses an oracle whose release is neither the harness
   nor `R`, naming both releases.
 - `compiler_environment` and the build sites: with an image frontend, the
-  native build, batch server and the WASM, LLVM, JIT and Luau build commands
+  native build, batch server and the WASM, LLVM and JIT build commands
   get the image's `UV_PROJECT_ENVIRONMENT` and `PYTHONPYCACHEPREFIX`; their
   guest run environments do not.
 - `run_diff`: one selection for a multi-item run on each path (serial, pool,
@@ -405,7 +405,7 @@ Gate: `python -B tools/molt_dev.py land --repo <slot> --precheck-only`.
   release can serve another release of the same target minor. This predates
   the slice (a 3.14 harness already compiles 3.12 targets into the same keys);
   it is reported as a sibling, not fixed here.
-- Real LLVM, JIT and Luau cells on 3.13: their build commands are wired and
+- Real LLVM and JIT cells on 3.13: their build commands are wired and
   unit-tested, not run.
 
 ## Review record
@@ -432,6 +432,6 @@ is emitted once (decision 8); developer commands that forward
 lease is built from the image root and re-checked (decision 5); decision 9's
 evidence corrected, with stability, platform and PEP 739 notes. Answered
 without change: publication stays on demand, not a separate step; the oracle
-path is checked at selection (I3); the build-cache key gap and the LLVM, JIT
-and Luau cells are out of scope. Two rounds are spent; the remaining scope is
+path is checked at selection (I3); the build-cache key gap and the LLVM and JIT
+cells are out of scope. Two rounds are spent; the remaining scope is
 as written.

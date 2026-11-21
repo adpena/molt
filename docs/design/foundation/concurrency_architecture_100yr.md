@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!-- 100-year concurrency architecture (GIL / free-threaded / subinterpreter). Principal-architect synthesis of read-only research workflow wq6q37loo, 2026-06-27. -->
 
 Verification complete. The reports are accurate on every load-bearing point, with one correction I'll carry: `IsolationClass`/`SchedulerDomain` are **designed-only, not implemented** (grep-confirmed zero matches) — the escape *substrate* (`EscapeState`) is live, but the isolation *projection* is greenfield. I'll write the architecture with that distinction precise.

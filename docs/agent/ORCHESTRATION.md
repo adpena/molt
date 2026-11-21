@@ -433,8 +433,8 @@ LANDED (4b7f5bbde) and is the pattern to generalize.
   iadd/imul/fadd/fdiv in loop bodies with box/unbox hoisted to loop
   boundaries. Ingredients: `runtime/molt-passes/src/tir/scalar_carriers.rs`,
   `value_range.rs`, the CheckedMul lowering
-  (Cranelift `smulhi`, 64-bit-exact flag; Luau conservative; WASM boxed
-  until R4a). Carrier disagreements between value_range/arith_division/
+  (Cranelift `smulhi`, 64-bit-exact flag; LLVM and LLVM wasm32 share
+  the same lowering). Carrier disagreements between value_range/arith_division/
   scalar_carriers are P0 silent-wrong-answer bugs (the loop-IV modulo class)
   — one carrier authority, gated by R3a.
 - R3c Dynamic-IV bounds-check elimination (GAP-3): UNBLOCKED ONLY after R3a

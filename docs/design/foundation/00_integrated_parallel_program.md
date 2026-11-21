@@ -2,6 +2,11 @@
 
 # molt Compiler Foundation — Integrated Build Program
 
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
+
 This is the master coordination artifact for the multi-tier foundation program.
 It tracks what has landed, what is in flight, and the dependency edges that
 order the remaining work. Design docs in this directory carry the full per-arc

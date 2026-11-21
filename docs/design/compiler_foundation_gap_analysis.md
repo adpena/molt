@@ -248,8 +248,8 @@ Adopt, in order of expected gain:
 Reject, because Molt keeps CPython semantics: wrapping 64-bit `int`, fixed fields with compile
 errors for unknown attributes, compile-time-only `__getattr__`, Boehm GC (`__del__` and weakref
 timing need reference counts), operators only as magic-method calls (Molt's opcodes encode the
-`__radd__`/`NotImplemented` protocol), and Itanium unwinding everywhere (WASM and Luau are
-co-equal targets).
+`__radd__`/`NotImplemented` protocol), and Itanium unwinding everywhere (WASM is a
+co-equal target).
 
 ## Dependency-correct build order (the program)
 The Tier-0 substrate has landed (see `foundation/00_integrated_parallel_program.md`). The order for

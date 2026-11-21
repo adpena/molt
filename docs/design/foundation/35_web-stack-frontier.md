@@ -1,3 +1,7 @@
+> 2026-11-21 status: the Luau and Rust-source targets and the direct WASM backend named in this
+> design are deleted. Shipped backends are Cranelift and LLVM; WASM builds through LLVM wasm32.
+> Current authorities: `docs/design/foundation/call_anatomy.md` and `78_whole_program_type_flow.md`.
+
 <!--
 Foundation design 35 — Web Stack Frontier. The end-state design for molt's web stack:
 HTTP/1.1 + HTTP/2, TLS, sockets, WebSockets, the ASGI server runtime (standalone server
