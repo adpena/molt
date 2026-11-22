@@ -446,6 +446,9 @@ pub(crate) unsafe fn call_class_init_with_args(
             }
             return ellipsis_bits(_py);
         }
+        if class_bits == builtins.reference_type {
+            return crate::builtins::weakref_type::new_from_positional(_py, class_bits, args);
+        }
         if class_bits == builtins.function {
             return crate::builtins::functions::function_type_new_from_args(_py, args);
         }

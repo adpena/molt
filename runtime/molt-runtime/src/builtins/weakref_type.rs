@@ -73,31 +73,33 @@ pub(crate) extern "C" fn weakref_new_method(__context: u64, args: u64, kwargs: u
         ) else {
             return MoltObject::none().bits();
         };
-        let values = call.values();
-        if values.is_empty() || values.len() > 2 {
+        // weakref.__new__ ignores kwargs; the published __init__ rejects them.
+        new_from_positional(py, class, call.values())
+    })
+}
+
+/// The immutable ReferenceType's __init__ only checks its receiver. A positional
+/// call to that exact class can return the owner produced by __new__ directly.
+pub(crate) fn new_from_positional(py: &crate::PyToken<'_>, class: u64, values: &[u64]) -> u64 {
+    let (target, callback) = match values {
+        [target] => (*target, MoltObject::none().bits()),
+        [target, callback] => (*target, *callback),
+        [] => {
             return raise_exception::<_>(
                 py,
                 BuiltinExc::TypeError,
-                &format!(
-                    "__new__ expected at {} {} argument{}, got {}",
-                    if values.is_empty() { "least" } else { "most" },
-                    if values.is_empty() { 1 } else { 2 },
-                    if values.is_empty() { "" } else { "s" },
-                    values.len(),
-                ),
+                "__new__ expected at least 1 argument, got 0",
             );
         }
-        // weakref.__new__ ignores kwargs; the published __init__ rejects them.
-        molt_weakref_new_attached_body(
-            py,
-            class,
-            values[0],
-            values
-                .get(1)
-                .copied()
-                .unwrap_or_else(|| MoltObject::none().bits()),
-        )
-    })
+        _ => {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                &format!("__new__ expected at most 2 arguments, got {}", values.len()),
+            );
+        }
+    };
+    molt_weakref_new_attached_body(py, class, target, callback)
 }
 
 pub(crate) fn molt_weakref_new_attached_body(

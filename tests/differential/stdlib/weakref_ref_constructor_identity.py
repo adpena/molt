@@ -16,6 +16,12 @@ print(w() is d)
 print(type(w).__name__)
 print("ref-type-identity", weakref.ref is weakref.ReferenceType)
 print("exact-cache", weakref.ref(d) is w)
+print("explicit-none-cache", weakref.ref(*(d, None)) is w)
+for invalid in ((), (d, None, None), (42,)):
+    try:
+        weakref.ref(*invalid)
+    except TypeError as exc:
+        print("constructor-error", type(exc).__name__, str(exc))
 callback_descriptor = weakref.ReferenceType.__dict__["__callback__"]
 print(
     "callback-descriptor-published",

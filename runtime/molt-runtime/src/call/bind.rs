@@ -418,6 +418,11 @@ pub(crate) unsafe fn call_bind_with_arguments(
                 self_bits = Some(bound_method_self_bits(call_ptr));
             }
             TYPE_ID_TYPE => {
+                // The exact, immutable metaclass type owns the native type.__call__
+                // slot. Custom metaclasses still bind their descriptor below.
+                if object_class_bits(call_ptr) == builtin_classes(_py).type_obj {
+                    return call_type_with_arguments(_py, call_ptr, args);
+                }
                 match lookup_call_attr(_py, call_ptr) {
                     AttributeLookup::Found(call_attr_bits) => {
                         if !is_default_type_call(_py, call_attr_bits) {
