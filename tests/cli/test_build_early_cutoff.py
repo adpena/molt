@@ -189,7 +189,7 @@ def test_ir_lease_products_do_not_hide_explicit_source_inputs(
     def compile_program(request: BuildRequest) -> int:
         lease = _write_backend_ir_lease(
             root, BackendIrProgram({"functions": []}, FunctionDigests())
-        )
+        ).path
         try:
             assert msgspec.msgpack.decode(lease.read_bytes()) == {
                 "function_bodies": [],

@@ -6,7 +6,7 @@ from molt.compilation_target import admit_target
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
 
-from molt.cli.backend_ir_transport import BackendIrProgram
+from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
 from molt.cli.cache_keys import FunctionDigests
 
 import hashlib
@@ -807,7 +807,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         backend_timeout=None,
         molt_root=tmp_path,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: tmp_path / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: BackendIrLease(tmp_path / "ir.msgpack"),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,

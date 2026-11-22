@@ -13,6 +13,8 @@ is ``runtime/molt-ir/src/addressed_program.rs``.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import msgspec
@@ -20,6 +22,7 @@ import msgspec
 from molt.cli.function_records import encode_function_body
 
 if TYPE_CHECKING:
+    from molt.backend_protocol import BackendAddressedProgramInput
     from molt.cli.cache_keys import FunctionDigests
 
 # The header fields the backend admits; the lease carries no other key.
@@ -48,6 +51,14 @@ class ByteSink(Protocol):
     """Anything the transport can stream encoded bytes into."""
 
     def write(self, data: bytes, /) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BackendIrLease:
+    """The path and expected content of one completed IR lease."""
+
+    path: Path
+    expected_input: BackendAddressedProgramInput | None = None
 
 
 class BackendIrProgram:

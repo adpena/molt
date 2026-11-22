@@ -125,14 +125,14 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
 
     def prepare_compile(**kwargs: Any) -> None:
         phases.append("compile")
-        lease = kwargs["_ensure_backend_ir_file_path"]()
-        assert lease.is_file()
-        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {
+        lease = kwargs["_ensure_backend_ir_lease"]()
+        assert lease.path.is_file()
+        assert msgpack.unpackb(lease.path.read_bytes(), raw=False) == {
             "function_bodies": [],
             "function_digests": b"",
         }
-        assert kwargs["_ensure_backend_ir_file_path"]() == lease
-        leases.append(lease)
+        assert kwargs["_ensure_backend_ir_lease"]() is lease
+        leases.append(lease.path)
         fail_symbol_inspection()
 
     monkeypatch.setattr(

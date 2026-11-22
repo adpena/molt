@@ -402,6 +402,12 @@ The CLI allocates a lease only after a cache miss. It writes an exclusive file
 with standard map and array headers and one encoded body resident at a time.
 A failed create does not grant cleanup ownership; a failed write removes only
 the newly created lease. The lease lives until its synchronous request ends.
+When the caller needs an emission observation, the writer retains the size and
+SHA-256 of the exact stream it wrote, including the module registry, code slots
+and profile. For a new emission, the CLI checks
+these facts and the ordered function digests against the backend's observation
+of the consumed stream. The CLI does not reopen the lease to derive its expected
+identity. A cache hit carries the original emission's observation.
 Daemon and standalone receivers share one direct typed reader rather than
 decoding through a JSON value tree. Both require EOF and admit a regular file
 descriptor using the existing nonblocking/device-aware open authority. Cache

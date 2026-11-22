@@ -220,7 +220,7 @@ def _run_jit_pipeline(
                     [
                         str(setup.backend_bin),
                         "--ir-file",
-                        str(lease),
+                        str(lease.path),
                         "--ir-format",
                         "msgpack",
                         "--native-output-kind",
@@ -239,7 +239,7 @@ def _run_jit_pipeline(
                     memory_guard_prefix="MOLT_BUILD",
                 )
             finally:
-                lease.unlink(missing_ok=True)
+                lease.path.unlink(missing_ok=True)
             if process.returncode:
                 raise ValueError(f"JIT stdlib preparation failed: {process.stderr}")
             _validate_shared_stdlib_output_for_link(

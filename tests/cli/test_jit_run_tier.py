@@ -971,7 +971,9 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         jit_pipeline, "_validate_shared_stdlib_output_for_link", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        jit_pipeline, "_write_backend_ir_lease", lambda *_: tmp_path / "lease"
+        jit_pipeline,
+        "_write_backend_ir_lease",
+        lambda *_: SimpleNamespace(path=tmp_path / "lease"),
     )
     monkeypatch.setattr(
         jit_pipeline,

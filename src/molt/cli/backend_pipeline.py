@@ -27,7 +27,7 @@ from molt.cli.build_request import FactGraphRequest
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
-from molt.cli.backend_ir_transport import BackendIrProgram
+from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
@@ -216,20 +216,22 @@ def _run_backend_pipeline(
             6,
         )
     resolved_modules = frozenset(module_graph)
-    backend_ir_file_path: Path | None = None
+    backend_ir_lease: BackendIrLease | None = None
 
-    def _ensure_backend_ir_file_path() -> Path:
-        nonlocal backend_ir_file_path
-        if backend_ir_file_path is None:
-            backend_ir_file_path = _write_backend_ir_lease(
-                prepared_build_roots.project_root, program
+    def _ensure_backend_ir_lease() -> BackendIrLease:
+        nonlocal backend_ir_lease
+        if backend_ir_lease is None:
+            backend_ir_lease = _write_backend_ir_lease(
+                prepared_build_roots.project_root,
+                program,
+                bind_input=capture_link_inputs,
             )
-        return backend_ir_file_path
+        return backend_ir_lease
 
     def _cleanup_backend_ir_file_path() -> None:
-        if backend_ir_file_path is not None:
+        if backend_ir_lease is not None:
             with contextlib.suppress(OSError):
-                backend_ir_file_path.unlink()
+                backend_ir_lease.path.unlink()
 
     pipeline_stage_ms: dict[str, float] | None = None
     if prepared_build_preamble.diagnostics_enabled:
@@ -348,7 +350,7 @@ def _run_backend_pipeline(
                 target=target,
                 entry_module=resolved_build_entry.entry_module,
                 prepare_backend_dispatch=_backend_compile._prepare_backend_dispatch,
-                ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
+                ensure_backend_ir_file_path=lambda: _ensure_backend_ir_lease().path,
                 cleanup_backend_ir_file_path=_cleanup_backend_ir_file_path,
                 run_subprocess_captured_to_tempfiles=_run_subprocess_captured_to_tempfiles,
                 subprocess_output_text=_subprocess_output_text,
@@ -393,7 +395,7 @@ def _run_backend_pipeline(
                     entry_module=resolved_build_entry.entry_module,
                     artifacts_root=artifacts_root,
                     program=program,
-                    _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
+                    _ensure_backend_ir_lease=_ensure_backend_ir_lease,
                     backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
                     backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
                     backend_daemon_health=prepared_build_preamble.backend_daemon_health,
@@ -415,9 +417,9 @@ def _run_backend_pipeline(
                 _fail(str(error), json_output, command="build")
             )
         finally:
-            if backend_ir_file_path is not None:
+            if backend_ir_lease is not None:
                 with contextlib.suppress(OSError):
-                    backend_ir_file_path.unlink()
+                    backend_ir_lease.path.unlink()
         if prepared_backend_compile_error is not None:
             return return_after_build_diagnostics(prepared_backend_compile_error)
         assert prepared_backend_compile is not None

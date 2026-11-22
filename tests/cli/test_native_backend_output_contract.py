@@ -6,6 +6,7 @@ from molt.compilation_target import admit_target
 
 from tests.cli.native_link_test_support import transport_codegen_binding
 
+from collections.abc import Collection
 import copy
 import hashlib
 import io
@@ -21,6 +22,7 @@ import pytest
 from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
 from molt.cli import native_symbol_inspection
 from molt.cli.backend_ir_transport import (
+    BackendIrLease,
     BackendIrProgram,
     _bin_header,
     _container_header,
@@ -542,7 +544,9 @@ def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
 
 def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    good = backend_execution._write_backend_ir_lease(tmp_path / "project", _program([]))
+    good = backend_execution._write_backend_ir_lease(
+        tmp_path / "project", _program([])
+    ).path
     lease_dir = good.parent
     assert msgpack.unpackb(good.read_bytes(), raw=False) == {
         "function_bodies": [],
@@ -678,8 +682,8 @@ def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkey
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     project = tmp_path / "project"
     empty = {"function_bodies": [], "function_digests": b""}
-    first = backend_execution._write_backend_ir_lease(project, _program([]))
-    second = backend_execution._write_backend_ir_lease(project, _program([]))
+    first = backend_execution._write_backend_ir_lease(project, _program([])).path
+    second = backend_execution._write_backend_ir_lease(project, _program([])).path
     assert first != second
     assert first.suffix == second.suffix == ".msgpack"
     assert msgpack.unpackb(first.read_bytes(), raw=False) == empty
@@ -700,12 +704,11 @@ def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkey
 def test_partial_ir_write_failure_releases_only_its_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     project = tmp_path / "project"
-    good = backend_execution._write_backend_ir_lease(project, _program([]))
+    good = backend_execution._write_backend_ir_lease(project, _program([])).path
     original = good.read_bytes()
 
     def fail_after_write(self, handle, shipped=None):
         handle.write(b"\x82\xaffunction_bodies\x91")
-        handle.flush()
         raise OSError("injected write failure")
 
     monkeypatch.setattr(BackendIrProgram, "write", fail_after_write)
@@ -735,6 +738,7 @@ def test_partial_ir_write_failure_releases_only_its_lease(tmp_path, monkeypatch)
         "output_sha",
         "output_size",
         "input_swap",
+        "lease_header_swap",
         "output_swap",
         "synced_missing",
     ],
@@ -830,6 +834,26 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
             del row["origin"]
         return {"ok": True, "jobs": [row]}, None
 
+    if fault == "lease_header_swap":
+        publish = backend_execution._write_backend_ir_lease
+
+        def substitute_lease(
+            project: Path,
+            program: BackendIrProgram,
+            shipped: Collection[int] | None,
+            *,
+            bind_input: bool,
+        ) -> BackendIrLease:
+            lease = publish(project, program, shipped, bind_input=bind_input)
+            payload = msgpack.unpackb(lease.path.read_bytes(), raw=False)
+            payload["profile"] = {"version": "replaced"}
+            lease.path.write_bytes(msgpack.packb(payload, use_bin_type=True))
+            return lease
+
+        monkeypatch.setattr(
+            backend_execution, "_write_backend_ir_lease", substitute_lease
+        )
+
     monkeypatch.setattr(backend_execution, "_backend_daemon_request_bytes", request)
     result = backend_execution._compile_with_backend_daemon(
         tmp_path / "daemon.sock",
@@ -848,8 +872,22 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
     )
     # Cached inputs describe the retained origin, not an unconsumed current
     # request. These observations do not establish semantic equivalence or E2.
-    accepted = fault is None or cached and fault in {"input_swap", "assembly_swap"}
+    accepted = (
+        fault is None
+        or cached
+        and fault
+        in {
+            "input_swap",
+            "assembly_swap",
+            "lease_header_swap",
+        }
+    )
     assert result.ok is accepted, result.error
+    if fault == "lease_header_swap" and not cached:
+        assert (
+            result.error
+            == "backend daemon origin names different addressed input assembly"
+        )
     if accepted:
         assert isinstance(result.origin, BackendEmissionOrigin)
         assert result.origin.producer.process_id == 73

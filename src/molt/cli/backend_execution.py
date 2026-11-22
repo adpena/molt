@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Collection, Mapping, cast, NamedTuple
+from typing import Any, BinaryIO, Collection, Mapping, cast, NamedTuple
 import uuid
 
 from molt.backend_environment import (
@@ -32,10 +32,11 @@ from molt.backend_environment import (
 from molt import backend_daemon_custody as _daemon_custody
 from molt.backend_protocol import (
     BACKEND_DAEMON_PROTOCOL_VERSION,
+    BackendAddressedProgramInput,
     BackendEmissionOrigin,
     validate_emission_scope,
 )
-from molt.cli.backend_ir_transport import BackendIrProgram
+from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
 from molt.backend_executable_names import (
     DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
     CodegenBackend,
@@ -892,11 +893,27 @@ def _backend_daemon_request_payload_bytes(
     return encoded + b"\n", None
 
 
+class _LeaseWriter:
+    def __init__(self, handle: BinaryIO):
+        self.handle = handle
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def write(self, data: bytes, /) -> None:
+        written = self.handle.write(data)
+        if written != len(data):
+            raise OSError("short backend IR lease write")
+        self.digest.update(data)
+        self.size += written
+
+
 def _write_backend_ir_lease(
     project_root: Path,
     program: BackendIrProgram,
     shipped: Collection[int] | None = None,
-) -> Path:
+    *,
+    bind_input: bool = False,
+) -> BackendIrLease:
     """Publish one uniquely named IR lease; a failed write leaves no file.
 
     The lease ships the bodies at ``shipped``; ``None`` ships every body.
@@ -907,13 +924,22 @@ def _write_backend_ir_lease(
     handle = lease_path.open("xb")
     try:
         with handle:
-            program.write(handle, shipped)
+            if not bind_input:
+                program.write(handle, shipped)
+                return BackendIrLease(lease_path)
+            writer = _LeaseWriter(handle)
+            program.write(writer, shipped)
+            return BackendIrLease(
+                lease_path,
+                BackendAddressedProgramInput(
+                    writer.digest.hexdigest(), writer.size, program.digest_hex()
+                ),
+            )
     except BaseException:
         # The IR streams body by body, so an encoder error can stop it
         # midway. Nothing returned the path yet, so nothing else owns it.
         lease_path.unlink(missing_ok=True)
         raise
-    return lease_path
 
 
 def _backend_daemon_artifact_contract_error(
@@ -1610,7 +1636,7 @@ def _compile_with_backend_daemon(
             False, contract_error, None, None, None, True, False
         )
 
-    ir_lease_identity: tuple[str, int] | None = None
+    ir_lease: BackendIrLease | None = None
 
     def request_bytes(*, ir_path: Path | None) -> tuple[bytes | None, str | None]:
         return _backend_daemon_compile_request_bytes(
@@ -1665,28 +1691,22 @@ def _compile_with_backend_daemon(
     )
     for lease_shipped in leases:
         try:
-            lease_path = _write_backend_ir_lease(project_root, program, lease_shipped)
+            ir_lease = _write_backend_ir_lease(
+                project_root, program, lease_shipped, bind_input=True
+            )
         except (OSError, TypeError, ValueError, OverflowError) as exc:
             error = f"backend daemon IR lease write failed: {exc}"
             break
         try:
-            from molt.toolchain_identity import stable_regular_file_identity
-
-            identity = stable_regular_file_identity(
-                lease_path, label="backend daemon addressed input lease"
-            )
-            ir_lease_identity = (identity.sha256, identity.size)
-            compile_request, error = request_bytes(ir_path=lease_path)
+            compile_request, error = request_bytes(ir_path=ir_lease.path)
             if error is not None:
                 break
             assert compile_request is not None
             full_request_sent = True
             response, error = send(compile_request)
-        except (OSError, ValueError) as exc:
-            error = f"backend daemon IR lease identity failed: {exc}"
         finally:
             with contextlib.suppress(OSError):
-                lease_path.unlink()
+                ir_lease.path.unlink()
         if error is not None:
             break
         health = _backend_daemon_health_from_response(response) if response else None
@@ -1755,9 +1775,7 @@ def _compile_with_backend_daemon(
                 )
             origin.verify_output(synced_output)
         if cached is not True and (
-            ir_lease_identity is None
-            or (origin.input.lease_sha256, origin.input.lease_size) != ir_lease_identity
-            or origin.input.function_digests != program.digest_hex()
+            ir_lease is None or origin.input != ir_lease.expected_input
         ):
             raise ValueError(
                 "backend daemon origin names different addressed input assembly"

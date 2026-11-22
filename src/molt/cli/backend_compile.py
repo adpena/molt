@@ -28,7 +28,7 @@ from molt.cli import factgraph as _factgraph
 from molt.cli.backend_artifact_contract import (
     resolve_backend_artifact_contract,
 )
-from molt.cli.backend_ir_transport import BackendIrProgram
+from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
     _backend_daemon_skip_output_sync_flags,
@@ -104,10 +104,7 @@ from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.artifact_publication import discard_staged_output
 from molt.file_publication import staged_file_path
-from molt.toolchain_identity import (
-    capture_stable_regular_file,
-    stable_regular_file_identity,
-)
+from molt.toolchain_identity import capture_stable_regular_file
 from molt.exact_json import loads_exact
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.file_locks import _shared_cache_lock
@@ -793,7 +790,7 @@ def _execute_backend_compile(
     backend_timeout: float | None,
     molt_root: Path,
     backend_cargo_profile: str,
-    _ensure_backend_ir_file_path: Callable[[], Path],
+    _ensure_backend_ir_lease: Callable[[], BackendIrLease],
     cache_hit: bool,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -1078,7 +1075,7 @@ def _execute_backend_compile(
             backend_output.parent.mkdir(parents=True, exist_ok=True)
             _entry_name = entry_module or "program"
             try:
-                ir_file_path = _ensure_backend_ir_file_path()
+                ir_lease = _ensure_backend_ir_lease()
             except (OSError, TypeError, ValueError, OverflowError) as exc:
                 return None, _fail(
                     f"Backend IR lease write failed: {exc}",
@@ -1086,7 +1083,12 @@ def _execute_backend_compile(
                     command="build",
                 )
             cmd_with_output.extend(
-                ["--ir-format", BACKEND_IR_LEASE_FORMAT, "--ir-file", str(ir_file_path)]
+                [
+                    "--ir-format",
+                    BACKEND_IR_LEASE_FORMAT,
+                    "--ir-file",
+                    str(ir_lease.path),
+                ]
             )
             try:
                 backend_process = _run_subprocess_captured_to_tempfiles(
@@ -1168,18 +1170,7 @@ def _execute_backend_compile(
                             "one-shot emission names another producer scope"
                         )
                     backend_emission_origin.verify_output(backend_output)
-                    lease = stable_regular_file_identity(
-                        ir_file_path, label="captured backend IR lease"
-                    )
-                    if (
-                        (
-                            backend_emission_origin.input.lease_sha256,
-                            backend_emission_origin.input.lease_size,
-                        )
-                        != (lease.sha256, lease.size)
-                        or backend_emission_origin.input.function_digests
-                        != program.digest_hex()
-                    ):
+                    if backend_emission_origin.input != ir_lease.expected_input:
                         raise ValueError(
                             "one-shot emission names a different consumed input assembly"
                         )
@@ -1268,7 +1259,7 @@ def _prepare_backend_compile(
     entry_module: str,
     artifacts_root: Path,
     program: BackendIrProgram,
-    _ensure_backend_ir_file_path: Callable[[], Path],
+    _ensure_backend_ir_lease: Callable[[], BackendIrLease],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
@@ -1410,7 +1401,7 @@ def _prepare_backend_compile(
                     backend_timeout=backend_timeout,
                     molt_root=molt_root,
                     backend_cargo_profile=backend_cargo_profile,
-                    _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
+                    _ensure_backend_ir_lease=_ensure_backend_ir_lease,
                     cache_hit=cache_hit,
                     backend_daemon_cached=backend_daemon_cached,
                     backend_daemon_cache_tier=backend_daemon_cache_tier,

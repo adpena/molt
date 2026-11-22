@@ -259,9 +259,8 @@ BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 BACKEND_IR = importlib.import_module("molt.cli.backend_ir")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
-BackendIrProgram = importlib.import_module(
-    "molt.cli.backend_ir_transport"
-).BackendIrProgram
+backend_ir_transport = importlib.import_module("molt.cli.backend_ir_transport")
+BackendIrProgram = backend_ir_transport.BackendIrProgram
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
@@ -12491,7 +12490,7 @@ def test_backend_ir_lease_streams_msgpack_without_json_bytes_helper(
     }
     lease_path = BACKEND_EXECUTION._write_backend_ir_lease(
         tmp_path / "project", BackendIrProgram(ir, CACHE_KEYS.FunctionDigests())
-    )
+    ).path
 
     assert lease_path.parent == artifacts.resolve() / "tmp" / "backend-ir-leases"
     assert lease_path.suffix == ".msgpack"
@@ -27504,7 +27503,9 @@ def test_native_backend_compile_routes_stdlib_object_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -27606,7 +27607,9 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -27704,7 +27707,9 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module="pkg.app",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -27723,9 +27728,16 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
 
 
-@pytest.mark.parametrize("returncode", [0, 7])
-@pytest.mark.parametrize("verbose", [False, True])
-@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "returncode,verbose,json_output,replace_header",
+    [
+        (returncode, verbose, json_output, None)
+        for returncode in (0, 7)
+        for verbose in (False, True)
+        for json_output in (False, True)
+    ]
+    + [(0, False, True, False), (0, False, True, True)],
+)
 def test_backend_compile_stages_one_shot_output_into_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -27733,6 +27745,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     returncode: int,
     verbose: bool,
     json_output: bool,
+    replace_header: bool | None,
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -27743,6 +27756,18 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     backend_bin = tmp_path / "backend-bin"
     seen_output_paths: list[Path] = []
     artifact_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
+    program = BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests())
+
+    def prepare_lease() -> backend_ir_transport.BackendIrLease:
+        if replace_header is None:
+            return backend_ir_transport.BackendIrLease(
+                project_root / "tmp" / "ir.msgpack"
+            )
+        return BACKEND_EXECUTION._write_backend_ir_lease(
+            project_root, program, bind_input=True
+        )
+
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts_root))
 
     def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
@@ -27752,6 +27777,40 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         seen_output_paths.append(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(artifact_bytes)
+        if replace_header is not None:
+            lease = Path(cmd[cmd.index("--ir-file") + 1])
+            payload = msgpack.unpackb(lease.read_bytes(), raw=False)
+            if replace_header:
+                payload["profile"] = {"version": "replaced"}
+                lease.write_bytes(msgpack.packb(payload, use_bin_type=True))
+            raw = lease.read_bytes()
+            origin = Path(cmd[cmd.index("--capture-origin") + 1])
+            origin.write_text(
+                json.dumps(
+                    {
+                        "schema": "molt.backend-emission-origin.v1",
+                        "producer": {
+                            "kind": "one-shot",
+                            "process_id": 73,
+                            "scope": None,
+                        },
+                        "input": {
+                            "schema": "molt.addressed-program-input.v1",
+                            "lease": {
+                                "sha256": hashlib.sha256(raw).hexdigest(),
+                                "size": len(raw),
+                            },
+                            "function_digests": payload["function_digests"].hex(),
+                        },
+                        "output": {
+                            "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                            "size": len(artifact_bytes),
+                        },
+                        "codegen": {"kind": "in-process", "process_id": 73},
+                    }
+                ),
+                encoding="utf-8",
+            )
         return subprocess.CompletedProcess(
             cmd, returncode, b"backend-stdout-marker\n", b"backend-stderr-marker\n"
         )
@@ -27763,6 +27822,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     )
 
     result, error = cli_backend_compile._execute_backend_compile(
+        capture_origin=replace_header is not None,
         cache=True,
         cache_path=cache_path,
         function_cache_path=function_cache_path,
@@ -27797,7 +27857,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         ),
         backend_daemon_config_digest=None,
         entry_module="pkg.app",
-        program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
+        program=program,
         json_output=json_output,
         warnings=[],
         verbose=verbose,
@@ -27806,7 +27866,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=prepare_lease,
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -27830,6 +27890,14 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         if json_output:
             json.loads(captured.out)
             assert "backend-stderr-marker" in captured.out
+        return
+    if replace_header:
+        assert error == 2
+        assert result is None
+        assert "different consumed input assembly" in captured.out
+        assert not output_artifact.exists()
+        assert not cache_path.exists()
+        assert not function_cache_path.exists()
         return
     assert error is None
     assert result is not None
@@ -27946,7 +28014,9 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28087,7 +28157,9 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28216,7 +28288,9 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28326,7 +28400,9 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28434,7 +28510,9 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -28523,7 +28601,9 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.msgpack",
+        _ensure_backend_ir_lease=lambda: backend_ir_transport.BackendIrLease(
+            project_root / "tmp" / "ir.msgpack"
+        ),
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
