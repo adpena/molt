@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
+    from molt.compiler_distribution import InstalledCompiler
     from molt.process_environment import ProcessEnvironment
     from molt.toolchain_identity import StableRegularFileObservation
 
@@ -373,6 +374,9 @@ class _SourceTreeFingerprintTransaction:
     compiler_plans: dict[tuple[str, str, str, str, str, ProcessEnvironment], object] = (
         field(default_factory=dict)
     )
+    # One private validated projection per root, bound to freshly read exact
+    # manifest bytes. Consumers receive independent mutable copies.
+    installed_manifests: dict[Path, tuple[bytes, InstalledCompiler]] | None = None
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
     installed_executables: dict[
         tuple[str, str, HostToolProduct], StableRegularFileObservation
