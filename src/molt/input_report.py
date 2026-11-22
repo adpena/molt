@@ -21,9 +21,9 @@ import stat
 import sys
 import threading
 from enum import IntFlag, StrEnum
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, assert_never
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeVar, assert_never
 
 if TYPE_CHECKING:
     from molt.durable_file_identity import StatToken
@@ -627,6 +627,39 @@ class _ReadCapture:
 
 def capture_read(path: Path) -> _ReadCapture:
     return _ReadCapture(path)
+
+
+_Read = TypeVar("_Read")
+
+
+def read_consumed_input(
+    path: Path, consume: Callable[[BinaryIO, int], tuple[_Read, str]]
+) -> _Read:
+    """Bind the consumed bytes to one stable read of a filesystem input."""
+
+    selector = path.absolute()
+    report_probe(selector)
+    selected = selector.resolve(strict=True)
+    with capture_read(selector) as receipt:
+        # Preserve ordinary source-open sharing and permission behavior. Unknown
+        # change-time/selection evidence refuses reuse, not source compilation.
+        with open(selector, "rb") as handle:
+            receipt.opened()
+            before = os.fstat(handle.fileno())
+            value, digest = consume(handle, before.st_size)
+            after = os.fstat(handle.fileno())
+            token = stat_token(selector, before)
+            if (
+                token is None
+                or token != stat_token(selector, after)
+                or token != stat_token(selector)
+                or selector.resolve(strict=True) != selected
+            ):
+                refuse(f"source generation changed while read: {path}")
+                token = None
+        report_probe(selector)
+        receipt.complete(token, digest)
+    return value
 
 
 def report_consumed_buffer(

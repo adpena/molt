@@ -1855,6 +1855,35 @@ def test_recent_custody_digest_is_not_a_consumed_read(tmp_path):
     assert _write(tmp_path, ledger, output)[1] is not None
 
 
+def test_fresh_project_config_records_the_bytes_used(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.cli.config_resolution import _load_molt_config, _project_requires_python
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_bytes(b"[project]\rrequires-python = '>=3.12'\r")
+    molt_config = tmp_path / "molt.toml"
+    molt_config.write_bytes(b"[tool.molt.build]\r\nprofile = 'dev'\r\n")
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+
+    with build_record.recording(transient) as ledger:
+        assert _load_molt_config(tmp_path)["tool"]["molt"]["build"] == {
+            "profile": "dev"
+        }
+        assert _project_requires_python(tmp_path) == ">=3.12"
+
+    for config in (pyproject, molt_config):
+        observation = ledger.files[str(config)]
+        assert observation.evidence == input_report.FileEvidence.CONSUMED
+        assert observation.sha256 == hashlib.sha256(config.read_bytes()).hexdigest()
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None
+    assert isinstance(build_record.check(record, KEY), build_record.BuildRecordHit)
+    pyproject.write_bytes(b"[project]\rrequires-python = '>=3.13'\r")
+    assert str(pyproject) in build_record.check(record, KEY)
+
+
 @pytest.mark.parametrize("raw_order", ["before", "after", "second", "thread"])
 def test_raw_read_obligation_survives_consumed_capture(tmp_path, transient, raw_order):
     from molt.cli.module_source import PythonSourceSnapshot

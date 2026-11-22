@@ -6,7 +6,16 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, cast, get_args
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    Literal,
+    Mapping,
+    Sequence,
+    cast,
+    get_args,
+)
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
@@ -25,6 +34,26 @@ if TYPE_CHECKING:
     from molt.cli.build_request import BuildProfile
 
 
+def _read_project_toml(path: Path) -> dict[str, Any]:
+    from molt import input_report
+
+    if not input_report.active():
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+
+    import hashlib
+    import io
+
+    from molt.toolchain_identity import iter_captured_file_chunks
+
+    def consume(handle: BinaryIO, size: int) -> tuple[bytes, str]:
+        content = b"".join(iter_captured_file_chunks(handle, size=size))
+        return content, hashlib.sha256(content).hexdigest()
+
+    content = input_report.read_consumed_input(path, consume)
+    text = io.StringIO(content.decode("utf-8"), newline=None).read()
+    return tomllib.loads(text)
+
+
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
     """The project's `molt.toml` merged with `[tool.molt]` from
     `pyproject.toml`; unreadable or malformed files contribute nothing."""
@@ -32,13 +61,13 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
     molt_toml = project_root / "molt.toml"
     if molt_toml.exists():
         try:
-            config.update(tomllib.loads(molt_toml.read_text(encoding="utf-8")))
+            config.update(_read_project_toml(molt_toml))
         except (OSError, tomllib.TOMLDecodeError):
             pass
     pyproject = project_root / "pyproject.toml"
     if pyproject.exists():
         try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            data = _read_project_toml(pyproject)
         except (OSError, tomllib.TOMLDecodeError):
             data = {}
         tool_cfg = data.get("tool", {}).get("molt", {})
@@ -53,11 +82,11 @@ def _project_requires_python(project_root: Path) -> str | None:
     pyproject = project_root / "pyproject.toml"
     from molt import input_report
 
-    input_report.report_data_file(pyproject)
+    input_report.report_probe(pyproject)
     if not pyproject.exists():
         return None
     try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        data = _read_project_toml(pyproject)
     except OSError as exc:
         raise ValueError(
             f"failed to read pyproject.toml at {pyproject}: {exc}"
