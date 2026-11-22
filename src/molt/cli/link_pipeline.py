@@ -407,15 +407,21 @@ def _prepare_native_link(
             else ()
         ),
     ]
-    link_fingerprint = link_fingerprints._link_fingerprint(
-        project_root=project_root,
-        inputs=link_inputs,
-        link_cmd=link_cmd,
-        tool_facts=link_tool_facts,
-        stored_fingerprint=(
-            stored_link_fingerprint["fingerprint"] if stored_link_fingerprint else None
-        ),
-    )
+    try:
+        link_fingerprint = link_fingerprints._link_fingerprint(
+            project_root=project_root,
+            inputs=link_inputs,
+            link_cmd=link_cmd,
+            tool_facts=link_tool_facts,
+            stored_fingerprint=(
+                stored_link_fingerprint["fingerprint"]
+                if stored_link_fingerprint
+                else None
+            ),
+            runtime_binding=runtime_codegen_binding if runtime_image is None else None,
+        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
     if capture_link_inputs and link_fingerprint is None:
         return None, _fail(
             "Link input capture requires an output-family receipt",

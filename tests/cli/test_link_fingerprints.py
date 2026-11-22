@@ -28,6 +28,49 @@ from tests.cli.native_link_test_support import (
 )
 
 
+def test_native_link_fingerprint_reuses_the_admitted_archive_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    runtime = root / "runtime.a"
+    application = root / "app.a"
+    write_test_static_archive(runtime)
+    write_test_static_archive(application)
+    binding = native_codegen_binding(runtime, write_test_native_link_manifest(runtime))
+    inputs = [application, runtime]
+    command = ["clang", str(application), str(runtime)]
+    clean = receipts._link_fingerprint(
+        project_root=root, inputs=inputs, link_cmd=command
+    )
+    assert clean is not None
+
+    inspect_content = receipts.artifact_content_identity
+
+    def inspect_application(path: Path) -> dict[str, object]:
+        assert path == application, "the admitted runtime archive was parsed twice"
+        return inspect_content(path)
+
+    monkeypatch.setattr(receipts, "artifact_content_identity", inspect_application)
+    assert (
+        receipts._link_fingerprint(
+            project_root=root, inputs=inputs, link_cmd=command, runtime_binding=binding
+        )
+        == clean
+    )
+
+    # A new file at the same coordinate loses the old generation even when
+    # its timestamps are restored. It may never inherit its fingerprint.
+    saved = runtime.stat()
+    replacement = root / "replacement.a"
+    replacement.write_bytes(runtime.read_bytes())
+    replacement.replace(runtime)
+    os.utime(runtime, ns=(saved.st_atime_ns, saved.st_mtime_ns))
+    with pytest.raises(ValueError, match="native runtime link input changed"):
+        receipts._link_fingerprint(
+            project_root=root, inputs=inputs, link_cmd=command, runtime_binding=binding
+        )
+
+
 @pytest.mark.parametrize("route", ["execute", "cached"])
 @pytest.mark.parametrize("which", ["archive", "callable_symbols"])
 def test_native_link_consumer_rejects_codegen_generation_replacement(

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, Mapping, Sequence, TYPE_CHECKING, cast
 
 from molt import artifact_publication
 from molt.cli.runtime_fingerprints import (
@@ -26,6 +26,10 @@ from molt.source_admission import admitted_source_files
 from molt.exact_json import encode_exact, read_exact
 from molt.link_outputs import validate_link_output_paths
 from molt.python_identity_common import canonical_absolute_path
+from molt.toolchain_identity import verify_stable_regular_file_identity
+
+if TYPE_CHECKING:
+    from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 
 
 def _link_receipt_is_valid(payload: object) -> bool:
@@ -78,6 +82,7 @@ def _link_fingerprint(
     link_cmd: list[str],
     tool_facts: Sequence[Mapping[str, object]] = (),
     stored_fingerprint: dict[str, Any] | None = None,
+    runtime_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> dict[str, str | None] | None:
     admitted = admitted_source_files(inputs)
     inputs_meta = _hash_source_tree_metadata(admitted, project_root)
@@ -109,9 +114,26 @@ def _link_fingerprint(
                 identity_path = item
             hasher.update(str(identity_path).encode("utf-8"))
             hasher.update(b"\0")
+            if runtime_binding is not None and item == runtime_binding.archive.path:
+                # The admitted receipt already holds this archive's semantic
+                # identity. Verify bytes directly, without parsing its members
+                # again. A changed admitted generation aborts the link.
+                verify_stable_regular_file_identity(
+                    runtime_binding.archive,
+                    label="native runtime link input",
+                    hash_content=True,
+                )
+                identity = dict(
+                    cast(
+                        Mapping[str, object],
+                        runtime_binding.link_facts.manifest["runtime"],
+                    )
+                )
+            else:
+                identity = artifact_content_identity(item)
             hasher.update(
                 json.dumps(
-                    artifact_content_identity(item),
+                    identity,
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode("utf-8")

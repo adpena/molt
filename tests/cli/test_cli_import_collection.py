@@ -96,6 +96,7 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import native_symbol_inspection, wasm_link_inputs
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli import non_native_output as cli_non_native_output
 from molt.cli import runtime_features as cli_runtime_features
 from molt.cli import script_commands as cli_commands
@@ -12827,8 +12828,9 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         link_cmd: list[str],
         tool_facts: Sequence[Mapping[str, object]] = (),
         stored_fingerprint: dict[str, object] | None = None,
+        runtime_binding: NativeRuntimeCodegenBinding | None = None,
     ) -> dict[str, str | None]:
-        del project_root, link_cmd, tool_facts, stored_fingerprint
+        del project_root, link_cmd, tool_facts, stored_fingerprint, runtime_binding
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
@@ -13135,8 +13137,9 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         link_cmd: list[str],
         tool_facts: Sequence[Mapping[str, object]] = (),
         stored_fingerprint: dict[str, object] | None = None,
-    ) -> dict[str, str]:
-        del project_root, link_cmd, tool_facts, stored_fingerprint
+        runtime_binding: NativeRuntimeCodegenBinding | None = None,
+    ) -> dict[str, str | None]:
+        del project_root, link_cmd, tool_facts, stored_fingerprint, runtime_binding
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
