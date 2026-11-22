@@ -31,6 +31,7 @@ from molt.cli.python_source_closure import local_python_import_graph_transaction
 
 if TYPE_CHECKING:
     from molt.cli.frontend_record_files import FrontendRecordFiles
+    from molt.cli.module_graph_cache import _ImportScanDecoder
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
@@ -370,6 +371,7 @@ class _SourceTreeFingerprintTransaction:
         field(default_factory=dict)
     )
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
+    import_scan_decoder: _ImportScanDecoder | None = None
     cargo_documents: dict[str, object] = field(default_factory=dict)
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
         default_factory=dict

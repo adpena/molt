@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt import compiler_process
+from molt.typed_cache import typed_cache
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
@@ -33,12 +34,13 @@ from collections.abc import Callable, Mapping, MutableMapping
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from itertools import pairwise
-from typing import Any, cast, get_args
+from typing import Any, NamedTuple, cast, get_args
 
 from molt.cli.frontend_record_files import FrontendRecord, frontend_record_files
 from molt.cli.source_record_store import SourceRecord, shared_source_records
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
+    _SOURCE_TREE_FINGERPRINT_TRANSACTION,
     _frontend_semantic_tooling_fingerprint,
     _import_scan_tooling_fingerprint,
     _operation_resolved,
@@ -1087,6 +1089,38 @@ def _write_persisted_import_scan_alias(
         files.link("import-scan", record_key, key(same_as_premise))
 
 
+class _ImportScanAdmission(NamedTuple):
+    source_sha256: str
+    source_size: int
+    compiler_fingerprint: str
+    module_name: str
+    is_package: bool
+    import_scan_mode: ImportScanMode
+    source_owner: PythonSourceKey | None
+    source_arguments: tuple[str, ...]
+    body_selection: ModuleBodySelection
+    target_sys_platform: str | None
+    target_python: TargetPythonVersion
+    runtime_catalog_owner: bool
+    purpose: SourceImportPurpose
+
+
+_ImportScanDecoder = Callable[[bytes, _ImportScanAdmission], _ImportScanRequests | None]
+
+
+def _operation_import_scan_decoder(raw: bytes) -> _ImportScanDecoder:
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    # Retain at most 16 MiB of encoded records, with decoded objects shared
+    # between the requests that already keep those objects alive.
+    if transaction is None or len(raw) > 32 * 1024:
+        return _decode_import_scan_payload
+    if transaction.import_scan_decoder is None:
+        transaction.import_scan_decoder = typed_cache(maxsize=512)(
+            _decode_import_scan_payload
+        )
+    return transaction.import_scan_decoder
+
+
 @_source_tree_fingerprint_transaction()
 def _read_persisted_import_scan_record(
     path: Path,
@@ -1131,6 +1165,32 @@ def _read_persisted_import_scan_record(
     raw = record.payload if record is not None else None
     if raw is None and installed_initializer is not None:
         raw = installed_initializer(record_key)
+    if raw is None:
+        return None
+    admission = _ImportScanAdmission(
+        snapshot.sha256,
+        len(snapshot.content),
+        _import_scan_tooling_fingerprint(),
+        module_name,
+        is_package,
+        import_scan_mode,
+        source_owner,
+        source_arguments,
+        ModuleBodySelection.from_requested_roots(native_support_function_roots),
+        target_sys_platform,
+        target_python,
+        runtime_catalog_owner,
+        purpose,
+    )
+    scan = _operation_import_scan_decoder(raw)(raw, admission)
+    if scan is not None and record is not None:
+        record.refresh()
+    return scan
+
+
+def _decode_import_scan_payload(
+    raw: bytes, admission: _ImportScanAdmission
+) -> _ImportScanRequests | None:
     payload = _decode_source_record_json(raw)
     if payload is None:
         return None
@@ -1171,7 +1231,7 @@ def _read_persisted_import_scan_record(
         runtime_catalog = _decode_runtime_catalog_deferral(payload["runtime_catalog"])
     except ValueError:
         return None
-    if (runtime_catalog is not None) != runtime_catalog_owner:
+    if (runtime_catalog is not None) != admission.runtime_catalog_owner:
         return None
     try:
         namespace_summary = (
@@ -1180,32 +1240,31 @@ def _read_persisted_import_scan_record(
             else _decode_namespace_summary(payload["namespace_summary"])
         )
         _validate_import_scan_namespace_summary(
-            namespace_summary, source_owner=source_owner
+            namespace_summary, source_owner=admission.source_owner
         )
     except (KeyError, ValueError):
         return None
     if (
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint") != _import_scan_tooling_fingerprint()
-        or payload.get("module_name") != module_name
-        or payload.get("is_package") != is_package
-        or payload.get("body_selection")
-        != ModuleBodySelection.from_requested_roots(
-            native_support_function_roots
-        ).payload()
-        or payload.get("target_python") != target_python.tag
-        or payload.get("target_sys_platform") != target_sys_platform
+        or payload.get("compiler_fingerprint") != admission.compiler_fingerprint
+        or payload.get("module_name") != admission.module_name
+        or payload.get("is_package") != admission.is_package
+        or payload.get("body_selection") != admission.body_selection.payload()
+        or payload.get("target_python") != admission.target_python.tag
+        or payload.get("target_sys_platform") != admission.target_sys_platform
         or payload.get("parser") != [sys.implementation.name, sys.version]
-        or payload.get("import_scan_mode") != import_scan_mode
-        or payload.get("purpose") != purpose.value
+        or payload.get("import_scan_mode") != admission.import_scan_mode
+        or payload.get("purpose") != admission.purpose.value
         or payload.get("source_owner")
-        != (list(source_owner) if source_owner is not None else None)
-        or payload.get("source_arguments") != list(source_arguments)
+        != (
+            list(admission.source_owner) if admission.source_owner is not None else None
+        )
+        or payload.get("source_arguments") != list(admission.source_arguments)
     ):
         return None
     if (
-        payload.get("size") != len(snapshot.content)
-        or payload.get("source_sha256") != snapshot.sha256
+        payload.get("size") != admission.source_size
+        or payload.get("source_sha256") != admission.source_sha256
     ):
         return None
     fields = (
@@ -1596,7 +1655,7 @@ def _read_persisted_import_scan_record(
             return None
     except (KeyError, TypeError, ValueError, IndexError):
         return None
-    scan = _ImportScanRequests(
+    return _ImportScanRequests(
         tuple(payload["imports"]),
         tuple(executions),
         tuple(payload["star_modules"]),
@@ -1612,9 +1671,6 @@ def _read_persisted_import_scan_record(
         runtime_catalog,
         uses_runtime_import_protocol=uses_protocol,
     )
-    if record is not None:
-        record.refresh()
-    return scan
 
 
 def _encode_runtime_catalog_deferral(

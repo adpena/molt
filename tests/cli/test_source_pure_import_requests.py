@@ -1600,6 +1600,88 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     assert all("namespace_premise" not in payload for payload in payloads)
 
 
+def test_persisted_import_blobs_reuse_decode_only_under_matching_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    path = write(tmp_path / "entry.py", "import leaf\n")
+    write(tmp_path / "leaf.py")
+    snapshot = PythonSourceSnapshot.capture(path)
+    request = load(
+        path, project_root=None, source_snapshot=snapshot
+    ).scan.source_requests
+    assert request.imports == ("leaf",)
+
+    key = records._import_scan_cache_key(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=snapshot,
+    )
+    alias = records._import_scan_cache_key(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=snapshot,
+        namespace_premise=WHOLE_PROGRAM,
+    )
+    foreign = records._import_scan_cache_key(
+        path,
+        module_name="other",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=snapshot,
+    )
+    assert len({key, alias, foreign}) == 3
+    records._write_persisted_import_scan(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        snapshot=snapshot,
+        scan=request,
+    )
+    store = records.frontend_record_files()
+    assert store.link("import-scan", alias, key)
+    assert store.link("import-scan", foreign, key)
+
+    decode_count = 0
+    original_decode = records._decode_import_scan_payload
+
+    def count_decode(
+        raw: bytes, admission: records._ImportScanAdmission
+    ) -> records._ImportScanRequests | None:
+        nonlocal decode_count
+        decode_count += 1
+        return original_decode(raw, admission)
+
+    monkeypatch.setattr(records, "_decode_import_scan_payload", count_decode)
+
+    def read(
+        name: str, premise: PythonNamespacePremise | None = None
+    ) -> records._ImportScanRequests | None:
+        return records._read_persisted_import_scan_record(
+            path,
+            module_name=name,
+            namespace_premise=premise,
+            is_package=False,
+            import_scan_mode="full",
+            snapshot=snapshot,
+        )
+
+    with _source_tree_fingerprint_transaction():
+        assert read("entry") == request
+        assert read("entry", WHOLE_PROGRAM) == request
+        assert decode_count == 1
+        assert read("other") is None
+        assert decode_count == 2
+    assert read("entry") == request
+    assert decode_count == 3
+
+
 @pytest.mark.parametrize(
     "retired",
     [
