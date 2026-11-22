@@ -1523,7 +1523,6 @@ def _materialize_import_plan(
         tuple(scan_authorities.values())
     ).restricted(module_graph)
     final_scan_authority.validate_graph(module_graph)
-    discovery.validate_sources()
     if runtime_closure.custody is not None:
         runtime_closure.custody.validate_graph(module_graph)
     native_artifact_manifests = _custodied_native_artifact_manifests(
@@ -1651,7 +1650,14 @@ def _materialize_import_plan(
                 import_hook_writers=(NATIVE_EXTENSION_WRITER,),
             )
         )
+    import_query_closure = (
+        prepared_module_graph.module_resolution_cache.import_query_closure(
+            prepared_module_graph.import_query_closure
+        )
+    )
+    import_query_closure.validate(final_scan_authority)
     return _ImportPlan(
+        import_query_closure=import_query_closure,
         import_redirects=import_redirects,
         image_scope=prepared_module_graph.image_scope,
         stdlib_allowlist=frozenset(stdlib_allowlist),
@@ -2068,6 +2074,7 @@ def _prepare_entry_module_graph(
         ]
     )
     return _PreparedEntryModuleGraph(
+        import_query_closure=module_resolution_cache.import_query_closure(),
         discovery=discovery,
         project_root=project_root,
         image_scope=image_scope,

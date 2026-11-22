@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.compilation_target import admit_target
 
 from molt.cli.build_request import BuildRequest
+from molt.cli.models import ImportScanAdmission
 
 
 import ast
@@ -128,6 +129,52 @@ def _prepare_analysis_for_plan(project_root: Path, import_plan):
     assert error is None
     assert analysis is not None
     return analysis
+
+
+def test_production_import_query_closure_matches_clean_and_cached_graphs(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    entry.write_text(
+        "import importlib\nimport peer\nprint(importlib.import_module('peer').value)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "peer.py").write_text("value = 7\n", encoding="utf-8")
+    cold = _materialize_plan(tmp_path, entry, "app")
+    warm = _materialize_plan(tmp_path, entry, "app")
+    assert cold.module_graph == warm.module_graph
+    assert cold.scan_authority == warm.scan_authority
+    assert cold.runtime_import_scan_custody == warm.runtime_import_scan_custody
+    assert cold.import_query_closure is not None
+    assert warm.import_query_closure is not None
+    cold_rows = {
+        row.query: row.result for row in cold.import_query_closure.observations
+    }
+    warm_rows = {
+        row.query: row.result for row in warm.import_query_closure.observations
+    }
+    assert cold_rows == warm_rows
+    assert {"app", "peer"} <= {query.module_name for query in cold_rows}
+    assert all(query.source_lease is not None for query in cold_rows)
+    admissions = {
+        admission
+        for row in warm.import_query_closure.observations
+        for admission in row.admissions
+    }
+    assert ImportScanAdmission.PERSISTED in admissions
+    assert any(query.runtime_custody is not None for query in cold_rows)
+    cold.import_query_closure.validate()
+    warm.import_query_closure.validate()
+    missing_peer = replace(
+        warm.import_query_closure,
+        observations=tuple(
+            row
+            for row in warm.import_query_closure.observations
+            if row.query.module_name != "peer"
+        ),
+    )
+    with pytest.raises(ValueError, match="lost source authority: 'peer'"):
+        missing_peer.validate(warm.scan_authority)
 
 
 def test_project_config_entry_file_defines_binary_image_scope(tmp_path: Path) -> None:
