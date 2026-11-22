@@ -61,15 +61,26 @@ pub struct TirOptimizationResourcePlan {
     pub wave_op_budget: usize,
 }
 
-#[derive(Debug)]
 pub struct CachedTirCustody {
     optimized_tir_by_name: BTreeMap<String, TirFunction>,
+    finalization_cache: Option<CompilationCache>,
+}
+
+impl std::fmt::Debug for CachedTirCustody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedTirCustody")
+            .field("optimized_tir_by_name", &self.optimized_tir_by_name)
+            .field("finalization_cache", &self.finalization_cache.is_some())
+            .finish()
+    }
 }
 
 impl CachedTirCustody {
     fn new() -> Self {
         Self {
             optimized_tir_by_name: BTreeMap::new(),
+            finalization_cache: None,
         }
     }
 
@@ -726,6 +737,9 @@ where
             );
         }
     }
+    if cache_reuse_allowed {
+        cached_tir_custody.finalization_cache = tir_cache;
+    }
 
     TirPipelineRun {
         cached_tir: cached_tir_custody,
@@ -854,17 +868,23 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
         cached_tir,
         options.missing_tir_context,
     );
+    let target_contract = tir_pipeline_target_fingerprint(options.target_info);
+    // Finalization consumes this custody. Retire the resident cache before
+    // LLVM/Cranelift codegen starts retaining its own module-sized products.
+    let mut finalization_store = cached_tir.finalization_cache.take();
+    let mut finalization_cache = finalization_store
+        .as_mut()
+        .map(|store| super::drop_phase::FinalizationCache::new(store, &target_contract));
+    let table = molt_ir::FunctionTable::from_rows(tir_functions.iter().map(|(is_extern, func)| {
+        let kind = if *is_extern {
+            molt_ir::function_table::FunctionRowKind::Extern
+        } else {
+            molt_ir::function_table::FunctionRowKind::Body
+        };
+        (func.name.as_str(), kind)
+    }));
     match options.mode {
         TirOwnedModulePipelineMode::ModulePhase => {
-            let table =
-                molt_ir::FunctionTable::from_rows(tir_functions.iter().map(|(is_extern, func)| {
-                    let kind = if *is_extern {
-                        molt_ir::function_table::FunctionRowKind::Extern
-                    } else {
-                        molt_ir::function_table::FunctionRowKind::Body
-                    };
-                    (func.name.as_str(), kind)
-                }));
             let mut rows: Vec<Option<(bool, TirFunction)>> =
                 Vec::with_capacity(tir_functions.len());
             let mut bodies = Vec::new();
@@ -882,6 +902,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                 options.target_info,
                 options.non_inlinable,
                 options.linkage,
+                finalization_cache.as_mut(),
             );
             // Specialized clones are rows after the source rows.
             rows.resize_with(module.table.len(), || None);
@@ -905,6 +926,8 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                     }),
                 options.target_info,
                 options.linkage,
+                &table,
+                finalization_cache.as_mut(),
             );
         }
     }
@@ -1091,6 +1114,53 @@ mod tests {
         let diagnostic = run_cached_tir_pipeline(&source, diagnostics, |_| {});
         assert_eq!(diagnostic.uncached_count, 2);
         assert_eq!(cached_body_bytes(&diagnostic), expected_tir);
+        for mode in [
+            TirOwnedModulePipelineMode::ModulePhase,
+            TirOwnedModulePipelineMode::TerminalDropsOnly,
+        ] {
+            let directory = cache_dir.join(format!("{mode:?}"));
+            let target = projection_test_options(&directory).target_info;
+            let non_inlinable = HashSet::default();
+            let finish = |mut run: TirPipelineRun, diagnostics: bool| {
+                assert_eq!(run.cached_tir.finalization_cache.is_some(), !diagnostics);
+                let owned = run_owned_module_pipeline_from_cached_tir(
+                    &source,
+                    &mut run.cached_tir,
+                    TirOwnedModulePipelineOptions {
+                        target_info: &target,
+                        module_name: "projection_fixture",
+                        non_inlinable: &non_inlinable,
+                        missing_tir_context: "cold/warm final body verification",
+                        mode,
+                        linkage: None,
+                    },
+                );
+                assert!(run.cached_tir.finalization_cache.is_none());
+                owned
+                    .functions
+                    .iter()
+                    .filter(|(external, _)| !*external)
+                    .map(|(_, body)| {
+                        super::super::serialize::serialize_tir_function(
+                            body,
+                            &molt_ir::FunctionTable::of(&source),
+                        )
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let run = |diagnostics| {
+                let mut options = projection_test_options(&directory);
+                options.tir_stats = diagnostics;
+                finish(
+                    run_cached_tir_pipeline(&source, options, |_| {}),
+                    diagnostics,
+                )
+            };
+            let cold = run(false);
+            assert_eq!(run(false), cold);
+            assert_eq!(run(true), cold);
+        }
         assert_eq!(serde_json::to_vec(&source).unwrap(), source_bytes);
         let _ = std::fs::remove_dir_all(cache_dir);
     }

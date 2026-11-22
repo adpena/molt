@@ -111,6 +111,7 @@ pub fn run_module_pipeline(
     tti: &TargetInfo,
     non_inlinable: &molt_ir::deterministic_hash::HashSet<String>,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+    finalization_cache: Option<&mut super::drop_phase::FinalizationCache<'_>>,
 ) -> ModulePhaseOutcome {
     let audit_start = Instant::now();
     emit_module_stage_audit("start", module, None, audit_start.elapsed().as_millis());
@@ -337,7 +338,8 @@ pub fn run_module_pipeline(
         Some(changed_functions.len()),
         audit_start.elapsed().as_millis(),
     );
-    let drop_changed = super::drop_phase::finalize_module_drops(module, tti, linkage);
+    let drop_changed =
+        super::drop_phase::finalize_module_drops(module, tti, linkage, finalization_cache);
     emit_module_stage_audit(
         "after-drop-finalize",
         module,
@@ -580,6 +582,7 @@ mod tests {
             &tti,
             &molt_ir::deterministic_hash::HashSet::default(),
             None,
+            None,
         )
         .changed;
         // Inlining changes a; terminal ownership markers change both a and b.
@@ -678,7 +681,7 @@ mod tests {
     fn a_proven_call_inlines_its_frameless_clone() {
         let mut module = proven_add_module();
         let llvm = TargetInfo::from_llvm_feature_string("");
-        let outcome = run_module_pipeline(&mut module, &llvm, &Default::default(), None);
+        let outcome = run_module_pipeline(&mut module, &llvm, &Default::default(), None, None);
         assert_eq!(outcome.clones.len(), 1, "add(int, int) gets one clone");
         let clone = &module.functions[outcome.clones[0].id.index()];
         assert_eq!(
@@ -720,7 +723,7 @@ mod tests {
         ] {
             let leaf = crate::tir::passes::frame_elision::tests::framed_add("leaf", true);
             let mut module = TirModule::with_own_table("m", vec![leaf]);
-            let _ = run_module_pipeline(&mut module, &tti, &Default::default(), None);
+            let _ = run_module_pipeline(&mut module, &tti, &Default::default(), None, None);
             assert_eq!(module.functions[0].execution_context, policy);
         }
     }

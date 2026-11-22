@@ -38,6 +38,10 @@ impl BackendSemanticTarget {
 pub struct SemanticBackendIdentity([u8; 32]);
 
 impl SemanticBackendIdentity {
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     fn from_lookup<S: AsRef<str>, E>(
         keys: impl IntoIterator<Item = BackendEnv>,
         mut lookup: impl FnMut(BackendEnv) -> Result<Option<S>, E>,
