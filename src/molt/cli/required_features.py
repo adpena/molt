@@ -56,12 +56,8 @@ available-feature authority the build uses to select the staticlib) differs.
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable
 
-from molt._intrinsic_symbols import (
-    INTRINSIC_SIGNATURES,
-    intrinsic_runtime_symbol_name,
-)
 from molt._runtime_feature_gates import (
     feature_for_symbol,
     runtime_symbol_available_on_target,
@@ -70,41 +66,11 @@ from molt._runtime_feature_gates import (
     unsupported_target_arches_for_symbol,
     unsupported_target_oses_for_symbol,
 )
-from molt.cli import function_references as _function_references
 from molt.compilation_target import ArtifactTarget, artifact_triple
 from molt.cli.runtime_features import (
     profile_link_features,
     runtime_stdlib_profile_for_required_features,
 )
-from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_CALL_TARGET_ROLES,
-    SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS,
-)
-
-_PROTECTED_RUNTIME_ENTRYPOINTS = _function_references.PROTECTED_RUNTIME_ENTRYPOINTS
-reachable_function_names = _function_references.reachable_function_names
-
-_RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
-    symbol for symbol, _arity in INTRINSIC_SIGNATURES.values()
-)
-
-# ---------------------------------------------------------------------------
-# Reachability primitives - shared generated defined-function edges.
-# ---------------------------------------------------------------------------
-#
-# function_references and the Rust dead-function pass consume the same generated
-# op-kind authority. Runtime entry roots remain owned by runtime_roots.rs; the
-# exact-name graph contributes features only from statically retained bodies.
-
-#: Op kinds whose ``s_value`` directly references a *runtime intrinsic symbol* and
-#: thus makes it a reached-intrinsic candidate. ``builtin_func`` is the direct
-#: link reference (``func_addr`` / ``Linkage::Import`` -> ``.refptr.molt_*``);
-#: ``const_str`` is the name the per-app resolver may resolve dynamically (the
-#: ``compute_app_callable_manifest`` candidate shape). Both are validated
-#: against intrinsic membership, so non-intrinsic strings/builtins contribute
-#: nothing. Unlike general named calls/function addresses, these runtime-only
-#: and conservative resolver references are not shadowed by compiled definitions.
-_INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_str"})
 
 
 def reached_intrinsic_symbols_by_feature(
@@ -123,63 +89,6 @@ def reached_intrinsic_symbols_by_feature(
             continue
         by_feature.setdefault(feature, set()).add(symbol)
     return by_feature
-
-
-def reached_intrinsic_symbols(
-    functions: Sequence[Mapping[str, object]],
-    *,
-    extra_roots: Iterable[str] = (),
-) -> frozenset[str]:
-    """Runtime intrinsic symbols referenced by reached SimpleIR.
-
-    This is the backend-uniform symbol fact below ``RequiredLinkFeatures``: it
-    keeps core/ungated intrinsic symbols as well as link-affecting ones so
-    consumers such as the WASM auto-import seed can reuse the same reachability
-    closure without re-scanning source modules.
-    """
-    reachable = reachable_function_names(functions, extra_roots=extra_roots)
-    compiled = {
-        name
-        for func in functions
-        if isinstance((name := func.get("name")), str)
-        and not func.get("is_extern", False)
-    }
-    symbols: set[str] = set()
-    for func in functions:
-        name = func.get("name")
-        if not isinstance(name, str) or name not in reachable:
-            continue
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            continue
-        for op in ops:
-            if not isinstance(op, Mapping):
-                continue
-            kind = op.get("kind")
-            if not isinstance(kind, str):
-                continue
-            # A typed runtime-symbol carrier (a qualified runtime callable
-            # such as `sys._getframe`) names the callable it acquires; the
-            # app-callable collector admits the same symbol.
-            carried = op.get("runtime_symbol")
-            if isinstance(carried, str) and carried in _RUNTIME_INTRINSIC_SYMBOL_NAMES:
-                symbols.add(carried)
-            symbol = op.get("s_value")
-            if not isinstance(symbol, str):
-                continue
-            if kind not in _INTRINSIC_SYMBOL_OP_KINDS:
-                if symbol in compiled:
-                    continue
-                if (
-                    SIMPLEIR_CALL_TARGET_ROLES.get(kind) != "external_or_runtime"
-                    and kind not in SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS
-                ):
-                    continue
-            canonical = intrinsic_runtime_symbol_name(symbol)
-            if canonical not in _RUNTIME_INTRINSIC_SYMBOL_NAMES:
-                continue
-            symbols.add(canonical)
-    return frozenset(symbols)
 
 
 def required_link_features(reached_symbols: Iterable[str]) -> frozenset[str]:

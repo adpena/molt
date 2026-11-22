@@ -28,7 +28,7 @@ from molt._wasm_abi_generated import (
 )
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import runtime_symbol_available_on_target
-from molt.cli.required_features import reached_intrinsic_symbols
+from molt.cli.function_references import reached_intrinsic_symbols
 from molt.wasm_artifact import parse_wasm_exports, transform_wasm_publication_file
 
 

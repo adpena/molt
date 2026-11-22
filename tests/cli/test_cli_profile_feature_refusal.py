@@ -14,6 +14,7 @@ import tomllib
 
 import pytest
 from molt.cli import backend_ir as BACKEND_IR
+from molt.cli import function_references as FR
 from molt.cli import required_features as RF
 from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import RUNTIME_FEATURES as DECLARED_FEATURES
@@ -74,7 +75,7 @@ def _refusal_for_reached_symbols(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(profile, target=target)
     )
     return RF.reachability_profile_feature_refusal(
-        RF.reached_intrinsic_symbols(_functions_reaching(*symbols)),
+        FR.reached_intrinsic_symbols(_functions_reaching(*symbols)),
         profile_name=profile,
         profile_features=profile_features,
         target=target,
@@ -148,7 +149,7 @@ def test_representative_symbols_map_to_their_declared_features() -> None:
 def test_unicode_names_demand_owns_auto_profile_and_explicit_ceiling(
     target_triple: str | None, symbol: str
 ) -> None:
-    reached = RF.reached_intrinsic_symbols(_functions_reaching(symbol))
+    reached = FR.reached_intrinsic_symbols(_functions_reaching(symbol))
     required = RF.required_link_features(reached)
     assert required == frozenset({"stdlib_unicode_names"})
     assert (
@@ -268,7 +269,7 @@ def test_explicit_profile_refuses_reached_networking_at_build_time() -> None:
     # available" when the program ran. Now the build refuses and names the
     # symbol, the feature and the smallest tier that provides it.
     message = BACKEND_IR._reachability_feature_refusal(
-        RF.reached_intrinsic_symbols(_socket_module_reaching_socketpair()),
+        FR.reached_intrinsic_symbols(_socket_module_reaching_socketpair()),
         stdlib_profile="micro",
         facts_target=_runtime_facts_target(admit_target("native")),
     )
@@ -280,7 +281,7 @@ def test_explicit_profile_refuses_reached_networking_at_build_time() -> None:
 
 @pytest.mark.parametrize("target_triple", [None, "wasm32-wasip1"])
 def test_auto_selects_the_networking_tier(target_triple: str | None) -> None:
-    reached = RF.reached_intrinsic_symbols(_socket_module_reaching_socketpair())
+    reached = FR.reached_intrinsic_symbols(_socket_module_reaching_socketpair())
     required = RF.required_link_features(reached)
     assert required == {"stdlib_net"}
     assert (
@@ -498,7 +499,7 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
     )
     assert (
         RF.reachability_profile_feature_refusal(
-            RF.reached_intrinsic_symbols(functions),
+            FR.reached_intrinsic_symbols(functions),
             profile_name="full",
             profile_features=profile_features,
             target=host,
@@ -532,7 +533,7 @@ def test_backend_refusal_combines_missing_target_and_profile_requirements(
     target: str,
 ) -> None:
     message = BACKEND_IR._reachability_feature_refusal(
-        RF.reached_intrinsic_symbols(
+        FR.reached_intrinsic_symbols(
             _functions_reaching(
                 "molt_sqlite3_connect", "molt_hash_new", "molt_ast_parse"
             )

@@ -4380,7 +4380,7 @@ def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32", "wasi"])
 def test_locale_facade_target_guard_prunes_only_unavailable_intrinsic(platform) -> None:
-    from molt.cli.required_features import reached_intrinsic_symbols
+    from molt.cli.function_references import reached_intrinsic_symbols
 
     source = (
         Path(__file__).resolve().parents[1] / "src/molt/stdlib/_locale.py"
@@ -4446,7 +4446,7 @@ def test_target_guard_preserves_cpython_condition_effects(platform, expected) ->
             "from _intrinsics import require_intrinsic as _require_intrinsic\n" + source
         )
     )
-    from molt.cli.required_features import reached_intrinsic_symbols
+    from molt.cli.function_references import reached_intrinsic_symbols
 
     functions = gen.to_json()["functions"]
     main_ops = next(f["ops"] for f in functions if f["name"] == "molt_main")

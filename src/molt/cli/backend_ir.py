@@ -89,6 +89,7 @@ from molt.cli.module_registry import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.module_resolution import STDLIB_SUBMODULE_ALIASES
 from molt.cli import required_features as _required_features
+from molt.cli.function_references import reached_intrinsic_symbols
 from molt.cli import runtime_features as _runtime_features
 from molt.target_python import TargetPythonVersion
 
@@ -2938,7 +2939,7 @@ def _prepare_backend_ir(
     # once; the refusal and the link features both read its symbols.
     functions_for_features = ir.get("functions")
     reached_symbols = (
-        _required_features.reached_intrinsic_symbols(
+        reached_intrinsic_symbols(
             cast(Sequence[Mapping[str, object]], functions_for_features),
             extra_roots=runtime_feature_roots,
         )

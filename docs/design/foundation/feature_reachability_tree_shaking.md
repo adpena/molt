@@ -63,7 +63,10 @@ pseudo-operations must not survive as a separate Python retention policy.
 
 A build computes the reached intrinsic symbols once, in `_prepare_backend_ir`;
 the profile and target refusal and the required link features both read that
-symbol set.
+symbol set. The finalized SimpleIR worklist gathers compiled edges and runtime
+references in the same operation scan. The two kinds of reference keep their
+own classification and shadowing rules. The shared stdlib cache uses the same
+worklist with its own initializer roots and needs only compiled edges.
 
 The Python requirement pass and backend resolver manifest operate at different
 pipeline stages. Their intended agreement must be proved; naming both

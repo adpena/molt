@@ -30,7 +30,7 @@ from molt.default_paths import (
 
 from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
 from molt.backend_environment import compilation_diagnostics_requested
-from molt.cli import function_references as _function_references
+from molt.cli.function_references import reachable_function_names
 from molt.cli import native_symbol_inspection as _native_symbols
 from molt.cli.artifact_sync import (
     _artifact_sync_emission_origin,
@@ -71,9 +71,6 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-
-_is_protected_runtime_entrypoint = _function_references.is_protected_runtime_entrypoint
-reachable_function_names = _function_references.reachable_function_names
 
 _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 3
 
@@ -1967,38 +1964,19 @@ def _reachable_function_names_for_stdlib_cache(
     ir: Mapping[str, Any],
     *,
     stdlib_modules: Collection[str],
-) -> set[str]:
+) -> frozenset[str]:
     functions = ir.get("functions")
-    if not isinstance(functions, list) or not functions:
-        return set()
-
-    function_maps = [func for func in functions if isinstance(func, Mapping)]
-    defined: set[str] = {
-        name
-        for func in function_maps
-        if isinstance((name := func.get("name")), str) and name
-    }
-
-    roots: list[str] = []
-    first_function = functions[0]
-    if isinstance(first_function, Mapping):
-        first_name = first_function.get("name")
-        if isinstance(first_name, str) and first_name in defined:
-            roots.append(first_name)
-    if "molt_main" in defined:
-        roots.append("molt_main")
-    roots.extend(
-        sorted(name for name in defined if _is_protected_runtime_entrypoint(name))
+    if not isinstance(functions, list):
+        return frozenset()
+    # The common walk already owns the entry, protected roots, and membership
+    # checks. Only the stdlib partition's additional roots belong here.
+    return reachable_function_names(
+        [func for func in functions if isinstance(func, Mapping)],
+        extra_roots=(
+            "molt_main",
+            *(compiled_symbols.module_init_symbol(module) for module in stdlib_modules),
+        ),
     )
-    roots.extend(
-        init_name
-        for init_name in (
-            compiled_symbols.module_init_symbol(module)
-            for module in sorted(set(stdlib_modules))
-        )
-        if init_name in defined
-    )
-    return set(reachable_function_names(function_maps, extra_roots=roots))
 
 
 def _shared_stdlib_cache_payload_ir(
