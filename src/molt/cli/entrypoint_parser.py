@@ -206,9 +206,9 @@ def _add_build_parser(
         choices=WASM_OPT_LEVELS,
         default=None,
         help=(
-            "Binaryen optimization level. Dev builds run no post-link optimizer "
-            "unless a level is named; release builds default to the selected "
-            "deployment profile's shipping level."
+            "Binaryen optimization level for monolithic WASM. Dev builds run no "
+            "post-link optimizer unless a level is named; release builds default "
+            "to the selected deployment profile's shipping level."
         ),
     )
     build_parser.add_argument(
@@ -236,11 +236,10 @@ def _add_build_parser(
         action="store_true",
         default=False,
         help=(
-            "Produce separate runtime and app WASM modules instead of a single "
-            "linked binary. The shared runtime retains one app-independent "
-            "canonical ABI and receives deterministic structural reachability "
-            "cleanup; the app is independently deforested and Binaryen-optimized. "
-            "Outputs app.wasm + molt_runtime.wasm + worker.js + manifest.json."
+            "Produce app.wasm, molt_runtime.wasm, worker.js and manifest.json. "
+            "Pass --linked as well to emit a separate monolithic artifact. "
+            "The shared runtime retains an app-independent ABI and the app "
+            "uses LLVM's side-module link."
         ),
     )
     build_parser.add_argument(

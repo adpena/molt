@@ -155,35 +155,26 @@ def _load_optimizer_publication(
     *,
     cache_fact: Mapping[str, str],
     level: str,
-    split: bool,
     preserve_debug: bool,
 ) -> dict[str, Any]:
     """Admit optimizer evidence against the exact generation being published."""
-    # The output contract names each optimized artifact: a split side-module
-    # app is published as LLVM emitted it, with no app optimizer sidecar.
-    roles = (("linked", "optimizer"),) + (
-        (("app", "app_optimizer"),) if split and "app_optimizer" in outputs else ()
+    attestation = load_wasm_optimizer_attestation(outputs["optimizer"])
+    identity = stable_regular_file_identity(
+        outputs["linked"], label="optimized linked WASM output"
     )
-    attestations = {}
-    for artifact_role, sidecar_role in roles:
-        attestation = load_wasm_optimizer_attestation(outputs[sidecar_role])
-        identity = stable_regular_file_identity(
-            outputs[artifact_role], label="optimized WASM output"
+    if (
+        set(cache_fact) != {"tool", "sha256", "binaryen_version"}
+        or cache_fact.get("tool") != "wasm-opt"
+        or attestation["wasm_opt_sha256"] != cache_fact["sha256"]
+        or attestation["binaryen_version"] != cache_fact["binaryen_version"]
+        or attestation["optimization_level"] != level
+        or attestation["optimization_preserve_debug"] is not preserve_debug
+        or attestation["published_output_sha256"] != identity.sha256
+    ):
+        raise ValueError(
+            "WASM optimizer evidence differs from the admitted tool or published artifact"
         )
-        if (
-            set(cache_fact) != {"tool", "sha256", "binaryen_version"}
-            or cache_fact.get("tool") != "wasm-opt"
-            or attestation["wasm_opt_sha256"] != cache_fact["sha256"]
-            or attestation["binaryen_version"] != cache_fact["binaryen_version"]
-            or attestation["optimization_level"] != level
-            or attestation["optimization_preserve_debug"] is not preserve_debug
-            or attestation["published_output_sha256"] != identity.sha256
-        ):
-            raise ValueError(
-                "WASM optimizer evidence differs from the admitted tool or published artifact"
-            )
-        attestations[artifact_role] = attestation
-    return attestations["app" if "app" in attestations else "linked"]
+    return attestation
 
 
 def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
@@ -1055,8 +1046,9 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
-            if resolved_linked_output is None:
+            if linked and resolved_linked_output is None:
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
+            linked_opt_level = wasm_opt_level if linked else None
             try:
                 side_sdk_capture_ns = time.time_ns()
                 side_sdk_archives = (
@@ -1068,7 +1060,7 @@ def _prepare_non_native_build_result_in_generation(
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
                     external_selection=bool(wasm_link_requirements.items),
-                    optimize=wasm_opt_level is not None,
+                    optimize=linked_opt_level is not None,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
                     inputs=(
                         output_wasm,
@@ -1090,7 +1082,7 @@ def _prepare_non_native_build_result_in_generation(
                 )
             except (OSError, ValueError) as exc:
                 return None, _fail(str(exc), json_output, command="build")
-            if resolved_linked_output.parent != Path("."):
+            if resolved_linked_output is not None:
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
             if not is_wasm_freestanding:
                 if runtime_wasm is None or not runtime_wasm.is_file():
@@ -1121,11 +1113,11 @@ def _prepare_non_native_build_result_in_generation(
                 str(runtime_wasm),
                 "--input",
                 str(output_wasm),
-                "--output",
-                str(resolved_linked_output),
                 "--wasm-facts-scanner",
                 str(wasm_facts_scanner),
             ]
+            if resolved_linked_output is not None:
+                link_cmd.extend(["--output", str(resolved_linked_output)])
             link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
             if stdlib_archive is not None:
                 # The shared stdlib archive the wasm32 application object was
@@ -1149,8 +1141,8 @@ def _prepare_non_native_build_result_in_generation(
                 )
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
-            if wasm_opt_level is not None:
-                link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
+            if linked_opt_level is not None:
+                link_cmd.extend(["--optimize", "--optimize-level", linked_opt_level])
             if profile == "dev":
                 link_cmd.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
@@ -1198,7 +1190,7 @@ def _prepare_non_native_build_result_in_generation(
                     )
                 ]
                 link_cmd.extend(expected_input_args)
-                if wasm_opt_level is not None:
+                if linked_opt_level is not None:
                     optimizer_cache_fact = wasm_optimizer_cache_fact()
                 deploy_asset_root = molt_root / "wasm"
                 browser_asset_names = (
@@ -1384,14 +1376,13 @@ def _prepare_non_native_build_result_in_generation(
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
             )
-            if link_skipped and wasm_opt_level is not None:
+            if link_skipped and linked_opt_level is not None:
                 try:
                     assert optimizer_cache_fact is not None
                     optimizer_attestation = _load_optimizer_publication(
                         deployment_plan.outputs,
                         cache_fact=optimizer_cache_fact,
-                        level=wasm_opt_level,
-                        split=_split_runtime,
+                        level=linked_opt_level,
                         preserve_debug=profile == "dev",
                     )
                 except (OSError, ValueError):
@@ -1425,15 +1416,19 @@ def _prepare_non_native_build_result_in_generation(
                     deployment = generation_custody.enter_context(
                         WasmDeploymentGeneration.prepare(deployment_plan)
                     )
-                    link_run_cmd[link_run_cmd.index("--output") + 1] = str(
-                        deployment.outputs["linked"]
-                    )
+                    if "linked" in link_outputs:
+                        link_run_cmd[link_run_cmd.index("--output") + 1] = str(
+                            deployment.outputs["linked"]
+                        )
                     if _split_runtime:
                         link_run_cmd[link_run_cmd.index("--split-output-dir") + 1] = (
                             str(deployment.root)
                         )
+                    deployment_entry = deployment.outputs[
+                        "app" if _split_runtime else "linked"
+                    ]
                     native_link_plan_path = staged_file_path(
-                        deployment.outputs["linked"], purpose="native-link-plan"
+                        deployment_entry, purpose="native-link-plan"
                     )
                     native_link_plan_path.write_bytes(native_link_plan_bytes)
                     link_run_cmd.extend(
@@ -1448,7 +1443,7 @@ def _prepare_non_native_build_result_in_generation(
                     )
                     if stage_timings_ms is not None:
                         link_timings_path = staged_file_path(
-                            deployment.outputs["linked"], purpose="link-timings"
+                            deployment_entry, purpose="link-timings"
                         )
                         link_run_cmd.extend(
                             ["--phase-timings-file", str(link_timings_path)]
@@ -1506,17 +1501,18 @@ def _prepare_non_native_build_result_in_generation(
                             validate_link_selection_policy(
                                 deployment.outputs["selection"],
                                 selection_policy,
-                                roles={"linked", "app"}
-                                if _split_runtime
-                                else {"linked"},
+                                roles={
+                                    role
+                                    for role in ("linked", "app")
+                                    if role in link_outputs
+                                },
                             )
-                        if wasm_opt_level is not None:
+                        if linked_opt_level is not None:
                             assert optimizer_cache_fact is not None
                             optimizer_attestation = _load_optimizer_publication(
                                 deployment.outputs,
                                 cache_fact=optimizer_cache_fact,
-                                level=wasm_opt_level,
-                                split=_split_runtime,
+                                level=linked_opt_level,
                                 preserve_debug=profile == "dev",
                             )
 
@@ -1551,7 +1547,7 @@ def _prepare_non_native_build_result_in_generation(
                             "WASM link result was not cached: "
                             + str(link_result.publication_error)
                         )
-                    resolved_linked_output = deployment.outputs["linked"]
+                    resolved_linked_output = deployment.outputs.get("linked")
                 except _WasmFinalLinkFailure as exc:
                     return None, _fail(str(exc), json_output, command="build")
                 except (OSError, ValueError) as exc:
@@ -1630,7 +1626,13 @@ def _prepare_non_native_build_result_in_generation(
         primary_output = output_wasm
         if require_linked and resolved_linked_output is not None:
             primary_output = resolved_linked_output
-        consumer_output = resolved_linked_output or primary_output
+        consumer_output = (
+            (deployment.outputs if deployment is not None else deployment_plan.outputs)[
+                "app"
+            ]
+            if _split_runtime and deployment_plan is not None and not require_linked
+            else resolved_linked_output or primary_output
+        )
         success_messages = (
             [f"Successfully built {primary_output}"]
             if require_linked
@@ -1847,11 +1849,6 @@ def _prepare_non_native_build_result_in_generation(
             manifest_data: dict[str, Any] = {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
-                **(
-                    {"optimizer": optimizer_attestation}
-                    if optimizer_attestation is not None
-                    else {}
-                ),
                 "tree_shaken": True,
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,

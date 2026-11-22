@@ -23122,7 +23122,7 @@ def _install_fake_wasm_link_runner(
                 if "--freestanding" in command
                 else "wasm32-wasip1",
             )
-        if "--output" not in command:
+        if "--output" not in command and "--split-runtime" not in command:
             return subprocess.CompletedProcess(command, 0, "", "")
         assert command[command.index("--wasm-facts-scanner") + 1] == str(scanner)
         expected_inputs = [
@@ -23141,12 +23141,14 @@ def _install_fake_wasm_link_runner(
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
             link_calls.append(command)
-        output_path = Path(command[command.index("--output") + 1])
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         valid_wasm = b"\0asm\x01\0\0\0"
         from molt import artifact_publication
 
-        payloads = {"linked": (output_path, linked_bytes)}
+        payloads: dict[str, tuple[Path, bytes]] = {}
+        if "--output" in command:
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            payloads["linked"] = (output_path, linked_bytes)
         if "--split-runtime" in command:
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
@@ -23158,7 +23160,11 @@ def _install_fake_wasm_link_runner(
                 runtime=(split_dir / "molt_runtime.wasm", valid_wasm),
             )
         payloads.update(
-            mock_wasm_optimizer_publications(command, payloads, optimizer_fact)
+            mock_wasm_optimizer_publications(
+                command,
+                {role: value for role, value in payloads.items() if role == "linked"},
+                optimizer_fact,
+            )
         )
         candidates = {}
         for role, (final, payload) in payloads.items():
@@ -23195,10 +23201,9 @@ def _install_fake_wasm_link_runner(
                 **link_selection_policy(),
                 "inputs": inputs,
             }
-            roles = {"linked": selection}
-            if "--split-runtime" in command:
-                roles["app"] = selection
-            final = link_selection_path(output_path)
+            roles = {role: selection for role in ("linked", "app") if role in payloads}
+            selection_anchor = payloads["linked" if "--output" in command else "app"][0]
+            final = link_selection_path(selection_anchor)
             stage = artifact_publication.staged_output_path(final)
             write_link_selection(stage, roles)
             candidates["selection"] = (stage, final)
@@ -23816,11 +23821,13 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     assert prepared.artifacts["manifest"] == str(output_wasm.parent / "manifest.json")
 
 
+@pytest.mark.parametrize("explicit_linked", [False, True])
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
     isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    explicit_linked: bool,
 ) -> None:
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23950,9 +23957,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     common_kwargs = dict(
         is_wasm=True,
         is_wasm_freestanding=False,
-        linked=True,
+        linked=explicit_linked,
         require_linked=False,
-        linked_output_path=linked_wasm,
+        linked_output_path=linked_wasm if explicit_linked else None,
         output_artifact=output_wasm,
         json_output=True,
         resolved_capability_policy=resolved_policy,
@@ -23977,6 +23984,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert pair_required == [frozenset({"alloc", "molt_fast_list_append"})]
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
+    assert ("--output" in link_cmd) is explicit_linked
+    assert ("linked_wasm" in prepared.artifacts) is explicit_linked
+    assert linked_wasm.exists() is explicit_linked
+    assert prepared.consumer_output == output_wasm.parent / "app.wasm"
     assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
     assert runtime_wasm in link_fingerprint_inputs
     plan_path = Path(link_cmd[link_cmd.index("--native-link-plan") + 1])
@@ -24077,18 +24088,26 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     )
     receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
     assert receipt is not None
+    selection_anchor = (
+        linked_wasm if explicit_linked else output_wasm.parent / "app.wasm"
+    )
     outputs = {
-        "linked": linked_wasm,
         "app": output_wasm.parent / "app.wasm",
         "runtime": output_wasm.parent / "molt_runtime.wasm",
-        "selection": linked_wasm.with_name(
-            linked_wasm.name + ".molt-link-selection.json"
+        "selection": selection_anchor.with_name(
+            selection_anchor.name + ".molt-link-selection.json"
         ),
     }
+    if explicit_linked:
+        outputs["linked"] = linked_wasm
+    assert ("linked" in receipt["outputs"]) is explicit_linked
+    assert "app_optimizer" not in receipt["outputs"]
     assert set(outputs) < set(receipt["outputs"])
     selection = json.loads(outputs["selection"].read_text(encoding="utf-8"))
     assert selection["schema"] == "molt.link-member-selection.v1"
-    assert set(selection["roles"]) == {"linked", "app"}
+    assert set(selection["roles"]) == (
+        {"linked", "app"} if explicit_linked else {"app"}
+    )
     for role in selection["roles"].values():
         assert (
             role["selection_policy"]
@@ -34382,8 +34401,14 @@ def test_run_wrapper_build_uses_explicit_child_module_roots_over_ambient(
 
 
 @pytest.mark.parametrize(
-    "split_runtime,stage",
-    [(False, "linked-validation"), (True, "facts-scan"), (True, "split-native-link")],
+    "split_runtime,explicit_linked,stage",
+    [
+        (False, True, "linked-validation"),
+        (True, False, "facts-scan"),
+        (True, False, "split-native-link"),
+        (True, True, "facts-scan"),
+        (True, True, "split-native-link"),
+    ],
 )
 def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     isolated_molt_cache: Path,
@@ -34391,6 +34416,7 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     split_runtime: bool,
+    explicit_linked: bool,
     stage: str,
 ) -> None:
     from tools.wasm_link_fact_provider import preserve_rejected_wasm
@@ -34431,10 +34457,16 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     generations: list[Path] = []
     rejected = b"\0asm\x01\0\0\0rejected-link-output"
 
-    def rejected_link(command, **kwargs):
+    def rejected_link(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         if "--wasm-facts-scanner" not in command:
             return original_runner(command, **kwargs)
-        private_output = Path(command[command.index("--output") + 1])
+        private_output = (
+            Path(command[command.index("--output") + 1])
+            if "--output" in command
+            else Path(command[command.index("--split-output-dir") + 1]) / "app.wasm"
+        )
         generations.append(private_output.parent)
         evidence_root = Path(command[command.index("--failure-evidence-dir") + 1])
         assert evidence_root == output.parent / "wasm-link-evidence"
@@ -34448,9 +34480,9 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     prepared, error = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
         is_wasm=True,
-        linked=True,
+        linked=explicit_linked,
         require_linked=False,
-        linked_output_path=linked,
+        linked_output_path=linked if explicit_linked else None,
         output_artifact=output,
         json_output=True,
         runtime_state=_prepared_runtime_pair_state(shared, reloc),

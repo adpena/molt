@@ -99,7 +99,8 @@ class WasmDeploymentPlan:
         root = output_root if split else core["linked"].parent
         outputs = {**core, "manifest": root / "manifest.json"}
         obsolete = {root / "bundle.tar", root / "wrangler.toml"} if split else set()
-        obsolete.add(wasm_optimizer_attestation_path(core["linked"]))
+        if "linked" in core:
+            obsolete.add(wasm_optimizer_attestation_path(core["linked"]))
         if split:
             obsolete.add(wasm_optimizer_attestation_path(core["app"]))
         if split:
@@ -131,7 +132,6 @@ class WasmDeploymentPlan:
         roles = {
             "linked": "linked_wasm",
             "optimizer": "wasm_optimizer_attestation",
-            "app_optimizer": "wasm_app_optimizer_attestation",
             "app": "app_wasm",
             "runtime": "runtime_wasm",
             "manifest": "manifest",

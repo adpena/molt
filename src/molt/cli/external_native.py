@@ -2800,7 +2800,7 @@ def _external_native_artifact_output_custody_error(
                 "static_link static_archive artifacts: " + ", ".join(linkage_mismatches)
             )
         return None
-    if output_layout.is_wasm and output_layout.linked:
+    if output_layout.is_wasm and (output_layout.linked or output_layout.split_runtime):
         mismatches = [
             f"{artifact.module}={artifact.runtime_linkage}/"
             f"{artifact.artifact_kind}/{artifact.target_triple}"

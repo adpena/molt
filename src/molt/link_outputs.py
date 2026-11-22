@@ -33,24 +33,28 @@ def validate_link_output_paths(
 
 
 def wasm_link_output_paths(
-    linked: Path,
+    linked: Path | None,
     *,
     split_output_dir: Path | None = None,
     inputs: Iterable[Path] = (),
     external_selection: bool = False,
     optimize: bool = False,
 ) -> dict[str, Path]:
-    outputs = {"linked": linked}
+    outputs: dict[str, Path] = {}
+    if linked is not None:
+        outputs["linked"] = linked
     if optimize:
         from molt.wasm_optimizer_identity import wasm_optimizer_attestation_path
 
+        if linked is None:
+            raise ValueError("WASM optimization requires a monolithic linked output")
         outputs["optimizer"] = wasm_optimizer_attestation_path(linked)
-    if external_selection:
-        outputs["selection"] = link_selection_path(linked)
     if split_output_dir is not None:
         outputs.update(
             app=split_output_dir / "app.wasm",
             runtime=split_output_dir / "molt_runtime.wasm",
         )
+    if external_selection and outputs:
+        outputs["selection"] = link_selection_path(linked or outputs["app"])
     validate_link_output_paths(outputs, inputs=inputs)
     return outputs

@@ -778,6 +778,8 @@ class TestSplitRuntimeArtifacts:
         receipt_path = publication_receipt_path(out / "manifest.json")
         receipt = _read_link_fingerprint(receipt_path)
         assert receipt is not None
+        assert "linked" not in receipt["outputs"]
+        assert "optimizer" not in receipt["outputs"]
         assert {
             "app",
             "runtime",
@@ -845,6 +847,7 @@ class TestSplitRuntimeArtifacts:
                 f"Copied browser asset differs from its canonical payload: {name}"
             )
         assert not (out_dir / "wrangler.toml").exists()
+        assert not (out_dir / "output_linked.wasm").exists()
 
     def test_runtime_wasm_size(self, split_build_a):
         """The shared runtime's budget is its transfer size, with a raw ceiling.
@@ -2065,8 +2068,10 @@ class TestRuntimeCacheability:
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("explicit_linked", [False, True])
 def test_llvm_split_runtime_side_module_matches_cpython_on_node_and_wasmtime(
     tmp_path: Path,
+    explicit_linked: bool,
 ) -> None:
     """An LLVM wasm32 split build is a side module placed after the shared
     runtime (dylink.0, GOT, the runtime's shadow stack); Node and the Wasmtime
@@ -2084,8 +2089,26 @@ print(remainder(float("5.5"), float("-2.0")))
 """
     source.write_text(PROGRAM_A + PROGRAM_B + remainder, encoding="utf-8")
     out_dir = tmp_path / "split"
-    build = _build_split(source, out_dir, extra_args=["--backend", "llvm"])
+    extra_args = ["--backend", "llvm"]
+    if explicit_linked:
+        extra_args.append("--linked")
+    build = _build_split(source, out_dir, extra_args=extra_args)
     assert build.returncode == 0, build.stdout + build.stderr
+    assert (out_dir / "output_linked.wasm").exists() is explicit_linked
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest["modules"]) == {"app", "runtime"}
+    assert "optimizer" not in manifest
+    from molt.artifact_publication import publication_receipt_path
+    from molt.cli.link_fingerprints import _read_link_fingerprint
+
+    receipt = _read_link_fingerprint(
+        publication_receipt_path(out_dir / "manifest.json")
+    )
+    assert receipt is not None
+    assert {"app", "runtime", "manifest"} <= set(receipt["outputs"])
+    assert ("linked" in receipt["outputs"]) is explicit_linked
+    assert ("optimizer" in receipt["outputs"]) is explicit_linked
+    assert "app_optimizer" not in receipt["outputs"]
     app = (out_dir / "app.wasm").read_bytes()
     assert b"dylink.0" in app
     expected = "42\n0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n0.5\n-0.5\n"

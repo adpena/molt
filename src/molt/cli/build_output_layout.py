@@ -458,9 +458,7 @@ def resolve_build_output_options(
         raise ValueError("Linked output is only supported for wasm targets")
     if require_linked and not linked:
         linked = True
-    if split_runtime and is_wasm:
-        linked = True
-    if is_wasm and not linked:
+    if is_wasm and not linked and not split_runtime:
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True

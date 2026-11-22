@@ -177,9 +177,12 @@ ordered member identity, and reads through one stable source handle. The WASM
 projection adds object bounds and target-format checks; it owns no archive
 parser. Before linking, raw objects and whole archives create required provider
 and data-address obligations. Lazy archives contribute candidates only. Exact
-linker extraction evidence admits both the monolithic and split-app roles before
-publication; dormant member names cannot force runtime exports or missing
-provider/address failures.
+linker extraction evidence admits the requested link roles before publication.
+A split deployment links its side module and uses the admitted shared runtime.
+An explicit monolithic request also links and publishes that module. Dormant
+member names cannot force runtime exports or missing provider/address failures.
+Binaryen evidence belongs to the monolithic module it describes. The LLVM side
+module preserves its dynamic-loading metadata and carries no Binaryen evidence.
 
 ### Linker Source and Loader Closure
 

@@ -418,6 +418,18 @@ def test_link_output_aliases_are_rejected_before_publication(tmp_path: Path) -> 
         )
 
 
+def test_split_only_link_owns_side_module_selection(tmp_path: Path) -> None:
+    assert wasm_link_output_paths(
+        None, split_output_dir=tmp_path, external_selection=True
+    ) == {
+        "app": tmp_path / "app.wasm",
+        "runtime": tmp_path / "molt_runtime.wasm",
+        "selection": tmp_path / "app.wasm.molt-link-selection.json",
+    }
+    with pytest.raises(ValueError, match="requires a monolithic linked output"):
+        wasm_link_output_paths(None, split_output_dir=tmp_path, optimize=True)
+
+
 def test_receipt_never_adopts_a_later_publishers_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

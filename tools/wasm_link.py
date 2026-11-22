@@ -39,6 +39,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
     read_source_extension_link_plan,
 )
 from molt.cli import wasm_link_inputs, wasm_toolchain  # noqa: E402
+from molt.link_outputs import wasm_link_output_paths  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 
@@ -92,7 +93,8 @@ def _link_admitted_standard_object(
     wasm_ld: str,
     runtime: Path,
     app_object: Path,
-    linked: Path,
+    linked: Path | None,
+    split_output_dir: Path | None,
     native_link_requirements: SourceExtensionLinkRequirements | None,
     input_versions: Sequence[StableRegularFileIdentity],
     side_sdk_archives: Sequence[Path],
@@ -100,7 +102,7 @@ def _link_admitted_standard_object(
 ) -> int:
     """Link an admitted LLVM wasm32 application object with wasm-ld.
 
-    A split build also links the application as a wasm32 side module
+    A split build links the application as a wasm32 side module
     (`app.wasm`) beside the trusted shared runtime member
     (`molt_runtime.wasm`), which the host instantiates first and places the
     side module after (wasm/loader_bridge.js `placeSideModule`).
@@ -115,6 +117,23 @@ def _link_admitted_standard_object(
     scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
     scratch = OwnedTemporaryDirectory(prefix="molt-wasm-object-link-", dir=scratch_root)
     try:
+        outputs = wasm_link_output_paths(
+            linked,
+            split_output_dir=split_output_dir,
+            inputs=(
+                runtime,
+                app_object,
+                deploy_runtime,
+                *(identity.path for identity in input_versions),
+            ),
+            external_selection=bool(
+                native_link_requirements and native_link_requirements.items
+            ),
+            optimize=args.optimize,
+        )
+        primary = outputs["app"] if split_output_dir is not None else outputs["linked"]
+        for path in outputs.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
         for identity in input_versions:
             verify_stable_regular_file_identity(
                 identity, label="WASM input before link"
@@ -129,32 +148,33 @@ def _link_admitted_standard_object(
             base_allowlist=TOOLS_ROOT / "wasm_allowed_imports.txt",
             scratch=scratch,
             evidence_root=args.failure_evidence_dir
-            or linked.parent / "wasm-link-evidence",
+            or primary.parent / "wasm-link-evidence",
             phase_timings_ms=phase_timings_ms,
         )
-        status = link_standard_object(
-            wasm_ld=wasm_ld,
-            app_object=app_object,
-            stdlib_archive=args.stdlib_archive,
-            runtime=runtime,
-            allowlist=native.allowlist,
-            linked=linked,
-            app_export_contract=args.app_export_contract,
-            native_link_requirements=native.requirements,
-            selection_roles=selection_roles,
-            optimize=args.optimize,
-            optimize_level=args.optimize_level,
-            preserve_debug=args.preserve_debug_sections,
-            phase_timings_ms=phase_timings_ms,
-            freestanding=args.freestanding,
-        )
-        if status == 0 and args.split_runtime:
-            split_dir = args.split_output_dir or linked.parent
+        status = 0
+        if linked is not None:
+            status = link_standard_object(
+                wasm_ld=wasm_ld,
+                app_object=app_object,
+                stdlib_archive=args.stdlib_archive,
+                runtime=runtime,
+                allowlist=native.allowlist,
+                linked=linked,
+                app_export_contract=args.app_export_contract,
+                native_link_requirements=native.requirements,
+                selection_roles=selection_roles,
+                optimize=args.optimize,
+                optimize_level=args.optimize_level,
+                preserve_debug=args.preserve_debug_sections,
+                phase_timings_ms=phase_timings_ms,
+                freestanding=args.freestanding,
+            )
+        if status == 0 and split_output_dir is not None:
             status = link_side_module(
                 wasm_ld=wasm_ld,
                 app_object=app_object,
                 stdlib_archive=args.stdlib_archive,
-                app=split_dir / "app.wasm",
+                app=outputs["app"],
                 app_export_contract=args.app_export_contract,
                 native_link_requirements=native.requirements,
                 sdk_archives=side_sdk_archives,
@@ -163,14 +183,14 @@ def _link_admitted_standard_object(
                 phase_timings_ms=phase_timings_ms,
             )
             if status == 0:
-                staged_runtime = split_dir / ".molt_runtime.wasm.staged"
+                runtime_output = outputs["runtime"]
+                staged_runtime = runtime_output.with_name(".molt_runtime.wasm.staged")
                 shutil.copyfile(deploy_runtime, staged_runtime)
-                staged_runtime.replace(split_dir / "molt_runtime.wasm")
+                staged_runtime.replace(runtime_output)
         if status == 0 and selection_roles:
             from molt.cli.link_selection_admission import write_link_selection
-            from molt.link_outputs import link_selection_path
 
-            selection = link_selection_path(linked)
+            selection = outputs["selection"]
             staged_selection = selection.with_name(f".{selection.name}.staged")
             write_link_selection(staged_selection, selection_roles)
             staged_selection.replace(selection)
@@ -210,7 +230,9 @@ def main() -> int:
         default=None,
         help="Shared stdlib archive of an LLVM wasm32 application object",
     )
-    parser.add_argument("--output", type=Path, default=_default_output_path())
+    parser.add_argument(
+        "--output", type=Path, help="Emit a monolithic linked module at this path"
+    )
     parser.add_argument(
         "--failure-evidence-dir",
         type=Path,
@@ -226,7 +248,7 @@ def main() -> int:
         "--optimize",
         action="store_true",
         default=False,
-        help="Run wasm-opt after linking (requires Binaryen)",
+        help="Run wasm-opt on the monolithic linked module (requires Binaryen)",
     )
     parser.add_argument(
         "--optimize-level",
@@ -244,7 +266,7 @@ def main() -> int:
         "--split-output-dir",
         type=Path,
         default=None,
-        help="Directory for split-runtime output files (default: same as --output parent)",
+        help="Directory for split-runtime output files",
     )
     parser.add_argument(
         "--deploy-runtime",
@@ -278,7 +300,14 @@ def main() -> int:
 
     runtime = args.runtime
     output = args.input
-    linked = args.output
+    linked = (
+        args.output if args.split_runtime else args.output or _default_output_path()
+    )
+    split_output_dir = (
+        args.split_output_dir or (linked or _default_output_path()).parent
+        if args.split_runtime
+        else None
+    )
     try:
         expected_inputs: dict[Path, str] = {}
         side_sdk_archives = (
@@ -347,8 +376,6 @@ def main() -> int:
         except (OSError, ValueError) as exc:
             print(f"Invalid native WASM link plan: {exc}", file=sys.stderr)
             return 1
-    linked.parent.mkdir(parents=True, exist_ok=True)
-
     try:
         wasm_ld = str(wasm_toolchain.resolve_wasm_linker().path)
     except wasm_toolchain.WasmLinkerContractError as exc:
@@ -361,6 +388,7 @@ def main() -> int:
         runtime=runtime,
         app_object=output,
         linked=linked,
+        split_output_dir=split_output_dir,
         native_link_requirements=native_link_requirements,
         input_versions=input_versions,
         side_sdk_archives=tuple(sdk_versions),
