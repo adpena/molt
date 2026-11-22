@@ -133,7 +133,10 @@ from molt.compiler_analysis.python_imports import (
     _StaticSourceExecutionRequest,
 )
 from molt.native_target import resolve_native_target_spec
-from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.python_source_closure import (
+    LocalPythonSourceClosure,
+    local_python_import_closure,
+)
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
@@ -23273,6 +23276,10 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     wasm_link = tmp_path / "tools" / "wasm_link.py"
     wasm_link.parent.mkdir(parents=True, exist_ok=True)
     wasm_link.write_text("# linker\n", encoding="utf-8")
+    # Wheel code runs outside the separately admitted compiler source tree.
+    deployment_source = tmp_path / "src" / "molt" / "cli" / "non_native_output.py"
+    deployment_source.parent.mkdir(parents=True)
+    deployment_source.write_text("# deployment\n", encoding="utf-8")
     link_calls: list[list[str]] = []
 
     linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
@@ -23284,16 +23291,21 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         linked_bytes=linked_bytes,
         app_input_paths=(output_wasm, tmp_path / "relocated" / "output.wasm"),
     )
-    closure_digest = ["captured-tooling-generation-one"]
+    closure_digests: dict[Path, str] = {}
+
+    def capture_closure(
+        root: Path, seeds: tuple[Path, ...]
+    ) -> LocalPythonSourceClosure:
+        closure = local_python_import_closure(root, seeds)
+        (seed,) = seeds
+        assert closure.paths == (seed,)
+        closure_digests[seed] = closure.content_digest
+        return closure
+
     monkeypatch.setattr(
         cli_non_native_output,
         "local_python_import_closure",
-        lambda _root, _entries: LocalPythonSourceClosure(
-            paths=(wasm_link,),
-            source_sha256={wasm_link: "captured-source-hash"},
-            content_digest=closure_digest[0],
-            source_bytes=len(b"# linker\n"),
-        ),
+        capture_closure,
     )
     fingerprints: list[dict[str, Any]] = []
     real_link_fingerprint = cli_link_fingerprints._link_fingerprint
@@ -23310,8 +23322,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         assert set(optimizer[0]) == {"tool", "sha256", "binaryen_version"}
         assert by_role["wasm-link-source-closure"] == {
             "role": "wasm-link-source-closure",
-            "content_digest": closure_digest[0],
+            "content_digest": closure_digests[wasm_link],
         }
+        assert (
+            by_role["wasm-deployment"]["source_digest"]
+            == closure_digests[deployment_source]
+        )
         assert by_role["wasm-native-link-plan"]["role"] == "wasm-native-link-plan"
         assert "--native-link-plan" not in kwargs["link_cmd"]
         assert "--runtime-generation" not in kwargs["link_cmd"]
@@ -23470,7 +23486,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     # Byte-generation identity belongs to metadata, so unchanged binary inputs
     # cannot reuse a link built by different captured compiler tooling.
-    closure_digest[0] = "captured-tooling-generation-two"
+    wasm_link.write_text("# updated linker\n", encoding="utf-8")
     third, third_err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None, **common_kwargs
     )

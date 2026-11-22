@@ -1285,8 +1285,13 @@ def _prepare_non_native_build_result_in_generation(
                 selection_policy = (
                     link_selection_policy() if wasm_link_requirements.items else None
                 )
+                # A platform wheel executes the verified copy in site-packages.
+                # The closure belongs to the admitted compiler source tree.
+                deployment_source = (
+                    molt_root / "src" / Path(*__name__.split(".")).with_suffix(".py")
+                )
                 deployment_closure = local_python_import_closure(
-                    molt_root, (Path(__file__),)
+                    molt_root, (deployment_source,)
                 )
             except (OSError, ValueError) as exc:
                 return None, _fail(
