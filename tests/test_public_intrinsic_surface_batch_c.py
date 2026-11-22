@@ -53,6 +53,7 @@ install_registry({{
     "molt_math_isinf": lambda x: False,
     "molt_math_isnan": lambda x: False,
     "molt_math_sqrt": lambda x: float(x) ** 0.5,
+    "molt_math_pow": _host_math.pow,
     "molt_math_log2": lambda x: 3.0,
     "molt_math_log10": lambda x: 1.0,
     "molt_math_log1p": lambda x: 1.0,
@@ -150,6 +151,7 @@ replaced = copy_mod.replace(box, value=9) if sys.version_info >= (3, 13) else No
 checks = {{
     "math": (
         math_mod.sqrt(9) == 3.0
+        and math_mod.pow(2.0, -3.0) == _host_math.pow(2.0, -3.0)
         and math_mod.gcd(12, 18) == 6
         and math_mod.prod([2, 3], start=2) == 12
         and "molt_math_sqrt" not in math_mod.__dict__
