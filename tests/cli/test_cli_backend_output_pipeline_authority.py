@@ -29,6 +29,7 @@ from molt.cli.models import (
     _BuildDiagnosticsContext,
     _ExternalPackageNativeArtifactPlan,
     _PreparedBackendCompile,
+    _PreparedNonNativeResult,
 )
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
@@ -527,12 +528,11 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
         case.phases["wasm_publish"] = case.clock.now
         case.clock.now += 5.0
         (tmp_path / "app.wasm").write_bytes(b"published wasm")
-        return SimpleNamespace(
+        return _PreparedNonNativeResult(
             primary_output=tmp_path / "app.wasm",
             consumer_output=tmp_path / "app.wasm",
-            link_input_observation=None,
-            result_inputs=None,
             bundle_root=None,
+            linked_output_path=None,
             extra_fields={},
             artifacts={},
             success_messages=[],
@@ -603,12 +603,11 @@ def test_wasm_inspection_admission_is_lazy_and_failure_preserves_diagnostics(
 
     def prepare(**kwargs):
         assert kwargs["wasm_facts_scanner"] is None
-        return SimpleNamespace(
+        return _PreparedNonNativeResult(
             primary_output=kwargs["output_artifact"],
             consumer_output=kwargs["output_artifact"],
-            link_input_observation=None,
-            result_inputs=None,
             bundle_root=None,
+            linked_output_path=None,
             extra_fields={},
             artifacts={},
             success_messages=[],
@@ -648,12 +647,11 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
             cli_backend_output_pipeline._non_native_output,
             "_prepare_non_native_build_result",
             lambda **kwargs: (
-                SimpleNamespace(
+                _PreparedNonNativeResult(
                     primary_output=kwargs["output_artifact"],
                     consumer_output=kwargs["output_artifact"],
-                    link_input_observation=None,
-                    result_inputs=None,
                     bundle_root=None,
+                    linked_output_path=None,
                     extra_fields={},
                     artifacts={},
                     success_messages=[],
@@ -1064,12 +1062,11 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
 
         def publish_wasm(**_):
             artifact.write_bytes(published_bytes)
-            return SimpleNamespace(
+            return _PreparedNonNativeResult(
                 primary_output=artifact,
                 consumer_output=artifact,
-                link_input_observation=None,
-                result_inputs=None,
                 bundle_root=None,
+                linked_output_path=None,
                 extra_fields={},
                 artifacts={},
                 success_messages=["WASM ready"],
