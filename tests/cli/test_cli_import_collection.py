@@ -23263,6 +23263,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23273,11 +23274,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
-    wasm_link = tmp_path / "tools" / "wasm_link.py"
+    molt_root = tmp_path / "source"
+    wasm_link = molt_root / "tools" / "wasm_link.py"
     wasm_link.parent.mkdir(parents=True, exist_ok=True)
     wasm_link.write_text("# linker\n", encoding="utf-8")
     # Wheel code runs outside the separately admitted compiler source tree.
-    deployment_source = tmp_path / "src" / "molt" / "cli" / "non_native_output.py"
+    deployment_source = molt_root / "src" / "molt" / "cli" / "non_native_output.py"
     deployment_source.parent.mkdir(parents=True)
     deployment_source.write_text("# deployment\n", encoding="utf-8")
     link_calls: list[list[str]] = []
@@ -23285,7 +23287,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
     _install_fake_wasm_link_runner(
         monkeypatch,
-        molt_root=tmp_path,
+        molt_root=molt_root,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         linked_bytes=linked_bytes,
@@ -23363,13 +23365,25 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "runtime_state": runtime_state,
         "ensure_runtime_wasm_both": admit_pair,
         "runtime_cargo_profile": "dev-fast",
-        "molt_root": tmp_path,
+        "molt_root": molt_root,
         "split_runtime": False,
         "precompile": False,
         "wasm_facts_scanner": tmp_path / "molt-wasm-facts",
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
         "stdlib_archive": None,
     }
+
+    # Only an installed layout has a separately verified executing package.
+    monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
+    unrelated_source, source_error = (
+        cli_non_native_output._prepare_non_native_build_result(
+            validate_inputs=lambda: None, **common_kwargs
+        )
+    )
+    assert unrelated_source is None and source_error is not None
+    assert "Python tooling source is outside project root" in capsys.readouterr().out
+    assert link_calls == []
+    monkeypatch.setenv("MOLT_BUNDLE_ROOT", str(molt_root.parent))
 
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     first, first_err = cli_non_native_output._prepare_non_native_build_result(

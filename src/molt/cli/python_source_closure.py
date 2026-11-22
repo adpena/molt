@@ -8,7 +8,7 @@ import os
 from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock
 from types import MappingProxyType
@@ -312,12 +312,18 @@ def _analysis_policy_digest(
     policy: PythonImportPolicy,
     premise: PythonNamespacePremise,
 ) -> str:
+    # These records contain immutable JSON values. Give the encoder their
+    # fields directly to preserve the durable key without copying the tuples.
     payload = json.dumps(
         {
             "module": module,
             "is_package": is_package,
-            "policy": asdict(policy),
-            "namespace_premise": asdict(premise),
+            "policy": {
+                item.name: getattr(policy, item.name) for item in fields(policy)
+            },
+            "namespace_premise": {
+                item.name: getattr(premise, item.name) for item in fields(premise)
+            },
         },
         sort_keys=True,
         separators=(",", ":"),

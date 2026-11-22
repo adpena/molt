@@ -1439,3 +1439,120 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tam
             ).encode()
         )
         assert observed["identity"] == expected.hexdigest()
+
+
+def test_installed_manifest_projection_expires_with_its_operation(
+    installation: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import cache_fingerprints
+
+    validate = distribution._validate_installed_manifest
+    validations = 0
+
+    def counted_validate(root: Path, raw: bytes) -> distribution.InstalledCompiler:
+        nonlocal validations
+        validations += 1
+        return validate(root, raw)
+
+    monkeypatch.setattr(distribution, "_validate_installed_manifest", counted_validate)
+    expected = distribution.installed_compiler(installation)
+    assert expected is not None
+    assert validations == 1
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        for _ in range(3):
+            assert distribution.installed_compiler(installation) == expected
+        assert validations == 2
+        with cache_fingerprints._source_tree_fingerprint_transaction(fresh=True):
+            assert distribution.installed_compiler(installation) == expected
+        assert validations == 3
+        assert distribution.installed_compiler(installation) == expected
+        assert validations == 3
+    assert distribution.installed_compiler(installation) == expected
+    assert validations == 4
+
+
+def test_installed_manifest_projection_never_shares_mutable_results(
+    installation: Path,
+) -> None:
+    from molt.cli import cache_fingerprints
+
+    payload = json.loads((installation / distribution.MANIFEST_NAME).read_bytes())
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        for _ in range(3):
+            compiler = distribution.installed_compiler(installation)
+            assert compiler is not None
+            assert compiler.record == payload["compiler"]
+            assert compiler.files[0] == payload["files"][0]
+            assert compiler.runtime == payload["runtime"]
+            assert (
+                compiler.stdlib_source_summaries == payload["stdlib_source_summaries"]
+            )
+            compiler.record["features"].append("caller-mutation")
+            compiler.files[0]["sha256"] = "0" * 64
+            compiler.runtime["source"]["commit"] = "0" * 40
+            compiler.stdlib_source_summaries["sha256"] = "0" * 64
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_installed_manifest_projection_revalidates_changed_bytes(
+    installation: Path, replacement: bool
+) -> None:
+    from molt.cli import cache_fingerprints
+
+    path = installation / distribution.MANIFEST_NAME
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        initial = distribution.installed_compiler(installation)
+        assert initial is not None
+        metadata = path.stat()
+        original = path.read_bytes()
+        payload = json.loads(original)
+        payload["git"]["commit"] = "d" * 40
+        payload["runtime"]["source"]["commit"] = "d" * 40
+        changed = json.dumps(payload).encode()
+        assert len(changed) == len(original)
+        destination = path.with_suffix(".replacement") if replacement else path
+        destination.write_bytes(changed)
+        os.utime(destination, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        if replacement:
+            os.replace(destination, path)
+        current = distribution.installed_compiler(installation)
+        assert current is not None
+        assert initial.source_sha == "a" * 40
+        assert current.source_sha == "d" * 40
+        # A valid earlier projection cannot hide subsequent schema damage.
+        damaged = changed.replace(
+            distribution.MANIFEST_SCHEMA.encode(),
+            b"!" * len(distribution.MANIFEST_SCHEMA),
+        )
+        path.write_bytes(damaged)
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        with pytest.raises(ValueError, match="Invalid installed compiler manifest"):
+            distribution.installed_compiler(installation)
+
+
+@pytest.mark.parametrize("damage", ["missing", "link", "duplicate"])
+def test_installed_manifest_projection_still_reads_the_live_boundary(
+    installation: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    from molt.cli import cache_fingerprints
+
+    monkeypatch.setenv("MOLT_BUNDLE_ROOT", str(installation.parent))
+    path = installation / distribution.MANIFEST_NAME
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert distribution.installed_compiler(installation) is not None
+        original = path.read_bytes()
+        if damage == "missing":
+            path.unlink()
+        elif damage == "link":
+            target = path.with_suffix(".target")
+            path.rename(target)
+            try:
+                path.symlink_to(target)
+            except OSError:
+                if os.name == "nt":
+                    pytest.skip("host does not admit symbolic link creation")
+                raise
+        else:
+            path.write_bytes(b'{"schema":"duplicate",' + original[1:])
+        with pytest.raises((OSError, ValueError)):
+            distribution.installed_compiler(installation)

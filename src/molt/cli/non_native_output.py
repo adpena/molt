@@ -46,6 +46,7 @@ from molt.wasm_optimizer_identity import (
 
 from molt.file_publication import staged_file_path
 from molt.exact_json import canonical_json_bytes
+from molt.source_root import installed_distribution_root
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
     WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
@@ -1285,11 +1286,15 @@ def _prepare_non_native_build_result_in_generation(
                 selection_policy = (
                     link_selection_policy() if wasm_link_requirements.items else None
                 )
-                # A platform wheel executes the verified copy in site-packages.
-                # The closure belongs to the admitted compiler source tree.
-                deployment_source = (
-                    molt_root / "src" / Path(*__name__.split(".")).with_suffix(".py")
-                )
+                deployment_source = Path(__file__)
+                if installed_distribution_root(molt_root) is not None:
+                    # Wheel admission verifies that the executing package is
+                    # the copy of the admitted compiler source.
+                    deployment_source = (
+                        molt_root
+                        / "src"
+                        / Path(*__name__.split(".")).with_suffix(".py")
+                    )
                 deployment_closure = local_python_import_closure(
                     molt_root, (deployment_source,)
                 )

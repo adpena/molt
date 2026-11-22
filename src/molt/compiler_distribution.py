@@ -21,7 +21,7 @@ import re
 import stat
 from typing import Any, TypedDict
 
-from molt.exact_json import canonical_json_sha256, read_exact
+from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.file_publication import (
     is_link_like,
     metadata_is_link_like,
@@ -732,9 +732,37 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
             raise ValueError("Installed compiler manifest is missing; reinstall Molt")
         return None
     source_root = resolve_owned_path(source_root)
-    payload = read_exact(
+    # Selection always reads the current direct-file generation. Only the
+    # pure projection of identical bytes belongs to the operation; neither
+    # metadata nor a persisted digest can authorize reuse.
+    _, raw = capture_stable_regular_file(
         manifest_path, max_bytes=16 * 1024 * 1024, label="installed compiler manifest"
     )
+    from copy import deepcopy
+
+    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    prior = (
+        None
+        if transaction is None or transaction.installed_manifests is None
+        else transaction.installed_manifests.get(source_root)
+    )
+    if prior is not None and prior[0] == raw:
+        return deepcopy(prior[1])
+    compiler = _validate_installed_manifest(source_root, raw)
+    if transaction is None:
+        return compiler
+    if transaction.installed_manifests is None:
+        transaction.installed_manifests = {}
+    transaction.installed_manifests[source_root] = (raw, compiler)
+    # InstalledCompiler contains public mutable dictionaries. Keep the owned
+    # projection private even on its first use, including nested records.
+    return deepcopy(compiler)
+
+
+def _validate_installed_manifest(source_root: Path, raw: bytes) -> InstalledCompiler:
+    payload = loads_exact(raw.decode("utf-8", errors="strict"))
     if (
         not isinstance(payload, dict)
         or set(payload)
