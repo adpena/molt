@@ -8,7 +8,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from molt.backend_environment import CodegenSelection, compilation_diagnostics_requested
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -63,6 +63,9 @@ from molt.cli.runtime_native_codegen import (
     RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
+
+if TYPE_CHECKING:
+    from molt.toolchain_identity import StableRegularFileObservation
 
 _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 3
 
@@ -347,6 +350,7 @@ def _prepare_backend_cache_setup(
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
     backend_compiler_fingerprint: str | None = None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
@@ -380,7 +384,20 @@ def _prepare_backend_cache_setup(
     backend_features = _backend_features_for_build_target(
         target=target, is_wasm=is_wasm, codegen_backend=codegen.backend
     )
-    backend_binary_identity = identify_backend_binary(backend_bin)
+    if (
+        backend_binary_observation is not None
+        and backend_bin != backend_binary_observation.identity.path
+    ):
+        from molt.cli.compiler_identity import CompilerIdentityError
+
+        raise CompilerIdentityError(
+            "Object-cache compiler differs from admitted installation"
+        )
+    backend_binary_identity = (
+        identify_backend_binary(backend_bin, observed=backend_binary_observation)
+        if backend_binary_observation is not None
+        else identify_backend_binary(backend_bin)
+    )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_backend_binary_identity",

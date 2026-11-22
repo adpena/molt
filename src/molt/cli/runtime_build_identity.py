@@ -42,18 +42,16 @@ from molt.rust_toolchain import (
     rust_flag_spans,
 )
 from molt.file_publication import metadata_is_link_like
-from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     StableRegularFileChangedError,
     StableRegularFileError,
     StableRegularFileHandle,
+    StableRegularFileObservation,
     open_stable_regular_file,
     probe_executable,
     resolve_executable,
     _regular_file_identity,
-    verify_stable_regular_file_identity,
-    verify_stable_regular_file_metadata,
 )
 from molt.wasi_sdk_identity import WASI_C_ABI_PLAN_ENV, wasi_c_abi_projection
 
@@ -393,16 +391,10 @@ class RuntimeTreeIndex:
         )
         if current != expected or directories != self.directories:
             raise ValueError("runtime source membership changed after capture")
-        # A timestamp racy at acquisition cannot become trustworthy as it ages.
-        cutoff = self.capture_started_ns - DIGEST_RACY_WINDOW_NS
         for item in self.files:
-            token = item.stat_token()
-            if os.name == "nt" or max(token.mtime_ns, token.ctime_ns) >= cutoff:
-                verify_stable_regular_file_identity(
-                    item, label="runtime source input", hash_content=True
-                )
-            else:
-                verify_stable_regular_file_metadata(item, label="runtime source input")
+            StableRegularFileObservation(item, self.capture_started_ns).verify(
+                label="runtime source input"
+            )
 
     def identity(
         self, roots: Sequence[tuple[str, Path]], *, require_all: bool

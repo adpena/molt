@@ -302,12 +302,18 @@ def test_installed_source_admission_fails_closed_without_repair(
 def test_installed_source_admission_checks_the_selected_payload(
     installation, monkeypatch
 ):
+    from molt.host_tool_products import HostToolProduct
+    from molt.toolchain_identity import StableRegularFileObservation
+
     source = installation
     calls = []
     original_installed = compiler_distribution.installed_compiler
     original_sources = compiler_distribution.InstalledCompiler.verify_sources
     original_package = compiler_distribution.InstalledCompiler.verify_executing_package
-    original_binary = compiler_distribution.InstalledCompiler.verify_binary
+    selection = compiler_distribution.InstalledExecutableSelection
+    capture = selection.capture
+    expected = original_installed(source)
+    assert expected is not None
 
     def verify_sources(self):
         calls.append("verified")
@@ -317,9 +323,11 @@ def test_installed_source_admission_checks_the_selected_payload(
         calls.append("package verified")
         return original_package(self)
 
-    def verify_binary(self, features, cargo_profile):
-        calls.append(("binary verified", features, cargo_profile))
-        return original_binary(self, features, cargo_profile)
+    def capture_binary(
+        self: compiler_distribution.InstalledExecutableSelection,
+    ) -> StableRegularFileObservation:
+        calls.append(("binary captured", self.product, self.path))
+        return capture(self)
 
     def installed(root):
         calls.append(root)
@@ -334,19 +342,13 @@ def test_installed_source_admission_checks_the_selected_payload(
         "verify_executing_package",
         verify_executing_package,
     )
-    monkeypatch.setattr(
-        compiler_distribution.InstalledCompiler, "verify_binary", verify_binary
-    )
+    monkeypatch.setattr(selection, "capture", capture_binary)
     assert project_roots._require_molt_root(source, True, "build") is None
     assert calls == [
         source,
         "verified",
         "package verified",
-        (
-            "binary verified",
-            compiler_distribution.PRODUCTION_COMPILER_FEATURES,
-            "release",
-        ),
+        ("binary captured", HostToolProduct.BACKEND, expected.binary),
     ]
 
 

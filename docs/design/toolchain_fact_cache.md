@@ -166,6 +166,34 @@ It writes no digest rows until new captures or age renewal make the cache dirty.
 Cold capture additionally reads the selected bytes and commits one batch of new
 digests. The existing age budget and racy-window policy remain authoritative.
 
+### Installed executable admission within one operation
+
+The existing source-fingerprint transaction owns independently hashed installed
+backend and WASM-facts observations. Each admission rereads the release manifest
+and applies current host, feature and compiler-profile policy. Reuse requires
+the same selected owned path, expected SHA/size and current regular-file
+generation. A missing, rewritten, replaced or redirected member refuses.
+
+`StableRegularFileObservation` owns the capture-start epoch. Files recent at
+enrollment remain subject to exact hashing for their entire observation;
+Windows always rehashes. Settled POSIX observations use the existing full
+metadata fence. Runtime source trees use this same observation verifier with
+their tree-capture epoch, alongside their root and membership fences.
+
+The admitted installed witness travels through backend selection into object
+cache setup. Daemon selection freshly admits the installation and projects the
+same canonical executable digest from its observation. Object-cache setup adds
+no compiler-root selection or manifest read. The generic executable probe closes
+entrypoint and generation checks around projection. Facts capture is lazy.
+
+Direct `InstalledCompiler.verify_binary` and `verify_wasm_facts` always hash the
+current bytes, including inside a transaction. An explicit fresh admission or
+new operation also captures independently. No observation comes from the
+mutable host digest database: its rows cannot prove release-byte acceptance.
+This provides no persistent admission or device-remapping seal. The qualified
+cost boundary is removed duplicate payload reads for settled POSIX members;
+selector and metadata I/O remain, and no whole-build speedup is inferred.
+
 ### Keys per probe class
 
 Every key carries the tools, argv, cwd and the typed environment subset

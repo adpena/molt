@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
     from molt.process_environment import ProcessEnvironment
+    from molt.toolchain_identity import StableRegularFileObservation
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v4"
@@ -371,6 +372,9 @@ class _SourceTreeFingerprintTransaction:
         field(default_factory=dict)
     )
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
+    installed_executables: dict[
+        tuple[str, str, HostToolProduct], StableRegularFileObservation
+    ] = field(default_factory=dict)
     import_scan_decoder: _ImportScanDecoder | None = None
     cargo_documents: dict[str, object] = field(default_factory=dict)
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(

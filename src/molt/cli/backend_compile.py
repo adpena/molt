@@ -448,6 +448,7 @@ def _prepare_backend_setup(
             native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
+            backend_binary_observation=backend_ensure_result.installed_observation,
             codegen=codegen,
             rust_cpu=rust_cpu,
             stage_timings_ms=stage_timings_ms,

@@ -34,6 +34,8 @@ from molt.toolchain_identity import (
     capture_stable_regular_file,
     stable_regular_file_content_identity,
     stable_regular_file_identity,
+    StableRegularFileObservation,
+    verify_stable_regular_file_identity,
 )
 from molt.verified_subset import current_host_coordinate
 
@@ -434,6 +436,56 @@ def verify_runtime_tree(
             raise ValueError(f"Installed runtime content changed: {name}")
 
 
+@dataclass(frozen=True, slots=True)
+class InstalledExecutableSelection:
+    """Current manifest policy and the directly owned executable it selects."""
+
+    product: HostToolProduct
+    path: Path
+    size: int
+    sha256: str
+
+    @property
+    def label(self) -> str:
+        if self.product is HostToolProduct.BACKEND:
+            return "installed compiler"
+        return "installed WASM facts tool"
+
+    def _require_content(self, observed: StableRegularFileIdentity) -> None:
+        if observed.path != self.path:
+            raise ValueError("Installed executable selection changed")
+        if (observed.size, observed.sha256) != (self.size, self.sha256):
+            if self.product is HostToolProduct.BACKEND:
+                raise ValueError(
+                    "Installed compiler content differs from its release manifest"
+                )
+            raise ValueError(
+                "Installed WASM facts tool differs from its release manifest"
+            )
+
+    def capture(self) -> StableRegularFileObservation:
+        """Hash the selected current bytes independently of every prior receipt."""
+        observation = StableRegularFileObservation.capture(
+            resolve_owned_path(self.path), label=self.label
+        )
+        observed = observation.identity
+        self._require_content(observed)
+        if resolve_owned_path(self.path) != observed.path:
+            raise ValueError("Installed executable selection changed")
+        verify_stable_regular_file_identity(observed, label=self.label)
+        return observation
+
+    def verify(self, observation: StableRegularFileObservation) -> None:
+        """Refuse replaced, rewritten or redirected operation observations."""
+        observed = observation.identity
+        self._require_content(observed)
+        if resolve_owned_path(self.path) != observed.path:
+            raise ValueError("Installed executable selection changed")
+        observation.verify(label=self.label)
+        if resolve_owned_path(self.path) != observed.path:
+            raise ValueError("Installed executable selection changed")
+
+
 @dataclass(frozen=True)
 class InstalledCompiler:
     source_root: Path
@@ -454,20 +506,11 @@ class InstalledCompiler:
         return self.source_root.parent / self.wasm_facts["path"]
 
     def verify_wasm_facts(self) -> dict[str, str | int]:
-        if current_host_coordinate() != (
-            self.wasm_facts["platform"],
-            self.wasm_facts["arch"],
-        ):
-            raise ValueError("Installed WASM facts tool does not match this host")
-        identity = stable_regular_file_content_identity(
-            resolve_owned_path(self.wasm_facts_binary),
-            label="installed WASM facts tool",
+        return (
+            self.select_executable(HostToolProduct.WASM_FACTS)
+            .capture()
+            .identity.content_record()
         )
-        if any(identity[key] != self.wasm_facts[key] for key in ("sha256", "size")):
-            raise ValueError(
-                "Installed WASM facts tool differs from its release manifest"
-            )
-        return identity
 
     def verify_launcher(self) -> dict[str, str | int]:
         if current_host_coordinate() != (
@@ -483,31 +526,57 @@ class InstalledCompiler:
             raise ValueError("Installed launcher differs from its release manifest")
         return identity
 
+    def select_executable(
+        self,
+        product: HostToolProduct,
+        features: tuple[str, ...] | None = None,
+        cargo_profile: str | None = None,
+    ) -> InstalledExecutableSelection:
+        """Apply current host/feature/profile policy before admitting any bytes."""
+        if product is HostToolProduct.WASM_FACTS:
+            record = self.wasm_facts
+            path = self.wasm_facts_binary
+            if current_host_coordinate() != (record["platform"], record["arch"]):
+                raise ValueError("Installed WASM facts tool does not match this host")
+        elif product is HostToolProduct.BACKEND:
+            record = self.record
+            path = self.binary
+            features = tuple(record["features"]) if features is None else features
+            cargo_profile = (
+                record["profile"] if cargo_profile is None else cargo_profile
+            )
+            if cargo_profile != self.record["profile"]:
+                raise ValueError(
+                    "Installed Molt uses its production compiler; host compiler profile "
+                    "overrides require a source checkout. Use --profile for your program."
+                )
+            missing = set(features).difference(self.record["features"])
+            if missing:
+                raise ValueError(
+                    "Installed compiler does not provide: " + ", ".join(sorted(missing))
+                )
+            if current_host_coordinate() != (
+                self.record["platform"],
+                self.record["arch"],
+            ):
+                raise ValueError(
+                    "Installed compiler does not match this host OS/architecture"
+                )
+        else:
+            raise ValueError("Installed Molt ships no selected host tool")
+        return InstalledExecutableSelection(
+            product, resolve_owned_path(path), record["size"], record["sha256"]
+        )
+
     def verify_binary(
         self, features: tuple[str, ...], cargo_profile: str
     ) -> dict[str, str | int]:
-        if cargo_profile != self.record["profile"]:
-            raise ValueError(
-                "Installed Molt uses its production compiler; host compiler profile "
-                "overrides require a source checkout. Use --profile for your program."
-            )
-        missing = set(features).difference(self.record["features"])
-        if missing:
-            raise ValueError(
-                "Installed compiler does not provide: " + ", ".join(sorted(missing))
-            )
-        if current_host_coordinate() != (self.record["platform"], self.record["arch"]):
-            raise ValueError(
-                "Installed compiler does not match this host OS/architecture"
-            )
-        identity = stable_regular_file_content_identity(
-            resolve_owned_path(self.binary), label="installed compiler"
+        """Exact release boundary: every call captures the actual current bytes."""
+        return (
+            self.select_executable(HostToolProduct.BACKEND, features, cargo_profile)
+            .capture()
+            .identity.content_record()
         )
-        if any(identity[key] != self.record[key] for key in ("sha256", "size")):
-            raise ValueError(
-                "Installed compiler content differs from its release manifest"
-            )
-        return identity
 
     def verify_sources(self) -> None:
         self.verify_launcher()

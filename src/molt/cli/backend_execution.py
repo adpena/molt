@@ -370,7 +370,13 @@ def _backend_daemon_config_digest(
             "target_triple": target_triple,
         }
         if backend_bin is not None:
-            payload["backend_binary"] = identify_backend_binary(backend_bin)
+            payload["backend_binary"] = (
+                identify_backend_binary(
+                    backend_bin, observed=installed.binary_observation
+                )
+                if installed is not None
+                else identify_backend_binary(backend_bin)
+            )
         return canonical_json_sha256(payload)
     except CompilerIdentityError:
         raise

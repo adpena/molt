@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -21,7 +20,7 @@ from tests.compiler_identity_helper import (
     compiler_cargo_stdout,
     stub_compiler_admission,
 )
-from tests.release_lane_fixtures import stage_stdlib_source_summaries_fixture
+from tests.cli.test_installed_compiler import installation as installation
 
 
 def _workspace(root: Path) -> None:
@@ -296,38 +295,14 @@ def test_facts_timeout_diagnostic_precedes_build(source_tool, timeout):
     assert state.builds == state.probes == []
 
 
-def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch):
+def test_installed_facts_is_verified_without_cargo_or_path(
+    installation: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from molt import compiler_distribution
 
-    binary = tmp_path / "installed-facts"
-    binary.write_bytes(b"installed facts")
-    expected = hashlib.sha256(binary.read_bytes()).hexdigest()
-    verified = []
-
-    def verify_facts():
-        verified.append(True)
-        if hashlib.sha256(binary.read_bytes()).hexdigest() != expected:
-            raise ValueError("installed facts content changed")
-
-    installed = SimpleNamespace(
-        source_sha="a" * 40,
-        files=[],
-        record={"features": ["native-backend"], "profile": "release"},
-        launcher={},
-        runtime={},
-        wasm_facts={"sha256": expected, "profile": "release"},
-        stdlib_source_summaries=stage_stdlib_source_summaries_fixture(tmp_path),
-        binary=tmp_path / "installed-compiler",
-        wasm_facts_binary=binary,
-        verify_sources=lambda: None,
-        verify_executing_package=lambda: None,
-        verify_binary=lambda features, profile: None,
-        verify_wasm_facts=verify_facts,
-    )
-    monkeypatch.setattr(
-        compiler_distribution, "installed_compiler", lambda root: installed
-    )
-    monkeypatch.setattr(wasm_facts_tool, "installed_compiler", lambda root: installed)
+    installed = compiler_distribution.installed_compiler(installation)
+    assert installed is not None
+    binary = installed.wasm_facts_binary
     monkeypatch.setattr(
         backend_binary,
         "backend_build_admission",
@@ -338,16 +313,25 @@ def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch
         "project_cargo_target_dir",
         lambda *a, **k: pytest.fail("installed mode chose a source target"),
     )
-    assert wasm_facts_tool.ensure_wasm_facts_tool(tmp_path, env={"PATH": ""}) == binary
-    assert verified == [True]
-    before = compiler_identity.installed_compiler_admission(tmp_path).fingerprint
-    installed.wasm_facts = {"sha256": "b" * 64, "profile": "release"}
     assert (
-        compiler_identity.installed_compiler_admission(tmp_path).fingerprint != before
+        wasm_facts_tool.ensure_wasm_facts_tool(installation, env={"PATH": ""}) == binary
     )
-    binary.write_bytes(b"changed facts")
-    with pytest.raises(ValueError, match="installed facts content changed"):
-        wasm_facts_tool.ensure_wasm_facts_tool(tmp_path, env={"PATH": ""})
+    before = compiler_identity.installed_compiler_admission(installation)
+    assert before is not None
+    manifest_path = installation / compiler_distribution.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    original = manifest["wasm_facts"]["sha256"]
+    manifest["wasm_facts"]["sha256"] = "b" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    changed = compiler_identity.installed_compiler_admission(installation)
+    assert changed is not None and changed.fingerprint != before.fingerprint
+    with pytest.raises(ValueError, match="Installed WASM facts tool differs"):
+        wasm_facts_tool.ensure_wasm_facts_tool(installation, env={"PATH": ""})
+    manifest["wasm_facts"]["sha256"] = original
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    binary.write_bytes(b"other")
+    with pytest.raises(ValueError, match="Installed WASM facts tool differs"):
+        wasm_facts_tool.ensure_wasm_facts_tool(installation, env={"PATH": ""})
 
 
 def test_actual_cargo_edges_separate_tool_from_codegen():

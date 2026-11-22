@@ -276,12 +276,15 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
 ) -> None:
     from molt import compiler_distribution
     from molt.cli import compiler_identity
+    from molt.toolchain_identity import StableRegularFileObservation
 
-    calls = {"sources": 0, "executing": 0, "binary": 0}
+    calls = {"sources": 0, "executing": 0, "capture": 0, "recheck": 0}
     installed_type = compiler_distribution.InstalledCompiler
     verify_sources = installed_type.verify_sources
     verify_executing = installed_type.verify_executing_package
-    verify_binary = installed_type.verify_binary
+    selection = compiler_distribution.InstalledExecutableSelection
+    capture = selection.capture
+    recheck = selection.verify
 
     # Keep strict release-manifest and live file admission real. The shared
     # fixture's synthetic executable bytes are never execution evidence.
@@ -293,9 +296,18 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
         calls["executing"] += 1
         return verify_executing(compiler)
 
-    def binary(compiler, features, cargo_profile):
-        calls["binary"] += 1
-        return verify_binary(compiler, features, cargo_profile)
+    def capture_binary(
+        selected: compiler_distribution.InstalledExecutableSelection,
+    ) -> StableRegularFileObservation:
+        calls["capture"] += 1
+        return capture(selected)
+
+    def recheck_binary(
+        selected: compiler_distribution.InstalledExecutableSelection,
+        observed: StableRegularFileObservation,
+    ) -> None:
+        calls["recheck"] += 1
+        recheck(selected, observed)
 
     def forbidden(root: Path) -> NoReturn:
         raise AssertionError(
@@ -304,7 +316,8 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
 
     monkeypatch.setattr(installed_type, "verify_sources", sources)
     monkeypatch.setattr(installed_type, "verify_executing_package", executing)
-    monkeypatch.setattr(installed_type, "verify_binary", binary)
+    monkeypatch.setattr(selection, "capture", capture_binary)
+    monkeypatch.setattr(selection, "verify", recheck_binary)
     monkeypatch.setattr(fingerprints, "_compiler_root", lambda: installation)
     monkeypatch.setattr(fingerprints, "_frontend_semantic_tooling_sources", forbidden)
     with fingerprints._source_tree_fingerprint_transaction():
@@ -313,7 +326,7 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
         broad = fingerprints._cache_tooling_fingerprint()
     assert first.source_paths == ()
     assert first.fingerprint != broad  # Explicit consumer namespace separation.
-    assert calls == {"sources": 1, "executing": 1, "binary": 2}
+    assert calls == {"sources": 1, "executing": 1, "capture": 1, "recheck": 1}
 
     manifest = installation / compiler_distribution.MANIFEST_NAME
     payload = json.loads(manifest.read_text(encoding="utf-8"))

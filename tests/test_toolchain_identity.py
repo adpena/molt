@@ -13,6 +13,7 @@ import time
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import BinaryIO
 
 import pytest
 
@@ -21,6 +22,56 @@ from molt import default_paths
 
 from molt import toolchain_identity as identity
 from tests.process_guard_common import install_module_view
+
+
+def test_operation_observation_never_ages_out_of_racy_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "member"
+    path.write_bytes(b"independent capture")
+    observed = identity.StableRegularFileObservation.capture(path, label="member")
+    assert (
+        observed.identity.sha256 == hashlib.sha256(b"independent capture").hexdigest()
+    )
+    reads = []
+    original = identity._sha256_stream
+
+    def digest(stream: BinaryIO, *, max_bytes: int) -> str:
+        reads.append(max_bytes)
+        return original(stream, max_bytes=max_bytes)
+
+    monkeypatch.setattr(identity, "_sha256_stream", digest)
+    install_module_view(monkeypatch, "time", time, identity)
+    monkeypatch.setattr(
+        identity.time,
+        "time_ns",
+        lambda: observed.acquired_at_ns + 10 * identity.DIGEST_RACY_WINDOW_NS,
+    )
+    observed.verify(label="member")
+    observed.verify(label="member")
+    assert reads == [len(b"independent capture")] * 2
+
+
+def test_observed_backend_projection_closes_against_current_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.backend_binary_identity import identify_backend_binary
+
+    path = tmp_path / "backend"
+    path.write_bytes(b"original")
+    observed = identity.StableRegularFileObservation.capture(path, label="backend")
+    original = identity.ExecutableIdentity.content_record
+
+    def mutate(executable: identity.ExecutableIdentity) -> dict[str, str | int]:
+        result = original(executable)
+        metadata = path.stat()
+        path.write_bytes(b"modified")
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(identity.ExecutableIdentity, "content_record", mutate)
+    with pytest.raises(ValueError):
+        identify_backend_binary(path, observed=observed)
 
 
 def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch):

@@ -384,16 +384,20 @@ def test_resolvers_own_one_source_observation_per_call(
 def test_runtime_tree_rehashes_a_file_racy_at_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from molt import toolchain_identity
+
     source = tmp_path / "source.rs"
     source.write_text("const VERSION: u32 = 1;\n", encoding="utf-8")
     timestamp = source.stat().st_mtime_ns
     monkeypatch.setattr(identity, "time_ns", lambda: timestamp)
     tree = identity.RuntimeTreeIndex.capture((("source", source),))
     monkeypatch.setattr(
-        identity, "time_ns", lambda: timestamp + 2 * identity.DIGEST_RACY_WINDOW_NS
+        identity,
+        "time_ns",
+        lambda: timestamp + 2 * toolchain_identity.DIGEST_RACY_WINDOW_NS,
     )
     rehashed: list[Path] = []
-    original_verify = identity.verify_stable_regular_file_identity
+    original_verify = toolchain_identity.verify_stable_regular_file_identity
 
     def verify(
         file: identity.StableRegularFileIdentity, *, label: str, hash_content: bool
@@ -402,7 +406,9 @@ def test_runtime_tree_rehashes_a_file_racy_at_capture(
         rehashed.append(file.path)
         original_verify(file, label=label, hash_content=hash_content)
 
-    monkeypatch.setattr(identity, "verify_stable_regular_file_identity", verify)
+    monkeypatch.setattr(
+        toolchain_identity, "verify_stable_regular_file_identity", verify
+    )
     tree.verify()
     assert rehashed == [source.resolve()]
 
