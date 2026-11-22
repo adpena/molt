@@ -19,7 +19,14 @@ from molt.cli import module_source as _module_source
 from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
 from molt.compiler_analysis.python_imports import ImportScanMode
-from molt.cli.models import _RuntimeImportScanCustody
+from molt.cli.models import (
+    _RuntimeImportScanCustody,
+    ImportQueryClosure,
+    ImportScanAdmission,
+    ImportScanObservation,
+    ImportScanQuery,
+    _CompleteImportScan,
+)
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -371,6 +378,68 @@ class _ModuleResolutionCache:
     # One source-analysis operation; None denotes genuinely unknown runtime OS.
     target_sys_platform: str | None = None
     import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
+    import_scan_queries: dict[ImportScanQuery, ImportScanObservation] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _import_query_allowlists: dict[frozenset[str], frozenset[str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _import_query_source_leases: dict[
+        tuple[Path, str], _module_source._ModuleSourceLease
+    ] = field(default_factory=dict, init=False, repr=False)
+
+    def import_query_source_lease(
+        self, snapshot: _module_source.PythonSourceSnapshot
+    ) -> _module_source._ModuleSourceLease:
+        key = (snapshot.path, snapshot.sha256)
+        lease = self._import_query_source_leases.get(key)
+        if lease is None:
+            lease = _module_source._ModuleSourceLease.path_backed(
+                snapshot.path, snapshot=snapshot
+            )
+            self._import_query_source_leases[key] = lease
+        return lease
+
+    def import_query_allowlist(
+        self, allowlist: set[str] | None
+    ) -> frozenset[str] | None:
+        if allowlist is None:
+            return None
+        frozen = frozenset(allowlist)
+        return self._import_query_allowlists.setdefault(frozen, frozen)
+
+    def observe_import_scan(
+        self,
+        query: ImportScanQuery,
+        result: _CompleteImportScan,
+        admission: ImportScanAdmission,
+    ) -> None:
+        previous = self.import_scan_queries.get(query)
+        admissions = frozenset((admission,))
+        if previous is not None:
+            if previous.result != result:
+                raise ValueError(
+                    f"equal import queries produced different results: {query.module_name!r}"
+                )
+            admissions |= previous.admissions
+        self.import_scan_queries[query] = ImportScanObservation(
+            query, result, admissions
+        )
+
+    def import_query_closure(
+        self, previous: ImportQueryClosure | None = None
+    ) -> ImportQueryClosure:
+        if previous is not None:
+            if previous.import_topology is not self.import_topology:
+                raise ValueError("import query closure changed resolver custody")
+            for observed in previous.observations:
+                current = self.import_scan_queries.get(observed.query)
+                if current is None or current.result != observed.result:
+                    raise ValueError("import query closure lost a prepared observation")
+        return ImportQueryClosure(
+            tuple(self.import_scan_queries.values()), self.import_topology
+        )
+
     module_root_aliases: _ModuleRootAliases | None = None
     python_resolvers: dict[tuple[Path, ...], "LocalPythonModuleResolver"] = field(
         default_factory=dict

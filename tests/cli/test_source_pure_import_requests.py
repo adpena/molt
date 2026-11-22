@@ -22,6 +22,7 @@ from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_import_scanner as scanner
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.models import ImportScanAdmission
 from molt.target_python import TargetPythonVersion
 from tests.source_record_test_support import replace_source_record, source_records
 
@@ -57,6 +58,64 @@ def load(path: Path, **kwargs):
     )
     options.update(kwargs)
     return discovery._load_module_import_scan(path, **options)
+
+
+def test_import_query_capture_unifies_source_persisted_and_precomputed(
+    tmp_path: Path,
+) -> None:
+    path = write(tmp_path / "entry.py", "import leaf\n")
+    write(tmp_path / "leaf.py")
+    resolver = _ModuleResolutionCache()
+    cold = load(path, resolution_cache=resolver)
+    warm = load(path, resolution_cache=resolver)
+    assert not cold.cache_hit and warm.cache_hit
+    assert cold.snapshot is not None
+    # Use the boundary's actual default version, just as the producer did.
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    bound = discovery._bind_precomputed_module_import_scan(
+        path,
+        module_name="entry",
+        import_scan_mode="full",
+        purpose=SourceImportPurpose.EXECUTION,
+        scan=cold.scan,
+        snapshot=cold.snapshot,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        target_sys_platform=None,
+    )
+    precomputed = load(path, resolution_cache=resolver, precomputed_scan=bound)
+    closure = resolver.import_query_closure()
+    assert len(closure.observations) == 1
+    observation = closure.observations[0]
+    assert observation.result == cold.scan == warm.scan == precomputed.scan
+    assert observation.admissions == frozenset(
+        (
+            ImportScanAdmission.SOURCE,
+            ImportScanAdmission.PERSISTED,
+            ImportScanAdmission.PRECOMPUTED,
+        )
+    )
+    closure.validate()
+
+
+def test_import_query_closure_fences_negative_resolution_and_source(
+    tmp_path: Path,
+) -> None:
+    path = write(tmp_path / "entry.py", "import runpy\nrunpy.run_path('loaded.py')\n")
+    resolver = _ModuleResolutionCache()
+    assert load(path, resolution_cache=resolver).scan.source_executions == ()
+    closure = resolver.import_query_closure()
+    closure.validate()
+    write(tmp_path / "loaded.py")
+    with pytest.raises(ValueError, match="topology changed"):
+        closure.validate()
+
+    resolver = _ModuleResolutionCache()
+    load(path, resolution_cache=resolver)
+    closure = resolver.import_query_closure()
+    write(path, "import runpy\nrunpy.run_path('loaded.py')\nVALUE = 2\n")
+    with pytest.raises(ValueError, match="source generation changed"):
+        closure.validate()
 
 
 @pytest.mark.parametrize("inventory_first", [False, True])

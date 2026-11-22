@@ -196,6 +196,18 @@ per premise revision.
    and rejects dependencies on CLI or frontend code. A real store test keeps a scan after
    changing frontend bytes and invalidates it after changing a binding producer. See
    [Frontend semantic fingerprint](../../../../design/frontend_semantic_fingerprint.md).
+   The production entry and materialized import plan also carry an operation-local typed
+   query closure. The outer scan admission records completed results for fresh, persisted
+   and precomputed scans, including runtime-catalog custody. A proven premise cutoff also
+   records the reused result under its newly admitted premise. Equivalent semantic queries
+   share one result while retaining their admission kinds; namespace premises, deferred
+   owners and arguments, target, body selection and runtime custody stay distinct inputs.
+   Materialization fences the prepared closure and its final extension through the existing
+   source leases and positive/negative import-topology observations. This is capture and
+   live validation, not a persisted graph or an edited-source cutoff. Persistence still
+   requires encoding the complete semantic topology observations and source identities;
+   replay must re-evaluate every query of an edited source and refuse changed results or
+   missing owners before admitting the previous graph.
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.
