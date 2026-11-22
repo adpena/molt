@@ -16044,6 +16044,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
         "runtime/molt-tir",
         "Cargo.toml",
         # Cargo.lock is a separately admitted compiler dependency projection.
+        "src/molt/backend_cache_layout.json",
         "src/molt/backend_environment.json",
         "src/molt/backend_daemon_protocol_version.txt",
         # molt-ir's build script publishes through the shared write-if-changed

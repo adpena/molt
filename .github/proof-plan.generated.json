@@ -10043,6 +10043,7 @@
           "src/molt/cli/module_graph_cache.py",
           "src/molt/cli/source_record_store.py",
           "src/molt/cache_eviction.py",
+          "src/molt/backend_cache_layout.json",
           "src/molt/frontend/module_publication.py",
           "src/molt/frontend/lowering/serialization.py",
           "src/molt/frontend/lowering/serialization_context.py",

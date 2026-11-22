@@ -248,6 +248,41 @@ The SDK and DX use the same memoized user-state selector; no second cache
 default lives in the inventory. Installation home keeps its original user
 custody rather than following a new binding for regenerable cache.
 
+### Backend compilation artifacts
+
+The selected compile cache holds per-binary and shared producer namespaces
+under `backend-tir-v1/<identity>/`. On first use, the producer stages the
+functions directory, disposition tag and trim lock together. The existing
+`molt-artifact-publish` owner publishes the complete directory exclusively.
+Concurrent writers validate the winner. An interrupted stage leaves the
+final name available. Reusing this native publication primitive expands
+its downstream crate bound from four to six and keeps the workspace maximum
+at 29. Its installed layout contract supplies the tag,
+directory name and envelope version to Rust and to the scheduled cache pruner.
+Explicitly placed caches keep their caller-selected directory and ordinary
+cache tag. A caller that places an explicit cache in the managed tree retains
+custody of that preimage.
+
+The scheduled pruner enforces the managed cache's per-namespace and shared
+limits and reclaims immutable envelopes after five idle days. It checks the
+managed tag, key, kind and declared size. A compiler takes one nonblocking
+shared lock for a cache consumer. Scheduled eviction takes the same lock
+exclusively and rechecks the observed generation, activity and poison state
+before unlinking a file. Successful readers own the copied bytes.
+Poison sidecars carry evidence that the compiler produced two different
+payloads for the same key. They continue to reject resident values and fresh
+publications across capacity trims. Even a zero payload budget preserves a
+compact poison record. A reader whose limit excludes a larger incumbent takes
+a cache miss and leaves the incumbent available to other readers.
+
+Control files and empty namespace directories retain their generation.
+Scheduled eviction opens the published lock directly. Compiles perform
+bounded cache reads and publication without directory sweeps.
+Historical top-level hash directories, operator data, links and unpublished
+stages stay with their original owners. Shared artifacts fill once in the
+managed layout when a new producer first needs them. Source builds schedule
+retention after publication. The installed compiler dispatches the same pruner after publication in a separate process group.
+
 ## Upstream decisions reused
 
 * [Cargo's 1.78 development report](https://blog.rust-lang.org/inside-rust/2024/03/26/this-development-cycle-in-cargo-1.78/)

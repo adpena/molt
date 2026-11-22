@@ -37,6 +37,10 @@ def compiler_build_admission(
         command += ["--no-default-features", "--features", ",".join(features)]
 
     class Plan(list):
+        environment: ProcessEnvironment
+        rust_resources: SimpleNamespace
+        link_resources: SimpleNamespace
+
         @property
         def command(self):
             return tuple(self)
@@ -89,10 +93,10 @@ def stub_compiler_admission(monkeypatch):
     monkeypatch.setattr(compiler_identity, "backend_build_admission", admission)
 
 
-# The backend reads two authorities outside its crate: molt-backend embeds the
-# daemon protocol version and molt-ir's build embeds the environment catalog.
-# The one-crate fixture declares both, as the real crates do.
+# Model the external authorities the real backend, IR and pass crates embed.
+# The fixture collapses their Cargo source closure into a single crate.
 _BACKEND_FIXTURE_BUILD_INPUTS = {
+    "src/molt/backend_cache_layout.json": "{}\n",
     "src/molt/backend_environment.json": "{}\n",
     "src/molt/backend_daemon_protocol_version.txt": "2\n",
 }

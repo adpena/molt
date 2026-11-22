@@ -992,6 +992,193 @@ def test_completion_stamp_error_preserves_original_retention_failure(
     assert "completion clock unavailable" in " ".join(caught.value.__notes__)
 
 
+def _managed_backend_leaf(root: Path, label: str) -> Path:
+    namespace = root / "backend-tir-v1" / _cache_key(label)
+    functions = namespace / "functions"
+    functions.mkdir(parents=True)
+    tag = namespace / "CACHEDIR.TAG"
+    tag.write_bytes(
+        b"Signature: 8a477f597d28d172789f06886806bc55\n"
+        b"# Molt managed backend compilation cache v1\n"
+    )
+    (namespace / ".trim.lock").touch()
+    key, payload = _cache_key("compiled-" + label), label.encode("utf-8")
+    leaf = functions / (key + ".bin")
+    leaf.write_bytes(
+        b"MOLT:CACHE-ARTIFACT:v1\0\0"
+        + key.encode("ascii")
+        + len(payload).to_bytes(8, "big")
+        + hashlib.sha256(payload).digest()
+        + payload
+    )
+    old = time.time() - 6 * 86400
+    for member in (tag, leaf):
+        os.utime(member, (old, old))
+    return leaf
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO descriptor admission")
+def test_replaced_backend_artifact_opens_without_blocking(tmp_path: Path) -> None:
+    from molt.cache_eviction import _read_backend_prefix
+    from molt.file_hashing import open_stable_read_descriptor
+
+    path = tmp_path / "observed.bin"
+    path.write_bytes(b"artifact")
+    observed = path.stat()
+    path.unlink()
+    os.mkfifo(path)
+    # A live peer keeps an accidental blocking open from hanging this test.
+    # Inspect the actual descriptor mode before removing that peer.
+    peer = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        with os.fdopen(open_stable_read_descriptor(path), "rb") as opened:
+            assert not os.get_blocking(opened.fileno())
+    finally:
+        os.close(peer)
+    assert _read_backend_prefix(path, observed, 4) == b""
+
+
+def test_backend_retention_removes_only_old_owned_envelopes(tmp_path: Path) -> None:
+    prune = _load_molt_cache_prune()
+    root = tmp_path / "cache"
+    old = _managed_backend_leaf(root, "old")
+    functions = old.parent
+    untouched = [functions / "operator-note", functions / ("." + old.name + ".tmp.1.7")]
+    for path in untouched:
+        path.write_bytes(b"foreign or unpublished")
+    fake = functions / (_cache_key("forged") + ".bin")
+    fake.write_bytes(old.read_bytes())  # real envelope, different key
+    short = functions / (_cache_key("short") + ".bin")
+    short.write_bytes(b"operator payload")
+    recent = _managed_backend_leaf(root, "recent namespace")
+    (recent.parent.parent / "CACHEDIR.TAG").touch()
+    hot_leaf = _managed_backend_leaf(root, "recent leaf")
+    hot_leaf.touch()
+    poisoned = _managed_backend_leaf(root, "quarantined")
+    poison = poisoned.with_suffix(".poison")
+    poison.write_bytes(b"nondeterminism evidence")
+    legacy = _managed_backend_leaf(root, "historical")
+    legacy_namespace = root / legacy.parent.parent.name
+    legacy.parent.parent.rename(legacy_namespace)
+    generic = _managed_backend_leaf(root, "explicit")
+    (generic.parent.parent / "CACHEDIR.TAG").write_bytes(
+        b"Signature: 8a477f597d28d172789f06886806bc55\n"
+        b"# This file is a cache directory tag created by Molt.\n"
+    )
+    dangling = functions / (_cache_key("unpublished") + ".bin")
+    dangling.symlink_to(tmp_path / "missing")
+    aged = time.time() - 6 * 86400
+    for path in (fake, short, generic.parent.parent / "CACHEDIR.TAG"):
+        os.utime(path, (aged, aged))
+    untouched += [
+        fake,
+        short,
+        recent,
+        hot_leaf,
+        poisoned,
+        poison,
+        generic,
+        legacy_namespace / "functions" / legacy.name,
+    ]
+    before = {path: path.read_bytes() for path in untouched}
+    options = dict(max_bytes=2**40, max_age_days=365)
+    assert prune._prune(root, dry_run=True, **options)["entries_removed"] == 1
+    assert old.is_file()
+    assert prune._prune(root, dry_run=False, **options)["entries_removed"] == 1
+    assert not old.exists()
+    assert dangling.is_symlink()
+    assert {path: path.read_bytes() for path in untouched} == before
+
+
+def test_backend_retirement_preserves_lock_and_final_name_replacements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import cache_eviction
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+    from molt.file_publication import unlink_owned_file
+
+    leaf = _managed_backend_leaf(tmp_path, "retired")
+    (entry,) = cache_eviction._collect_entries(tmp_path)
+    lock = leaf.parent.parent / ".trim.lock"
+    held = _try_acquire_file_lock(lock, create=False)
+    assert held is not None
+    try:
+        assert cache_eviction._remove_entry(entry, dry_run=False) == "busy"
+        assert leaf.exists()
+    finally:
+        _release_file_lock(held)
+
+    def replace_before_unlink(path: Path, identity: os.stat_result | None) -> bool:
+        path.rename(path.with_suffix(".saved"))
+        path.write_bytes(b"new owner")
+        return unlink_owned_file(path, identity)
+
+    monkeypatch.setattr(cache_eviction, "unlink_owned_file", replace_before_unlink)
+    assert cache_eviction._remove_entry(entry, dry_run=False) == "busy"
+    assert leaf.read_bytes() == b"new owner"
+
+    leaf.unlink()
+    assert not unlink_owned_file(leaf, entry.metadata)
+    assert cache_eviction._remove_entry(entry, dry_run=False) == "busy"
+
+
+@pytest.mark.parametrize(
+    "limit", ["MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES", "MOLT_BACKEND_TIR_CACHE_DISK_MB"]
+)
+def test_scheduled_backend_capacity_respects_a_live_namespace_lease(
+    tmp_path: Path, limit: str
+) -> None:
+    from molt.cache_eviction import _prune
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    leaf = _managed_backend_leaf(tmp_path, "recent")
+    namespace = leaf.parent.parent
+    leaf.touch()
+    (namespace / "CACHEDIR.TAG").touch()
+    options = dict(max_bytes=2**40, max_age_days=None, dry_run=False)
+    assert _prune(tmp_path, environ={}, **options)["entries_removed"] == 0
+    held = _try_acquire_file_lock(namespace / ".trim.lock", create=False)
+    assert held is not None
+    try:
+        assert _prune(tmp_path, environ={limit: "0"}, **options)["entries_removed"] == 0
+        assert leaf.exists()
+    finally:
+        _release_file_lock(held)
+    assert _prune(tmp_path, environ={limit: "0"}, **options)["entries_removed"] == 1
+    assert not leaf.exists()
+    assert (namespace / ".trim.lock").is_file()
+
+
+@pytest.mark.parametrize(
+    "change", ["reader", "leaf", "poison", "tag", "functions", "namespace"]
+)
+def test_backend_retirement_revalidates_observed_owner_and_leaf(
+    tmp_path: Path, change: str
+) -> None:
+    prune = _load_molt_cache_prune()
+    root = tmp_path / "cache"
+    leaf = _managed_backend_leaf(root, "old")
+    (entry,) = prune._collect_entries(root)
+    namespace = leaf.parent.parent
+    if change == "reader":
+        (namespace / "CACHEDIR.TAG").touch()
+    elif change == "leaf":
+        leaf.rename(leaf.with_suffix(".saved"))
+        leaf.write_bytes(b"new generation")
+    elif change == "poison":
+        leaf.with_suffix(".poison").touch()
+    elif change == "tag":
+        (namespace / "CACHEDIR.TAG").replace(namespace / "saved.tag")
+        (namespace / "CACHEDIR.TAG").symlink_to(namespace / "saved.tag")
+    else:
+        directory = leaf.parent if change == "functions" else namespace
+        moved = tmp_path / "operator-directory"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+    assert prune._remove_entry(entry, dry_run=False) == "busy"
+    assert leaf.is_file()
+
+
 def test_pruner_selects_completed_backend_files_and_preserves_mutable_namespaces(
     tmp_path,
 ):

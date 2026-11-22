@@ -5,12 +5,14 @@ from molt.typed_cache import typed_cache
 
 import argparse
 import heapq
+import json
 import os
 import re
 import shutil
 import stat
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from collections.abc import Callable, Generator
@@ -58,7 +60,9 @@ from molt.default_paths import (
 from molt.file_publication import (
     durable_remove_path,
     is_staged_file_path,
+    metadata_is_link_like,
     reclaim_retired_paths,
+    unlink_owned_file,
 )
 
 from molt.file_locks import (
@@ -132,6 +136,69 @@ def _hot_volume_free(root: Path) -> int:
 
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_BACKEND_IDLE_SECONDS = 5 * 24 * 60 * 60
+
+
+@dataclass(frozen=True)
+class _BackendCacheLayout:
+    directory: str
+    tag: bytes
+    artifact_magic: bytes
+    max_entries: int
+    disk_mib: int
+
+
+@typed_cache(maxsize=1)
+def _backend_cache_layout() -> _BackendCacheLayout:
+    layout = json.loads(
+        Path(__file__).with_name("backend_cache_layout.json").read_bytes()
+    )
+    return _BackendCacheLayout(
+        layout["directory"],
+        layout["tag"].encode("ascii"),
+        layout["artifact_magic"].encode("ascii"),
+        layout["max_entries"],
+        layout["disk_mib"],
+    )
+
+
+def _backend_capacity(environ: Mapping[str, str]) -> tuple[int, int]:
+    layout = _backend_cache_layout()
+
+    def limit(name: str, default: int, maximum: int) -> int:
+        value = environ.get(name, "")
+        if len(value) > 21 or re.fullmatch(r"\+?[0-9]+", value) is None:
+            return default
+        parsed = int(value)
+        return parsed if parsed <= maximum else default
+
+    entries = limit(
+        "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES", layout.max_entries, 2 * sys.maxsize + 1
+    )
+    mib = limit("MOLT_BACKEND_TIR_CACHE_DISK_MB", layout.disk_mib, (1 << 44) - 1)
+    return entries, mib * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _BackendNamespace:
+    directories: tuple[tuple[Path, os.stat_result], ...]
+    tag: Path
+    tag_stat: os.stat_result
+    lock: Path
+    lock_stat: os.stat_result
+
+    def unchanged(self) -> bool:
+        try:
+            return (
+                all(
+                    os.path.samestat(path.lstat(), observed)
+                    for path, observed in self.directories
+                )
+                and os.path.samestat(self.lock.lstat(), self.lock_stat)
+                and _same_cache_generation(self.tag.lstat(), self.tag_stat)
+            )
+        except OSError:
+            return False
 
 
 def _default_cache_root() -> Path:
@@ -148,6 +215,7 @@ class CacheEntry:
     companions: tuple[tuple[Path, os.stat_result], ...] = ()
     absent_peer: Path | None = None
     minimum_idle_seconds: float = 0.0
+    backend_namespace: _BackendNamespace | None = None
 
     @property
     def mtime(self) -> float:
@@ -289,6 +357,89 @@ class _LegacyStandaloneNames:
         )
 
 
+def _read_backend_prefix(path: Path, observed: os.stat_result, size: int) -> bytes:
+    from molt.file_hashing import open_stable_read_descriptor
+
+    with os.fdopen(open_stable_read_descriptor(path), "rb", buffering=0) as stream:
+        if not _same_cache_generation(observed, os.fstat(stream.fileno())):
+            return b""
+        return stream.read(size)
+
+
+def _backend_cache_entries(layout_root: Path) -> Generator[CacheEntry]:
+    """Admit immutable envelope leaves from positively owned namespaces."""
+    layout = _backend_cache_layout()
+    try:
+        root_stat = layout_root.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(root_stat.st_mode) or metadata_is_link_like(root_stat):
+        return
+    for namespace in _children(layout_root):
+        if not _HEX64.fullmatch(namespace.name):
+            continue
+        functions = namespace / "functions"
+        tag, lock = namespace / "CACHEDIR.TAG", namespace / ".trim.lock"
+        try:
+            namespace_stat = namespace.lstat()
+            if not stat.S_ISDIR(namespace_stat.st_mode) or metadata_is_link_like(
+                namespace_stat
+            ):
+                continue
+            functions_stat = functions.lstat()
+            if not stat.S_ISDIR(functions_stat.st_mode) or metadata_is_link_like(
+                functions_stat
+            ):
+                continue
+            directories = (
+                (layout_root, root_stat),
+                (namespace, namespace_stat),
+                (functions, functions_stat),
+            )
+            tag_stat, lock_stat = tag.lstat(), lock.lstat()
+            if (
+                not stat.S_ISREG(tag_stat.st_mode)
+                or metadata_is_link_like(tag_stat)
+                or tag_stat.st_size != len(layout.tag)
+                or not stat.S_ISREG(lock_stat.st_mode)
+                or metadata_is_link_like(lock_stat)
+                or _read_backend_prefix(tag, tag_stat, len(layout.tag)) != layout.tag
+            ):
+                continue
+            owner = _BackendNamespace(directories, tag, tag_stat, lock, lock_stat)
+            for leaf in _children(functions):
+                if leaf.suffix != ".bin" or not _HEX64.fullmatch(leaf.stem):
+                    continue
+                try:
+                    observed = leaf.lstat()
+                    if not stat.S_ISREG(observed.st_mode) or metadata_is_link_like(
+                        observed
+                    ):
+                        continue
+                    # Versioned artifact envelope: magic, artifact kind (0),
+                    # lowercase SHA-256 key, big-endian length, SHA-256, bytes.
+                    # Full payload authentication belongs to the compiler read.
+                    prefix = layout.artifact_magic + b"\x00" + leaf.stem.encode("ascii")
+                    header = _read_backend_prefix(leaf, observed, len(prefix) + 8)
+                    payload_size = observed.st_size - len(prefix) - 8 - 32
+                    if payload_size <= 0 or header != prefix + payload_size.to_bytes(
+                        8, "big"
+                    ):
+                        continue
+                    yield CacheEntry(
+                        leaf,
+                        observed.st_size,
+                        observed,
+                        lock,
+                        absent_peer=leaf.with_suffix(".poison"),
+                        backend_namespace=owner,
+                    )
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+
 def _collect_entries(
     cache_root: Path, *, environ: Mapping[str, str] | None = None
 ) -> list[CacheEntry]:
@@ -346,6 +497,9 @@ def _collect_entries(
             or _legacy_native_entry(child)
             or standalone_names.protects(child.name)
         ):
+            continue
+        if child.name == _backend_cache_layout().directory:
+            entries.extend(_backend_cache_entries(child))
             continue
         if child.name in {
             "module_analysis",
@@ -727,12 +881,17 @@ def _remove_entry(
 ) -> str:
     lock_handle = None
     try:
+        namespace = entry.backend_namespace
+        if namespace is not None and not namespace.unchanged():
+            return "busy"
         if entry.lock_path is not None:
             try:
                 lock_handle = _try_acquire_file_lock(
-                    entry.lock_path, create=not dry_run
+                    entry.lock_path, create=not dry_run and namespace is None
                 )
             except FileNotFoundError:
+                if namespace is not None:
+                    return "busy"
                 if not dry_run:
                     raise
                 # No lock existed at observation time. A dry-run forecasts
@@ -740,10 +899,12 @@ def _remove_entry(
             else:
                 if lock_handle is None:
                     return "busy"
+        if namespace is not None and not namespace.unchanged():
+            return "busy"
         try:
             current = entry.path.lstat()
         except FileNotFoundError:
-            return "removed"
+            return "busy" if namespace is not None else "removed"
         if not _same_cache_generation(current, entry.metadata):
             # A reader refreshed this entry (or a publisher replaced it) after
             # inventory. The old observation no longer owns its eviction.
@@ -769,7 +930,12 @@ def _remove_entry(
                 return "busy"
         if dry_run:
             return "removed"
-        if entry.retirement_scope is not None:
+        if namespace is not None:
+            # A replaced name must never promote a file eviction into a
+            # recursive deletion. Keep the namespace, lock and poison lineage.
+            if not unlink_owned_file(entry.path, current):
+                return "busy"
+        elif entry.retirement_scope is not None:
             try:
                 durable_remove_path(
                     entry.path,
@@ -816,6 +982,17 @@ def _prune_locked(
 
         FrontendRecordFiles(cache_root).compact_index()
     entries = _collect_entries(cache_root, environ=environ)
+    backend_count: Counter[Path] = Counter()
+    backend_bytes: Counter[Path] = Counter()
+    for entry in entries:
+        if entry.backend_namespace is not None:
+            tag = entry.backend_namespace.tag
+            backend_count[tag] += 1
+            backend_bytes[tag] += entry.size_bytes
+    backend_entry_limit, backend_byte_limit = _backend_capacity(
+        os.environ if environ is None else environ
+    )
+    backend_idle_cutoff = time.time() - _BACKEND_IDLE_SECONDS
     before_bytes = sum(item.size_bytes for item in entries)
     before_count = len(entries)
     total = before_bytes
@@ -925,9 +1102,10 @@ def _prune_locked(
 
         def order(entry):
             if isinstance(entry, CacheEntry):
-                return _eviction_order(entry)
+                return (entry.backend_namespace is None, *_eviction_order(entry))
             assert store is not None
             return (
+                True,
                 entry.used_ns / 1_000_000_000,
                 os.path.normcase(os.fspath(store.path / entry.kind / entry.key)),
             )
@@ -1006,7 +1184,16 @@ def _prune_locked(
             elif not row_enabled:
                 continue
             mtime = entry.mtime if is_file else entry.used_ns / 1e9
+            namespace = entry.backend_namespace if is_file else None
             expired = cutoff is not None and mtime < cutoff
+            if namespace is not None:
+                expired |= (
+                    mtime <= backend_idle_cutoff
+                    and namespace.tag_stat.st_mtime <= backend_idle_cutoff
+                ) or (
+                    backend_count[namespace.tag] > backend_entry_limit
+                    or backend_bytes[namespace.tag] > backend_byte_limit
+                )
             hot_entry = (
                 is_file and hot is not None and entry.path.is_relative_to(hot.root)
             )
@@ -1017,6 +1204,8 @@ def _prune_locked(
             ):
                 flush_rows()
                 if not over_budget(total):
+                    if namespace is not None:
+                        continue  # Later namespaces may still exceed their own limit.
                     if not hot_pressure():
                         break
                     continue  # Only the hot root is under pressure.
@@ -1031,6 +1220,9 @@ def _prune_locked(
                     removed_count += 1
                     removed_bytes += entry.size_bytes
                     total -= entry.size_bytes
+                    if namespace is not None:
+                        backend_count[namespace.tag] -= 1
+                        backend_bytes[namespace.tag] -= entry.size_bytes
                     if hot_entry:
                         hot_bytes -= entry.size_bytes
                 else:
@@ -1242,7 +1434,43 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Compute removals without changing cached payloads.",
     )
+    parser.add_argument("--automatic", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
+
+
+def schedule_installed_retention(cache_root: Path, *, epoch: str) -> Path:
+    """Launch one packaged maintenance attempt in a separate process group."""
+    import subprocess
+
+    from molt.process_spawn import detached_process_group_kwargs
+
+    if epoch != "initial" and (not epoch.isascii() or not epoch.isdecimal()):
+        raise ValueError("invalid cache retention epoch")
+    cache_root = cache_root.resolve(strict=True)
+    log = cache_root / "logs" / "cache_retention" / "automatic" / f"prune-{epoch}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # Like the installed launcher, bind the known source directory explicitly
+    # inside isolated Python. Ambient PYTHONPATH cannot select another compiler.
+    with log.open("ab") as stream:
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+                "runpy.run_module('molt.cache_eviction',run_name='__main__',alter_sys=True)",
+                str(Path(__file__).resolve().parent.parent),
+                "--cache-dir",
+                str(cache_root),
+                "--automatic",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            **detached_process_group_kwargs(),
+        )
+    return log
 
 
 def automatic_retention(
@@ -1363,6 +1591,19 @@ def main() -> int:
         if args.cache_dir
         else _default_cache_root()
     )
+    if args.automatic:
+        from molt.default_paths import CLI_CACHE_RETENTION_INTERVAL_SECONDS
+
+        result = automatic_retention(
+            os.environ,
+            cache_root=cache_root,
+            min_interval_seconds=CLI_CACHE_RETENTION_INTERVAL_SECONDS,
+        )
+        print(json.dumps(result), flush=True)
+        return int(
+            result is not None
+            and (result.get("status") == "failed" or bool(result.get("entries_failed")))
+        )
 
     max_gb, max_age_days = resolve_budget(args.max_gb, args.max_age_days, os.environ)
 
