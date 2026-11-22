@@ -567,42 +567,71 @@ pub(crate) unsafe fn append_with_projection(
     unsafe { insert_with_projection(py, ptr, len, item, item_ptr) }
 }
 
-/// Consume one already-owned value into a construction-only list whose caller
-/// preallocated an exact upper-bound capacity. This is the sole no-INCREF
-/// builder path; published lists are rejected and capacity drift aborts rather
-/// than escaping resource accounting through `Vec::push` growth.
-pub(crate) unsafe fn append_owned_unpublished(ptr: *mut u8, item: u64) {
-    crate::gil_assert();
-    if ptr.is_null()
-        || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
-        || unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() }
-            & HEADER_FLAG_HAS_ABI_VIEW
-            != 0
-    {
-        eprintln!("molt fatal: owned list-builder append targeted a published or invalid list");
-        std::process::abort();
+/// Own a runtime-only list through construction. Its pointer is private
+/// until the caller consumes the builder to publish the result.
+pub(crate) struct OwnedListBuilder<'a, 'py> {
+    py: &'a PyToken<'py>,
+    ptr: std::ptr::NonNull<u8>,
+    owner: molt_runtime_core::ProtectedRuntimeValue<'a>,
+}
+
+impl<'a, 'py> OwnedListBuilder<'a, 'py> {
+    pub(crate) fn with_capacity(py: &'a PyToken<'py>, reserve: usize) -> Option<Self> {
+        let ptr = std::ptr::NonNull::new(crate::object::builders::alloc_list_with_capacity(
+            py,
+            &[],
+            reserve,
+        ))?;
+        let owner = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(ptr.as_ptr()).bits(),
+            )
+        };
+        Some(Self { py, ptr, owner })
     }
-    let base = unsafe { seq_vec_ptr(ptr) };
-    let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
-    let values = unsafe { &mut *base };
-    if values.len() == values.capacity() {
-        eprintln!("molt fatal: owned list-builder exceeded its preallocated capacity");
-        std::process::abort();
-    }
-    values.push(item);
-    let item_is_heap = crate::object::refcount_opt::is_heap_ref(item);
-    unsafe {
-        crate::object::backing::tracked_vec_adjust_heap_edge_count(
-            base,
-            0,
-            usize::from(item_is_heap),
-        );
-        if item_is_heap {
-            (*header_from_obj_ptr(ptr)).mark_contains_refs();
+
+    /// Transfer one owned result into the builder. If growth fails, both the
+    /// incoming value and the partial list retire while preserving MemoryError.
+    ///
+    /// # Safety
+    /// `bits` must carry one owned reference in this builder's runtime.
+    pub(crate) unsafe fn push_owned(self, bits: u64) -> Option<Self> {
+        let item = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(self.py.core_token(), bits)
+        };
+        let ptr = self.ptr.as_ptr();
+        let base = unsafe { seq_vec_ptr(ptr) };
+        let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
+        let len = unsafe { (&*base).len() };
+        let reserved = len.checked_add(1).is_some_and(|required| unsafe {
+            crate::object::backing::tracked_vec_reserve_for_len(base, required)
+        });
+        if !reserved {
+            drop(mutation_guard);
+            crate::record_memory_error_without_allocation(self.py);
+            return None;
         }
-        crate::object::backing::tracked_vec_bump_mutation_epoch(base);
+        unsafe { (&mut *base).push(item.into_bits()) };
+        let item_is_heap = crate::object::refcount_opt::is_heap_ref(bits);
+        unsafe {
+            crate::object::backing::tracked_vec_adjust_heap_edge_count(
+                base,
+                0,
+                usize::from(item_is_heap),
+            );
+            if item_is_heap {
+                (*header_from_obj_ptr(ptr)).mark_contains_refs();
+            }
+            crate::object::backing::tracked_vec_bump_mutation_epoch(base);
+        }
+        drop(mutation_guard);
+        Some(self)
     }
-    drop(mutation_guard);
+
+    pub(crate) fn finish(self) -> u64 {
+        self.owner.into_bits()
+    }
 }
 
 /// Replace one runtime slot and transfer the displaced owned edge to the
@@ -1408,6 +1437,46 @@ mod tests {
     use super::*;
     use crate::builtins::functions::alloc_runtime_function_obj;
     use std::cell::RefCell;
+
+    #[test]
+    fn owned_builder_denied_growth_releases_incoming_and_staged_items() {
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let ptr = alloc_bytes(py, b"owned list builder capacity witness");
+            assert!(!ptr.is_null());
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let item = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits)
+            };
+            let reference_count = || unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+            let baseline = reference_count();
+            let mut builder = OwnedListBuilder::with_capacity(py, 1).unwrap();
+            let capacity = unsafe { (&*seq_vec_ptr(builder.ptr.as_ptr())).capacity() };
+            for _ in 0..capacity {
+                inc_ref_bits(py, item.bits());
+                builder = unsafe { builder.push_owned(item.bits()) }.unwrap();
+            }
+            let restore = crate::test_support::restore_unlimited_tracker_on_drop();
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            inc_ref_bits(py, item.bits());
+            assert!(unsafe { builder.push_owned(item.bits()) }.is_none());
+            drop(restore);
+            assert_eq!(reference_count(), baseline);
+            let pending = molt_exception_last_pending_attached_body(py);
+            assert!(crate::builtins::exceptions::exception_matches_kind(
+                py,
+                pending,
+                BuiltinExc::MemoryError,
+            ));
+            dec_ref_bits(py, pending);
+            clear_exception(py);
+        });
+    }
 
     thread_local! {
         static ITEMS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };

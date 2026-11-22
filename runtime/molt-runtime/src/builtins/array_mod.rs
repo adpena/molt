@@ -1448,22 +1448,21 @@ pub(crate) fn molt_array_tolist_attached_body(_py: &crate::PyToken<'_>, handle_b
             Ok(elems) => elems,
             Err(error) => return error.raise(py),
         };
-        let list = crate::object::builders::alloc_list_with_capacity(py, &[], elems.len());
-        if list.is_null() {
+        let Some(mut list) =
+            crate::object::list_mutation::OwnedListBuilder::with_capacity(py, elems.len())
+        else {
             return MoltObject::none().bits();
-        }
-        let owner = unsafe {
-            OwnedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::from_ptr(list).bits())
         };
         for elem in elems {
             let Some(bits) = elem_to_bits(py, elem) else {
                 return MoltObject::none().bits();
             };
-            unsafe {
-                crate::object::list_mutation::append_owned_unpublished(list, bits);
-            }
+            let Some(updated) = (unsafe { list.push_owned(bits) }) else {
+                return MoltObject::none().bits();
+            };
+            list = updated;
         }
-        owner.into_bits()
+        list.finish()
     })
 }
 

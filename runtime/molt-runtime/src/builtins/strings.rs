@@ -1,5 +1,6 @@
 use crate::BuiltinExc;
 use crate::PyToken;
+use crate::object::list_mutation::OwnedListBuilder;
 use crate::object::ops_bytes::bytes_ascii_space;
 use crate::object::ops_string::wtf8_step;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -10,8 +11,8 @@ use crate::const_data_cache::{
     ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
 };
 use crate::{
-    MAX_SMALL_LIST, alloc_bytes, alloc_list_with_capacity, alloc_string, dec_ref_bits,
-    inc_ref_bits, obj_from_bits, string_bytes, usize_from_bits, utf8_codepoint_count_cached,
+    MAX_SMALL_LIST, alloc_bytes, alloc_string, inc_ref_bits, obj_from_bits, string_bytes,
+    usize_from_bits, utf8_codepoint_count_cached,
 };
 
 pub(crate) fn bytes_find_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
@@ -500,13 +501,17 @@ pub(crate) fn replace_string_impl(
     replace_bytes_impl(hay_bytes, needle_bytes, replacement_bytes)
 }
 
-unsafe fn list_push_owned(list_ptr: *mut u8, val_bits: u64) {
-    unsafe { crate::object::list_mutation::append_owned_unpublished(list_ptr, val_bits) }
+fn split_list<'a, 'py>(py: &'a PyToken<'py>, reserve: usize) -> Option<OwnedListBuilder<'a, 'py>> {
+    OwnedListBuilder::with_capacity(py, reserve.max(MAX_SMALL_LIST))
 }
 
-fn alloc_list_empty_with_capacity(_py: &PyToken<'_>, capacity: usize) -> *mut u8 {
-    let cap = capacity.max(MAX_SMALL_LIST);
-    alloc_list_with_capacity(_py, &[], cap)
+fn push_allocated_split_part<'a, 'py>(
+    list: OwnedListBuilder<'a, 'py>,
+    part: *mut u8,
+) -> Option<OwnedListBuilder<'a, 'py>> {
+    let part = std::ptr::NonNull::new(part)?;
+    // String, bytes and bytearray allocators transfer an owned reference.
+    unsafe { list.push_owned(MoltObject::from_ptr(part.as_ptr()).bits()) }
 }
 
 const SPLIT_CACHE_MAX_ENTRIES: usize = 8;
@@ -558,63 +563,47 @@ impl SplitTokenCache {
     }
 }
 
-fn split_string_push_part(
-    _py: &PyToken<'_>,
+fn split_string_push_part<'a, 'py>(
+    py: &'a PyToken<'py>,
     cache: &mut SplitTokenCache,
-    list_ptr: *mut u8,
-    list_bits: u64,
+    list: OwnedListBuilder<'a, 'py>,
     part: &[u8],
-) -> bool {
+) -> Option<OwnedListBuilder<'a, 'py>> {
     if let Some(bits) = cache.lookup(part) {
-        inc_ref_bits(_py, bits);
-        unsafe {
-            list_push_owned(list_ptr, bits);
-        }
-        return true;
+        inc_ref_bits(py, bits);
+        return unsafe { list.push_owned(bits) };
     }
-    let ptr = alloc_string(_py, part);
-    if ptr.is_null() {
-        dec_ref_bits(_py, list_bits);
-        return false;
-    }
-    let bits = MoltObject::from_ptr(ptr).bits();
-    unsafe {
-        list_push_owned(list_ptr, bits);
-    }
+    let ptr = std::ptr::NonNull::new(alloc_string(py, part))?;
+    let bits = MoltObject::from_ptr(ptr.as_ptr()).bits();
+    let list = unsafe { list.push_owned(bits) }?;
     cache.store(bits, part.len());
-    true
+    Some(list)
 }
 
-fn build_explicit_split_list(
-    _py: &PyToken<'_>,
+fn build_explicit_split_list<'a, 'py>(
+    py: &'a PyToken<'py>,
     hay: &[u8],
     needle_len: usize,
     matches: impl IntoIterator<Item = usize>,
     match_bound: usize,
-    mut push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+    mut push_part: impl FnMut(OwnedListBuilder<'a, 'py>, &[u8]) -> Option<OwnedListBuilder<'a, 'py>>,
 ) -> Option<u64> {
-    let list_ptr = alloc_list_empty_with_capacity(_py, match_bound + 1);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut list = split_list(py, match_bound + 1)?;
     let mut start = 0;
     for idx in matches {
-        if !push_part(list_ptr, list_bits, &hay[start..idx]) {
-            return None;
-        }
+        list = push_part(list, &hay[start..idx])?;
         start = idx + needle_len;
     }
-    push_part(list_ptr, list_bits, &hay[start..]).then_some(list_bits)
+    Some(push_part(list, &hay[start..])?.finish())
 }
 
-fn split_from_forward_search(
-    _py: &PyToken<'_>,
+fn split_from_forward_search<'a, 'py>(
+    _py: &'a PyToken<'py>,
     hay: &[u8],
     needle_len: usize,
     matches: impl Iterator<Item = usize>,
     limit: usize,
-    push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+    push_part: impl FnMut(OwnedListBuilder<'a, 'py>, &[u8]) -> Option<OwnedListBuilder<'a, 'py>>,
 ) -> Option<u64> {
     let matches = matches.take(limit);
     if limit < MAX_SMALL_LIST {
@@ -628,13 +617,13 @@ fn split_from_forward_search(
 /// Find disjoint delimiters in the requested direction, then emit parts in
 /// source order. Direction matters for overlapping multi-byte delimiters even
 /// when the number of splits is unlimited.
-fn explicit_split_to_list(
-    _py: &PyToken<'_>,
+fn explicit_split_to_list<'a, 'py>(
+    _py: &'a PyToken<'py>,
     hay: &[u8],
     needle: &[u8],
     maxsplit: i64,
     from_right: bool,
-    push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+    push_part: impl FnMut(OwnedListBuilder<'a, 'py>, &[u8]) -> Option<OwnedListBuilder<'a, 'py>>,
 ) -> Option<u64> {
     let limit = usize::try_from(maxsplit).unwrap_or(usize::MAX);
     if limit == 0 {
@@ -690,14 +679,9 @@ pub(crate) fn split_string_bytes_to_list_maxsplit(
     from_right: bool,
 ) -> Option<u64> {
     let mut cache = SplitTokenCache::new();
-    explicit_split_to_list(
-        _py,
-        hay,
-        needle,
-        maxsplit,
-        from_right,
-        |list, bits, part| split_string_push_part(_py, &mut cache, list, bits, part),
-    )
+    explicit_split_to_list(_py, hay, needle, maxsplit, from_right, |list, part| {
+        split_string_push_part(_py, &mut cache, list, part)
+    })
 }
 
 pub(crate) fn bytes_strip_range(
@@ -797,22 +781,9 @@ pub(crate) fn split_bytes_to_list_maxsplit<F>(
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
-    explicit_split_to_list(
-        _py,
-        hay,
-        needle,
-        maxsplit,
-        from_right,
-        |list, bits, part| {
-            let ptr = alloc(part);
-            if ptr.is_null() {
-                dec_ref_bits(_py, bits);
-                return false;
-            }
-            unsafe { list_push_owned(list, MoltObject::from_ptr(ptr).bits()) };
-            true
-        },
-    )
+    explicit_split_to_list(_py, hay, needle, maxsplit, from_right, |list, part| {
+        push_allocated_split_part(list, alloc(part))
+    })
 }
 
 /// Find the next ASCII whitespace byte starting from `start`.
@@ -1028,40 +999,6 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
     i
 }
 
-fn split_bytes_whitespace_to_list<F>(_py: &PyToken<'_>, hay: &[u8], mut alloc: F) -> Option<u64>
-where
-    F: FnMut(&[u8]) -> *mut u8,
-{
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-
-    // Use SIMD-accelerated whitespace scanning
-    let mut idx = skip_ascii_whitespace(hay, 0);
-    while idx < hay.len() {
-        let word_start = idx;
-        // Find next whitespace (end of word)
-        idx = match find_next_ascii_whitespace(hay, idx) {
-            Some(ws_pos) => ws_pos,
-            None => hay.len(),
-        };
-        let part = &hay[word_start..idx];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        // Skip whitespace between words
-        idx = skip_ascii_whitespace(hay, idx);
-    }
-    Some(list_bits)
-}
-
 pub(crate) fn split_bytes_whitespace_to_list_maxsplit<F>(
     _py: &PyToken<'_>,
     hay: &[u8],
@@ -1071,80 +1008,20 @@ pub(crate) fn split_bytes_whitespace_to_list_maxsplit<F>(
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
-    if maxsplit < 0 {
-        return split_bytes_whitespace_to_list(_py, hay, alloc);
+    let mut list = split_list(_py, 0)?;
+    let mut start = skip_ascii_whitespace(hay, 0);
+    let mut remaining = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+    while start < hay.len() {
+        if remaining == 0 {
+            list = push_allocated_split_part(list, alloc(&hay[start..]))?;
+            break;
+        }
+        let end = find_next_ascii_whitespace(hay, start).unwrap_or(hay.len());
+        list = push_allocated_split_part(list, alloc(&hay[start..end]))?;
+        start = skip_ascii_whitespace(hay, end);
+        remaining -= 1;
     }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let mut idx = skip_ascii_whitespace(hay, 0);
-    if idx >= hay.len() {
-        return Some(list_bits);
-    }
-    if maxsplit == 0 {
-        let ptr = alloc(&hay[idx..]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let mut start = idx;
-    let mut splits = 0i64;
-    while idx < hay.len() {
-        // Use SIMD-accelerated whitespace search
-        let ws_pos = match find_next_ascii_whitespace(hay, idx) {
-            Some(pos) => pos,
-            None => {
-                // No more whitespace — rest of string is the final word
-                break;
-            }
-        };
-        let part = &hay[start..ws_pos];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        splits += 1;
-        idx = skip_ascii_whitespace(hay, ws_pos);
-        if idx >= hay.len() {
-            return Some(list_bits);
-        }
-        if splits >= maxsplit {
-            let ptr = alloc(&hay[idx..]);
-            if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
-            }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
-            return Some(list_bits);
-        }
-        start = idx;
-    }
-    // Last word (no trailing whitespace found)
-    if start < hay.len() {
-        let part = &hay[start..];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-    }
-    Some(list_bits)
+    Some(list.finish())
 }
 
 pub(crate) fn rsplit_bytes_whitespace_to_list_maxsplit<F>(
@@ -1157,31 +1034,20 @@ where
     F: FnMut(&[u8]) -> *mut u8,
 {
     if maxsplit < 0 {
-        return split_bytes_whitespace_to_list(_py, hay, alloc);
+        return split_bytes_whitespace_to_list_maxsplit(_py, hay, maxsplit, alloc);
     }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut list = split_list(_py, 0)?;
     let mut end = hay.len();
     while end > 0 && bytes_ascii_space(hay[end - 1]) {
         end -= 1;
     }
     if end == 0 {
-        return Some(list_bits);
+        return Some(list.finish());
     }
     if maxsplit == 0 {
         // Only trailing whitespace is stripped before an unsplit remainder.
-        let ptr = alloc(&hay[..end]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
+        list = push_allocated_split_part(list, alloc(&hay[..end]))?;
+        return Some(list.finish());
     }
     let mut parts: Vec<(usize, usize)> = Vec::new();
     let mut splits = 0i64;
@@ -1208,16 +1074,9 @@ where
     }
     parts.reverse();
     for (start, end) in parts {
-        let ptr = alloc(&hay[start..end]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
+        list = push_allocated_split_part(list, alloc(&hay[start..end]))?;
     }
-    Some(list_bits)
+    Some(list.finish())
 }
 
 pub(crate) fn splitlines_bytes_to_list<F>(
@@ -1229,11 +1088,7 @@ pub(crate) fn splitlines_bytes_to_list<F>(
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut list = split_list(_py, 0)?;
     let mut start = 0usize;
     let mut idx = 0usize;
     // Use memchr2 (SIMD-backed) to find '\n' or '\r' line breaks
@@ -1250,14 +1105,7 @@ where
             } else {
                 &hay[start..abs_pos]
             };
-            let ptr = alloc(part);
-            if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
-            }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
+            list = push_allocated_split_part(list, alloc(part))?;
             start = break_end;
             idx = break_end;
         } else {
@@ -1266,16 +1114,9 @@ where
     }
     if start < hay.len() {
         let part = &hay[start..];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
+        list = push_allocated_split_part(list, alloc(part))?;
     }
-    Some(list_bits)
+    Some(list.finish())
 }
 
 /// Advance one Python string code point in either direction. The storage is
@@ -1351,20 +1192,11 @@ fn string_whitespace_split(
         maxsplit,
         from_right,
     );
-    let list_ptr = alloc_list_empty_with_capacity(_py, parts.len());
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut list = split_list(_py, parts.len())?;
     for (start, end) in parts {
-        let ptr = alloc_string(_py, &hay[start..end]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe { list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits()) };
+        list = push_allocated_split_part(list, alloc_string(_py, &hay[start..end]))?;
     }
-    Some(list_bits)
+    Some(list.finish())
 }
 
 pub(crate) fn split_string_whitespace_to_list_maxsplit(
@@ -1403,11 +1235,7 @@ pub(crate) fn splitlines_string_to_list(
     hay_str: &str,
     keepends: bool,
 ) -> Option<u64> {
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut list = split_list(_py, 0)?;
     let mut start = 0usize;
     let mut iter = hay_str.char_indices().peekable();
     while let Some((idx, ch)) = iter.next() {
@@ -1428,28 +1256,14 @@ pub(crate) fn splitlines_string_to_list(
         } else {
             &hay_str[start..end]
         };
-        let ptr = alloc_string(_py, part.as_bytes());
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
+        list = push_allocated_split_part(list, alloc_string(_py, part.as_bytes()))?;
         start = break_end;
     }
     if start < hay_str.len() {
         let part = &hay_str[start..];
-        let ptr = alloc_string(_py, part.as_bytes());
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
+        list = push_allocated_split_part(list, alloc_string(_py, part.as_bytes()))?;
     }
-    Some(list_bits)
+    Some(list.finish())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -59,6 +59,16 @@ show("bytes_rsplit_overlap", b"000".rsplit(b"00"))
 show("bytearray_rsplit_overlap", bytearray(b"000").rsplit(b"00"))
 show("bytes_split_many", len((b"0," * 24).split(b",", 20)))
 show("bytearray_rsplit_many", len(bytearray(b"0," * 24).rsplit(b",", 20)))
+words = b" word" * 24 + b"  "
+show("bytes_whitespace_many", len(words.split()), len(words.rsplit()))
+show("bytes_whitespace_limited", words.split(None, 18)[-1], words.rsplit(None, 18)[0])
+mutable_words = bytearray(words)
+show("bytearray_whitespace_many", len(mutable_words.split()), len(mutable_words.rsplit()))
+show(
+    "bytearray_whitespace_limited",
+    mutable_words.split(None, 18)[-1],
+    mutable_words.rsplit(None, 18)[0],
+)
 show("splitlines0", "a\nb".splitlines())
 show("splitlines1", "a\nb\n".splitlines())
 show("splitlines2", "a\n\n".splitlines())
@@ -71,6 +81,20 @@ show("splitlines8", "a\u0085b".splitlines())
 show("splitlines9", "a\u2028b".splitlines())
 show("splitlines10", "a\u2029b".splitlines(True))
 show("splitlines11", "a\x0b\x0c".splitlines())
+many_lines = "line\r\n" * 17
+show("str_splitlines_many", len(many_lines.splitlines()), many_lines.splitlines(True)[-1])
+many_bytes_lines = b"line\r\n" * 17
+show(
+    "bytes_splitlines_many",
+    len(many_bytes_lines.splitlines()),
+    many_bytes_lines.splitlines(True)[-1],
+)
+many_mutable_lines = bytearray(many_bytes_lines)
+show(
+    "bytearray_splitlines_many",
+    len(many_mutable_lines.splitlines()),
+    many_mutable_lines.splitlines(True)[-1],
+)
 show("partition0", "hello".partition("ll"))
 show("partition1", "hello".partition("z"))
 show("partition2", "hello".partition("o"))
