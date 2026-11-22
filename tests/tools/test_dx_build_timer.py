@@ -1213,12 +1213,9 @@ def test_measurement_command_preserves_real_cli_cutoff_admission(
         == 0
     )
     assert len(admitted) == 1
-    # A JSON attribution run and a split runtime publish outputs no build
-    # record selects (`build_command._wasm_cutoff_request`); a plain latency
-    # build of the default wasm target is recorded like a native one.
-    assert (admitted[0] is not None) is (
-        measurement == "latency" and target in {"native", "wasm"}
-    )
+    # Latency measurements exercise real build-record reuse for every output
+    # form here. Attribution requests diagnostics and runs the full pipeline.
+    assert (admitted[0] is not None) is (measurement == "latency")
     assert ("--split-runtime" in command) is (target == "wasm-split")
 
 
