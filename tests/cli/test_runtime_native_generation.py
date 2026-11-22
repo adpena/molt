@@ -299,6 +299,7 @@ def test_native_selection_does_not_admit_incomplete_or_redirected_receipt(tmp_pa
 
 @pytest.fixture
 def native_build(tmp_path, runtime_fixture_root, monkeypatch):
+    real_identity_resolver = runtime._runtime_build_identity_for_plan
     source = write_runtime_crate(tmp_path)
     captures = []
     commands = []
@@ -343,7 +344,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
         scratch = runtime._runtime_cargo_scratch_lib_path(current.coordinate, None)
         scratch.parent.mkdir(parents=True, exist_ok=True)
         write_test_static_archive(
-            scratch, payload=repr((source.read_bytes(), captures[-1])).encode()
+            scratch, payload=repr((source.read_bytes(), plan.command)).encode()
         )
         return CargoExecutionResult(
             subprocess.CompletedProcess(
@@ -418,7 +419,68 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
         root=tmp_path,
         current=current,
         store=store,
+        real_identity_resolver=real_identity_resolver,
     )
+
+
+def test_native_ready_to_link_reuses_its_independent_source_observation(
+    native_build: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.runtime_identity_schema import (
+        RuntimePublicationTransform,
+        runtime_publication_executor_paths,
+    )
+    from tests.cli.native_link_test_support import native_codegen_binding
+
+    for relative in runtime_publication_executor_paths(
+        RuntimePublicationTransform.NATIVE_STATICLIB
+    ):
+        path = native_build.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"# retained publication input\n")
+    monkeypatch.setattr(
+        runtime, "_runtime_build_identity_for_plan", native_build.real_identity_resolver
+    )
+    ok, state, _timings = native_build.run()
+    assert ok
+    assert state.native_runtime_build_inputs is not None
+    assert state.native_runtime_build_inputs.input_observation is not None
+    state.native_runtime_codegen_binding = native_codegen_binding(
+        state.runtime_lib, state.native_runtime_build_identity
+    )
+    original = state.native_runtime_build_inputs
+    captured: list[bool] = []
+
+    def capture(*args: object, **kwargs: object) -> runtime.RuntimeBuildIdentity:
+        captured.append(True)
+        return native_build.real_identity_resolver(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_runtime_build_identity_for_plan", capture)
+
+    def link_ready() -> bool:
+        return runtime._ensure_native_runtime_lib_ready_before_link(
+            state,
+            target_triple=None,
+            json_output=True,
+            runtime_cargo_profile="dev-fast",
+            molt_root=native_build.root,
+            cargo_timeout=None,
+            diagnostics_enabled=False,
+            phase_starts={},
+            stdlib_profile="micro",
+        )
+
+    assert link_ready()
+    assert captured == []
+    assert state.native_runtime_build_inputs is original
+    before = native_build.source.stat()
+    data = native_build.source.read_bytes()
+    native_build.source.write_bytes(b"after!" if data == b"before" else b"changed")
+    os.utime(native_build.source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert not link_ready()
+    assert captured == [True]
+    assert state.native_runtime_build_inputs is None
+    assert state.native_runtime_codegen_binding is None
 
 
 def test_native_runtime_cargo_plan_carries_the_build_rust_cpu_policy(native_build):

@@ -304,6 +304,7 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
                 "stdlib_profile": "micro",
                 "extra_runtime_features": (),
                 "rust_cpu": state.rust_cpu,
+                "retained_inputs": None,
             },
         )
     ]

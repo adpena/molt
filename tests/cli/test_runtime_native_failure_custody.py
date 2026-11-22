@@ -64,6 +64,7 @@ def plan(
         fingerprint_features=("stdlib_micro",),
         build_identity=identity,
         store=ProductStore(tmp_path / "store" / "native-runtime"),
+        input_observation=None,
     )
 
 

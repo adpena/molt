@@ -27,6 +27,20 @@ At that measurement, the remaining one to five children were link work
 rediscovery described below has since been removed; these historical counts
 are not current latency measurements.
 
+Runtime readiness now retains the source and publication inputs its identity
+actually hashed, including admitted membership, root generations and missing
+roots. Native final-link admission and a bound WASM pair still resolve current
+Cargo configuration and tool selection. When those freshly resolved typed plans
+and member specifications equal the original request, the operation verifies
+its retained source observations instead of deriving the runtime identity again.
+Recent timestamp generations and Windows source observations require content
+verification; other POSIX files use their original content-change fences.
+Changed or unavailable observations require ordinary independent identity capture.
+Product bytes, receipts, callable inputs and final export obligations keep their
+existing admission boundaries. Cold publication still independently captures
+its inputs after building. This reuse ends with the operation; it provides no
+cross-command identity cutoff or release qualification.
+
 Darwin native link planning projects the already-admitted `NativeTargetSpec`
 into compiler arguments, presenting `aarch64` as `arm64`. The backend artifact
 contract checks every application archive member against the exact target

@@ -12,6 +12,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from time import time_ns
 from typing import Callable, Mapping, Sequence, TypeVar, assert_never, cast
 
 from molt import input_report as _input_report
@@ -41,13 +42,18 @@ from molt.rust_toolchain import (
     rust_flag_spans,
 )
 from molt.file_publication import metadata_is_link_like
+from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.toolchain_identity import (
+    StableRegularFileIdentity,
     StableRegularFileChangedError,
     StableRegularFileError,
     StableRegularFileHandle,
     open_stable_regular_file,
     probe_executable,
     resolve_executable,
+    _regular_file_identity,
+    verify_stable_regular_file_identity,
+    verify_stable_regular_file_metadata,
 )
 from molt.wasi_sdk_identity import WASI_C_ABI_PLAN_ENV, wasi_c_abi_projection
 
@@ -68,10 +74,6 @@ class _TreeInputCandidate:
 @dataclass(frozen=True)
 class _TreeInputFile(_TreeInputCandidate):
     opened: StableRegularFileHandle
-
-    @property
-    def size(self) -> int:
-        return self.opened.stat.st_size
 
 
 def _tree_hash_worker_count(file_count: int) -> int:
@@ -112,7 +114,9 @@ def _hash_tree_input_file(file: _TreeInputFile) -> str:
     return _sha256_open_file(file.opened.stream)
 
 
-def _capture_tree_input_file(candidate: _TreeInputCandidate) -> tuple[int, str]:
+def _capture_tree_input_file(
+    candidate: _TreeInputCandidate,
+) -> StableRegularFileIdentity:
     # Enumeration discovers names. Content admission, the one hash pass and
     # closing checks share one owned handle; there is no detached metadata
     # snapshot whose ChangeTime would have to uniquely identify later writes.
@@ -122,7 +126,10 @@ def _capture_tree_input_file(candidate: _TreeInputCandidate) -> tuple[int, str]:
         ) as opened:
             file = _TreeInputFile(candidate.label, candidate.path, opened)
             digest = _hash_tree_input_file(file)
-        return file.size, digest
+            identity = _regular_file_identity(
+                opened.path, opened.stat, opened.content_change_time_ns, digest
+            )
+        return identity
     except StableRegularFileChangedError as exc:
         raise _runtime_input_changed(candidate) from exc
     except StableRegularFileError as exc:
@@ -207,7 +214,7 @@ def _bounded_parallel_map(
 
 def _capture_tree_input_files(
     candidates: Sequence[_TreeInputCandidate],
-) -> dict[str, tuple[int, str]]:
+) -> dict[str, StableRegularFileIdentity]:
     captures = _bounded_parallel_map(
         candidates,
         _capture_tree_input_file,
@@ -236,14 +243,20 @@ class RuntimeTreeIndex:
     root_directories: dict[str, tuple[str, ...]]
     sizes: dict[str, int]
     digests: dict[str, str]
+    files: tuple[StableRegularFileIdentity, ...]
+    directories: tuple[tuple[Path, tuple[int, int, int]], ...]
+    root_versions: tuple[tuple[Path, tuple[int, int, int] | None], ...]
+    capture_started_ns: int
 
     @classmethod
     def capture(cls, roots: Sequence[tuple[str, Path]]) -> RuntimeTreeIndex:
+        capture_started_ns = time_ns()
         root_labels: dict[str, Path] = {}
         files: dict[str, _TreeInputCandidate] = {}
         root_files: dict[str, tuple[str, ...]] = {}
         root_directories: dict[str, tuple[str, ...]] = {}
         missing: set[str] = set()
+        root_versions: dict[Path, tuple[int, int, int] | None] = {}
         canonical_roots: list[tuple[str, Path]] = []
         for logical_root, raw_path in roots:
             try:
@@ -288,8 +301,14 @@ class RuntimeTreeIndex:
             try:
                 root_stat = path.lstat()
             except FileNotFoundError:
+                root_versions[path] = None
                 missing.add(logical_root)
                 continue
+            root_versions[path] = (
+                root_stat.st_dev,
+                root_stat.st_ino,
+                root_stat.st_mode,
+            )
             if stat_module.S_ISREG(root_stat.st_mode):
                 candidates.append((logical_root, path))
             elif stat_module.S_ISDIR(root_stat.st_mode):
@@ -333,7 +352,7 @@ class RuntimeTreeIndex:
         )
         if _input_report.active():
             for label, candidate in files.items():
-                _input_report.report_file(candidate.path, captures[label][1])
+                _input_report.report_file(candidate.path, captures[label].sha256)
             for logical_root in missing:
                 _input_report.report_probe(root_labels[logical_root])
         return cls(
@@ -341,9 +360,49 @@ class RuntimeTreeIndex:
             missing=frozenset(missing),
             root_files=root_files,
             root_directories=root_directories,
-            sizes={label: size for label, (size, _digest) in captures.items()},
-            digests={label: digest for label, (_size, digest) in captures.items()},
+            sizes={label: item.size for label, item in captures.items()},
+            digests={label: item.sha256 for label, item in captures.items()},
+            files=tuple(captures.values()),
+            directories=tuple(
+                (path, (metadata.st_dev, metadata.st_ino, metadata.st_mode))
+                for path in source_directories(admitted, tuple(root_labels.values()))
+                for metadata in (path.lstat(),)
+            ),
+            root_versions=tuple(root_versions.items()),
+            capture_started_ns=capture_started_ns,
         )
+
+    def verify(self) -> None:
+        """Fence this hash observation, including absences and admitted membership."""
+        roots = tuple(self.root_paths.values())
+        for path, expected_root in self.root_versions:
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                current_root = None
+            else:
+                current_root = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+            if current_root != expected_root:
+                raise ValueError("runtime input root changed after capture")
+        current = admitted_source_files(roots)
+        expected = tuple(sorted({item.path for item in self.files}))
+        directories = tuple(
+            (path, (metadata.st_dev, metadata.st_ino, metadata.st_mode))
+            for path in source_directories(current, roots)
+            for metadata in (path.lstat(),)
+        )
+        if current != expected or directories != self.directories:
+            raise ValueError("runtime source membership changed after capture")
+        # A timestamp racy at acquisition cannot become trustworthy as it ages.
+        cutoff = self.capture_started_ns - DIGEST_RACY_WINDOW_NS
+        for item in self.files:
+            token = item.stat_token()
+            if os.name == "nt" or max(token.mtime_ns, token.ctime_ns) >= cutoff:
+                verify_stable_regular_file_identity(
+                    item, label="runtime source input", hash_content=True
+                )
+            else:
+                verify_stable_regular_file_metadata(item, label="runtime source input")
 
     def identity(
         self, roots: Sequence[tuple[str, Path]], *, require_all: bool
@@ -394,6 +453,41 @@ class RuntimeTreeIndex:
             "roots": sorted(root_labels),
             "missing": sorted(missing),
         }
+
+
+@dataclass(frozen=True)
+class RuntimeBuildInputObservation:
+    """Operation-owned source observations; never a portable expected identity."""
+
+    trees: tuple[RuntimeTreeIndex, ...]
+    source_roots: tuple[tuple[str, Path], ...]
+
+    def verify(self, roots: Sequence[tuple[str, Path]]) -> None:
+        if not self.trees or tuple(roots) != self.source_roots:
+            raise ValueError("runtime source selection changed after capture")
+        for tree in self.trees:
+            tree.verify()
+
+
+@dataclass
+class RuntimeBuildInputCapture:
+    """Collect the real resolver's tree observations before freezing its fence."""
+
+    trees: list[RuntimeTreeIndex] = field(default_factory=list)
+    source_roots: tuple[tuple[str, Path], ...] = ()
+
+    def capture(
+        self, roots: Sequence[tuple[str, Path]], *, require_all: bool
+    ) -> dict[str, object]:
+        tree = RuntimeTreeIndex.capture(roots)
+        result = tree.identity(roots, require_all=require_all)
+        self.trees.append(tree)
+        return result
+
+    def finish(self) -> RuntimeBuildInputObservation | None:
+        if not self.trees:
+            return None
+        return RuntimeBuildInputObservation(tuple(self.trees), self.source_roots)
 
 
 def _tree_identity(
@@ -780,6 +874,8 @@ def _capture_runtime_build_sources(
 def capture_runtime_publication_executor(
     project_root: Path,
     transform: RuntimePublicationTransform,
+    *,
+    input_observation: RuntimeBuildInputCapture | None = None,
 ) -> Mapping[str, object] | None:
     """Capture only the code that produces retained publication semantics."""
     roots = tuple(
@@ -788,6 +884,8 @@ def capture_runtime_publication_executor(
     )
     if not roots:
         return None
+    if input_observation is not None:
+        return input_observation.capture(roots, require_all=True)
     return RuntimeTreeIndex.capture(roots).identity(roots, require_all=True)
 
 
@@ -999,6 +1097,7 @@ def resolve_native_runtime_build_identity(
     cargo_command: Sequence[str],
     artifact_selection: RuntimeArtifactSelection,
     cargo_plan: RuntimeCargoPlan | None = None,
+    input_observation: RuntimeBuildInputCapture | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve one exact native staticlib identity through the shared family model."""
 
@@ -1017,7 +1116,11 @@ def resolve_native_runtime_build_identity(
         (*plan.logical_paths, ("source", root)), cargo_plan=plan
     )
     source_roots = runtime_source_roots(root, runtime_features)
-    sources = _capture_runtime_build_sources(root, source_roots)
+    if input_observation is None:
+        sources = _capture_runtime_build_sources(root, source_roots)
+    else:
+        input_observation.source_roots = tuple(source_roots)
+        sources = input_observation.capture(source_roots, require_all=False)
     toolchain_manifest = provision_native_runtime_toolchain_content_manifest(
         project_root=root,
         env=env,
@@ -1042,7 +1145,9 @@ def resolve_native_runtime_build_identity(
             RuntimePublicationTransform.NATIVE_STATICLIB,
             plan.preserve_debug_for_profile(cargo_profile),
             capture_runtime_publication_executor(
-                root, RuntimePublicationTransform.NATIVE_STATICLIB
+                root,
+                RuntimePublicationTransform.NATIVE_STATICLIB,
+                input_observation=input_observation,
             ),
         ),
     )
@@ -1229,6 +1334,7 @@ def resolve_wasm_runtime_build_family_identities(
     producer_artifact_selection: RuntimeArtifactSelection,
     members: Sequence[RuntimeBuildMemberPlan],
     cargo_plan: RuntimeCargoPlan | None = None,
+    input_observation: RuntimeBuildInputCapture | None = None,
 ) -> tuple[RuntimeBuildIdentity, ...]:
     root = project_root.resolve(strict=False)
     plan = _plan_for_capture(
@@ -1250,7 +1356,11 @@ def resolve_wasm_runtime_build_family_identities(
     env = plan.environment
     cargo_command = plan.command
     source_roots = runtime_source_roots(root, runtime_features)
-    sources = _capture_runtime_build_sources(root, source_roots)
+    if input_observation is None:
+        sources = _capture_runtime_build_sources(root, source_roots)
+    else:
+        input_observation.source_roots = tuple(source_roots)
+        sources = input_observation.capture(source_roots, require_all=False)
     toolchain_manifest = provision_wasm_runtime_toolchain_content_manifest(
         project_root=root,
         env=env,

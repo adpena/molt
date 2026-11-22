@@ -58,7 +58,10 @@ from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
 )
 from molt.cli.runtime_build_identity import (
+    RuntimeBuildInputObservation,
+    RuntimeBuildInputCapture,
     resolve_native_runtime_build_identity,
+    runtime_source_roots,
 )
 from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.cli.runtime_identity_schema import (
@@ -537,9 +540,10 @@ def _ensure_native_runtime_lib_ready_before_link(
     """Revalidate codegen's generation; never select or build a replacement.
 
     A source checkout admits the archive and manifest against the original
-    live codegen binding, then recaptures every current runtime, configuration,
-    toolchain input through a fresh Cargo plan and verifies the operation's
-    isolated Python admission; generation fences then close again. Installed Molt
+    live codegen binding, resolves current configuration/toolchain selection
+    through a fresh Cargo plan, and verifies the operation's source observation
+    when that plan matches. Unprovable or changed source fences require ordinary
+    fresh identity capture; generation fences then close again. Installed Molt
     re-derives only the cell selection for this request and fences the retained
     generation this operation already admitted. The shipped cell is never
     admitted again beneath compiled code; the final link consumes the admitted
@@ -587,6 +591,7 @@ def _ensure_native_runtime_lib_ready_before_link(
                 stdlib_profile=stdlib_profile,
                 extra_runtime_features=runtime_state.extra_runtime_features,
                 rust_cpu=runtime_state.rust_cpu,
+                retained_inputs=runtime_state.native_runtime_build_inputs,
             )
             # Only the admitted source generation owns raw build observations.
             # Product-only installed facts cannot authorize source cache reuse.
@@ -688,6 +693,7 @@ def _runtime_build_identity_for_plan(
     runtime_features: tuple[str, ...],
     cargo_command: Sequence[str],
     cargo_plan: RuntimeCargoPlan,
+    input_observation: RuntimeBuildInputCapture | None = None,
 ) -> RuntimeBuildIdentity:
     return resolve_native_runtime_build_identity(
         project_root,
@@ -698,6 +704,7 @@ def _runtime_build_identity_for_plan(
         cargo_command=cargo_command,
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         cargo_plan=cargo_plan,
+        input_observation=input_observation,
     )
 
 
@@ -715,6 +722,7 @@ class _NativeRuntimeBuildPlan:
     fingerprint_features: tuple[str, ...]
     build_identity: RuntimeBuildIdentity
     store: ProductStore
+    input_observation: RuntimeBuildInputObservation | None
     consume: NativeRuntimeGenerationConsumer | None = None
 
     @property
@@ -846,6 +854,12 @@ class _NativeRuntimeBuildPlan:
             self.runtime_state.runtime_lib = generation.runtime_lib
             self.runtime_state.native_runtime_build_identity = generation.build_identity
             self.runtime_state.native_runtime_generation = generation
+            self.runtime_state.native_runtime_build_inputs = NativeRuntimeBuildInputs(
+                self.build_identity,
+                self.build_env,
+                self.cargo_plan,
+                self.input_observation,
+            )
         return True
 
 
@@ -895,6 +909,7 @@ def _prepare_native_runtime_build(
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
     consume: NativeRuntimeGenerationConsumer | None = None,
+    retained_inputs: NativeRuntimeBuildInputs | None = None,
 ) -> _NativeRuntimeBuildPlan | None:
     if runtime_state is not None:
         runtime_state.revoke_native_runtime_admission()
@@ -950,16 +965,43 @@ def _prepare_native_runtime_build(
     # This fresh capture keys the store and is every stored generation's
     # expectation, never an expectation copied from a stored receipt.
     started = time.perf_counter()
+    input_capture = RuntimeBuildInputCapture()
     try:
-        build_identity = _runtime_build_identity_for_plan(
-            project_root,
-            env=build_env,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            runtime_features=fingerprint_features,
-            cargo_command=cmd,
-            cargo_plan=cargo_plan,
-        )
+        reuse = False
+        if (
+            retained_inputs is not None
+            and retained_inputs.cargo_plan == cargo_plan
+            and retained_inputs.build_identity.runtime_features
+            == tuple(sorted(set(fingerprint_features)))
+            and retained_inputs.input_observation is not None
+        ):
+            try:
+                retained_inputs.input_observation.verify(
+                    runtime_source_roots(project_root, fingerprint_features)
+                )
+                cargo_plan.verify()
+                reuse = True
+            except (OSError, ValueError):
+                # A changed or unprovable fence requires ordinary fresh identity
+                # capture; it never authorizes its stored expected digest.
+                pass
+        if reuse:
+            assert retained_inputs is not None
+            assert retained_inputs.input_observation is not None
+            build_identity = retained_inputs.build_identity
+            input_observation = retained_inputs.input_observation
+        else:
+            build_identity = _runtime_build_identity_for_plan(
+                project_root,
+                env=build_env,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                runtime_features=fingerprint_features,
+                cargo_command=cmd,
+                cargo_plan=cargo_plan,
+                input_observation=input_capture,
+            )
+            input_observation = input_capture.finish()
     except (OSError, ValueError) as exc:
         summary = f"Failed to compute exact runtime native build identity: {exc}"
         if not json_output:
@@ -988,6 +1030,7 @@ def _prepare_native_runtime_build(
         fingerprint_features=fingerprint_features,
         build_identity=build_identity,
         store=native_runtime_store(project_root),
+        input_observation=input_observation,
         consume=consume,
     )
 
@@ -998,6 +1041,8 @@ class NativeRuntimeBuildInputs:
 
     build_identity: RuntimeBuildIdentity
     environment: ProcessEnvironment
+    cargo_plan: RuntimeCargoPlan | None = None
+    input_observation: RuntimeBuildInputObservation | None = None
 
 
 def current_native_runtime_build_inputs(
@@ -1009,6 +1054,7 @@ def current_native_runtime_build_inputs(
     stdlib_profile: str | None,
     extra_runtime_features: Sequence[str] | None = None,
     rust_cpu: RustCpuPolicy,
+    retained_inputs: NativeRuntimeBuildInputs | None = None,
 ) -> NativeRuntimeBuildInputs:
     """Resolve the exact current native-runtime build-plan identity.
 
@@ -1039,6 +1085,7 @@ def current_native_runtime_build_inputs(
         rust_cpu=rust_cpu,
         stage_timings_ms=None,
         runtime_state=None,
+        retained_inputs=retained_inputs,
     )
     if plan is None:
         raise ValueError("cannot resolve the current native-runtime build identity")
@@ -1050,6 +1097,8 @@ def current_native_runtime_build_inputs(
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         ),
         plan.cargo_plan.environment,
+        plan.cargo_plan,
+        plan.input_observation,
     )
 
 

@@ -48,6 +48,7 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
 )
 from molt.cli.runtime_build_identity import (
+    RuntimeBuildInputCapture,
     _tree_hash_worker_count,
     capture_runtime_publication_executor,
     resolve_wasm_runtime_build_family_identities,
@@ -247,6 +248,8 @@ def _resolved_runtime_wasm_family_identities(
     root: Path,
     shared_spec: _RuntimeWasmBuildSpec,
     reloc_spec: _RuntimeWasmBuildSpec,
+    *,
+    input_observation: RuntimeBuildInputCapture | None = None,
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
     if (
         shared_spec.cargo_profile != reloc_spec.cargo_profile
@@ -276,7 +279,9 @@ def _resolved_runtime_wasm_family_identities(
                     RuntimePublicationTransform.SHARED,
                     preserve_debug,
                     capture_runtime_publication_executor(
-                        root, RuntimePublicationTransform.SHARED
+                        root,
+                        RuntimePublicationTransform.SHARED,
+                        input_observation=input_observation,
                     ),
                     export_renames=tuple(
                         sorted(wasm_split_runtime_export_rename_map(None).items())
@@ -291,12 +296,15 @@ def _resolved_runtime_wasm_family_identities(
                     reloc_spec.runtime_exports,
                     module_name=reloc_spec.publication_name,
                     executor=capture_runtime_publication_executor(
-                        root, RuntimePublicationTransform.RELOC
+                        root,
+                        RuntimePublicationTransform.RELOC,
+                        input_observation=input_observation,
                     ),
                 ),
             ),
         ),
         cargo_plan=shared_spec.cargo_plan,
+        input_observation=input_observation,
     )
     if len(identities) != 2:
         raise ValueError("runtime WASM build family must contain shared and reloc")

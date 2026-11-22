@@ -15,6 +15,7 @@ import time
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -378,6 +379,202 @@ def test_resolvers_own_one_source_observation_per_call(
     assert after_source.compile_digest == after_tooling.compile_digest
     assert after_source == after_tooling
     assert observations == [observations[0]] * 3
+
+
+def test_runtime_tree_rehashes_a_file_racy_at_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.rs"
+    source.write_text("const VERSION: u32 = 1;\n", encoding="utf-8")
+    timestamp = source.stat().st_mtime_ns
+    monkeypatch.setattr(identity, "time_ns", lambda: timestamp)
+    tree = identity.RuntimeTreeIndex.capture((("source", source),))
+    monkeypatch.setattr(
+        identity, "time_ns", lambda: timestamp + 2 * identity.DIGEST_RACY_WINDOW_NS
+    )
+    rehashed: list[Path] = []
+    original_verify = identity.verify_stable_regular_file_identity
+
+    def verify(
+        file: identity.StableRegularFileIdentity, *, label: str, hash_content: bool
+    ) -> None:
+        assert hash_content
+        rehashed.append(file.path)
+        original_verify(file, label=label, hash_content=hash_content)
+
+    monkeypatch.setattr(identity, "verify_stable_regular_file_identity", verify)
+    tree.verify()
+    assert rehashed == [source.resolve()]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unchanged",
+        "rewrite",
+        "new-file",
+        "missing-root",
+        "removed-empty-root",
+        "flags",
+        "new-config",
+    ],
+)
+def test_native_input_observation_reuses_only_live_source_facts(
+    identity_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: Literal[
+        "unchanged",
+        "rewrite",
+        "new-file",
+        "missing-root",
+        "removed-empty-root",
+        "flags",
+        "new-config",
+    ],
+) -> None:
+    from molt.process_environment import ProcessEnvironmentBuilder
+
+    root = identity_root
+    env = dict(os.environ)
+    env.update(
+        {
+            "RUSTC": sys.executable,
+            "CARGO": sys.executable,
+            "CARGO_HOME": str(root / "test-cargo-home"),
+            "RUSTC_WRAPPER": "",
+            "RUSTC_WORKSPACE_WRAPPER": "",
+        }
+    )
+    env.update(
+        {
+            f"{name}_{_TEST_HOST_TARGET}": sys.executable
+            for name in ("CC", "CXX", "AR", "RANLIB")
+        }
+    )
+    monkeypatch.setattr(
+        runtime_native_build, "_cargo_build_env", lambda: ProcessEnvironmentBuilder(env)
+    )
+
+    def plan(project_root: Path, **kwargs: object) -> cargo_plans.RuntimeCargoPlan:
+        return _test_plan(project_root, env, target_triple=None)
+
+    monkeypatch.setattr(runtime_native_build, "resolve_runtime_cargo_plan", plan)
+    observed: list[identity.RuntimeBuildInputCapture | None] = []
+    resolve = runtime_native_build._runtime_build_identity_for_plan
+
+    def capture(*args: object, **kwargs: object) -> schema.RuntimeBuildIdentity:
+        # The actual resolver below owns source hashing and typed observations.
+        observation = kwargs.get("input_observation")
+        assert observation is None or isinstance(
+            observation, identity.RuntimeBuildInputCapture
+        )
+        observed.append(observation)
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_native_build, "_runtime_build_identity_for_plan", capture
+    )
+    missing = root / "optional-source"
+    if change == "removed-empty-root":
+        missing.mkdir()
+    original_roots = identity.runtime_source_roots
+
+    def roots(project_root: Path, features: tuple[str, ...]) -> list[tuple[str, Path]]:
+        return [*original_roots(project_root, features), ("source/optional", missing)]
+
+    monkeypatch.setattr(identity, "runtime_source_roots", roots)
+    monkeypatch.setattr(runtime_native_build, "runtime_source_roots", roots)
+
+    def current(
+        retained: runtime_native_build.NativeRuntimeBuildInputs | None = None,
+    ) -> runtime_native_build.NativeRuntimeBuildInputs:
+        return runtime_native_build.current_native_runtime_build_inputs(
+            root,
+            root / "runtime.a",
+            target_triple=None,
+            cargo_profile="dev-fast",
+            stdlib_profile="micro",
+            rust_cpu=RustCpuPolicy.BASELINE,
+            retained_inputs=retained,
+        )
+
+    first = current()
+    if change == "rewrite":
+        path = root / "runtime/src/lib.rs"
+        before = path.stat()
+        path.write_bytes(b"pub fn changed() {}\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif change == "new-file":
+        (root / "runtime/src/new.rs").write_bytes(b"new source")
+    elif change == "missing-root":
+        missing.write_bytes(b"appeared")
+    elif change == "removed-empty-root":
+        missing.rmdir()
+    elif change == "flags":
+        env["RUSTFLAGS"] = "--cfg changed"
+    elif change == "new-config":
+        configuration = root / ".cargo" / "config.toml"
+        configuration.parent.mkdir()
+        configuration.write_text(
+            '[build]\nrustflags = ["--cfg", "changed"]\n', encoding="utf-8"
+        )
+    second = current(first)
+    assert (second.build_identity == first.build_identity) is (change == "unchanged")
+    assert len(observed) == (1 if change == "unchanged" else 2)
+
+
+@pytest.mark.parametrize(
+    "change", ["unchanged", "source", "publication", "member-flags"]
+)
+def test_wasm_pair_reuses_only_its_independent_source_and_member_observation(
+    identity_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: Literal["unchanged", "source", "publication", "member-flags"],
+) -> None:
+    from molt.cli import runtime_wasm_pair_build as pairs
+    from molt.cli.runtime_wasm_build_spec import _RuntimeWasmBuildSpec
+    from tests.cli.test_runtime_wasm_single_compile import _specs
+
+    manifest = identity_root / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + '[profile.wasm-release]\ninherits = "release"\n',
+        encoding="utf-8",
+    )
+    captures: list[bool] = []
+    resolve = pairs._resolved_runtime_wasm_family_identities
+
+    def capture(
+        root: Path,
+        shared: _RuntimeWasmBuildSpec,
+        reloc: _RuntimeWasmBuildSpec,
+        *,
+        input_observation: identity.RuntimeBuildInputCapture | None = None,
+    ) -> tuple[schema.RuntimeBuildIdentity, schema.RuntimeBuildIdentity]:
+        captures.append(True)
+        return resolve(root, shared, reloc, input_observation=input_observation)
+
+    monkeypatch.setattr(pairs, "_resolved_runtime_wasm_family_identities", capture)
+    shared, reloc = _specs(identity_root)
+    first = pairs.resolve_runtime_wasm_pair_identity(identity_root, shared, reloc)
+    assert first.input_observation is not None
+    if change == "source":
+        (identity_root / "runtime/src/lib.rs").write_bytes(b"changed source")
+    elif change == "publication":
+        relative = schema.runtime_publication_executor_paths(
+            schema.RuntimePublicationTransform.SHARED
+        )[0]
+        (identity_root / relative).write_bytes(b"# changed publication")
+    shared, reloc = _specs(identity_root)
+    if change == "member-flags":
+        reloc = reloc._replace(
+            link_flags=(*reloc.link_flags, "-C", "link-arg=--export=changed")
+        )
+    second = pairs.resolve_runtime_wasm_pair_identity(
+        identity_root, shared, reloc, retained_inputs=first
+    )
+    assert (second == first) is (change == "unchanged")
+    assert len(captures) == (1 if change == "unchanged" else 2)
 
 
 def test_identity_roundtrips_and_shared_reloc_form_one_family(

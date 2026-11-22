@@ -54,7 +54,7 @@ class NativeRuntimeCodegenBinding:
     """The admitted runtime and callable input consumed by one app's codegen.
 
     This owns no global cache and is not a live source/toolchain identity.
-    Final admission must independently recapture those inputs.
+    Final admission independently revalidates those source/toolchain inputs.
     """
 
     runtime_lib: Path
