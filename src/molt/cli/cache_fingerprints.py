@@ -27,6 +27,7 @@ from molt.file_hashing import (
 from molt.source_admission import admitted_source_files
 from molt.host_tool_products import HostToolProduct
 from molt.cli.python_source_closure import local_python_import_graph_transaction
+from molt.compiler_distribution import installed_manifest_transaction
 
 
 if TYPE_CHECKING:
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
-    from molt.compiler_distribution import InstalledCompiler
     from molt.process_environment import ProcessEnvironment
     from molt.toolchain_identity import StableRegularFileObservation
 
@@ -374,9 +374,6 @@ class _SourceTreeFingerprintTransaction:
     compiler_plans: dict[tuple[str, str, str, str, str, ProcessEnvironment], object] = (
         field(default_factory=dict)
     )
-    # One private validated projection per root, bound to freshly read exact
-    # manifest bytes. Consumers receive independent mutable copies.
-    installed_manifests: dict[Path, tuple[bytes, InstalledCompiler]] | None = None
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
     installed_executables: dict[
         tuple[str, str, HostToolProduct], StableRegularFileObservation
@@ -445,7 +442,10 @@ def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[No
     transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(transaction)
     implicit_close = False
     try:
-        with local_python_import_graph_transaction(fresh=fresh):
+        with (
+            installed_manifest_transaction(),
+            local_python_import_graph_transaction(fresh=fresh),
+        ):
             try:
                 yield
             except GeneratorExit:

@@ -14,7 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from itertools import batched
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 import os
 from pathlib import Path
 import re
@@ -721,6 +724,21 @@ class InstalledCompiler:
                     )
 
 
+_INSTALLED_MANIFESTS: ContextVar[dict[Path, tuple[bytes, InstalledCompiler]] | None] = (
+    ContextVar("_INSTALLED_MANIFESTS", default=None)
+)
+
+
+@contextmanager
+def installed_manifest_transaction() -> Generator[None]:
+    """Keep validated manifest projections private to the calling operation."""
+    token = _INSTALLED_MANIFESTS.set({})
+    try:
+        yield
+    finally:
+        _INSTALLED_MANIFESTS.reset(token)
+
+
 def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     from molt import input_report
 
@@ -738,24 +756,14 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     _, raw = capture_stable_regular_file(
         manifest_path, max_bytes=16 * 1024 * 1024, label="installed compiler manifest"
     )
-    from copy import deepcopy
-
-    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
-
-    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    prior = (
-        None
-        if transaction is None or transaction.installed_manifests is None
-        else transaction.installed_manifests.get(source_root)
-    )
+    manifests = _INSTALLED_MANIFESTS.get()
+    prior = None if manifests is None else manifests.get(source_root)
     if prior is not None and prior[0] == raw:
         return deepcopy(prior[1])
     compiler = _validate_installed_manifest(source_root, raw)
-    if transaction is None:
+    if manifests is None:
         return compiler
-    if transaction.installed_manifests is None:
-        transaction.installed_manifests = {}
-    transaction.installed_manifests[source_root] = (raw, compiler)
+    manifests[source_root] = (raw, compiler)
     # InstalledCompiler contains public mutable dictionaries. Keep the owned
     # projection private even on its first use, including nested records.
     return deepcopy(compiler)
