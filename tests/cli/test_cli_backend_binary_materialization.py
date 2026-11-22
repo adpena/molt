@@ -1182,6 +1182,7 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
     does.
     """
     from molt.cli import atomic_io
+    from molt import toolchain_identity
 
     write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
@@ -1232,7 +1233,21 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
     generation_stat = first.binary.stat()
     probes.clear()
 
+    captures: list[Path] = []
+    capture = toolchain_identity.stable_regular_file_handle_identity
+
+    def count_capture(
+        opened: toolchain_identity.StableRegularFileHandle, *, label: str
+    ) -> toolchain_identity.StableRegularFileIdentity:
+        captures.append(opened.path)
+        return capture(opened, label=label)
+
+    monkeypatch.setattr(
+        toolchain_identity, "stable_regular_file_handle_identity", count_capture
+    )
+
     second = ensure()
+    assert captures.count(first.binary) == 1
     assert second.cache_compiler_fingerprint == first.cache_compiler_fingerprint
     assert second.binary == first.binary or second.binary.samefile(first.binary)
     assert builds and len(builds) == 1
@@ -1285,6 +1300,46 @@ def _two_generation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "hash": canonical_json_sha256(source),
     }
     return coordinate, ensure
+
+
+@pytest.mark.parametrize("replace_file", [False, True])
+def test_warm_backend_success_rejects_a_generation_changed_after_its_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_file: bool
+) -> None:
+    from collections.abc import Mapping
+    from molt.toolchain_identity import StableRegularFileIdentity
+
+    coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
+    generation = ensure("v1")
+    original_success = cli_backend_binary._backend_ensure_success
+
+    def changed_success(
+        *,
+        coordinate: Path,
+        binary_path: Path,
+        identity: StableRegularFileIdentity,
+        fingerprint: Mapping[str, object] | None = None,
+    ) -> cli_backend_binary._BackendBinaryEnsureResult:
+        before = generation.stat()
+        if replace_file:
+            replacement = generation.with_name("replacement")
+            replacement.write_bytes(generation.read_bytes())
+            replacement.chmod(before.st_mode)
+            os.replace(replacement, generation)
+        else:
+            generation.write_bytes(b"#!/bin/sh\n# XX\n")
+        os.utime(generation, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return original_success(
+            coordinate=coordinate,
+            binary_path=binary_path,
+            identity=identity,
+            fingerprint=fingerprint,
+        )
+
+    monkeypatch.setattr(cli_backend_binary, "_backend_ensure_success", changed_success)
+    result = _ensure(coordinate, tmp_path, ("probe-backend",), profile="release")
+    assert not result and result.phase == "backend_binary_identity"
+    assert result.binary is None and result.cache_compiler_fingerprint is None
 
 
 def test_a_later_publication_never_changes_the_generation_a_build_holds(

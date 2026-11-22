@@ -381,6 +381,15 @@ def static_archive_member_identities(
     return tuple(identities)
 
 
+def artifact_bytes_identity(identity: StableRegularFileIdentity) -> dict[str, object]:
+    """Project the ordinary artifact receipt from already captured bytes."""
+    return {
+        "schema": _BYTE_IDENTITY_SCHEMA,
+        "sha256": identity.sha256,
+        "size_bytes": identity.size,
+    }
+
+
 def artifact_content_identity(
     path: Path,
     *,
@@ -405,11 +414,7 @@ def artifact_content_identity(
             identity = stable_regular_file_handle_identity(
                 opened, label="runtime artifact"
             )
-            return {
-                "schema": _BYTE_IDENTITY_SCHEMA,
-                "sha256": identity.sha256,
-                "size_bytes": identity.size,
-            }
+            return artifact_bytes_identity(identity)
     except (OSError, ValueError) as exc:
         if isinstance(exc, StaticArchiveIdentityError):
             raise
