@@ -39,6 +39,8 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_IMPORT_IDENTITIES,
 )
 
+_CANONICAL_IMPORT_NAMES = tuple(sorted(CANONICAL_IMPORT_IDENTITIES))
+
 
 @dataclass(frozen=True, slots=True, order=True)
 class PythonImportKeyBound:
@@ -264,9 +266,11 @@ class ImportRedirects:
     def canonical_redirected(self) -> tuple[str, ...]:
         """The canonical providers (``CANONICAL_IMPORT_IDENTITIES``) some
         writer redirects; the binding flow treats them as noncanonical (M7)."""
-        return tuple(
-            sorted(name for name in CANONICAL_IMPORT_IDENTITIES if self.redirect(name))
-        )
+        if self.global_writers:
+            return _CANONICAL_IMPORT_NAMES
+        if not (self.key_writers or self.bound_writers):
+            return ()
+        return tuple(name for name in _CANONICAL_IMPORT_NAMES if self.redirect(name))
 
     def join(self, other: ImportRedirects) -> ImportRedirects:
         if other == self or other == NO_IMPORT_REDIRECTS:

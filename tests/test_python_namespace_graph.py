@@ -123,6 +123,7 @@ def test_incremental_index_matches_whole_graph_in_any_admission_order() -> None:
     oracle = graph_python_namespace_writes(writes, topology.get)
     assert oracle.import_redirects.redirect("typing")
     assert not oracle.import_redirects.redirect("first")
+    assert oracle.premise(first, frozenset()).noncanonical_imports == ("typing",)
     assert oracle.import_redirects.swallowers("fast", ())
     for order in permutations(writes):
         index = PythonGraphNamespaceIndex()
