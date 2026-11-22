@@ -227,7 +227,7 @@ def _syntax_error_info_from_exception(exc: SyntaxError) -> ModuleSyntaxErrorInfo
 
 def _prepare_build_module_outputs(
     *,
-    prepared_module_graph: _PreparedEntryModuleGraph,
+    prepared_module_graph: _PreparedEntryModuleGraph | _ImportPlan,
     module_reasons: MutableMapping[str, set[ModuleReason]],
     stdlib_root: Path,
     artifacts_root: Path,
@@ -249,18 +249,26 @@ def _prepare_build_module_outputs(
     project_root: Path,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
     try:
-        if prepared_module_graph.target != target:
+        selected_target = (
+            prepared_module_graph.settled_graph.target
+            if isinstance(prepared_module_graph, _ImportPlan)
+            else prepared_module_graph.target
+        )
+        if selected_target != target:
             raise ValueError(
                 "prepared source closure target changed before materialization"
             )
-        import_plan = _materialize_import_plan(
-            prepared_module_graph=prepared_module_graph,
-            module_reasons=module_reasons,
-            stdlib_root=stdlib_root,
-            artifacts_root=artifacts_root,
-            entry_module=entry_module,
-            diagnostics_enabled=diagnostics_enabled,
-        )
+        if isinstance(prepared_module_graph, _ImportPlan):
+            import_plan = prepared_module_graph
+        else:
+            import_plan = _materialize_import_plan(
+                prepared_module_graph=prepared_module_graph,
+                module_reasons=module_reasons,
+                stdlib_root=stdlib_root,
+                artifacts_root=artifacts_root,
+                entry_module=entry_module,
+                diagnostics_enabled=diagnostics_enabled,
+            )
     except ValueError as exc:
         return None, str(exc)
     try:
@@ -746,58 +754,86 @@ def _prepare_frontend_stage_state(
     _progress.phase("module_graph")
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
-    prepared_module_graph, prepared_module_graph_error = _prepare_entry_module_graph(
-        source_path=source_path,
-        entry_module=entry_module,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        project_root=project_root,
-        entry_tree=entry_tree,
-        entry_snapshot=resolved_build_entry.entry_snapshot,
-        import_topology=resolved_build_entry.import_topology,
-        module_root_aliases=resolved_build_entry.module_root_aliases,
-        module_reasons=module_reasons,
-        diagnostics_enabled=diagnostics_enabled,
-        json_output=json_output,
-        target=target,
-        import_admission_policy=import_admission_policy,
-        target_python=prepared_build_config.target_python,
-        target_sys_platform=prepared_build_config.target_sys_platform,
-        image_scope=resolved_build_entry.image_scope,
-        stdlib_profile=stdlib_profile,
-        runtime_import_machinery=RuntimeImportMachinery.for_build(
+    from molt.cli.import_graph_record import ImportGraphContext, replay_import_graph
+
+    graph_context = ImportGraphContext(
+        resolved_build_entry,
+        import_admission_policy,
+        target,
+        prepared_build_config.target_python,
+        prepared_build_config.target_sys_platform,
+        stdlib_root,
+        stdlib_profile,
+        include_modules,
+        RuntimeImportMachinery.for_build(
             target, prepared_build_config.codegen.wasm_profile
         ),
-        include_modules=include_modules,
     )
-    if prepared_module_graph_error is not None:
-        return None, prepared_module_graph_error
-    assert prepared_module_graph is not None
-    native_artifact_plan, native_artifact_errors = (
-        _resolve_external_package_native_artifact_plan(
-            external_module_roots=import_admission_policy.external_roots,
-            admitted_packages=import_admission_policy.admitted_external_packages,
-            target=target,
-            target_python=prepared_build_config.target_python,
-            required_modules=(
-                set(prepared_module_graph.module_graph)
-                | set(prepared_module_graph.explicit_imports)
-                | set(prepared_module_graph.runtime_import_dispatch_roots)
-            ),
+    replayed_plan = replay_import_graph(graph_context)
+    prepared_module_graph: _PreparedEntryModuleGraph | _ImportPlan | None
+    if replayed_plan is not None:
+        prepared_module_graph = replayed_plan
+        module_reasons.update(
+            {
+                name: set(reasons)
+                for name, reasons in replayed_plan.settled_graph.module_reasons.items()
+            }
         )
-    )
-    if native_artifact_errors:
-        return None, _fail(
-            "External static package native-artifact custody errors: "
-            + _external_native_artifact_error_summary(native_artifact_errors),
-            json_output,
-            command="build",
+    else:
+        prepared_module_graph, prepared_module_graph_error = (
+            _prepare_entry_module_graph(
+                source_path=source_path,
+                entry_module=entry_module,
+                module_roots=module_roots,
+                stdlib_root=stdlib_root,
+                project_root=project_root,
+                entry_tree=entry_tree,
+                entry_snapshot=resolved_build_entry.entry_snapshot,
+                import_topology=resolved_build_entry.import_topology,
+                module_root_aliases=resolved_build_entry.module_root_aliases,
+                module_reasons=module_reasons,
+                diagnostics_enabled=diagnostics_enabled,
+                json_output=json_output,
+                target=target,
+                import_admission_policy=import_admission_policy,
+                target_python=prepared_build_config.target_python,
+                target_sys_platform=prepared_build_config.target_sys_platform,
+                image_scope=resolved_build_entry.image_scope,
+                stdlib_profile=stdlib_profile,
+                runtime_import_machinery=RuntimeImportMachinery.for_build(
+                    target, prepared_build_config.codegen.wasm_profile
+                ),
+                include_modules=include_modules,
+            )
         )
-    assert native_artifact_plan is not None
-    prepared_module_graph = replace(
-        prepared_module_graph,
-        native_artifact_plan=native_artifact_plan,
-    )
+        if prepared_module_graph_error is not None:
+            return None, prepared_module_graph_error
+        assert prepared_module_graph is not None
+        native_artifact_plan, native_artifact_errors = (
+            _resolve_external_package_native_artifact_plan(
+                external_module_roots=import_admission_policy.external_roots,
+                admitted_packages=import_admission_policy.admitted_external_packages,
+                target=target,
+                target_python=prepared_build_config.target_python,
+                required_modules=(
+                    set(prepared_module_graph.module_graph)
+                    | set(prepared_module_graph.explicit_imports)
+                    | set(prepared_module_graph.runtime_import_dispatch_roots)
+                ),
+            )
+        )
+        if native_artifact_errors:
+            return None, _fail(
+                "External static package native-artifact custody errors: "
+                + _external_native_artifact_error_summary(native_artifact_errors),
+                json_output,
+                command="build",
+            )
+        assert native_artifact_plan is not None
+        prepared_module_graph = replace(
+            prepared_module_graph,
+            native_artifact_plan=native_artifact_plan,
+        )
     output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
     artifacts_root, bin_root, output_root = _resolve_output_roots(
@@ -838,6 +874,9 @@ def _prepare_frontend_stage_state(
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
+    from molt.cli.import_graph_record import publish_import_graph
+
+    publish_import_graph(prepared_build_outputs.import_plan, graph_context)
     output_layout = prepared_build_outputs.output_layout
     target_triple = output_layout.target_triple
     # Object-only cross compilation does not build or link the Rust runtime.

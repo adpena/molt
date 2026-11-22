@@ -451,6 +451,20 @@ class ImportScanObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class PersistedImportScanObservation:
+    """A producer's complete semantic result digest, with current source custody."""
+
+    query: ImportScanQuery
+    result_digest: str
+    admissions: frozenset[ImportScanAdmission] = frozenset(
+        (ImportScanAdmission.PERSISTED,)
+    )
+
+
+ImportScanEvidence = ImportScanObservation | PersistedImportScanObservation
+
+
+@dataclass(frozen=True, slots=True)
 class ImportQueryClosure:
     """All admitted solver queries, with the operation's live topology fence.
 
@@ -458,7 +472,7 @@ class ImportQueryClosure:
     observations and reject queries supplied without a path-backed source lease.
     """
 
-    observations: tuple[ImportScanObservation, ...]
+    observations: tuple[ImportScanEvidence, ...]
     import_topology: PythonImportTopology = field(compare=False, repr=False)
 
     def validate(self, authority: _ModuleGraphScanAuthority | None = None) -> None:
@@ -1939,7 +1953,36 @@ class RuntimeImportMachinery(StrEnum):
 
 
 @dataclass(frozen=True)
+class _SettledImportGraph:
+    """Solver outputs consumed by the one final import-plan assembler."""
+
+    import_query_closure: ImportQueryClosure
+    image_scope: _BinaryImageScope
+    declared_root_modules: frozenset[str]
+    roots: tuple[Path, ...]
+    stdlib_allowlist: frozenset[str]
+    module_graph: Mapping[str, Path]
+    scan_authority: _ModuleGraphScanAuthority
+    explicit_imports: frozenset[str]
+    support_explicit_imports: frozenset[str]
+    runtime_import_dispatch_roots: frozenset[str]
+    stub_parents: frozenset[str]
+    spawn_enabled: bool
+    runtime_import_support_policy: _RuntimeImportSupportPolicy
+    runtime_import_scan_custody: _RuntimeImportScanCustody | None
+    runtime_import_machinery: RuntimeImportMachinery
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan
+    namespace_import_redirects: ImportRedirects
+    module_reasons: Mapping[str, frozenset[ModuleReason]]
+    operation_counts: Mapping[str, int]
+    target: Target
+    target_python: TargetPythonVersion
+    publication_payload: bytes | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
 class _ImportPlan:
+    settled_graph: _SettledImportGraph
     import_query_closure: ImportQueryClosure
     image_scope: _BinaryImageScope
     stdlib_allowlist: frozenset[str]

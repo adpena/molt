@@ -140,6 +140,109 @@ class PythonImportTopology:
         self._probes: dict[Path, PythonImportPath | None] = {}
         self._failure: str | None = None
 
+    def record(self) -> dict[str, object]:
+        """The semantic facts consumed, excluding disposable directory epochs."""
+        self.validate()
+        return {
+            "probes": [
+                [str(path), None if value is None else [str(value.path), value.mode]]
+                for path, value in sorted(self._probes.items())
+            ],
+            "directories": [
+                [
+                    str(path),
+                    None if observed.state is None else str(observed.state.path),
+                    [
+                        [name, kind, value]
+                        for (name, kind), value in sorted(observed.exact_names.items())
+                    ],
+                    [
+                        [kind, sorted(names)]
+                        for kind, names in sorted(observed.name_queries.items())
+                    ],
+                ]
+                for path, observed in sorted(self._directories.items())
+            ],
+        }
+
+    @classmethod
+    def from_record(cls, payload: object) -> PythonImportTopology:
+        """Reobserve a persisted import topology; changed facts refuse admission."""
+        if not isinstance(payload, dict) or set(payload) != {"probes", "directories"}:
+            raise ValueError("invalid import topology record")
+        probes, directories = payload["probes"], payload["directories"]
+        if not isinstance(probes, list) or not isinstance(directories, list):
+            raise ValueError("invalid import topology rows")
+        result = cls()
+        for row in probes:
+            if (
+                not isinstance(row, list)
+                or len(row) != 2
+                or not isinstance(row[0], str)
+            ):
+                raise ValueError("invalid import topology probe")
+            expected = row[1]
+            if expected is not None and (
+                not isinstance(expected, list)
+                or len(expected) != 2
+                or not isinstance(expected[0], str)
+                or type(expected[1]) is not int
+            ):
+                raise ValueError("invalid import topology outcome")
+            current = result.probe(Path(row[0]))
+            actual = None if current is None else [str(current.path), current.mode]
+            if actual != expected:
+                raise PythonImportTopologyChangedError(
+                    f"recorded import lookup changed: {row[0]}"
+                )
+        for row in directories:
+            if (
+                not isinstance(row, list)
+                or len(row) != 4
+                or not isinstance(row[0], str)
+            ):
+                raise ValueError("invalid import topology directory")
+            path = Path(row[0])
+            observed = result._directory(path)
+            actual_path = None if observed.state is None else str(observed.state.path)
+            if (
+                actual_path != row[1]
+                or not isinstance(row[2], list)
+                or not isinstance(row[3], list)
+            ):
+                raise PythonImportTopologyChangedError(
+                    f"recorded import directory changed: {path}"
+                )
+            for exact in row[2]:
+                if (
+                    not isinstance(exact, list)
+                    or len(exact) != 3
+                    or not isinstance(exact[0], str)
+                    or exact[1] not in ("file", "directory")
+                    or type(exact[2]) is not bool
+                ):
+                    raise ValueError("invalid exact import observation")
+                if result.contains_exact(path, exact[0], exact[1]) != exact[2]:
+                    raise PythonImportTopologyChangedError(
+                        f"recorded import selection changed: {path}"
+                    )
+            for names in row[3]:
+                if (
+                    not isinstance(names, list)
+                    or len(names) != 2
+                    or names[0] not in ("package", "source", "directories")
+                    or not isinstance(names[1], list)
+                    or any(not isinstance(name, str) for name in names[1])
+                ):
+                    raise ValueError("invalid import listing observation")
+                if result._child_names(path, names[0]) != frozenset(names[1]):
+                    raise PythonImportTopologyChangedError(
+                        f"recorded import listing changed: {path}"
+                    )
+        if result.record() != payload:
+            raise ValueError("noncanonical import topology record")
+        return result
+
     def _check(self) -> None:
         if self._failure is not None:
             raise PythonImportTopologyChangedError(self._failure)

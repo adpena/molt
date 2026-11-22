@@ -177,6 +177,109 @@ def test_production_import_query_closure_matches_clean_and_cached_graphs(
         missing_peer.validate(warm.scan_authority)
 
 
+def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import build_record
+    from molt.cli.import_graph_record import (
+        ImportGraphContext,
+        publish_import_graph,
+        replay_import_graph,
+    )
+    from molt.cli.frontend_record_files import (
+        FrontendRecordFiles,
+        frontend_record_files,
+    )
+    from molt.cli.models import _ImportAdmissionPolicy, RuntimeImportMachinery
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    entry = tmp_path / "app.py"
+    entry.write_text("import peer\nprint(peer.compute())\n", encoding="utf-8")
+    peer = tmp_path / "peer.py"
+    peer.write_text("def compute():\n    return 5\n", encoding="utf-8")
+    resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
+    assert error is None and resolved is not None
+    context = ImportGraphContext(
+        resolved,
+        _ImportAdmissionPolicy(),
+        admit_target("native"),
+        _DEFAULT_TARGET_PYTHON_VERSION,
+        None,
+        cli_module_resolution._stdlib_root_path(),
+        "standard",
+        (),
+        RuntimeImportMachinery.PYTHON,
+    )
+    cold = _materialize_plan(tmp_path, entry, "app", image_scope=resolved.image_scope)
+    with build_record.recording(tmp_path / "recording") as ledger:
+
+        def refuse_publication(*args: object, **kwargs: object) -> None:
+            raise OSError("unavailable cache store")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(FrontendRecordFiles, "put_blob", refuse_publication)
+            publish_import_graph(cold, context)
+            assert ledger.import_graph is None
+        publish_import_graph(cold, context)
+        assert ledger.import_graph is not None
+        ledger.previous_import_graph = ledger.import_graph
+        import json
+
+        original_digest = ledger.import_graph
+        stored = frontend_record_files().get_blob(
+            original_digest, max_bytes=16 * 1024 * 1024
+        )
+        assert stored is not None
+        for defect in ("producer", "context", "topology", "observers"):
+            damaged = json.loads(stored.payload)
+            if defect == "producer":
+                damaged["producer"] = "obsolete producer"
+            elif defect == "context":
+                damaged["context"]["roots"].append(str(tmp_path / "other"))
+            elif defect == "topology":
+                damaged["topology"]["probes"] *= 2
+            else:
+                damaged["queries"] = [
+                    row for row in damaged["queries"] if row["module"] != "peer"
+                ]
+            ledger.previous_import_graph = frontend_record_files().put_blob(
+                json.dumps(damaged).encode()
+            )
+            assert ledger.previous_import_graph is not None
+            assert replay_import_graph(context) is None, defect
+        ledger.previous_import_graph = "0" * 64
+        assert replay_import_graph(context) is None
+        ledger.previous_import_graph = original_digest
+        peer.write_text("def compute():\n    return 7\n", encoding="utf-8")
+        replayed = replay_import_graph(context)
+        assert replayed is not None
+        fresh = _materialize_plan(
+            tmp_path, entry, "app", image_scope=resolved.image_scope
+        )
+        assert replayed.closure_payload() == fresh.closure_payload()
+        assert replayed.scan_authority == fresh.scan_authority
+        peer.write_text(
+            "def compute():\n    import new_demand\n    return 7\n", encoding="utf-8"
+        )
+        (tmp_path / "new_demand.py").write_text("VALUE = 1\n", encoding="utf-8")
+        assert replay_import_graph(context) is None
+        changed = _materialize_plan(
+            tmp_path, entry, "app", image_scope=resolved.image_scope
+        )
+        assert "new_demand" in changed.module_graph
+        peer.write_text("def compute():\n    return 7\n", encoding="utf-8")
+        package = tmp_path / "peer"
+        package.mkdir()
+        provider = package / "__init__.py"
+        provider.write_text("def compute():\n    return 9\n", encoding="utf-8")
+        assert replay_import_graph(context) is None
+        shadowed = _materialize_plan(
+            tmp_path, entry, "app", image_scope=resolved.image_scope
+        )
+        assert shadowed.module_graph["peer"] == provider
+
+
 def test_project_config_entry_file_defines_binary_image_scope(tmp_path: Path) -> None:
     entry = tmp_path / "app.py"
     entry.write_text("value = 1\n", encoding="utf-8")

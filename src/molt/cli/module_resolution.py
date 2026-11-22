@@ -24,6 +24,8 @@ from molt.cli.models import (
     ImportQueryClosure,
     ImportScanAdmission,
     ImportScanObservation,
+    PersistedImportScanObservation,
+    ImportScanEvidence,
     ImportScanQuery,
     _CompleteImportScan,
 )
@@ -378,7 +380,7 @@ class _ModuleResolutionCache:
     # One source-analysis operation; None denotes genuinely unknown runtime OS.
     target_sys_platform: str | None = None
     import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
-    import_scan_queries: dict[ImportScanQuery, ImportScanObservation] = field(
+    import_scan_queries: dict[ImportScanQuery, ImportScanEvidence] = field(
         default_factory=dict, init=False, repr=False
     )
     _import_query_allowlists: dict[frozenset[str], frozenset[str]] = field(
@@ -417,7 +419,9 @@ class _ModuleResolutionCache:
         previous = self.import_scan_queries.get(query)
         admissions = frozenset((admission,))
         if previous is not None:
-            if previous.result != result:
+            if not self._same_import_result(
+                previous, ImportScanObservation(query, result, admissions)
+            ):
                 raise ValueError(
                     f"equal import queries produced different results: {query.module_name!r}"
                 )
@@ -425,6 +429,38 @@ class _ModuleResolutionCache:
         self.import_scan_queries[query] = ImportScanObservation(
             query, result, admissions
         )
+
+    @staticmethod
+    def _same_import_result(
+        left: ImportScanEvidence, right: ImportScanEvidence
+    ) -> bool:
+        if isinstance(left, ImportScanObservation) and isinstance(
+            right, ImportScanObservation
+        ):
+            return left.result == right.result
+        from molt.cli.import_graph_record import semantic_import_result_digest
+
+        left_digest = (
+            left.result_digest
+            if isinstance(left, PersistedImportScanObservation)
+            else semantic_import_result_digest(left.query, left.result)
+        )
+        right_digest = (
+            right.result_digest
+            if isinstance(right, PersistedImportScanObservation)
+            else semantic_import_result_digest(right.query, right.result)
+        )
+        return left_digest == right_digest
+
+    def observe_persisted_import_scan(
+        self, query: ImportScanQuery, result_digest: str
+    ) -> None:
+        current = PersistedImportScanObservation(query, result_digest)
+        previous = self.import_scan_queries.get(query)
+        if previous is not None and not self._same_import_result(previous, current):
+            raise ValueError("persisted import query changed its semantic result")
+        if previous is None:
+            self.import_scan_queries[query] = current
 
     def import_query_closure(
         self, previous: ImportQueryClosure | None = None
@@ -434,7 +470,7 @@ class _ModuleResolutionCache:
                 raise ValueError("import query closure changed resolver custody")
             for observed in previous.observations:
                 current = self.import_scan_queries.get(observed.query)
-                if current is None or current.result != observed.result:
+                if current is None or not self._same_import_result(current, observed):
                     raise ValueError("import query closure lost a prepared observation")
         return ImportQueryClosure(
             tuple(self.import_scan_queries.values()), self.import_topology

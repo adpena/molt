@@ -204,10 +204,14 @@ per premise revision.
    owners and arguments, target, body selection and runtime custody stay distinct inputs.
    Materialization fences the prepared closure and its final extension through the existing
    source leases and positive/negative import-topology observations. This is capture and
-   live validation, not a persisted graph or an edited-source cutoff. Persistence still
-   requires encoding the complete semantic topology observations and source identities;
-   replay must re-evaluate every query of an edited source and refuse changed results or
-   missing owners before admitting the previous graph.
+   live validation. Ordinary local build records can now retain the settled graph in
+   the existing immutable blob store. Replay validates the current producer, source
+   identities and semantic topology, re-evaluates every query of edited sources, and
+   rebuilds the active plan through the common final assembler. Changed name universes,
+   demands, writers, source owners or resolution facts refuse reuse. Runtime custody
+   remains exact and native artifact plans are excluded. See
+   [Build early cutoff](../../../../design/build_early_cutoff.md) for publication,
+   proof exclusions and the remaining atomic-save record-refresh limitation.
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.

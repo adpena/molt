@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from functools import cached_property
 import io
+import json
 from pathlib import Path
 import re
 import sys
@@ -18,7 +19,7 @@ from molt.cli.cache_fingerprints import (
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.module_graph_cache import (
     _decode_namespace_summary,
-    _encode_import_scan_payload,
+    _import_scan_payload,
     _encode_namespace_summary,
     _import_scan_cache_key,
 )
@@ -87,9 +88,16 @@ def _write_initializers(
         except UnresolvedStaticImportError:
             # A refusal is evaluated in the importing program's actual context.
             continue
-        payload = _encode_import_scan_payload(
-            **context, scan=requests, snapshot=captured, target_sys_platform=platform
-        )
+        payload = json.dumps(
+            _import_scan_payload(
+                **context,
+                scan=requests,
+                source_sha256=captured.sha256,
+                source_size=len(captured.content),
+                target_sys_platform=platform,
+            ),
+            separators=(",", ":"),
+        ).encode()
         if len(payload) > SOURCE_ANALYSIS_CACHE_MAX_BYTES:
             continue
         key = _import_scan_cache_key(

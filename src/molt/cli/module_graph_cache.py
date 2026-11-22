@@ -1703,7 +1703,7 @@ def _decode_runtime_catalog_deferral(value: object) -> RuntimeCatalogDeferral | 
     )
 
 
-def _encode_import_scan_payload(
+def _import_scan_payload(
     *,
     module_name: str,
     is_package: bool,
@@ -1712,12 +1712,13 @@ def _encode_import_scan_payload(
     source_arguments: tuple[str, ...] = (),
     native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,
-    snapshot: _module_source.PythonSourceSnapshot,
+    source_sha256: str,
+    source_size: int,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
-) -> bytes:
+) -> dict[str, object]:
     _validate_import_scan_namespace_summary(
         scan.namespace_summary, source_owner=source_owner
     )
@@ -1726,7 +1727,7 @@ def _encode_import_scan_payload(
         and any(binding.runtime_catalog for binding in scan.source_bindings)
     ):
         raise ValueError("a runtime catalog deferral belongs only to an owner scan")
-    identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
+    identity = {"size": source_size, "source_sha256": source_sha256}
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "parser": [sys.implementation.name, sys.version],
@@ -1875,7 +1876,7 @@ def _encode_import_scan_payload(
         "uses_runtime_import_protocol": scan.uses_runtime_import_protocol,
         "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
     }
-    return json.dumps(payload, separators=(",", ":")).encode()
+    return payload
 
 
 @_source_tree_fingerprint_transaction()
@@ -1902,7 +1903,7 @@ def _write_persisted_import_scan(
     # A publication is for the captured generation, never a later pathname hash.
     if not _module_source._payload_source_matches(identity, path, path.stat()):
         return
-    payload = _encode_import_scan_payload(
+    payload_value = _import_scan_payload(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
@@ -1910,12 +1911,14 @@ def _write_persisted_import_scan(
         source_arguments=source_arguments,
         native_support_function_roots=native_support_function_roots,
         scan=scan,
-        snapshot=snapshot,
+        source_sha256=snapshot.sha256,
+        source_size=len(snapshot.content),
         target_sys_platform=target_sys_platform,
         target_python=target_python,
         runtime_catalog_owner=runtime_catalog_owner,
         purpose=purpose,
     )
+    payload = json.dumps(payload_value, separators=(",", ":")).encode()
     record_key = _import_scan_cache_key(
         path,
         module_name=module_name,
