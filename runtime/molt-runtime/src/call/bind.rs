@@ -20,7 +20,8 @@ use crate::{
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_default_object_new, alloc_tuple,
+    TYPE_ID_TYPE, TYPE_ID_WEAKREF, alloc_dict_with_pairs, alloc_instance_for_default_object_new,
+    alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
     call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup_raw_mro,
@@ -409,7 +410,8 @@ pub(crate) unsafe fn call_bind_with_arguments(
         {
             return MoltObject::none().bits();
         }
-        match object_type_id(call_ptr) {
+        let kind = object_type_id(call_ptr);
+        match kind {
             TYPE_ID_FUNCTION => {}
             TYPE_ID_BOUND_METHOD => {
                 func_bits = bound_method_func_bits(call_ptr);
@@ -441,6 +443,14 @@ pub(crate) unsafe fn call_bind_with_arguments(
                 return call_foreign_with_arguments(_py, call_ptr, &args);
             }
             _ => {
+                if kind == TYPE_ID_WEAKREF
+                    && args.positional().is_empty()
+                    && args.keyword_count() == 0
+                    && let Some(result) =
+                        crate::builtins::weakref_type::call_exact_no_args(_py, call_bits, call_ptr)
+                {
+                    return result;
+                }
                 let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
                     Ok(bits) => bits,
                     Err(result) => return result,

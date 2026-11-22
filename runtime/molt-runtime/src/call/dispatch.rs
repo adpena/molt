@@ -4,10 +4,10 @@ use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
 use crate::call::{StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target};
 use crate::{
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, call_builtin_type_if_needed, call_function_obj_vec,
-    class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
-    generic_alias_origin_bits, molt_call_bind_attached_body, obj_from_bits, object_type_id,
-    ptr_from_bits, raise_exception, raise_not_callable,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, TYPE_ID_WEAKREF, call_builtin_type_if_needed,
+    call_function_obj_vec, class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits,
+    exception_pending, generic_alias_origin_bits, molt_call_bind_attached_body, obj_from_bits,
+    object_type_id, ptr_from_bits, raise_exception, raise_not_callable,
 };
 
 #[inline]
@@ -143,7 +143,15 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
         if let Some(bits) = call_builtin_type_if_needed(_py, call_bits, call_ptr, &[]) {
             return bits;
         }
-        match object_type_id(call_ptr) {
+        let kind = object_type_id(call_ptr);
+        if kind == TYPE_ID_WEAKREF
+            && !exception_pending(_py)
+            && let Some(result) =
+                crate::builtins::weakref_type::call_exact_no_args(_py, call_bits, call_ptr)
+        {
+            return result;
+        }
+        match kind {
             TYPE_ID_FUNCTION => call_function_obj_vec(_py, call_bits, &[]),
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[]),

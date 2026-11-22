@@ -1016,6 +1016,21 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             if type_id == TYPE_ID_FROZENSET {
                 return hash_frozenset(_py, ptr);
             }
+            if type_id == crate::TYPE_ID_WEAKREF
+                && object_class_bits(ptr) == builtin_classes(_py).reference_type
+                && !exception_pending(_py)
+            {
+                let hash = super::weakref::weakref_cached_hash_or_compute(_py, bits);
+                // The builtin slot returns a signed hash directly. Preserve
+                // the public hash width adjustment on narrow targets.
+                return if hash == -1 || exception_pending(_py) {
+                    -1
+                } else if Py_hash_t::try_from(hash).is_ok() {
+                    hash
+                } else {
+                    hash_int(hash)
+                };
+            }
             if let Some(hash) = hash_from_dunder(_py, obj, ptr) {
                 return hash;
             }

@@ -151,6 +151,19 @@ pub(crate) fn molt_weakref_new_attached_body(
     })
 }
 
+/// Invoke the fixed native call slot of an exact ReferenceType with no arguments.
+///
+/// # Safety
+/// `ptr` is the live weak-reference payload of `bits`.
+pub(crate) unsafe fn call_exact_no_args(
+    py: &crate::PyToken<'_>,
+    bits: u64,
+    ptr: *mut u8,
+) -> Option<u64> {
+    (unsafe { crate::object_class_bits(ptr) } == builtin_classes(py).reference_type)
+        .then(|| molt_weakref_call_attached_body(py, bits))
+}
+
 pub(crate) fn molt_weakref_call_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if weakref_receiver(_py, self_bits, "__call__").is_none() {

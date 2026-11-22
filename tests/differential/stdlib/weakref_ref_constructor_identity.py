@@ -209,6 +209,12 @@ slots_override = SlotsOverrideRef(original, keyed_callback)
 descriptor_shadow = DescriptorShadowRef(original, keyed_callback)
 protocol = ProtocolRef(original)
 print("subtype-protocol-overrides", type(override) is OverrideRef, override(), hash(override))
+for args, keywords in (((1,), {}), ((), {"extra": 1})):
+    try:
+        one_shot(*args, **keywords)
+    except TypeError as exc:
+        print("exact-ref-call-rejects-arguments", type(exc).__name__)
+
 print(
     "subtype-getattribute-overrides",
     slots_override.__class__,
