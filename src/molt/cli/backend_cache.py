@@ -92,13 +92,26 @@ def _record_backend_cache_stage_ms(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ValidatedBackendArtifact:
+    """An operation's structural proof for an exact byte sequence and contract."""
+
+    contract: BackendArtifactContract
+    identity: StableRegularFileIdentity
+
+
 def _validate_backend_cache_artifact(
     path: Path,
     *,
     artifact_contract: BackendArtifactContract,
     identity: StableRegularFileIdentity | None = None,
     publish_symbol_facts: bool = False,
+    validation: _ValidatedBackendArtifact | None = None,
 ) -> StableRegularFileIdentity:
+    if validation is not None and validation.contract != artifact_contract:
+        raise BackendArtifactValidationError(
+            "Backend structural proof belongs to another artifact contract"
+        )
     # Native shape, member framing and nm consume one admitted owned handle.
     # Content-keyed facts are published only after its closing fences pass.
     # The artifact opener owns the identity-path check: it compares the
@@ -125,7 +138,14 @@ def _validate_backend_cache_artifact(
                 _opened,
                 identity,
             ):
-                artifact_contract.validate(path)
+                # Exact equal bytes carry structural validity across copies.
+                # A different winner still needs its own validation before the
+                # caller distinguishes invalid cache bytes from a conflict.
+                if validation is None or (identity.sha256, identity.size) != (
+                    validation.identity.sha256,
+                    validation.identity.size,
+                ):
+                    artifact_contract.validate(path)
         return identity
     except _native_symbols.NativeSymbolArtifactError as error:
         raise BackendArtifactValidationError(str(error)) from error
@@ -355,6 +375,7 @@ def _publish_immutable_backend_cache_artifact(
     warnings: list[str],
     identity: StableRegularFileIdentity | None = None,
     emission_origin: BackendEmissionOrigin | None = None,
+    validation: _ValidatedBackendArtifact | None = None,
 ) -> _BackendCacheGeneration:
     """Publish bytes and their optional origin under one generation lock.
 
@@ -362,8 +383,12 @@ def _publish_immutable_backend_cache_artifact(
     origin. Byte equality does not authorize grafting a new producer onto it.
     """
     identity = _validate_backend_cache_artifact(
-        src, artifact_contract=artifact_contract, identity=identity
+        src,
+        artifact_contract=artifact_contract,
+        identity=identity,
+        validation=validation,
     )
+    validation = _ValidatedBackendArtifact(artifact_contract, identity)
     if emission_origin is not None and (
         emission_origin.output_sha256 != identity.sha256
         or emission_origin.output_size != identity.size
@@ -378,7 +403,10 @@ def _publish_immutable_backend_cache_artifact(
         if dst.exists():
             try:
                 existing = _validate_backend_cache_artifact(
-                    dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+                    dst,
+                    artifact_contract=artifact_contract,
+                    publish_symbol_facts=True,
+                    validation=validation,
                 )
             except BackendArtifactValidationError:
                 warnings.append(
@@ -397,7 +425,10 @@ def _publish_immutable_backend_cache_artifact(
                 os.link(tmp_path, dst)
             except FileExistsError:
                 existing = _validate_backend_cache_artifact(
-                    dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+                    dst,
+                    artifact_contract=artifact_contract,
+                    publish_symbol_facts=True,
+                    validation=validation,
                 )
                 _require_matching_backend_content(identity, existing)
                 return _backend_cache_generation(dst, identity=existing)
@@ -414,7 +445,10 @@ def _publish_immutable_backend_cache_artifact(
                 )
         # Unlinking the temporary hard link changes ctime. Capture only after it.
         published = _validate_backend_cache_artifact(
-            dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+            dst,
+            artifact_contract=artifact_contract,
+            publish_symbol_facts=True,
+            validation=validation,
         )
         _require_matching_backend_content(identity, published)
         if emission_origin is not None:
@@ -476,6 +510,7 @@ def restore_backend_cache_artifact(
         warnings=warnings,
         identity=identity,
         emission_origin=origin,
+        validation=_ValidatedBackendArtifact(artifact_contract, identity),
     )
     if warnings or published.identity.path != destination.expanduser().absolute():
         raise BackendArtifactValidationError(
@@ -716,6 +751,9 @@ def _materialize_cached_backend_artifact(
                     warnings=warnings,
                     identity=candidate_identity,
                     emission_origin=emission_origin,
+                    validation=_ValidatedBackendArtifact(
+                        artifact_contract, candidate_identity
+                    ),
                 )
                 if (
                     module_cache_key
@@ -1156,6 +1194,9 @@ def _stage_backend_output_and_caches(
         staged_identity = _validate_backend_cache_artifact(
             backend_output, artifact_contract=artifact_contract
         )
+        staged_validation = _ValidatedBackendArtifact(
+            artifact_contract, staged_identity
+        )
         if emission_origin is not None and (
             emission_origin.output_sha256 != staged_identity.sha256
             or emission_origin.output_size != staged_identity.size
@@ -1180,6 +1221,7 @@ def _stage_backend_output_and_caches(
                 warnings=warnings,
                 identity=staged_identity,
                 emission_origin=emission_origin,
+                validation=staged_validation,
             )
             emission_origin = published.emission_origin
         except OSError as exc:
@@ -1248,6 +1290,7 @@ def _stage_backend_output_and_caches(
                     warnings=warnings,
                     identity=staged_identity,
                     emission_origin=emission_origin,
+                    validation=staged_validation,
                 )
             except OSError as exc:
                 warnings.append(f"Function cache write failed: {exc}")

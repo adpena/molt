@@ -11,6 +11,7 @@ from typing import BinaryIO, Callable, Mapping, Literal
 from molt.toolchain_identity import (
     StableRegularFileHandle,
     StableRegularFileIdentity,
+    StableRegularFileObservation,
     open_stable_regular_file,
     stable_regular_file_handle_identity,
 )
@@ -394,10 +395,19 @@ def artifact_content_identity(
     path: Path,
     *,
     logical_path: Path | None = None,
-    observed: StableRegularFileIdentity | None = None,
+    observed: StableRegularFileIdentity | StableRegularFileObservation | None = None,
 ) -> dict[str, object]:
-    """Read current artifact bytes once; metadata never authorizes cached content."""
+    """Identify current bytes using the file or an operation-owned observation."""
     try:
+        if isinstance(observed, StableRegularFileObservation):
+            if str(observed.identity.path) != str(path):
+                raise ValueError(
+                    f"artifact observation has a different selection: {path}"
+                )
+            if (logical_path or path).suffix.lower() not in {".a", ".lib"}:
+                observed.verify(label="runtime artifact")
+                return artifact_bytes_identity(observed.identity)
+            observed = observed.identity
         with open_stable_regular_file(
             path, label="runtime artifact", observed=observed
         ) as opened:

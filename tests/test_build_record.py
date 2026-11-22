@@ -1027,6 +1027,13 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
     assert first == key(environment={"MOLT_X": "1", "CODEX_TOOL_CALL_ID": "call-a"})
     assert first == key(environment={"MOLT_X": "1", "CODEX_TOOL_CALL_ID": "call-b"})
     assert first != key(environment={"MOLT_X": "1", "CODEX_PRODUCT_MODE": "a"})
+    generated = {"MOLT_X": "1", "MOLT_SESSION_ID_GENERATED": "1"}
+    assert key(environment={**generated, "MOLT_SESSION_ID": "dev-7303"}) == key(
+        environment={**generated, "MOLT_SESSION_ID": "dev-8207"}
+    )
+    assert key(environment={"MOLT_X": "1", "MOLT_SESSION_ID": "left"}) != key(
+        environment={"MOLT_X": "1", "MOLT_SESSION_ID": "right"}
+    )
     assert first != key(environment={"MOLT_X": "2", "TERM_SESSION_ID": "s1"})
     assert first != key(
         arguments={"file_path": "/a.py", "profile": "release", "output": "/o/app"}

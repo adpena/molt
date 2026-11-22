@@ -30,6 +30,7 @@ from molt.toolchain_identity import verify_stable_regular_file_identity
 
 if TYPE_CHECKING:
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+    from molt.toolchain_identity import StableRegularFileObservation
 
 
 def _link_receipt_is_valid(payload: object) -> bool:
@@ -83,6 +84,7 @@ def _link_fingerprint(
     tool_facts: Sequence[Mapping[str, object]] = (),
     stored_fingerprint: dict[str, Any] | None = None,
     runtime_binding: NativeRuntimeCodegenBinding | None = None,
+    observed_inputs: Mapping[str, StableRegularFileObservation] | None = None,
 ) -> dict[str, str | None] | None:
     admitted = admitted_source_files(inputs)
     inputs_meta = _hash_source_tree_metadata(admitted, project_root)
@@ -130,7 +132,10 @@ def _link_fingerprint(
                     )
                 )
             else:
-                identity = artifact_content_identity(item)
+                observation = (
+                    None if observed_inputs is None else observed_inputs.get(str(item))
+                )
+                identity = artifact_content_identity(item, observed=observation)
             hasher.update(
                 json.dumps(
                     identity,

@@ -75,8 +75,11 @@ to those reads.
 the working directory, the interpreter and its version, the host (system,
 release, machine, and the CPU model for non-portable builds, which tune for
 the host CPU), and the full environment except terminal and session
-identifiers and registry entries declared output-neutral. Guard custody and
-memory budgets supervise execution without selecting different optimizations.
+identifiers and registry entries declared output-neutral. DX's automatically
+generated session label selects the same unpinned Cargo target and user output
+layout on each invocation. An explicitly pinned session scopes the build and
+remains in the key. Guard custody and memory budgets supervise execution
+without selecting different optimizations.
 The record keeps the output the successful build selected: a request spelling
 alone does not determine the output of a directory or package-entry build.
 The output path and the output directory are keyed: building one

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
-from molt import artifact_publication, process_guard
+from molt import artifact_publication, process_guard, toolchain_identity
 from molt.cli import wasm_final_link_cache as cache
 from molt.cli import wasm_link_cache
 
@@ -68,6 +71,46 @@ def test_key_ignores_private_locations_and_follows_input_content(
     # Changed input bytes at the same path: a different result.
     app.write_bytes(b"\0asm\x01\0\0\0app-v2")
     assert key("ci-row-a", "/tmp/.molt-link-timings-1.tmp", "/tmp/gen-1") != first
+
+
+@pytest.mark.skipif(os.name == "nt", reason="settled POSIX file observation")
+@pytest.mark.parametrize("admit_before_key", [False, True])
+def test_repeated_input_uses_one_exact_capture_and_rejects_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admit_before_key: bool
+) -> None:
+    app = _inputs(tmp_path)
+    # Observe actual streams without waiting for a test file's timestamp to age.
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    reads = []
+    stream_digest = toolchain_identity._sha256_stream
+
+    def digest(stream: BinaryIO, *, max_bytes: int) -> str:
+        reads.append(os.fstat(stream.fileno()).st_ino)
+        return stream_digest(stream, max_bytes=max_bytes)
+
+    monkeypatch.setattr(toolchain_identity, "_sha256_stream", digest)
+    obs = toolchain_identity.StableRegularFileObservation.capture(app, label="app")
+    observations = {str(app): obs} if admit_before_key else None
+    reads.clear()
+    cmd = _link_cmd(tmp_path, out_dir=tmp_path, app=app, timings="t", split_dir="s")
+    cmd.extend(
+        ("--expected-input", app.name, hashlib.sha256(app.read_bytes()).hexdigest())
+    )
+    key = cache.final_link_cache_key(
+        cmd, cwd=tmp_path, tool_facts=(), observed_inputs=observations
+    )
+    assert reads == ([] if admit_before_key else [app.stat().st_ino])
+    original = app.stat()
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"\0asm\x01\0\0\0app-v2")
+    replacement.replace(app)
+    os.utime(app, ns=(original.st_atime_ns, original.st_mtime_ns))
+    if admit_before_key:
+        with pytest.raises(ValueError, match="changed since identity capture"):
+            cache.final_link_cache_key(
+                cmd, cwd=tmp_path, tool_facts=(), observed_inputs=observations
+            )
+    assert cache.final_link_cache_key(cmd, cwd=tmp_path, tool_facts=()) != key
 
 
 def test_key_keeps_the_embedded_module_name_and_hashes_relative_inputs(
@@ -277,6 +320,8 @@ def test_matching_requests_have_one_locked_producer_and_retry_failure(
                     sys.executable,
                     "-c",
                     """
+import hashlib
+import os
 import sys
 from pathlib import Path
 from molt.file_locks import _acquire_file_lock, _release_file_lock, FileLockTimeout

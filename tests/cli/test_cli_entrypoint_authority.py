@@ -375,10 +375,17 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     import time
 
     from molt import cache_eviction
-    from molt import dx
+    from molt.source_root import MANIFEST_NAME
 
-    # Installed distributions run the packaged policy without source tools.
-    monkeypatch.setattr(dx, "_source_checkout_maintenance", lambda: None)
+    # The release ships these files. Their presence does not confer checkout
+    # custody or authorize importing the Git-owned scheduler from the bundle.
+    source = tmp_path / "bundle" / "source"
+    tools = source / "tools"
+    tools.mkdir(parents=True)
+    (source / MANIFEST_NAME).write_bytes(b"{}")
+    for name in ("checkout_maintenance.py", "disk_guard.py"):
+        (tools / name).write_bytes(b"raise AssertionError('development tool imported')")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
 
     cache = tmp_path / "cache"
     entry = _old_cache_entry(cache)

@@ -8,6 +8,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 from molt.cli import native_symbol_inspection
 import pytest
@@ -274,6 +275,78 @@ def _stub_external_inspectors(monkeypatch):
         "_reusable_wasm_artifact_validation_error",
         lambda path: None,
     )
+
+
+@pytest.mark.parametrize("winner", ["absent", "equal", "invalid", "conflict"])
+def test_publication_projects_one_structural_proof_after_actual_byte_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    winner: Literal["absent", "equal", "invalid", "conflict"],
+) -> None:
+    # Real UTF-8/NUL validation supplies the structural oracle. Counting its
+    # public contract boundary observes repeated work independently of the
+    # publication helper's control flow; no successful validator is mocked.
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
+    source = tmp_path / "source.mlir"
+    content = b"return 1\n"
+    source.write_bytes(content)
+    module = tmp_path / "module.mlir"
+    function = tmp_path / "function.mlir"
+    output = tmp_path / "output.mlir"
+    winners = {"equal": content, "invalid": b"\x00", "conflict": b"return 2\n"}
+    if winner in winners:
+        module.write_bytes(winners[winner])
+    validations: list[Path] = []
+    real_validate = BackendArtifactContract.validate
+
+    def observe_validation(self: BackendArtifactContract, path: Path) -> None:
+        validations.append(path)
+        real_validate(self, path)
+
+    monkeypatch.setattr(BackendArtifactContract, "validate", observe_validation)
+    warnings: list[str] = []
+    result = cache._stage_backend_output_and_caches(
+        tmp_path,
+        source,
+        output,
+        cache_path=module,
+        cache_key="module-key",
+        stdlib_object_cache_key=None,
+        function_cache_path=function,
+        warnings=warnings,
+        output_already_synced=False,
+        artifact_contract=contract,
+    )
+    if winner == "conflict":
+        assert result.error is not None and "conflicting content" in result.error
+        assert not output.exists() and not function.exists()
+        assert module.read_bytes() == b"return 2\n"
+    else:
+        assert result.error is None
+        assert output.read_bytes() == function.read_bytes() == content
+        assert module.read_bytes() == (b"\x00" if winner == "invalid" else content)
+        assert bool(warnings) is (winner == "invalid")
+    assert len(validations) == (2 if winner in {"invalid", "conflict"} else 1)
+
+
+def test_structural_projection_rejects_a_different_contract(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mlir"
+    source.write_bytes(b"return 1\n")
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
+    identity = cache._validate_backend_cache_artifact(
+        source, artifact_contract=contract
+    )
+    proof = cache._ValidatedBackendArtifact(contract, identity)
+    with pytest.raises(
+        BackendArtifactValidationError, match="another artifact contract"
+    ):
+        cache._validate_backend_cache_artifact(
+            source,
+            artifact_contract=BackendArtifactContract(BackendArtifactKind.WASM_OBJECT),
+            validation=proof,
+        )
 
 
 @pytest.mark.parametrize(

@@ -32069,6 +32069,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         warnings: list[str],
         identity=None,
         emission_origin=None,
+        validation: cli_backend_cache._ValidatedBackendArtifact | None = None,
     ):
         if dst == function_cache_path:
             raise OSError("link failed")
@@ -32079,6 +32080,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
             warnings=warnings,
             identity=identity,
             emission_origin=emission_origin,
+            validation=validation,
         )
 
     monkeypatch.setattr(
