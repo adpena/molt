@@ -1108,9 +1108,13 @@ def test_checkout_target_oracle_reports_what_a_session_adds(tmp_path: Path) -> N
 def test_hypothesis_storage_lives_in_scratch_not_the_checkout() -> None:
     from hypothesis.configuration import storage_directory
 
-    from molt.dx import checkout_component, scratch_dir
+    from molt.checkout_state import checkout_scratch_state_dir
+    from tests import conftest as session
 
-    home = scratch_dir(REPO_ROOT, f"hypothesis/{checkout_component(REPO_ROOT)}")
+    # Hypothesis is configured before the per-test scratch override is cleared.
+    home = checkout_scratch_state_dir(
+        "hypothesis-home", REPO_ROOT, session._SESSION_ENVIRONMENT
+    )
     for name in ("examples", "constants", "unicode_data"):
         path = storage_directory(name, intent_to_write=False).path
         assert path == home / name
