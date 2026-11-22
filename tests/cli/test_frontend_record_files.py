@@ -150,7 +150,7 @@ def test_link_names_the_equal_scans_blob_and_needs_a_known_target(
     )
 
 
-def test_a_reader_merges_many_index_files_into_one(
+def test_retention_merges_many_index_files_without_foreground_compaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(records, "_MERGE_INDEX_FILES", 4)
@@ -160,6 +160,12 @@ def test_a_reader_merges_many_index_files_into_one(
     assert len(_index_files(tmp_path)) == 6
     reader = FrontendRecordFiles(tmp_path)
     assert _read(reader, "module-analysis", f"{5:024x}", max_bytes=_LIMIT) == b"[5]"
+    assert len(_index_files(tmp_path)) == 6
+    from molt.cache_eviction import _prune_locked
+
+    _prune_locked(tmp_path, max_bytes=None, max_age_days=None, dry_run=True)
+    assert len(_index_files(tmp_path)) == 6
+    _prune_locked(tmp_path, max_bytes=None, max_age_days=None, dry_run=False)
     (merged,) = _index_files(tmp_path)
     parsed = parse_index(merged.read_bytes())
     assert parsed is not None and len(parsed) == 6
@@ -174,6 +180,30 @@ def test_a_reader_merges_many_index_files_into_one(
         == f"[{index}]".encode()
         for index in range(6)
     )
+
+
+def test_seek_resolves_variable_width_rows_without_decoding_unasked_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = FrontendRecordFiles(tmp_path)
+    monkeypatch.setattr(files, "_pinned_by_operation", lambda: True)
+    keys = [f"{value:0{16 + value % 49}x}" for value in range(257)]
+    for kind in ("import-scan", "module-analysis"):
+        for key in keys:
+            assert files.put(kind, key, f"{kind} {key}".encode())
+    assert files.save()
+
+    def unexpected_full_scan(data: bytes) -> None:
+        pytest.fail(f"a lookup decoded an entire {len(data)}-byte index")
+
+    monkeypatch.setattr(records, "parse_index", unexpected_full_scan)
+    reader = FrontendRecordFiles(tmp_path)
+    for kind in ("import-scan", "module-analysis"):
+        for key in keys:
+            assert (
+                _read(reader, kind, key, max_bytes=_LIMIT) == f"{kind} {key}".encode()
+            )
+        assert _read(reader, kind, "f" * 64, max_bytes=_LIMIT) is None
 
 
 def test_a_malformed_index_file_answers_nothing(tmp_path: Path) -> None:

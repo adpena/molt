@@ -397,12 +397,13 @@ after a cold build takes 31-35 s, and a one-line edit of a user module 96-102 s.
 
 Slice 2 (`molt.cli.frontend_record_files`): an import scan or module analysis
 is a blob named by the SHA-256 of its bytes (`frontend_records/v1/blobs`), and
-index files map keys to digests (`frontend_records/v1/index/<digest>.idx`); one
-frontend operation publishes one index file. A reader loads the index files
-once, rescans only when a miss finds the index directory changed, lets the most
-recently published entry win (a key names its source by path, so a changed
-source publishes a newer entry), and reads a blob with one `os.read` whose bytes
-must hash to its name. A reader merges more than 64 index files into one. An
+sorted index files map keys to digests (`frontend_records/v1/index/<digest>.idx`);
+one frontend operation publishes one index file. A reader orders files by
+publication time and seeks within them for the requested key, reading at most
+two rows per search step. Only requested answers are retained in process. On
+a miss it refreshes the index inventory when the directory generation changes.
+A blob must hash to its name, and the consumer still checks the exact input
+identity. The existing retention sweep compacts more than 64 index files. An
 HF-926 alias is an index entry naming the equal scan's blob. A consumer renews a
 blob's mtime, at most hourly, only after it admits the record. Eviction lists
 each blob and index file as an entry under the compile-cache budget and sweeps
@@ -426,6 +427,18 @@ runs): `import asyncio` stored 21.37 MB in 3,168 blobs and 2 index files against
 one-edit discovery CPU stayed within run spread (asyncio warm 11.0/9.4 s on main,
 10.7/9.4 s with the change); graph and authority dumps were byte-identical in
 every phase.
+
+On 2026-11-21 the shared index had 1.71 million rows across nine files. A
+three-file application requested 133 distinct addresses. Bounded reads
+returned identical digests to a full parse in 14–18 ms versus 1.73–1.83 s in
+the isolated lookup comparison, with about 25 MiB versus 1.1 GiB peak RSS.
+Two interleaved native dev edits per variant used the same cache, code, target
+and output. The only switched component was the index reader. Import discovery
+fell from 1.36–1.39 s to 121–125 ms. The full diagnosed build fell from
+3.12–3.34 s to 1.84–1.86 s. Each build lowered one changed module, reused eight,
+and produced stdout identical to managed CPython 3.12.16. This is a local
+macOS arm64 result. [Git's pack index](https://git-scm.com/docs/gitformat-pack)
+uses the same ordered-search principle over fixed-width IDs.
 
 Prior art: rustc incremental queries (dep graph, red/green), Salsa (tracked
 reads, revisions, backdating), Zig incremental compilation (InternPool,

@@ -811,6 +811,10 @@ def _prune_locked(
     environ: Mapping[str, str] | None = None,
 ) -> PruneCompleted:
     started = time.monotonic()
+    if not dry_run:
+        from molt.cli.frontend_record_files import FrontendRecordFiles
+
+        FrontendRecordFiles(cache_root).compact_index()
     entries = _collect_entries(cache_root, environ=environ)
     before_bytes = sum(item.size_bytes for item in entries)
     before_count = len(entries)

@@ -4,18 +4,15 @@ An import scan or a module analysis is a pure function of its key. Its result
 is one immutable file named by the SHA-256 of its bytes (``blobs/aa/<digest>``),
 and index files map keys to digests (``index/<digest>.idx``), as Go's GOCACHE
 pairs an action ID with an output ID. One frontend operation publishes one
-index file for the results it made. Publication is temp file plus rename and
-idempotent: equal results share one blob, and a concurrent writer of the same
-blob or index loses nothing. A reader takes no lock and opens no database: it
-loads the index files once (again only when a miss finds the index directory
-changed), then reads a blob with one open. A blob whose bytes do not hash to
-its name is a miss, so a torn or damaged file never answers.
+index file for the results it made. Publication is atomic and equal results
+share one blob. Readers seek to a requested row in the sorted index and
+verify the blob against its digest.
 
 Retention: an admitted read renews the blob's mtime at most hourly (a record
 its consumer refuses is not renewed); the compile cache's
 byte and age budget (``molt.cache_eviction``) unlinks old blobs and index
-files. A reader merges many index files into one; an entry whose blob is gone
-is a miss. ``docs/design/storage_authority.md`` ("Compile cache") owns the
+files and compacts the index. An entry whose blob is gone is a miss.
+``docs/design/storage_authority.md`` ("Compile cache") owns the
 design and its measurements.
 """
 
@@ -45,8 +42,10 @@ _DIGEST: Final = re.compile(r"[0-9a-f]{64}")
 _KEY: Final = re.compile(r"[0-9a-f]{16,64}")
 # A used blob's mtime moves at most this often (Go GOCACHE renews hourly).
 _RENEW_NS: Final = 3600 * 10**9
-# A reader merges the index files it loaded into one past this count.
+# Retention merges index files past this count.
 _MERGE_INDEX_FILES: Final = 64
+# Longest line including its newline: kind, two spaces, two hex strings.
+_INDEX_ROW_LIMIT: Final = max(map(len, _KINDS)) + 2 + 64 + 64 + 1
 # An operation saves its queued index entries at most this many at a time.
 _PENDING_INDEX_ENTRIES: Final = 4096
 _READ_FLAGS: Final = (
@@ -103,6 +102,73 @@ def render_index(entries: dict[tuple[str, str], str]) -> bytes:
     ).encode("ascii")
 
 
+def _index_paths(directory: Path) -> tuple[Path, ...]:
+    try:
+        with os.scandir(directory) as entries:
+            files = []
+            for entry in entries:
+                if not entry.name.endswith(INDEX_SUFFIX):
+                    continue
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(metadata.st_mode):
+                    files.append((metadata.st_mtime_ns, entry.name))
+    except OSError:
+        return ()
+    return tuple(directory / name for _, name in sorted(files, reverse=True))
+
+
+def _seek_index(path: Path, prefix: bytes) -> str | None:
+    """Read at most two rows per step, even for a damaged index."""
+    try:
+        with open(
+            path, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
+        ) as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                return None
+            if stream.read(len(_INDEX_HEADER)) != _INDEX_HEADER:
+                return None
+            lower, upper = len(_INDEX_HEADER), metadata.st_size
+            while lower < upper:
+                middle = (lower + upper) // 2
+                base = max(lower, middle - _INDEX_ROW_LIMIT)
+                stream.seek(base)
+                window = stream.read(min(upper - base, 2 * _INDEX_ROW_LIMIT))
+                offset = middle - base
+                prior = window.rfind(b"\n", 0, offset)
+                end = window.find(b"\n", offset)
+                if end < 0 or (prior < 0 and base != lower):
+                    return None
+                row = window[prior + 1 : end]
+                if len(row) >= _INDEX_ROW_LIMIT:
+                    return None
+                if row.startswith(prefix):
+                    digest = row[len(prefix) :].decode("ascii")
+                    return digest if _DIGEST.fullmatch(digest) is not None else None
+                if row < prefix:
+                    lower = base + end + 1
+                else:
+                    upper = base + prior + 1
+    except (OSError, UnicodeError):
+        return None
+    return None
+
+
+def _read_indices(indices: tuple[Path, ...]) -> dict[tuple[str, str], str]:
+    result: dict[tuple[str, str], str] = {}
+    for index in reversed(indices):
+        try:
+            entries = parse_index(index.read_bytes())
+        except OSError:
+            continue
+        if entries is not None:
+            result.update(entries)
+    return result
+
+
 class FrontendRecordFiles:
     """One process's view of one cache root's record files."""
 
@@ -113,12 +179,12 @@ class FrontendRecordFiles:
         self._index = self.root / "index"
         self._pid = os.getpid()
         self._lock = threading.Lock()
-        self._table: dict[tuple[str, str], str] = {}
-        self._loaded: set[str] = set()
-        self._index_mtime_ns: int | None = None
+        self._lookups: dict[tuple[str, str], str | None] = {}
+        self._indices: tuple[Path, ...] = ()
+        self._index_generation: tuple[int, int, int] | None = None
         self._pending: dict[tuple[str, str], str] = {}
         # Addresses this process recorded: newer than any index file it loads.
-        self._written: set[tuple[str, str]] = set()
+        self._written: dict[tuple[str, str], str] = {}
 
     def blob_path(self, digest: str) -> Path:
         return self._blobs / digest[:2] / digest
@@ -135,70 +201,64 @@ class FrontendRecordFiles:
         return None if digest is None else self._read_blob(digest, max_bytes)
 
     def digest(self, kind: FrontendRecordKind, key: str) -> str | None:
+        if kind not in _KINDS or _KEY.fullmatch(key) is None:
+            return None
         address = (kind, key)
         with self._lock:
-            digest = self._table.get(address)
-            if digest is None and self._index_changed_locked():
-                self._load_index_locked()
-                digest = self._table.get(address)
-        return digest
+            if address in self._written:
+                return self._written[address]
+            digest = self._lookups.get(address)
+            if digest is not None:
+                return digest
+            generation = self._directory_generation()
+            if generation != self._index_generation:
+                self._indices = _index_paths(self._index)
+                self._lookups.clear()
+                self._index_generation = generation
+            if address not in self._lookups:
+                prefix = f"{kind} {key} ".encode("ascii")
+                self._lookups[address] = next(
+                    (
+                        digest
+                        for index in self._indices
+                        if (digest := _seek_index(index, prefix)) is not None
+                    ),
+                    None,
+                )
+            return self._lookups[address]
 
     def addresses(self) -> dict[tuple[str, str], str]:
-        """Every address this view resolves, with the index files loaded."""
+        """Explicit inventory of every address, including this view's writes."""
         with self._lock:
-            if self._index_changed_locked():
-                self._load_index_locked()
-            return dict(self._table)
+            return _read_indices(_index_paths(self._index)) | self._written
 
-    def _index_changed_locked(self) -> bool:
+    def _directory_generation(self) -> tuple[int, int, int] | None:
         try:
-            mtime = os.stat(self._index).st_mtime_ns
+            metadata = self._index.stat()
         except OSError:
-            return False
-        return mtime != self._index_mtime_ns
+            return None
+        return metadata.st_ino, metadata.st_mtime_ns, metadata.st_ctime_ns
 
-    def _load_index_locked(self) -> None:
-        try:
-            self._index_mtime_ns = os.stat(self._index).st_mtime_ns
-            names = os.listdir(self._index)
-        except OSError:
+    def compact_index(self) -> None:
+        """Merge immutable index files during an existing retention sweep."""
+        generation = self._directory_generation()
+        indices = _index_paths(self._index)
+        if len(indices) <= _MERGE_INDEX_FILES:
             return
-        # A key names its source by path, and the payload checks the bytes, so
-        # index files may map one key to several source generations: the most
-        # recently published entry wins, and nothing loaded overrides an entry
-        # this process wrote.
-        fresh: list[tuple[int, str]] = []
-        for name in names:
-            if not name.endswith(INDEX_SUFFIX) or name in self._loaded:
-                continue
-            self._loaded.add(name)
-            try:
-                fresh.append((os.stat(self._index / name).st_mtime_ns, name))
-            except OSError:
-                continue
-        for _mtime, name in sorted(fresh):
-            try:
-                with open(self._index / name, "rb") as stream:
-                    entries = parse_index(stream.read())
-            except OSError:
-                continue
-            if entries is not None:
-                for address, digest in entries.items():
-                    if address not in self._written:
-                        self._table[address] = digest
-        live = {name for name in names if name in self._loaded}
-        if len(live) > _MERGE_INDEX_FILES:
-            self._merge_locked(live)
-
-    def _merge_locked(self, names: set[str]) -> None:
-        merged = render_index(self._table)
-        name = record_digest(merged) + INDEX_SUFFIX
-        if not self._publish(self._index / name, merged):
+        entries = _read_indices(indices)
+        if not entries or self._directory_generation() != generation:
             return
-        self._loaded.add(name)
-        for old in names - {name}:
+        merged = render_index(entries)
+        destination = self._index / (record_digest(merged) + INDEX_SUFFIX)
+        if self._directory_generation() != generation or not self._publish(
+            destination, merged
+        ):
+            return
+        for old in indices:
+            if old == destination:
+                continue
             try:
-                os.unlink(self._index / old)
+                old.unlink()
             except OSError:
                 # A peer merged it first, or (Windows) still reads it.
                 continue
@@ -253,8 +313,7 @@ class FrontendRecordFiles:
         if kind not in _KINDS or _KEY.fullmatch(key) is None:
             raise ValueError(f"invalid frontend record address: {kind} {key}")
         with self._lock:
-            self._table[(kind, key)] = digest
-            self._written.add((kind, key))
+            self._written[(kind, key)] = digest
             self._pending[(kind, key)] = digest
             due = len(self._pending) >= _PENDING_INDEX_ENTRIES
         if due or not self._pinned_by_operation():
@@ -274,8 +333,6 @@ class FrontendRecordFiles:
                 for address, digest in pending.items():
                     self._pending.setdefault(address, digest)
             return False
-        with self._lock:
-            self._loaded.add(name)
         return True
 
     def pending_count(self) -> int:
