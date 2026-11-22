@@ -17,10 +17,10 @@ IMPORT_BINDINGS = (
 )
 
 
-def _generate(source: str) -> tuple[SimpleTIRGenerator, list[MoltOp]]:
+def _generate(source: str) -> tuple[SimpleTIRGenerator, list[list[MoltOp]]]:
     gen = SimpleTIRGenerator(known_modules={"nativepkg", "nativepkg.child"})
     gen.visit(ast.parse(source))
-    return gen, [op for fn in gen.funcs_map.values() for op in fn["ops"]]
+    return gen, [fn["ops"] for fn in gen.funcs_map.values()]
 
 
 def _named_stores(ops: list[MoltOp], kind: str, name: str) -> list[MoltOp]:
@@ -37,6 +37,13 @@ def _named_stores(ops: list[MoltOp], kind: str, name: str) -> list[MoltOp]:
     ]
 
 
+def _module_named_stores(
+    functions: list[list[MoltOp]], kind: str, name: str
+) -> list[MoltOp]:
+    # Each function assigns its own value names.
+    return [op for ops in functions for op in _named_stores(ops, kind, name)]
+
+
 @pytest.mark.parametrize("statement", IMPORT_BINDINGS)
 @pytest.mark.parametrize("enclosing_global", [False, True])
 def test_class_import_publishes_to_class_mapping_not_enclosing_module(
@@ -48,11 +55,11 @@ def test_class_import_publishes_to_class_mapping_not_enclosing_module(
             f"    {line}\n" for line in body.splitlines()
         )
     gen, ops = _generate(body)
-    stores = _named_stores(ops, "STORE_INDEX", "bound")
+    stores = _module_named_stores(ops, "STORE_INDEX", "bound")
     assert len(stores) == 1
     assert isinstance(stores[0].args[0], MoltValue)
     assert stores[0].args[0] != gen.module_obj
-    assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
+    assert not _module_named_stores(ops, "MODULE_SET_ATTR", "bound")
     assert "bound" not in gen.global_imported_modules
     assert "bound" not in gen.global_imported_names
     assert "bound" not in gen.imported_modules
@@ -64,8 +71,8 @@ def test_explicit_class_global_import_publishes_once_to_module(statement: str) -
     gen, ops = _generate(
         "class C(metaclass=meta):\n    global bound\n" + f"    {statement}\n"
     )
-    assert len(_named_stores(ops, "MODULE_SET_ATTR", "bound")) == 1
-    assert not _named_stores(ops, "STORE_INDEX", "bound")
+    assert len(_module_named_stores(ops, "MODULE_SET_ATTR", "bound")) == 1
+    assert not _module_named_stores(ops, "STORE_INDEX", "bound")
     assert (
         "bound" in gen.global_imported_modules or "bound" in gen.global_imported_names
     )
@@ -74,7 +81,7 @@ def test_explicit_class_global_import_publishes_once_to_module(statement: str) -
 @pytest.mark.parametrize("statement", IMPORT_BINDINGS)
 def test_function_local_import_has_no_module_publication(statement: str) -> None:
     gen, ops = _generate(f"def f():\n    {statement}\n    return bound\n")
-    assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
+    assert not _module_named_stores(ops, "MODULE_SET_ATTR", "bound")
     assert "bound" not in gen.global_imported_modules
     assert "bound" not in gen.global_imported_names
 
@@ -83,16 +90,20 @@ def test_function_local_import_has_no_module_publication(statement: str) -> None
 def test_function_global_import_publishes_once_to_active_globals(
     statement: str,
 ) -> None:
-    _, ops = _generate(f"def f():\n    global bound\n    {statement}\n")
-    active_globals = {
-        op.result.name
-        for op in ops
+    gen, ops = _generate(f"def f():\n    global bound\n    {statement}\n")
+    fn_ops = next(
+        fn["ops"] for name, fn in gen.funcs_map.items() if name.endswith(".f")
+    )
+    active_globals = [
+        op.result
+        for op in fn_ops
         if op.kind == "CALL" and op.args == ["molt_globals_builtin"]
-    }
-    stores = _named_stores(ops, "DICT_SET", "bound")
+    ]
+    stores = _named_stores(fn_ops, "DICT_SET", "bound")
+    assert len(_module_named_stores(ops, "DICT_SET", "bound")) == 1
     assert len(stores) == 1
-    assert stores[0].args[0].name in active_globals
-    assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
+    assert stores[0].args[0] in active_globals
+    assert not _module_named_stores(ops, "MODULE_SET_ATTR", "bound")
 
 
 @pytest.mark.parametrize("statement", IMPORT_BINDINGS)
@@ -102,7 +113,7 @@ def test_module_loop_import_has_one_publication_per_dynamic_iteration(
     # A replaced imported binding can own a finalizer. The loop's static body
     # must contain one publication, not separate mutation and loop setters.
     _, ops = _generate(f"for item in items:\n    {statement}\n")
-    assert len(_named_stores(ops, "MODULE_SET_ATTR", "bound")) == 1
+    assert len(_module_named_stores(ops, "MODULE_SET_ATTR", "bound")) == 1
 
 
 def test_live_module_mutation_retires_deferred_publication_without_replay() -> None:
@@ -199,8 +210,8 @@ def test_class_nonlocal_import_publishes_to_enclosing_cell_not_class_or_module(
         "    class C(metaclass=meta):\n        nonlocal bound\n"
         f"        {statement}\n    return bound\n"
     )
-    assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
-    assert not _named_stores(ops, "STORE_INDEX", "bound")
+    assert not _module_named_stores(ops, "MODULE_SET_ATTR", "bound")
+    assert not _module_named_stores(ops, "STORE_INDEX", "bound")
     outer = next(
         fn for symbol, fn in gen.funcs_map.items() if symbol.endswith(".outer")
     )
@@ -277,7 +288,7 @@ ABSENT_MODULE_CALLERS = {
 
 def _function_ir(
     source: str, *, module_name: str, source_path: str
-) -> dict[str, list[dict]]:
+) -> tuple[SimpleTIRGenerator, dict[str, list[dict]]]:
     gen = SimpleTIRGenerator(
         module_name=module_name,
         source_path=source_path,
@@ -297,7 +308,7 @@ def _function_ir(
         },
     )
     gen.visit(ast.parse(source))
-    return {
+    return gen, {
         func["name"]: func["ops"]
         for func in gen.to_json()["functions"]
         if func["name"] != "molt_main"
@@ -309,7 +320,7 @@ def test_call_through_import_from_unadmitted_module_is_an_ordinary_call(
     source: str,
 ) -> None:
     """The import statement raises ImportError if it runs; the call never refuses."""
-    functions = _function_ir(source, module_name="top", source_path="/x/top.py")
+    _, functions = _function_ir(source, module_name="top", source_path="/x/top.py")
     ops = [op for body in functions.values() for op in body]
     calls = [
         op
@@ -327,18 +338,14 @@ def test_function_relative_import_binds_the_package_child_not_a_top_level_module
     None
 ):
     """`.helper` in package `pkg` is `pkg.helper`, never a top-level `helper`."""
-    functions = _function_ir(
+    gen, functions = _function_ir(
         "def f():\n    from .helper import compute\n    yield compute(1)\n",
         module_name="pkg",
         source_path="/x/pkg/__init__.py",
     )
-    targets = {
-        op.get("s_value")
-        for body in functions.values()
-        for op in body
-        if op["kind"] == "call_guarded"
+    assert gen.module_function_symbol_targets == {
+        "py.pkg.helper.compute": ("pkg.helper", "compute")
     }
-    assert targets == {"py.pkg.helper.compute"}
     transactions = [
         op
         for body in functions.values()
@@ -346,15 +353,19 @@ def test_function_relative_import_binds_the_package_child_not_a_top_level_module
         if op["kind"] == "import_name" and op["import_form"] == "dunder"
     ]
     assert len(transactions) == 1, "the import keeps its runtime package anchor"
+    assert transactions[0]["s_value"] == "helper"
+    assert transactions[0]["value"] == 1
+    assert transactions[0]["fromlist"] == ["compute"]
 
 
 def test_function_relative_import_without_a_package_anchor_has_no_origin() -> None:
     """With no parent package the import raises when it runs; `helper` is not it."""
-    functions = _function_ir(
+    gen, functions = _function_ir(
         "def f():\n    from .helper import compute\n    return compute(1)\n",
         module_name="top",
         source_path="/x/top.py",
     )
+    assert not gen.module_function_symbol_targets
     ops = [op for body in functions.values() for op in body]
     assert not any(op["kind"] == "call_guarded" for op in ops)
     assert any(op["kind"] == "call_func" for op in ops)
