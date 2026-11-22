@@ -147,10 +147,9 @@ mod tests {
             {"kind":"call","s_value":"molt_exception_prepare_raise","args":["e","cause"],"out":"prepared"},
             {"kind":"check_exception","exception_edge":"origin","value":5},
             {"kind":"try_end","value":5},
-            {"kind":"ret","var":"prepared"},
+            {"kind":"ret","args":["prepared"]},
             {"kind":"label","value":5},{"kind":"try_end","value":5},
-            {"kind":"exception_last_pending","out":"pending"},
-            {"kind":"exception_clear"},{"kind":"ret","var":"pending"}
+            {"kind":"exception_clear"},{"kind":"ret","args":["arg"]}
         ]}]}"#).unwrap();
         crate::tir::lower_from_simple::lower_to_tir_for_target(
             &program.functions[0],
