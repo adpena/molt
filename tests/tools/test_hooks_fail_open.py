@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 
 import tools.hooks._common as common  # noqa: E402
 import tools.hooks.session_digest as sd  # noqa: E402
+from tests.process_guard_common import guard_custody_env  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
@@ -171,6 +172,7 @@ def _run_settings_command(
         timeout=120,
         env={
             **run_context,
+            **guard_custody_env(),
             "PATH": str(bin_dir),
             "HOME": str(tmp_path),
             "CLAUDE_PROJECT_DIR": str(project),
