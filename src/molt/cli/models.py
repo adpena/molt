@@ -53,9 +53,9 @@ from molt.native_callable_exports import (
 from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
-from molt.durable_file_identity import StatToken
 
 if TYPE_CHECKING:
+    from molt.durable_file_identity import StatToken
     from molt.cli.closed_world_bindings import ModuleNamespaceFacts
     from molt.compiler_analysis.python_import_scan import SourceImportPurpose
     from molt.tool_releases import ToolDiscovery

@@ -21,6 +21,17 @@ from tests.module_isolation import forget_module
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
 
 
+def _graph_cache_view(raw: str | bytes) -> dict:
+    payload = json.loads(raw)
+    entries = payload["entries"]
+    decoded = {
+        source: graph._restore_graph_variants(groups)
+        for source, groups in entries.items()
+    }
+    assert all(variants is not None for variants in decoded.values())
+    return {**payload, "entries": decoded}
+
+
 def test_local_python_import_closure_follows_tools_and_src_packages(
     tmp_path: Path,
 ) -> None:
@@ -675,8 +686,8 @@ def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
         )
 
     assert len({closure for closure in closures}) == 1
-    cache = json.loads(
-        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     assert cache["schema_version"] == graph._GRAPH_CACHE_SCHEMA_VERSION
     assert set(cache["entries"]) == {"tools/entry.py", "tools/helper.py"}
@@ -704,6 +715,33 @@ def test_non_mapping_graph_cache_is_ignored_and_replaced(tmp_path: Path) -> None
     )
 
 
+def test_graph_cache_stores_equal_analysis_once_and_rejects_ambiguous_aliases(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "entry.py"
+    source.write_bytes(b"import helper\n")
+    analysis = {"requests": [{"candidates": ["helper"]}]}
+    different = {"requests": [{"candidates": ["different"]}]}
+    variants = {
+        "a": analysis,
+        "b": {"requests": [{"candidates": ["helper"]}]},
+        "c": different,
+    }
+    graph._write_graph_cache(tmp_path, {source.name: variants})
+    path = graph.python_source_closure_cache_path(tmp_path)
+    wire = json.loads(path.read_bytes())
+    groups = wire["entries"][source.name]
+    assert groups == [[["a", "b"], analysis], [["c"], different]]
+    restored, pruned = graph._read_graph_cache(tmp_path)
+    assert not pruned
+    assert restored == {source.name: variants}
+    assert restored[source.name]["a"] is restored[source.name]["b"]
+
+    groups.append([["b"], different])
+    path.write_text(json.dumps(wire), encoding="utf-8")
+    assert graph._read_graph_cache(tmp_path) == ({}, True)
+
+
 @pytest.mark.parametrize("unknown_fields", [False, True])
 def test_validated_graph_hit_reuses_storage_and_changed_bytes_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unknown_fields: bool
@@ -714,14 +752,14 @@ def test_validated_graph_hit_reuses_storage_and_changed_bytes_publish(
     original = local_python_import_closure(tmp_path, (seed,))
     cache_path = graph.python_source_closure_cache_path(tmp_path)
     if unknown_fields:
-        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        cache = _graph_cache_view(cache_path.read_bytes())
         row = next(iter(cache["entries"]["entry.py"].values()))
         # Unknown storage metadata cannot become a graph request, even when a
         # valid row is retained instead of round-tripped through its projection.
         row["future_requests"] = ["unowned"]
         row["requests"][0]["future_candidates"] = ["unowned"]
         (tmp_path / "unowned.py").write_text("VALUE = 9\n", encoding="utf-8")
-        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+        graph._write_graph_cache(tmp_path, cache["entries"])
     before = cache_path.read_bytes()
 
     def unnecessary(*_args, **_kwargs):
@@ -741,7 +779,7 @@ def test_validated_graph_hit_reuses_storage_and_changed_bytes_publish(
     changed = local_python_import_closure(tmp_path, (seed,))
     assert set(changed.paths) == {seed, helper}
     assert changed.content_digest != original.content_digest
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache = _graph_cache_view(cache_path.read_bytes())
     row = next(iter(cache["entries"]["helper.py"].values()))
     assert row["source_sha256"] == hashlib.sha256(b"VALUE = 2\n").hexdigest()
     assert cache_path.read_bytes() != before
@@ -778,10 +816,10 @@ def test_malformed_known_graph_fields_reanalyze_and_replace(
     original = local_python_import_closure(tmp_path, (seed,))
     cache_path = graph.python_source_closure_cache_path(tmp_path)
     original_cache = cache_path.read_bytes()
-    cache = json.loads(original_cache)
+    cache = _graph_cache_view(original_cache)
     row = next(iter(cache["entries"]["entry.py"].values()))
     row[field] = [invalid_row]
-    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    graph._write_graph_cache(tmp_path, cache["entries"])
     analyze = graph.analyze_local_imports
     analyzed = []
 
@@ -829,8 +867,8 @@ def test_grouped_fromlist_graph_preserves_distinct_consumer_policies(
         if policy.include_parent_packages or include_attribute:
             expected.update((initializer, aggregate))
         assert paths == expected
-    cache = json.loads(
-        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     assert len(cache["entries"]["src/pkg/entry.py"]) == 2
 
@@ -908,8 +946,8 @@ def test_source_capture_keys_and_parses_the_same_byte_generation(
     assert set(receipt.paths) == {seed, first}
     assert receipt.source_sha256[seed] == hashlib.sha256(original).hexdigest()
     assert captures.count(seed) == 1
-    cache = json.loads(
-        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     row = next(iter(cache["entries"]["tools/entry.py"].values()))
     assert row["source_sha256"] == hashlib.sha256(original).hexdigest()
@@ -936,8 +974,8 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
         local_python_import_closure(tmp_path, (seed,)).paths
     first.unlink()
     local_python_import_closure(tmp_path, (seed,)).paths
-    cache = json.loads(
-        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     assert set(cache["entries"]) == {"tools/entry.py", "tools/later.py"}
     assert len(cache["entries"]["tools/entry.py"]) == 1
@@ -948,7 +986,7 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
     cache_path = graph.python_source_closure_cache_path(tmp_path)
     accepted_bytes = cache_path.read_bytes()
     row["unresolved_dynamic_imports"].append(dict(row["unresolved_dynamic_imports"][0]))
-    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    graph._write_graph_cache(tmp_path, cache["entries"])
     invalid_bytes = cache_path.read_bytes()
     with pytest.raises(ValueError, match="manifest drift"):
         local_python_import_closure(tmp_path, (seed,))
@@ -988,8 +1026,8 @@ def test_graph_reparses_after_parser_or_binding_authority_change(
     monkeypatch.setattr(graph, "analyze_local_imports", record)
     local_python_import_closure(tmp_path, (seed,)).paths
     assert analyzed == [seed]
-    cache = json.loads(
-        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     assert len(cache["entries"]["tools/entry.py"]) == 1
 
@@ -1370,8 +1408,8 @@ def test_import_alias_contexts_share_bytes_not_analysis(
     assert trees and all(tree() is None for tree in trees)
     assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
     assert captures.count(helper) == 1
-    cache = json.loads(
-        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     assert len(cache["entries"]["tools/pkg/helper.py"]) == 2
     contexts.clear()
@@ -1401,8 +1439,8 @@ def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
     for policy in (*policies, *policies):
         paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy).paths)
         assert (child in paths) is (policy.purpose == "source_dependency")
-    cache = json.loads(
-        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     variants = cache["entries"]["src/pkg/entry.py"]
     premise = PythonNamespacePremise(
@@ -1478,8 +1516,8 @@ def test_unknown_relative_inventory_covers_failed_owner_execution(
         )
     receipt = local_python_import_closure(tmp_path, (seed,))
     assert alternate in receipt.paths and receipt.topology_digest
-    cache = json.loads(
-        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    cache = _graph_cache_view(
+        graph.python_source_closure_cache_path(tmp_path).read_bytes()
     )
     variants = cache["entries"]["entry.py"].values()
     assert any(row["relative_source_obligations"] for row in variants)
@@ -2102,8 +2140,8 @@ def test_foreign_member_write_precedes_first_tooling_acquisition(
     # premise. Preserve every other receipt field so this exercises the retired
     # semantic generation rather than rejection of a malformed record.
     cache_path = graph.python_source_closure_cache_path(tmp_path)
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    cache["schema_version"] = 20
+    cache = _graph_cache_view(cache_path.read_bytes())
+    cache["schema_version"] = 21
     removed = 0
     for row in cache["entries"]["reader.py"].values():
         requests = row["requests"]

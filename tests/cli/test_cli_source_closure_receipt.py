@@ -98,14 +98,14 @@ def test_cache_keys_do_not_resolve_or_grant_source_authority(tmp_path, monkeypat
             {
                 "schema_version": graph._GRAPH_CACHE_SCHEMA_VERSION,
                 "entries": {
-                    "source.py": {},
-                    "../outside.py": {},
-                    "/outside.py": {},
-                    "C:/outside.py": {},
-                    "nested/../source.py": {},
-                    "./source.py": {},
-                    "nested\\source.py": {},
-                    "vanished.py": {},
+                    "source.py": [],
+                    "../outside.py": [],
+                    "/outside.py": [],
+                    "C:/outside.py": [],
+                    "nested/../source.py": [],
+                    "./source.py": [],
+                    "nested\\source.py": [],
+                    "vanished.py": [],
                 },
             }
         ),
@@ -146,7 +146,7 @@ def test_inaccessible_cache_hint_is_pruned_without_source_admission(
         json.dumps(
             {
                 "schema_version": graph._GRAPH_CACHE_SCHEMA_VERSION,
-                "entries": {source.name: {}},
+                "entries": {source.name: []},
             }
         ),
     )

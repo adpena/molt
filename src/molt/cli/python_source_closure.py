@@ -58,7 +58,9 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
     unknown_relative_sources="local_inventory",
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
-_GRAPH_CACHE_SCHEMA_VERSION = 21
+_GRAPH_CACHE_SCHEMA_VERSION = 22
+_StoredGraphEntries = dict[str, dict[str, object]]
+_StoredAnalysisGroup = tuple[list[str], object]
 _GraphDomainKey = tuple[
     Path,
     tuple[Path, ...],
@@ -112,8 +114,8 @@ class _GraphDomain:
 
     root: Path
     resolver: LocalPythonModuleResolver
-    persisted_entries: dict[str, dict[str, object]]
-    entries: dict[str, dict[str, object]]
+    persisted_entries: _StoredGraphEntries
+    entries: _StoredGraphEntries
     cache_pruned: bool
     snapshots: dict[Path, PythonSourceSnapshot] = field(default_factory=dict)
     relative_keys: dict[Path, str] = field(default_factory=dict)
@@ -197,7 +199,7 @@ def python_source_closure_cache_path(project_root: Path) -> Path:
 
 def _read_graph_cache(
     project_root: Path,
-) -> tuple[dict[str, dict[str, object]], bool]:
+) -> tuple[_StoredGraphEntries, bool]:
     cache_path = python_source_closure_cache_path(project_root)
     try:
         source = cache_path.read_text(encoding="utf-8")
@@ -214,8 +216,52 @@ def _read_graph_cache(
     entries = payload.get("entries")
     if not isinstance(entries, dict):
         return {}, True
-    retained = _retained_graph_entries(project_root, entries)
-    return retained, retained != entries
+    decoded = {}
+    for path, groups in entries.items():
+        variants = _restore_graph_variants(groups)
+        if variants is not None:
+            decoded[path] = variants
+    retained = _retained_graph_entries(project_root, decoded)
+    return retained, len(retained) != len(entries)
+
+
+def _restore_graph_variants(groups: object) -> dict[str, object] | None:
+    if not isinstance(groups, list):
+        return None
+    variants: dict[str, object] = {}
+    for group in groups:
+        if not isinstance(group, list) or len(group) != 2:
+            return None
+        policy_keys, analysis = group
+        if (
+            not isinstance(policy_keys, list)
+            or not policy_keys
+            or not isinstance(analysis, dict)
+        ):
+            return None
+        for policy_key in policy_keys:
+            if not isinstance(policy_key, str) or policy_key in variants:
+                return None
+            variants[policy_key] = analysis
+    return variants
+
+
+def _group_graph_variants(variants: Mapping[str, object]) -> list[_StoredAnalysisGroup]:
+    """Intern equal records while preserving every exact namespace premise key."""
+    encoded_by_node: dict[int, str] = {}
+    groups: dict[str, _StoredAnalysisGroup] = {}
+    for policy_key, analysis in sorted(variants.items()):
+        node = id(analysis)
+        encoded = encoded_by_node.get(node)
+        if encoded is None:
+            encoded = json.dumps(analysis, sort_keys=True, separators=(",", ":"))
+            encoded_by_node[node] = encoded
+        group = groups.get(encoded)
+        if group is None:
+            groups[encoded] = ([policy_key], analysis)
+        else:
+            group[0].append(policy_key)
+    return list(groups.values())
 
 
 def _retained_graph_entries(
@@ -280,12 +326,15 @@ def _remember_process_graph_entries(
 
 def _write_graph_cache(
     project_root: Path,
-    entries: dict[str, dict[str, object]],
+    entries: _StoredGraphEntries,
 ) -> None:
     cache_path = python_source_closure_cache_path(project_root)
     payload = {
         "schema_version": _GRAPH_CACHE_SCHEMA_VERSION,
-        "entries": entries,
+        "entries": {
+            source: _group_graph_variants(variants)
+            for source, variants in entries.items()
+        },
     }
     try:
         _atomic_write_text(
