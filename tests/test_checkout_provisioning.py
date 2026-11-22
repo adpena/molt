@@ -18,7 +18,7 @@ import pytest
 
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import guard_custody_env, run_guarded_test_process
 from tests.test_molt_dev import _commit_file, _git, _init_repo, kept_gate_stdout
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -858,13 +858,11 @@ def test_shared_hooks_install_only_from_sources_matching_main(tmp_path: Path) ->
 
     work = _hook_checkout(tmp_path)
     marker = work / ".git" / "stub-hooks-installed"
-    # The installer runs under the memory guard, which keeps its checkout
-    # state under the session's Molt roots. Without them it falls back to the
-    # repository's target/, outside the test's storage authority when the
-    # session (as under the proof executor) selects other roots.
+    # The nested guard must use the test session's state and scratch placement.
     environ = {
         "PATH": os.environ.get("PATH", ""),
         **{key: os.environ[key] for key in MOLT_ROOT_ENV_KEYS if key in os.environ},
+        **guard_custody_env(),
     }
 
     # An unlanded hook change must not reach every other worktree.
