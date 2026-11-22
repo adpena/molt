@@ -1800,7 +1800,7 @@ def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
         path.name for path in _frontend_semantic_tooling_sources(_compiler_root()).paths
     }
     assert _FRONTEND_COMPILER_INPUTS["input_report.py"] is _FrontendInputRole.REPORTING
-    assert "build_record.py" not in _FRONTEND_COMPILER_INPUTS
+    assert _FRONTEND_COMPILER_INPUTS["build_record.py"] is _FrontendInputRole.IDENTITY
     assert not {"input_report.py", "build_record.py"} & names
 
 
