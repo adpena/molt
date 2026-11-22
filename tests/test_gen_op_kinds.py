@@ -4714,9 +4714,11 @@ def test_frontend_generated_tables_have_live_consumers() -> None:
     """The generated CHECK_EXCEPTION_SKIP_KINDS /
     *_OP_KIND constants the frontend imports are the SAME objects the generator
     renders — the frontend emit()/visit_BinOp/visit_AugAssign now have no private
-    copy. Importing the frontend lowering module must expose them identically."""
+    copy. Exercise the lazily loaded frontend through its normal entry point."""
     py = _load_generated_py()
-    import molt.frontend  # noqa: F401  (binds every lowering mixin)
+    from molt.frontend import SimpleTIRGenerator
+
+    SimpleTIRGenerator().visit(ast.parse("value = 1 + 2\nvalue += 3\n"))
 
     names = (
         "CHECK_EXCEPTION_SKIP_KINDS",
