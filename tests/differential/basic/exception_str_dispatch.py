@@ -72,3 +72,13 @@ for i in range(30):
     except ValueError as e:
         total += int(str(e))
 print("total", total)
+
+
+class ChangesArgs:
+    def __str__(self):
+        changed.args = (43,)
+        return "29"
+
+
+changed = ValueError(ChangesArgs())
+print("mutated args", int(str(changed)), changed.args)

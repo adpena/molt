@@ -1610,12 +1610,32 @@ def test_recording_does_not_delete_a_replacement_allocation(
     assert moved.is_dir()
 
 
-def test_a_hit_refreshes_its_record_for_trimming(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_products", [False, True])
+def test_a_hit_refreshes_its_record_for_trimming(
+    tmp_path: Path, with_products: bool
+) -> None:
     _source, _tool, output, record = _fixture(tmp_path)
+    products = [output]
+    if with_products:
+        manifest = output.with_suffix(".json")
+        manifest.write_bytes(b'{"module": "app"}')
+        ledger = _future_ledger()
+        ledger.build_products(
+            {
+                "consumer": str(output),
+                "products": {"wasm": str(output), "manifest": str(manifest)},
+            }
+        )
+        record, reason = _write(tmp_path, ledger, output)
+        assert reason is None
+        products.append(manifest)
+    published = [input_report.stat_token(product) for product in products]
     _age(record, 2 * 3600)
     aged = record.stat().st_mtime_ns
     assert _current(record, output)
     assert record.stat().st_mtime_ns > aged
+    assert [input_report.stat_token(product) for product in products] == published
+    assert _current(record, output), "retention refresh must preserve the next hit"
 
 
 def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
@@ -1833,6 +1853,35 @@ def test_recent_custody_digest_is_not_a_consumed_read(tmp_path):
     output = tmp_path / "app"
     output.write_bytes(b"binary")
     assert _write(tmp_path, ledger, output)[1] is not None
+
+
+def test_fresh_project_config_records_the_bytes_used(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.cli.config_resolution import _load_molt_config, _project_requires_python
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_bytes(b"[project]\rrequires-python = '>=3.12'\r")
+    molt_config = tmp_path / "molt.toml"
+    molt_config.write_bytes(b"[tool.molt.build]\r\nprofile = 'dev'\r\n")
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+
+    with build_record.recording(transient) as ledger:
+        assert _load_molt_config(tmp_path)["tool"]["molt"]["build"] == {
+            "profile": "dev"
+        }
+        assert _project_requires_python(tmp_path) == ">=3.12"
+
+    for config in (pyproject, molt_config):
+        observation = ledger.files[str(config)]
+        assert observation.evidence == input_report.FileEvidence.CONSUMED
+        assert observation.sha256 == hashlib.sha256(config.read_bytes()).hexdigest()
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None
+    assert isinstance(build_record.check(record, KEY), build_record.BuildRecordHit)
+    pyproject.write_bytes(b"[project]\rrequires-python = '>=3.13'\r")
+    assert str(pyproject) in build_record.check(record, KEY)
 
 
 @pytest.mark.parametrize("raw_order", ["before", "after", "second", "thread"])

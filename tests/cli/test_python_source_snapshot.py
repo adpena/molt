@@ -106,7 +106,6 @@ def test_completed_capture_cannot_acknowledge_a_different_recording(
     tmp_path, monkeypatch
 ):
     from molt import build_record, input_report
-    from molt.cli import module_source
     from molt.process_birth import current_process_started_ns
 
     path = tmp_path / "source.py"
@@ -116,7 +115,7 @@ def test_completed_capture_cannot_acknowledge_a_different_recording(
     started = current_process_started_ns()
     assert started is not None
     next_ledger = build_record.InputLedger(started)
-    capture = module_source._read_source_input
+    capture = input_report.read_consumed_input
 
     def switch_after_completed_read(*args):
         value = capture(*args)
@@ -125,7 +124,7 @@ def test_completed_capture_cannot_acknowledge_a_different_recording(
         return value
 
     monkeypatch.setattr(
-        module_source, "_read_source_input", switch_after_completed_read
+        input_report, "read_consumed_input", switch_after_completed_read
     )
     with build_record.recording(tmp_path / "records"):
         snapshot = PythonSourceSnapshot.capture(path)

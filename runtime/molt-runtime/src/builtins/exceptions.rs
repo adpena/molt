@@ -41,6 +41,7 @@ use molt_obj_model::exception_layout::{
     EXCEPTION_ARGS_PAYLOAD_SLOT, EXCEPTION_ARGS_SLOT, EXCEPTION_CAUSE_SLOT, EXCEPTION_CONTEXT_SLOT,
     EXCEPTION_DICT_SLOT, EXCEPTION_LAYOUT_KIND_SLOT, EXCEPTION_MSG_SLOT, EXCEPTION_NOTES_SLOT,
     EXCEPTION_SUPPRESS_SLOT, EXCEPTION_TRACE_SLOT, EXCEPTION_TYPED_TAIL_SLOT,
+    UnicodeErrorConstructor,
 };
 const EXCEPTION_OWNED_EDGE_SLOTS: [usize; 8] = [
     EXCEPTION_MSG_SLOT,
@@ -3953,21 +3954,10 @@ unsafe fn syntax_error_reinit(
     Ok(())
 }
 
-fn unicode_error_kind_for_class(class_bits: u64) -> Option<exception_payload::UnicodeErrorKind> {
+fn unicode_error_kind_for_class(class_bits: u64) -> Option<UnicodeErrorConstructor> {
     let class_ptr = obj_from_bits(class_bits).as_ptr()?;
     let root = unsafe { crate::object::class_exception_layout_root(class_ptr) };
-    match root {
-        ExceptionLayoutRoot::UnicodeDecodeError => {
-            Some(exception_payload::UnicodeErrorKind::Decode)
-        }
-        ExceptionLayoutRoot::UnicodeEncodeError => {
-            Some(exception_payload::UnicodeErrorKind::Encode)
-        }
-        ExceptionLayoutRoot::UnicodeTranslateError => {
-            Some(exception_payload::UnicodeErrorKind::Translate)
-        }
-        _ => None,
-    }
+    UnicodeErrorConstructor::for_root(root)
 }
 
 unsafe fn unicode_error_reinit(
@@ -3983,12 +3973,11 @@ unsafe fn unicode_error_reinit(
     // rejected argument tuple leaves every field as it was.
     let cleared = match kind {
         _ if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) => &[][..],
-        exception_payload::UnicodeErrorKind::Translate => &[
+        UnicodeErrorConstructor::Translate => &[
             (ExceptionTypedField::UnicodeObject, none),
             (ExceptionTypedField::UnicodeReason, none),
         ][..],
-        exception_payload::UnicodeErrorKind::Encode
-        | exception_payload::UnicodeErrorKind::Decode => &[
+        UnicodeErrorConstructor::Encode | UnicodeErrorConstructor::Decode => &[
             (ExceptionTypedField::UnicodeEncoding, none),
             (ExceptionTypedField::UnicodeObject, none),
             (ExceptionTypedField::UnicodeReason, none),
@@ -3997,19 +3986,7 @@ unsafe fn unicode_error_reinit(
     unsafe { exception_reinit_default_message(_py, ptr, args_bits, cleared) }?;
     let fields = unicode_error_fields_from_args(_py, kind, args_bits)
         .map_err(|()| "invalid UnicodeError arguments")?;
-    let result = exception_typed_fields_replace_internal(
-        _py,
-        MoltObject::from_ptr(ptr).bits(),
-        &[
-            (ExceptionTypedField::UnicodeEncoding, fields.encoding_bits),
-            (ExceptionTypedField::UnicodeObject, fields.object_bits),
-            (ExceptionTypedField::UnicodeStart, fields.start_bits),
-            (ExceptionTypedField::UnicodeEnd, fields.end_bits),
-            (ExceptionTypedField::UnicodeReason, fields.reason_bits),
-        ],
-    );
-    fields.release_owned(_py);
-    result
+    fields.write(_py, MoltObject::from_ptr(ptr).bits())
 }
 
 unsafe fn exception_reinitialize_from_args(
@@ -4374,19 +4351,7 @@ pub(crate) unsafe fn exception_initialize_typed_fields_from_args(
                 .ok_or("Unicode typed layout requires a concrete UnicodeError root")?;
             let fields = unicode_error_fields_from_args(_py, kind, args_bits)
                 .map_err(|()| "invalid UnicodeError arguments")?;
-            let result = exception_typed_fields_replace_internal(
-                _py,
-                exception_bits,
-                &[
-                    (ExceptionTypedField::UnicodeEncoding, fields.encoding_bits),
-                    (ExceptionTypedField::UnicodeObject, fields.object_bits),
-                    (ExceptionTypedField::UnicodeStart, fields.start_bits),
-                    (ExceptionTypedField::UnicodeEnd, fields.end_bits),
-                    (ExceptionTypedField::UnicodeReason, fields.reason_bits),
-                ],
-            );
-            fields.release_owned(_py);
-            result
+            fields.write(_py, exception_bits)
         }
         ExceptionLayoutKind::SystemExit | ExceptionLayoutKind::StopIteration => unsafe {
             exception_initialize_simple_typed_fields(_py, ptr, args_bits)
@@ -7165,6 +7130,9 @@ mod tests {
             });
             assert_eq!(format_exception_message(_py, exc_ptr), "42");
             assert_eq!(format_obj(_py, obj_from_bits(exc_bits)), "ValueError(42)");
+            assert!(unsafe {
+                super::exception_args_is_lazy_single(super::exception_args_bits(exc_ptr))
+            });
 
             let args_bits = super::exception_materialized_args_bits(_py, exc_ptr)
                 .expect("args materialization");

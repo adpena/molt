@@ -329,13 +329,13 @@ enum ParseIntError {
     TooManyDigits { limit: usize, digits: usize },
 }
 
-fn parse_int_from_str(
-    text: &str,
+fn parse_int_literal(
+    bytes: &[u8],
     base: i64,
     max_str_digits: usize,
-) -> Result<(BigInt, i64), ParseIntError> {
+) -> Result<BigInt, ParseIntError> {
     let base_arg = i32::try_from(base).map_err(|_| ParseIntError::Invalid)?;
-    let scanned = scan_int_literal_with_limit(text.as_bytes(), base_arg, max_str_digits).map_err(
+    let scanned = scan_int_literal_with_limit(bytes, base_arg, max_str_digits).map_err(
         |error| match error.kind {
             IntLiteralErrorKind::TooManyDigits => ParseIntError::TooManyDigits {
                 limit: max_str_digits,
@@ -354,64 +354,95 @@ fn parse_int_from_str(
     if scanned.negative {
         parsed = -parsed;
     }
-    Ok((parsed, i64::from(scanned.base)))
-}
-
-fn int_digit_limit_message(error: ParseIntError) -> Option<String> {
-    let ParseIntError::TooManyDigits { limit, digits } = error else {
-        return None;
-    };
-    Some(format!(
-        "Exceeds the limit ({limit} digits) for integer string conversion: value has {digits} digits; use sys.set_int_max_str_digits() to increase the limit"
-    ))
+    Ok(parsed)
 }
 
 #[inline(always)]
-fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
-    let trimmed = text.trim_matches(|ch: char| matches!(ch, '\t'..='\r' | ' '));
-    if trimmed.is_empty() {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    let mut idx = 0usize;
-    let mut negative = false;
-    match bytes[0] {
-        b'+' => idx = 1,
-        b'-' => {
-            negative = true;
-            idx = 1;
-        }
-        _ => {}
-    }
-    if idx == bytes.len() {
-        return None;
-    }
-    let limit: u64 = if negative {
-        (i64::MAX as u64) + 1
-    } else {
-        i64::MAX as u64
+fn parse_simple_ascii_decimal_i64(bytes: &[u8]) -> Option<i64> {
+    let (&first, rest) = bytes.split_first()?;
+    let digits = match first {
+        b'+' | b'-' => rest,
+        _ => bytes,
     };
-    let mut value = 0u64;
-    while idx < bytes.len() {
-        let byte = bytes[idx];
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        let digit = (byte - b'0') as u64;
-        if value > (limit - digit) / 10 {
-            return None;
-        }
-        value = value * 10 + digit;
-        idx += 1;
+    const _: () = assert!(molt_runtime_core::integer_decimal::INT_STR_DIGITS_CHECK_THRESHOLD >= 19);
+    // Nineteen digits fit in u64 and below any configured digit limit.
+    // The general scanner counts longer inputs, including leading zeros.
+    if digits.is_empty() || digits.len() > 19 {
+        return None;
     }
-    if negative {
-        if value == (i64::MAX as u64) + 1 {
-            Some(i64::MIN)
-        } else {
-            Some(-(value as i64))
+    let mut value = 0u64;
+    for &byte in digits {
+        let digit = byte.wrapping_sub(b'0');
+        if digit >= 10 {
+            return None;
         }
-    } else {
-        Some(value as i64)
+        value = value * 10 + u64::from(digit);
+    }
+    let negative = first == b'-';
+    if negative && value == i64::MIN.unsigned_abs() {
+        return Some(i64::MIN);
+    }
+    let signed = i64::try_from(value).ok()?;
+    Some(if negative { -signed } else { signed })
+}
+
+#[derive(Clone, Copy)]
+enum IntTextKind {
+    Unicode,
+    Bytes,
+}
+
+fn int_from_text(py: &PyToken<'_>, bytes: &[u8], base: i64, kind: IntTextKind) -> u64 {
+    if base == 10
+        && let Some(value) = parse_simple_ascii_decimal_i64(bytes)
+    {
+        return int_bits_from_i64(py, value);
+    }
+    int_from_text_general(py, bytes, base, kind)
+}
+
+#[cold]
+fn int_from_text_general(py: &PyToken<'_>, bytes: &[u8], base: i64, kind: IntTextKind) -> u64 {
+    let input = match kind {
+        IntTextKind::Unicode => molt_obj_model::int_literal::normalize_unicode_int_literal(
+            bytes,
+            super::ops::unicode_data_for_bytes(py, bytes),
+        ),
+        IntTextKind::Bytes => std::borrow::Cow::Borrowed(bytes),
+    };
+    match parse_int_literal(
+        &input,
+        base,
+        crate::builtins::sys_ext::current_int_max_str_digits(py),
+    ) {
+        Ok(parsed) => int_bits_from_bigint(py, parsed),
+        Err(ParseIntError::Invalid) => {
+            let repr = match kind {
+                IntTextKind::Unicode => {
+                    format_string_repr_bytes(super::ops::unicode_data_for_bytes(py, bytes), bytes)
+                }
+                IntTextKind::Bytes => format_bytes(&bytes[..bytes.len().min(200)]),
+            };
+            let end = repr
+                .char_indices()
+                .nth(200)
+                .map_or(repr.len(), |(end, _)| end);
+            raise_exception::<_>(
+                py,
+                BuiltinExc::ValueError,
+                &format!(
+                    "invalid literal for int() with base {base}: {}",
+                    &repr[..end]
+                ),
+            )
+        }
+        Err(ParseIntError::TooManyDigits { limit, digits }) => raise_exception::<_>(
+            py,
+            BuiltinExc::ValueError,
+            &format!(
+                "Exceeds the limit ({limit} digits) for integer string conversion: value has {digits} digits; use sys.set_int_max_str_digits() to increase the limit"
+            ),
+        ),
     }
 }
 
@@ -1536,31 +1567,10 @@ pub(crate) fn molt_int_from_obj_attached_body(
         } else {
             10
         };
-        let invalid_literal = |base: i64, literal: &str| -> u64 {
-            let msg = format!("invalid literal for int() with base {base}: '{literal}'");
-            raise_exception::<_>(_py, BuiltinExc::ValueError, &msg)
-        };
-        if has_base {
-            let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "int() can't convert non-string with explicit base",
-                );
-            };
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id != TYPE_ID_STRING
-                    && type_id != TYPE_ID_BYTES
-                    && type_id != TYPE_ID_BYTEARRAY
-                {
-                    return raise_exception::<_>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        "int() can't convert non-string with explicit base",
-                    );
-                }
-            }
+        // Exact str has no numeric slots. Resolve an explicit base first
+        // because its __index__ can execute Python.
+        if let Some(bytes) = unsafe { super::ops::exact_string_bytes(_py, val_bits) } {
+            return int_from_text(_py, bytes, base_val, IntTextKind::Unicode);
         }
         if !has_base {
             if let Some(value) = crate::builtins::numbers::int_from_number_protocol(_py, val_bits) {
@@ -1574,68 +1584,21 @@ pub(crate) fn molt_int_from_obj_attached_body(
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_STRING {
-                    let len = string_len(ptr);
-                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                    let text = match std::str::from_utf8(bytes) {
-                        Ok(val) => val,
-                        Err(_) => return invalid_literal(base_val, "<bytes>"),
-                    };
-                    let base = if has_base { base_val } else { 10 };
-                    if base == 10
-                        && let Some(i) = parse_simple_ascii_decimal_i64(text)
-                    {
-                        return int_bits_from_i64(_py, i);
-                    }
-                    let (parsed, _base_used) = match parse_int_from_str(
-                        text,
-                        base,
-                        crate::builtins::sys_ext::current_int_max_str_digits(_py),
-                    ) {
-                        Ok(val) => val,
-                        Err(error) => {
-                            if let Some(message) = int_digit_limit_message(error) {
-                                return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
-                            }
-                            return invalid_literal(base, text);
-                        }
-                    };
-                    if let Some(i) = bigint_to_inline(&parsed) {
-                        return MoltObject::from_int(i).bits();
-                    }
-                    return bigint_bits(_py, parsed);
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    return int_from_text(_py, bytes, base_val, IntTextKind::Unicode);
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                    let len = bytes_len(ptr);
-                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                    let text = String::from_utf8_lossy(bytes);
-                    let base = if has_base { base_val } else { 10 };
-                    if base == 10
-                        && let Some(i) = parse_simple_ascii_decimal_i64(&text)
-                    {
-                        return int_bits_from_i64(_py, i);
-                    }
-                    let (parsed, _base_used) = match parse_int_from_str(
-                        &text,
-                        base,
-                        crate::builtins::sys_ext::current_int_max_str_digits(_py),
-                    ) {
-                        Ok(val) => val,
-                        Err(error) => {
-                            if let Some(message) = int_digit_limit_message(error) {
-                                return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
-                            }
-                            return invalid_literal(base, &format!("b'{text}'"));
-                        }
-                    };
-                    if let Some(i) = bigint_to_inline(&parsed) {
-                        return MoltObject::from_int(i).bits();
-                    }
-                    return bigint_bits(_py, parsed);
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+                    return int_from_text(_py, bytes, base_val, IntTextKind::Bytes);
                 }
             }
         }
         if has_base {
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid literal for int()");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "int() can't convert non-string with explicit base",
+            );
         }
         raise_exception::<_>(
             _py,
@@ -1657,14 +1620,8 @@ pub(crate) fn molt_int_from_obj_attached_body(
 /// csv/etl ETL profiles for numeric (digit-leading, non-interned) fields. It
 /// also heals the general real-world `int(s.split(sep)[k])` idiom.
 ///
-/// Byte-identical to `molt_int_from_obj` on the string the field WOULD have
-/// materialized to (no explicit base): the same `parse_simple_ascii_decimal_i64`
-/// fast path, the same `parse_int_from_str(_, 10)` BigInt fallback (so leading
-/// zeros / sign / `_` separators / bigint overflow all match), and the same
-/// `ValueError("invalid literal for int() with base 10: '<field>'")` on an
-/// invalid literal — where `<field>` is the field text, exactly as CPython
-/// reports. An out-of-range field index raises the same
-/// `IndexError("list index out of range")` the materializing path would.
+/// Parse the same Python string bytes as the materializing conversion.
+/// An out-of-range index raises the same `IndexError` as the list access.
 pub(crate) fn molt_string_split_field_to_int_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -1697,31 +1654,7 @@ pub(crate) fn molt_string_split_field_to_int_attached_body(
                     "list index out of range",
                 );
             };
-            // The field is a sub-slice of a valid UTF-8 `str` split on a UTF-8
-            // separator, so `[start..end]` is itself valid UTF-8 (split never
-            // bisects a multibyte codepoint).
-            let field = std::str::from_utf8_unchecked(&hay_bytes[start..end]);
-            if let Some(i) = parse_simple_ascii_decimal_i64(field) {
-                return int_bits_from_i64(_py, i);
-            }
-            let (parsed, _base_used) = match parse_int_from_str(
-                field,
-                10,
-                crate::builtins::sys_ext::current_int_max_str_digits(_py),
-            ) {
-                Ok(val) => val,
-                Err(error) => {
-                    if let Some(message) = int_digit_limit_message(error) {
-                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
-                    }
-                    let msg = format!("invalid literal for int() with base 10: '{field}'");
-                    return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
-                }
-            };
-            if let Some(i) = bigint_to_inline(&parsed) {
-                return MoltObject::from_int(i).bits();
-            }
-            bigint_bits(_py, parsed)
+            int_from_text(_py, &hay_bytes[start..end], 10, IntTextKind::Unicode)
         }
     })
 }
@@ -1926,7 +1859,7 @@ include!("../attached_exports_generated/object/ops_convert.rs");
 
 #[cfg(test)]
 mod int_literal_tests {
-    use super::parse_int_from_str;
+    use super::parse_int_literal;
     use num_bigint::BigInt;
 
     #[test]
@@ -2076,18 +2009,18 @@ mod int_literal_tests {
     #[test]
     fn integer_runtime_parser_consumes_shared_cpython_lexical_authority() {
         assert_eq!(
-            parse_int_from_str("  -0x_FF  ", 0, 4300),
-            Ok((BigInt::from(-255), 16))
+            parse_int_literal(b"  -0x_FF  ", 0, 4300),
+            Ok(BigInt::from(-255))
         );
         assert_eq!(
-            parse_int_from_str("1208925819614629174706176", 10, 4300),
-            Ok((BigInt::from(1u8) << 80, 10))
+            parse_int_literal(b"1208925819614629174706176", 10, 4300),
+            Ok(BigInt::from(1u8) << 80)
         );
-        assert!(parse_int_from_str("010", 0, 4300).is_err());
-        assert!(parse_int_from_str("1__2", 10, 4300).is_err());
-        assert!(parse_int_from_str("123 junk", 10, 4300).is_err());
-        assert!(parse_int_from_str("0x_FF", 16, 4300).is_ok());
-        assert!(parse_int_from_str(&"9".repeat(4301), 10, 4300).is_err());
-        assert!(parse_int_from_str(&format!("0b1{}", "0".repeat(5000)), 0, 4300).is_ok());
+        assert!(parse_int_literal(b"010", 0, 4300).is_err());
+        assert!(parse_int_literal(b"1__2", 10, 4300).is_err());
+        assert!(parse_int_literal(b"123 junk", 10, 4300).is_err());
+        assert!(parse_int_literal(b"0x_FF", 16, 4300).is_ok());
+        assert!(parse_int_literal(&vec![b'9'; 4301], 10, 4300).is_err());
+        assert!(parse_int_literal(format!("0b1{}", "0".repeat(5000)).as_bytes(), 0, 4300).is_ok());
     }
 }

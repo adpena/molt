@@ -217,13 +217,15 @@ def test_final_link_replay_excludes_historical_optimizer_cost(
     )
     assert historical_timings not in produced.values()
     entry = wasm_final_link_cache.final_link_cache_entry("f" * 64)
-    wasm_final_link_cache.publish_final_link_result(entry, produced)
+    wasm_final_link_cache.ensure_final_link_result(entry, produced, lambda: None)
     restored = wasm_link_output_paths(
         tmp_path / "current" / "linked.wasm",
         split_output_dir=tmp_path / "current" if split else None,
         optimize=True,
     )
-    assert wasm_final_link_cache.restore_final_link_result(entry, restored)
+    assert wasm_final_link_cache.ensure_final_link_result(
+        entry, restored, lambda: pytest.fail("unexpected link producer")
+    ).reused
     assert {role: path.read_bytes() for role, path in restored.items()} == {
         role: path.read_bytes() for role, path in produced.items()
     }

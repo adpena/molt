@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
@@ -178,12 +180,14 @@ def test_native_selection_payload_rejects_other_root_scope(
     path = native_support_source
     _analyze(path, native_support_function_roots=("later",))
     key = module_cache._module_analysis_record_key(
-        path,
-        module_name="app",
-        is_package=False,
-        import_scan_mode="full",
-        native_support_function_roots=("later",),
-        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        module_cache._module_analysis_record_identity(
+            module_cache.PythonSourceSnapshot.capture(path),
+            module_name="app",
+            is_package=False,
+            import_scan_mode="full",
+            native_support_function_roots=("later",),
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
     )
     payload = source_records("module-analysis")[key]
     assert payload is not None
@@ -192,10 +196,15 @@ def test_native_selection_payload_rejects_other_root_scope(
         module_cache._validate_persisted_module_analysis_payload(
             payload,
             path,
-            import_scan_mode="full",
-            path_stat=None,
+            identity=module_cache._module_analysis_record_identity(
+                module_cache.PythonSourceSnapshot.capture(path),
+                module_name="app",
+                is_package=False,
+                import_scan_mode="full",
+                target_python=module_cache._DEFAULT_TARGET_PYTHON_VERSION,
+                native_support_function_roots=("later",),
+            ),
             snapshot=snapshot,
-            native_support_function_roots=("later",),
         )
         is not None
     )
@@ -203,10 +212,15 @@ def test_native_selection_payload_rejects_other_root_scope(
         module_cache._validate_persisted_module_analysis_payload(
             payload,
             path,
-            import_scan_mode="full",
-            path_stat=None,
+            identity=module_cache._module_analysis_record_identity(
+                module_cache.PythonSourceSnapshot.capture(path),
+                module_name="app",
+                is_package=False,
+                import_scan_mode="full",
+                target_python=module_cache._DEFAULT_TARGET_PYTHON_VERSION,
+                native_support_function_roots=other_roots,
+            ),
             snapshot=snapshot,
-            native_support_function_roots=other_roots,
         )
         is None
     )
@@ -524,6 +538,10 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
     path.write_text("VALUE = 1\n", encoding="utf-8")
     snapshot = PythonSourceSnapshot.capture(path)
     payload = {
+        "parser": [sys.implementation.name, sys.version],
+        "module_name": "app",
+        "is_package": False,
+        "target_python": module_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
         "version": module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
         - (0 if current_schema else 1),
         "compiler_fingerprint": "scan-admission",
@@ -535,6 +553,8 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
         "source_sha256": snapshot.sha256,
     }
     options: dict[str, Any] = {
+        "module_name": "app",
+        "is_package": False,
         "import_scan_mode": "full",
         "path_stat": path.stat(),
         "snapshot": snapshot if admitted_snapshot else None,
@@ -548,6 +568,15 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
     if has_imports:
         payload["imports"] = ["stale.child"]
     result = module_cache._validate_persisted_module_analysis_payload(
-        payload, path, **options
+        payload,
+        path,
+        identity=module_cache._module_analysis_record_identity(
+            module_cache.PythonSourceSnapshot.capture(path),
+            module_name="app",
+            is_package=False,
+            import_scan_mode="full",
+            target_python=module_cache._DEFAULT_TARGET_PYTHON_VERSION,
+        ),
+        snapshot=options["snapshot"],
     )
     assert result == (({}, {}) if current_schema and not has_imports else None)

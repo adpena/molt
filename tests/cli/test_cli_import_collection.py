@@ -12311,6 +12311,10 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
         source, snapshot=snapshot
     )
     analysis = {
+        "parser": [sys.implementation.name, sys.version],
+        "module_name": "pkg",
+        "is_package": False,
+        "target_python": cli_module_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
         "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
         "import_scan_mode": "full",
@@ -12325,8 +12329,13 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
         return cli_module_cache._validate_persisted_module_analysis_payload(
             payload,
             source,
-            import_scan_mode="full",
-            path_stat=None,
+            identity=cli_module_cache._module_analysis_record_identity(
+                cli_module_cache.PythonSourceSnapshot.capture(source),
+                module_name="pkg",
+                is_package=False,
+                import_scan_mode="full",
+                target_python=cli_module_cache._DEFAULT_TARGET_PYTHON_VERSION,
+            ),
             snapshot=snapshot,
         )
 
@@ -15390,48 +15399,81 @@ def test_module_cache_keys_resolve_each_path_once_per_operation(
     assert len(resolved) == 2, "a new operation resolves afresh"
 
 
-def test_module_analysis_record_key_separates_source_and_module_roles(tmp_path):
+def test_module_analysis_record_key_shares_content_and_separates_module_roles(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "pkg/mod.py"
+    path.parent.mkdir()
+    path.write_text("pass\n", encoding="utf-8")
+    relocated = tmp_path / "other/mod.py"
+    relocated.parent.mkdir()
+    relocated.write_bytes(path.read_bytes())
     options = dict(
         is_package=False,
         import_scan_mode="full",
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
     first = cli_module_cache._module_analysis_record_key(
-        path, module_name="pkg.mod", **options
+        cli_module_cache._module_analysis_record_identity(
+            cli_module_cache.PythonSourceSnapshot.capture(path),
+            module_name="pkg.mod",
+            **options,
+        )
     )
     assert (
         cli_module_cache._module_analysis_record_key(
-            path, module_name="pkg.mod", **options
+            cli_module_cache._module_analysis_record_identity(
+                cli_module_cache.PythonSourceSnapshot.capture(path),
+                module_name="pkg.mod",
+                **options,
+            )
         )
         == first
     )
     assert (
         cli_module_cache._module_analysis_record_key(
-            path, module_name="other.mod", **options
+            cli_module_cache._module_analysis_record_identity(
+                cli_module_cache.PythonSourceSnapshot.capture(path),
+                module_name="other.mod",
+                **options,
+            )
         )
         != first
     )
     assert (
         cli_module_cache._module_analysis_record_key(
-            tmp_path / "other/mod.py", module_name="pkg.mod", **options
+            cli_module_cache._module_analysis_record_identity(
+                cli_module_cache.PythonSourceSnapshot.capture(relocated),
+                module_name="pkg.mod",
+                **options,
+            )
         )
-        != first
+        == first
     )
 
 
 def test_module_analysis_record_key_tracks_import_scan_mode(tmp_path):
     path = tmp_path / "pkg/mod.py"
+    path.parent.mkdir()
+    path.write_text("pass\n", encoding="utf-8")
     options = dict(
         module_name="pkg.mod",
         is_package=False,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
     full = cli_module_cache._module_analysis_record_key(
-        path, import_scan_mode="full", **options
+        cli_module_cache._module_analysis_record_identity(
+            cli_module_cache.PythonSourceSnapshot.capture(path),
+            import_scan_mode="full",
+            **options,
+        )
     )
     module_init = cli_module_cache._module_analysis_record_key(
-        path, import_scan_mode="module_init", **options
+        cli_module_cache._module_analysis_record_identity(
+            cli_module_cache.PythonSourceSnapshot.capture(path),
+            import_scan_mode="module_init",
+            **options,
+        )
     )
     assert full != module_init
 
@@ -15535,11 +15577,13 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
         snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
     key = cli_module_cache._module_analysis_record_key(
-        module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        cli_module_cache._module_analysis_record_identity(
+            cli_module_cache.PythonSourceSnapshot.capture(module_path),
+            module_name="pkg.mod",
+            is_package=False,
+            import_scan_mode="full",
+            target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        )
     )
     payload = source_records("module-analysis")[key]
     payload["import_scan_mode"] = "module_init"
@@ -16435,17 +16479,20 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     from molt.cli.frontend_record_files import frontend_record_files
 
     key = cli_module_cache._module_analysis_record_key(
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        import_scan_mode="full",
-        target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        cli_module_cache._module_analysis_record_identity(
+            cli_module_cache.PythonSourceSnapshot.capture(module_path),
+            module_name="pkg",
+            is_package=False,
+            import_scan_mode="full",
+            target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        )
     )
     assert frontend_record_files().put(
         "module-analysis",
         key,
         json.dumps(
             {
+                "parser": [sys.implementation.name, sys.version],
                 "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
                 "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
                 "module_name": "pkg",
@@ -16454,7 +16501,6 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
                 "body_selection": {"kind": "complete_source", "roots": []},
                 "target_python": TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION.tag,
                 "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
                 "source_sha256": source_sha256,
                 "func_defaults": {"g": {"params": 0, "defaults": []}},
             }

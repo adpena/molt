@@ -347,13 +347,14 @@ def shared_session_tree(
     A session fixture runs once per xdist worker, so an expensive seed built
     in one costs the session N times. The workers share their basetemp's
     parent: the first to take the lock builds the tree there, the rest find
-    it ready. Callers clone from the result and never write into it.
+    it ready. The completed directory is published by one atomic rename, so
+    interruption after publication cannot leave a missing readiness token.
+    Callers clone from the result and never write into it.
     """
     base = tmp_path_factory.getbasetemp()
     shared = base if worker_id == "master" else base.parent
     target = shared / name
-    ready = shared / f"{name}.ready"
-    if ready.is_file():
+    if target.is_dir():
         return target
     # The builder holds the lock until the tree is ready; its exit releases
     # it. A wall-clock bound here failed waiters while a loaded host built.
@@ -361,14 +362,13 @@ def shared_session_tree(
         shared / f"{name}.lock", timeout_s=None, timeout_message=""
     )
     try:
-        if not ready.is_file():
+        if not target.is_dir():
             staging = shared / f"{name}.staging"
             if staging.exists():
                 shutil.rmtree(staging)
             staging.mkdir()
             build(staging)
             staging.rename(target)
-            ready.touch()
     finally:
         _release_file_lock(handle)
     return target

@@ -445,11 +445,13 @@ def test_module_analysis_record_key_uses_the_declared_key(declared_tree: Path) -
 
     def analysis_key() -> str:
         return MC._module_analysis_record_key(
-            module_path,
-            module_name="program",
-            is_package=False,
-            import_scan_mode="full",
-            target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
+            MC._module_analysis_record_identity(
+                MC.PythonSourceSnapshot.capture(module_path),
+                module_name="program",
+                is_package=False,
+                import_scan_mode="full",
+                target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
+            )
         )
 
     before = analysis_key()

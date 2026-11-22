@@ -1195,10 +1195,10 @@ def check(
         for role, product, token in products:
             if not isinstance(role, str) or not role:
                 return "unreadable record: invalid product role"
-            path = _record_path(product)
-            product_paths.add(path)
-            if stat_token(path) != StatToken.from_payload(token):
-                return f"product {path} changed"
+            product_path = _record_path(product)
+            product_paths.add(product_path)
+            if stat_token(product_path) != StatToken.from_payload(token):
+                return f"product {product_path} changed"
         if consumer != selection.path and consumer not in product_paths:
             return "unreadable record: consumer is not a product"
         changed = _first_change(

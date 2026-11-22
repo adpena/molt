@@ -34,6 +34,7 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_pipeline_authority_sha256,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.integration_driver_fixture import shared_session_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,25 +87,35 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
-def hello_wasm_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the shared read-only hello module once for this test family."""
+def hello_wasm_path(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
+    """Build the read-only hello module once across all session workers."""
 
     _skip_unless_wasm()
-    return _build_wasm(
-        ROOT / "examples" / "hello.py",
-        tmp_path_factory.mktemp("wasm-optimization-hello"),
+
+    def build(root: Path) -> None:
+        _build_wasm(ROOT / "examples" / "hello.py", root)
+
+    root = shared_session_tree(
+        tmp_path_factory, worker_id, "wasm-optimization-hello", build
     )
+    return root / "output_linked.wasm"
 
 
 @pytest.fixture(scope="module")
-def simple_ret_wasm_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the shared read-only comparison module once for this test family."""
+def simple_ret_wasm_path(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str
+) -> Path:
+    """Build the read-only comparison module once across session workers."""
 
     _skip_unless_wasm()
-    return _build_wasm(
-        ROOT / "examples" / "simple_ret.py",
-        tmp_path_factory.mktemp("wasm-optimization-simple-ret"),
+
+    def build(root: Path) -> None:
+        _build_wasm(ROOT / "examples" / "simple_ret.py", root)
+
+    root = shared_session_tree(
+        tmp_path_factory, worker_id, "wasm-optimization-simple-ret", build
     )
+    return root / "output_linked.wasm"
 
 
 def _varuint(value: int) -> bytes:

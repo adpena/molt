@@ -406,6 +406,24 @@ def _pytest_gate(*args: str) -> SelectedGate:
     return SelectedGate(command=command, toolchains=(), pytest=True, try_run=True)
 
 
+def _private_presubmit_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the fixture's complete file without the repository's host policy."""
+    monkeypatch.setattr(
+        consumer_gate,
+        "presubmit_pytest_argv",
+        lambda root, tests: [
+            consumer_gate.sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *tests,
+        ],
+    )
+    monkeypatch.setattr(consumer_gate, "_importer_demand", lambda argv, files: None)
+
+
 def test_a_receipt_proves_the_gates_it_ran_and_no_other(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,9 +436,8 @@ def test_a_receipt_proves_the_gates_it_ran_and_no_other(
     tree = consumer_gate.commit_tree(repo, ["lib.py"])
     assert consumer_gate.proven_gates(repo, tree) is None
 
-    assert (
-        consumer_gate.run(repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"]) == 0
-    )
+    _private_presubmit_run(monkeypatch)
+    assert consumer_gate.run(repo, ["lib.py"], pytest_args=None) == 0
     proven = consumer_gate.proven_gates(repo, tree)
     assert proven is not None
     # The receipt ran these: the static command, and the importer under
@@ -442,6 +459,49 @@ def test_a_receipt_proves_the_gates_it_ran_and_no_other(
         consumer_gate.proven_gates(repo, consumer_gate.commit_tree(repo, ["lib.py"]))
         is None
     )
+
+
+def test_a_scoped_or_legacy_receipt_cannot_prove_a_whole_importer_file(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    passing = 'python -c "pass"'
+    commit = 'python -c "assert True"'
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [passing]
+    )
+    monkeypatch.setattr(
+        consumer_gate, "commit_gates", lambda root, tree, base="HEAD": [commit]
+    )
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repo / "tests/test_lib.py").write_text(
+        "def test_selected():\n    assert True\n\n"
+        "def test_unselected():\n    assert False, 'not exercised by -k'\n",
+        encoding="utf-8",
+    )
+    assert (
+        consumer_gate.run(
+            repo, ["lib.py"], pytest_args=["-k", "selected and not unselected"]
+        )
+        == 0
+    )
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+    path = consumer_gate.receipt_path(repo, tree)
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["canonical_presubmit"] is False
+    assert "-k" in receipt["pytest_argv"]
+    for legacy in (False, True):
+        if legacy:
+            del receipt["canonical_presubmit"]
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+        proven = consumer_gate.proven_gates(repo, tree)
+        assert proven is not None
+        assert proven(SelectedGate(command=passing, toolchains=()))
+        assert proven(SelectedGate(command=commit, toolchains=("cargo",), commit=True))
+        assert not proven(_pytest_gate("--skip-slow", "tests/test_lib.py"))
+        assert not proven(
+            _pytest_gate("--skip-slow", "tests/test_lib.py::test_unselected")
+        )
 
 
 def test_a_failing_commit_gate_blocks_the_receipt_and_a_passing_one_proves_itself(
@@ -522,7 +582,8 @@ def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
     paths = [".gitignore", "lib.py"]
     gate = _pytest_gate("--skip-slow", "tests/test_lib.py")
 
-    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    _private_presubmit_run(monkeypatch)
+    assert consumer_gate.run(repo, paths, pytest_args=None) == 0
     tree = consumer_gate.commit_tree(repo, paths)
     exact = consumer_gate.proven_gates(repo, tree, exact=True)
     assert exact is not None and exact(gate)
@@ -530,7 +591,7 @@ def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
     # An untracked file the tree lacks could have made the tests pass: the
     # lane precheck may still skip the gate, the batch may not.
     (repo / "helper.py").write_text("X = 1\n", encoding="utf-8")
-    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    assert consumer_gate.run(repo, paths, pytest_args=None) == 0
     assert consumer_gate.proven_gates(repo, tree, exact=True) is None
     lane = consumer_gate.proven_gates(repo, tree)
     assert lane is not None and lane(gate)
@@ -586,6 +647,27 @@ def test_a_hung_base_rerun_is_stopped_and_proves_no_main_defect(
     assert "base rerun ran past 5 s and was stopped" in capsys.readouterr().err
     assert consumer_gate.check(repo, paths) == 1
     assert len(_git(repo, "worktree", "list").splitlines()) == 1
+
+
+def test_retry_budget_counts_each_failing_junit_node_once(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_lib.py").touch()
+    report = tmp_path / "importers.xml"
+    names = [f"test_value_{index}" for index in range(11)]
+    cases = [
+        f'<testcase classname="tests.test_lib" name="{name}"><failure/></testcase>'
+        for name in names
+    ]
+    cases.insert(
+        1,
+        '<testcase classname="tests.test_lib" name="test_value_0"><error/></testcase>',
+    )
+    report.write_text("<testsuite>" + "".join(cases) + "</testsuite>", encoding="utf-8")
+
+    assert consumer_gate._failed_node_ids(tmp_path, report) == [
+        f"tests/test_lib.py::{name}" for name in names
+    ]
+    assert consumer_gate._rerun_failures_alone(tmp_path, report, {}) == (None, [])
 
 
 def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(

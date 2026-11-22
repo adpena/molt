@@ -26,32 +26,17 @@ executable tests and generated evidence win when prose drifts.
 
 ## First Release Milestone
 
-Molt's first public release is v0.1 (owner decision 2026-11-05): a narrow claim
-proven by two flagship witnesses in four Tier 1 cells, with a generated
-known-issues list ([the v0.1 claim](docs/spec/PUBLIC_CLAIM_V0_1.md)). It must be
-useful for real work, and measured correctness, conformance, performance and
-security evidence must back every claim it makes. The v1.0 plan below continues
-after v0.1. Release acceptance follows the
+Molt's first public release is v0.1 (owner decision 2026-11-05). The
+[public claim](docs/spec/PUBLIC_CLAIM_V0_1.md) defines the two flagship
+witnesses and links the Tier 1 cells and generated known-issues list.
+
+Version 1.0 is the stable release for real-world use. Its compatibility and
+support promises require evidence of generated-program performance, user-code
+compilation latency, correctness, conformance and security. The
+[findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md) owns blocker status and
+execution order. Release acceptance follows the
 [packaging authority](packaging/PACKAGING.md) and the
 [performance acceptance scope](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
-A missing measurement is a gap, not a pass. A demonstration or one green cell
-does not qualify the release.
-
-The approved v1.0 plan runs in this order:
-
-1. **Cut line.** Write the compatibility promise and the support matrix. The
-   owner signs it. Every open ledger row is classified as release-blocking or
-   post-1.0.
-2. **Typed contracts over harness checks.** A fact the type system can enforce
-   moves into a generated, closed type. Source-scraping audits and harness
-   checks retire when the type enforces the same fact (see below).
-3. **One environment.** Development, the Linux VMs and CI run one environment
-   definition.
-4. **CPython's own tests as the oracle.** CPython's regrtest becomes the
-   acceptance oracle (HF-488). The ledger becomes executable: every open
-   finding has a test keyed by its typed ID.
-5. **The fast loop.** Cut the test-suite time (HF-263) and make compile time
-   scale with program size (HF-549).
 
 ### Typed identity comes first
 

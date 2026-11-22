@@ -13,6 +13,29 @@ pub(crate) unsafe fn read(
         let kind = NativeCallableKind::from_class(py, object_class_bits(public));
         let field = match declared {
             CallableMetadata::Stored(field) => field,
+            CallableMetadata::Code | CallableMetadata::Globals => {
+                if kind.is_some() || object_type_id(public) != TYPE_ID_FUNCTION {
+                    return Ok(None);
+                }
+                let function = MoltObject::from_ptr(public).bits();
+                let value = if declared == CallableMetadata::Code {
+                    crate::builtins::functions::runtime_callable_targets::molt_function_get_code(
+                        py.attached_context(),
+                        function,
+                    )
+                } else {
+                    crate::builtins::functions::runtime_callable_targets::molt_function_get_globals(
+                        py.attached_context(),
+                        function,
+                    )
+                };
+                return if exception_pending(py) {
+                    dec_ref_bits(py, value);
+                    Err(())
+                } else {
+                    Ok(Some(value))
+                };
+            }
             CallableMetadata::Builtins => {
                 if kind.is_some() || object_type_id(public) != TYPE_ID_FUNCTION {
                     return Ok(None);
@@ -113,6 +136,9 @@ pub(crate) unsafe fn write(
     value: Option<u64>,
 ) -> Result<(), ()> {
     unsafe {
+        if declared == CallableMetadata::Code {
+            return super::mutation::replace_function_code(py, object, value);
+        }
         let CallableMetadata::Stored(field) = declared else {
             raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
@@ -191,7 +217,8 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[CallableMetadat
             // CPython's methodobject/descrobject/funcobject declaration kind
             // is independent of this runtime's shared typed metadata storage.
             let member = match (field, kind) {
-                (CallableMetadata::Builtins, _) => true,
+                (CallableMetadata::Builtins | CallableMetadata::Globals, _) => true,
+                (CallableMetadata::Code, _) => false,
                 (CallableMetadata::Stored(field), kind) => match kind {
                     Some(
                         NativeCallableKind::Constructor

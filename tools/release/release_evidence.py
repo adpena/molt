@@ -31,6 +31,7 @@ from .release_model import (
     RELEASE_EXIT_ARCHIVE_KIND,
     file_record,
     load_config,
+    normalized_version,
     release_exit_archive_filename,
     phase_exit_attestation_filename,
 )
@@ -161,7 +162,15 @@ def verify_evidence(
     repo_root: Path = ROOT,
     authenticate: bool = False,
 ) -> None:
-    verify_release_exit_manifest(manifest, source_sha=source_sha, repo_root=repo_root)
+    report = verify_release_exit_manifest(
+        manifest, source_sha=source_sha, repo_root=repo_root
+    )
+    selected_version = normalized_version(version)
+    if report.version != selected_version:
+        raise ValueError(
+            "release-exit bundle version differs from release plan: "
+            f"expected {selected_version!r}, got {report.version!r}"
+        )
     if phase_manifest is None:
         raise ValueError(
             f"release {version} requires a green H0 phase-exit manifest for {source_sha}"

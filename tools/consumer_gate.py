@@ -126,9 +126,9 @@ def proven_gates(
 
     A static gate reads only the tree's files, so the receipt's run of the
     same command proves it. A pytest gate is proven when it skips slow
-    tests, as the receipt's run did, and each of its targets is a file the
-    receipt ran as an importer; a ``-k`` or ``-m`` selection only narrows
-    those files. A test that needs landing-built artifacts is never a receipt
+    tests, the receipt explicitly records a canonical presubmit run, and
+    each target is a file that run covered. Custom pytest arguments and
+    older receipts cannot prove a whole file. A test that needs landing-built artifacts is never a receipt
     importer, so its cohort is never proven.
 
     ``exact`` accepts only a receipt whose run saw exactly the tree's files
@@ -147,6 +147,7 @@ def proven_gates(
     statics = frozenset(payload["static_gates"])
     commits = frozenset(payload.get("commit_gates", ()))
     importers = frozenset(payload["importers"])
+    canonical_presubmit: bool = payload.get("canonical_presubmit") is True
     import shlex
 
     from tools.molt_dev_gates import display
@@ -159,7 +160,7 @@ def proven_gates(
         if gate.commit:
             # The same command over the same tree, as for a static gate.
             return display(gate.command) in commits
-        if not gate.pytest:
+        if not gate.pytest or not canonical_presubmit:
             return False
         argv = (
             shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
@@ -451,6 +452,7 @@ def run(
             print(f"  {test}")
     flaky_reruns: list[str] | None = []
     slow_cases: list[tuple[str, float]] = []
+    importer_argv: list[str] = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -492,10 +494,11 @@ def run(
                 )
             print("consumer-gate: " + " ".join(argv), flush=True)
             report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
+            importer_argv = [*argv, f"--junitxml={report}"]
             try:
                 failed = (
                     _COMMANDS.run(
-                        [*argv, f"--junitxml={report}"],
+                        importer_argv,
                         cwd=root,
                         env=env,
                         timeout=IMPORTER_RUN_TIMEOUT_S,
@@ -544,8 +547,9 @@ def run(
         print("consumer-gate: the change moved while its tests ran", file=sys.stderr)
         return 1
     exact = exact and checkout_matches(root, tree)
+    from molt.file_publication import PublicationDurability, atomic_write_bytes
+
     path = receipt_path(root, tree)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": SCHEMA,
         "tree": tree,
@@ -555,6 +559,8 @@ def run(
         # The lib tests a Rust change reaches (`commit = true`, HF-937).
         "commit_gates": commits,
         "importers": run_now,
+        "canonical_presubmit": pytest_args is None and bool(run_now),
+        "pytest_argv": importer_argv,
         "landing_built_importers": {
             test: list(deps) for test, deps in landing_built.items()
         },
@@ -574,7 +580,12 @@ def run(
         # such a receipt (proven_gates(exact=True)).
         "exact": exact,
     }
-    path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=1) + "\n").encode("utf-8"),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
+        purpose="consumer-receipt",
+    )
     print(f"consumer-gate: receipt {path}")
     return 0
 
@@ -633,7 +644,7 @@ def _slow_cases(report: Path) -> list[tuple[str, float]]:
 
 
 def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
-    """The pytest node ids that failed or errored in a JUnit report, or None
+    """Distinct pytest node ids by first failure in a JUnit report, or None
     when the report is missing or names a case no test file owns."""
     import xml.etree.ElementTree as ElementTree
 
@@ -641,7 +652,7 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
         cases = ElementTree.parse(report).getroot().iter("testcase")
     except (OSError, ElementTree.ParseError):
         return None
-    ids: list[str] = []
+    ids: dict[str, None] = {}
     for case in cases:
         if case.find("failure") is None and case.find("error") is None:
             continue
@@ -649,11 +660,11 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
         for split in range(len(parts), 0, -1):
             path = "/".join(parts[:split]) + ".py"
             if (root / path).is_file():
-                ids.append("::".join([path, *parts[split:], case.get("name", "")]))
+                ids["::".join([path, *parts[split:], case.get("name", "")])] = None
                 break
         else:
             return None
-    return ids
+    return list(ids)
 
 
 def _rerun_failures_alone(
@@ -665,12 +676,8 @@ def _rerun_failures_alone(
     unreadable report or more failures than RERUN_LIMIT still fail as a whole
     (no ids, no base retry)."""
     ids = _failed_node_ids(root, report)
-    if ids is None:
+    if not ids or len(ids) > RERUN_LIMIT:
         return None, []
-    if not ids:
-        return None, []
-    if len(ids) > RERUN_LIMIT:
-        return None, ids
     print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
     alone = report.with_name("alone.junit.xml")
     rerun = [sys.executable, "-m", "pytest", "-q", *ids, f"--junitxml={alone}"]

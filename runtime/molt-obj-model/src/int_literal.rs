@@ -5,6 +5,33 @@
 //! through runtime hooks), while sharing sign/base/prefix/underscore and end
 //! pointer semantics.
 
+use crate::text_storage::code_points;
+use crate::unicode::UnicodeData;
+use std::borrow::Cow;
+
+/// Translate Python decimal digits and spaces before ASCII scanning.
+/// The caller supplies validated Python string storage.
+pub fn normalize_unicode_int_literal<'a>(bytes: &'a [u8], data: &UnicodeData) -> Cow<'a, [u8]> {
+    if bytes.is_ascii() {
+        return Cow::Borrowed(bytes);
+    }
+    Cow::Owned(
+        code_points(bytes)
+            .map(|code| {
+                if code < 0x80 {
+                    code as u8
+                } else if let Some(digit) = data.decimal(code) {
+                    b'0' + digit
+                } else if data.is_space(code) {
+                    b' '
+                } else {
+                    b'?'
+                }
+            })
+            .collect(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntLiteralErrorKind {
     InvalidBase,

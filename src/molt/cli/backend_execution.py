@@ -46,7 +46,7 @@ from molt.build_state_layout import build_state_root
 from molt.compiler_distribution import installed_compiler
 from molt.dx import (
     backend_ir_lease_dir,
-    cargo_target_dir_for_artifact_root,
+    checkout_cargo_target_roots,
     configured_artifact_root,
     project_cargo_target_base,
     session_targets_dir,
@@ -529,10 +529,9 @@ def _sweep_orphaned_backend_daemon_locks(
         if artifact is not None:
             bases.append(artifact)
         sessions_roots = [
-            session_targets_dir(
-                cargo_target_dir_for_artifact_root(base, None, source_root=project_root)
-            )
-            for base in bases
+            session_targets_dir(target)
+            for base in dict.fromkeys(bases)
+            for target in checkout_cargo_target_roots(base, source_root=project_root)
         ]
         for sessions_root in dict.fromkeys(sessions_roots):
             try:

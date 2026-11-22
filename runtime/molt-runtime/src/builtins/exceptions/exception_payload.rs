@@ -1,6 +1,7 @@
 use super::*;
 use crate::BuiltinExc;
 use crate::object::ops_sys::{HintFrame, traceback_format_exception_only_line};
+use molt_obj_model::exception_layout::{OSErrorArguments, OSErrorThird, UnicodeErrorArguments};
 
 fn errno_is_shutdown(errno: i64) -> bool {
     #[cfg(all(not(windows), not(target_arch = "wasm32")))]
@@ -88,6 +89,9 @@ pub(super) struct OSErrorFields {
 }
 
 fn oserror_integral_i64(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
+    if let Some(value) = obj_from_bits(bits).as_int() {
+        return Some(value);
+    }
     let int_type = builtin_classes(_py).int;
     (int_type != 0 && isinstance_bits(_py, bits, int_type))
         .then(|| to_i64(obj_from_bits(bits)))
@@ -121,22 +125,25 @@ pub(super) unsafe fn oserror_fields_from_args(
     let exact_blocking = class_bits != 0 && class_bits == blocking_type;
     unsafe {
         crate::object::seq_access::with_borrowed(args_ptr, |elems| {
-            if !(2..=5).contains(&elems.len()) {
+            let Some(args) = OSErrorArguments::from_positional(elems) else {
                 return;
-            }
-            fields.errno_bits = elems[0];
-            fields.errno_value = oserror_integral_i64(_py, elems[0]);
-            fields.strerror_bits = elems[1];
-            if let Some(&third) = elems.get(2) {
-                if exact_blocking && elems.len() == 3 && oserror_integral_i64(_py, third).is_some()
-                {
+            };
+            fields.errno_bits = args.errno;
+            fields.errno_value = oserror_integral_i64(_py, args.errno);
+            fields.strerror_bits = args.strerror;
+            match args.third_field(
+                exact_blocking,
+                |bits| oserror_integral_i64(_py, bits).is_some(),
+                |bits| obj_from_bits(bits).is_none(),
+            ) {
+                Some(OSErrorThird::CharactersWritten(third)) => {
                     fields.characters_written_bits = Some(third);
-                } else if !obj_from_bits(third).is_none() {
-                    fields.filename_bits = third;
                 }
+                Some(OSErrorThird::Filename(third)) => fields.filename_bits = third,
+                None => {}
             }
             #[cfg(windows)]
-            if let Some(&winerror) = elems.get(3) {
+            if let Some(winerror) = args.winerror {
                 fields.winerror_bits = winerror;
                 if let Some(winerror_value) = oserror_integral_i64(_py, winerror) {
                     let errno = crate::windows_abi::winerror_to_errno(winerror_value as i32) as i64;
@@ -145,7 +152,7 @@ pub(super) unsafe fn oserror_fields_from_args(
                 }
             }
             if !exception_field_is_missing(fields.filename_bits)
-                && let Some(&filename2) = elems.get(4)
+                && let Some(filename2) = args.filename2
                 && !obj_from_bits(filename2).is_none()
             {
                 fields.filename2_bits = filename2;
@@ -171,7 +178,7 @@ pub(super) fn oserror_stored_args(
     let mut stored = [none; 5];
     let (len, changed) = unsafe {
         crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
-            if !(2..=5).contains(&args.len()) {
+            if OSErrorArguments::from_positional(args).is_none() {
                 return (args.len(), false);
             }
             stored[..args.len()].copy_from_slice(args);
@@ -255,24 +262,33 @@ pub(crate) fn raise_os_error<T: ExceptionSentinel>(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum UnicodeErrorKind {
-    Encode,
-    Decode,
-    Translate,
-}
-
-#[derive(Clone, Copy)]
 pub(super) struct UnicodeErrorFields {
-    pub(super) encoding_bits: u64,
-    pub(super) object_bits: u64,
-    pub(super) start_bits: u64,
-    pub(super) end_bits: u64,
-    pub(super) reason_bits: u64,
+    encoding_bits: u64,
+    object_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    reason_bits: u64,
     owned_object: bool,
 }
 
 impl UnicodeErrorFields {
-    pub(super) fn release_owned(self, _py: &PyToken<'_>) {
+    pub(super) fn write(self, py: &PyToken<'_>, exception_bits: u64) -> Result<(), &'static str> {
+        let result = exception_typed_fields_replace_internal(
+            py,
+            exception_bits,
+            &[
+                (ExceptionTypedField::UnicodeEncoding, self.encoding_bits),
+                (ExceptionTypedField::UnicodeObject, self.object_bits),
+                (ExceptionTypedField::UnicodeStart, self.start_bits),
+                (ExceptionTypedField::UnicodeEnd, self.end_bits),
+                (ExceptionTypedField::UnicodeReason, self.reason_bits),
+            ],
+        );
+        self.release_owned(py);
+        result
+    }
+
+    fn release_owned(self, _py: &PyToken<'_>) {
         if self.owned_object {
             dec_ref_bits(_py, self.object_bits);
         }
@@ -286,12 +302,20 @@ impl UnicodeErrorFields {
 /// `__index__` object, converted to `Py_ssize_t`. Its refusals differ from the
 /// attribute setter's ("an integer is required"). The result is an owned int.
 fn unicode_error_position_arg(_py: &PyToken<'_>, bits: u64) -> Result<u64, ()> {
-    let message = format!(
-        "'{}' object cannot be interpreted as an integer",
-        type_name(_py, obj_from_bits(bits))
-    );
-    let value =
-        crate::builtins::numbers::index_bigint_from_obj(_py, bits, message.as_str()).ok_or(())?;
+    let value = obj_from_bits(bits);
+    if value
+        .as_int()
+        .is_some_and(|integer| isize::try_from(integer).is_ok())
+    {
+        return Ok(bits);
+    }
+    let message = crate::builtins::numbers::LazyMessage(|| {
+        format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, value)
+        )
+    });
+    let value = crate::builtins::numbers::index_bigint_from_obj(_py, bits, message).ok_or(())?;
     let Some(value) = value.to_isize() else {
         let _ = raise_exception::<u64>(
             _py,
@@ -308,7 +332,7 @@ fn unicode_error_position_arg(_py: &PyToken<'_>, bits: u64) -> Result<u64, ()> {
 
 pub(super) fn unicode_error_fields_from_args(
     _py: &PyToken<'_>,
-    kind: UnicodeErrorKind,
+    kind: UnicodeErrorConstructor,
     args_bits: u64,
 ) -> Result<UnicodeErrorFields, ()> {
     let args_obj = obj_from_bits(args_bits);
@@ -321,37 +345,27 @@ pub(super) fn unicode_error_fields_from_args(
         }
         let elems = crate::object::seq_access::pin_tuple(_py, args_ptr)
             .expect("type-checked UnicodeError args tuple must remain live");
-        let expected = match kind {
-            UnicodeErrorKind::Translate => 4,
-            UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
-        };
-        if elems.len() != expected {
+        let Some(UnicodeErrorArguments {
+            encoding,
+            object: mut object_bits,
+            start: start_bits,
+            end: end_bits,
+            reason: reason_bits,
+        }) = kind.arguments(&elems)
+        else {
+            let expected = kind.positional_count();
             let msg = format!(
                 "function takes exactly {expected} arguments ({} given)",
                 elems.len()
             );
             let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
-        }
-        let (encoding_bits, mut object_bits, start_bits, end_bits, reason_bits, object_idx) =
-            match kind {
-                UnicodeErrorKind::Translate => (
-                    exception_field_missing_bits(),
-                    elems[0],
-                    elems[1],
-                    elems[2],
-                    elems[3],
-                    1,
-                ),
-                UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => {
-                    (elems[0], elems[1], elems[2], elems[3], elems[4], 2)
-                }
-            };
+        };
         // CPython's argument order: encode and translate parse `U U n n U`
         // (encoding, object as str, start, end, reason); decode parses
         // `U O n n U` and checks the object's buffer after the whole tuple.
         let builtins = builtin_classes(_py);
-        if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Decode)
+        if let Some(encoding_bits) = encoding
             && !isinstance_bits(_py, encoding_bits, builtins.str)
         {
             let msg = format!(
@@ -361,9 +375,10 @@ pub(super) fn unicode_error_fields_from_args(
             let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
-        if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Translate)
+        if kind != UnicodeErrorConstructor::Decode
             && !isinstance_bits(_py, object_bits, builtins.str)
         {
+            let object_idx = kind.object_index() + 1;
             let msg = format!(
                 "argument {object_idx} must be str, not {}",
                 type_name(_py, obj_from_bits(object_bits))
@@ -386,17 +401,14 @@ pub(super) fn unicode_error_fields_from_args(
             Err(())
         };
         if !isinstance_bits(_py, reason_bits, builtins.str) {
-            let arg_index = match kind {
-                UnicodeErrorKind::Translate => 4,
-                UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
-            };
+            let arg_index = kind.positional_count();
             return refuse(format!(
                 "argument {arg_index} must be str, not {}",
                 type_name(_py, obj_from_bits(reason_bits))
             ));
         }
         let mut owned_object = false;
-        if matches!(kind, UnicodeErrorKind::Decode) {
+        if matches!(kind, UnicodeErrorConstructor::Decode) {
             let not_bytes = || {
                 format!(
                     "a bytes-like object is required, not '{}'",
@@ -421,7 +433,7 @@ pub(super) fn unicode_error_fields_from_args(
             }
         }
         Ok(UnicodeErrorFields {
-            encoding_bits,
+            encoding_bits: encoding.unwrap_or_else(exception_field_missing_bits),
             object_bits,
             start_bits,
             end_bits,

@@ -403,6 +403,8 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
         "invalid-policy",
         "passing-gate-failing-junit",
         "runner-fault",
+        "unclean-gate-failure",
+        "memory-pressure",
         "unresolved-cancellation",
     ],
 )
@@ -436,6 +438,14 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             raise CandidateFailure("invalid local gate binding; executed=0")
         if outcome == "runner-fault":
             raise OSError("runner storage unavailable")
+        if outcome == "unclean-gate-failure":
+            # A real candidate trigger plus a sibling's runner/custody fault
+            # preserves GateFailure, but cannot qualify main as red.
+            raise GateFailure("candidate trigger with unresolved sibling custody")
+        if outcome == "memory-pressure":
+            raise molt_dev_gates.GateMemoryPressure(
+                "closed resource pressure", ("gate",)
+            )
         if outcome == "unresolved-cancellation":
             # HF-655: a landing preempted postsubmit, and the cancelled gate's
             # guard left its Cargo custody unresolved. No gate failed.
@@ -477,7 +487,9 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
                 output / "gate-001.junit.xml",
                 {"tests/test_value.py::TestValue::test_value[param]": "failed"},
             )
-            raise GateFailure("test failed")
+            failure = GateFailure("test failed")
+            failure.clean_closure = True
+            raise failure
         if outcome.startswith("cancelled"):
             if outcome == "cancelled-partial":
                 (output / "gate-001.junit.xml").write_text(
@@ -514,7 +526,14 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         "red"
         if outcome in {"invalid-policy", "passing-gate-failing-junit"}
         else "inconclusive"
-        if outcome in {"cas-race", "runner-fault", "unresolved-cancellation"}
+        if outcome
+        in {
+            "cas-race",
+            "runner-fault",
+            "unresolved-cancellation",
+            "unclean-gate-failure",
+            "memory-pressure",
+        }
         else "cancelled"
         if outcome.startswith("cancelled")
         else "green"
@@ -630,6 +649,106 @@ def test_postsubmit_refuses_a_failure_that_names_no_collected_test(
     )
     with pytest.raises(DriverError, match="names no collected test"):
         queue._postsubmit_failures(tmp_path)
+
+
+def test_postsubmit_reads_owned_attempts_and_their_flakes(tmp_path: Path) -> None:
+    from tools import molt_dev_queue as queue
+
+    flaky = "tests/test_value.py::test_flaky"
+    failures = []
+    for index, relative in enumerate(
+        (
+            "heavy-rest",
+            "heavy-rest-2",
+            "postsubmit-rest-1",
+            "postsubmit-rest-2/heavy-rest",
+            "postsubmit-rest-2/gate-001.isolation/continue-1",
+        )
+    ):
+        directory = tmp_path / relative
+        directory.mkdir(parents=True)
+        node = f"tests/test_value.py::test_failure_{index}"
+        failures.append(node)
+        _junit_report(
+            directory / "gate-001.junit.xml", {node: "failed", flaky: "failed"}
+        )
+    (tmp_path / "postsubmit-rest-1" / "flakes.json").write_text(
+        json.dumps([{"gate": "g", "tests": [flaky], "evidence": "e"}]),
+        encoding="utf-8",
+    )
+    # A gate's arbitrary scratch output cannot contribute a failure or hide
+    # one by claiming it passed alone.
+    for name in (
+        "scratch",
+        "postsubmit-rest-1-scratch",
+        "heavy-rest-2-scratch",
+        "attempt-2-scratch",
+    ):
+        scratch = tmp_path / name
+        scratch.mkdir()
+        _junit_report(scratch / "gate-001.junit.xml", {"unrelated": "failed"})
+        (scratch / "flakes.json").write_text(
+            json.dumps([{"tests": failures}]), encoding="utf-8"
+        )
+    assert set(queue._postsubmit_failures(tmp_path)) == set(failures)
+    assert molt_dev_gates.recorded_flaky_tests(tmp_path) == {flaky}
+
+
+@pytest.mark.parametrize("successful_report", [True, False])
+def test_postsubmit_requires_junit_beside_the_successful_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, successful_report: bool
+) -> None:
+    from types import SimpleNamespace
+    from tools import molt_dev_policy, molt_dev_queue as queue
+
+    gate = SelectedGate(
+        ("python", "-m", "pytest", "tests/gate.py"), ("python",), pytest=True
+    )
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, [gate], lambda *args: None)
+    output = tmp_path / "output"
+    output.mkdir()
+    successful = output / "postsubmit-rest-1"
+    successful.mkdir()
+    runtime.passed_logs[molt_dev_gates.display(gate.command)] = (
+        successful / "gate-001.stdout.log"
+    )
+    report_dir = successful if successful_report else output
+    _junit_report(
+        report_dir / "gate-001.junit.xml", {"tests/gate.py::test_ok": "passed"}
+    )
+    prepared = SimpleNamespace(
+        runnable=lambda: [gate], environments={}, fingerprints={}, deferred=()
+    )
+    config = SimpleNamespace(
+        prepare=lambda *args, **kwargs: prepared,
+        cargo_outputs=lambda *args: {},
+    )
+    driver = SimpleNamespace(
+        _assert_integration_source=lambda *args: None,
+        gate_environment=lambda *args, **kwargs: None,
+        _gate_runtime=lambda *args, **kwargs: runtime,
+        _IntegrationProgress=lambda: None,
+    )
+    monkeypatch.setattr(queue, "_driver", lambda: driver)
+    monkeypatch.setattr(queue, "queue_paths", lambda _repo: None)
+    monkeypatch.setattr(queue, "prior_main", lambda *args: None)
+    monkeypatch.setattr(
+        molt_dev_policy,
+        "select_landing_gates",
+        lambda *args, **kwargs: (None, config, (), [gate], ()),
+    )
+    monkeypatch.setattr(
+        molt_dev_gates, "run_selected_gates", lambda *args, **kwargs: None
+    )
+    git = SimpleNamespace(repo=tmp_path)
+    if successful_report:
+        assert (
+            queue._run_postsubmit_gates(git, "0" * 40, None, lambda: False, output)
+            == ()
+        )
+    else:
+        with pytest.raises(DriverError, match="passing pytest omitted its JUnit"):
+            queue._run_postsubmit_gates(git, "0" * 40, None, lambda: False, output)
 
 
 def test_postsubmit_revert_commands_restore_exact_green_across_a_merge(tmp_path):
@@ -3414,6 +3533,244 @@ def test_postsubmit_keeps_going_and_names_every_failed_gate(
     assert passed == {"light-2", "tests/test_heavy_2.py"}
 
 
+def test_postsubmit_continuation_preserves_real_cancelled_streams(
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+    import threading
+
+    from tools import molt_dev_common
+    from tools.molt_dev_policy import LandingMode
+
+    # Real guarded children create exclusive files. The first failure waits
+    # until its sibling has started, so cancellation leaves actual streams.
+    script = textwrap.dedent(
+        """
+        import pathlib, sys, time
+        root, name = pathlib.Path(sys.argv[1]), sys.argv[2]
+        count = root / (name + '.count')
+        n = int(count.read_text()) + 1 if count.exists() else 1
+        count.write_text(str(n))
+        print(name, n, flush=True)
+        if name == 'red-2' and n == 1:
+            (root / 'sibling-started').touch()
+            time.sleep(30)
+        if name == 'red-1':
+            deadline = time.monotonic() + 20
+            while not (root / 'sibling-started').exists():
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+        sys.exit(3 if name.startswith('red') else 0)
+        """
+    )
+    gates = [
+        SelectedGate(
+            command=(sys.executable, "-c", script, str(tmp_path), name),
+            toolchains=("python", "cargo"),
+        )
+        for name in ("green-1", "red-1", "red-2", "green-2")
+    ]
+    green_done = threading.Event()
+    launches: list[tuple[str, Path]] = []
+
+    def run(
+        command: tuple[str, ...],
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path],
+    ) -> molt_dev_gates.GateOutcome:
+        name = command[-1]
+        launches.append((name, streams[0]))
+        if name == "red-2" and (tmp_path / "red-2.count").exists():
+            assert green_done.wait(_HANG_BOUND_S)
+        outcome = molt_dev_gates.GateOutcome(
+            molt_dev_common._run_captured_gate(
+                command,
+                repo=repo,
+                env=environment.environment,
+                cancelled=cancelled,
+                streams=streams,
+            )
+        )
+        if name == "green-2":
+            green_done.set()
+        return outcome
+
+    monkeypatch.setattr(molt_dev_gates, "_local_cargo_gates", lambda: 2)
+    runtime = replace(
+        _heavy_runtime(molt_dev_gates, tmp_path, gates, run),
+        mode=LandingMode.POSTSUBMIT,
+    )
+    with pytest.raises(CandidateFailure, match=r"2 gate\(s\) failed"):
+        molt_dev_gates.run_selected_gates(
+            gates, runtime, [], host_limit=lambda: 2, keep_going=True
+        )
+    assert {gate.command[-1] for gate in runtime.passed} == {"green-1", "green-2"}
+    assert (tmp_path / "green-1.count").read_text(encoding="utf-8") == "1"
+    assert (tmp_path / "green-2.count").read_text(encoding="utf-8") == "1"
+    assert (tmp_path / "red-1.count").read_text(encoding="utf-8") == "2"
+    assert (tmp_path / "red-2.count").read_text(encoding="utf-8") == "3"
+    paths = [path for _name, path in launches]
+    assert len(paths) == len(set(paths))
+    assert all(path.is_file() and path.read_text(encoding="utf-8") for path in paths)
+    first = runtime.output_dir / "gate-003.stdout.log"
+    assert first.read_text(encoding="utf-8").strip() == "red-2 1"
+    assert any("postsubmit-rest-1" in path.parts for path in paths)
+    for gate in runtime.passed:
+        assert runtime.passed_logs[molt_dev_gates.display(gate.command)].is_file()
+
+
+def test_postsubmit_stops_on_runner_fault_after_candidate_failure(
+    drv: ModuleType, tmp_path: Path
+) -> None:
+    import threading
+
+    started = threading.Event()
+    launched: list[str] = []
+
+    def run(
+        command: tuple[str, ...],
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path],
+    ) -> molt_dev_gates.GateOutcome:
+        name = next(part for part in command if part.startswith("tests/"))
+        launched.append(name)
+        for path in streams:
+            path.open("x").close()
+        if name == "tests/red.py":
+            assert started.wait(_HANG_BOUND_S)
+            return _gate_outcome(3, "", "")
+        assert name == "tests/runner.py"
+        started.set()
+        deadline = time.monotonic() + _HANG_BOUND_S
+        while not cancelled() and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        assert cancelled()
+        raise RuntimeError("real runner refusal")
+
+    gates = [
+        SelectedGate(
+            ("python", "-m", "pytest", f"tests/{name}.py"), ("python",), pytest=True
+        )
+        for name in ("red", "runner", "unstarted")
+    ]
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run)
+    with pytest.raises(GateFailure) as caught:
+        molt_dev_gates.run_selected_gates(
+            gates, runtime, [], host_limit=lambda: 2, keep_going=True
+        )
+    assert not caught.value.clean_closure
+    assert any(
+        "real runner refusal" in str(error) for error in caught.value.guard_errors
+    )
+    assert sorted(launched) == ["tests/red.py", "tests/runner.py"]
+
+
+@pytest.mark.parametrize("second_rc", [0, 1])
+def test_gate_infrastructure_retry_keeps_junit_with_its_actual_stream(
+    tmp_path: Path, second_rc: int
+) -> None:
+    import errno
+    from molt.process_spawn import ProcessLaunchError
+    from tools import molt_dev_queue as queue
+
+    gate = SelectedGate(
+        ("python", "-m", "pytest", "tests/gate.py"), ("python",), pytest=True
+    )
+    attempts: list[Path] = []
+    node = "tests/gate.py::test_value"
+
+    def run(
+        command: tuple[str, ...],
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path],
+    ) -> molt_dev_gates.GateOutcome:
+        attempts.append(streams[0])
+        for path in streams:
+            path.open("x").close()
+        if len(attempts) == 1:
+            error = ProcessLaunchError(
+                command, OSError(errno.EAGAIN, "resource unavailable")
+            )
+            error.cleanup_closed = True
+            raise error
+        report = Path(_option_value(command, "--junitxml="))
+        assert report.parent == streams[0].parent
+        _junit_report(report, {node: "failed" if second_rc else "passed"})
+        return _gate_outcome(second_rc, "", "")
+
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, [gate], run)
+    if second_rc:
+        with pytest.raises(GateFailure):
+            molt_dev_gates._run_executor_block([(1, gate)], runtime, [], 1)
+        failed = molt_dev_gates._failed_tests(gate, 1, runtime.output_dir, runtime)
+        assert failed is not None and failed.failed == (node,)
+        assert queue._postsubmit_failures(runtime.output_dir) == (node,)
+    else:
+        molt_dev_gates._run_executor_block([(1, gate)], runtime, [], 1)
+        passed = runtime.passed_logs[molt_dev_gates.display(gate.command)]
+        assert passed == attempts[-1]
+        assert molt_dev_gates.junit_path(passed.parent, 1).is_file()
+    assert len(attempts) == 2 and len(set(attempts)) == 2
+    assert attempts[0].is_file() and attempts[1].is_file()
+
+
+@pytest.mark.parametrize("continuation", [False, True])
+def test_postsubmit_terminal_memory_pressure_preserves_identity_and_stops(
+    tmp_path: Path, continuation: bool
+) -> None:
+    node = "tests/pressure.py::test_value"
+    launched: list[str] = []
+
+    def run(
+        command: tuple[str, ...],
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path],
+    ) -> molt_dev_gates.GateOutcome:
+        assert "tests/pressure.py" in command
+        for path in streams:
+            path.open("x").close()
+        selected = _option_value(command, "--molt-run-nodes=")
+        skipped = _option_value(command, "--molt-skip-nodes=")
+        kind = "isolate" if selected else "continue" if skipped else "first"
+        launched.append(kind)
+        if continuation and not skipped:
+            _junit_report(
+                Path(_option_value(command, "--junitxml=")),
+                {node: "passed" if selected else "failed"},
+            )
+            return _gate_outcome(0 if selected else 1, "", "")
+        return _gate_outcome(
+            137, "", "", violation=memory_guard.RssViolation(0, 1024, "gate", "tree")
+        )
+
+    gate = SelectedGate(
+        ("python", "-m", "pytest", "--maxfail=1", "tests/pressure.py"),
+        ("python",),
+        pytest=True,
+    )
+    sibling = SelectedGate(
+        ("python", "-m", "pytest", "tests/unstarted.py"), ("python",), pytest=True
+    )
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, [gate, sibling], run)
+    with pytest.raises(molt_dev_gates.GateMemoryPressure) as caught:
+        molt_dev_gates.run_selected_gates(
+            [gate, sibling], runtime, [], host_limit=lambda: 1, keep_going=True
+        )
+    assert caught.value.shown == (molt_dev_gates.display(gate.command),)
+    assert not runtime.passed
+    assert launched == (
+        ["first", "isolate", "continue"] if continuation else ["first", "first"]
+    )
+
+
 @pytest.mark.parametrize("mode", ["presubmit", "postsubmit"])
 def test_postsubmit_takes_a_share_of_the_development_slot(
     drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
@@ -3775,8 +4132,9 @@ def test_a_stop_cancelled_cargo_cleanup_permits_only_a_test_level_rerun(
 
 
 @pytest.mark.parametrize("isolated_rc", [0, 1])
+@pytest.mark.parametrize("keep_going", [False, True])
 def test_a_failed_test_reruns_alone_then_the_tests_its_stop_left(
-    drv: ModuleType, tmp_path: Path, isolated_rc: int
+    drv: ModuleType, tmp_path: Path, isolated_rc: int, keep_going: bool
 ) -> None:
     # 2026-11-14: one flaky test cost a 449.8 s whole-gate retry, and a flake
     # in the gates a stop had cancelled failed a lane after 905 s. A failed
@@ -3874,8 +4232,19 @@ def test_a_failed_test_reruns_alone_then_the_tests_its_stop_left(
         for index in (1, 2)
     ]
     if isolated_rc:
-        with pytest.raises(GateFailure) as exc:
-            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        with pytest.raises(CandidateFailure if keep_going else GateFailure) as exc:
+            molt_dev_gates.run_selected_gates(
+                gates, runtime, [], host_limit=lambda: 1, keep_going=keep_going
+            )
+        if keep_going:
+            assert str(exc.value).startswith("2 gate(s) failed:")
+            assert runs == [
+                ("tests/test_gate_1.py", "first", ()),
+                ("tests/test_gate_1.py", "isolate", (a2,)),
+                ("tests/test_gate_2.py", "first", ()),
+                ("tests/test_gate_2.py", "isolate", (b2,)),
+            ]
+            return
         assert any("first attempt" in note for note in exc.value.__notes__)
         # The failed test reran once, alone; the gate never reran whole.
         assert runs == [
@@ -3884,7 +4253,9 @@ def test_a_failed_test_reruns_alone_then_the_tests_its_stop_left(
         ]
         assert not molt_dev_gates.recorded_flaky_tests(runtime.output_dir)
         return
-    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    molt_dev_gates.run_selected_gates(
+        gates, runtime, [], host_limit=lambda: 1, keep_going=keep_going
+    )
     assert runs == [
         ("tests/test_gate_1.py", "first", ()),
         ("tests/test_gate_1.py", "isolate", (a2,)),
@@ -5951,7 +6322,10 @@ def test_controller_exec_retains_source_without_an_extra_process(tmp_path):
     result = run_custody_subject_process(
         [sys.executable, "-B", "-c", code],
         cwd=REPO_ROOT,
-        env=dict(os.environ),
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(REPO_ROOT / "src"), str(REPO_ROOT))),
+        },
         capture_output=True,
         text=True,
         timeout=30,
@@ -11151,6 +11525,73 @@ def test_integrate_selected_output_capacity_refuses_before_gate_prefix(
     assert not target.exists() and not build.exists()
 
 
+@pytest.mark.parametrize(
+    ("on_hot_root", "recovery_succeeds", "measurement_fails"),
+    [
+        (True, True, False),
+        (True, False, False),
+        (False, False, False),
+        (True, False, True),
+    ],
+)
+def test_selected_output_capacity_reclaims_only_a_measured_hot_shortfall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    on_hot_root: bool,
+    recovery_succeeds: bool,
+    measurement_fails: bool,
+) -> None:
+    from molt.default_paths import HOT_STATE_RECORD, HOT_STATE_SCHEMA
+    from molt.disk_capacity import DiskCapacityError, minimum_headroom_bytes
+    from tools import disk_guard, molt_dev_gates
+    from tools.molt_dev_policy import GateEnvironment
+
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    (artifact / HOT_STATE_RECORD).write_text(
+        json.dumps({"schema": HOT_STATE_SCHEMA, "root": str(hot), "budget_bytes": 1}),
+        encoding="utf-8",
+    )
+    selected = hot if on_hot_root else artifact
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifact)})
+    tools = ("cargo",)
+    environments = {tools: GateEnvironment(environment, None, False)}
+    outputs = {tools: (selected / "target",)}
+    free = 0
+    reclaim_calls: list[Path] = []
+
+    def measure(path: Path) -> int:
+        if measurement_fails:
+            raise OSError("unavailable volume measurement")
+        return free
+
+    def reclaim(
+        minimum: float, *, root: Path, env: ProcessEnvironment
+    ) -> disk_guard.ReclaimResult:
+        nonlocal free
+        assert root == hot
+        assert env == environment
+        assert minimum > 0
+        reclaim_calls.append(root)
+        before = free
+        if recovery_succeeds:
+            free = 1 << 40
+        return disk_guard.ReclaimResult("pressure", str(root), True, before, free)
+
+    _capacity_measurement(monkeypatch, measure)
+    monkeypatch.setattr(disk_guard, "ensure_free", reclaim)
+    if recovery_succeeds:
+        assert molt_dev_gates.admit_selected_output_capacity(outputs, environments) == {
+            tools: minimum_headroom_bytes(environment)
+        }
+    else:
+        with pytest.raises(DiskCapacityError):
+            molt_dev_gates.admit_selected_output_capacity(outputs, environments)
+    assert reclaim_calls == ([hot] if on_hot_root and not measurement_fails else [])
+
+
 @pytest.mark.parametrize("gate_rc", [0, 19])
 def test_integrate_capacity_observes_interval_without_campaign_guarantee(
     drv, origin_and_clone, monkeypatch, tmp_path, capsys, gate_rc
@@ -12637,6 +13078,9 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
                     {
                         "MOLT_VENV": sys.prefix,
                         "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
+                        "PYTHONPATH": os.pathsep.join(
+                            (str(REPO_ROOT / "src"), str(REPO_ROOT))
+                        ),
                     }
                 ),
                 Path(sys.prefix),

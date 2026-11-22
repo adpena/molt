@@ -631,40 +631,47 @@ fn assert_cached_namespace_snapshot_ownership(access: molt_cpython_abi::hooks::A
 }
 
 #[test]
-fn synthetic_function_descriptor_root_retirement_cannot_leave_a_cached_value() {
-    use std::sync::atomic::Ordering;
+fn function_descriptors_are_owned_by_the_physical_class_namespace() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let state = crate::runtime_state(py);
-        let class = obj_from_bits(crate::builtin_classes(py).function)
+        let owner = crate::builtin_classes(py).function;
+        let class = obj_from_bits(owner).as_ptr().unwrap();
+        let dictionary = obj_from_bits(unsafe { crate::class_dict_bits(class) })
             .as_ptr()
             .unwrap();
-        for (name, slot) in [
+        for (name, flavor, expected_class) in [
             (
                 crate::NameId::DunderCode,
-                &state.special_cache.function_code_descriptor,
+                crate::object::layout::NativeDescriptorFlavor::CallableGetSet,
+                crate::builtins::types::getset_descriptor_class(py),
             ),
             (
                 crate::NameId::DunderGlobals,
-                &state.special_cache.function_globals_descriptor,
+                crate::object::layout::NativeDescriptorFlavor::CallableMember,
+                crate::builtins::types::member_descriptor_class(py),
             ),
         ] {
             let key = name.bits(py);
-            let first = unsafe { super::class_namespace_lookup_mro(py, class, key) }
+            let declared = unsafe { crate::dict_get_in_place(py, dictionary, key) }
                 .unwrap()
                 .unwrap();
-            assert_eq!(first, slot.load(Ordering::Acquire));
-            crate::inc_ref_bits(py, first);
-            crate::state::cache::clear_atomic_bits(py, slot);
-            let second = unsafe { super::class_namespace_lookup_mro(py, class, key) }
+            let resolved = unsafe { super::class_namespace_lookup_mro(py, class, key) }
                 .unwrap()
                 .unwrap();
-            assert_eq!(second, slot.load(Ordering::Acquire));
-            assert_ne!(
-                first, second,
-                "the retired root must be recreated rather than read from the namespace cache"
+            assert_eq!(declared, resolved);
+            let descriptor = obj_from_bits(declared).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { crate::object_class_bits(descriptor) },
+                expected_class
             );
-            dec_ref_bits(py, first);
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_flavor(descriptor) },
+                Some(flavor)
+            );
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_owner_bits(descriptor) },
+                owner
+            );
         }
     });
 }

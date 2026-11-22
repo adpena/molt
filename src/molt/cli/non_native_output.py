@@ -62,8 +62,7 @@ from molt.cli import link_fingerprints
 from molt.cli.wasm_final_link_cache import (
     final_link_cache_entry,
     final_link_cache_key,
-    publish_final_link_result,
-    restore_final_link_result,
+    ensure_final_link_result,
 )
 from molt.cli.link_selection_admission import link_selection_policy
 from molt.cli.wasm_deployment import (
@@ -333,6 +332,10 @@ def _app_export_manifest(
         "call_abi": contract["call_abi"],
         "bindings": bindings,
     }
+
+
+class _WasmFinalLinkFailure(RuntimeError):
+    """A failed final-link command, distinct from cache publication failure."""
 
 
 class _RuntimeImportAbiManifest(TypedDict):
@@ -1455,21 +1458,47 @@ def _prepare_non_native_build_result_in_generation(
                             ),
                         )
                     )
-                    link_result_reused = restore_final_link_result(
-                        link_result_entry, link_result_outputs
-                    )
-                    if stage_timings_ms is not None:
-                        stage_timings_ms["wasm_link_result_cache_hits"] = float(
-                            link_result_reused
-                        )
-                    if link_result_reused:
-                        link_process = subprocess.CompletedProcess(
-                            link_run_cmd, 0, "", ""
-                        )
-                    else:
-                        # The standalone tool retains its direct publisher, but
-                        # its destinations here are private until deployment is
-                        # complete.
+                    link_process = subprocess.CompletedProcess(link_run_cmd, 0, "", "")
+
+                    def admit_link_result() -> None:
+                        nonlocal optimizer_attestation
+                        for identity in admitted_link_inputs:
+                            verify_stable_regular_file_identity(
+                                identity, label="WASM link input"
+                            )
+                        if link_process.returncode != 0:
+                            err = (
+                                link_process.stderr.strip()
+                                or link_process.stdout.strip()
+                            )
+                            msg = "Wasm link failed"
+                            if err:
+                                msg = f"{msg}: {err}"
+                            raise _WasmFinalLinkFailure(msg)
+                        if selection_policy is not None:
+                            from molt.cli.link_selection_admission import (
+                                validate_link_selection_policy,
+                            )
+
+                            validate_link_selection_policy(
+                                deployment.outputs["selection"],
+                                selection_policy,
+                                roles={"linked", "app"}
+                                if _split_runtime
+                                else {"linked"},
+                            )
+                        if wasm_opt_level is not None:
+                            assert optimizer_cache_fact is not None
+                            optimizer_attestation = _load_optimizer_publication(
+                                deployment.outputs,
+                                cache_fact=optimizer_cache_fact,
+                                level=wasm_opt_level,
+                                split=_split_runtime,
+                                preserve_debug=profile == "dev",
+                            )
+
+                    def produce_link_result() -> None:
+                        nonlocal link_process
                         link_process = _run_completed_command(
                             link_run_cmd,
                             cwd=molt_root,
@@ -1477,48 +1506,31 @@ def _prepare_non_native_build_result_in_generation(
                             capture_output=True,
                             memory_guard_prefix="MOLT_WASM_LINK",
                         )
-                    for identity in admitted_link_inputs:
-                        verify_stable_regular_file_identity(
-                            identity, label="WASM link input"
-                        )
-                    if link_process.returncode != 0:
-                        err = link_process.stderr.strip() or link_process.stdout.strip()
-                        msg = "Wasm link failed"
-                        if err:
-                            msg = f"{msg}: {err}"
-                        return None, _fail(msg, json_output, command="build")
-                    if selection_policy is not None:
-                        from molt.cli.link_selection_admission import (
-                            validate_link_selection_policy,
-                        )
+                        admit_link_result()
 
-                        validate_link_selection_policy(
-                            deployment.outputs["selection"],
-                            selection_policy,
-                            roles={"linked", "app"} if _split_runtime else {"linked"},
+                    if stage_timings_ms is not None:
+                        stage_timings_ms["wasm_link_result_cache_hits"] = 0.0
+                    link_result = ensure_final_link_result(
+                        link_result_entry, link_result_outputs, produce_link_result
+                    )
+                    link_result_reused = link_result.reused
+                    if stage_timings_ms is not None:
+                        stage_timings_ms["wasm_link_result_cache_hits"] = float(
+                            link_result_reused
                         )
-                    if wasm_opt_level is not None:
-                        assert optimizer_cache_fact is not None
-                        optimizer_attestation = _load_optimizer_publication(
-                            deployment.outputs,
-                            cache_fact=optimizer_cache_fact,
-                            level=wasm_opt_level,
-                            split=_split_runtime,
-                            preserve_debug=profile == "dev",
+                    if link_result_reused:
+                        admit_link_result()
+                    if (
+                        link_result.publication_error is not None
+                        and warnings is not None
+                    ):
+                        warnings.append(
+                            "WASM link result was not cached: "
+                            + str(link_result.publication_error)
                         )
-                    if not link_result_reused:
-                        # Only an admitted result (selection and optimizer
-                        # publication checked above) is recorded for reuse.
-                        try:
-                            publish_final_link_result(
-                                link_result_entry, link_result_outputs
-                            )
-                        except (OSError, ValueError) as exc:
-                            if warnings is not None:
-                                warnings.append(
-                                    f"WASM link result was not cached: {exc}"
-                                )
                     resolved_linked_output = deployment.outputs["linked"]
+                except _WasmFinalLinkFailure as exc:
+                    return None, _fail(str(exc), json_output, command="build")
                 except (OSError, ValueError) as exc:
                     return None, _fail(
                         f"Failed to prepare WASM link publication: {exc}",
