@@ -1287,11 +1287,7 @@ fn bytes_split_impl(
                 return raise_exception::<_>(_py, BuiltinExc::ValueError, "empty separator");
             }
             let hay_bytes = bytes_like_slice(hay_ptr).expect("validated bytes receiver");
-            if from_right {
-                rsplit_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit, alloc)
-            } else {
-                split_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit, alloc)
-            }
+            split_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit, from_right, alloc)
         };
         result.unwrap_or_else(|| MoltObject::none().bits())
     }

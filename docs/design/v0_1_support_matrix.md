@@ -416,7 +416,6 @@ Rows that moved from the step-4 data:
 | HF-645 | post_v0_1 | v0_1_blocking | miscompile | pickle protocol-1 output is protocol-0 text; CPython-made protocol-1 pickles do not load |
 | HF-649 | post_v0_1 | v0_1_blocking | miscompile | pickle DEFAULT_PROTOCOL is 4 on a 3.15 target where CPython uses 5 (reachable once V1-35 admits 3.15) |
 | HF-718 | post_v0_1 | v0_1_blocking | miscompile | the namespace-writes collector misses real writes (vars(m).update, f.__globals__[...]), which exact builtin certificates rely on |
-| HF-738 | post_v0_1 | v0_1_blocking | miscompile | a split/join round trip misplaces an empty segment |
 | HF-744 | post_v0_1 | v0_1_blocking | miscompile | marshal writes JSON in place of CPython's format, with no error |
 | HF-763 | post_v0_1 | v0_1_blocking | miscompile | a heap class's __text_signature__ is always None (builtin_type_identity.py fails natively, unnamed) |
 | HF-764 | post_v0_1 | v0_1_blocking | miscompile | frame f_lineno lags the executing line and f_lasti is always -1 (frame_object_fields.py, unnamed) |

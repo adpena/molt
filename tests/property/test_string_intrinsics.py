@@ -6,7 +6,9 @@ str.encode, str.startswith, str.replace, and str.strip composition.
 
 from __future__ import annotations
 
-from hypothesis import assume, given, settings
+import re
+
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
@@ -116,11 +118,13 @@ class TestSplitJoinRoundtrip:
         ),
     )
     @settings(**SETTINGS)
-    def test_join_split_roundtrip(self, parts: list[str], sep: str) -> None:
-        """s.split(sep) after sep.join(parts) recovers parts when sep not in parts."""
-        assume(all(sep not in part for part in parts))
+    @example(parts=["0", ""], sep="00")
+    def test_split_uses_leftmost_literal_matches(
+        self, parts: list[str], sep: str
+    ) -> None:
+        """Separators can match across a join boundary."""
         joined = sep.join(parts)
-        assert joined.split(sep) == parts
+        assert joined.split(sep) == re.split(re.escape(sep), joined)
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +193,8 @@ class TestStartsWith:
 # ---------------------------------------------------------------------------
 
 
-class TestReplaceRoundtrip:
-    """str.replace() roundtrip for disjoint a, b."""
+class TestReplace:
+    """Literal replacement uses leftmost non-overlapping matches."""
 
     @given(
         s=short_text,
@@ -206,11 +210,11 @@ class TestReplaceRoundtrip:
         ),
     )
     @settings(**SETTINGS)
-    def test_replace_roundtrip_disjoint(self, s: str, a: str, b: str) -> None:
-        """s.replace(a, b).replace(b, a) recovers s when a, b are disjoint and b not in s."""
-        assume(a not in b and b not in a)
-        assume(b not in s)
-        assert s.replace(a, b).replace(b, a) == s
+    @example(s="aA", a="A", b="aa")
+    def test_replace_uses_leftmost_literal_matches(
+        self, s: str, a: str, b: str
+    ) -> None:
+        assert s.replace(a, b) == re.sub(re.escape(a), lambda _match: b, s)
 
     @given(s=ascii_text, a=st.just(""))
     @settings(**SETTINGS)

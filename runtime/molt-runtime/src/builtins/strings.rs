@@ -585,52 +585,101 @@ fn split_string_push_part(
     true
 }
 
-fn split_string_bytes_to_list(_py: &PyToken<'_>, hay: &[u8], needle: &[u8]) -> Option<u64> {
-    let mut cache = SplitTokenCache::new();
-    if needle.len() == 1 {
-        let count = memchr::memchr_iter(needle[0], hay).count();
-        let list_ptr = alloc_list_empty_with_capacity(_py, count + 1);
-        if list_ptr.is_null() {
-            return None;
-        }
-        let list_bits = MoltObject::from_ptr(list_ptr).bits();
-        let mut start = 0usize;
-        for idx in memchr::memchr_iter(needle[0], hay) {
-            let part = &hay[start..idx];
-            if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-                return None;
-            }
-            start = idx + needle.len();
-        }
-        let part = &hay[start..];
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-            return None;
-        }
-        return Some(list_bits);
-    }
-    let mut indices = Vec::new();
-    let finder = memmem::Finder::new(needle);
-    for idx in finder.find_iter(hay) {
-        indices.push(idx);
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, indices.len() + 1);
+fn build_explicit_split_list(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    needle_len: usize,
+    matches: impl IntoIterator<Item = usize>,
+    match_bound: usize,
+    mut push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+) -> Option<u64> {
+    let list_ptr = alloc_list_empty_with_capacity(_py, match_bound + 1);
     if list_ptr.is_null() {
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let mut start = 0usize;
-    for idx in indices {
-        let part = &hay[start..idx];
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
+    let mut start = 0;
+    for idx in matches {
+        if !push_part(list_ptr, list_bits, &hay[start..idx]) {
             return None;
         }
-        start = idx + needle.len();
+        start = idx + needle_len;
     }
-    let part = &hay[start..];
-    if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-        return None;
+    push_part(list_ptr, list_bits, &hay[start..]).then_some(list_bits)
+}
+
+fn split_from_forward_search(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    needle_len: usize,
+    matches: impl Iterator<Item = usize>,
+    limit: usize,
+    push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+) -> Option<u64> {
+    let matches = matches.take(limit);
+    if limit < MAX_SMALL_LIST {
+        return build_explicit_split_list(_py, hay, needle_len, matches, limit, push_part);
     }
-    Some(list_bits)
+    let indices: Vec<_> = matches.collect();
+    let count = indices.len();
+    build_explicit_split_list(_py, hay, needle_len, indices, count, push_part)
+}
+
+/// Find disjoint delimiters in the requested direction, then emit parts in
+/// source order. Direction matters for overlapping multi-byte delimiters even
+/// when the number of splits is unlimited.
+fn explicit_split_to_list(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    needle: &[u8],
+    maxsplit: i64,
+    from_right: bool,
+    push_part: impl FnMut(*mut u8, u64, &[u8]) -> bool,
+) -> Option<u64> {
+    let limit = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+    if limit == 0 {
+        return build_explicit_split_list(_py, hay, needle.len(), [], 0, push_part);
+    }
+    if let [separator] = *needle {
+        // A single byte cannot overlap itself. Keep the allocation-free match
+        // count and forward scan for the unlimited case in either direction.
+        if maxsplit < 0 {
+            let matches = memchr::memchr_iter(separator, hay);
+            let count = matches.clone().count();
+            return build_explicit_split_list(_py, hay, 1, matches, count, push_part);
+        }
+        if !from_right {
+            return split_from_forward_search(
+                _py,
+                hay,
+                1,
+                memchr::memchr_iter(separator, hay),
+                limit,
+                push_part,
+            );
+        }
+    } else if !from_right {
+        let finder = memmem::Finder::new(needle);
+        return split_from_forward_search(
+            _py,
+            hay,
+            needle.len(),
+            finder.find_iter(hay),
+            limit,
+            push_part,
+        );
+    }
+    let finder = memmem::FinderRev::new(needle);
+    let indices: Vec<_> = finder.rfind_iter(hay).take(limit).collect();
+    let count = indices.len();
+    build_explicit_split_list(
+        _py,
+        hay,
+        needle.len(),
+        indices.into_iter().rev(),
+        count,
+        push_part,
+    )
 }
 
 pub(crate) fn split_string_bytes_to_list_maxsplit(
@@ -638,104 +687,17 @@ pub(crate) fn split_string_bytes_to_list_maxsplit(
     hay: &[u8],
     needle: &[u8],
     maxsplit: i64,
+    from_right: bool,
 ) -> Option<u64> {
-    if maxsplit < 0 {
-        return split_string_bytes_to_list(_py, hay, needle);
-    }
     let mut cache = SplitTokenCache::new();
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    if maxsplit == 0 {
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, hay) {
-            return None;
-        }
-        return Some(list_bits);
-    }
-    let mut start = 0usize;
-    let mut splits = 0i64;
-    if needle.len() == 1 {
-        for idx in memchr::memchr_iter(needle[0], hay) {
-            if splits >= maxsplit {
-                break;
-            }
-            let part = &hay[start..idx];
-            if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-                return None;
-            }
-            start = idx + needle.len();
-            splits += 1;
-        }
-        let part = &hay[start..];
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-            return None;
-        }
-        return Some(list_bits);
-    }
-    let finder = memmem::Finder::new(needle);
-    for idx in finder.find_iter(hay) {
-        if splits >= maxsplit {
-            break;
-        }
-        let part = &hay[start..idx];
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-            return None;
-        }
-        start = idx + needle.len();
-        splits += 1;
-    }
-    let part = &hay[start..];
-    if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-        return None;
-    }
-    Some(list_bits)
-}
-
-pub(crate) fn rsplit_string_bytes_to_list_maxsplit(
-    _py: &PyToken<'_>,
-    hay: &[u8],
-    needle: &[u8],
-    maxsplit: i64,
-) -> Option<u64> {
-    if maxsplit < 0 {
-        return split_string_bytes_to_list(_py, hay, needle);
-    }
-    let mut cache = SplitTokenCache::new();
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    if maxsplit == 0 {
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, hay) {
-            return None;
-        }
-        return Some(list_bits);
-    }
-    let mut end = hay.len();
-    let mut splits = 0i64;
-    let mut parts: Vec<(usize, usize)> = Vec::new();
-    while splits < maxsplit {
-        let idx = bytes_rfind_impl(&hay[..end], needle);
-        if idx < 0 {
-            break;
-        }
-        let idx = idx as usize;
-        parts.push((idx + needle.len(), end));
-        end = idx;
-        splits += 1;
-    }
-    parts.push((0, end));
-    parts.reverse();
-    for (start, end) in parts {
-        let part = &hay[start..end];
-        if !split_string_push_part(_py, &mut cache, list_ptr, list_bits, part) {
-            return None;
-        }
-    }
-    Some(list_bits)
+    explicit_split_to_list(
+        _py,
+        hay,
+        needle,
+        maxsplit,
+        from_right,
+        |list, bits, part| split_string_push_part(_py, &mut cache, list, bits, part),
+    )
 }
 
 pub(crate) fn bytes_strip_range(
@@ -824,220 +786,33 @@ fn simd_skip_strip_left(hay: &[u8], start: usize, end: usize, table: &[bool; 256
     pos
 }
 
-fn split_bytes_to_list<F>(_py: &PyToken<'_>, hay: &[u8], needle: &[u8], mut alloc: F) -> Option<u64>
-where
-    F: FnMut(&[u8]) -> *mut u8,
-{
-    if needle.len() == 1 {
-        let count = memchr::memchr_iter(needle[0], hay).count();
-        let list_ptr = alloc_list_empty_with_capacity(_py, count + 1);
-        if list_ptr.is_null() {
-            return None;
-        }
-        let list_bits = MoltObject::from_ptr(list_ptr).bits();
-        let mut start = 0usize;
-        for idx in memchr::memchr_iter(needle[0], hay) {
-            let part = &hay[start..idx];
-            let ptr = alloc(part);
-            if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
-            }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
-            start = idx + needle.len();
-        }
-        let part = &hay[start..];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let mut indices = Vec::new();
-    let finder = memmem::Finder::new(needle);
-    for idx in finder.find_iter(hay) {
-        indices.push(idx);
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, indices.len() + 1);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let mut start = 0usize;
-    for idx in indices {
-        let part = &hay[start..idx];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        start = idx + needle.len();
-    }
-    let part = &hay[start..];
-    let ptr = alloc(part);
-    if ptr.is_null() {
-        dec_ref_bits(_py, list_bits);
-        return None;
-    }
-    unsafe {
-        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-    }
-    Some(list_bits)
-}
-
 pub(crate) fn split_bytes_to_list_maxsplit<F>(
     _py: &PyToken<'_>,
     hay: &[u8],
     needle: &[u8],
     maxsplit: i64,
+    from_right: bool,
     mut alloc: F,
 ) -> Option<u64>
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
-    if maxsplit < 0 {
-        return split_bytes_to_list(_py, hay, needle, alloc);
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    if maxsplit == 0 {
-        let ptr = alloc(hay);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let mut start = 0usize;
-    let mut splits = 0i64;
-    if needle.len() == 1 {
-        for idx in memchr::memchr_iter(needle[0], hay) {
-            if splits >= maxsplit {
-                break;
-            }
-            let part = &hay[start..idx];
+    explicit_split_to_list(
+        _py,
+        hay,
+        needle,
+        maxsplit,
+        from_right,
+        |list, bits, part| {
             let ptr = alloc(part);
             if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
+                dec_ref_bits(_py, bits);
+                return false;
             }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
-            start = idx + needle.len();
-            splits += 1;
-        }
-        let part = &hay[start..];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let finder = memmem::Finder::new(needle);
-    for idx in finder.find_iter(hay) {
-        if splits >= maxsplit {
-            break;
-        }
-        let part = &hay[start..idx];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        start = idx + needle.len();
-        splits += 1;
-    }
-    let part = &hay[start..];
-    let ptr = alloc(part);
-    if ptr.is_null() {
-        dec_ref_bits(_py, list_bits);
-        return None;
-    }
-    unsafe {
-        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-    }
-    Some(list_bits)
-}
-
-pub(crate) fn rsplit_bytes_to_list_maxsplit<F>(
-    _py: &PyToken<'_>,
-    hay: &[u8],
-    needle: &[u8],
-    maxsplit: i64,
-    mut alloc: F,
-) -> Option<u64>
-where
-    F: FnMut(&[u8]) -> *mut u8,
-{
-    if maxsplit < 0 {
-        return split_bytes_to_list(_py, hay, needle, alloc);
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    if maxsplit == 0 {
-        let ptr = alloc(hay);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let mut end = hay.len();
-    let mut splits = 0i64;
-    let mut parts: Vec<(usize, usize)> = Vec::new();
-    while splits < maxsplit {
-        let idx = bytes_rfind_impl(&hay[..end], needle);
-        if idx < 0 {
-            break;
-        }
-        let idx = idx as usize;
-        parts.push((idx + needle.len(), end));
-        end = idx;
-        splits += 1;
-    }
-    parts.push((0, end));
-    parts.reverse();
-    for (start, end) in parts {
-        let part = &hay[start..end];
-        let ptr = alloc(part);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-    }
-    Some(list_bits)
+            unsafe { list_push_owned(list, MoltObject::from_ptr(ptr).bits()) };
+            true
+        },
+    )
 }
 
 /// Find the next ASCII whitespace byte starting from `start`.

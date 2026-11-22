@@ -563,11 +563,7 @@ fn string_split_impl(
             };
             let needle =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
-            if from_right {
-                rsplit_string_bytes_to_list_maxsplit(_py, hay, needle, maxsplit)
-            } else {
-                split_string_bytes_to_list_maxsplit(_py, hay, needle, maxsplit)
-            }
+            split_string_bytes_to_list_maxsplit(_py, hay, needle, maxsplit, from_right)
         };
         result.unwrap_or_else(|| MoltObject::none().bits())
     }

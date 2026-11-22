@@ -746,8 +746,7 @@ pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
-    replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
-    rsplit_bytes_whitespace_to_list_maxsplit, rsplit_string_bytes_to_list_maxsplit,
+    replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_whitespace_to_list_maxsplit,
     rsplit_string_whitespace_to_list_maxsplit, split_bytes_to_list_maxsplit,
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
