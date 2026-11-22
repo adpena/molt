@@ -1,0 +1,7 @@
+{
+  "directory": "backend-tir-v1",
+  "tag": "Signature: 8a477f597d28d172789f06886806bc55\n# Molt managed backend compilation cache v1\n",
+  "artifact_magic": "MOLT:CACHE-ARTIFACT:v1\u0000",
+  "max_entries": 65536,
+  "disk_mib": 4096
+}

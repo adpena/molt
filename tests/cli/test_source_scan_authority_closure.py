@@ -424,6 +424,7 @@ def test_late_native_root_refreshes_policy_and_catalog(
     initial = _discover(entry, tmp_path, full=True)
     assert initial.discovery is not None
     prepared = _PreparedEntryModuleGraph(
+        import_query_closure=initial.discovery.resolver_cache.import_query_closure(),
         discovery=initial.discovery,
         image_scope=_BinaryImageScope.from_entry(
             kind="entry_script",
@@ -541,6 +542,15 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
         for call in extend.call_args_list
     )
     assert second.custody.catalog_by_module["late"] == late
+    owner_queries = [
+        observed
+        for observed in initial.discovery.resolver_cache.import_query_closure().observations
+        if observed.query.module_name == "runtime_owner"
+        and observed.query.runtime_custody is not None
+    ]
+    assert {first.custody, second.custody} <= {
+        observed.query.runtime_custody for observed in owner_queries
+    }
     second.custody.validate_graph(graph)
     assert set(second.custody.modules) <= second.dispatch_roots
     extensions = extend.call_count
@@ -1827,6 +1837,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
     # Namespace packages are metadata-only catalog entries, with no source body.
     assert "hf226_namespace" not in initial.graph
     prepared = _PreparedEntryModuleGraph(
+        import_query_closure=initial.discovery.resolver_cache.import_query_closure(),
         discovery=initial.discovery,
         image_scope=_BinaryImageScope.from_entry(
             kind="entry_script",

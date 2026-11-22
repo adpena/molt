@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from molt.cli.module_graph_discovery import _DiscoveredModuleGraph
-from molt.cli.models import ModuleReason
+from molt.cli.models import ImportScanAdmission, ModuleReason
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process
@@ -2623,6 +2623,19 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
         )
         assert later.discovery is state
         assert sources["hf226_pkg.sub"].namespace_premise.foreign_writes == ("handler",)
+        projected = [
+            observed
+            for observed in cache.import_query_closure().observations
+            if observed.query.module_name == "hf226_pkg.sub"
+            and observed.query.namespace_premise is not None
+            and observed.query.namespace_premise.foreign_writes == ("handler",)
+        ]
+        assert projected
+        if run == 0:
+            assert any(
+                ImportScanAdmission.PREMISE_REUSE in observed.admissions
+                for observed in projected
+            )
         assert prior.namespace_premise.foreign_writes == ()
         assert "hf226_pkg.sub" not in later.graph
         # ``sub``'s scan reads nothing the writer changed: early cutoff keeps

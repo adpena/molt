@@ -49,13 +49,10 @@ impl MachineCodeCache {
             // An explicitly assigned TIR directory owns only its own data.
             TirCacheLocation::Directory(_) => return None,
         };
-        let mut artifacts = CompilationCache::open_shared_backend_namespace(
+        let artifacts = CompilationCache::open_shared_backend_namespace(
             root,
             store_identity(cranelift_codegen::VERSION),
         )?;
-        if let Err(error) = artifacts.trim_if_due() {
-            eprintln!("MOLT_CACHE: {error}");
-        }
         Some(Self {
             artifacts: Mutex::new(artifacts),
             placement,

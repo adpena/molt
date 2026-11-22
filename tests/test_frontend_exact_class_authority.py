@@ -19,7 +19,6 @@ from molt.frontend import (
     MoltOp,
     MoltValue,
     SimpleTIRGenerator,
-    compile_to_tir,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
 
@@ -695,11 +694,16 @@ def test_external_layout_identity_does_not_import_or_read_module(
     assert ELSEWHERE_POINT.definition_symbol == "class:elsewhere:Point"
 
 
-def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
+@pytest.mark.parametrize("target_minor", [12, 15])
+def test_retained_layout_differential_capsule_lowers_optional_guards(
+    target_minor: int,
+) -> None:
     source = (
         Path(__file__).parent / "differential/basic/attribute_lookup_transactions.py"
     )
-    ir = compile_to_tir(source.read_text(encoding="utf-8"))
+    gen = SimpleTIRGenerator(target_python=(3, target_minor))
+    gen.visit(ast.parse(source.read_text(encoding="utf-8")))
+    functions = gen.to_json()["functions"]
     for method, guard in (
         ("read", "guarded_field_get"),
         ("write", "guarded_field_set"),
@@ -707,9 +711,25 @@ def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
     ):
         function = next(
             function
-            for function in ir["functions"]
+            for function in functions
             if function["name"].endswith(f".RetainedLayoutOwner_{method}")
         )
+        if method == "loop" and target_minor >= 13:
+            # A loop-carried callback may write to self through a live frame.
+            ops = function["ops"]
+            loads = {op["out"] for op in ops if op["kind"] == "frame_home_load"}
+            aliases = {
+                op["out"]
+                for op in ops
+                if op["kind"] == "binding_alias" and op["args"][0] in loads
+            }
+            reads = [
+                op
+                for op in ops
+                if op["kind"] == "get_attr_generic_obj" and op["s_value"] == "value"
+            ]
+            assert reads and all(op["args"][0] in aliases for op in reads)
+            continue
         guards = [op for op in function["ops"] if op["kind"] == guard]
         assert guards
         assert {op["class_definition"] for op in guards} == {

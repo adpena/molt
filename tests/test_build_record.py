@@ -1683,7 +1683,7 @@ def test_an_unreportable_directory_keeps_its_original_fact_and_refusal(
 
 
 def test_unused_records_are_trimmed(tmp_path: Path) -> None:
-    root = tmp_path / "build_records" / "v12"
+    root = build_record.record_path(tmp_path, "a" * 64).parent.parent
     old = build_record.record_path(tmp_path, "a" * 64)
     new = build_record.record_path(tmp_path, "b" * 64)
     for path in (old, new):
@@ -1701,7 +1701,7 @@ def test_unused_records_are_trimmed(tmp_path: Path) -> None:
 def test_record_trimming_preserves_live_and_unproven_transient_allocations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    records = tmp_path / "build_records" / "v12"
+    records = build_record.record_path(tmp_path, "a" * 64).parent.parent
     transient = build_record.transient_root(tmp_path)
     abandoned = transient / "build-unproven"
     abandoned.mkdir(parents=True)

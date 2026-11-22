@@ -109,9 +109,6 @@ pub(in crate::native_backend::simple_backend) fn linkage_carriers(
         }
         rows[index] = Some(row);
     }
-    if let Err(error) = cache.trim_if_due() {
-        eprintln!("MOLT_CACHE: persistent TIR cache trim failed: {error}");
-    }
     LinkageCarrierRows {
         rows: rows
             .into_iter()

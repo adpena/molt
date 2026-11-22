@@ -727,9 +727,6 @@ where
         }
     }
 
-    if let Some(Err(error)) = tir_cache.as_mut().map(CompilationCache::trim_if_due) {
-        eprintln!("MOLT_CACHE: persistent TIR cache trim failed: {error}");
-    }
     TirPipelineRun {
         cached_tir: cached_tir_custody,
         uncached_count,

@@ -364,7 +364,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `frontend-python` | 1 | 3 |
 | `finding-ids-static` | 1 | 1 |
 | `python-source-dependencies` | 16 | 0 |
-| `frontend-ir-assembly` | 64 | 1 |
+| `frontend-ir-assembly` | 65 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 20 | 0 |
 | `stdlib-intrinsic-contracts` | 7 | 1 |

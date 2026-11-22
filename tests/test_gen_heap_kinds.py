@@ -596,14 +596,12 @@ def test_terminal_metrics_commit_only_after_no_unwind_resource_teardown() -> Non
     source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
         encoding="utf-8"
     )
-    terminal = source.split("let total_size =", 1)[1].split("#[cfg(test)]", 1)[0]
+    terminal = _rust_function(source, "dec_ref_ptr_terminal_body")
     teardown = terminal.index("terminal_resource_drop_no_unwind")
     release = terminal.index("release_ptr(ptr)")
     metrics = terminal.index("record_terminal_deallocation")
     assert teardown < release < metrics
-    guard = source.split("fn terminal_resource_drop_no_unwind", 1)[1].split(
-        "fn record_terminal_deallocation", 1
-    )[0]
+    guard = _rust_function(source, "terminal_resource_drop_no_unwind")
     assert "catch_unwind" in guard
     assert "std::process::abort()" in guard
 

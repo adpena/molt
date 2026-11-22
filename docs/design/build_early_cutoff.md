@@ -3,6 +3,33 @@
 Status: implemented, 2026-10-16 (HF-250); WASM product families 2026-10-29.
 Owner: frontend build speed.
 
+The v13 local build record also retains a digest of its settled import graph in
+the existing bounded frontend blob store. An ordinary record miss may replay
+that graph's complete typed queries for changed sources, validate its current
+producer, target, roots, native selection and semantic topology, and rebuild the
+active import plan through the same final assembler. A successful unchanged
+build neither loads nor decodes the graph blob. Proof-bearing and exact
+`capture_link_inputs` requests retain their existing exclusion; nested excluded
+requests cannot inherit an outer developer-cache candidate. These local cache
+observations do not constitute release used-byte evidence.
+
+The persisted query evidence stores a canonical semantic SHA for each observed
+result, with shared resolution contexts and namespace premises. Live capture
+retains its typed results. Replay computes actual results only for changed
+sources and carries unchanged digest witnesses through the common source and
+topology fences; it does not deserialize unchanged result bodies. Publication
+reuses the admitted source leases and, after replay, refreshes the changed query
+generations in the existing payload. The blob remains bounded at 16 MiB.
+
+Replay currently refuses changes to a source's recorded name universe, missing
+body owners, incomplete source observers, native artifact plans, stale runtime
+custody, changed query outputs, malformed/oversized blobs and changed positive or
+negative import observations. The canonical solver handles a refused candidate.
+The graph pointer publishes with the successful full build record. If an atomic
+editor save makes that record refuse a recent directory epoch, its graph pointer
+does not refresh independently; subsequent edits can still qualify the previous
+graph, while no-change recording waits for publishable input epochs.
+
 ## Problem
 
 A `molt build` whose inputs did not change still runs the whole pipeline to

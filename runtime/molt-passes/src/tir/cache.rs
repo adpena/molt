@@ -4,8 +4,8 @@
 //! pipeline invocations, and concurrent compiler processes share the work.
 //! Each artifact lives at `cache_dir/functions/<hash>.bin` as an authenticated
 //! envelope (magic, kind, key, payload length, SHA-256 of the payload), so a
-//! reader verifies everything it serves and needs no lock, index or flush
-//! ordering:
+//! reader verifies everything it serves. Managed consumers share one namespace
+//! lease with each other; publication needs no per-artifact lock or flush:
 //!
 //! - `put` publishes with a no-clobber hard link from a unique temporary file.
 //!   The first writer wins; a later writer compares payloads. An equal payload
@@ -13,10 +13,8 @@
 //!   (`<hash>.poison`) makes every later read miss and every later write fail.
 //! - `get` verifies the envelope. Torn or corrupt files are crash residue; they
 //!   are retired and read as misses.
-//! - `trim_if_due` bounds the namespace at most once per trim interval, under a
-//!   non-blocking trim lock. It evicts the least recently used files (file
-//!   modification time, refreshed on use at most once per recency interval)
-//!   and retires sibling backend namespaces unused for the namespace limit.
+//! - Scheduled retention owns managed cache capacity. Each active consumer
+//!   holds a nonblocking shared namespace lease and leaves sweeps to the pruner.
 //!
 //! This is the design of Go's build cache (`cmd/go/internal/cache`: unlocked
 //! reads and writes, checksum-verified reads, `trim.txt`-gated trimming,
@@ -28,8 +26,8 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
@@ -39,11 +37,31 @@ use sha2::{Digest, Sha256};
 use crate::resident_cache::ResidentCache;
 
 const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v8-lock-free-content-store";
-const CACHE_ARTIFACT_MAGIC: &[u8] = b"MOLT:CACHE-ARTIFACT:v1\0";
+#[derive(serde::Deserialize)]
+struct BackendCacheLayout {
+    directory: String,
+    tag: String,
+    artifact_magic: String,
+    max_entries: usize,
+    disk_mib: u64,
+}
+
+// The installed retention reader consumes the same versioned wire layout.
+static MANAGED_LAYOUT: LazyLock<BackendCacheLayout> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(
+        "../../../../src/molt/backend_cache_layout.json"
+    ))
+    .expect("valid packaged backend cache layout")
+});
 const CACHE_ARTIFACT_KEY_BYTES: usize = 64;
 const CACHE_ARTIFACT_DIGEST_BYTES: usize = 32;
-const CACHE_ARTIFACT_FIXED_BYTES: usize =
-    CACHE_ARTIFACT_MAGIC.len() + 1 + CACHE_ARTIFACT_KEY_BYTES + 8 + CACHE_ARTIFACT_DIGEST_BYTES;
+fn cache_artifact_header_bytes() -> usize {
+    MANAGED_LAYOUT.artifact_magic.len()
+        + 1
+        + CACHE_ARTIFACT_KEY_BYTES
+        + 8
+        + CACHE_ARTIFACT_DIGEST_BYTES
+}
 const CACHE_FUNCTIONS_DIR: &str = "functions";
 const CACHE_TRIM_STAMP_FILE: &str = "trim.txt";
 const CACHE_TRIM_LOCK_FILE: &str = ".trim.lock";
@@ -56,21 +74,20 @@ const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n\
 # This file is a cache directory tag created by Molt.\n\
 # For information about cache directory tags see https://bford.info/cachedir/\n";
 /// Minimum time between trims of one namespace.
-const CACHE_TRIM_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Granularity of on-disk recency: a hit rewrites an artifact's modification
 /// time only when it is older than this, so hits stay read-only in practice.
 const CACHE_RECENCY_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// A sibling backend namespace unused for this long belongs to a retired
-/// backend binary and is removed (Go's build cache uses the same 5 days).
-const CACHE_NAMESPACE_UNUSED_LIMIT: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 const DEFAULT_MEMORY_CACHE_BYTES_FALLBACK: usize = 64 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN: usize = 8 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_BYTES_MIN: usize = 32 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_BYTES_MAX: usize = 512 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_AVAILABLE_DIVISOR: usize = 128;
 const DEFAULT_MEMORY_CACHE_TOTAL_DIVISOR: usize = 512;
-const DEFAULT_PERSISTENT_CACHE_MAX_ENTRIES: usize = 65_536;
-const DEFAULT_PERSISTENT_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+enum NamespaceDisposition {
+    Explicit,
+    Managed { active: Option<File> },
+}
 
 /// Content-addressed cache for compiled TIR functions.
 ///
@@ -80,16 +97,14 @@ pub struct CompilationCache {
     /// Namespace directory (e.g. `.molt_cache/<namespace>/`).
     cache_dir: PathBuf,
     functions_dir: PathBuf,
-    /// Root of the backend namespaces whose stale siblings trimming retires.
-    /// `None` for an explicitly placed cache, which owns only itself.
-    namespace_root: Option<PathBuf>,
+    disposition: NamespaceDisposition,
     /// Whether the first write still has to tag `cache_dir`.
     tag_pending: bool,
 
     /// Resident ownership: payloads, keys, quarantine paths and entry storage.
     resident: ResidentCache<Arc<str>, ResidentEntry>,
 
-    /// Maximum files (artifacts and poison sidecars) a trim leaves on disk.
+    /// Maximum ordinary artifacts a trim leaves on disk.
     max_entries: usize,
     /// Maximum bytes a trim leaves on disk; larger envelopes stay memory-only.
     max_persistent_bytes: u64,
@@ -119,8 +134,6 @@ pub struct CompilationCacheTelemetry {
     pub evicted_entries: u64,
     pub evicted_persistent_bytes: u64,
     pub temp_files_retired: u64,
-    pub untracked_files_retired: u64,
-    pub stale_namespaces_retired: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -180,20 +193,16 @@ impl CompilationCache {
     }
 
     /// Open the namespace of the running backend binary under the process's
-    /// cache root (see [`backend_cache_dir`]), or `None` when the process has
-    /// no root. Its trims also retire stale sibling namespaces.
+    /// cache root (see [`backend_cache_dir`]), or `None` when the process has no root.
     pub fn open_backend_namespace() -> Option<Self> {
         backend_cache_root().map(Self::open_backend_namespace_under)
     }
 
     /// Open the namespace of the running backend binary under `root`, for a
     /// process whose own environment and current directory do not name its
-    /// cache (the JIT runner's are the program's). Its trims also retire
-    /// stale sibling namespaces under `root`.
+    /// cache (the JIT runner's are the program's).
     pub fn open_backend_namespace_under(root: PathBuf) -> Self {
-        let mut cache = Self::open(backend_cache_dir_under(&root));
-        cache.namespace_root = Some(root);
-        cache
+        Self::open_managed(backend_cache_dir_under(&root))
     }
 
     /// Open artifacts keyed by a shared producer contract and an optional
@@ -203,9 +212,16 @@ impl CompilationCache {
         identity: CompilationCacheKey,
     ) -> Option<Self> {
         let root = root.or_else(backend_cache_root)?;
-        let mut cache = Self::open(root.join(identity.finish_hex()));
-        cache.namespace_root = Some(root);
-        Some(cache)
+        Some(Self::open_managed(
+            root.join(&MANAGED_LAYOUT.directory)
+                .join(identity.finish_hex()),
+        ))
+    }
+
+    fn open_managed(directory: PathBuf) -> Self {
+        let mut cache = Self::open(directory);
+        cache.disposition = NamespaceDisposition::Managed { active: None };
+        cache
     }
 
     /// Open a compilation cache with an explicit in-memory cap.
@@ -230,7 +246,7 @@ impl CompilationCache {
         Self {
             cache_dir,
             functions_dir,
-            namespace_root: None,
+            disposition: NamespaceDisposition::Explicit,
             tag_pending: true,
             resident: ResidentCache::new(Some(max_memory_bytes)),
             max_entries,
@@ -239,9 +255,60 @@ impl CompilationCache {
         }
     }
 
+    /// Hold the namespace's existing trim lock for this cache consumer's lifetime.
+    /// Readers and publishers share it. A scheduled exclusive trim is a cache miss.
+    /// Only the process that created the namespace may publish its disposition.
+    fn activate_managed(&mut self, create: bool) -> std::io::Result<()> {
+        let NamespaceDisposition::Managed { active } = &mut self.disposition else {
+            return Ok(());
+        };
+        if active.is_some() {
+            return Ok(());
+        }
+        let layout = self
+            .cache_dir
+            .parent()
+            .expect("managed namespace has a layout");
+        if create {
+            std::fs::create_dir_all(layout.parent().expect("layout has a selected root"))?;
+            match std::fs::create_dir(layout) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+                result => result?,
+            }
+        }
+        require_direct_directory(layout)?;
+        match require_direct_directory(&self.cache_dir) {
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+                publish_managed_namespace(layout, &self.cache_dir)?;
+            }
+            result => result?,
+        }
+        let tag_path = self.cache_dir.join(CACHEDIR_TAG_FILE);
+        let lock_path = self.cache_dir.join(CACHE_TRIM_LOCK_FILE);
+        require_direct_directory(&self.functions_dir)?;
+        let lock = open_regular_member(&lock_path, MemberAccess::Update)?;
+        lock.try_lock_shared().map_err(std::io::Error::from)?;
+        let mut tag = open_regular_member(&tag_path, MemberAccess::Update)?;
+        let expected = MANAGED_LAYOUT.tag.as_bytes();
+        let mut bytes = vec![0; expected.len()];
+        if tag.metadata()?.len() != expected.len() as u64
+            || tag.read_exact(&mut bytes).is_err()
+            || bytes != expected
+        {
+            return Err(std::io::Error::other("unowned backend cache namespace"));
+        }
+        let now = SystemTime::now();
+        if !matches!(now.duration_since(tag.metadata()?.modified()?), Ok(age) if age < CACHE_RECENCY_INTERVAL)
+        {
+            tag.set_modified(now)?;
+        }
+        *active = Some(lock);
+        Ok(())
+    }
+
     /// Return the verified payload cached under `content_hash`, if any.
     pub fn get(&mut self, content_hash: &str) -> Option<Arc<[u8]>> {
-        if !is_canonical_cache_hash(content_hash) {
+        if !is_canonical_cache_hash(content_hash) || self.activate_managed(false).is_err() {
             self.telemetry.misses = self.telemetry.misses.saturating_add(1);
             return None;
         }
@@ -260,8 +327,9 @@ impl CompilationCache {
                 self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                 return None;
             }
-            Err(error) => {
-                self.retire_corrupt_artifact(&artifact_path, content_hash, &error);
+            Err(_) => {
+                // A read budget or I/O failure is not evidence of corrupt bytes.
+                self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                 return None;
             }
         };
@@ -313,6 +381,8 @@ impl CompilationCache {
                 "persistent compilation cache is disabled by a zero entry limit".to_string(),
             ));
         }
+        self.activate_managed(true)
+            .map_err(|error| CompilationCacheWriteError::Unavailable(error.to_string()))?;
         let artifact_path = self
             .artifact_path(content_hash)
             .expect("validated cache hash has a canonical artifact path");
@@ -376,7 +446,9 @@ impl CompilationCache {
     /// also holds durable state (`home/`: installed tools and `MOLT_BIN`). A
     /// failed tag costs only backup and retirement hints, so the write goes on.
     fn tag_once(&mut self) {
-        if !std::mem::take(&mut self.tag_pending) {
+        if !matches!(self.disposition, NamespaceDisposition::Explicit)
+            || !std::mem::take(&mut self.tag_pending)
+        {
             return;
         }
         if let Err(error) = tag_cache_directory(&self.cache_dir, &self.functions_dir) {
@@ -420,17 +492,13 @@ impl CompilationCache {
                     )));
                 }
             }
-            let incumbent = match read_file_bounded(artifact_path, self.max_persistent_bytes) {
+            let Some(incumbent) = read_file_bounded(artifact_path, self.max_persistent_bytes)
+                .map_err(CompilationCacheWriteError::Unavailable)?
+            else {
                 // Retired by a concurrent reader or trim: link again.
-                Ok(None) => continue,
-                Ok(Some(envelope)) => Ok(envelope),
-                Err(error) => Err(error),
+                continue;
             };
-            match incumbent
-                .as_deref()
-                .map_err(String::clone)
-                .and_then(|envelope| decode_artifact_envelope(content_hash, envelope))
-            {
+            match decode_artifact_envelope(content_hash, &incumbent) {
                 Ok(existing) if existing == artifact => {
                     self.telemetry.reuses = self.telemetry.reuses.saturating_add(1);
                     refresh_recency(artifact_path, SystemTime::now());
@@ -475,16 +543,10 @@ impl CompilationCache {
         let poison_path = self
             .poison_path(content_hash)
             .expect("validated cache hash has a canonical poison path");
+        let envelope =
+            poison_envelope_for_limit(content_hash, existing, artifact, self.max_persistent_bytes);
         let poison =
-            poison_envelope_for_limit(content_hash, existing, artifact, self.max_persistent_bytes)
-                .and_then(|envelope| {
-                    install_poison_sidecar(
-                        &self.functions_dir,
-                        &poison_path,
-                        content_hash,
-                        &envelope,
-                    )
-                });
+            install_poison_sidecar(&self.functions_dir, &poison_path, content_hash, &envelope);
         let retired = retire_cache_file(&artifact_path);
         match (poison, retired) {
             (Ok(()), Ok(())) => CompilationCacheWriteError::Integrity(detail),
@@ -500,7 +562,7 @@ impl CompilationCache {
         let detail = match read_poison_sidecar(content_hash, poison_path, self.max_persistent_bytes)
         {
             Ok(Some(poison)) => String::from_utf8_lossy(&poison).into_owned(),
-            Ok(None) => "its poison sidecar was trimmed during the write".to_string(),
+            Ok(None) => "its poison sidecar disappeared during the write".to_string(),
             Err(error) => format!("invalid poison sidecar: {error}"),
         };
         CompilationCacheWriteError::Integrity(format!(
@@ -517,23 +579,12 @@ impl CompilationCache {
         }
     }
 
-    /// Trim the namespace if no trim ran within the trim interval.
-    pub fn trim_if_due(&mut self) -> Result<(), String> {
-        let now = SystemTime::now();
-        if !trim_due(&self.cache_dir.join(CACHE_TRIM_STAMP_FILE), now) {
-            return Ok(());
-        }
-        self.trim_at(now, true)
-    }
-
-    /// Trim the namespace now: retire stale temporary and untracked files,
-    /// evict the least recently used files beyond the entry and byte limits,
-    /// and retire stale sibling backend namespaces.
+    /// Trim an explicitly placed cache on its caller's maintenance path.
     pub fn trim(&mut self) -> Result<(), String> {
-        self.trim_at(SystemTime::now(), false)
-    }
-
-    fn trim_at(&mut self, now: SystemTime, recheck_due: bool) -> Result<(), String> {
+        if !matches!(self.disposition, NamespaceDisposition::Explicit) {
+            return Err("managed cache capacity belongs to scheduled retention".into());
+        }
+        let now = SystemTime::now();
         std::fs::create_dir_all(&self.cache_dir).map_err(|error| {
             format!(
                 "cannot create cache namespace {}: {error}",
@@ -543,12 +594,7 @@ impl CompilationCache {
         // A trim can create the namespace before any write does.
         self.tag_once();
         let lock_path = self.cache_dir.join(CACHE_TRIM_LOCK_FILE);
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
+        let lock = open_regular_member(&lock_path, MemberAccess::Create)
             .map_err(|error| format!("cannot open {}: {error}", lock_path.display()))?;
         // One trimmer at a time; a busy lock means another process trims now.
         // Concurrent trims would only repeat work, so a platform without file
@@ -563,16 +609,15 @@ impl CompilationCache {
             }
         }
         let stamp_path = self.cache_dir.join(CACHE_TRIM_STAMP_FILE);
-        if recheck_due && !trim_due(&stamp_path, now) {
-            return Ok(());
-        }
         self.telemetry.trims = self.telemetry.trims.saturating_add(1);
         self.trim_functions(now)?;
-        if let Some(root) = self.namespace_root.clone() {
-            self.retire_stale_namespaces(&root, now)?;
-        }
-        File::create(&stamp_path)
-            .and_then(|stamp| stamp.set_modified(now))
+        open_regular_member(&stamp_path, MemberAccess::Create)
+            .and_then(|stamp| {
+                if stamp.metadata()?.len() != 0 {
+                    return Err(std::io::Error::other("unexpected trim stamp contents"));
+                }
+                stamp.set_modified(now)
+            })
             .map_err(|error| format!("cannot stamp {}: {error}", stamp_path.display()))
     }
 
@@ -593,11 +638,11 @@ impl CompilationCache {
             let entry = entry.map_err(|error| {
                 format!("cannot enumerate {}: {error}", self.functions_dir.display())
             })?;
-            let Ok(metadata) = entry.metadata() else {
+            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
                 // Retired concurrently.
                 continue;
             };
-            if !metadata.is_file() {
+            if !metadata.is_file() || is_reparse_point(&metadata) {
                 continue;
             }
             let name = entry.file_name();
@@ -615,13 +660,33 @@ impl CompilationCache {
                             self.telemetry.temp_files_retired.saturating_add(1);
                     }
                 }
-                NamespaceFile::Untracked => {
-                    retire_cache_file(&entry.path())?;
-                    self.telemetry.untracked_files_retired =
-                        self.telemetry.untracked_files_retired.saturating_add(1);
-                }
+                NamespaceFile::Protected => {}
             }
         }
+        if tracked.len() <= self.max_entries && tracked_bytes <= self.max_persistent_bytes {
+            return Ok(());
+        }
+        // A plausible filename is not authority to reclaim an operator's
+        // bytes. Read headers only under actual pressure, never for every hit.
+        let mut header = vec![0; cache_artifact_header_bytes()];
+        tracked.retain(|(used, name, size)| {
+            let Some(key) = name.to_str().and_then(|name| name.strip_suffix(".bin")) else {
+                return false;
+            };
+            let Ok(mut file) =
+                open_regular_member(&self.functions_dir.join(name), MemberAccess::Read)
+            else {
+                return false;
+            };
+            file.metadata().is_ok_and(|metadata| {
+                metadata.len() == *size && metadata.modified().ok() == Some(*used)
+            }) && file.read_exact(&mut header).is_ok()
+                && matches!(
+                    decode_cache_header(key, &header, *size),
+                    Ok((CacheEnvelopeKind::Artifact, _))
+                )
+        });
+        tracked_bytes = tracked.iter().map(|(_, _, size)| size).sum();
         // Oldest first; the name breaks ties, so eviction never depends on
         // directory iteration order.
         tracked.sort_unstable();
@@ -638,51 +703,6 @@ impl CompilationCache {
                 .telemetry
                 .evicted_persistent_bytes
                 .saturating_add(bytes);
-        }
-        Ok(())
-    }
-
-    /// Retire sibling backend namespaces that no process used within the
-    /// namespace limit. Only directories with a canonical namespace name and
-    /// a `functions` directory are namespaces; everything else under the root
-    /// belongs to other caches.
-    fn retire_stale_namespaces(&mut self, root: &Path, now: SystemTime) -> Result<(), String> {
-        let own = self.cache_dir.file_name().map(OsStr::to_os_string);
-        let entries = match std::fs::read_dir(root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(format!("cannot enumerate {}: {error}", root.display())),
-        };
-        for entry in entries {
-            let entry =
-                entry.map_err(|error| format!("cannot enumerate {}: {error}", root.display()))?;
-            let name = entry.file_name();
-            if own.as_deref() == Some(name.as_os_str())
-                || !name.to_str().is_some_and(is_canonical_cache_hash)
-                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
-            {
-                continue;
-            }
-            let namespace = entry.path();
-            let Some(last_use) = namespace_last_use(&namespace) else {
-                continue;
-            };
-            if age(now, last_use) < CACHE_NAMESPACE_UNUSED_LIMIT {
-                continue;
-            }
-            match std::fs::remove_dir_all(&namespace) {
-                Ok(()) => {
-                    self.telemetry.stale_namespaces_retired =
-                        self.telemetry.stale_namespaces_retired.saturating_add(1);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "cannot retire stale cache namespace {}: {error}",
-                        namespace.display()
-                    ));
-                }
-            }
         }
         Ok(())
     }
@@ -757,29 +777,36 @@ impl CompilationCache {
 // ---------------------------------------------------------------------------
 
 enum NamespaceFile {
-    /// `<hash>.bin` or `<hash>.poison`.
     Tracked,
-    /// `.<stem>.tmp.<pid>.<serial>`, a writer's staging file.
     Temporary,
-    Untracked,
+    Protected,
 }
 
 fn classify_namespace_file(name: &OsStr) -> NamespaceFile {
     let Some(name) = name.to_str() else {
-        return NamespaceFile::Untracked;
+        return NamespaceFile::Protected;
     };
-    if name.starts_with('.') && name.contains(".tmp.") {
+    if name
+        .strip_suffix(".bin")
+        .is_some_and(is_canonical_cache_hash)
+    {
+        return NamespaceFile::Tracked;
+    }
+    // A poison marker must outlive resident copies in every process. Only
+    // retire staging files whose names the no-clobber publisher could write.
+    if let Some((stem, serial)) = name.strip_prefix('.').and_then(|n| n.split_once(".tmp."))
+        && let Some((pid, n)) = serial.split_once('.')
+        && pid.parse::<u32>().is_ok_and(|v| v.to_string() == pid)
+        && n.parse::<u64>().is_ok_and(|v| v.to_string() == n)
+        && (stem == CACHEDIR_TAG_FILE
+            || stem
+                .strip_suffix(".bin")
+                .or_else(|| stem.strip_suffix(".poison"))
+                .is_some_and(is_canonical_cache_hash))
+    {
         return NamespaceFile::Temporary;
     }
-    let tracked = name
-        .strip_suffix(".bin")
-        .or_else(|| name.strip_suffix(".poison"))
-        .is_some_and(is_canonical_cache_hash);
-    if tracked {
-        NamespaceFile::Tracked
-    } else {
-        NamespaceFile::Untracked
-    }
+    NamespaceFile::Protected
 }
 
 /// Elapsed time since `then`; a future timestamp (clock skew) counts as zero.
@@ -788,31 +815,11 @@ fn age(now: SystemTime, then: SystemTime) -> Duration {
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-}
-
-/// A trim is due when the stamp is missing, older than the trim interval, or
-/// implausibly far in the future (a skewed clock must not disable trimming).
-fn trim_due(stamp_path: &Path, now: SystemTime) -> bool {
-    let Some(stamp) = modified(stamp_path) else {
-        return true;
-    };
-    match now.duration_since(stamp) {
-        Ok(elapsed) => elapsed >= CACHE_TRIM_INTERVAL,
-        Err(skew) => skew.duration() > CACHE_TRIM_INTERVAL,
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || is_reparse_point(&metadata) {
+        return None;
     }
-}
-
-/// Latest use of a namespace: its last trim (hourly while in use) or its
-/// last artifact addition or removal. `None` if it is not a TIR namespace.
-fn namespace_last_use(namespace: &Path) -> Option<SystemTime> {
-    let functions = modified(&namespace.join(CACHE_FUNCTIONS_DIR))?;
-    Some(
-        modified(&namespace.join(CACHE_TRIM_STAMP_FILE))
-            .map_or(functions, |stamp| stamp.max(functions)),
-    )
+    metadata.modified().ok()
 }
 
 /// Trimming evicts by modification time. Refresh it at most once per recency
@@ -821,7 +828,7 @@ fn refresh_recency(path: &Path, now: SystemTime) {
     if modified(path).is_some_and(|then| age(now, then) < CACHE_RECENCY_INTERVAL) {
         return;
     }
-    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+    if let Ok(file) = open_regular_member(path, MemberAccess::Update) {
         let _ = file.set_modified(now);
     }
 }
@@ -853,6 +860,97 @@ fn install_poison_sidecar(
             poison_path.display()
         )),
     }
+}
+
+/// Expose the functions directory, lock and disposition together. A crash
+/// before publication leaves only a private stage. A competitor observes the
+/// complete winning namespace and must validate its tag like any other reader.
+fn publish_managed_namespace(layout: &Path, destination: &Path) -> std::io::Result<()> {
+    let stage = loop {
+        let serial = CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let stage = layout.join(format!(".namespace.tmp.{}.{}", std::process::id(), serial));
+        match std::fs::create_dir(&stage) {
+            Ok(()) => break stage,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let functions = stage.join(CACHE_FUNCTIONS_DIR);
+    let lock = stage.join(CACHE_TRIM_LOCK_FILE);
+    let tag = stage.join(CACHEDIR_TAG_FILE);
+    let published = (|| {
+        std::fs::create_dir(&functions)?;
+        File::create_new(&lock)?;
+        File::create_new(&tag)?.write_all(MANAGED_LAYOUT.tag.as_bytes())?;
+        molt_artifact_publish::publish_directory_exclusive(&stage, destination)
+    })();
+    if published.is_err() {
+        let _ = std::fs::remove_file(&tag);
+        let _ = std::fs::remove_file(&lock);
+        let _ = std::fs::remove_dir(&functions);
+        let _ = std::fs::remove_dir(&stage);
+    }
+    match published {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            require_direct_directory(destination)
+        }
+        result => result,
+    }
+}
+
+fn require_direct_directory(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !is_reparse_point(&metadata) {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "not a direct cache directory: {}",
+            path.display()
+        )))
+    }
+}
+
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+enum MemberAccess {
+    Read,
+    Update,
+    Create,
+}
+
+fn open_regular_member(path: &Path, access: MemberAccess) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(!matches!(access, MemberAccess::Read))
+        .create(matches!(access, MemberAccess::Create))
+        .truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || is_reparse_point(&metadata) {
+        return Err(std::io::Error::other("replaced cache member"));
+    }
+    Ok(file)
 }
 
 /// Write `directory`'s `CACHEDIR.TAG` unless it has one.
@@ -910,8 +1008,8 @@ fn is_canonical_cache_hash(value: &str) -> bool {
 fn encode_cache_envelope(content_hash: &str, kind: CacheEnvelopeKind, payload: &[u8]) -> Vec<u8> {
     debug_assert!(is_canonical_cache_hash(content_hash));
     let digest = Sha256::digest(payload);
-    let mut envelope = Vec::with_capacity(CACHE_ARTIFACT_FIXED_BYTES + payload.len());
-    envelope.extend_from_slice(CACHE_ARTIFACT_MAGIC);
+    let mut envelope = Vec::with_capacity(cache_artifact_header_bytes() + payload.len());
+    envelope.extend_from_slice(MANAGED_LAYOUT.artifact_magic.as_bytes());
     envelope.push(kind as u8);
     envelope.extend_from_slice(content_hash.as_bytes());
     envelope.extend_from_slice(&(payload.len() as u64).to_be_bytes());
@@ -920,16 +1018,17 @@ fn encode_cache_envelope(content_hash: &str, kind: CacheEnvelopeKind, payload: &
     envelope
 }
 
-fn decode_cache_envelope<'a>(
+fn decode_cache_header<'a>(
     expected_hash: &str,
     envelope: &'a [u8],
+    file_size: u64,
 ) -> Result<(CacheEnvelopeKind, &'a [u8]), String> {
-    if envelope.len() < CACHE_ARTIFACT_FIXED_BYTES {
+    if envelope.len() < cache_artifact_header_bytes() {
         return Err("cache envelope is truncated".to_string());
     }
     let mut cursor = 0;
-    let magic_end = CACHE_ARTIFACT_MAGIC.len();
-    if &envelope[..magic_end] != CACHE_ARTIFACT_MAGIC {
+    let magic_end = MANAGED_LAYOUT.artifact_magic.len();
+    if &envelope[..magic_end] != MANAGED_LAYOUT.artifact_magic.as_bytes() {
         return Err("cache envelope magic/version mismatch".to_string());
     }
     cursor += magic_end;
@@ -950,18 +1049,21 @@ fn decode_cache_envelope<'a>(
     let digest_end = cursor + CACHE_ARTIFACT_DIGEST_BYTES;
     let expected_digest = &envelope[cursor..digest_end];
     cursor = digest_end;
-    let payload_len = usize::try_from(payload_len)
-        .map_err(|_| "cache envelope payload length exceeds address space".to_string())?;
-    let expected_total = cursor
-        .checked_add(payload_len)
-        .ok_or_else(|| "cache envelope payload length overflow".to_string())?;
-    if envelope.len() != expected_total {
+    if (cursor as u64).checked_add(payload_len) != Some(file_size) {
         return Err(format!(
-            "cache envelope length mismatch: declared {payload_len}, total {}",
-            envelope.len()
+            "cache envelope length mismatch: declared {payload_len}, total {file_size}"
         ));
     }
-    let payload = &envelope[cursor..];
+    Ok((kind, expected_digest))
+}
+
+fn decode_cache_envelope<'a>(
+    expected_hash: &str,
+    envelope: &'a [u8],
+) -> Result<(CacheEnvelopeKind, &'a [u8]), String> {
+    let (kind, expected_digest) =
+        decode_cache_header(expected_hash, envelope, envelope.len() as u64)?;
+    let payload = &envelope[cache_artifact_header_bytes()..];
     if Sha256::digest(payload).as_slice() != expected_digest {
         return Err("cache envelope payload checksum mismatch".to_string());
     }
@@ -1007,23 +1109,19 @@ fn poison_envelope_for_limit(
     left: &[u8],
     right: &[u8],
     max_persistent_bytes: u64,
-) -> Result<Vec<u8>, String> {
+) -> Vec<u8> {
     let payload = nondeterminism_poison_payload(left, right);
     let detailed = encode_cache_envelope(content_hash, CacheEnvelopeKind::Poison, &payload);
     if detailed.len() as u64 <= max_persistent_bytes {
-        return Ok(detailed);
+        return detailed;
     }
-    let minimal = encode_cache_envelope(content_hash, CacheEnvelopeKind::Poison, &[]);
-    if minimal.len() as u64 > max_persistent_bytes {
-        return Err(format!(
-            "cache key {content_hash} diverged but the configured persistent-byte limit cannot retain the minimal durable quarantine"
-        ));
-    }
-    Ok(minimal)
+    // A payload budget cannot unquarantine a divergent key in a different
+    // process. Even a memory-only producer publishes the fixed-size marker.
+    encode_cache_envelope(content_hash, CacheEnvelopeKind::Poison, &[])
 }
 
 fn read_file_bounded(path: &std::path::Path, max_bytes: u64) -> Result<Option<Vec<u8>>, String> {
-    let file = match File::open(path) {
+    let file = match open_regular_member(path, MemberAccess::Read) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -1063,7 +1161,10 @@ fn read_poison_sidecar(
     poison_path: &std::path::Path,
     max_persistent_bytes: u64,
 ) -> Result<Option<Vec<u8>>, String> {
-    let envelope = match read_file_bounded(poison_path, max_persistent_bytes) {
+    let envelope = match read_file_bounded(
+        poison_path,
+        max_persistent_bytes.max(cache_artifact_header_bytes() as u64),
+    ) {
         Ok(Some(envelope)) => envelope,
         Ok(None) => return Ok(None),
         Err(error) => {
@@ -1140,7 +1241,7 @@ pub(crate) fn backend_cache_dir_for(
     key.field(b"executable-path", &path_bytes);
     key.field(b"executable-mtime", &mtime.to_be_bytes());
     key.field(b"backend-build-identity", build_identity);
-    root.join(key.finish_hex())
+    root.join(&MANAGED_LAYOUT.directory).join(key.finish_hex())
 }
 
 fn backend_build_identity(executable: &std::path::Path) -> Vec<u8> {
@@ -1229,13 +1330,13 @@ fn default_memory_cache_limit_bytes() -> usize {
 
 fn default_persistent_cache_max_entries() -> usize {
     env_cache_limit::<usize>(BackendEnv::MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES)
-        .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_ENTRIES)
+        .unwrap_or(MANAGED_LAYOUT.max_entries)
 }
 
 fn default_persistent_cache_max_bytes() -> u64 {
     env_cache_limit::<u64>(BackendEnv::MOLT_BACKEND_TIR_CACHE_DISK_MB)
         .and_then(|mib| mib.checked_mul(1024 * 1024))
-        .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_BYTES)
+        .unwrap_or(MANAGED_LAYOUT.disk_mib * 1024 * 1024)
 }
 
 /// A cache limit from the process-scoped `cache` catalog group: fixed for

@@ -1274,7 +1274,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BACKEND_TIR_CACHE_DISK_MB",
       "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
-      "summary": "MiB limit of one persistent TIR cache namespace on disk, enforced by its hourly trim; unset or non-numeric means 4096.",
+      "summary": "MiB limit of one persistent TIR cache namespace on disk, enforced by scheduled cache retention; unset or non-numeric means 4096.",
       "values": []
     },
     {
@@ -1284,7 +1284,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES",
       "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/cache.rs",
-      "summary": "Maximum file count (artifacts and quarantine sidecars) of one persistent TIR cache namespace, enforced by its hourly trim; unset or non-numeric means 65536.",
+      "summary": "Maximum artifact count of one persistent TIR cache namespace, enforced by scheduled cache retention; unset or non-numeric means 65536. Quarantine sidecars are retained as integrity evidence.",
       "values": []
     },
     {

@@ -317,15 +317,23 @@ def _with_early_cutoff(
         first = _build_record.enter_build()
         cutoff = _early_cutoff_request(request)
         if cutoff is None:
-            return build_function(request)
+            with _build_record.without_import_graph_recording():
+                return build_function(request)
         key, record = cutoff
         from molt.cli.build_output_layout import _replay_build_claim
+
+        previous_import_graph: str | None = None
+
+        def graph_candidate(digest: str) -> None:
+            nonlocal previous_import_graph
+            previous_import_graph = digest
 
         change = _build_record.check(
             record,
             key,
             claim=_replay_build_claim,
             require_result=request.json_output,
+            graph_candidate=graph_candidate,
         )
         if isinstance(change, _build_record.BuildRecordHit):
             if request.json_output:
@@ -343,10 +351,12 @@ def _with_early_cutoff(
         if verbose:
             print(f"Build record: {change}", file=sys.stderr)
         if not first:
-            return build_function(request)
+            with _build_record.without_import_graph_recording():
+                return build_function(request)
         with _build_record.recording(
             _build_record.transient_root(_default_molt_cache()),
             capture_result=request.json_output,
+            previous_import_graph=previous_import_graph,
         ) as ledger:
             result = build_function(request)
         if result == 0:

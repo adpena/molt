@@ -37,6 +37,7 @@ from molt.cli.models import (
     _ModuleGraphMetadata,
     _PreparedEntryModuleGraph,
     _RuntimeImportScanCustody,
+    _SettledImportGraph,
 )
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
@@ -365,7 +366,7 @@ _PACKAGE_PARENT_REASONS = frozenset(
 
 def _modules_with_any_reason(
     module_graph: Mapping[str, Path],
-    module_reasons: Mapping[str, set[ModuleReason]],
+    module_reasons: Mapping[str, Collection[ModuleReason]],
     reasons: Collection[ModuleReason],
 ) -> frozenset[str]:
     reason_set = set(reasons)
@@ -1523,7 +1524,63 @@ def _materialize_import_plan(
         tuple(scan_authorities.values())
     ).restricted(module_graph)
     final_scan_authority.validate_graph(module_graph)
-    discovery.validate_sources()
+    settled = _SettledImportGraph(
+        import_query_closure=prepared_module_graph.module_resolution_cache.import_query_closure(
+            prepared_module_graph.import_query_closure
+        ),
+        image_scope=prepared_module_graph.image_scope,
+        declared_root_modules=prepared_module_graph.declared_root_modules,
+        roots=tuple(prepared_module_graph.roots),
+        stdlib_allowlist=frozenset(stdlib_allowlist),
+        module_graph=MappingProxyType(module_graph),
+        scan_authority=final_scan_authority,
+        explicit_imports=frozenset(prepared_module_graph.explicit_imports),
+        support_explicit_imports=frozenset(support_explicit_imports),
+        runtime_import_dispatch_roots=runtime_closure.dispatch_roots,
+        stub_parents=frozenset(stub_parents),
+        spawn_enabled=prepared_module_graph.spawn_enabled,
+        runtime_import_support_policy=runtime_closure.policy,
+        runtime_import_scan_custody=runtime_closure.custody,
+        runtime_import_machinery=prepared_module_graph.runtime_import_machinery,
+        native_artifact_plan=native_artifact_plan,
+        namespace_import_redirects=discovery.namespace_index.import_redirects,
+        module_reasons=MappingProxyType(
+            {name: frozenset(reasons) for name, reasons in module_reasons.items()}
+        ),
+        operation_counts=MappingProxyType(module_graph_operation_counts),
+        target=prepared_module_graph.target,
+        target_python=prepared_module_graph.target_python,
+    )
+    return _assemble_import_plan(
+        settled,
+        resolver=prepared_module_graph.module_resolution_cache,
+        stdlib_root=stdlib_root,
+        entry_module=entry_module,
+    )
+
+
+def _assemble_import_plan(
+    prepared_module_graph: _SettledImportGraph,
+    *,
+    resolver: _module_resolution._ModuleResolutionCache,
+    stdlib_root: Path,
+    entry_module: str,
+) -> _ImportPlan:
+    """One live final assembly for freshly solved and replayed closed graphs."""
+    module_graph = dict(prepared_module_graph.module_graph)
+    final_scan_authority = prepared_module_graph.scan_authority
+    final_scan_authority.validate_graph(module_graph)
+    runtime_closure = _RuntimeImportClosure(
+        prepared_module_graph.runtime_import_support_policy,
+        prepared_module_graph.runtime_import_scan_custody,
+        prepared_module_graph.runtime_import_dispatch_roots,
+    )
+    native_artifact_plan = prepared_module_graph.native_artifact_plan
+    stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
+    stub_parents = set(prepared_module_graph.stub_parents)
+    support_explicit_imports = set(prepared_module_graph.support_explicit_imports)
+    module_reasons = prepared_module_graph.module_reasons
+    module_graph_operation_counts = prepared_module_graph.operation_counts
     if runtime_closure.custody is not None:
         runtime_closure.custody.validate_graph(module_graph)
     native_artifact_manifests = _custodied_native_artifact_manifests(
@@ -1550,7 +1607,7 @@ def _materialize_import_plan(
         stdlib_allowlist,
         set(prepared_module_graph.explicit_imports) | support_explicit_imports,
         stub_parents=stub_parents,
-        resolver_cache=prepared_module_graph.module_resolution_cache,
+        resolver_cache=resolver,
     )
     if (
         prepared_module_graph.runtime_import_machinery
@@ -1623,7 +1680,7 @@ def _materialize_import_plan(
             known_modules=known_modules,
         )
     )
-    import_redirects = discovery.namespace_index.import_redirects.join(
+    import_redirects = prepared_module_graph.namespace_import_redirects.join(
         # A module whose own code reflects its namespace dynamically (an
         # escaping ``globals()``, ``exec`` on its globals) may store its own
         # ``__spec__`` or ``__path__``: that row keeps the protocol (D2b).
@@ -1651,13 +1708,19 @@ def _materialize_import_plan(
                 import_hook_writers=(NATIVE_EXTENSION_WRITER,),
             )
         )
+    import_query_closure = resolver.import_query_closure(
+        prepared_module_graph.import_query_closure
+    )
+    import_query_closure.validate(final_scan_authority)
     return _ImportPlan(
+        settled_graph=prepared_module_graph,
+        import_query_closure=import_query_closure,
         import_redirects=import_redirects,
         image_scope=prepared_module_graph.image_scope,
         stdlib_allowlist=frozenset(stdlib_allowlist),
         roots=tuple(prepared_module_graph.roots),
         stdlib_root=stdlib_root,
-        module_resolution_cache=prepared_module_graph.module_resolution_cache,
+        module_resolution_cache=resolver,
         module_graph=MappingProxyType(dict(module_graph)),
         scan_authority=final_scan_authority,
         module_graph_operation_counts=MappingProxyType(
@@ -2068,6 +2131,7 @@ def _prepare_entry_module_graph(
         ]
     )
     return _PreparedEntryModuleGraph(
+        import_query_closure=module_resolution_cache.import_query_closure(),
         discovery=discovery,
         project_root=project_root,
         image_scope=image_scope,

@@ -372,6 +372,8 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     # HF-184: a CLI build applies the budget to the cache it used, after it
     # succeeded, at most once a day; failures, --no-cache builds and
     # MOLT_CACHE_PRUNE=0 leave the cache alone.
+    import time
+
     from molt import cache_eviction
     from molt import dx
 
@@ -396,14 +398,27 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     assert entry.exists()
 
     monkeypatch.delenv("MOLT_CACHE_PRUNE")
+    monkeypatch.setattr(
+        cache_eviction,
+        "automatic_retention",
+        lambda *_args, **_kwargs: pytest.fail("installed compile ran retention inline"),
+    )
     assert entrypoint._build(request) == 0
+    log = cache / "logs" / "cache_retention" / "automatic" / "prune-initial.log"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not log.read_text(encoding="utf-8").endswith(
+        "\n"
+    ):
+        time.sleep(0.02)
+    report = json.loads(log.read_text(encoding="utf-8"))
+    assert report["status"] == "completed" and report["entries_removed"] == 1
     assert not entry.exists()
     entry = _old_cache_entry(cache)
 
     def no_second_sweep(*_args: object, **_kwargs: object) -> None:
         pytest.fail("a build within a day of the last sweep must not sweep")
 
-    monkeypatch.setattr(cache_eviction, "automatic_retention", no_second_sweep)
+    monkeypatch.setattr(cache_eviction, "schedule_installed_retention", no_second_sweep)
     assert entrypoint._build(request) == 0
     assert entry.exists()
 

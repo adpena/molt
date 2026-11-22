@@ -196,6 +196,22 @@ per premise revision.
    and rejects dependencies on CLI or frontend code. A real store test keeps a scan after
    changing frontend bytes and invalidates it after changing a binding producer. See
    [Frontend semantic fingerprint](../../../../design/frontend_semantic_fingerprint.md).
+   The production entry and materialized import plan also carry an operation-local typed
+   query closure. The outer scan admission records completed results for fresh, persisted
+   and precomputed scans, including runtime-catalog custody. A proven premise cutoff also
+   records the reused result under its newly admitted premise. Equivalent semantic queries
+   share one result while retaining their admission kinds; namespace premises, deferred
+   owners and arguments, target, body selection and runtime custody stay distinct inputs.
+   Materialization fences the prepared closure and its final extension through the existing
+   source leases and positive/negative import-topology observations. This is capture and
+   live validation. Ordinary local build records can now retain the settled graph in
+   the existing immutable blob store. Replay validates the current producer, source
+   identities and semantic topology, re-evaluates every query of edited sources, and
+   rebuilds the active plan through the common final assembler. Changed name universes,
+   demands, writers, source owners or resolution facts refuse reuse. Runtime custody
+   remains exact and native artifact plans are excluded. See
+   [Build early cutoff](../../../../design/build_early_cutoff.md) for publication,
+   proof exclusions and the remaining atomic-save record-refresh limitation.
 6. *Laziness in development.* A development build does not wait for the whole closure: it
    analyzes on demand, and the JIT lane compiles a function on its first call (no interpreter
    fallback). A release build keeps the full closed-world solve.

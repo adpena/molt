@@ -133,6 +133,11 @@ checks = {{
         and issubclass(_public.StringIO, _public.TextIOBase)
     ),
     "open": _private.open is _published_open and _public.open is _published_open,
+    "export_order": _private.__all__ == [
+        "SEEK_SET", "SEEK_CUR", "SEEK_END", "DEFAULT_BUFFER_SIZE", "FileIO",
+        "BufferedReader", "BufferedWriter", "BufferedRandom", "TextIOWrapper",
+        "BytesIO", "StringIO", "UnsupportedOperation", "open", "text_encoding",
+    ],
     "native_mode_error": _native_mode_error,
     "excluded_open": all(
         "open" not in vars(module) and "open" not in module.__all__
@@ -142,6 +147,15 @@ checks = {{
         _without_open_public.BytesIO is _without_open.BytesIO
         and _without_open_public.BytesIO(b"memory").read() == b"memory"
         and _without_open_public.StringIO("memory").read() == "memory"
+    ),
+    "memory_exports": (
+        _without_open.__all__ == [name for name in _private.__all__ if name != "open"]
+        and _without_open_public.__all__ == _without_open.__all__
+        + ["IOBase", "RawIOBase", "BufferedIOBase", "TextIOBase"]
+        and all(
+            getattr(_without_open_public, name) is getattr(_without_open, name)
+            for name in _without_open.__all__
+        )
     ),
     "intrinsics": _intrinsic_requests
     == ["molt_io_class", "molt_builtin_class_lookup", "molt_io_default_buffer_size", "molt_io_text_encoding", "molt_function_set_builtin"] * 2,
@@ -202,7 +216,9 @@ def test__io_public_surface_matches_expected_shape() -> None:
         "classes": "True",
         "constants": "True",
         "excluded_open": "True",
+        "export_order": "True",
         "intrinsics": "True",
+        "memory_exports": "True",
         "memory_io_without_open": "True",
         "native_mode_error": "True",
         "open": "True",

@@ -200,6 +200,12 @@ class FrontendRecordFiles:
         digest = self.digest(kind, key)
         return None if digest is None else self._read_blob(digest, max_bytes)
 
+    def get_blob(self, digest: str, *, max_bytes: int) -> FrontendRecord | None:
+        """Read a bounded digest-addressed product owned by an external record."""
+        if self._pid != os.getpid() or _DIGEST.fullmatch(digest) is None:
+            return None
+        return self._read_blob(digest, max_bytes)
+
     def digest(self, kind: FrontendRecordKind, key: str) -> str | None:
         if kind not in _KINDS or _KEY.fullmatch(key) is None:
             return None
@@ -303,6 +309,16 @@ class FrontendRecordFiles:
         if not os.path.exists(path) and not self._publish(path, payload):
             return False
         return self._record(kind, key, digest)
+
+    def put_blob(self, payload: bytes) -> str | None:
+        """Publish immutable bytes without inventing a second address index."""
+        if self._pid != os.getpid():
+            return None
+        digest = record_digest(payload)
+        path = self.blob_path(digest)
+        if not os.path.exists(path) and not self._publish(path, payload):
+            return None
+        return digest
 
     def link(self, kind: FrontendRecordKind, key: str, same_as_key: str) -> bool:
         """Record that ``key`` has the result ``same_as_key`` has (HF-926)."""

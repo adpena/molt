@@ -26,6 +26,7 @@ from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 import pytest
 
 from molt import artifact_publication as publication
+from molt.build_record import record_path
 from molt import durable_file_identity as durable
 from molt import dx
 from molt import temporary_artifacts as scratch
@@ -558,7 +559,7 @@ TestDurableIdentityModel.settings = settings(
         ),
         (
             "tmp/build-control/" + "a" * 64 + "/build_records/ab/entry.json",
-            "tmp/build-control/" + "a" * 64 + "/build_records/v12/ab/entry.json",
+            str(record_path(Path("tmp/build-control") / ("a" * 64), "ab" + "c" * 62)),
             "tmp/build-control/" + "a" * 64 + "/build_records/ab",
         ),
         (
