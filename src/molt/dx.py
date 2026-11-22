@@ -814,7 +814,10 @@ def _disk_guard_disabled(env: Mapping[str, str]) -> bool:
 
 def _source_checkout_maintenance():  # noqa: ANN202 - source tools load lazily
     """The source scheduling adapter, or None for an installed compiler."""
-    tools_dir = compiler_source_root() / "tools"
+    source = compiler_source_root()
+    if installed_distribution_root(source) is not None:
+        return None
+    tools_dir = source / "tools"
     if not (tools_dir / "checkout_maintenance.py").is_file():
         return None
     if str(tools_dir.parent) not in sys.path:
@@ -847,7 +850,11 @@ def checkout_state_maintenance_environment(
     replace the command's result.
     """
     try:
-        if not (compiler_source_root() / "tools" / "disk_guard.py").is_file():
+        compiler = compiler_source_root()
+        if (
+            installed_distribution_root(compiler, environ=env) is not None
+            or not (compiler / "tools" / "disk_guard.py").is_file()
+        ):
             return None
         captured = ProcessEnvironment(env)
         selected = artifact_root(

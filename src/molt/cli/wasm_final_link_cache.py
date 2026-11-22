@@ -32,7 +32,7 @@ from molt.cli.wasm_link_cache import (
     _wasm_link_cache_entry,
 )
 from molt.exact_json import canonical_json_bytes
-from molt.toolchain_identity import stable_regular_file_identity
+from molt.toolchain_identity import StableRegularFileObservation
 
 FINAL_LINK_CACHE_FAMILY = "final_link"
 # Bump when the link tool's output contract changes in a way its source
@@ -51,6 +51,7 @@ def final_link_cache_key(
     *,
     cwd: Path,
     tool_facts: Sequence[Mapping[str, object]],
+    observed_inputs: Mapping[str, StableRegularFileObservation] | None = None,
 ) -> str:
     """Key one final link by content: files by digest, outputs by name only.
 
@@ -63,6 +64,9 @@ def final_link_cache_key(
     if len(link_cmd) < 2:
         raise ValueError("final link command must name an interpreter and a tool")
     arguments: list[str] = []
+    files: dict[str, StableRegularFileObservation] = {}
+    reused: dict[str, StableRegularFileObservation] = {}
+    label = "final link input"
     pending: str | None = None
     for argument in link_cmd[2:]:
         if pending is not None:
@@ -78,12 +82,27 @@ def final_link_cache_key(
             pending = argument
             continue
         # The tool resolves relative paths against its working directory.
-        path = Path(argument) if Path(argument).is_absolute() else cwd / argument
-        if not argument.startswith("-") and path.is_file():
-            identity = stable_regular_file_identity(path, label="final link input")
-            arguments.append(f"sha256:{identity.sha256}")
-        else:
+        path = (cwd / argument).absolute()
+        name = str(path)
+        if argument.startswith("-"):
             arguments.append(argument)
+            continue
+        observation = files.get(name)
+        if observation is None and observed_inputs is not None:
+            observation = observed_inputs.get(name)
+        if observation is not None:
+            if str(observation.identity.path) != name:
+                raise ValueError(f"{label} changes the selected path: {path}")
+            reused[name] = observation
+        elif path.is_file():
+            observation = StableRegularFileObservation.capture(path, label=label)
+        if observation is None:
+            arguments.append(argument)
+        else:
+            files[name] = observation
+            arguments.append(f"sha256:{observation.identity.sha256}")
+    for observation in reused.values():
+        observation.verify(label=label)
     payload = {
         "schema": FINAL_LINK_CACHE_SCHEMA,
         "python": list(sys.version_info[:3]),

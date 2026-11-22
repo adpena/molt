@@ -125,6 +125,7 @@ from molt.native_callable_abi import (
     native_callable_browser_signature,
 )
 from molt.toolchain_identity import (
+    StableRegularFileObservation,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
@@ -1056,6 +1057,7 @@ def _prepare_non_native_build_result_in_generation(
             if resolved_linked_output is None:
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
             try:
+                side_sdk_capture_ns = time.time_ns()
                 side_sdk_archives = (
                     wasm_link_inputs.wasm_side_module_sdk_archives()
                     if _split_runtime
@@ -1159,8 +1161,11 @@ def _prepare_non_native_build_result_in_generation(
                 # producer-bound input it keys the final link and the build
                 # record, and the tool verifies its bytes before linking.
                 link_allowlist = tool.with_name("wasm_allowed_imports.txt")
-                admitted_link_inputs = side_sdk_archives + tuple(
-                    stable_regular_file_identity(
+                link_observations = tuple(
+                    StableRegularFileObservation(identity, side_sdk_capture_ns)
+                    for identity in side_sdk_archives
+                ) + tuple(
+                    StableRegularFileObservation.capture(
                         path.resolve(), label="WASM link input"
                     )
                     for path in dict.fromkeys(
@@ -1176,6 +1181,12 @@ def _prepare_non_native_build_result_in_generation(
                     )
                     if path.resolve() not in side_sdk_paths
                 )
+                admitted_link_inputs = tuple(
+                    item.identity for item in link_observations
+                )
+                observed_link_inputs = {
+                    str(item.identity.path): item for item in link_observations
+                }
                 expected_input_args = [
                     argument
                     for identity in admitted_link_inputs
@@ -1297,6 +1308,7 @@ def _prepare_non_native_build_result_in_generation(
                     app_export_contract_path,
                 ],
                 link_cmd=link_cmd,
+                observed_inputs=observed_link_inputs,
                 tool_facts=(
                     *(
                         (optimizer_cache_fact,)
@@ -1440,6 +1452,7 @@ def _prepare_non_native_build_result_in_generation(
                         final_link_cache_key(
                             link_run_cmd,
                             cwd=molt_root,
+                            observed_inputs=observed_link_inputs,
                             tool_facts=(
                                 {
                                     "role": "wasm-link-source-closure",

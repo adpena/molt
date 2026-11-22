@@ -13,19 +13,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
 import re
+import stat
 from typing import Any, TypedDict
 
 from molt.exact_json import canonical_json_sha256, read_exact
-from molt.file_publication import is_link_like, resolve_owned_path
+from molt.file_publication import (
+    is_link_like,
+    metadata_is_link_like,
+    resolve_owned_path,
+)
 from molt.host_tool_products import HostToolProduct
 from molt.portable_paths import (
     portable_path_component,
     portable_path_identity,
-    portable_relative_path,
 )
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from molt.source_root import MANIFEST_NAME, installed_distribution_root
@@ -77,12 +82,16 @@ def verify_source_inventory(
     *,
     manifest_name: str | None = None,
 ) -> Path:
-    """Verify the same exact source projection before packaging and after install.
+    """Hash the same exact source closure before packaging and after install.
 
-    Callers admit the inventory schema first. The optional root manifest is
-    metadata outside its own inventory, never a blanket directory exclusion.
+    Enumeration owns one no-follow metadata row per member. Hashing binds
+    that row to the opened file through the shared stable-file authority;
+    directory fences reject observed membership-generation changes. The
+    optional root manifest participates in closure only.
     """
     root = resolve_owned_path(root)
+    if len(files) > MAX_SOURCE_FILES:
+        raise ValueError("Compiler source exceeds file count policy")
     expected = {entry["path"]: entry for entry in files}
     directories = {
         parent.as_posix()
@@ -90,53 +99,101 @@ def verify_source_inventory(
         for parent in Path(name).parents
         if parent != Path(".")
     }
-    actual_files: set[str] = set()
-    actual_dirs: set[str] = set()
-
-    def scan_error(error: OSError) -> None:
-        raise error
-
-    for current, dirs, names in os.walk(root, followlinks=False, onerror=scan_error):
-        for name in dirs + names:
-            path = Path(current) / name
-            if is_link_like(path):
-                raise ValueError(f"Compiler source contains a link: {path}")
-        actual_dirs.update(
-            (Path(current) / name).relative_to(root).as_posix() for name in dirs
-        )
-        for name in names:
-            path = Path(current) / name
-            relative = path.relative_to(root).as_posix()
-            if not path.is_file():
-                raise ValueError(f"Compiler source is not a regular file: {relative}")
-            actual_files.add(relative)
     allowed = set(expected)
     if manifest_name is not None:
         allowed.add(manifest_name)
-    if actual_files != allowed or actual_dirs != directories:
+    observed: dict[str, os.stat_result] = {}
+    observed_dirs: dict[str, os.stat_result] = {}
+    root_metadata = root.lstat()
+    pending = [(root, root_metadata)]
+
+    def directory_generation(
+        metadata: os.stat_result,
+    ) -> tuple[int, int, int, int, int]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    def check_directory(path: Path, metadata: os.stat_result) -> None:
+        current = path.lstat()
+        if (
+            metadata_is_link_like(current)
+            or not stat.S_ISDIR(current.st_mode)
+            or directory_generation(current) != directory_generation(metadata)
+        ):
+            raise ValueError(f"Compiler source directory changed: {path}")
+
+    while pending:
+        current, metadata = pending.pop()
+        check_directory(current, metadata)
+        with os.scandir(current) as entries:
+            for entry in entries:
+                path = current / entry.name
+                relative = path.relative_to(root).as_posix()
+                # DirEntry.stat omits device/inode identity on Windows.
+                member = (
+                    path.lstat()
+                    if os.name == "nt"
+                    else entry.stat(follow_symlinks=False)
+                )
+                if metadata_is_link_like(member):
+                    raise ValueError(f"Compiler source contains a link: {path}")
+                if stat.S_ISDIR(member.st_mode) and relative in directories:
+                    observed_dirs[relative] = member
+                    pending.append((path, member))
+                elif stat.S_ISREG(member.st_mode) and relative in allowed:
+                    observed[relative] = member
+                elif not (stat.S_ISDIR(member.st_mode) or stat.S_ISREG(member.st_mode)):
+                    raise ValueError(
+                        f"Compiler source is not a regular file: {relative}"
+                    )
+                else:
+                    raise ValueError(
+                        "Compiler source file/directory closure is not exact"
+                    )
+    if set(observed) != allowed or set(observed_dirs) != directories:
         raise ValueError("Compiler source file/directory closure is not exact")
-    # Windows records no POSIX permission bits to compare.
     check_modes = os.name != "nt"
 
-    def verify_file(name: str) -> None:
-        entry = expected[name]
-        path = root / name
-        identity = stable_regular_file_content_identity(path, label="compiler source")
-        if any(identity[key] != entry[key] for key in ("size", "sha256")):
-            raise ValueError(f"Compiler source content changed: {name}")
-        if check_modes:
-            mode = path.stat().st_mode
-            if not _source_mode_matches_git(mode, entry["mode"]):
+    def verify_batch(names: tuple[str, ...]) -> None:
+        for name in names:
+            entry = expected[name]
+            metadata = observed[name]
+            identity = stable_regular_file_identity(
+                root / name, label="compiler source", expected_path_stat=metadata
+            )
+            if (identity.size, identity.sha256) != (entry["size"], entry["sha256"]):
+                raise ValueError(f"Compiler source content changed: {name}")
+            # The supplied mode participated in the opened path/handle fence.
+            # A later independent stat could instead inspect another generation.
+            if check_modes and not _source_mode_matches_git(
+                metadata.st_mode, entry["mode"]
+            ):
                 raise ValueError(
                     f"Compiler source mode changed: {name} (found "
-                    f"{mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
+                    f"{metadata.st_mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
                 )
 
+    # ThreadPoolExecutor.map's chunksize does not batch thread jobs on 3.12.
+    # The existing source policy bounds eager submission to at most 782 jobs.
+    batch_size = 32
+    workers = min(16, max(1, (len(expected) + batch_size - 1) // batch_size))
     with ThreadPoolExecutor(
-        max_workers=min(16, max(1, len(expected))),
-        thread_name_prefix="compiler-source-verify",
+        max_workers=workers, thread_name_prefix="compiler-source-verify"
     ) as executor:
-        tuple(executor.map(verify_file, expected, chunksize=32))
+        # map consumes results in manifest order and cancels pending futures
+        # when a result raises. Each job closes its own stable-file handles.
+        for _ in executor.map(verify_batch, batched(expected, batch_size)):
+            pass
+    if resolve_owned_path(root) != root:
+        raise ValueError("Compiler source root changed during verification")
+    check_directory(root, root_metadata)
+    for name, metadata in observed_dirs.items():
+        check_directory(root / name, metadata)
     return root
 
 
@@ -721,7 +778,10 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
             "sha256",
         }:
             raise ValueError("Invalid installed compiler source record")
-        path = portable_relative_path(entry["path"]).as_posix()
+        path = entry["path"]
+        if not isinstance(path, str):
+            raise ValueError("Invalid installed compiler source path")
+        # Collision identity also admits the portable spelling verbatim.
         identity = portable_path_identity(path)
         if identity in seen or path <= last or path == MANIFEST_NAME:
             raise ValueError("Installed compiler source paths collide or are unordered")

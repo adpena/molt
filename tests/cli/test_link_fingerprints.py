@@ -22,6 +22,7 @@ from molt.cli import atomic_io
 from molt.cli import build_results, link_fingerprints as receipts, link_pipeline
 from molt.cli import native_link_command
 from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths
+from molt.toolchain_identity import StableRegularFileObservation
 from tests.cli.native_link_test_support import (
     write_test_native_link_manifest,
     write_test_static_archive,
@@ -46,9 +47,11 @@ def test_native_link_fingerprint_reuses_the_admitted_archive_identity(
 
     inspect_content = receipts.artifact_content_identity
 
-    def inspect_application(path: Path) -> dict[str, object]:
+    def inspect_application(
+        path: Path, *, observed: StableRegularFileObservation | None = None
+    ) -> dict[str, object]:
         assert path == application, "the admitted runtime archive was parsed twice"
-        return inspect_content(path)
+        return inspect_content(path, observed=observed)
 
     monkeypatch.setattr(receipts, "artifact_content_identity", inspect_application)
     assert (
@@ -69,6 +72,46 @@ def test_native_link_fingerprint_reuses_the_admitted_archive_identity(
         receipts._link_fingerprint(
             project_root=root, inputs=inputs, link_cmd=command, runtime_binding=binding
         )
+
+
+def test_wasm_link_fingerprint_preserves_byte_and_archive_identities(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app.wasm"
+    app.write_bytes(b"application object")
+    archive = tmp_path / "stdlib.a"
+    write_test_static_archive(archive)
+    inputs = [app, archive]
+    cmd = ["wasm-ld", *map(str, inputs)]
+    observations = {
+        str(path): StableRegularFileObservation.capture(path, label="link input")
+        for path in inputs
+    }
+    independently_read = receipts._link_fingerprint(
+        project_root=tmp_path, inputs=inputs, link_cmd=cmd
+    )
+    assert independently_read is not None
+    assert (
+        receipts._link_fingerprint(
+            project_root=tmp_path,
+            inputs=inputs,
+            link_cmd=cmd,
+            observed_inputs=observations,
+        )
+        == independently_read
+    )
+    original = app.stat()
+    app.write_bytes(b"different content!")
+    os.utime(app, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert (
+        receipts._link_fingerprint(
+            project_root=tmp_path,
+            inputs=inputs,
+            link_cmd=cmd,
+            observed_inputs=observations,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("route", ["execute", "cached"])

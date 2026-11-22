@@ -827,12 +827,18 @@ def request_key(
     registry's output-neutral names: a guarded build carries a fresh guard
     token, marker and scratch lease, and memory budgets measured at launch.
     """
+    from molt.dx import generated_session_id
     from molt.environment_registry import load_registry
 
     # The registry loads only when a MOLT_* name is set, as at CLI start.
     registry = (
         load_registry() if any(key.startswith("MOLT_") for key in environment) else None
     )
+    excluded = _SESSION_ENVIRONMENT_KEYS
+    if generated_session_id(environment):
+        # DX gives each process a routing label while selecting the same
+        # unpinned Cargo target and user output layout.
+        excluded = excluded | {"MOLT_SESSION_ID"}
     material = {
         "schema": "molt-build-record-v10",
         "arguments": dict(arguments),
@@ -843,7 +849,7 @@ def request_key(
         "environment": {
             key: value
             for key, value in environment.items()
-            if key not in _SESSION_ENVIRONMENT_KEYS
+            if key not in excluded
             and not (
                 registry is not None
                 and key.startswith("MOLT_")

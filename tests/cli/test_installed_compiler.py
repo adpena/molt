@@ -16,6 +16,7 @@ import pytest
 
 from molt import compiler_distribution as distribution
 from molt.cli import backend_binary, backend_execution, cargo_profiles
+from molt.toolchain_identity import StableRegularFileIdentity
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.release_lane_fixtures import stage_stdlib_source_summaries_fixture
@@ -212,6 +213,61 @@ def test_installed_source_closure_fails_closed(installation, damage):
         (installation / "Cargo.toml").unlink()
     with pytest.raises(ValueError):
         installed.verify_sources()
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "replace", "mode", "extra"])
+def test_installed_source_binds_inventory_to_stable_read(
+    installation: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    if mutation == "mode" and os.name == "nt":
+        pytest.skip("POSIX source permission semantics")
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    victim = installation / "Cargo.lock"
+    before = victim.stat()
+    original = distribution.stable_regular_file_identity
+    injected = False
+
+    def capture(
+        path: Path, *, label: str, expected_path_stat: os.stat_result | None = None
+    ) -> StableRegularFileIdentity:
+        nonlocal injected
+        assert expected_path_stat is not None
+        if path == victim:
+            injected = True
+            if mutation == "rewrite":
+                victim.write_bytes(b"edited")
+                os.utime(victim, ns=(before.st_atime_ns, before.st_mtime_ns))
+            elif mutation == "replace":
+                replacement = installation.parent / "replacement"
+                replacement.write_bytes(b"source")
+                os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+                os.replace(replacement, victim)
+            elif mutation == "mode":
+                victim.chmod(before.st_mode ^ 0o100)
+            else:
+                (victim.parent / "extra.py").write_bytes(b"")
+        return original(path, label=label, expected_path_stat=expected_path_stat)
+
+    monkeypatch.setattr(distribution, "stable_regular_file_identity", capture)
+    with pytest.raises(ValueError):
+        compiler.verify_sources()
+    assert injected
+
+
+def test_installed_source_reports_first_manifest_error_across_batches(
+    tmp_path: Path,
+) -> None:
+    expected = hashlib.sha256(b"ok\n").hexdigest()
+    records = []
+    for index in range(65):
+        name = f"file-{index:03}.py"
+        (tmp_path / name).write_bytes(b"bad" if index in (0, 40) else b"ok\n")
+        records.append({"path": name, "mode": 0o100644, "size": 3, "sha256": expected})
+    with pytest.raises(
+        ValueError, match="Compiler source content changed: file-000.py"
+    ):
+        distribution.verify_source_inventory(tmp_path, records)
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
