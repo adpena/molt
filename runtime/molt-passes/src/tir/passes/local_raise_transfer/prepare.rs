@@ -36,7 +36,9 @@ fn constructed_exception(block: &TirBlock) -> Option<ValueId> {
         && constructor.operands.len() == arity
         && constructor.runtime.is_none()
         && plain(constructor)
-        && label_of(constructor).is_some()
+        // Only an immutable builtin whose plain layout allocates the supplied
+        // class. Heap exception types and class-promoting constructors stay generic.
+        && label_of(constructor).is_some_and(super::builtin_kinds_generated::is_static_base_layout_builtin)
         && synchronous_check(check))
     .then_some(exception)
 }
@@ -136,7 +138,7 @@ mod tests {
 
     fn source() -> TirFunction {
         let program = molt_ir::ir::SimpleIR::from_json_str(r#"{"functions":[{
-            "name":"raise_value", "params":["arg"], "return_abi":"value", "ops":[
+            "name":"raise_value", "execution_context":"inherited", "params":["arg"], "return_abi":"value", "ops":[
             {"kind":"try_start","value":5},
             {"kind":"exception_new_builtin_one","args":["arg"],"out":"e","s_value":"ValueError","value":32},
             {"kind":"check_exception","exception_edge":"unwind","value":5},
@@ -239,7 +241,7 @@ mod tests {
         assert_eq!(super::super::run(&mut f).ops_added, 0);
         molt_ir::tir::verify::verify_function(&f).unwrap();
         crate::tir::exception_regions::verify_exception_regions(&f).unwrap();
-        for refusal in 0..5 {
+        for refusal in 0..8 {
             let mut f = base.clone();
             match refusal {
                 0 => {
@@ -269,6 +271,21 @@ mod tests {
                     molt_ir::ir::ParameterCustody::Transferred,
                     molt_ir::ir::ParameterCustody::Borrowed,
                 ]),
+                4..=6 => {
+                    let constructor = f
+                        .blocks
+                        .get_mut(&ctor)
+                        .unwrap()
+                        .ops
+                        .iter_mut()
+                        .find(|op| op.origin == Some(OpKind::ExceptionNewBuiltinOne))
+                        .unwrap();
+                    // Heap _DeadlockError, promoting OSError, unknown tag.
+                    let tag = [26, 21, -1][refusal - 4];
+                    constructor
+                        .attrs
+                        .insert("value".into(), AttrValue::Int(tag));
+                }
                 _ => {
                     f.label_id_map.insert(target.0, 91);
                     f.blocks

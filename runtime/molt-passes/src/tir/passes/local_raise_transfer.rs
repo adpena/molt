@@ -42,6 +42,7 @@ use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
 
+mod builtin_kinds_generated;
 mod prepare;
 
 /// A `raise v` whose check, the block's last op, transfers to label `label`.
