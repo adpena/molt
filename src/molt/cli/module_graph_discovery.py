@@ -27,6 +27,7 @@ from molt.cli import module_graph_cache as _module_graph_cache
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
+from molt.python_canonical_ast import canonical_module_digest
 from molt.cli.models import (
     ModuleReason,
     UnresolvedRoot,
@@ -36,6 +37,8 @@ from molt.cli.models import (
     _PrecomputedModuleImportScan,
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
+    ImportScanAdmission,
+    ImportScanQuery,
 )
 from molt.compiler_analysis.python_binding_flow import python_binding_revision_scope
 from molt.compiler_analysis.python_imports import (
@@ -300,6 +303,7 @@ class _LoadedModuleImportScan(NamedTuple):
     # The early-cutoff witness of HF-926, when the caller asked for it
     # (``record_premise_reads``).
     premise_reads: "_ScanCutoff | None" = None
+    query: ImportScanQuery | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1527,7 +1531,12 @@ def _discovery_pass(
             if unchanged:
                 assert previous_load is not None
                 assert previous_load.premise_reads is not None
-                loaded = previous_load
+                assert previous_load.query is not None
+                query = replace(previous_load.query, namespace_premise=receipt[0])
+                resolution_cache.observe_import_scan(
+                    query, previous_load.scan, ImportScanAdmission.PREMISE_REUSE
+                )
+                loaded = previous_load._replace(query=query)
                 if previous_load.premise_reads.publish is not None:
                     previous_load.premise_reads.publish(premise)
             loaded = loaded or _load_module_import_scan(
@@ -1984,6 +1993,53 @@ def _load_module_import_scan(
         runtime_import_custody.validate_scan_mode(
             module_name, path.resolve(), import_scan_mode
         )
+
+    def admitted(
+        loaded: _LoadedModuleImportScan, admission: ImportScanAdmission
+    ) -> _LoadedModuleImportScan:
+        snapshot = loaded.snapshot
+        lease = (
+            resolution_cache.import_query_source_lease(snapshot)
+            if snapshot is not None
+            else (
+                _module_source._ModuleSourceLease.inline(path, source)
+                if source is not None
+                else None
+            )
+        )
+        premise = namespace_premise
+        if premise is not None and premise.foreign_universe is None:
+            text = snapshot.text if snapshot is not None else source
+            premise = premise.scan_view(python_namespace_name_universe(text))
+        query = ImportScanQuery(
+            source_path=resolution_cache.resolved_path(path),
+            source_lease=lease,
+            supplied_ast_digest=(
+                canonical_module_digest(tree)
+                if lease is None and tree is not None
+                else None
+            ),
+            module_name=module_name,
+            is_package=is_package,
+            mode=import_scan_mode,
+            purpose=purpose,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
+            target_python=target_python,
+            target_sys_platform=resolution_cache.target_sys_platform,
+            namespace_premise=premise,
+            body_selection=ModuleBodySelection.from_requested_roots(
+                native_support_function_roots
+            ),
+            roots=None if roots is None else tuple(roots),
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=resolution_cache.import_query_allowlist(stdlib_allowlist),
+            module_root_aliases=resolution_cache.module_root_aliases or (),
+            runtime_custody=runtime_import_custody,
+        )
+        resolution_cache.observe_import_scan(query, loaded.scan, admission)
+        return loaded._replace(query=query)
+
     if source_owner is not None and precomputed_scan is not None:
         raise ValueError(
             "precomputed module scan cannot substitute for a deferred body"
@@ -2042,13 +2098,16 @@ def _load_module_import_scan(
                 resolution_cache=resolution_cache,
                 target_python=target_python,
             )
-            return _LoadedModuleImportScan(
-                completed,
-                False,
-                False,
-                snapshot.text if retain_source else None,
-                None,
-                snapshot,
+            return admitted(
+                _LoadedModuleImportScan(
+                    completed,
+                    False,
+                    False,
+                    snapshot.text if retain_source else None,
+                    None,
+                    snapshot,
+                ),
+                ImportScanAdmission.PRECOMPUTED,
             )
     # Stdlib requests have the same source/namespace/tooling/target admission
     # without an application root. Rootless graph consumers must not redo the
@@ -2133,8 +2192,11 @@ def _load_module_import_scan(
             ),
         )
         if persisted is not None:
-            return _LoadedModuleImportScan(
-                complete(persisted), True, False, source, None, snapshot
+            return admitted(
+                _LoadedModuleImportScan(
+                    complete(persisted), True, False, source, None, snapshot
+                ),
+                ImportScanAdmission.PERSISTED,
             )
 
     source_parsed = False
@@ -2253,15 +2315,18 @@ def _load_module_import_scan(
                     )
 
         cutoff = _ScanCutoff(premise_reads, view, publish)
-    return _LoadedModuleImportScan(
-        complete(requests),
-        False,
-        source_parsed,
-        source,
-        tree,
-        snapshot,
-        source_pruned,
-        cutoff,
+    return admitted(
+        _LoadedModuleImportScan(
+            complete(requests),
+            False,
+            source_parsed,
+            source,
+            tree,
+            snapshot,
+            source_pruned,
+            cutoff,
+        ),
+        ImportScanAdmission.SOURCE,
     )
 
 

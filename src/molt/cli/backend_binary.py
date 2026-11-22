@@ -48,12 +48,14 @@ from molt.cli.runtime_fingerprints import (
     _admitted_runtime_fingerprint,
     _fingerprint_payload,
     _read_runtime_fingerprint,
-    _runtime_artifact_fingerprint_matches,
     _stored_fingerprint_matches_clean_source_state,
     _stored_fingerprint_matches_source_metadata,
 )
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.cli.static_archive_identity import artifact_content_identity
+from molt.cli.static_archive_identity import (
+    artifact_bytes_identity,
+    artifact_content_identity,
+)
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt import input_report as _input_report
 from molt.source_admission import admitted_source_files, source_directories
@@ -66,8 +68,9 @@ from molt.host_tool_products import HostToolProduct
 from molt.process_environment import ProcessEnvironment
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
+    ExecutableIdentity,
     StableRegularFileIdentity,
-    executable_content_identity,
+    stable_regular_file_identity,
     stable_executable_probe,
     verify_stable_regular_file_identity,
 )
@@ -170,10 +173,16 @@ def _backend_ensure_success(
     *,
     coordinate: Path,
     binary_path: Path,
+    identity: StableRegularFileIdentity,
     fingerprint: Mapping[str, Any] | None = None,
 ) -> _BackendBinaryEnsureResult:
     try:
-        identity = executable_content_identity(binary_path, label="backend executable")
+        with stable_executable_probe(
+            binary_path, label="backend executable", identity=identity
+        ) as (entrypoint, observed):
+            binary_identity = ExecutableIdentity(
+                entrypoint, observed.path, observed.size, observed.sha256, ""
+            ).content_record()
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("backend_binary_identity", str(exc))
     # The selected generation of a written-once variant is never evicted, and
@@ -186,7 +195,7 @@ def _backend_ensure_success(
     return _BackendBinaryEnsureResult(
         ok=True,
         cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(
-            fingerprint, identity
+            fingerprint, binary_identity
         ),
         binary=binary_path,
     )
@@ -333,6 +342,7 @@ class StoredHostToolAdmission:
     stored: StoredHostTool
     generation: Path
     fingerprint: dict[str, Any]
+    identity: StableRegularFileIdentity
 
 
 def stored_host_tools(
@@ -383,12 +393,20 @@ def stored_host_tools(
                 store, identity, "it holds another host tool identity", variant=variant
             )
         generation = selected_backend_generation(stored.coordinate, receipt)
-        if generation is None or not _runtime_artifact_fingerprint_matches(
-            generation,
-            dict(fingerprint),
-            stored.receipt,
-            environment=environment,
-            require_artifact_digest=True,
+        observed: StableRegularFileIdentity | None = None
+        if generation is not None:
+            try:
+                observed = stable_regular_file_identity(
+                    generation, label="stored host-tool executable"
+                )
+            except (OSError, ValueError):
+                pass
+        content = receipt["artifact_content_identity"]
+        if (
+            generation is None
+            or observed is None
+            or observed.size == 0
+            or artifact_bytes_identity(observed) != content
         ):
             raise ProductStoreError(
                 store,
@@ -401,6 +419,7 @@ def stored_host_tools(
                 stored,
                 generation,
                 _admitted_runtime_fingerprint(dict(fingerprint), receipt),
+                observed,
             )
         )
     return tuple(admitted)
@@ -480,9 +499,12 @@ def _backend_probe_validation_matches(
     probe_target: str,
     backend_features: tuple[str, ...],
     fingerprint: dict[str, str | None] | None,
+    identity: StableRegularFileIdentity | None = None,
 ) -> bool:
     try:
-        with stable_executable_probe(binary_path, label="backend probe executable") as (
+        with stable_executable_probe(
+            binary_path, label="backend probe executable", identity=identity
+        ) as (
             _entrypoint,
             identity,
         ):
@@ -890,12 +912,14 @@ def _admit_stored_backend(
             probe_target=_backend_probe_target(backend_features, product),
             backend_features=backend_features,
             fingerprint=admission.fingerprint,
+            identity=admission.identity,
         ):
             _remember_backend_identity(memo_path, memo, fingerprint)
             return _backend_ensure_success(
                 coordinate=admission.stored.coordinate,
                 binary_path=admission.generation,
                 fingerprint=admission.fingerprint,
+                identity=admission.identity,
             ), fingerprint
     return None, fingerprint
 
@@ -1175,6 +1199,7 @@ def _ensure_backend_binary(
                 coordinate=admission.stored.coordinate,
                 binary_path=admission.generation,
                 fingerprint=admission.fingerprint,
+                identity=admission.identity,
             )
 
         _quick_target = _backend_probe_target(backend_features, product)
@@ -1210,6 +1235,7 @@ def _ensure_backend_binary(
                 probe_target=_quick_target,
                 backend_features=backend_features,
                 fingerprint=admission.fingerprint,
+                identity=admission.identity,
             )
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
@@ -1223,6 +1249,7 @@ def _ensure_backend_binary(
                 binary=admission.generation,
                 validation_path=admission.stored.probe_validation,
                 admitted=admission.fingerprint,
+                identity=admission.identity,
             )
             if _probe_result:
                 return _admitted(admission)
@@ -1449,4 +1476,5 @@ def _ensure_backend_binary(
             coordinate=stored.coordinate,
             binary_path=rebuilt_generation.path,
             fingerprint=fingerprint,
+            identity=rebuilt_generation,
         )

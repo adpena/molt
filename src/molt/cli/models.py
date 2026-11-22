@@ -97,7 +97,11 @@ if TYPE_CHECKING:
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_graph_discovery import _ModuleGraphDiscovery
-    from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
+    from molt.cli.module_source import (
+        _ModuleSourceCatalog,
+        _ModuleSourceLease,
+        PythonSourceSnapshot,
+    )
     from molt.cli.source_extension_link_requirements import (
         SourceExtensionLinkRequirements,
     )
@@ -406,6 +410,87 @@ class _CompleteImportScan(NamedTuple):
     source_values: _SourceValueSummary = _SourceValueSummary()
     source_sites: tuple[SourceImportSite, ...] = ()
     star_exports: tuple[tuple[str, SourceAllExports], ...] = ()
+
+
+class ImportScanAdmission(StrEnum):
+    SOURCE = "source"
+    PERSISTED = "persisted"
+    PRECOMPUTED = "precomputed"
+    PREMISE_REUSE = "premise_reuse"
+
+
+@dataclass(frozen=True, slots=True)
+class ImportScanQuery:
+    """The semantic inputs of one scan, independent of its storage producer."""
+
+    source_path: Path
+    source_lease: _ModuleSourceLease | None
+    supplied_ast_digest: str | None
+    module_name: str
+    is_package: bool
+    mode: ImportScanMode
+    purpose: SourceImportPurpose
+    source_owner: PythonSourceKey | None
+    source_arguments: tuple[str, ...]
+    target_python: TargetPythonVersion
+    target_sys_platform: str | None
+    namespace_premise: PythonNamespacePremise | None
+    body_selection: ModuleBodySelection
+    roots: tuple[Path, ...] | None
+    stdlib_root: Path | None
+    stdlib_allowlist: frozenset[str] | None
+    module_root_aliases: tuple[tuple[str, Path], ...]
+    runtime_custody: _RuntimeImportScanCustody | None
+
+
+@dataclass(frozen=True, slots=True)
+class ImportScanObservation:
+    query: ImportScanQuery
+    result: _CompleteImportScan
+    admissions: frozenset[ImportScanAdmission]
+
+
+@dataclass(frozen=True, slots=True)
+class ImportQueryClosure:
+    """All admitted solver queries, with the operation's live topology fence.
+
+    This is deliberately operation-local: persistence must also encode topology
+    observations and reject queries supplied without a path-backed source lease.
+    """
+
+    observations: tuple[ImportScanObservation, ...]
+    import_topology: PythonImportTopology = field(compare=False, repr=False)
+
+    def validate(self, authority: _ModuleGraphScanAuthority | None = None) -> None:
+        """Fence every consumed generation, including superseded writer scans."""
+        self.import_topology.validate()
+        leases = {
+            observation.query.source_lease
+            for observation in self.observations
+            if observation.query.source_lease is not None
+        }
+        if authority is not None:
+            generations = {
+                (lease.path, lease.source_sha256)
+                for lease in leases
+                if lease.path_backed_source
+            }
+            for source in authority.sources:
+                if (
+                    source.source_sha256 is not None
+                    and (
+                        source.source_path,
+                        source.source_sha256,
+                    )
+                    not in generations
+                ):
+                    raise ValueError(
+                        f"import query closure lost source authority: {source.module_name!r}"
+                    )
+        for lease in sorted(
+            leases, key=lambda item: (str(item.path), item.source_sha256)
+        ):
+            lease.validate()
 
 
 @dataclass(frozen=True)
@@ -1709,6 +1794,7 @@ class _ImportAdmissionPolicy:
 
 @dataclass(frozen=True)
 class _PreparedEntryModuleGraph:
+    import_query_closure: ImportQueryClosure
     image_scope: _BinaryImageScope
     declared_root_modules: frozenset[str]
     stdlib_allowlist: set[str]
@@ -1854,6 +1940,7 @@ class RuntimeImportMachinery(StrEnum):
 
 @dataclass(frozen=True)
 class _ImportPlan:
+    import_query_closure: ImportQueryClosure
     image_scope: _BinaryImageScope
     stdlib_allowlist: frozenset[str]
     roots: tuple[Path, ...]
