@@ -42,7 +42,6 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from molt.cli import module_registry as authority  # noqa: E402
-from molt.cli import required_features  # noqa: E402
 from molt.cli.models import _FrontendIntegrationState  # noqa: E402
 from molt.cli.output import fail  # noqa: E402
 from molt.frontend import SimpleTIRGenerator  # noqa: E402
@@ -959,20 +958,22 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
 def test_table_only_init_root_closes_required_runtime_features(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    closures: list[frozenset[str]] = []
-    reachable = required_features.reachable_function_names
+    from molt.cli import backend_ir
 
-    def counting_reachable(
+    symbol_sets: list[frozenset[str]] = []
+    reached_intrinsic_symbols = backend_ir.reached_intrinsic_symbols
+
+    def counting_reached_symbols(
         functions: Sequence[Mapping[str, object]],
         *,
         extra_roots: Iterable[str] = (),
     ) -> frozenset[str]:
-        closure = reachable(functions, extra_roots=extra_roots)
-        closures.append(closure)
-        return closure
+        symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
+        symbol_sets.append(symbols)
+        return symbols
 
     monkeypatch.setattr(
-        required_features, "reachable_function_names", counting_reachable
+        backend_ir, "reached_intrinsic_symbols", counting_reached_symbols
     )
     prepared = _prepare_binary_ir(
         tmp_path,
@@ -987,7 +988,7 @@ def test_table_only_init_root_closes_required_runtime_features(
     assert prepared.required_link_features == frozenset({"stdlib_regex"})
     # One whole-program closure serves both the profile refusal and the link
     # features.
-    assert len(closures) == 1
+    assert len(symbol_sets) == 1
 
 
 @pytest.mark.parametrize("target", ["native", "llvm", "wasm"])
