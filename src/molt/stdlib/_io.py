@@ -61,11 +61,12 @@ __all__ = [
     "BytesIO",
     "StringIO",
     "UnsupportedOperation",
-    "open",
     "text_encoding",
 ]
-# `open` is the runtime's: it publishes `_io.open` before this body runs, so
-# every name above exists and no code reads this namespace to filter them.
+# Publication can omit filesystem I/O while retaining memory I/O. Inspect only
+# the owning binding: a bare `open` could borrow the caller's builtin instead.
+if "open" in globals():
+    __all__.insert(-1, "open")
 
 del _MOLT_IO_CLASS
 del _require_intrinsic

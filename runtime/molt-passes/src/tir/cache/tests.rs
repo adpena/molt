@@ -307,9 +307,10 @@ fn the_first_write_tags_the_cache_directory_never_the_root() {
     let custom = b"Signature: 8a477f597d28d172789f06886806bc55\n# kept\n";
     std::fs::write(&tag, custom).expect("custom tag");
     let mut again = CompilationCache::open_backend_namespace_under(root.clone());
-    again
-        .put(&fixture_hash("second", b"body"), b"artifact")
-        .expect("second write");
+    assert!(matches!(
+        again.put(&fixture_hash("second", b"body"), b"artifact"),
+        Err(CompilationCacheWriteError::Unavailable(_))
+    ));
     assert_eq!(std::fs::read(&tag).expect("tag"), custom);
 
     // An explicitly placed cache tags its own directory, not its parent.
@@ -586,6 +587,11 @@ fn external_poison_invalidates_an_already_resident_hit_and_equal_put() {
         divergent_writer.put(&hash, b"second"),
         Err(CompilationCacheWriteError::Integrity(_))
     ));
+    // The original reader is still resident and has not yet seen the poison.
+    // A third handle may evict every ordinary artifact in the meantime.
+    CompilationCache::open_with_limits(dir, 0, 0, 0)
+        .trim()
+        .unwrap();
     assert!(resident.get(&hash).is_none());
     assert!(resident.resident.peek(hash.as_str()).is_none());
     assert!(matches!(
@@ -708,10 +714,12 @@ fn durable_poison_falls_back_to_minimal_envelope_and_retires_ordinary_artifact()
 }
 
 #[test]
-fn impossible_durable_poison_fails_closed_and_drops_resident_payload() {
+fn zero_payload_budget_still_quarantines_all_resident_handles() {
     let dir = tmp_cache_dir();
     let hash = fixture_hash("memory-only-zero-cap", b"same-contract");
     let mut cache = CompilationCache::open_with_limits(dir.clone(), 4096, 8, 0);
+    let mut other = CompilationCache::open_with_limits(dir, 4096, 8, 0);
+    other.put(&hash, b"first").unwrap();
     cache.put(&hash, b"first").unwrap();
     assert!(cache.get(&hash).is_some());
 
@@ -722,7 +730,30 @@ fn impossible_durable_poison_fails_closed_and_drops_resident_payload() {
     assert!(cache.get(&hash).is_none());
     assert!(cache.resident.peek(hash.as_str()).is_none());
     assert!(!cache.artifact_path(&hash).unwrap().exists());
-    assert!(!cache.poison_path(&hash).unwrap().exists());
+    assert!(cache.poison_path(&hash).unwrap().is_file());
+    assert!(other.get(&hash).is_none());
+    assert!(matches!(
+        other.put(&hash, b"first"),
+        Err(CompilationCacheWriteError::Integrity(_))
+    ));
+}
+
+#[test]
+fn an_admission_budget_refusal_preserves_a_larger_immutable_incumbent() {
+    let dir = tmp_cache_dir();
+    let key = fixture_hash("mixed-budgets", b"same key");
+    let mut writer = CompilationCache::open(dir.clone());
+    writer.put(&key, &[42; 1024]).unwrap();
+    let mut limited = CompilationCache::open_with_limits(dir.clone(), 0, 8, 256);
+    assert!(limited.get(&key).is_none());
+    assert!(matches!(
+        limited.put(&key, b"small"),
+        Err(CompilationCacheWriteError::Unavailable(_))
+    ));
+    let mut reader = CompilationCache::open(dir.clone());
+    assert_eq!(reader.get(&key).as_deref(), Some([42; 1024].as_slice()));
+    assert!(!reader.poison_path(&key).unwrap().exists());
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -1001,40 +1032,6 @@ fn a_held_trim_lock_never_blocks_reads_writes_or_other_trims() {
 }
 
 #[test]
-fn trimming_is_amortized_by_its_stamp() {
-    let dir = tmp_cache_dir();
-    let mut cache = CompilationCache::open(dir.clone());
-    cache
-        .put(&fixture_hash("stamp", b"body"), b"artifact")
-        .unwrap();
-    cache.trim_if_due().unwrap();
-    assert_eq!(cache.stats().telemetry.trims, 1);
-    cache.trim_if_due().unwrap();
-    assert_eq!(
-        cache.stats().telemetry.trims,
-        1,
-        "a fresh stamp defers trims"
-    );
-
-    let stamp = dir.join(CACHE_TRIM_STAMP_FILE);
-    set_mtime(&stamp, SystemTime::now() - CACHE_TRIM_INTERVAL);
-    cache.trim_if_due().unwrap();
-    assert_eq!(
-        cache.stats().telemetry.trims,
-        2,
-        "an expired stamp trims again"
-    );
-
-    set_mtime(&stamp, SystemTime::now() + 2 * CACHE_TRIM_INTERVAL);
-    cache.trim_if_due().unwrap();
-    assert_eq!(
-        cache.stats().telemetry.trims,
-        3,
-        "a far-future stamp from a skewed clock cannot disable trimming"
-    );
-}
-
-#[test]
 fn trim_bounds_concurrent_writers_to_entry_and_byte_limits() {
     let dir = tmp_cache_dir();
     let sample_hash = fixture_hash("sample", b"body");
@@ -1101,7 +1098,7 @@ fn trim_evicts_least_recently_used_files_and_hits_refresh_recency() {
 }
 
 #[test]
-fn trim_retires_stale_temporaries_and_untracked_files_only() {
+fn trim_retires_only_identified_stale_producer_stages() {
     let dir = tmp_cache_dir();
     let hash = fixture_hash("tracked", b"body");
     let mut cache = CompilationCache::open(dir.clone());
@@ -1121,61 +1118,177 @@ fn trim_retires_stale_temporaries_and_untracked_files_only() {
     cache.trim().unwrap();
     assert!(!stale_temp.exists());
     assert!(live_temp.exists(), "a live writer's staging file survives");
-    assert!(!untracked.exists());
+    assert!(untracked.exists());
     assert!(cache.artifact_path(&hash).unwrap().exists());
     let telemetry = cache.stats().telemetry;
     assert_eq!(telemetry.temp_files_retired, 1);
-    assert_eq!(telemetry.untracked_files_retired, 1);
     assert_eq!(telemetry.evicted_entries, 0);
 }
 
 #[test]
-fn trim_retires_only_stale_sibling_backend_namespaces() {
-    let root = tmp_cache_dir();
-    let name = |seed: &str| fixture_hash(seed, b"namespace");
-    let own = root.join(name("own"));
-    let stale = root.join(name("stale"));
-    let active = root.join(name("active"));
-    let not_a_namespace = root.join(name("other-cache"));
-    let foreign = root.join("python_source_closure");
-    for namespace in [&stale, &active, &foreign] {
-        std::fs::create_dir_all(namespace.join("functions")).unwrap();
-    }
-    std::fs::create_dir_all(&not_a_namespace).unwrap();
-    let artifact_file = root.join(format!("{}.artifact-x.a", name("archive")));
-    std::fs::write(&artifact_file, b"archive").unwrap();
-    // A namespace that a live backend trimmed recently.
-    std::fs::write(active.join(CACHE_TRIM_STAMP_FILE), b"").unwrap();
-    let later = SystemTime::now() + CACHE_NAMESPACE_UNUSED_LIMIT;
-    set_mtime(&active.join(CACHE_TRIM_STAMP_FILE), later);
-
-    let mut cache = CompilationCache::open(own.clone());
-    cache.namespace_root = Some(root.clone());
-    cache.put(&name("artifact"), b"artifact").unwrap();
-    cache.trim_at(later, false).unwrap();
-
-    assert!(!stale.exists(), "an unused backend namespace is retired");
-    assert!(active.exists());
-    assert!(own.exists(), "a trim never retires its own namespace");
-    assert!(
-        not_a_namespace.exists(),
-        "only namespaces with functions/ qualify"
-    );
-    assert!(foreign.exists(), "non-hash names belong to other caches");
-    assert!(artifact_file.exists());
-    assert_eq!(cache.stats().telemetry.stale_namespaces_retired, 1);
+fn capacity_trim_preserves_foreign_bytes_at_an_artifact_name() {
+    let directory = tmp_cache_dir();
+    let mut cache = CompilationCache::open(directory.clone());
+    let real = fixture_hash("real", b"body");
+    cache.put(&real, b"compiled bytes").unwrap();
+    let foreign = cache
+        .artifact_path(&fixture_hash("foreign", b"body"))
+        .unwrap();
+    std::fs::write(&foreign, b"operator payload").unwrap();
+    let mut trimmer = CompilationCache::open_with_limits(directory.clone(), 0, 0, 0);
+    trimmer.trim().unwrap();
+    assert!(!cache.artifact_path(&real).unwrap().exists());
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"operator payload");
+    std::fs::remove_dir_all(&directory).unwrap();
 }
 
 #[test]
-fn explicitly_placed_caches_never_sweep_their_parent() {
+fn backend_startup_never_sweeps_cache_namespaces() {
     let root = tmp_cache_dir();
-    let sibling = root.join(fixture_hash("sibling", b"namespace"));
-    std::fs::create_dir_all(sibling.join("functions")).unwrap();
-    let mut cache = CompilationCache::open(root.join(fixture_hash("own", b"namespace")));
-    cache
-        .trim_at(SystemTime::now() + 2 * CACHE_NAMESPACE_UNUSED_LIMIT, false)
-        .unwrap();
-    assert!(sibling.exists());
+    let mut managed = CompilationCache::open_backend_namespace_under(root.clone());
+    let old = UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let hash = fixture_hash("sibling", b"namespace");
+    let key = fixture_hash("body", b"source");
+    // The formerly swept preimage and a positively identified managed
+    // sibling both remain byte-for-byte intact even when every stamp is old.
+    let legacy = root.join(&hash);
+    let current = root.join(&MANAGED_LAYOUT.directory).join(&hash);
+    for sibling in [&legacy, &current] {
+        let mut writer = CompilationCache::open(sibling.clone());
+        writer.put(&key, b"other producer").unwrap();
+        writer.trim().unwrap();
+        let tag = sibling.join(CACHEDIR_TAG_FILE);
+        if sibling == &current {
+            std::fs::write(&tag, MANAGED_LAYOUT.tag.as_bytes()).unwrap();
+        }
+        for member in [tag, sibling.join(CACHE_TRIM_STAMP_FILE)] {
+            set_mtime(&member, old);
+        }
+    }
+    managed.put(&key, b"current producer").unwrap();
+    assert!(!managed.cache_dir.join(CACHE_TRIM_STAMP_FILE).exists());
+    assert_eq!(
+        managed.get(&key).as_deref(),
+        Some(b"current producer".as_slice())
+    );
+    for sibling in [&legacy, &current] {
+        assert_eq!(
+            CompilationCache::open(sibling.clone()).get(&key).as_deref(),
+            Some(b"other producer".as_slice())
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn managed_writes_never_adopt_an_existing_untagged_namespace() {
+    let root = tmp_cache_dir();
+    let mut cache = CompilationCache::open_backend_namespace_under(root.clone());
+    std::fs::create_dir_all(&cache.functions_dir).unwrap();
+    let foreign = cache.functions_dir.join("operator-data");
+    std::fs::write(&foreign, b"preserve").unwrap();
+    let key = fixture_hash("key", b"body");
+    assert!(cache.get(&key).is_none());
+    assert!(matches!(
+        cache.put(&key, b"value"),
+        Err(CompilationCacheWriteError::Unavailable(_))
+    ));
+    assert!(!cache.cache_dir.join(CACHEDIR_TAG_FILE).exists());
+    assert!(!cache.cache_dir.join(CACHE_TRIM_LOCK_FILE).exists());
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"preserve");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn simultaneous_first_writers_share_one_complete_namespace() {
+    let root = tmp_cache_dir();
+    let start = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| {
+        for index in 0..4u8 {
+            let root = &root;
+            let start = &start;
+            scope.spawn(move || {
+                let mut writer = CompilationCache::open_backend_namespace_under(root.clone());
+                let key = fixture_hash("parallel", &[index]);
+                start.wait();
+                writer.put(&key, &[index]).unwrap();
+            });
+        }
+    });
+    let mut reader = CompilationCache::open_backend_namespace_under(root.clone());
+    for index in 0..4u8 {
+        assert_eq!(
+            reader.get(&fixture_hash("parallel", &[index])).as_deref(),
+            Some([index].as_slice())
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(reader.cache_dir.parent().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn staged_namespace_cannot_replace_an_empty_foreign_directory() {
+    let root = tmp_cache_dir();
+    let cache = CompilationCache::open_backend_namespace_under(root.clone());
+    std::fs::create_dir_all(&cache.cache_dir).unwrap();
+    publish_managed_namespace(cache.cache_dir.parent().unwrap(), &cache.cache_dir).unwrap();
+    assert_eq!(std::fs::read_dir(&cache.cache_dir).unwrap().count(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn managed_activation_does_not_recreate_or_follow_replaced_lock() {
+    let root = tmp_cache_dir();
+    let mut cache = CompilationCache::open_backend_namespace_under(root.clone());
+    cache.activate_managed(true).unwrap();
+    let lock = cache.cache_dir.join(CACHE_TRIM_LOCK_FILE);
+    drop(cache);
+    std::fs::remove_file(&lock).unwrap();
+    let mut peer = CompilationCache::open_backend_namespace_under(root.clone());
+    assert!(peer.activate_managed(true).is_err());
+    assert!(!lock.exists());
+    #[cfg(unix)]
+    {
+        let absent = root.join("outside-the-namespace");
+        std::os::unix::fs::symlink(&absent, &lock).unwrap();
+        assert!(peer.activate_managed(true).is_err());
+        assert!(!absent.exists());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn idle_namespace_reactivation_obeys_the_collector_lock() {
+    let root = tmp_cache_dir();
+    let key = fixture_hash("key", b"body");
+    let mut writer = CompilationCache::open_backend_namespace_under(root.clone());
+    writer.put(&key, b"value").unwrap();
+    let tag = writer.cache_dir.join(CACHEDIR_TAG_FILE);
+    let old = SystemTime::now() - 7 * Duration::from_secs(86400);
+    set_mtime(&tag, old);
+    let lock = open_regular_member(
+        &writer.cache_dir.join(CACHE_TRIM_LOCK_FILE),
+        MemberAccess::Update,
+    )
+    .unwrap();
+    assert!(matches!(
+        lock.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(writer);
+    lock.try_lock().unwrap();
+    let mut reader = CompilationCache::open_backend_namespace_under(root.clone());
+    assert!(reader.get(&key).is_none());
+    drop(lock);
+    assert_eq!(reader.get(&key).as_deref(), Some(b"value".as_slice()));
+    assert!(modified(&tag).unwrap() > old);
+    drop(reader);
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1211,7 +1324,15 @@ fn bounded_read_rejects_an_oversized_file_before_decode() {
         .unwrap();
 
     assert!(cache.get(&hash).is_none());
-    assert_eq!(cache.stats().telemetry.corruptions, 1);
+    assert_eq!(cache.stats().telemetry.corruptions, 0);
+    assert!(artifact.is_file());
+    assert!(matches!(
+        cache.put(&hash, b"repaired"),
+        Err(CompilationCacheWriteError::Unavailable(_))
+    ));
+    let mut admitted = CompilationCache::open(dir);
+    assert!(admitted.get(&hash).is_none());
+    assert_eq!(admitted.stats().telemetry.corruptions, 1);
     assert!(!artifact.exists());
     cache.put(&hash, b"repaired").unwrap();
     assert_eq!(cache.get(&hash).as_deref(), Some(b"repaired".as_slice()));

@@ -478,20 +478,72 @@ pub fn windows_namespace_path_wide(path: &Path) -> io::Result<Vec<u16>> {
         .collect())
 }
 
+/// Install an already staged directory on the same volume without replacing
+/// any existing name, including an empty directory. Like file publication,
+/// this is an atomic, reconstructible operation with no durability barrier.
+pub fn publish_directory_exclusive(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let source = CString::new(source.as_os_str().as_bytes())?;
+        let destination = CString::new(destination.as_os_str().as_bytes())?;
+        #[cfg(target_vendor = "apple")]
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(windows)]
+    {
+        move_file(source, destination, 0)
+    }
+    #[cfg(not(any(
+        target_vendor = "apple",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
+    {
+        let _ = (source, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive directory publication is unavailable",
+        ))
+    }
+}
+
 #[cfg(windows)]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+    move_file(
+        source,
+        destination,
+        windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
+    )
+}
+
+#[cfg(windows)]
+fn move_file(source: &Path, destination: &Path, flags: u32) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
     let source = windows_namespace_path_wide(source)?;
     let destination = windows_namespace_path_wide(destination)?;
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING,
-        )
-    };
-    if replaced == 0 {
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())

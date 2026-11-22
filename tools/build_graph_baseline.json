@@ -1,7 +1,7 @@
 {
   "blast_radius": {
     "cranelift-object": 3,
-    "molt-artifact-publish": 4,
+    "molt-artifact-publish": 6,
     "molt-backend": 0,
     "molt-backend-native": 2,
     "molt-cext-discovery": 0,

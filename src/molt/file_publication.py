@@ -866,21 +866,24 @@ def staged_file_destination_key(
     return match.group("identity")
 
 
-def unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
+def unlink_owned_file(path: Path, identity: os.stat_result | None) -> bool:
     """Reclaim a partial file only while the leaf still names the acquired node.
 
     Callers own the parent namespace; this identity fence refuses replacements
     observed before unlink, not hostile concurrent mutation of that namespace.
+    Return true only when this call removed the acquired node.
     """
 
     if identity is None or not identity.st_ino:
-        return
+        return False
     try:
         current = path.lstat()
     except FileNotFoundError:
-        return
+        return False
     if not metadata_is_link_like(current) and os.path.samestat(identity, current):
         path.unlink()
+        return True
+    return False
 
 
 def clone_file(source: Path, destination: Path) -> None:

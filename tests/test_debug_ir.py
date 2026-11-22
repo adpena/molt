@@ -8,6 +8,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+from molt.compiled_symbols import module_function_symbol
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -84,8 +85,9 @@ def test_debug_ir_json_serializes_one_frontend_boundary(tmp_path: Path) -> None:
         [selected] = [
             function
             for function in snapshot["functions"]
-            if function["name"].split("__")[-1] == "selected"
+            if function["name"] == module_function_symbol("__main__", "selected")
         ]
+        assert selected["module"] == "__main__"
         ops = selected["ops"]
         # The frontend preserves the literal and the potentially raising addition.
         assert sum(op["kind"] == "const" and op["value"] == 99 for op in ops) == (1)
@@ -94,11 +96,16 @@ def test_debug_ir_json_serializes_one_frontend_boundary(tmp_path: Path) -> None:
             for op in ops
             if op["kind"] == "frame_home_store" and op["args"] == ["value"]
         ]
+        [parameter_read] = [
+            op
+            for op in ops
+            if op["kind"] == "binding_alias" and op["args"] == [parameter["out"]]
+        ]
         [one] = [op for op in ops if op["kind"] == "const" and op["value"] == 1]
         [seven] = [op for op in ops if op["kind"] == "const" and op["value"] == 7]
         [addition] = [op for op in ops if op["kind"] == "add"]
         [normal_return] = [op for op in ops if op["kind"] == "ret"]
-        assert addition["args"] == [parameter["out"], one["out"]]
+        assert addition["args"] == [parameter_read["out"], one["out"]]
         assert normal_return["args"] == [seven["out"]]
         add_index, return_index = ops.index(addition), ops.index(normal_return)
         [exception_check] = [

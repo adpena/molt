@@ -283,6 +283,7 @@ version = "0.1.0"
 dependencies = [
  "hashlink",
  "libc",
+ "molt-artifact-publish",
  "molt-host-process",
  "molt-ir",
  "rmp-serde",

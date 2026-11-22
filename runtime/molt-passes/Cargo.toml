@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
 
+[package.metadata.molt]
+build-inputs = ["../../src/molt/backend_cache_layout.json"]
+
 # Pass/fact/orchestration layer. This crate depends only on the immutable IR
 # vocabulary in molt-ir plus std/data dependencies needed by analyses and cache
 # logic. Lowering and backend crates consume this layer; it never depends on
@@ -14,6 +17,7 @@ license = "Apache-2.0"
 [dependencies]
 hashlink = "0.12.2"
 libc = "0.2"
+molt-artifact-publish = { path = "../molt-artifact-publish" }
 molt-ir = { path = "../molt-ir" }
 molt-host-process = { path = "../molt-host-process" }
 serde = { version = "1.0", features = ["derive"] }

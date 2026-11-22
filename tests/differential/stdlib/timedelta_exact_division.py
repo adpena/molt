@@ -54,3 +54,24 @@ for kwargs in (
     {"days": True, "seconds": 2**40},
 ):
     show(f"ctor {sorted(kwargs.items())!r}", lambda: timedelta(**kwargs))
+
+
+# Exercise the public constructor's actual arbitrary-precision normalizer.
+# Keep sign, both +/-999999999-day boundaries and the former i128 oracle's
+# overflow cases together; the differential runner obtains tuples and exact
+# OverflowError messages independently from its managed CPython interpreter.
+day_us = 86_400_000_000
+for total_us in (
+    -2,
+    -1,
+    0,
+    1,
+    2,
+    -999_999_999 * day_us,
+    1_000_000_000 * day_us - 1,
+    -999_999_999 * day_us - 1,
+    1_000_000_000 * day_us,
+    -(2**127),
+    2**127 - 1,
+):
+    show(f"timedelta microseconds {total_us}", lambda: timedelta(microseconds=total_us))

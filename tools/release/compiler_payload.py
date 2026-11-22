@@ -79,6 +79,7 @@ REQUIRED_MARKERS = frozenset(
         "runtime/molt-wasm-facts/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
+        "src/molt/backend_cache_layout.json",
         "src/molt/backend_environment.json",
         "src/molt/backend_daemon_protocol_version.txt",
         "src/molt/stdlib/builtins.py",

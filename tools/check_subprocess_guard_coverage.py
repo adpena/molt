@@ -33,6 +33,7 @@ DEFAULT_TARGET_PATHS = (
     "tools",
     "tests",
     "src/molt/backend_daemon_custody.py",
+    "src/molt/cache_eviction.py",
     "src/molt/cli",
     "src/molt/process_guard.py",
     "src/molt/process_model.py",
@@ -148,6 +149,12 @@ class SubprocessGuardAudit:
 
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
+    AllowedRawSubprocessUse(
+        "src/molt/cache_eviction.py",
+        "schedule_installed_retention",
+        "Popen",
+        "dispatches packaged cache retention in an independent process group; the child owns the existing prune lock and a retained log",
+    ),
     AllowedRawSubprocessUse(
         "src/molt/process_spawn.py",
         "forward_command",

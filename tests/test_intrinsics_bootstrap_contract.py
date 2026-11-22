@@ -38,15 +38,10 @@ def test_builtins_facade_does_not_duplicate_runtime_namespace_publication() -> N
         not {"globals", "locals", "__import__", "property", "len", "ValueError"}
         & rebound
     )
-    assert any(
-        isinstance(node, ast.Assign)
-        and isinstance(node.value, ast.ListComp)
-        and any(
-            isinstance(target, ast.Name) and target.id == "__all__"
-            for target in node.targets
-        )
-        for node in tree.body
-    ), "public names must project runtime admission rather than duplicate its gates"
+    # CPython builtins has no export list. Native publication owns the
+    # admitted namespace; the facade must not invent another membership gate.
+    assert not hasattr(builtins, "__all__")
+    assert "__all__" not in rebound
 
 
 def _load_intrinsics(path: Path, module_name: str) -> types.ModuleType:
@@ -74,6 +69,7 @@ def test_builtins_facade_only_acquires_its_wrapper_dependencies(
     marked = []
     registry = {
         "molt_function_set_builtin": marked.append,
+        "molt_sys_version_info": lambda: sys.version_info,
     }
     monkeypatch.setattr(builtins, "_molt_intrinsics", registry, raising=False)
     monkeypatch.setattr(builtins, "_molt_runtime", True, raising=False)

@@ -75,7 +75,8 @@ def open_stable_read_descriptor(path: Path) -> int:
         | getattr(os, "O_NOFOLLOW", 0)
     )
     if os.name != "nt":
-        return os.open(path, flags)
+        # A replacement FIFO must not block before the caller checks fstat.
+        return os.open(path, flags | os.O_NONBLOCK)
     api = _windows_file_api()
     if api is None:
         raise OSError("Windows direct-file handle API is unavailable")

@@ -165,63 +165,6 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
     )
 
 
-def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
-    import shutil
-
-    compiler = shutil.which("rustc")
-    if compiler is None:
-        pytest.skip("rustc unavailable: exact timedelta normalization unverified")
-    source = (ROOT / "runtime/molt-runtime-serial/src/datetime.rs").read_text(
-        encoding="utf-8"
-    )
-    start = source.index("fn normalize_timedelta_us_exact(")
-    # td_total_us float helper occurs between these; only the closed exact function.
-    exact = source[start : source.index("\nfn td_total_us(", start)]
-    cases = (
-        -2,
-        -1,
-        0,
-        1,
-        2,
-        -999_999_999 * 86_400_000_000,
-        1_000_000_000 * 86_400_000_000 - 1,
-    )
-    checks = []
-    for value in cases:
-        day, residue = divmod(value, 86_400_000_000)
-        second, microsecond = divmod(residue, 1_000_000)
-        checks.append(
-            f"assert_eq!(normalize_timedelta_us_exact({value}i128), Some(({day}, {second}, {microsecond})));"
-        )
-    for value in (-999_999_999 * 86_400_000_000 - 1, 1_000_000_000 * 86_400_000_000):
-        checks.append(f"assert_eq!(normalize_timedelta_us_exact({value}i128), None);")
-    checks += [
-        "assert_eq!(normalize_timedelta_us_exact(i128::MIN), None);",
-        "assert_eq!(normalize_timedelta_us_exact(i128::MAX), None);",
-    ]
-    path = tmp_path / "td_normalizer.rs"
-    path.write_text(
-        exact + "\nfn main() {\n" + "\n".join(checks) + "\n}\n", encoding="utf-8"
-    )
-    binary = tmp_path / (
-        "td_normalizer.exe" if sys.platform == "win32" else "td_normalizer"
-    )
-    result = run_guarded_test_process(
-        [compiler, "--edition=2024", str(path), "-o", str(binary)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    result = run_guarded_test_process(
-        [str(binary)],
-        capture_output=True,
-        text=True,
-        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 def test_compiled_float_divmod_against_host_cpython(tmp_path):
     """Exact finite/signed-zero/infinity bits; NaNs have no stable payload oracle."""
     import itertools

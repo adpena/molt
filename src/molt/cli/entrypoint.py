@@ -63,8 +63,8 @@ def _apply_cache_budget_after_build(cache_root: Path | None, *, verbose: bool) -
 
     It prunes the cache the build used. The common case reads one lock stamp
     and imports nothing more. Source commands dispatch the canonical pruner
-    through retained published source; installed compilers run their packaged
-    policy directly. Retention never changes the build's result.
+    through retained published source; installed compilers dispatch their
+    packaged policy. Retention never changes the build's result.
     """
     from molt.default_paths import (
         CLI_CACHE_RETENTION_INTERVAL_SECONDS,
@@ -109,15 +109,20 @@ def _apply_cache_budget_after_build(cache_root: Path | None, *, verbose: bool) -
                     file=sys.stderr,
                 )
         return
-    from molt.cache_eviction import automatic_retention
+    from molt.cache_eviction import schedule_installed_retention
 
-    report = automatic_retention(
-        os.environ,
-        cache_root=root,
-        min_interval_seconds=CLI_CACHE_RETENTION_INTERVAL_SECONDS,
-    )
-    if verbose and report is not None and report.get("status") != "recent":
-        print(f"molt: cache retention: {report}", file=sys.stderr)
+    try:
+        log = schedule_installed_retention(
+            root, epoch="initial" if metadata is None else str(metadata.st_mtime_ns)
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(
+            f"molt: cache retention scheduling failed: {str(exc)[:512]}",
+            file=sys.stderr,
+        )
+    else:
+        if verbose:
+            print(f"molt: cache retention evidence: {log}", file=sys.stderr)
 
 
 def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:
