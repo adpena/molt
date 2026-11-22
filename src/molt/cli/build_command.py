@@ -82,17 +82,13 @@ def _cpu_model() -> str:
 def _wasm_cutoff_request(request: BuildRequest) -> bool:
     """Whether a WASM request publishes only the family its record verifies.
 
-    The default ``wasm`` target qualifies, unlinked or linked under the
-    derived ``*_linked.wasm`` name: the module, linked module, deployment
-    manifest and optimizer attestation are the products the result reports.
-    A JSON request has no typed WASM result to replay; a split runtime, a
-    precompiled image or a named linked output publishes outputs the record
-    does not select.
+    The default ``wasm`` target qualifies, including split deployments whose
+    full publication plan is recorded. JSON replay, precompiled images and
+    named linked outputs remain outside the verified request family.
     """
     return (
         request.target is TargetKind.WASM
         and not request.json_output
-        and not request.split_runtime
         and not request.precompile
         and request.linked_output is None
     )
@@ -116,7 +112,6 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         or request.emit_ir is not None
         or (native and request.linked)
         or request.linked_output is not None
-        or request.split_runtime
         or request.snapshot
         or request.bolt
         or request.fact_graph_request is not None

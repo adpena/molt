@@ -333,20 +333,22 @@ Diagnostic requests still execute the pipeline because they require fresh
 measurements; unsupported additional result families also retain that path.
 
 **WASM product families.** A plain request for the default `wasm` target,
-unlinked or linked under the derived `*_linked.wasm` name, records too. The
-layout reports the module's selection through the same selector. The result
-owner (`build_results._report_non_native_products`) reports the family the
-result promises as one typed `BuildProducts` fact: the module, linked module,
-deployment manifest and optimizer attestation, and the one a user runs. Record
-schema v10 keeps each product's token; a hit requires every member unchanged
-and names the module a user runs. Each product's publication custody is a
+including split deployment, records through the same output selector. The
+deployment plan supplies every published role, including loader assets, target
+features, optional bundle and optimizer evidence, and the final-link receipt.
+The result owner reports this family as one typed `BuildProducts` fact with
+its execution output. Publication and verified link reuse capture the installed
+tokens under the existing output locks. A record is refused if any of those
+files changes before the record is written. Record schema v10 keeps each
+product's token and requires every member unchanged on reuse. Each product's publication custody is a
 product, resolved transitively by the staging-name authority: a stage issued
 for one of its own stages (the LLVM wasm32 object is staged beside the module
 and a copy is staged for that stage) and every path inside a staged directory
-(the deployment generation is staged in one directory beside the manifest). A JSON WASM request has no
-typed result to replay and still runs the pipeline, as do split runtimes,
-precompiled images and named linked outputs. The WASM path reports what it
-reads like the native one, plus three inputs it read without reporting:
+(the deployment generation is staged in one directory beside the manifest).
+JSON WASM requests, precompiled images and named linked outputs still run the
+pipeline. Deployment source files, tooling closure and admitted link inputs
+are reported on final-link reuse as well as fresh links. The WASM path also
+reports three other inputs:
 wasm-opt's PATH search goes through `toolchain_identity.executable_candidates`;
 `tools/wasm_allowed_imports.txt`, which only wasm-ld reads, is a producer-bound
 link input, so it keys the final-link cache and the record and the link tool

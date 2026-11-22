@@ -2508,6 +2508,35 @@ def test_conflicting_product_families_refuse_the_record() -> None:
     assert ledger.refusals == ["build published conflicting products"]
 
 
+def test_record_cannot_adopt_products_replaced_after_publication(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.wasm"
+    loader = tmp_path / "loader.js"
+    output.write_bytes(b"app")
+    loader.write_bytes(b"old")
+    tokens = {}
+    for path in (output, loader):
+        token = input_report.stat_token(path)
+        assert token is not None
+        tokens[str(path)] = token.payload()
+    ledger = _future_ledger()
+    ledger.build_products(
+        {
+            "consumer": str(output),
+            "products": {"wasm": str(output), "asset:loader.js": str(loader)},
+            "publication_tokens": tokens,
+        }
+    )
+    # A second writer has published after the first released its output lock.
+    replacement = tmp_path / "new-loader.js"
+    replacement.write_bytes(b"new")
+    replacement.replace(loader)
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason == f"product {loader} changed after publication"
+    assert not record.exists()
+
+
 def test_paths_inside_an_output_stage_directory_are_publication_custody(
     tmp_path: Path,
 ) -> None:

@@ -789,6 +789,9 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
             _resolve_out_dir,
         )
         from molt.cli.project_roots import _find_project_root
+        from molt.artifact_publication import publication_receipt_path
+        from molt.cli.wasm_deployment import WasmDeploymentPlan
+        from molt.link_outputs import wasm_link_output_paths
 
         file_path = request.file_path
         assert file_path is not None
@@ -800,6 +803,7 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         layout = _resolve_build_output_layout(
             target=request.target,
             trusted=request.trusted,
+            split_runtime=request.split_runtime,
             require_linked=request.require_linked,
             linked=request.linked,
             linked_output=request.linked_output,
@@ -815,10 +819,32 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         )
         module = layout.output_artifact
         linked = layout.linked_output_path
+        module.write_text(f"module of {source}", encoding="utf-8")
+        if layout.split_runtime:
+            plan = WasmDeploymentPlan.create(
+                wasm_link_output_paths(linked, split_output_dir=module.parent),
+                output_root=module.parent,
+                split=True,
+                loader_assets=("loader_bridge.js",),
+                target_feature_asset="target_features.json",
+                bundle=True,
+                precompile=False,
+            )
+            receipt = publication_receipt_path(plan.outputs["manifest"])
+            for role, path in plan.build_products(module, receipt).items():
+                if path != module:
+                    path.write_text(f"{role} of {source}", encoding="utf-8")
+            if report_products:
+                build_results._report_non_native_products(
+                    module,
+                    plan.outputs["app"],
+                    plan.artifacts(),
+                    published_products=plan.build_products(module, receipt),
+                )
+            return 0
         assert linked is not None
         manifest = module.with_name("manifest.json")
         attestation = linked.with_name(linked.name + ".wasm-opt.json")
-        module.write_text(f"module of {source}", encoding="utf-8")
         linked.write_text(f"linked {source}", encoding="utf-8")
         manifest.write_text(f"manifest of {source}", encoding="utf-8")
         attestation.write_text(f"optimizer for {source}", encoding="utf-8")
@@ -844,8 +870,8 @@ def _wasm_request(project: Path, out_dir: Path, **options: Any) -> BuildRequest:
     return BuildRequest(
         file_path=os.fspath(project / "app.py"),
         target=TargetKind.WASM,
-        linked=True,
-        require_linked=True,
+        linked=options.pop("linked", True),
+        require_linked=options.pop("require_linked", True),
         out_dir=os.fspath(out_dir),
         verbose=True,
         **options,
@@ -931,10 +957,49 @@ def test_a_wasm_build_that_reports_no_products_never_records(
 
 
 @pytest.mark.parametrize(
+    "product",
+    ["loader_bridge.js", "target_features.json", "bundle.tar", "manifest.json"],
+)
+def test_split_cutoff_invalidates_the_full_publication(
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    product: str,
+) -> None:
+    from molt.artifact_publication import publication_receipt_path
+
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls))
+    )
+    out_dir = tmp_path / "split"
+    request = _wasm_request(
+        project, out_dir, linked=False, require_linked=False, split_runtime=True
+    )
+    _run_wasm(build, request)
+    capsys.readouterr()
+    _run_wasm(build, request)
+    assert len(calls) == 1
+    assert f"{out_dir / 'app.wasm'} (inputs unchanged)" in capsys.readouterr().err
+    touched = out_dir / product
+    original = touched.read_bytes()
+    before = touched.stat()
+    touched.write_bytes(b"x" * len(original))
+    os.utime(touched, ns=(before.st_atime_ns, before.st_mtime_ns))
+    _run_wasm(build, request)
+    assert len(calls) == 2
+    assert touched.read_bytes() == original
+    receipt = publication_receipt_path(out_dir / "manifest.json")
+    receipt.unlink()
+    _run_wasm(build, request)
+    assert len(calls) == 3
+    assert receipt.is_file()
+
+
+@pytest.mark.parametrize(
     "options",
     [
         {"json_output": True},
-        {"split_runtime": True},
         {"precompile": True},
         {"linked_output": "named_linked.wasm"},
     ],

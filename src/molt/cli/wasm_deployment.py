@@ -147,6 +147,10 @@ class WasmDeploymentPlan:
             if role in roles
         }
 
+    def build_products(self, module: Path, receipt: Path) -> dict[str, Path]:
+        """Return the full published file family for build-record reuse."""
+        return {"wasm": module, **self.outputs, "publication_receipt": receipt}
+
 
 @dataclass(frozen=True)
 class WasmDeploymentGeneration:
@@ -191,7 +195,12 @@ class WasmDeploymentGeneration:
                 env.pop(name, None)
         return ProcessEnvironment(env)
 
-    def publish(self, receipt: FinalLinkReceiptRequest | None) -> None:
+    def publish(
+        self,
+        receipt: FinalLinkReceiptRequest | None,
+        *,
+        observe_commit: Callable[[], None] | None = None,
+    ) -> None:
         candidates: dict[str, tuple[Path, Path]] = {}
         try:
             for role, private in self.outputs.items():
@@ -211,6 +220,7 @@ class WasmDeploymentGeneration:
                 receipt=receipt,
                 removals=self.plan.removals,
                 retire_previous_outputs_under=self.plan.root,
+                observe_commit=observe_commit,
             )
         finally:
             for stage, _ in candidates.values():
@@ -234,6 +244,8 @@ class WasmDeploymentGeneration:
 
         return _PreparedNonNativeResult(
             link_input_observation=result.link_input_observation,
+            published_products=result.published_products,
+            publication_tokens=result.publication_tokens,
             primary_output=reverse.get(result.primary_output, result.primary_output),
             consumer_output=reverse.get(result.consumer_output, result.consumer_output),
             bundle_root=path(result.bundle_root),

@@ -487,10 +487,14 @@ class BuildProducts:
 
     consumer: Path
     products: tuple[tuple[str, Path], ...]
+    publication_tokens: tuple[tuple[Path, StatToken], ...] = ()
 
     @classmethod
     def from_payload(cls, value: object) -> BuildProducts:
-        if not isinstance(value, dict) or set(value) != {"consumer", "products"}:
+        if not isinstance(value, dict) or set(value) not in (
+            {"consumer", "products"},
+            {"consumer", "products", "publication_tokens"},
+        ):
             raise ValueError("invalid build products")
         raw = value["products"]
         if not isinstance(raw, dict) or not raw:
@@ -501,9 +505,23 @@ class BuildProducts:
                 raise ValueError("invalid build product role")
             products.append((role, _record_path(path)))
         consumer = _record_path(value["consumer"])
-        if consumer not in {path for _role, path in products}:
+        paths = {path for _role, path in products}
+        if consumer not in paths:
             raise ValueError("build consumer is not one of its products")
-        return cls(consumer, tuple(products))
+        tokens: tuple[tuple[Path, StatToken], ...] = ()
+        if "publication_tokens" in value:
+            raw_tokens = value["publication_tokens"]
+            if not isinstance(raw_tokens, dict):
+                raise ValueError("invalid build publication tokens")
+            tokens = tuple(
+                sorted(
+                    (_record_path(path), StatToken.from_payload(token))
+                    for path, token in raw_tokens.items()
+                )
+            )
+            if {path for path, _token in tokens} != paths:
+                raise ValueError("build publication tokens do not cover its products")
+        return cls(consumer, tuple(products), tokens)
 
     def paths(self) -> tuple[Path, ...]:
         return tuple(path for _role, path in self.products)
@@ -883,7 +901,7 @@ def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]
     authority; nothing is opened. Stages live beside what they stage, so only
     paths under an output's directory are examined, and each walk stops there.
     """
-    from molt.artifact_publication import is_publication_family_member
+    from molt.artifact_publication import publication_family_members
     from molt.file_publication import (
         is_staged_file_path,
         staged_file_destination_key,
@@ -912,9 +930,8 @@ def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]
         and (nodes := nodes_below_root(path))
     }
     custody = {
-        path
-        for path in candidates
-        if any(is_publication_family_member(Path(path), output) for output in outputs)
+        os.fspath(path)
+        for path in publication_family_members(map(Path, candidates), outputs)
     }
     owners = {owner_key(path) for path in (*outputs, *map(Path, custody))}
     pending = [
@@ -1146,10 +1163,13 @@ def write_record(
         if output.path not in ledger.products.paths():
             return "selected output is not one of the published products"
         consumer = ledger.products.consumer
+        published = dict(ledger.products.publication_tokens)
         for role, product in ledger.products.products:
             token = stat_token(product)
             if token is None or not stat.S_ISREG(token.mode):
                 return f"product {product} is not a regular file"
+            if published and token != published[product]:
+                return f"product {product} changed after publication"
             products.append([role, os.fspath(product), token.payload()])
     payload = {
         "schema": _SCHEMA,

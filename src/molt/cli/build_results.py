@@ -26,6 +26,7 @@ from molt.toolchain_identity import (
     stable_file_content_identity,
 )
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.durable_file_identity import StatToken
 from molt.artifact_publication import discard_staged_output
 from molt.cli.binary_image_analysis import (
     _native_artifact_binary_image_analysis_payload,
@@ -1022,17 +1023,28 @@ def _emit_native_link_result(
 
 
 def _report_non_native_products(
-    output: Path, consumer_output: Path | None, artifacts: Mapping[str, Any] | None
+    output: Path,
+    consumer_output: Path | None,
+    artifacts: Mapping[str, Any] | None,
+    *,
+    published_products: Mapping[str, Path] | None = None,
+    publication_tokens: Mapping[Path, StatToken] | None = None,
 ) -> None:
     """Report the published family a recorded build must find unchanged.
 
-    The result's artifact map is the canonical list of files this build
-    promises; each one becomes a product of its record. A role whose value is
-    not a path string refuses the record rather than going unverified.
+    A deployment supplies its complete publication plan. Simpler outputs
+    report their artifact map.
     """
     from molt import input_report
 
     if not input_report.active():
+        return
+    if published_products is not None:
+        input_report.report_build_products(
+            os.fspath(consumer_output or output),
+            {role: os.fspath(path) for role, path in published_products.items()},
+            publication_tokens=publication_tokens,
+        )
         return
     products: dict[str, str] = {}
     for role, value in (artifacts or {"output": str(output)}).items():
@@ -1078,6 +1090,8 @@ def _emit_non_native_build_result(
     json_output: bool,
     resolved_diagnostics_verbosity: str,
     artifacts: Mapping[str, Any] | None = None,
+    published_products: Mapping[str, Path] | None = None,
+    publication_tokens: Mapping[Path, StatToken] | None = None,
     extra_fields: Mapping[str, Any] | None = None,
     success_messages: Sequence[str] = (),
     finalize_inputs: Callable[[], None] | None = None,
@@ -1096,7 +1110,13 @@ def _emit_non_native_build_result(
         ),
     )
     if custody_error is None and diagnostics_error is None:
-        _report_non_native_products(output, consumer_output, artifacts)
+        _report_non_native_products(
+            output,
+            consumer_output,
+            artifacts,
+            published_products=published_products,
+            publication_tokens=publication_tokens,
+        )
     if json_output:
         cache_info = _build_cache_info(
             enabled=cache,

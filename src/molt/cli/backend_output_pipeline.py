@@ -301,6 +301,8 @@ def _emit_backend_pipeline_outputs(
                 ),
             },
             artifacts=prepared_non_native_result.artifacts,
+            published_products=prepared_non_native_result.published_products,
+            publication_tokens=prepared_non_native_result.publication_tokens,
             success_messages=prepared_non_native_result.success_messages,
             finalize_inputs=validate_inputs,
         )

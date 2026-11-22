@@ -775,14 +775,24 @@ def report_build_output(selection: Mapping[str, str | None]) -> None:
         _worker_log([WorkerFactKind.BUILD_OUTPUT, dict(selection)])
 
 
-def report_build_products(consumer: str, products: Mapping[str, str]) -> None:
+def report_build_products(
+    consumer: str,
+    products: Mapping[str, str],
+    *,
+    publication_tokens: Mapping[Path, StatToken] | None = None,
+) -> None:
     """Report the files a successful build published beside its selected output.
 
     ``products`` maps each result artifact role to its absolute path, as the
     result promises them to the user; ``consumer`` is the one a user runs. A
     recorded build is current only while every product keeps its token.
     """
-    payload = {"consumer": consumer, "products": dict(products)}
+    payload: dict[str, object] = {"consumer": consumer, "products": dict(products)}
+    if publication_tokens is not None:
+        payload["publication_tokens"] = {
+            os.fspath(path): token.payload()
+            for path, token in publication_tokens.items()
+        }
     if _SINK is not None:
         _SINK.build_products(payload)
     else:

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, TYPE_CHECKING, cast
+from typing import Any, Callable, Mapping, Sequence, TYPE_CHECKING, cast
 
 from molt import artifact_publication
 from molt.cli.runtime_fingerprints import (
@@ -159,6 +159,7 @@ def _link_outputs_match(
     outputs: Mapping[str, Path],
     fingerprint: dict[str, Any] | None,
     receipt_path: Path,
+    observe_match: Callable[[], None] | None = None,
 ) -> bool:
     """Reuse only the exact published family, never file presence or format alone."""
     if not outputs or fingerprint is None:
@@ -183,6 +184,8 @@ def _link_outputs_match(
                     return False
                 if artifact_content_identity(path) != recorded[role]["identity"]:
                     return False
+            if observe_match is not None:
+                observe_match()
     except (OSError, ValueError, RuntimeError):
         return False
     return True
@@ -244,6 +247,7 @@ def publish_link_outputs(
     receipt: FinalLinkReceiptRequest | None = None,
     removals: tuple[Path, ...] = (),
     retire_previous_outputs_under: Path | None = None,
+    observe_commit: Callable[[], None] | None = None,
 ) -> None:
     """Publish finalized private bytes and their input binding as one generation.
 
@@ -328,6 +332,7 @@ def publish_link_outputs(
             pairs,
             removals=removals,
             select_removals=previous_outputs if retirement_root is not None else None,
+            observe_commit=observe_commit,
         )
     finally:
         if receipt_stage is not None:

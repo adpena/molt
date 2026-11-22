@@ -21,6 +21,7 @@ from molt.wasm_artifact import (
 )
 
 import contextlib
+from dataclasses import replace
 import datetime as dt
 import hashlib
 import json
@@ -35,7 +36,8 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, TypedDict
 
 from molt.capability_manifest import ResolvedRuntimePolicy
-from molt import artifact_publication
+from molt import artifact_publication, input_report
+from molt.durable_file_identity import StatToken
 from molt.wasm_bundle import BundleManifest, write_wasm_bundle
 from molt.wasm_optimizer_identity import (
     load_wasm_optimizer_attestation,
@@ -863,6 +865,9 @@ def _prepare_non_native_build_result_in_generation(
         deployment: WasmDeploymentGeneration | None = None
         deployment_plan: WasmDeploymentPlan | None = None
         deployment_sources: WasmDeploymentSources | None = None
+        published_products: dict[str, Path] | None = None
+        publication_tokens: dict[Path, StatToken] | None = None
+        observe_publication: Callable[[], None] | None = None
         link_skipped = False
         optimizer_attestation: dict[str, Any] | None = None
         optimizer_cache_fact: dict[str, str] | None = None
@@ -1290,6 +1295,29 @@ def _prepare_non_native_build_result_in_generation(
                 deployment_closure = local_python_import_closure(
                     molt_root, (deployment_source,)
                 )
+                if input_report.active():
+                    # Warm final-link reuse can skip the reads these authorities
+                    # performed on a miss. The build record still owns them.
+                    internal_inputs = {
+                        output_wasm.resolve(),
+                        app_export_contract_path.resolve(),
+                    }
+                    for identity in (
+                        *admitted_link_inputs,
+                        runtime_wasm_pair.shared_member_identity,
+                        runtime_wasm_pair.reloc_member_identity,
+                    ):
+                        if identity.path not in internal_inputs:
+                            input_report.report_captured_file(
+                                identity.path, identity.stat_token(), identity.sha256
+                            )
+                    for identity in deployment_sources.files:
+                        input_report.report_data_file(identity.path)
+                    for path, digest in {
+                        **link_tool_closure.source_sha256,
+                        **deployment_closure.source_sha256,
+                    }.items():
+                        input_report.report_file(path, digest)
             except (OSError, ValueError) as exc:
                 return None, _fail(
                     f"Failed to derive WASM linker fingerprint closure: {exc}",
@@ -1371,10 +1399,32 @@ def _prepare_non_native_build_result_in_generation(
                     )
             except (OSError, ValueError) as exc:
                 return None, _fail(str(exc), json_output, command="build")
+            published_products = deployment_plan.build_products(
+                output_wasm, link_fingerprint_path
+            )
+            if input_report.active():
+                raw = observed_link_inputs[str(output_wasm.resolve())].identity
+                product_paths = tuple(
+                    path for path in published_products.values() if path != output_wasm
+                )
+
+                def capture_publication() -> None:
+                    nonlocal publication_tokens
+                    snapshot = {output_wasm: raw.stat_token()}
+                    for path in product_paths:
+                        token = input_report.stat_token(path)
+                        if token is None:
+                            input_report.refuse(f"unreportable WASM product {path}")
+                            return
+                        snapshot[path] = token
+                    publication_tokens = snapshot
+
+                observe_publication = capture_publication
             link_skipped = link_fingerprints._link_outputs_match(
                 outputs=deployment_plan.outputs,
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
+                observe_match=observe_publication,
             )
             if link_skipped and linked_opt_level is not None:
                 try:
@@ -2068,6 +2118,7 @@ def _prepare_non_native_build_result_in_generation(
                 ),
             },
             artifacts=artifacts,
+            published_products=published_products,
         )
         if deployment is not None:
             try:
@@ -2081,7 +2132,8 @@ def _prepare_non_native_build_result_in_generation(
                 deployment.publish(
                     link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                         link_fingerprint_path, link_fingerprint
-                    )
+                    ),
+                    observe_commit=observe_publication,
                 )
             except (OSError, ValueError, RuntimeError) as exc:
                 return None, _fail(
@@ -2090,7 +2142,9 @@ def _prepare_non_native_build_result_in_generation(
                     command="build",
                 )
             prepared = deployment.public_result(prepared)
-        return prepared, None
+        if observe_publication is not None and publication_tokens is None:
+            input_report.refuse("WASM build has no observed publication generation")
+        return replace(prepared, publication_tokens=publication_tokens), None
     return _PreparedNonNativeResult(
         primary_output=output_artifact,
         consumer_output=output_artifact,

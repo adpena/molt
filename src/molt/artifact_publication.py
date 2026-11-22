@@ -736,30 +736,46 @@ def _publication_receipt_name(anchor_name: str) -> str:
     return f".molt-artifact-receipt-{digest}.json"
 
 
-def is_publication_family_member(path: Path, final: Path) -> bool:
-    """Whether ``path`` is ``final`` or custody that publishing it keeps beside it.
+def publication_family_members(
+    paths: Iterable[Path], outputs: Iterable[Path]
+) -> set[Path]:
+    """Select outputs and their direct publication custody by directory and name.
 
-    The receipt, the directory's lock and journals, and every stage issued for
-    ``final`` or its receipt are products of the publication, never inputs of
-    the artifact. Reads only names; it touches no file.
+    Index each output and its receipt once. Membership reads names without
+    opening a file and takes one lookup for each observed path.
     """
+    from molt.file_publication import (
+        staged_file_destination_key,
+        staging_destination_key,
+    )
     from molt.path_custody import resolved_host_path_key
 
-    path = Path(path)
-    final = Path(final)
-    if resolved_host_path_key(path.parent) != resolved_host_path_key(final.parent):
-        return False
-    receipt = final.parent / _publication_receipt_name(final.name)
-    name = path.name.casefold()
-    return (
-        os.path.normcase(path.name)
-        in {os.path.normcase(final.name), os.path.normcase(receipt.name)}
-        or name == _PUBLICATION_LOCK_NAME
-        or _PUBLICATION_JOURNAL_NAME_RE.fullmatch(name) is not None
-        or _PUBLICATION_JOURNAL_STAGE_NAME_RE.fullmatch(name) is not None
-        or is_owned_staged_file_path(path, final)
-        or is_owned_staged_file_path(path, receipt)
-    )
+    families: dict[str, tuple[set[str], set[str]]] = {}
+    for output in outputs:
+        names, keys = families.setdefault(
+            resolved_host_path_key(output.parent), (set(), set())
+        )
+        receipt = output.with_name(_publication_receipt_name(output.name))
+        for member in (output, receipt):
+            names.add(os.path.normcase(member.name))
+            keys.add(staging_destination_key(member))
+
+    owned: set[Path] = set()
+    for path in paths:
+        family = families.get(resolved_host_path_key(path.parent))
+        if family is None:
+            continue
+        names, keys = family
+        name = path.name.casefold()
+        if (
+            os.path.normcase(path.name) in names
+            or name == _PUBLICATION_LOCK_NAME
+            or _PUBLICATION_JOURNAL_NAME_RE.fullmatch(name) is not None
+            or _PUBLICATION_JOURNAL_STAGE_NAME_RE.fullmatch(name) is not None
+            or staged_file_destination_key(path) in keys
+        ):
+            owned.add(path)
+    return owned
 
 
 @contextmanager
@@ -1227,6 +1243,7 @@ def publish_validated_outputs(
     *,
     removals: tuple[Path, ...] = (),
     select_removals: Callable[[frozenset[Path]], Iterable[Path]] | None = None,
+    observe_commit: Callable[[], None] | None = None,
 ) -> tuple[Path, ...]:
     """Durably replace and retire one crash-recoverable artifact set.
 
@@ -1241,6 +1258,9 @@ def publish_validated_outputs(
     An optional pure removal selector reads family metadata while locked. It
     may run again when its output expands the destination lock set; it must
     not publish or take publication locks itself.
+
+    The commit observer records the installed generation under the same locks.
+    It must not publish, acquire publication locks or raise.
     """
     normalized = []
     for raw_staged, raw_final in pairs:
@@ -1312,6 +1332,8 @@ def publish_validated_outputs(
         if len(normalized) == 1 and not normalized_removals:
             staged, final = normalized[0]
             _durable_replace(staged, final)
+            if observe_commit is not None:
+                observe_commit()
             return ()
         transaction_id = uuid.uuid4().hex
         journal_paths = tuple(
@@ -1394,6 +1416,8 @@ def publish_validated_outputs(
                     "artifact publication committed but cleanup recovery failed: "
                     f"{type(cleanup_error).__name__}"
                 )
+        if observe_commit is not None:
+            observe_commit()
     if retained:
         _warn_after_commit(
             "artifact publication committed with journal-owned cleanup residue: "
