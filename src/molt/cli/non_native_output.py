@@ -47,7 +47,7 @@ from molt.wasm_optimizer_identity import (
 
 
 from molt.file_publication import staged_file_path
-from molt.exact_json import canonical_json_bytes
+from molt.exact_json import canonical_json_bytes, encode_exact
 from molt.source_root import installed_distribution_root
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
@@ -76,9 +76,7 @@ from molt.cli.wasm_deployment import (
 from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths
 from molt.cli.atomic_io import (
     _atomic_copy_file,
-    _atomic_write_bytes,
     _atomic_write_json,
-    _atomic_write_text,
     _remove_file_or_tree,
 )
 from molt.cli.browser_target_features import (
@@ -129,6 +127,7 @@ from molt.native_callable_abi import (
 )
 from molt.toolchain_identity import (
     StableRegularFileObservation,
+    capture_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
@@ -1740,39 +1739,41 @@ def _prepare_non_native_build_result_in_generation(
                 )
             assert deployment is not None
             linked_manifest = deployment.outputs["manifest"]
-            _atomic_write_json(
-                linked_manifest,
-                {
-                    "version": WASM_EXECUTION_MANIFEST_VERSION,
-                    "mode": "linked",
-                    "launch": wasm_execution_manifest_launch(
-                        resolved_capability_policy
-                    ),
-                    **(
-                        {"optimizer": optimizer_attestation}
-                        if optimizer_attestation is not None
-                        else {}
-                    ),
-                    "abi": {
-                        "runtime_imports": _runtime_import_abi_manifest(
-                            resolved_linked_output,
-                            linked_runtime_import_names,
+            deployment.stage_payload(
+                "manifest",
+                encode_exact(
+                    {
+                        "version": WASM_EXECUTION_MANIFEST_VERSION,
+                        "mode": "linked",
+                        "launch": wasm_execution_manifest_launch(
+                            resolved_capability_policy
                         ),
-                        "linked_self_imports": sorted(linked_self_imports),
-                        "app_exports": app_exports_manifest,
+                        **(
+                            {"optimizer": optimizer_attestation}
+                            if optimizer_attestation is not None
+                            else {}
+                        ),
+                        "abi": {
+                            "runtime_imports": _runtime_import_abi_manifest(
+                                resolved_linked_output,
+                                linked_runtime_import_names,
+                            ),
+                            "linked_self_imports": sorted(linked_self_imports),
+                            "app_exports": app_exports_manifest,
+                        },
+                        "modules": {
+                            "linked": _file_asset(
+                                resolved_linked_output,
+                                resolved_linked_output.name,
+                            )
+                        },
+                        "entry": {
+                            "module": "linked",
+                            "function": compiled_execution_symbol("molt_main"),
+                        },
                     },
-                    "modules": {
-                        "linked": _file_asset(
-                            resolved_linked_output,
-                            resolved_linked_output.name,
-                        )
-                    },
-                    "entry": {
-                        "module": "linked",
-                        "function": compiled_execution_symbol("molt_main"),
-                    },
-                },
-                indent=2,
+                    sort_keys=False,
+                ),
             )
             artifacts["manifest"] = str(linked_manifest)
 
@@ -1801,10 +1802,17 @@ def _prepare_non_native_build_result_in_generation(
                     browser_asset_keys[name]: _bytes_asset(payload, name)
                     for name, payload in browser_asset_payloads.items()
                 }
-                target_feature_manifest_asset = _file_asset(
-                    target_feature_manifest_src,
-                    TARGET_FEATURE_MANIFEST_ASSET_NAME,
+                target_feature_identity, target_feature_payload = (
+                    capture_stable_regular_file(
+                        target_feature_manifest_src,
+                        label="WASM target feature manifest",
+                    )
                 )
+                target_feature_manifest_asset = {
+                    "path": TARGET_FEATURE_MANIFEST_ASSET_NAME,
+                    "size": target_feature_identity.size,
+                    "sha256": target_feature_identity.sha256,
+                }
             except (OSError, ValueError) as exc:
                 return None, _fail(
                     f"Invalid split-runtime browser asset closure: {exc}",
@@ -1929,35 +1937,33 @@ def _prepare_non_native_build_result_in_generation(
                     "source_total_bytes": bundle_manifest["total_bytes"],
                 }
                 manifest_data["total_size"] = app_size + rt_size + bundle_size
-            _atomic_write_json(manifest, manifest_data, indent=2)
+            deployment.stage_payload(
+                "manifest", encode_exact(manifest_data, sort_keys=False)
+            )
 
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
-            _atomic_write_text(
-                worker_js,
+            deployment.stage_payload(
+                "worker_js",
                 _generate_split_worker_js(
                     deployment_manifest=manifest_data,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     runtime_import_names=runtime_abi_names,
-                ),
+                ).encode("utf-8"),
             )
             try:
                 for name, payload in browser_asset_payloads.items():
-                    _atomic_write_bytes(split_dir.joinpath(*Path(name).parts), payload)
+                    deployment.stage_payload(f"asset:{name}", payload)
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime browser asset closure: {exc}",
                     json_output,
                     command="build",
                 )
-            target_feature_manifest_dst = split_dir / TARGET_FEATURE_MANIFEST_ASSET_NAME
             try:
-                _atomic_copy_file(
-                    target_feature_manifest_src,
-                    target_feature_manifest_dst,
-                )
+                deployment.stage_payload("target_features", target_feature_payload)
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime target feature manifest: {exc}",
@@ -1969,16 +1975,13 @@ def _prepare_non_native_build_result_in_generation(
             # JSONC is the modern Wrangler config shape and matches the
             # live-verification tooling contract.
             wrangler_jsonc = split_dir / "wrangler.jsonc"
-            _atomic_write_text(
-                wrangler_jsonc,
+            deployment.stage_payload(
+                "wrangler_config",
                 _generate_split_wrangler_jsonc(
                     WASM_WORKER_COMPATIBILITY_DATE,
                     browser_asset_names,
-                ),
+                ).encode("utf-8"),
             )
-            legacy_wrangler_toml = split_dir / "wrangler.toml"
-            if legacy_wrangler_toml.exists():
-                legacy_wrangler_toml.unlink()
             bundle_root = split_dir
             artifacts.update(
                 {

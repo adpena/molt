@@ -23594,7 +23594,8 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
     real_exports = cli_non_native_output._app_export_manifest
-    real_write = cli_non_native_output._atomic_write_bytes
+    generation_type = cli_non_native_output.WasmDeploymentGeneration
+    real_write = generation_type.stage_payload
     rival_published = False
     rival_bytes: dict[Path, bytes] = {}
     receipt_path = cli_link_fingerprints._link_fingerprint_path(
@@ -23659,13 +23660,17 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                 asset.write_bytes(asset.read_bytes() + b"\n")
         return real_exports(contract, candidate, **kwargs)
 
-    def write_asset(path: Path, payload: bytes) -> None:
-        if fail_after_rival and rival_bytes:
+    def write_asset(
+        generation: cli_non_native_output.WasmDeploymentGeneration,
+        role: str,
+        payload: bytes,
+    ) -> None:
+        if role.startswith("asset:") and fail_after_rival and rival_bytes:
             raise OSError("injected producer A loader staging failure")
-        real_write(path, payload)
+        real_write(generation, role, payload)
 
     monkeypatch.setattr(cli_non_native_output, "_app_export_manifest", derive_exports)
-    monkeypatch.setattr(cli_non_native_output, "_atomic_write_bytes", write_asset)
+    monkeypatch.setattr(generation_type, "stage_payload", write_asset)
     prepared, error = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None, **common, resolved_capability_policy=policy_a
     )

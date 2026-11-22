@@ -195,6 +195,12 @@ class WasmDeploymentGeneration:
                 env.pop(name, None)
         return ProcessEnvironment(env)
 
+    def stage_payload(self, role: str, payload: bytes) -> None:
+        """Write one planned private member. Publication owns the durable flush."""
+        path = self.outputs[role]
+        with path.open("xb") as handle:
+            handle.write(payload)
+
     def publish(
         self,
         receipt: FinalLinkReceiptRequest | None,
