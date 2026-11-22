@@ -4315,6 +4315,7 @@ globs = [
   "src/molt/cli/python_import_resolution.py",
   "src/molt/cli/python_source_closure.py",
   "src/molt/cli/cache_fingerprints.py",
+  "src/molt/cli/import_graph_record.py",
   "src/molt/cli/module_cache.py",
   "tests/test_python_namespace_graph.py",
   "tests/cli/test_cli_python_source_closure.py",
