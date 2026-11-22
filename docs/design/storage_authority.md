@@ -498,8 +498,12 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    of raw free space. Cargo resolves the artifact binding from its working
    directory, including direct builds without an exported artifact root.
    Guard scratch carries its selected artifact root from placement into
-   admission, using one binding lookup. This checks current capacity before a
-   run, and already admitted writers can continue allocating. The compile-cache
+   admission, using one binding lookup. Before a managed gate starts, a
+   measured shortfall on the selected hot output volume invokes one pressure
+   pass through `disk_guard.ensure_free`. The admission boundary measures the
+   selected outputs again and starts the gates only when they pass. Explicit
+   external destinations are admitted as selected. This checks current capacity
+   before a run, and already admitted writers can continue allocating. The compile-cache
    cap covers its own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
    state carries no byte budget because sizing it walks hundreds of GB (the

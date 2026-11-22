@@ -110,8 +110,17 @@ class DiskCapacityReceipt:
 class DiskCapacityError(ValueError):
     """Capacity admission rejection with a machine-readable diagnostic."""
 
-    def __init__(self, message: str, diagnostic: Mapping[str, object]) -> None:
+    def __init__(
+        self,
+        message: str,
+        diagnostic: Mapping[str, object],
+        *,
+        rejected: tuple[DiskCapacityProbe, ...] = (),
+        hot_root: Path | None = None,
+    ) -> None:
         self.diagnostic = dict(diagnostic)
+        self.rejected = rejected
+        self.hot_root = hot_root
         serialized = json.dumps(
             self.diagnostic,
             sort_keys=True,
@@ -719,7 +728,10 @@ def _require_capacity(
             "probes": [probe.as_dict() for probe in probes],
         }
         raise DiskCapacityError(
-            _rejection_message(purpose, remedy, rejected), diagnostic
+            _rejection_message(purpose, remedy, rejected),
+            diagnostic,
+            rejected=rejected,
+            hot_root=raw_headroom_root,
         )
 
     return DiskCapacityReceipt(required_bytes=required_bytes, probes=tuple(probes))

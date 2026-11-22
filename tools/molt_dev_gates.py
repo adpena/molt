@@ -40,7 +40,7 @@ from tools.driver_errors import CandidateFailure, DriverError, GateFailure  # no
 from tools.molt_dev_common import _say, _warn  # noqa: E402
 
 if TYPE_CHECKING:
-    from molt.disk_capacity import DiskCapacityProbe
+    from molt.disk_capacity import DiskCapacityError, DiskCapacityProbe
     from molt.host_capacity import HostWorkDemand
     from tools.proof_plan import ToolchainPolicy
 
@@ -546,15 +546,57 @@ def concurrent_gate_limit() -> int:
     )
 
 
+def _reclaim_failed_hot_output(
+    error: DiskCapacityError,
+    environment: Mapping[str, str],
+    attempted: set[Path],
+) -> bool:
+    """Try one bounded cleanup for a measured shortfall in the bound hot root."""
+    root = error.hot_root
+    if root is None or root in attempted or not error.rejected:
+        return False
+    try:
+        device = root.stat().st_dev
+        for probe in error.rejected:
+            measured = probe.measured_path
+            if (
+                probe.error is not None
+                or probe.free_bytes is None
+                or measured is None
+                or not probe.requested_path.is_relative_to(root)
+                or not measured.is_relative_to(root)
+                or measured.stat().st_dev != device
+            ):
+                return False
+    except OSError:
+        return False
+
+    from tools import disk_guard
+
+    attempted.add(root)
+    required = max(probe.required_bytes for probe in error.rejected)
+    result = disk_guard.ensure_free(required / (1 << 30), root=root, env=environment)
+    _say(
+        f"    hot output cleanup: {len(result.reclaimed)} retired, "
+        f"{result.free_before} -> {result.free_after} bytes free on {root}"
+    )
+    return True
+
+
 def admit_selected_output_capacity(
     outputs: dict[tuple[str, ...], tuple[Path, ...]],
     environments: dict[tuple[str, ...], GateEnvironment],
 ) -> dict[tuple[str, ...], int]:
-    """Check current volumes before any gate, without forecasting growth."""
-    from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
+    """Observe output capacity, reclaim once on a hot shortfall, then recheck."""
+    from molt.disk_capacity import (
+        DiskCapacityError,
+        minimum_headroom_bytes,
+        require_build_capacity,
+    )
 
     requirements = {}
     observed: set[tuple[tuple[Path, ...], int]] = set()
+    attempted: set[Path] = set()
     for tools, paths in outputs.items():
         environment = environments[tools].environment
         required = minimum_headroom_bytes(environment)
@@ -562,7 +604,12 @@ def admit_selected_output_capacity(
         key = (paths, required)
         if key in observed:
             continue
-        receipt = require_build_capacity(paths, env=environment)
+        try:
+            receipt = require_build_capacity(paths, env=environment)
+        except DiskCapacityError as error:
+            if not _reclaim_failed_hot_output(error, environment, attempted):
+                raise
+            receipt = require_build_capacity(paths, env=environment)
         observed.add(key)
         _say(
             "    selected output capacity: "

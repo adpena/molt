@@ -11525,6 +11525,73 @@ def test_integrate_selected_output_capacity_refuses_before_gate_prefix(
     assert not target.exists() and not build.exists()
 
 
+@pytest.mark.parametrize(
+    ("on_hot_root", "recovery_succeeds", "measurement_fails"),
+    [
+        (True, True, False),
+        (True, False, False),
+        (False, False, False),
+        (True, False, True),
+    ],
+)
+def test_selected_output_capacity_reclaims_only_a_measured_hot_shortfall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    on_hot_root: bool,
+    recovery_succeeds: bool,
+    measurement_fails: bool,
+) -> None:
+    from molt.default_paths import HOT_STATE_RECORD, HOT_STATE_SCHEMA
+    from molt.disk_capacity import DiskCapacityError, minimum_headroom_bytes
+    from tools import disk_guard, molt_dev_gates
+    from tools.molt_dev_policy import GateEnvironment
+
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    (artifact / HOT_STATE_RECORD).write_text(
+        json.dumps({"schema": HOT_STATE_SCHEMA, "root": str(hot), "budget_bytes": 1}),
+        encoding="utf-8",
+    )
+    selected = hot if on_hot_root else artifact
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifact)})
+    tools = ("cargo",)
+    environments = {tools: GateEnvironment(environment, None, False)}
+    outputs = {tools: (selected / "target",)}
+    free = 0
+    reclaim_calls: list[Path] = []
+
+    def measure(path: Path) -> int:
+        if measurement_fails:
+            raise OSError("unavailable volume measurement")
+        return free
+
+    def reclaim(
+        minimum: float, *, root: Path, env: ProcessEnvironment
+    ) -> disk_guard.ReclaimResult:
+        nonlocal free
+        assert root == hot
+        assert env == environment
+        assert minimum > 0
+        reclaim_calls.append(root)
+        before = free
+        if recovery_succeeds:
+            free = 1 << 40
+        return disk_guard.ReclaimResult("pressure", str(root), True, before, free)
+
+    _capacity_measurement(monkeypatch, measure)
+    monkeypatch.setattr(disk_guard, "ensure_free", reclaim)
+    if recovery_succeeds:
+        assert molt_dev_gates.admit_selected_output_capacity(outputs, environments) == {
+            tools: minimum_headroom_bytes(environment)
+        }
+    else:
+        with pytest.raises(DiskCapacityError):
+            molt_dev_gates.admit_selected_output_capacity(outputs, environments)
+    assert reclaim_calls == ([hot] if on_hot_root and not measurement_fails else [])
+
+
 @pytest.mark.parametrize("gate_rc", [0, 19])
 def test_integrate_capacity_observes_interval_without_campaign_guarantee(
     drv, origin_and_clone, monkeypatch, tmp_path, capsys, gate_rc
