@@ -93,6 +93,146 @@ def test_an_unchanged_build_is_current(tmp_path: Path) -> None:
     assert not _current(record, output, "j" * 64), "the key binds"
 
 
+@pytest.fixture
+def bound_cache_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    from molt import default_paths
+
+    artifact = tmp_path / "artifact"
+    hot = tmp_path / "hot"
+    artifact.mkdir()
+    hot.mkdir()
+    (artifact / default_paths.HOT_STATE_RECORD).write_text(
+        json.dumps(
+            {
+                "schema": default_paths.HOT_STATE_SCHEMA,
+                "root": str(hot),
+                "budget_bytes": 4096,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    return artifact, hot
+
+
+@pytest.mark.parametrize("cache_from_env", [False, True])
+def test_hot_frontend_publication_allows_immediate_build_record_replay(
+    tmp_path: Path,
+    transient: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bound_cache_volume: tuple[Path, Path],
+    cache_from_env: bool,
+) -> None:
+    from molt.cli.build_command import _excluded_read_roots
+    from molt.cli.build_request import BuildRequest
+    from molt.cli.frontend_record_files import FrontendRecordFiles
+    from molt.cli.module_source import PythonSourceSnapshot
+
+    artifact, hot = bound_cache_volume
+    if cache_from_env:
+        cache = artifact / "user-selected-cache"
+        monkeypatch.setenv("MOLT_CACHE", str(cache))
+    else:
+        cache = artifact / ".molt_cache"
+        monkeypatch.delenv("MOLT_CACHE", raising=False)
+    source = tmp_path / "main.py"
+    output = tmp_path / "program"
+    source.write_bytes(b"value = 1\n")
+    seed = FrontendRecordFiles(cache)
+    assert seed.put("import-scan", "a" * 64, b"first scan")
+    assert seed.root.is_relative_to(hot)
+    request = BuildRequest(file_path=str(source), output=str(output))
+    with build_record.recording(transient) as ledger:
+        snapshot = PythonSourceSnapshot.capture(source)
+        reader = FrontendRecordFiles(cache)
+        scan = reader.get("import-scan", "a" * 64, max_bytes=100)
+        assert scan is not None and scan.payload == b"first scan"
+        assert reader.put("import-scan", "b" * 64, b"another scan")
+        output.write_bytes(snapshot.content)
+    assert ("directory", str(seed.root / "index")) in ledger.observed
+    build_record.resolve_observed(
+        ledger, _excluded_read_roots(request), published_outputs=(output,)
+    )
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None and _current(record, output)
+    assert reader.put("import-scan", "c" * 64, b"another build's scan")
+    assert _current(record, output)
+    source.write_bytes(b"value = 2\n")
+    assert not _current(record, output)
+
+
+def test_hot_cache_ownership_keeps_source_probes_bindings_and_foreign_files(
+    tmp_path: Path,
+    transient: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bound_cache_volume: tuple[Path, Path],
+) -> None:
+    from molt import default_paths
+    from molt.cli.build_command import _excluded_read_roots
+    from molt.cli.build_request import BuildRequest
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.cli.python_import_topology import PythonImportTopology
+
+    project, hot = bound_cache_volume
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("MOLT_CACHE", str(project / "host-cache"))
+    monkeypatch.chdir(tmp_path)
+    digest_dir = hot / "host-cache" / "file-digests"
+    host_locks = hot / "host-cache" / "locks"
+    products = [
+        project / "app-cache" / "object",
+        host_locks / "compile.00.lock",
+        hot / "app-cache" / "locks" / "immutable-publish.00.lock",
+        *(
+            digest_dir / ("v3.sqlite" + suffix)
+            for suffix in ("", "-wal", "-shm", "-journal")
+        ),
+    ]
+    foreign = [
+        tmp_path / "app-cache" / "config",
+        hot / "host-cache" / "operator-data",
+        digest_dir / "unrelated.sqlite",
+    ]
+    for path in (*products, *foreign):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"before")
+    # Even inside an owned cache, an explicitly consumed source and an earlier
+    # absent import candidate keep their semantic obligations.
+    source = project / "app-cache" / "fallback.py"
+    source.write_bytes(b"value = 1\n")
+    earlier = project / "app-cache" / "preferred.py"
+    binding = project / default_paths.HOT_STATE_RECORD
+    # --cache-dir is relative to the project, even when the CLI runs elsewhere.
+    request = BuildRequest(file_path=str(source), cache_dir="app-cache")
+    with build_record.recording(transient) as ledger:
+        assert default_paths.cache_control_root(project / "host-cache") == host_locks
+        for path in (*products, *foreign):
+            path.read_bytes()
+        PythonSourceSnapshot.capture(source)
+        assert PythonImportTopology().probe(earlier) is None
+    roots = _excluded_read_roots(request)
+    build_record.resolve_observed(ledger, roots)
+    assert set(map(str, (*foreign, binding, source))) <= ledger.files.keys()
+    assert not set(map(str, products)).intersection(ledger.files)
+    # The raw fixture inputs above stand in for established operator files.
+    ledger.started_ns = _future_ledger().started_ns
+    output = tmp_path / "program"
+    output.write_bytes(b"published")
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None
+    for product in products:
+        product.write_bytes(b"changed cache")
+    assert _current(record, output)
+    source.write_bytes(b"value = 3\n")
+    assert not _current(record, output), "explicit source inside the cache still binds"
+    source.write_bytes(b"value = 1\n")
+    assert _current(record, output)
+    earlier.write_bytes(b"value = 2\n")
+    assert not _current(record, output), "a newly available earlier import wins"
+
+
 def test_no_change_build_tokens_ignore_device_renumbering(tmp_path, monkeypatch):
     _source, _tool, output, record = _fixture(tmp_path)
     capture = input_report.stat_token

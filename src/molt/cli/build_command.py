@@ -185,15 +185,20 @@ def _guard_profile_roots(compiler_root: Path) -> tuple[Path, ...]:
 
 
 def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
-    """Directories that hold only content-verified caches, scratch files and
-    build products, never inputs. Each is a named product root. A source
+    """Physical paths reserved for caches, scratch files and build products.
+    Explicit semantic inputs under them still bind the build record. A source
     checkout, a user directory, the temporary directory and the shared scratch
     root are never excluded: projects live there too. The declared published
     binary is projected separately as one product file."""
     from molt import dx, memory_guard_paths, temporary_artifacts
     from molt.cli import runtime_paths
-    from molt.cli.build_output_layout import _default_build_base
+    from molt.cli.build_output_layout import _default_build_base, _resolve_cache_root
     from molt.cli.project_roots import _find_project_root
+    from molt.default_paths import (
+        cache_control_root,
+        file_digest_cache_path,
+        frontend_record_files_root,
+    )
     from molt.source_root import compiler_source_root
 
     entry = request.file_path
@@ -205,8 +210,20 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     # when the child ends; the guard follows the same compiler sources
     # (`process_guard`). Each of these once refused every record.
     compiler_root = compiler_source_root()
+    # The host frontend and digest readers use the default cache even when
+    # the backend selects --cache-dir. A hot-state binding places their
+    # physical products outside that logical cache.
+    cache = _default_molt_cache()
+    digests = file_digest_cache_path(cache)
     roots = [
-        _default_molt_cache(),
+        cache,
+        frontend_record_files_root(cache.resolve()),
+        cache_control_root(cache),
+        digests,
+        *(
+            digests.with_name(digests.name + suffix)
+            for suffix in ("-wal", "-shm", "-journal")
+        ),
         dx.backend_daemon_socket_dir(project_root, os.environ),
         dx.backend_ir_lease_dir(project_root, os.environ),
         dx.backend_ir_lease_dir(compiler_root, os.environ),
@@ -225,10 +242,9 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         dx.product_store_dir(project_root, os.environ),
         dx.product_store_dir(compiler_root, os.environ),
     ]
-    if os.environ.get("MOLT_CACHE"):
-        roots.append(Path(os.environ["MOLT_CACHE"]))
     if request.cache_dir:
-        roots.append(Path(request.cache_dir).expanduser())
+        backend_cache = _resolve_cache_root(project_root, request.cache_dir)
+        roots.extend((backend_cache, cache_control_root(backend_cache)))
     out_dir = request.out_dir
     if out_dir:
         roots.append(Path(out_dir).expanduser() / ".molt_build")
