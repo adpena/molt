@@ -70,6 +70,7 @@ from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
+    StableRegularFileObservation,
     stable_regular_file_identity,
     stable_executable_probe,
     verify_stable_regular_file_identity,
@@ -98,10 +99,15 @@ class _BackendBinaryEnsureResult:
     command: tuple[str, ...] = ()
     cache_compiler_fingerprint: str | None = None
     binary: Path | None = None
+    installed_observation: StableRegularFileObservation | None = None
 
     def __post_init__(self) -> None:
         if self.ok and self.binary is None:
             raise ValueError("an admitted backend names the executable it admitted")
+        if self.installed_observation is not None and (
+            not self.ok or self.binary != self.installed_observation.identity.path
+        ):
+            raise ValueError("installed admission must name its captured executable")
 
     def __bool__(self) -> bool:
         return self.ok
@@ -969,8 +975,9 @@ def _ensure_backend_binary(
                     "MOLT_PERF_PROFILE=native-arch needs a source checkout"
                 )
             installed_binary = installed.compiler.binary
+            observed = installed.binary_observation
             if product is HostToolProduct.WASM_FACTS:
-                installed.compiler.verify_wasm_facts()
+                observed = installed.host_tool_observation(HostToolProduct.WASM_FACTS)
                 installed_binary = installed.compiler.wasm_facts_binary
             if backend_bin != installed_binary:
                 raise ValueError(
@@ -980,6 +987,7 @@ def _ensure_backend_binary(
                 ok=True,
                 cache_compiler_fingerprint=installed.fingerprint,
                 binary=installed_binary,
+                installed_observation=observed,
             )
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("installed_compiler", str(exc))

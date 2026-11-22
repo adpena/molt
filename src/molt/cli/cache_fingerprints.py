@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
     from molt.process_environment import ProcessEnvironment
+    from molt.toolchain_identity import StableRegularFileObservation
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v4"
@@ -178,6 +179,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/frontend_parallel.py": _P,
         "cli/frontend_pipeline.py": _P,
         "cli/frontend_worker.py": _P,
+        "cli/import_graph_record.py": _P,
         "cli/module_cache.py": _P,
         "cli/module_dependencies.py": _P,
         "cli/module_graph.py": _P,
@@ -234,6 +236,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "stdlib/struct.py": _FrontendInputRole.REFERENCE,
         "__init__.py": _FrontendInputRole.PACKAGE,
         "cli/__init__.py": _FrontendInputRole.PACKAGE,
+        "build_record.py": _FrontendInputRole.IDENTITY,
         "cli/cache_fingerprints.py": _FrontendInputRole.IDENTITY,
         "cli/source_extension_input_custody.py": _FrontendInputRole.IDENTITY,
         "compiler_distribution.py": _FrontendInputRole.IDENTITY,
@@ -371,6 +374,9 @@ class _SourceTreeFingerprintTransaction:
         field(default_factory=dict)
     )
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
+    installed_executables: dict[
+        tuple[str, str, HostToolProduct], StableRegularFileObservation
+    ] = field(default_factory=dict)
     import_scan_decoder: _ImportScanDecoder | None = None
     cargo_documents: dict[str, object] = field(default_factory=dict)
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(

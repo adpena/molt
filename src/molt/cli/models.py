@@ -71,8 +71,12 @@ if TYPE_CHECKING:
         _FrontendLayerRuntimeHooks,
     )
     from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
-    from molt.cli.runtime_native_build import _NativeRuntimeBuildFailure
+    from molt.cli.runtime_native_build import (
+        _NativeRuntimeBuildFailure,
+        NativeRuntimeBuildInputs,
+    )
     from molt.cli.runtime_wasm_failure import _RuntimeWasmBuildFailure
+    from molt.cli.runtime_wasm_pair_build import _RuntimeWasmPairIdentity
     from molt.cli.function_records import FunctionDigestSeed
     from molt.frontend.module_publication import FunctionAssemblyMetadata
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -834,6 +838,7 @@ class _RuntimeArtifactState:
     # selects (a product store variant or an installed cell's retained pair).
     runtime_wasm_pair: RuntimeWasmGeneration | None = None
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
+    runtime_wasm_build_inputs: _RuntimeWasmPairIdentity | None = None
     # One build operation's prerequisite discovery. Structural validation still
     # reattests the executable at each actual execution boundary.
     runtime_wasm_validator: ToolDiscovery | None = None
@@ -842,6 +847,7 @@ class _RuntimeArtifactState:
     # runtimes always compile for their fixed baseline.
     rust_cpu: RustCpuPolicy = RustCpuPolicy.BASELINE
     native_runtime_build_identity: RuntimeBuildIdentity | None = None
+    native_runtime_build_inputs: NativeRuntimeBuildInputs | None = None
     native_runtime_generation: NativeRuntimeGeneration | None = None
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None
     # LLVM's wasm32 codegen reads the callable set of the relocatable runtime
@@ -865,6 +871,7 @@ class _RuntimeArtifactState:
         """Revoke all authority to use this operation's native generation."""
         self.native_runtime_codegen_binding = None
         self.native_runtime_build_identity = None
+        self.native_runtime_build_inputs = None
         self.native_runtime_generation = None
         self.installed_native_admission = None
 

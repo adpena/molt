@@ -27,6 +27,20 @@ At that measurement, the remaining one to five children were link work
 rediscovery described below has since been removed; these historical counts
 are not current latency measurements.
 
+Runtime readiness now retains the source and publication inputs its identity
+actually hashed, including admitted membership, root generations and missing
+roots. Native final-link admission and a bound WASM pair still resolve current
+Cargo configuration and tool selection. When those freshly resolved typed plans
+and member specifications equal the original request, the operation verifies
+its retained source observations instead of deriving the runtime identity again.
+Recent timestamp generations and Windows source observations require content
+verification; other POSIX files use their original content-change fences.
+Changed or unavailable observations require ordinary independent identity capture.
+Product bytes, receipts, callable inputs and final export obligations keep their
+existing admission boundaries. Cold publication still independently captures
+its inputs after building. This reuse ends with the operation; it provides no
+cross-command identity cutoff or release qualification.
+
 Darwin native link planning projects the already-admitted `NativeTargetSpec`
 into compiler arguments, presenting `aarch64` as `arm64`. The backend artifact
 contract checks every application archive member against the exact target
@@ -151,6 +165,34 @@ inventory identity; metadata consumers still read and verify required bytes.
 It writes no digest rows until new captures or age renewal make the cache dirty.
 Cold capture additionally reads the selected bytes and commits one batch of new
 digests. The existing age budget and racy-window policy remain authoritative.
+
+### Installed executable admission within one operation
+
+The existing source-fingerprint transaction owns independently hashed installed
+backend and WASM-facts observations. Each admission rereads the release manifest
+and applies current host, feature and compiler-profile policy. Reuse requires
+the same selected owned path, expected SHA/size and current regular-file
+generation. A missing, rewritten, replaced or redirected member refuses.
+
+`StableRegularFileObservation` owns the capture-start epoch. Files recent at
+enrollment remain subject to exact hashing for their entire observation;
+Windows always rehashes. Settled POSIX observations use the existing full
+metadata fence. Runtime source trees use this same observation verifier with
+their tree-capture epoch, alongside their root and membership fences.
+
+The admitted installed witness travels through backend selection into object
+cache setup. Daemon selection freshly admits the installation and projects the
+same canonical executable digest from its observation. Object-cache setup adds
+no compiler-root selection or manifest read. The generic executable probe closes
+entrypoint and generation checks around projection. Facts capture is lazy.
+
+Direct `InstalledCompiler.verify_binary` and `verify_wasm_facts` always hash the
+current bytes, including inside a transaction. An explicit fresh admission or
+new operation also captures independently. No observation comes from the
+mutable host digest database: its rows cannot prove release-byte acceptance.
+This provides no persistent admission or device-remapping seal. The qualified
+cost boundary is removed duplicate payload reads for settled POSIX members;
+selector and metadata I/O remain, and no whole-build speedup is inferred.
 
 ### Keys per probe class
 

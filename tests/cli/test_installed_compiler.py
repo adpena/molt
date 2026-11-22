@@ -9,6 +9,8 @@ from pathlib import Path
 import runpy
 import shutil
 import sys
+from dataclasses import replace
+from typing import BinaryIO, Literal
 
 import pytest
 
@@ -868,6 +870,295 @@ def test_installed_source_admission_expires_at_operation_boundary(
     with cache_fingerprints._source_tree_fingerprint_transaction():
         with pytest.raises(compiler_identity.CompilerIdentityError):
             cache_fingerprints._cache_tooling_fingerprint()
+
+
+@pytest.fixture
+def executable_reads(
+    installation: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[Path, int]:
+    """Count actual digest traversals of the independently staged members."""
+    from molt import toolchain_identity
+
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    paths = (compiler.binary, compiler.wasm_facts_binary)
+    objects = {(path.stat().st_dev, path.stat().st_ino): path for path in paths}
+    reads = dict.fromkeys(paths, 0)
+    original = toolchain_identity._sha256_stream
+
+    def digest(stream: BinaryIO, *, max_bytes: int) -> str:
+        metadata = os.fstat(stream.fileno())
+        path = objects.get((metadata.st_dev, metadata.st_ino))
+        if path is not None:
+            reads[path] += 1
+        return original(stream, max_bytes=max_bytes)
+
+    monkeypatch.setattr(toolchain_identity, "_sha256_stream", digest)
+    # A zero window lets real fixture generations be settled at enrollment;
+    # the racy test below exercises the production window and aging separately.
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    return reads
+
+
+@pytest.mark.skipif(os.name == "nt", reason="settled POSIX observation cost contract")
+def test_installed_consumers_share_one_exact_byte_capture(
+    installation: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executable_reads: dict[Path, int],
+) -> None:
+    from molt.backend_binary_identity import identify_backend_binary
+    from molt.backend_environment import CodegenSelection
+    from molt.cli import backend_cache_setup, cache_fingerprints, compiler_identity
+    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+    from molt.cli.cache_keys import FunctionDigests
+    from molt.cli.models import _ModuleGraphMetadata
+    from molt.compilation_target import admit_target
+    from molt.host_tool_products import HostToolProduct
+    from molt.target_python import TargetPythonVersion
+
+    monkeypatch.setattr(cache_fingerprints, "_compiler_root", lambda: installation)
+    monkeypatch.setenv("MOLT_PORTABLE", "1")
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        fingerprint = cache_fingerprints._cache_fingerprint(
+            backend_features=("native-backend",),
+            cargo_profile="release",
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+        installed = compiler_identity.installed_compiler_admission(installation)
+        assert installed is not None
+        binary = installed.compiler.binary
+        ensured = backend_binary._ensure_backend_binary(
+            binary,
+            cargo_timeout=1,
+            json_output=True,
+            cargo_profile="release",
+            project_root=installation,
+            backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+        assert ensured.ok, ensured.message
+        assert ensured.installed_observation is installed.binary_observation
+        backend_execution._backend_daemon_config_digest(
+            installation, "release", backend_bin=binary, env={}
+        )
+        target = admit_target("native")
+        setup = backend_cache_setup._prepare_backend_cache_setup(
+            backend_bin=binary,
+            backend_binary_observation=ensured.installed_observation,
+            cache_enabled=False,
+            ir={"functions": []},
+            function_digests=FunctionDigests(),
+            target=target,
+            artifact_contract=resolve_backend_artifact_contract(
+                target=target, emit_mode="obj"
+            ),
+            profile="dev",
+            runtime_cargo_profile="dev-fast",
+            backend_cargo_profile="release",
+            emit_mode="obj",
+            is_wasm=False,
+            linked=False,
+            project_root=installation.parent,
+            cache_dir=None,
+            output_artifact=installation.parent / "out.o",
+            warnings=[],
+            entry_module="app",
+            module_graph_metadata=_ModuleGraphMetadata(
+                logical_source_path_by_module={},
+                namespace_portions_by_module={},
+                module_is_package_by_module={},
+                module_execution_kind_by_module={},
+                frontend_module_costs=None,
+                stdlib_like_by_module={},
+                module_source_role_by_module={},
+                scan_authority=None,
+            ),
+            target_python=TargetPythonVersion(3, 12, 0),
+            backend_compiler_fingerprint=fingerprint,
+            codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+        assert (
+            setup.backend_environment["MOLT_BACKEND_COMPILER_FINGERPRINT"]
+            == fingerprint
+        )
+        assert executable_reads[binary] == 1
+        assert executable_reads[installed.compiler.wasm_facts_binary] == 0
+        first_digest = identify_backend_binary(
+            binary, observed=installed.binary_observation
+        )
+        assert executable_reads[binary] == 1
+        # Independently capture the canonical cold projection, then compare it.
+        assert first_digest == identify_backend_binary(binary)
+        assert executable_reads[binary] == 2
+        facts = installed.host_tool_observation(HostToolProduct.WASM_FACTS)
+        assert facts is installed.host_tool_observation(HostToolProduct.WASM_FACTS)
+        assert executable_reads[installed.compiler.wasm_facts_binary] == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="settled POSIX observation cost contract")
+def test_release_and_operation_boundaries_capture_bytes_exactly(
+    installation: Path, executable_reads: dict[Path, int]
+) -> None:
+    from molt.cli import cache_fingerprints, compiler_identity
+
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert compiler_identity.installed_compiler_admission(installation)
+        assert compiler_identity.installed_compiler_admission(installation)
+        assert executable_reads[compiler.binary] == 1
+        for _ in range(2):
+            compiler.verify_binary(("native-backend",), "release")
+            compiler.verify_wasm_facts()
+        assert executable_reads[compiler.binary] == 3
+        assert executable_reads[compiler.wasm_facts_binary] == 2
+        assert compiler_identity.installed_compiler_admission(installation, fresh=True)
+        assert executable_reads[compiler.binary] == 4
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert compiler_identity.installed_compiler_admission(installation)
+    assert executable_reads[compiler.binary] == 5
+    assert compiler_identity.installed_compiler_admission(installation)
+    assert compiler_identity.installed_compiler_admission(installation)
+    assert executable_reads[compiler.binary] == 7
+
+
+@pytest.mark.parametrize("product", ["backend", "facts"])
+@pytest.mark.parametrize("change", ["rewrite", "replace", "missing", "alias"])
+def test_installed_observation_rejects_changed_generations(
+    installation: Path,
+    executable_reads: dict[Path, int],
+    product: Literal["backend", "facts"],
+    change: Literal["rewrite", "replace", "missing", "alias"],
+) -> None:
+    from molt.backend_binary_identity import identify_backend_binary
+    from molt.cli import cache_fingerprints, compiler_identity
+    from molt.host_tool_products import HostToolProduct
+
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        admitted = compiler_identity.installed_compiler_admission(installation)
+        assert admitted is not None
+        role = (
+            HostToolProduct.BACKEND
+            if product == "backend"
+            else HostToolProduct.WASM_FACTS
+        )
+        observed = admitted.host_tool_observation(role)
+        path = observed.identity.path
+        before = path.stat()
+        original = path.read_bytes()
+        if change == "rewrite":
+            path.write_bytes(b"!" * len(original))
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        elif change == "replace":
+            replacement = path.with_suffix(".new")
+            replacement.write_bytes(original)
+            os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+            os.replace(replacement, path)
+        elif change == "missing":
+            path.unlink()
+        else:
+            replacement = path.with_suffix(".new")
+            path.rename(replacement)
+            try:
+                path.symlink_to(replacement)
+            except OSError:
+                if os.name == "nt":
+                    pytest.skip("host does not admit symbolic link creation")
+                raise
+        with pytest.raises((OSError, ValueError)):
+            if product == "backend":
+                compiler_identity.installed_compiler_admission(installation)
+            else:
+                admitted.host_tool_observation(role)
+        with pytest.raises((OSError, ValueError)):
+            identify_backend_binary(path, observed=observed)
+
+
+@pytest.mark.parametrize("change", ["profile", "feature", "host", "manifest"])
+def test_installed_observation_rechecks_current_selection(
+    installation: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executable_reads: dict[Path, int],
+    change: Literal["profile", "feature", "host", "manifest"],
+) -> None:
+    from molt.cli import cache_fingerprints, compiler_identity
+
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert compiler_identity.installed_compiler_admission(installation)
+        if change == "host":
+            monkeypatch.setattr(
+                distribution, "current_host_coordinate", lambda: ("other", "host")
+            )
+        elif change == "manifest":
+            path = installation / distribution.MANIFEST_NAME
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["compiler"]["sha256"] = hashlib.sha256(b"wrong!!!").hexdigest()
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(compiler_identity.CompilerIdentityError):
+            compiler_identity.installed_compiler_admission(
+                installation,
+                ("polly",) if change == "feature" else None,
+                "dev-fast" if change == "profile" else None,
+            )
+
+
+def test_installed_observation_binds_role_and_fresh_facts_manifest(
+    installation: Path,
+) -> None:
+    from molt.backend_binary_identity import identify_backend_binary
+    from molt.cli import cache_fingerprints, compiler_identity
+    from molt.host_tool_products import HostToolProduct
+
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        admitted = compiler_identity.installed_compiler_admission(installation)
+        assert admitted is not None
+        backend = admitted.binary_observation
+        facts = admitted.host_tool_observation(HostToolProduct.WASM_FACTS)
+        with pytest.raises(ValueError):
+            identify_backend_binary(facts.identity.path, observed=backend)
+        with pytest.raises(ValueError):
+            backend_binary._BackendBinaryEnsureResult(
+                ok=True, binary=facts.identity.path, installed_observation=backend
+            )
+        path = installation / distribution.MANIFEST_NAME
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["wasm_facts"]["sha256"] = hashlib.sha256(b"other").hexdigest()
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(compiler_identity.CompilerIdentityError):
+            admitted.host_tool_observation(HostToolProduct.WASM_FACTS)
+
+
+def test_installed_release_bytes_ignore_forged_persistent_digest(
+    installation: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.cli.compiler_identity import (
+        CompilerIdentityError,
+        installed_compiler_admission,
+    )
+
+    compiler = distribution.installed_compiler(installation)
+    assert compiler is not None
+    compiler.binary.write_bytes(b"wrong!!!")
+    actual = toolchain_identity.stable_regular_file_identity(
+        compiler.binary, label="fixture"
+    )
+    forged = replace(actual, sha256=hashlib.sha256(b"compiler").hexdigest())
+    consulted: list[Path] = []
+
+    def cache_identity(
+        self: toolchain_identity.FileDigestCache, path: Path, *, label: str
+    ) -> toolchain_identity.StableRegularFileIdentity:
+        consulted.append(path)
+        return forged
+
+    monkeypatch.setattr(toolchain_identity.FileDigestCache, "identity", cache_identity)
+    with pytest.raises(CompilerIdentityError):
+        installed_compiler_admission(installation)
+    with pytest.raises(ValueError):
+        compiler.verify_binary(("native-backend",), "release")
+    assert consulted == []
 
 
 def test_real_cli_entry_retains_isolated_startup_without_seed_restart(tmp_path):

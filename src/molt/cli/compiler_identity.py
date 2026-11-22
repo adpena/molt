@@ -25,7 +25,10 @@ if TYPE_CHECKING:
     from molt.compiler_distribution import InstalledCompiler
     from molt.llvm_link_plan import LlvmNativeLinkPlan
     from molt.llvm_toolchain import LlvmPrefixVerification
-    from molt.toolchain_identity import StableRegularFileVersion
+    from molt.toolchain_identity import (
+        StableRegularFileObservation,
+        StableRegularFileVersion,
+    )
 
 
 class CompilerIdentityError(ValueError):
@@ -58,6 +61,59 @@ def compiler_cargo_profile(env: Mapping[str, str]) -> str:
 class InstalledCompilerAdmission:
     compiler: InstalledCompiler
     fingerprint: str
+    binary_observation: StableRegularFileObservation
+    force_fresh: bool = False
+
+    def host_tool_observation(
+        self, product: HostToolProduct
+    ) -> StableRegularFileObservation:
+        from molt.compiler_distribution import installed_compiler
+
+        current = installed_compiler(self.compiler.source_root)
+        if current != self.compiler:
+            raise CompilerIdentityError(
+                "Installed executable release selection changed"
+            )
+        assert current is not None
+        if product is HostToolProduct.BACKEND:
+            current.select_executable(product).verify(self.binary_observation)
+            return self.binary_observation
+        return _installed_executable_observation(
+            current, self.fingerprint, product, fresh=self.force_fresh
+        )
+
+
+def _installed_executable_observation(
+    compiler: InstalledCompiler,
+    release: str,
+    product: HostToolProduct,
+    *,
+    features: tuple[str, ...] | None = None,
+    cargo_profile: str | None = None,
+    fresh: bool = False,
+) -> StableRegularFileObservation:
+    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+
+    selection = compiler.select_executable(product, features, cargo_profile)
+    key = (os.fspath(compiler.source_root.resolve()), release, product)
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    prior = (
+        None
+        if transaction is None or fresh
+        else transaction.installed_executables.get(key)
+    )
+    if prior is not None:
+        try:
+            selection.verify(prior)
+        except (OSError, ValueError):
+            assert transaction is not None
+            transaction.installed_executables.pop(key, None)
+            raise
+        return prior
+    observed = selection.capture()
+    if transaction is not None:
+        transaction.installed_executables[key] = observed
+    return observed
 
 
 def installed_compiler_admission(
@@ -95,11 +151,15 @@ def installed_compiler_admission(
                 transaction.installed_sources.add(key)
         # Source admission is reusable within the immutable operation. Executable
         # selection and bytes remain live, including an alias replaced mid-build.
-        compiler.verify_binary(
-            tuple(compiler.record["features"]) if features is None else features,
-            compiler.record["profile"] if cargo_profile is None else cargo_profile,
+        observed = _installed_executable_observation(
+            compiler,
+            release,
+            HostToolProduct.BACKEND,
+            features=features,
+            cargo_profile=cargo_profile,
+            fresh=fresh,
         )
-        return InstalledCompilerAdmission(compiler, release)
+        return InstalledCompilerAdmission(compiler, release, observed, fresh)
     except (OSError, ValueError) as exc:
         raise CompilerIdentityError(f"Installed compiler identity: {exc}") from exc
 

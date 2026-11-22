@@ -11,7 +11,7 @@ import json
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +22,11 @@ from molt.cli.artifact_state import (
 )
 from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
 from molt.cli.runtime_source_closure import runtime_source_paths
+from molt.cli.runtime_build_identity import (
+    RuntimeBuildInputCapture,
+    RuntimeBuildInputObservation,
+    runtime_source_roots,
+)
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
@@ -384,6 +389,11 @@ class _RuntimeWasmPairIdentity:
     toolchain: RuntimeToolchainContentManifest
     shared: RuntimeBuildIdentity
     reloc: RuntimeBuildIdentity
+    input_observation: RuntimeBuildInputObservation | None = field(
+        default=None, compare=False
+    )
+    shared_spec: _RuntimeWasmBuildSpec | None = field(default=None, compare=False)
+    reloc_spec: _RuntimeWasmBuildSpec | None = field(default=None, compare=False)
 
 
 def _bind_exact_family_fingerprints(
@@ -495,6 +505,7 @@ class _RuntimeWasmPairBuild:
             return False
         _select_runtime_wasm_generation(self.runtime_state, generation)
         self.accepted_generation = generation
+        self.runtime_state.runtime_wasm_build_inputs = identity
         return True
 
     def generation_rejection_details(self) -> dict[str, object]:
@@ -573,8 +584,30 @@ def resolve_runtime_wasm_pair_identity(
     reloc_spec: _RuntimeWasmBuildSpec,
     *,
     mode: Literal["pre_build", "post_build"] = "pre_build",
+    retained_inputs: _RuntimeWasmPairIdentity | None = None,
 ) -> _RuntimeWasmPairIdentity:
     """Capture a checkout's resolved inputs without building either member."""
+    selected_shared = shared_spec._replace(fingerprint=None, staticlib_fingerprint=None)
+    selected_reloc = reloc_spec._replace(fingerprint=None, staticlib_fingerprint=None)
+    if (
+        mode == "pre_build"
+        and retained_inputs is not None
+        and retained_inputs.shared_spec == selected_shared
+        and retained_inputs.reloc_spec == selected_reloc
+        and retained_inputs.input_observation is not None
+    ):
+        try:
+            if shared_spec.cargo_plan is None:
+                raise ValueError("runtime WASM reuse has no current Cargo plan")
+            retained_inputs.input_observation.verify(
+                runtime_source_roots(project_root, shared_spec.fingerprint_features)
+            )
+            shared_spec.cargo_plan.verify()
+        except (OSError, ValueError):
+            pass
+        else:
+            return retained_inputs
+    capture = RuntimeBuildInputCapture()
     shared, reloc = _timed_runtime_identity_phase(
         phase="runtime_family_identity",
         mode=mode,
@@ -582,10 +615,18 @@ def resolve_runtime_wasm_pair_identity(
             project_root,
             shared_spec,
             reloc_spec,
+            input_observation=capture,
         ),
         identity_tree=_runtime_source_identity_tree,
     )
-    return _RuntimeWasmPairIdentity(shared.toolchain_manifest, shared, reloc)
+    return _RuntimeWasmPairIdentity(
+        shared.toolchain_manifest,
+        shared,
+        reloc,
+        capture.finish(),
+        selected_shared,
+        selected_reloc,
+    )
 
 
 def resolve_runtime_wasm_pair_specs(
@@ -666,7 +707,15 @@ def _prepare_runtime_wasm_pair_build(
             full_export_surface=full_export_surface,
         )
         identity = resolve_runtime_wasm_pair_identity(
-            project_root, shared_spec, reloc_spec, mode="pre_build"
+            project_root,
+            shared_spec,
+            reloc_spec,
+            mode="pre_build",
+            retained_inputs=(
+                runtime_state.runtime_wasm_build_inputs
+                if runtime_state.runtime_wasm_codegen_binding is not None
+                else None
+            ),
         )
         store = runtime_wasm_store(project_root)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

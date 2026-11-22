@@ -363,7 +363,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `browser-loader-deployment` | 13 | 0 |
 | `frontend-python` | 1 | 3 |
 | `finding-ids-static` | 1 | 1 |
-| `python-source-dependencies` | 16 | 0 |
+| `python-source-dependencies` | 17 | 0 |
 | `frontend-ir-assembly` | 65 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 20 | 0 |

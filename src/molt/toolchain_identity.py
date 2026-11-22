@@ -84,6 +84,40 @@ class StableRegularFileIdentity(StableRegularFileVersion):
 
     sha256: str
 
+    def content_record(self) -> dict[str, str | int]:
+        """Project captured regular-file bytes without performing another read."""
+        return {
+            "filename": _portable_filename(self.path.name),
+            "size": self.size,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StableRegularFileObservation:
+    """Independently captured bytes with permanent acquisition-time policy.
+
+    Operation-owned only; never construct from a persistent digest cache.
+    """
+
+    identity: StableRegularFileIdentity
+    acquired_at_ns: int
+
+    @classmethod
+    def capture(cls, path: Path, *, label: str) -> StableRegularFileObservation:
+        acquired_at_ns = time.time_ns()
+        return cls(stable_regular_file_identity(path, label=label), acquired_at_ns)
+
+    def verify(self, *, label: str) -> None:
+        token = self.identity.stat_token()
+        cutoff = self.acquired_at_ns - DIGEST_RACY_WINDOW_NS
+        if os.name == "nt" or max(token.mtime_ns, token.ctime_ns) >= cutoff:
+            verify_stable_regular_file_identity(
+                self.identity, label=label, hash_content=True
+            )
+        else:
+            verify_stable_regular_file_metadata(self.identity, label=label)
+
 
 @dataclass(frozen=True, slots=True)
 class StableRegularFileSnapshot:
@@ -1307,11 +1341,7 @@ def stable_regular_file_content_identity(
     """Return path-independent content identity for one stable direct file."""
 
     identity = stable_regular_file_identity(path, label=label)
-    return {
-        "filename": _portable_filename(identity.path.name),
-        "size": identity.size,
-        "sha256": identity.sha256,
-    }
+    return identity.content_record()
 
 
 def _native_executable_header(header: bytes) -> bool:
