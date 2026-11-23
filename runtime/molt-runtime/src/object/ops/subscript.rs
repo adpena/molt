@@ -1181,7 +1181,9 @@ pub(crate) fn molt_ord_at_attached_body(
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_STRING {
+                if object_type_id(ptr) == TYPE_ID_STRING
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     if key
                         .as_ptr()
                         .is_some_and(|key_ptr| object_type_id(key_ptr) == TYPE_ID_SLICE)
