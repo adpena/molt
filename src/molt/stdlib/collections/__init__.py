@@ -411,11 +411,12 @@ def namedtuple(
         items = ", ".join(f"{name}={getattr(self, name)!r}" for name in field_tuple)
         return f"{typename}({items})"
 
-    def _field_getter(index: int):
+    def _field_property(index: int):
         def _getter(self):
-            return self[index]
+            # Fields read tuple storage even if a subclass overrides __getitem__.
+            return tuple.__getitem__(self, index)
 
-        return _getter
+        return property(_getter, doc=_sys.intern(f"Alias for field number {index}"))
 
     if use_intrinsics:
         cls = _MOLT_CLASS_NEW(typename)
@@ -438,7 +439,7 @@ def namedtuple(
         setattr(cls, "__getnewargs__", __getnewargs__)
         setattr(cls, "__repr__", __repr__)
         for idx, name in enumerate(field_tuple):
-            setattr(cls, name, property(_field_getter(idx)))
+            setattr(cls, name, _field_property(idx))
         if callable(_MOLT_CLASS_APPLY_SET_NAME):
             _MOLT_CLASS_APPLY_SET_NAME(cls)
         return cls
@@ -463,7 +464,7 @@ def namedtuple(
         namespace["__replace__"] = _replace
 
     for idx, name in enumerate(field_tuple):
-        namespace[name] = property(_field_getter(idx))
+        namespace[name] = _field_property(idx)
     cls = type.__new__(type, typename, (tuple,), namespace)
     type.__init__(cls, typename, (tuple,), namespace)
     return cls
