@@ -49,28 +49,27 @@ def summary(finding_cell: str) -> str:
 
 
 def _entries(
-    keys: Sequence[str], lines: Sequence[str], rows: Mapping[str, int]
+    keys: Sequence[str], rows: Mapping[str, finding_status.FindingRow]
 ) -> list[str]:
-    entries = []
-    for key in keys:
-        cells = finding_status.cells(lines[rows[key] - 1])
-        entries.append(f"- **{key}**: {summary(cells[1]) if len(cells) > 1 else ''}")
-    return entries or ["- None."]
+    return [f"- **{key}**: {summary(rows[key].finding)}" for key in keys] or ["- None."]
 
 
 def render(
-    ledger_text: str,
+    ledger_text: str | finding_status.FindingStatus,
     *,
     source: str,
     cells: Sequence[Tier1Cell] = TIER1_CELLS,
     coordinates: Mapping[str, VerifiedSubsetCoordinate | None] | None = None,
 ) -> str:
-    status = finding_status.project(ledger_text)
+    status = (
+        finding_status.project(ledger_text)
+        if isinstance(ledger_text, str)
+        else ledger_text
+    )
     if status.problems:
         raise ValueError("ledger is invalid: " + "; ".join(status.problems))
     mapped = tier1_coordinates(tuple(cells)) if coordinates is None else coordinates
-    lines = ledger_text.splitlines()
-    rows = {row.key: row.line for row in status.rows}
+    rows = {row.key: row for row in status.rows}
     classes = status.v01_classes
     groups: dict[str, list[str]] = {
         "blocking": [],
@@ -117,14 +116,14 @@ def render(
         "Class `v0_1_blocking`: the row fails in a Tier 1 cell, is a safety defect, blocks "
         "Tier 1 installed delivery or guards a public performance claim.",
         "",
-        *_entries(groups["blocking"], lines, rows),
+        *_entries(groups["blocking"], rows),
     ]
     if groups["unclassified"]:
         out += [
             "",
             "Not yet classified; an unclassified row holds v0.1:",
             "",
-            *_entries(groups["unclassified"], lines, rows),
+            *_entries(groups["unclassified"], rows),
         ]
     out += [
         "",
@@ -132,13 +131,13 @@ def render(
         "",
         "These fail only in Tier 2 cells. They do not hold v0.1.",
         "",
-        *_entries(groups["tier2"], lines, rows),
+        *_entries(groups["tier2"], rows),
         "",
         f"## After v0.1 ({len(groups['later'])})",
         "",
         "Open work outside the v0.1 claim. It does not hold v0.1.",
         "",
-        *_entries(groups["later"], lines, rows),
+        *_entries(groups["later"], rows),
         "",
     ]
     return "\n".join(out)
@@ -155,12 +154,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.source_sha:
         from tools import release_exit_gate
 
-        text = release_exit_gate.source_findings(ROOT, args.source_sha).ledger_blob
+        status = release_exit_gate.source_findings(ROOT, args.source_sha).status
         source = f"commit `{args.source_sha}`"
     else:
-        text = (ROOT / finding_status.LEDGER_PATH).read_text(encoding="utf-8")
+        status = finding_status.project(
+            (ROOT / finding_status.LEDGER_PATH).read_text(encoding="utf-8")
+        )
         source = "the checkout"
-    document = render(text, source=source)
+    document = render(status, source=source)
     if args.output is None:
         sys.stdout.write(document)
     else:

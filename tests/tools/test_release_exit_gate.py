@@ -22,7 +22,7 @@ from tests.process_guard_common import run_guarded_test_process
 from tests.tools.verified_subset_fixtures import synthetic_validation
 from tests.tools.receipt_engine_fixtures import install_observed_runtime
 from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
-from tools import proof_plan, release_exit_gate, verified_subset
+from tools import known_issues, proof_plan, release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
 
@@ -1280,6 +1280,24 @@ def _ledger_from(monkeypatch: pytest.MonkeyPatch, gate, repo: Path, sha: str) ->
         "_blob_at_source",
         lambda _root, _sha, path: _REAL_BLOB_AT_SOURCE(repo, sha, path),
     )
+
+
+def test_known_issues_cli_reports_findings_at_requested_commit(
+    ledger_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected = _commit_ledger(ledger_repo, ONE_OPEN_LEDGER, PYPROJECT_V0)
+    _commit_ledger(ledger_repo, CLOSED_LEDGER, PYPROJECT_V0)
+    (ledger_repo / LEDGER).write_text(OPEN_LEDGER, encoding="utf-8")
+    monkeypatch.setattr(known_issues, "ROOT", ledger_repo)
+
+    assert known_issues.main(["--source-sha", selected]) == 0
+    report = capsys.readouterr().out
+    assert f"commit `{selected}`" in report
+    assert "## Open rows that hold v0.1 (1)" in report
+    assert "**HF-7**: An open defect." in report
+    assert "V1-3" not in report
 
 
 def test_source_findings_read_the_ledger_blob_at_the_source_revision(

@@ -58,6 +58,7 @@ class FindingRow:
     section: str
     line: int
     renamed_from: str | None
+    finding: str
     evidence: str
 
 
@@ -398,6 +399,7 @@ def project(text: str) -> FindingStatus:
                 section=section,
                 line=line_number,
                 renamed_from=renamed["id"] if renamed is not None else None,
+                finding=row_cells[1] if len(row_cells) > 1 else "",
                 evidence=evidence,
             )
         )
