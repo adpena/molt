@@ -86,18 +86,19 @@ impl TransferPlan {
                 continue;
             };
             let block = &func.blocks[&bid];
-            let taking: Vec<(usize, Vec<OperandTransfer>)> = block
+            let mut taking = block
                 .ops
                 .iter()
                 .enumerate()
-                .map(|(index, op)| (index, op_transferred_operands(op)))
-                .filter(|(_, transfers)| {
+                .filter_map(|(index, op)| {
+                    let transfers = op_transferred_operands(op);
                     transfers
-                        .iter()
-                        .any(|&transfer| transfer != OperandTransfer::Borrowed)
+                        .clone()
+                        .any(|transfer| transfer != OperandTransfer::Borrowed)
+                        .then_some((index, op, transfers))
                 })
-                .collect();
-            if taking.is_empty() {
+                .peekable();
+            if taking.peek().is_none() {
                 continue;
             }
             let forwarded: HashSet<ValueId> = terminator_branch_args(&block.terminator)
@@ -111,19 +112,18 @@ impl TransferPlan {
                     || terminator_uses_root(&block.terminator, root, &canon)
             };
             let adoptions = plan.ops.entry(bid).or_default();
-            for (index, transfers) in taking {
-                let operands = &block.ops[index].operands;
+            for (index, op, transfers) in taking {
+                let operands = op.operands.iter().copied();
                 let borrowed: HashSet<ValueId> = operands
-                    .iter()
-                    .zip(&transfers)
-                    .filter(|&(_, &transfer)| transfer == OperandTransfer::Borrowed)
-                    .map(|(&operand, _)| canon(operand))
+                    .clone()
+                    .zip(transfers.clone())
+                    .filter(|&(_, transfer)| transfer == OperandTransfer::Borrowed)
+                    .map(|(operand, _)| canon(operand))
                     .collect();
                 let mut adoption = Adoption::default();
-                for (&operand, &transfer) in operands
-                    .iter()
-                    .zip(&transfers)
-                    .filter(|&(_, &transfer)| transfer != OperandTransfer::Borrowed)
+                for (operand, transfer) in operands
+                    .zip(transfers)
+                    .filter(|&(_, transfer)| transfer != OperandTransfer::Borrowed)
                 {
                     let root = canon(operand);
                     if eligibility.is_raw_scalar_root(root) {

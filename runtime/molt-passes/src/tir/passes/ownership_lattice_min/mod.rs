@@ -103,30 +103,30 @@ pub(crate) enum OperandTransfer {
 /// call's callable. A position both declare is consumed. An explicit release
 /// (`DecRef`, `DeleteVar`, `DelBoundary`) takes nothing: it ends the holder's
 /// own reference.
-pub(crate) fn op_transferred_operands(op: &TirOp) -> Vec<OperandTransfer> {
+pub(crate) fn op_transferred_operands(
+    op: &TirOp,
+) -> impl Iterator<Item = OperandTransfer> + Clone + '_ {
     let arity = op.operands.len();
     let spelling_consumed =
         original_kind(op).and_then(|kind| kind_consumed_operand_table(kind, arity));
     let binding_store =
         op.opcode == OpCode::Copy && original_kind(op).is_some_and(is_binding_view_kind);
     let released = opcode_explicit_release_operands_table(op.opcode, arity);
-    (0..arity)
-        .map(|index| {
-            let opcode_consumed = opcode_operand_ownership_table(op.opcode, index)
-                == OperandOwnership::Consumed
-                && released != ExplicitReleaseOperands::All
-                && released != ExplicitReleaseOperands::One(index);
-            if spelling_consumed == Some(index) && binding_store {
-                OperandTransfer::BindingStore
-            } else if spelling_consumed == Some(index) || opcode_consumed {
-                OperandTransfer::Consumed
-            } else if op.operand_custody(index) == ParameterCustody::Transferred {
-                OperandTransfer::Adopted
-            } else {
-                OperandTransfer::Borrowed
-            }
-        })
-        .collect()
+    (0..arity).map(move |index| {
+        let opcode_consumed = opcode_operand_ownership_table(op.opcode, index)
+            == OperandOwnership::Consumed
+            && released != ExplicitReleaseOperands::All
+            && released != ExplicitReleaseOperands::One(index);
+        if spelling_consumed == Some(index) && binding_store {
+            OperandTransfer::BindingStore
+        } else if spelling_consumed == Some(index) || opcode_consumed {
+            OperandTransfer::Consumed
+        } else if op.operand_custody(index) == ParameterCustody::Transferred {
+            OperandTransfer::Adopted
+        } else {
+            OperandTransfer::Borrowed
+        }
+    })
 }
 
 /// A `Copy` that aliases exactly one operand into one result without creating or
