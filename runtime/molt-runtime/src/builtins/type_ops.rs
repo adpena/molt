@@ -599,216 +599,187 @@ pub(crate) fn class_bases_vec(bits: u64) -> Vec<u64> {
 }
 
 pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
-    let builtins = builtin_classes(_py);
     let obj = obj_from_bits(val_bits);
-    if obj.is_none() {
-        return builtins.none_type;
-    }
-    if val_bits == ellipsis_bits(_py) {
-        return builtins.ellipsis_type;
-    }
-    if obj.is_bool() {
-        return builtins.bool;
-    }
-    if obj.is_int() {
-        return builtins.int;
-    }
-    if obj.is_float() {
-        return builtins.float;
-    }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let tid = object_type_id(ptr);
-            let class_bits = object_class_bits(ptr);
-            if class_bits != 0 {
-                return class_bits;
-            }
-            return match tid {
-                TYPE_ID_FLOAT => builtins.float,
-                TYPE_ID_STRING => builtins.str,
-                TYPE_ID_BYTES => builtins.bytes,
-                TYPE_ID_BYTEARRAY => builtins.bytearray,
-                TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => builtins.list,
-                TYPE_ID_TUPLE => builtins.tuple,
-                TYPE_ID_DICT => builtins.dict,
-                TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keys,
-                TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_items,
-                TYPE_ID_DICT_VALUES_VIEW => builtins.dict_values,
-                TYPE_ID_SET => builtins.set,
-                TYPE_ID_FROZENSET => builtins.frozenset,
-                TYPE_ID_BIGINT => builtins.int,
-                TYPE_ID_COMPLEX => builtins.complex,
-                TYPE_ID_RANGE => builtins.range,
-                TYPE_ID_SLICE => builtins.slice,
-                TYPE_ID_MEMORYVIEW => builtins.memoryview,
-                TYPE_ID_FILE_HANDLE => builtins.file,
-                TYPE_ID_NOT_IMPLEMENTED => builtins.not_implemented_type,
-                TYPE_ID_ELLIPSIS => builtins.ellipsis_type,
-                // Every exception owns an explicit common-header class edge.
-                // A missing edge is corrupt state, not permission to synthesize
-                // type identity from the display name.
-                TYPE_ID_EXCEPTION | crate::TYPE_ID_NATIVE_DESCRIPTOR => 0,
-                TYPE_ID_FUNCTION => {
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        class_bits
-                    } else {
-                        builtins.function
-                    }
-                }
-                TYPE_ID_BOUND_METHOD => {
-                    let func_bits = bound_method_func_bits(ptr);
-                    let func_obj = obj_from_bits(func_bits);
-                    let func_ptr = func_obj.as_ptr();
-                    if let Some(func_ptr) = func_ptr {
-                        let func_class_bits = object_class_bits(func_ptr);
-                        if let Some(kind) = crate::builtins::functions::native_callable::NativeCallableKind::from_class(_py, func_class_bits) {
-                            kind.bound_class(_py)
-                        } else {
-                            crate::builtins::types::method_class(_py)
-                        }
+    let Some(ptr) = obj.as_ptr() else {
+        let builtins = builtin_classes(_py);
+        return if obj.is_none() {
+            builtins.none_type
+        } else if obj.is_bool() {
+            builtins.bool
+        } else if obj.is_int() {
+            builtins.int
+        } else if obj.is_float() {
+            builtins.float
+        } else {
+            builtins.object
+        };
+    };
+    unsafe {
+        let class_bits = object_class_bits(ptr);
+        if class_bits != 0 {
+            return class_bits;
+        }
+        // Classless storage uses the builtin type of its physical kind. This
+        // includes Ellipsis, whose publisher allocates TYPE_ID_ELLIPSIS.
+        let builtins = builtin_classes(_py);
+        match object_type_id(ptr) {
+            TYPE_ID_FLOAT => builtins.float,
+            TYPE_ID_STRING => builtins.str,
+            TYPE_ID_BYTES => builtins.bytes,
+            TYPE_ID_BYTEARRAY => builtins.bytearray,
+            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => builtins.list,
+            TYPE_ID_TUPLE => builtins.tuple,
+            TYPE_ID_DICT => builtins.dict,
+            TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keys,
+            TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_items,
+            TYPE_ID_DICT_VALUES_VIEW => builtins.dict_values,
+            TYPE_ID_SET => builtins.set,
+            TYPE_ID_FROZENSET => builtins.frozenset,
+            TYPE_ID_BIGINT => builtins.int,
+            TYPE_ID_COMPLEX => builtins.complex,
+            TYPE_ID_RANGE => builtins.range,
+            TYPE_ID_SLICE => builtins.slice,
+            TYPE_ID_MEMORYVIEW => builtins.memoryview,
+            TYPE_ID_FILE_HANDLE => builtins.file,
+            TYPE_ID_NOT_IMPLEMENTED => builtins.not_implemented_type,
+            TYPE_ID_ELLIPSIS => builtins.ellipsis_type,
+            // Every exception owns an explicit common-header class edge.
+            // A missing edge is corrupt state, not permission to synthesize
+            // type identity from the display name.
+            TYPE_ID_EXCEPTION | crate::TYPE_ID_NATIVE_DESCRIPTOR => 0,
+            TYPE_ID_FUNCTION => builtins.function,
+            TYPE_ID_BOUND_METHOD => {
+                let func_bits = bound_method_func_bits(ptr);
+                let func_obj = obj_from_bits(func_bits);
+                let func_ptr = func_obj.as_ptr();
+                if let Some(func_ptr) = func_ptr {
+                    let func_class_bits = object_class_bits(func_ptr);
+                    if let Some(kind) =
+                        crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                            _py,
+                            func_class_bits,
+                        )
+                    {
+                        kind.bound_class(_py)
                     } else {
                         crate::builtins::types::method_class(_py)
                     }
+                } else {
+                    crate::builtins::types::method_class(_py)
                 }
-                TYPE_ID_GENERATOR => builtins.generator,
-                TYPE_ID_ASYNC_GENERATOR => builtins.async_generator,
-                TYPE_ID_ITER => {
-                    // CPython exposes distinct iterator types (e.g. list_iterator,
-                    // str_ascii_iterator). Our iterator object stores the target iterable, so
-                    // resolve the type from the target at runtime.
-                    let target_bits = iter_target_bits(ptr);
-                    let target_obj = obj_from_bits(target_bits);
-                    if let Some(target_ptr) = target_obj.as_ptr() {
-                        match object_type_id(target_ptr) {
-                            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
-                                builtins.list_iterator
-                            }
-                            TYPE_ID_FOREIGN
-                                if crate::object::list_storage::native_list(target_bits)
-                                    .is_some() =>
-                            {
-                                builtins.list_iterator
-                            }
-                            TYPE_ID_TUPLE => builtins.tuple_iterator,
-                            TYPE_ID_STRING => {
-                                crate::object::ops_iter::resolve_deferred_iterator_class(_py, ptr)
-                            }
-                            TYPE_ID_BYTES => builtins.bytes_iterator,
-                            TYPE_ID_BYTEARRAY => builtins.bytearray_iterator,
-                            TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keyiterator,
-                            TYPE_ID_DICT_VALUES_VIEW => builtins.dict_valueiterator,
-                            TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_itemiterator,
-                            TYPE_ID_SET | TYPE_ID_FROZENSET => builtins.set_iterator,
-                            TYPE_ID_RANGE => {
-                                let start_bits = range_start_bits(target_ptr);
-                                let stop_bits = range_stop_bits(target_ptr);
-                                let step_bits = range_step_bits(target_ptr);
-                                if bigint_ptr_from_bits(start_bits).is_some()
-                                    || bigint_ptr_from_bits(stop_bits).is_some()
-                                    || bigint_ptr_from_bits(step_bits).is_some()
-                                {
-                                    builtins.longrange_iterator
-                                } else {
-                                    builtins.range_iterator
-                                }
-                            }
-                            _ => builtins.iterator,
-                        }
-                    } else {
-                        builtins.iterator
-                    }
-                }
-                TYPE_ID_ENUMERATE => builtins.enumerate,
-                TYPE_ID_CALL_ITER => builtins.callable_iterator,
-                TYPE_ID_REVERSED => {
-                    // CPython exposes distinct reverse iterator types for some builtins
-                    // (notably list_reverseiterator and the dict reverse iterators). Our
-                    // reversed object stores the target, so resolve the public type name from
-                    // that target.
-                    let target_bits = reversed_target_bits(ptr);
-                    let target_obj = obj_from_bits(target_bits);
-                    if let Some(target_ptr) = target_obj.as_ptr() {
-                        match object_type_id(target_ptr) {
-                            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
-                                builtins.list_reverseiterator
-                            }
-                            TYPE_ID_FOREIGN
-                                if crate::object::list_storage::native_list(target_bits)
-                                    .is_some() =>
-                            {
-                                builtins.list_reverseiterator
-                            }
-                            TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => {
-                                builtins.dict_reversekeyiterator
-                            }
-                            TYPE_ID_DICT_VALUES_VIEW => builtins.dict_reversevalueiterator,
-                            TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_reverseitemiterator,
-                            TYPE_ID_RANGE => {
-                                let start_bits = range_start_bits(target_ptr);
-                                let stop_bits = range_stop_bits(target_ptr);
-                                let step_bits = range_step_bits(target_ptr);
-                                if bigint_ptr_from_bits(start_bits).is_some()
-                                    || bigint_ptr_from_bits(stop_bits).is_some()
-                                    || bigint_ptr_from_bits(step_bits).is_some()
-                                {
-                                    builtins.longrange_iterator
-                                } else {
-                                    builtins.range_iterator
-                                }
-                            }
-                            _ => builtins.reversed,
-                        }
-                    } else {
-                        builtins.reversed
-                    }
-                }
-                TYPE_ID_ZIP => builtins.zip,
-                TYPE_ID_MAP => builtins.map,
-                TYPE_ID_FILTER => builtins.filter,
-                TYPE_ID_CODE => builtins.code,
-                crate::TYPE_ID_CELL => crate::builtins::types::cell_class(_py),
-                TYPE_ID_MODULE => builtins.module,
-                TYPE_ID_TYPE => {
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        class_bits
-                    } else {
-                        builtins.type_obj
-                    }
-                }
-                TYPE_ID_GENERIC_ALIAS => builtins.generic_alias,
-                TYPE_ID_UNION => builtins.union_type,
-                TYPE_ID_WEAKREF => builtins.reference_type,
-                TYPE_ID_SUPER => builtins.super_type,
-                TYPE_ID_CLASSMETHOD => builtins.classmethod,
-                TYPE_ID_STATICMETHOD => builtins.staticmethod,
-                TYPE_ID_PROPERTY => builtins.property,
-                TYPE_ID_OBJECT => {
-                    let header = header_from_obj_ptr(ptr);
-                    if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0 {
-                        return builtins.coroutine;
-                    }
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        class_bits
-                    } else {
-                        builtins.object
-                    }
-                }
-                _ => builtins.object,
-            };
-        }
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-        unsafe {
-            let class_bits = object_class_bits(ptr);
-            if class_bits != 0 {
-                return class_bits;
             }
+            TYPE_ID_GENERATOR => builtins.generator,
+            TYPE_ID_ASYNC_GENERATOR => builtins.async_generator,
+            TYPE_ID_ITER => {
+                // CPython exposes distinct iterator types (e.g. list_iterator,
+                // str_ascii_iterator). Our iterator object stores the target iterable, so
+                // resolve the type from the target at runtime.
+                let target_bits = iter_target_bits(ptr);
+                let target_obj = obj_from_bits(target_bits);
+                if let Some(target_ptr) = target_obj.as_ptr() {
+                    match object_type_id(target_ptr) {
+                        TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
+                            builtins.list_iterator
+                        }
+                        TYPE_ID_FOREIGN
+                            if crate::object::list_storage::native_list(target_bits).is_some() =>
+                        {
+                            builtins.list_iterator
+                        }
+                        TYPE_ID_TUPLE => builtins.tuple_iterator,
+                        TYPE_ID_STRING => {
+                            crate::object::ops_iter::resolve_deferred_iterator_class(_py, ptr)
+                        }
+                        TYPE_ID_BYTES => builtins.bytes_iterator,
+                        TYPE_ID_BYTEARRAY => builtins.bytearray_iterator,
+                        TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keyiterator,
+                        TYPE_ID_DICT_VALUES_VIEW => builtins.dict_valueiterator,
+                        TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_itemiterator,
+                        TYPE_ID_SET | TYPE_ID_FROZENSET => builtins.set_iterator,
+                        TYPE_ID_RANGE => {
+                            let start_bits = range_start_bits(target_ptr);
+                            let stop_bits = range_stop_bits(target_ptr);
+                            let step_bits = range_step_bits(target_ptr);
+                            if bigint_ptr_from_bits(start_bits).is_some()
+                                || bigint_ptr_from_bits(stop_bits).is_some()
+                                || bigint_ptr_from_bits(step_bits).is_some()
+                            {
+                                builtins.longrange_iterator
+                            } else {
+                                builtins.range_iterator
+                            }
+                        }
+                        _ => builtins.iterator,
+                    }
+                } else {
+                    builtins.iterator
+                }
+            }
+            TYPE_ID_ENUMERATE => builtins.enumerate,
+            TYPE_ID_CALL_ITER => builtins.callable_iterator,
+            TYPE_ID_REVERSED => {
+                // CPython exposes distinct reverse iterator types for some builtins
+                // (notably list_reverseiterator and the dict reverse iterators). Our
+                // reversed object stores the target, so resolve the public type name from
+                // that target.
+                let target_bits = reversed_target_bits(ptr);
+                let target_obj = obj_from_bits(target_bits);
+                if let Some(target_ptr) = target_obj.as_ptr() {
+                    match object_type_id(target_ptr) {
+                        TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
+                            builtins.list_reverseiterator
+                        }
+                        TYPE_ID_FOREIGN
+                            if crate::object::list_storage::native_list(target_bits).is_some() =>
+                        {
+                            builtins.list_reverseiterator
+                        }
+                        TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => builtins.dict_reversekeyiterator,
+                        TYPE_ID_DICT_VALUES_VIEW => builtins.dict_reversevalueiterator,
+                        TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_reverseitemiterator,
+                        TYPE_ID_RANGE => {
+                            let start_bits = range_start_bits(target_ptr);
+                            let stop_bits = range_stop_bits(target_ptr);
+                            let step_bits = range_step_bits(target_ptr);
+                            if bigint_ptr_from_bits(start_bits).is_some()
+                                || bigint_ptr_from_bits(stop_bits).is_some()
+                                || bigint_ptr_from_bits(step_bits).is_some()
+                            {
+                                builtins.longrange_iterator
+                            } else {
+                                builtins.range_iterator
+                            }
+                        }
+                        _ => builtins.reversed,
+                    }
+                } else {
+                    builtins.reversed
+                }
+            }
+            TYPE_ID_ZIP => builtins.zip,
+            TYPE_ID_MAP => builtins.map,
+            TYPE_ID_FILTER => builtins.filter,
+            TYPE_ID_CODE => builtins.code,
+            crate::TYPE_ID_CELL => crate::builtins::types::cell_class(_py),
+            TYPE_ID_MODULE => builtins.module,
+            TYPE_ID_TYPE => builtins.type_obj,
+            TYPE_ID_GENERIC_ALIAS => builtins.generic_alias,
+            TYPE_ID_UNION => builtins.union_type,
+            TYPE_ID_WEAKREF => builtins.reference_type,
+            TYPE_ID_SUPER => builtins.super_type,
+            TYPE_ID_CLASSMETHOD => builtins.classmethod,
+            TYPE_ID_STATICMETHOD => builtins.staticmethod,
+            TYPE_ID_PROPERTY => builtins.property,
+            TYPE_ID_OBJECT => {
+                let header = header_from_obj_ptr(ptr);
+                if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0 {
+                    return builtins.coroutine;
+                }
+                builtins.object
+            }
+            _ => builtins.object,
         }
     }
-    builtins.object
 }
 
 pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {

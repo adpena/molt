@@ -40,7 +40,8 @@ pub(crate) fn ellipsis_bits(_py: &PyToken<'_>) -> u64 {
 mod tests {
     use super::*;
 
-    fn assert_immortal_singleton(_py: &PyToken<'_>, bits: u64, type_id: u32) {
+    fn assert_immortal_singleton(_py: &PyToken<'_>, bits: u64, type_id: u32, class: u64) {
+        assert_eq!(type_of_bits(_py, bits), class);
         let ptr = obj_from_bits(bits)
             .as_ptr()
             .expect("special singleton must be heap allocated");
@@ -63,9 +64,20 @@ mod tests {
     fn special_singletons_are_immortal_process_roots() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT);
-            assert_immortal_singleton(_py, not_implemented_bits(_py), TYPE_ID_NOT_IMPLEMENTED);
-            assert_immortal_singleton(_py, ellipsis_bits(_py), TYPE_ID_ELLIPSIS);
+            let builtins = builtin_classes(_py);
+            assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT, builtins.object);
+            assert_immortal_singleton(
+                _py,
+                not_implemented_bits(_py),
+                TYPE_ID_NOT_IMPLEMENTED,
+                builtins.not_implemented_type,
+            );
+            assert_immortal_singleton(
+                _py,
+                ellipsis_bits(_py),
+                TYPE_ID_ELLIPSIS,
+                builtins.ellipsis_type,
+            );
         });
     }
 }
