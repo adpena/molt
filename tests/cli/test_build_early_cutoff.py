@@ -1065,7 +1065,9 @@ def test_another_checkouts_store_renewal_leaves_the_record_current(
     assert len(calls) == 1, "a rival checkout's renewal is no input of this build"
 
 
-def test_checkout_claim_replays_absence_and_detects_materialization(tmp_path):
+def test_checkout_claim_replays_absence_and_detects_materialization(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "target" / "checkouts" / "consumer"
     claim = build_record.RecordedBuildClaim.capture(
         build_record.BuildClaimKind.CHECKOUT, root
