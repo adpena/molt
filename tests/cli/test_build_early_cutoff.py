@@ -1063,3 +1063,32 @@ def test_another_checkouts_store_renewal_leaves_the_record_current(
     ledger.write_text('{"last_used": {"rival": 1}}\n', encoding="utf-8")
     _run(build, project, output)
     assert len(calls) == 1, "a rival checkout's renewal is no input of this build"
+
+
+def test_checkout_claim_replays_absence_and_detects_materialization(tmp_path):
+    root = tmp_path / "target" / "checkouts" / "consumer"
+    claim = build_record.RecordedBuildClaim.capture(
+        build_record.BuildClaimKind.CHECKOUT, root
+    )
+    restored = build_record.RecordedBuildClaim.from_payload(claim.payload())
+    assert restored == claim
+    restored.verify()
+    assert not root.exists()
+    for kind in (
+        build_record.BuildClaimKind.ARTIFACTS,
+        build_record.BuildClaimKind.PRODUCT,
+    ):
+        with pytest.raises(FileNotFoundError):
+            build_record.RecordedBuildClaim.capture(kind, root)
+    root.mkdir(parents=True)
+    with pytest.raises(ValueError, match="build claim root changed"):
+        restored.verify()
+    existing = build_record.RecordedBuildClaim.capture(
+        build_record.BuildClaimKind.CHECKOUT, root
+    )
+    root.rmdir()
+    with pytest.raises(ValueError, match="build claim root changed"):
+        existing.verify()
+    root.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(FileNotFoundError):
+        restored.verify()
