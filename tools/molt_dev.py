@@ -139,7 +139,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -212,10 +212,12 @@ from tools.molt_dev_gates import (  # noqa: E402
     display as _gate_display,
     gate_output_dir,
     gate_time_summary,
+    reclaim_hot_output,
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
     GATES_CONFIG_NAME,
+    CargoTargetAccess,
     Deferred,
     GateConfig,
     GateEnvironment,
@@ -1191,19 +1193,34 @@ def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -
 
 
 def gate_environment(
-    repo: Path, *, session_id: str, create_dirs: bool = True
+    repo: Path,
+    *,
+    session_id: str,
+    create_dirs: bool = True,
+    gates: Collection[SelectedGate] = (),
 ) -> ProcessEnvironmentBuilder:
     """The one baseline environment every landing gate projects from."""
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
     env = immutable_git_environment(os.environ)
+    writes_shared_cargo_target = any(
+        gate.cargo_target_access is CargoTargetAccess.SHARED for gate in gates
+    )
     from molt.dx import RunContext
 
     # Gates receive the same caches, scratch and toolchain selection as every
     # DX child, including shells without a lane env.sh.
     env = ProcessEnvironmentBuilder(
         RunContext(repo).canonical_env(
-            env, create_dirs=create_dirs, force_default_keys=("TMPDIR", "TMP", "TEMP")
+            env,
+            create_dirs=create_dirs,
+            force_default_keys=("TMPDIR", "TMP", "TEMP"),
+            admit_cargo_target=writes_shared_cargo_target,
+            reclaim_hot_target=(
+                lambda error, base: reclaim_hot_output(error, base, set())
+            )
+            if writes_shared_cargo_target
+            else None,
         )
     )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
@@ -1510,13 +1527,18 @@ def _integrate_exclusive(
                 f"    data readers left to postsubmit ({len(left)}): "
                 "presubmit runs importers"
             )
-    env = gate_environment(repo, session_id=args.session_id, create_dirs=False)
-    progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
-    cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
-    capacity_requirements: dict[tuple[str, ...], int] = {}
     from tools.trunk_landing import HOST_SETTING
 
     farm_host = os.environ.get(HOST_SETTING, "").strip()
+    env = gate_environment(
+        repo,
+        session_id=args.session_id,
+        create_dirs=False,
+        gates=gate_cmds if not dry and not farm_host else (),
+    )
+    progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
+    cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
+    capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry and not farm_host:
         _assert_integration_source(git, selected_commit)
         prepared = config.prepare(

@@ -285,7 +285,9 @@ def _run_postsubmit_gates(
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
         gates,
-        baseline=drv.gate_environment(repo, session_id="postsubmit", create_dirs=False),
+        baseline=drv.gate_environment(
+            repo, session_id="postsubmit", create_dirs=False, gates=gates
+        ),
         prepare_python=lambda baseline, needed: drv.prepare_gate_environment(
             repo, baseline, requires_python=needed
         ),

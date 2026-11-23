@@ -522,7 +522,15 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    into a fresh target took 8.9-11.6 s on the internal disk and 73.8-200.1 s
    on the data volume (kache's no-copy total rose 1.9 GiB for the two
    internal restores). Explicitly pinned Cargo sessions stay on the artifact
-   volume. Generated run IDs keep the reusable target. Managed retirement and
+   volume. Generated run IDs keep the reusable target. A managed landing
+   batch with shared Cargo writers checks the default hot target first. When
+   headroom is short, the bounded pressure reclaimer protects the checkout's
+   warm target and reclaims eligible artifacts before capacity is measured
+   again. If space is still short, the batch selects its checkout target on
+   the artifact volume. Each batch makes a fresh selection and pins it for
+   its children. Explicit targets retain their placement. Gates without shared
+   Cargo writers project the path without a Cargo capacity check.
+   Managed retirement and
    orphan-daemon cleanup see the checkout's targets on both volumes, including
    any previously placed sessions. Live stamps touch only the selected target,
    its enclosing checkout target when pinned, and its control. The disk guard

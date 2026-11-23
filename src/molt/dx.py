@@ -34,7 +34,11 @@ from molt.durable_file_identity import (
     file_identity,
     upgrade_legacy,
 )
-from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
+from molt.disk_capacity import (
+    DiskCapacityError,
+    capacity_bytes_from_gib,
+    probe_capacity,
+)
 from molt.default_paths import (
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
     DEFAULT_MOLT_CACHE_MAX_GB,
@@ -726,18 +730,40 @@ def cargo_target_dir_for_artifact_root(
     session_id: str | None,
     *,
     source_root: Path,
+    env: Mapping[str, str] | None = None,
+    reclaim_hot_target: Callable[[DiskCapacityError, Mapping[str, str]], bool]
+    | None = None,
 ) -> Path:
     """Select persistent Cargo intermediates for one source checkout.
 
     Local targets already belong to their checkout. Shared artifact roots need
     the same stable checkout identity used by uv environments. Reusable
     targets benefit from the hot volume's compiler cache. Pinned graphs use
-    the artifact volume so each session cannot grow the hot mirror. Explicit
-    target overrides bypass this default selector and remain caller-owned.
+    the artifact volume so each session cannot grow the hot mirror. When
+    selecting for a build environment, a hot volume below its reserve can
+    use the same checkout coordinate on the artifact volume. Inventory omits
+    the environment to address the default regardless of current capacity.
     """
     artifact = artifact_root.expanduser().resolve()
     source = source_root.expanduser().resolve()
     target = _checkout_cargo_target(artifact, source, reusable=not session_id)
+    if env is not None and not session_id and not target.is_relative_to(artifact):
+        from molt.disk_capacity import require_build_capacity
+
+        for reclaim in (reclaim_hot_target, None):
+            try:
+                require_build_capacity((target,), env=env, artifact_root=artifact)
+            except DiskCapacityError as error:
+                if not error.is_hot_capacity_shortfall():
+                    raise
+                if reclaim is None or not reclaim(
+                    error, {**env, "CARGO_TARGET_DIR": str(target)}
+                ):
+                    break
+            else:
+                return target
+        target = _checkout_cargo_target(artifact, source, reusable=False)
+        require_build_capacity((target,), env=env, artifact_root=artifact)
     return session_scoped_target_dir(target, session_id)
 
 
@@ -753,7 +779,7 @@ def cargo_target_dir_for_environment(
     if not session_id or generated_session_id(env):
         session_id = None
     return cargo_target_dir_for_artifact_root(
-        artifact_root, session_id, source_root=source_root
+        artifact_root, session_id, source_root=source_root, env=env
     )
 
 
@@ -2421,7 +2447,9 @@ def project_cargo_target_dir(
         target = (
             cargo_target_dir_for_environment(root, env, source_root=project)
             if session_scoped
-            else cargo_target_dir_for_artifact_root(root, None, source_root=project)
+            else cargo_target_dir_for_artifact_root(
+                root, None, source_root=project, env=env
+            )
         )
     _require_external_path("CARGO_TARGET_DIR", target, env, repo_root=project)
     return target
@@ -2858,6 +2886,9 @@ class RunContext:
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
         admit_toolchain_root: bool = True,
+        admit_cargo_target: bool = True,
+        reclaim_hot_target: Callable[[DiskCapacityError, Mapping[str, str]], bool]
+        | None = None,
     ) -> ProcessEnvironment:
         env = ProcessEnvironmentBuilder(os.environ if base is None else base)
         try:
@@ -2936,10 +2967,16 @@ class RunContext:
         elif session_pinned:
             env.pop("MOLT_SESSION_ID_GENERATED", None)
         target_session_id = env["MOLT_SESSION_ID"] if session_pinned else None
-        session_target = cargo_target_dir_for_artifact_root(
-            ext_root, target_session_id, source_root=self.root
-        )
-        install_default("CARGO_TARGET_DIR", session_target)
+        if "CARGO_TARGET_DIR" in forced or not env.get("CARGO_TARGET_DIR"):
+            env["CARGO_TARGET_DIR"] = str(
+                cargo_target_dir_for_artifact_root(
+                    ext_root,
+                    target_session_id,
+                    source_root=self.root,
+                    env=env if admit_cargo_target else None,
+                    reclaim_hot_target=reclaim_hot_target,
+                )
+            )
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # CARGO_INCREMENTAL stays unset: the Cargo profile decides (dev and
         # dev-fast build workspace crates incrementally against the persistent
