@@ -7,14 +7,15 @@ use molt_runtime_capi::{
     retire_native_reference,
 };
 use molt_runtime_core::prelude::*;
-use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ffi::{
     c_double, c_float, c_int, c_long, c_longlong, c_short, c_uint, c_ulong, c_ulonglong, c_ushort,
 };
 use std::mem::{align_of, size_of};
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 enum StructEndian {
@@ -50,7 +51,22 @@ struct StructOp {
     code: char,
 }
 
-fn parse_format(text: &str) -> Result<(StructFormat, Vec<StructOp>), String> {
+struct StructField {
+    kind: StructKind,
+    count: usize,
+    size: usize,
+    offset: usize,
+    code: char,
+}
+
+struct StructPlan {
+    format: StructFormat,
+    fields: Vec<StructField>,
+    size: usize,
+    values: usize,
+}
+
+fn compile_format(text: &str) -> Result<StructPlan, String> {
     let mut chars = text.chars().peekable();
     let mut format = StructFormat {
         endian: StructEndian::Native,
@@ -89,7 +105,12 @@ fn parse_format(text: &str) -> Result<(StructFormat, Vec<StructOp>), String> {
             _ => {}
         }
     }
-    let mut ops = Vec::new();
+    let mut plan = StructPlan {
+        format,
+        fields: Vec::new(),
+        size: 0,
+        values: 0,
+    };
     let mut count: usize = 0;
     let mut count_set = false;
     for ch in chars {
@@ -248,12 +269,13 @@ fn parse_format(text: &str) -> Result<(StructFormat, Vec<StructOp>), String> {
             'e' => float_op(ch, repeat, format, 2, align_of::<u16>())?,
             _ => return Err("bad char in struct format".to_string()),
         };
-        ops.push(op);
+        plan.place(op)
+            .ok_or_else(|| "total struct size too long".to_string())?;
     }
     if count_set {
         return Err("repeat count given without format specifier".to_string());
     }
-    Ok((format, ops))
+    Ok(plan)
 }
 
 fn format_obj_to_owned(_py: &PyToken, format_obj: MoltObject) -> Result<String, String> {
@@ -344,38 +366,28 @@ fn align_up(offset: usize, align: usize) -> Option<usize> {
     Some(aligned)
 }
 
-fn calc_size(ops: &[StructOp]) -> Option<usize> {
-    let mut offset: usize = 0;
-    for op in ops {
-        match op.kind {
-            StructKind::Pad => {
-                offset = offset.checked_add(op.count * op.size)?;
-            }
-            StructKind::Bytes | StructKind::Pascal => {
-                offset = align_up(offset, op.align)?;
-                offset = offset.checked_add(op.size)?;
-            }
-            _ => {
-                for _ in 0..op.count {
-                    offset = align_up(offset, op.align)?;
-                    offset = offset.checked_add(op.size)?;
-                }
-            }
+impl StructPlan {
+    fn place(&mut self, op: StructOp) -> Option<()> {
+        // sizeof(T) is a multiple of alignof(T). Native zero-count
+        // directives still round up the next field (including at the end).
+        debug_assert!(op.size.is_multiple_of(op.align));
+        let offset = align_up(self.size, op.align)?;
+        self.size = offset.checked_add(op.count.checked_mul(op.size)?)?;
+        if self.size > isize::MAX as usize {
+            return None;
         }
-    }
-    Some(offset)
-}
-
-fn expected_value_count(ops: &[StructOp]) -> usize {
-    let mut total = 0usize;
-    for op in ops {
-        match op.kind {
-            StructKind::Pad => {}
-            StructKind::Bytes | StructKind::Pascal => total = total.saturating_add(1),
-            _ => total = total.saturating_add(op.count),
+        if !matches!(op.kind, StructKind::Pad) && op.count != 0 {
+            self.values = self.values.checked_add(op.count)?;
+            self.fields.push(StructField {
+                kind: op.kind,
+                count: op.count,
+                size: op.size,
+                offset,
+                code: op.code,
+            });
         }
+        Some(())
     }
-    total
 }
 
 // A counted export or the pack output owns this span. No Rust slice survives
@@ -397,47 +409,6 @@ impl StructWriter {
         unsafe { std::ptr::copy(bytes.as_ptr(), self.data.add(self.position), bytes.len()) };
         self.position += bytes.len();
     }
-    fn skip(&mut self, count: usize) {
-        assert!(count <= self.len - self.position);
-        self.position += count;
-    }
-}
-
-fn push_signed(
-    out: &mut StructWriter,
-    endian: StructEndian,
-    size: usize,
-    val: i128,
-) -> Result<(), String> {
-    match size {
-        1 => out.push(val as i8 as u8),
-        2 => {
-            let bytes = match endian {
-                StructEndian::Native => (val as i16).to_ne_bytes(),
-                StructEndian::Little => (val as i16).to_le_bytes(),
-                StructEndian::Big => (val as i16).to_be_bytes(),
-            };
-            out.extend_from_slice(&bytes);
-        }
-        4 => {
-            let bytes = match endian {
-                StructEndian::Native => (val as i32).to_ne_bytes(),
-                StructEndian::Little => (val as i32).to_le_bytes(),
-                StructEndian::Big => (val as i32).to_be_bytes(),
-            };
-            out.extend_from_slice(&bytes);
-        }
-        8 => {
-            let bytes = match endian {
-                StructEndian::Native => (val as i64).to_ne_bytes(),
-                StructEndian::Little => (val as i64).to_le_bytes(),
-                StructEndian::Big => (val as i64).to_be_bytes(),
-            };
-            out.extend_from_slice(&bytes);
-        }
-        _ => return Err("unsupported integer size".to_string()),
-    }
-    Ok(())
 }
 
 fn push_unsigned(
@@ -579,16 +550,13 @@ fn f16_to_f64(bits: u16) -> f64 {
     molt_obj_model::float_bits::f16_bits_to_f64(bits)
 }
 
-fn signed_range(bits: usize) -> (BigInt, BigInt) {
-    let one = BigInt::from(1u8);
-    let max = (&one << (bits - 1)) - 1;
-    let min = -(&one << (bits - 1));
-    (min, max)
+fn signed_range(bits: usize) -> (i128, i128) {
+    let limit = 1i128 << (bits - 1);
+    (-limit, limit - 1)
 }
 
-fn unsigned_max(bits: usize) -> BigInt {
-    let one = BigInt::from(1u8);
-    (&one << bits) - 1
+fn unsigned_max(bits: usize) -> i128 {
+    (1i128 << bits) - 1
 }
 
 fn signed_range_message(code: char, bits: usize) -> String {
@@ -605,239 +573,69 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
 type StructIntrinsicError = (Option<BuiltinExc>, String);
 
 fn struct_unpack_values<'py>(
-    _py: &'py PyToken,
-    parsed: StructFormat,
-    ops: &[StructOp],
+    py: &'py PyToken,
+    plan: &StructPlan,
     data: *const u8,
-    size: usize,
 ) -> Result<molt_runtime_core::RuntimeValueCollection<'py>, StructIntrinsicError> {
-    let expected_values = expected_value_count(ops);
-    let mut out = molt_runtime_core::RuntimeValueCollection::with_capacity(_py, expected_values);
-    let mut offset = 0usize;
-    for op in ops {
-        match op.kind {
-            StructKind::Pad => {
-                let delta = op.count.checked_mul(op.size).ok_or((
-                    Some(BuiltinExc::OverflowError),
-                    "total struct size too long".to_string(),
-                ))?;
-                offset = offset.checked_add(delta).ok_or((
-                    Some(BuiltinExc::OverflowError),
-                    "total struct size too long".to_string(),
-                ))?;
-                if offset > size {
-                    return Err((
-                        Some(BuiltinExc::ValueError),
-                        "unpack requires a buffer of sufficient size".to_string(),
-                    ));
-                }
-            }
-            StructKind::Bytes | StructKind::Pascal => {
-                offset = align_up(offset, op.align).ok_or((
-                    Some(BuiltinExc::OverflowError),
-                    "total struct size too long".to_string(),
-                ))?;
-                let end = offset.checked_add(op.size).ok_or((
-                    Some(BuiltinExc::OverflowError),
-                    "total struct size too long".to_string(),
-                ))?;
-                if end > size {
-                    return Err((
-                        Some(BuiltinExc::ValueError),
-                        "unpack requires a buffer of sufficient size".to_string(),
-                    ));
-                }
-                let slice = unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
-                let bytes = if matches!(op.kind, StructKind::Pascal) {
-                    if op.size == 0 {
-                        &[][..]
+    use StructKind::*;
+    let mut out = molt_runtime_core::RuntimeValueCollection::with_capacity(py, plan.values);
+    for field in &plan.fields {
+        for index in 0..field.count {
+            let offset = field.offset + index * field.size;
+            // The caller admitted a complete record. Only access the borrowed
+            // buffer before creating each Python object, which can allocate.
+            let bytes = if field.size == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(data.add(offset), field.size) }
+            };
+            let bits = match field.kind {
+                Char | Bytes | Pascal => {
+                    let bytes = if let (Pascal, Some((&length, rest))) =
+                        (field.kind, bytes.split_first())
+                    {
+                        &rest[..usize::from(length).min(rest.len())]
                     } else {
-                        let len = std::cmp::min(slice[0] as usize, op.size.saturating_sub(1));
-                        &slice[1..1 + len]
-                    }
-                } else {
-                    slice
-                };
-                let bytes = bytes.to_vec();
-                let ptr = alloc_bytes(_py, &bytes);
-                if ptr.is_null() {
-                    return Err((
-                        Some(BuiltinExc::MemoryError),
-                        "allocation failed".to_string(),
-                    ));
-                }
-                out.push(unsafe {
-                    OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
-                });
-                offset = end;
-            }
-            StructKind::Char => {
-                for _ in 0..op.count {
-                    offset = align_up(offset, op.align).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    let end = offset.checked_add(1).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    if end > size {
-                        return Err((
-                            Some(BuiltinExc::ValueError),
-                            "unpack requires a buffer of sufficient size".to_string(),
-                        ));
-                    }
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
-                    let byte = [slice[0]];
-                    let ptr = alloc_bytes(_py, &byte);
-                    if ptr.is_null() {
-                        return Err((
-                            Some(BuiltinExc::MemoryError),
-                            "allocation failed".to_string(),
-                        ));
-                    }
-                    out.push(unsafe {
-                        OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
-                    });
-                    offset = end;
-                }
-            }
-            StructKind::Bool => {
-                for _ in 0..op.count {
-                    offset = align_up(offset, op.align).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    let end = offset.checked_add(1).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    if end > size {
-                        return Err((
-                            Some(BuiltinExc::ValueError),
-                            "unpack requires a buffer of sufficient size".to_string(),
-                        ));
-                    }
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
-                    out.push(unsafe {
-                        OwnedRuntimeValue::from_owned_bits(
-                            _py,
-                            MoltObject::from_bool(slice[0] != 0).bits(),
-                        )
-                    });
-                    offset = end;
-                }
-            }
-            StructKind::Int { signed } => {
-                for _ in 0..op.count {
-                    offset = align_up(offset, op.align).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    let end = offset.checked_add(op.size).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    if end > size {
-                        return Err((
-                            Some(BuiltinExc::ValueError),
-                            "unpack requires a buffer of sufficient size".to_string(),
-                        ));
-                    }
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
-                    let bits = if signed {
-                        let val = read_signed(slice, parsed.endian, op.size)
-                            .map_err(|msg| (Some(BuiltinExc::OverflowError), msg))?;
-                        int_bits_from_i128(_py, val)
-                    } else {
-                        let val = read_unsigned(slice, parsed.endian, op.size)
-                            .map_err(|msg| (Some(BuiltinExc::OverflowError), msg))?;
-                        int_bits_from_i128(_py, val as i128)
+                        bytes
                     };
-                    if exception_pending(_py) {
+                    let bytes = bytes.to_vec();
+                    let ptr = alloc_bytes(py, &bytes);
+                    if ptr.is_null() {
+                        return Err((Some(BuiltinExc::MemoryError), "allocation failed".into()));
+                    }
+                    MoltObject::from_ptr(ptr).bits()
+                }
+                Bool => MoltObject::from_bool(bytes[0] != 0).bits(),
+                Int { signed } => {
+                    let value = if signed {
+                        read_signed(bytes, plan.format.endian, field.size)
+                    } else {
+                        read_unsigned(bytes, plan.format.endian, field.size).map(|n| n as i128)
+                    }
+                    .map_err(|message| (Some(BuiltinExc::OverflowError), message))?;
+                    let bits = int_bits_from_i128(py, value);
+                    if exception_pending(py) {
                         return Err((None, String::new()));
                     }
-                    out.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
-                    offset = end;
+                    bits
                 }
-            }
-            StructKind::Float => {
-                for _ in 0..op.count {
-                    offset = align_up(offset, op.align).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    let end = offset.checked_add(op.size).ok_or((
-                        Some(BuiltinExc::OverflowError),
-                        "total struct size too long".to_string(),
-                    ))?;
-                    if end > size {
-                        return Err((
-                            Some(BuiltinExc::ValueError),
-                            "unpack requires a buffer of sufficient size".to_string(),
-                        ));
-                    }
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
-                    let val = match op.size {
-                        2 => {
-                            let mut buf2 = [0u8; 2];
-                            buf2.copy_from_slice(slice);
-                            let raw = match parsed.endian {
-                                StructEndian::Native => u16::from_ne_bytes(buf2),
-                                StructEndian::Little => u16::from_le_bytes(buf2),
-                                StructEndian::Big => u16::from_be_bytes(buf2),
-                            };
-                            f16_to_f64(raw)
-                        }
-                        4 => {
-                            let mut buf4 = [0u8; 4];
-                            buf4.copy_from_slice(slice);
-                            let raw = match parsed.endian {
-                                StructEndian::Native => f32::from_ne_bytes(buf4),
-                                StructEndian::Little => f32::from_le_bytes(buf4),
-                                StructEndian::Big => f32::from_be_bytes(buf4),
-                            };
-                            raw as f64
-                        }
-                        8 => {
-                            let mut buf8 = [0u8; 8];
-                            buf8.copy_from_slice(slice);
-                            match parsed.endian {
-                                StructEndian::Native => f64::from_ne_bytes(buf8),
-                                StructEndian::Little => f64::from_le_bytes(buf8),
-                                StructEndian::Big => f64::from_be_bytes(buf8),
-                            }
-                        }
-                        _ => {
-                            return Err((
-                                Some(BuiltinExc::OverflowError),
-                                "unsupported float size".to_string(),
-                            ));
-                        }
+                Float => {
+                    let bits = read_unsigned(bytes, plan.format.endian, field.size)
+                        .map_err(|message| (Some(BuiltinExc::OverflowError), message))?;
+                    let value = match field.size {
+                        2 => f16_to_f64(bits as u16),
+                        4 => f32::from_bits(bits as u32) as f64,
+                        8 => f64::from_bits(bits as u64),
+                        _ => unreachable!("validated float width"),
                     };
-                    out.push(unsafe {
-                        OwnedRuntimeValue::from_owned_bits(
-                            _py,
-                            molt_runtime_core::rt_float_result_bits(_py, val),
-                        )
-                    });
-                    offset = end;
+                    molt_runtime_core::rt_float_result_bits(py, value)
                 }
-            }
+                Pad => unreachable!("padding has no field"),
+            };
+            out.push(unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) });
         }
     }
     Ok(out)
-}
-
-struct StructPlan {
-    format: StructFormat,
-    ops: Vec<StructOp>,
-    size: usize,
-    values: usize,
 }
 
 fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
@@ -858,20 +656,43 @@ fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
     rt_raise(py, error.bits())
 }
 
-fn plan(py: &PyToken, error: u64, format: u64) -> Result<StructPlan, u64> {
+thread_local! {
+    // The plans contain only target-native sizes and offsets, with no Python
+    // objects or callback hooks. Bound both the number and size of cache keys.
+    static FORMAT_PLANS: RefCell<HashMap<Box<str>, Arc<StructPlan>>> = RefCell::default();
+}
+
+fn cached_plan(text: &str) -> Result<Arc<StructPlan>, String> {
+    const MAX_CACHED_FORMAT_BYTES: usize = 256;
+    const MAX_CACHED_FORMATS: usize = 100;
+    if text.len() > MAX_CACHED_FORMAT_BYTES {
+        return compile_format(text).map(Arc::new);
+    }
+    FORMAT_PLANS.with_borrow_mut(|plans| {
+        if let Some(plan) = plans.get(text) {
+            return Ok(Arc::clone(plan));
+        }
+        let plan = Arc::new(compile_format(text)?);
+        if plans.len() == MAX_CACHED_FORMATS {
+            plans.clear();
+        }
+        plans.insert(text.into(), Arc::clone(&plan));
+        Ok(plan)
+    })
+}
+
+fn plan(py: &PyToken, error: u64, format: u64) -> Result<Arc<StructPlan>, u64> {
+    // The attached entry keeps the borrowed argument alive throughout this
+    // pure Rust operation, and string payloads cannot be mutated.
+    if let Some(ptr) = obj_from_bits(format).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
+        && let Ok(text) = std::str::from_utf8(unsafe { string_bytes(ptr) })
+    {
+        return cached_plan(text).map_err(|message| struct_error(py, error, &message));
+    }
     let text = format_obj_to_owned(py, obj_from_bits(format))
         .map_err(|message| raise_exception::<u64>(py, BuiltinExc::TypeError, &message))?;
-    let (format, ops) = parse_format(&text).map_err(|message| struct_error(py, error, &message))?;
-    let size = calc_size(&ops)
-        .filter(|&n| n <= isize::MAX as usize)
-        .ok_or_else(|| struct_error(py, error, "total struct size too long"))?;
-    let values = expected_value_count(&ops);
-    Ok(StructPlan {
-        format,
-        ops,
-        size,
-        values,
-    })
+    cached_plan(&text).map_err(|message| struct_error(py, error, &message))
 }
 
 unsafe fn native_object(bits: u64) -> NativeObjectOwner {
@@ -903,13 +724,15 @@ fn index_object(py: &PyToken, error: u64, bits: u64) -> Result<NativeObjectOwner
     }
 }
 
-fn index_value(py: &PyToken, error: u64, bits: u64) -> Result<BigInt, u64> {
+// Every struct integer width fits in i128. A wider index result is out of
+// range for every field, without constructing a dynamic bound for it.
+fn index_value(py: &PyToken, error: u64, bits: u64) -> Result<Option<i128>, u64> {
     let obj = obj_from_bits(bits);
     if obj.is_int() {
-        return Ok(BigInt::from(obj.as_int_unchecked()));
+        return Ok(Some(i128::from(obj.as_int_unchecked())));
     }
-    if obj.is_bool() {
-        return Ok(BigInt::from(u8::from(obj.as_bool().unwrap())));
+    if let Some(value) = obj.as_bool() {
+        return Ok(Some(i128::from(value)));
     }
     let integer = index_object(py, error, bits)?;
     unsafe {
@@ -917,8 +740,12 @@ fn index_value(py: &PyToken, error: u64, bits: u64) -> Result<BigInt, u64> {
             return Err(MoltObject::none().bits());
         };
         let value = OwnedRuntimeValue::from_owned_bits(py, value);
-        to_bigint(obj_from_bits(value.bits()))
-            .or_else(|| to_i64(obj_from_bits(value.bits())).map(BigInt::from))
+        let value = obj_from_bits(value.bits());
+        if let Some(value) = to_i64(value) {
+            return Ok(Some(i128::from(value)));
+        }
+        to_bigint(value)
+            .map(|value| value.to_i128())
             .ok_or_else(|| {
                 raise_exception::<u64>(
                     py,
@@ -1024,19 +851,9 @@ fn pack_values(
         position: 0,
     };
     let mut index = 0;
-    for op in &plan.ops {
-        if matches!(op.kind, StructKind::Pad) {
-            out.skip(op.count * op.size);
-            continue;
-        }
-        let count = if matches!(op.kind, StructKind::Bytes | StructKind::Pascal) {
-            1
-        } else {
-            op.count
-        };
-        for _ in 0..count {
-            let aligned = align_up(out.position, op.align).expect("validated struct plan");
-            out.skip(aligned - out.position);
+    for op in &plan.fields {
+        out.position = op.offset;
+        for _ in 0..op.count {
             let bits = values[index];
             index += 1;
             let obj = obj_from_bits(bits);
@@ -1100,7 +917,7 @@ fn pack_values(
                                 data.add(out.position).write(n.min(255) as u8);
                             }
                         }
-                        out.skip(op.size);
+                        out.position += op.size;
                     } else {
                         let n = length.min(op.size);
                         if n != 0 {
@@ -1108,7 +925,7 @@ fn pack_values(
                                 std::ptr::copy(source, data.add(out.position), n);
                             }
                         }
-                        out.skip(op.size);
+                        out.position += op.size;
                     }
                 }
                 StructKind::Bool => {
@@ -1153,38 +970,21 @@ fn pack_values(
                             return Err(bits);
                         }
                     };
-                    if signed {
-                        let (min, max) = signed_range(width);
-                        if value < min || value > max {
-                            return Err(struct_error(
-                                py,
-                                error,
-                                &signed_range_message(op.code, width),
-                            ));
-                        }
-                        push_signed(
-                            &mut out,
-                            plan.format.endian,
-                            op.size,
-                            value.to_i128().unwrap(),
-                        )
-                        .expect("validated integer width");
+                    let (min, max) = if signed {
+                        signed_range(width)
                     } else {
-                        if value.sign() == Sign::Minus || value > unsigned_max(width) {
-                            return Err(struct_error(
-                                py,
-                                error,
-                                &unsigned_range_message(op.code, width),
-                            ));
-                        }
-                        push_unsigned(
-                            &mut out,
-                            plan.format.endian,
-                            op.size,
-                            value.to_u128().unwrap(),
-                        )
+                        (0, unsigned_max(width))
+                    };
+                    let Some(value) = value.filter(|value| (min..=max).contains(value)) else {
+                        let message = if signed {
+                            signed_range_message(op.code, width)
+                        } else {
+                            unsigned_range_message(op.code, width)
+                        };
+                        return Err(struct_error(py, error, &message));
+                    };
+                    push_unsigned(&mut out, plan.format.endian, op.size, value as u128)
                         .expect("validated integer width");
-                    }
                 }
                 StructKind::Float => {
                     let value = float_value(py, error, bits)?;
@@ -1260,7 +1060,7 @@ fn packing_arguments<'py>(
 }
 
 fn unpack_record(py: &PyToken, error: Option<u64>, plan: &StructPlan, data: *const u8) -> u64 {
-    let values = match struct_unpack_values(py, plan.format, &plan.ops, data, plan.size) {
+    let values = match struct_unpack_values(py, plan, data) {
         Ok(values) => values,
         Err((kind, message)) => {
             if exception_pending(py) {
@@ -1531,7 +1331,7 @@ struct UnpackIterator {
     state: *mut UnpackState,
 }
 struct UnpackState {
-    plan: Rc<StructPlan>,
+    plan: Arc<StructPlan>,
     lease: RuntimeBufferLease,
     index: usize,
 }
@@ -1615,7 +1415,7 @@ unsafe extern "C" fn unpack_iter_next(object: *mut PyObject) -> *mut PyObject {
             }
             // Allocation/GC can clear the published state. Local owners preserve
             // the same parsed plan and export without retaining a Rust borrow.
-            (Rc::clone(&state.plan), state.lease.clone(), state.index)
+            (Arc::clone(&state.plan), state.lease.clone(), state.index)
         };
         let data = unsafe { (*lease.descriptor()).buf.cast::<u8>().add(index) };
         let result =
@@ -1812,7 +1612,7 @@ pub fn molt_struct_iter_unpack_attached_body(
                 );
             }
             let state = Box::new(UnpackState {
-                plan: Rc::new(plan),
+                plan,
                 lease,
                 index: 0,
             });
@@ -1827,8 +1627,50 @@ pub fn molt_struct_iter_unpack_attached_body(
 include!("attached_exports_generated/structs.rs");
 
 #[cfg(test)]
-mod float_pack_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_plan_keeps_zero_count_alignment_and_bounds_large_repeats() {
+        let plan = compile_format("@b0qb2h0s").unwrap();
+        let alignment = align_of::<c_longlong>();
+        assert_eq!(plan.size, alignment + 6);
+        assert_eq!(plan.values, 5);
+        assert_eq!(
+            plan.fields
+                .iter()
+                .map(|field| (field.offset, field.count, field.size))
+                .collect::<Vec<_>>(),
+            [
+                (0, 1, 1),
+                (alignment, 1, 1),
+                (alignment + 2, 2, 2),
+                (alignment + 6, 1, 0)
+            ]
+        );
+        assert_eq!(
+            compile_format("<1000000000i").unwrap().values,
+            1_000_000_000
+        );
+        let overflow = format!("<{}q", isize::MAX);
+        assert_eq!(
+            compile_format(&overflow).err().as_deref(),
+            Some("total struct size too long")
+        );
+    }
+
+    #[test]
+    fn format_cache_shares_layout_by_content_and_bounds_churn() {
+        let first = cached_plan("<hi").unwrap();
+        let same_text = String::from("<hi");
+        assert!(Arc::ptr_eq(&first, &cached_plan(&same_text).unwrap()));
+        assert!(cached_plan("<nope").is_err());
+        for count in 1..=101 {
+            cached_plan(&format!("<{count}h")).unwrap();
+        }
+        assert!(!Arc::ptr_eq(&first, &cached_plan(&same_text).unwrap()));
+        assert_eq!(first.size, 6);
+    }
 
     #[test]
     fn struct_e_and_f_reject_finite_overflow() {
