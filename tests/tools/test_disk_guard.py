@@ -23,6 +23,7 @@ import errno
 import os
 import sys
 import tokenize
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1703,12 +1704,13 @@ def test_a_lone_old_partition_is_its_targets_newest_and_stays(tmp_path: Path) ->
     assert not dg.stale_toolchain_partitions(target, now=time.time())
 
 
-def test_a_hot_mirror_is_governed_with_its_artifact_root(
+def test_daily_pressure_uses_hot_free_space_and_keeps_cross_volume_custody(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import json
+    import time
 
     from molt import default_paths
+    from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     monkeypatch.setattr(default_paths, "_HOT_STATES", {})
     artifact = tmp_path / "artifact"
@@ -1725,7 +1727,43 @@ def test_a_hot_mirror_is_governed_with_its_artifact_root(
         ),
         encoding="utf-8",
     )
-    assert hot.resolve() in dg.reclaim_roots(artifact)
+    idle = hot / "target" / "lane-idle"
+    held = hot / "target" / "lane-held"
+    unrelated = artifact / "target" / "lane-other-volume"
+    now = time.time()
+    for target in (idle, held):
+        _make_dir(target, size_bytes=64, age_s=3 * HOUR, now=now)
+    _make_dir(unrelated, size_bytes=64, age_s=4 * HOUR, now=now)
+
+    markers = active_guard_marker_dirs_of(artifact)[0]
+    markers.mkdir(parents=True, exist_ok=True)
+    _guard_marker(
+        markers,
+        8282,
+        "spawn_pending",
+        artifact_scope={"checkout": str(artifact), "paths": [str(held)]},
+    )
+
+    def device(path: Path) -> int | None:
+        if not path.exists():
+            return None
+        return 2 if path.is_relative_to(hot) else 1
+
+    def free(path: Path) -> Callable[[], int]:
+        if path == hot:
+            return lambda: (32 if idle.exists() else 52) * _GB
+        return lambda: 100 * _GB
+
+    monkeypatch.setattr(dg, "_device_of", device)
+    monkeypatch.setattr(dg, "_default_free_fn", free)
+    hot_pressure, _, _, artifact_pressure = dg.collect(root=artifact, env={})
+
+    assert hot_pressure.root == str(hot)
+    assert set(hot_pressure.scope_roots) == {str(artifact), str(hot)}
+    assert _reclaimed(hot_pressure) == {str(idle)}
+    assert (hot_pressure.free_before, hot_pressure.free_after) == (32 * _GB, 52 * _GB)
+    assert not artifact_pressure.triggered
+    assert held.is_dir() and unrelated.is_dir()
 
 
 def test_live_use_keeps_checkout_state_from_every_reclaim(tmp_path):

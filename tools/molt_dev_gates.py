@@ -575,7 +575,9 @@ def reclaim_hot_output(
 
     attempted.add(root)
     required = max(probe.required_bytes for probe in error.rejected)
-    result = disk_guard.ensure_free(required / (1 << 30), root=root, env=environment)
+    result = disk_guard.ensure_free(
+        required / (1 << 30), volume_root=root, env=environment
+    )
     _say(
         f"    hot output cleanup: {len(result.reclaimed)} retired, "
         f"{result.free_before} -> {result.free_after} bytes free on {root}"
