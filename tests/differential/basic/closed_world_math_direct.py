@@ -7,6 +7,7 @@ CPython, as must aliases, shadowing, nested functions and class bodies."""
 
 import math
 import math as m
+import struct
 
 
 def show(label, thunk):
@@ -85,3 +86,65 @@ for index in range(20000):
         values.append(root)
 print("loop", total, values)
 print("same object", math.sqrt is m.sqrt, math.sqrt(4.0) == 2.0)
+
+
+# Exact local expressions exercise late-TIR sqrt, including its pending-error
+# continuation; the heterogeneous loop above intentionally keeps generic inputs.
+def exact_sqrt_edges():
+    for sign in [1.0, -1.0]:
+        value = sign * 0.0
+        show(("exact zero", sign), lambda: math.sqrt(value))
+    tiny = 5e-324
+    print("exact subnormal", math.sqrt(tiny))
+    nan = float("nan")
+    print("exact nan", math.isnan(math.sqrt(nan)))
+    infinity = float("inf")
+    print("exact infinity", math.sqrt(infinity))
+    negative = -4.0
+    try:
+        math.sqrt(negative)
+    except ValueError as error:
+        print("exact domain", str(error))
+    print("after exact domain", math.sqrt(9.0))
+    negative_infinity = -float("inf")
+    try:
+        math.sqrt(negative_infinity)
+    except ValueError as error:
+        print("exact negative infinity", str(error))
+
+
+def sqrt_nan_bits():
+    # Exercise external inline and heap NaNs of both signs. repr() hides
+    # the quiet bit and payload, so compare exact result bytes with CPython.
+    for encoding in (
+        "7ff0000000000001",
+        "fff0000000000001",
+        "7ff1000000000001",
+        "fff9000000000001",
+    ):
+        value = struct.unpack(">d", bytes.fromhex(encoding))[0]
+        print("sqrt NaN bits", struct.pack(">d", math.sqrt(value)).hex())
+
+
+class SqrtFloat(float):
+    def __float__(self):
+        print("sqrt subclass float")
+        return 25.0
+
+
+class SqrtProtocol:
+    def __float__(self):
+        print("sqrt protocol float")
+        return 36.0
+
+
+class SqrtBadProtocol:
+    def __float__(self):
+        return "bad"
+
+
+exact_sqrt_edges()
+sqrt_nan_bits()
+show("sqrt subclass", lambda: math.sqrt(SqrtFloat(16.0)))
+show("sqrt protocol", lambda: math.sqrt(SqrtProtocol()))
+show("sqrt bad protocol", lambda: math.sqrt(SqrtBadProtocol()))

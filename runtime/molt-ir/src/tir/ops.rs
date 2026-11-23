@@ -193,6 +193,8 @@ pub enum OpCode {
     IsFloatWord,
     UnboxFloatWord,
     IntToFloat,
+    /// Strict IEEE raw-f64 square root; domain policy belongs to late TIR.
+    FloatSqrt,
     UnboxBoolWord,
     BoxInlineInt,
     CodeIs,

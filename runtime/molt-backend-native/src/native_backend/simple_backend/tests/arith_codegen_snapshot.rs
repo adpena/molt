@@ -174,20 +174,25 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // measurement since the walker switch: 8,696 bytes at ed6df54b53 (CI run
 // 44874314443) and 6,896 bytes (FNV 15b0f00d7379fdb8) at ccd5ac1ed8 (run
 // 44889909492); the 6,144 ceiling from 4d99469744's 5,576 bytes kept main red.
-#[cfg(all(target_arch = "x86_64", target_os = "linux", debug_assertions))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 7_600;
-#[cfg(all(target_arch = "x86_64", target_os = "linux", not(debug_assertions)))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 9_424;
-#[cfg(all(
-    not(all(target_arch = "x86_64", target_os = "linux")),
-    debug_assertions
-))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
-#[cfg(all(
-    not(all(target_arch = "x86_64", target_os = "linux")),
-    not(debug_assertions)
-))]
-const ARITH_OBJECT_SIZE_CEILING: usize = 7_952;
+//
+// Linux arm64 ELF from 0ce3f9c419, 2026-11-23, emits 5,880 bytes with
+// debug assertions (FNV ff26fb6f2144ba98) and 9,160 without them (FNV
+// 5111047ad1cbe8fe). The changed compiler produces the same release object.
+// Each ceiling keeps about 10% headroom for that format and build profile.
+const ARITH_OBJECT_SIZE_CEILING: usize = {
+    let (debug, release) = if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        (6_480, 10_080)
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        (7_600, 9_424)
+    } else {
+        (5_024, 7_952)
+    };
+    if cfg!(debug_assertions) {
+        debug
+    } else {
+        release
+    }
+};
 
 /// One-shot capture probe: run with `--ignored --nocapture` to print the
 /// current `(len, digest)` when investigating a deliberate codegen change.
