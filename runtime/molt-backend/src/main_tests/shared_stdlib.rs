@@ -631,7 +631,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     };
 
     let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
+    let partition = prune_and_partition_native_stdlib(
         &mut ir,
         "app",
         Some(&stdlib_modules),
@@ -639,12 +639,17 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).
-    let user_names: Vec<_> = user_remaining
+    let user_names: Vec<_> = partition
+        .user_remaining
         .iter()
         .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
-    let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+    let stdlib_names: Vec<_> = partition
+        .stdlib_funcs
+        .iter()
+        .map(|func| func.name.as_str())
+        .collect();
 
     assert_eq!(user_names, vec!["molt_main"]);
     assert_eq!(stdlib_names, vec!["molt_init_sys"]);
@@ -704,7 +709,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
     };
 
     let stdlib_modules = std::collections::BTreeSet::new();
-    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
+    let partition = prune_and_partition_native_stdlib(
         &mut ir,
         "__main__",
         Some(&stdlib_modules),
@@ -712,18 +717,69 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).
-    let user_names: Vec<_> = user_remaining
+    let user_names: Vec<_> = partition
+        .user_remaining
         .iter()
         .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
-    let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+    let stdlib_names: Vec<_> = partition
+        .stdlib_funcs
+        .iter()
+        .map(|func| func.name.as_str())
+        .collect();
 
     assert_eq!(
         user_names,
         vec!["molt_main", "demo__module", "molt_isolate_import"]
     );
     assert!(stdlib_names.is_empty());
+}
+
+#[test]
+fn shared_stdlib_resolver_keeps_only_reachable_descriptor_publishers() {
+    let mut ir: SimpleIR = serde_json::from_value(serde_json::json!({
+        "functions": [
+            {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "ret_void"}]},
+            {"return_abi": "void", "name": "registry_init", "module": "used", "params": ["kernel"], "ops": [
+                {"kind": "const_str", "out": "descriptor", "s_value":
+                    "{\"python_bodies\":{\"helper\":{\"symbol\":\"live_body\"}}}"},
+                {"kind": "call", "s_value": "molt_gpu_kernel_descriptor_set", "args": ["kernel", "descriptor"]},
+                {"kind": "ret_void"}
+            ]},
+            {"return_abi": "void", "name": "dead_publisher", "module": "unused", "params": ["kernel"], "ops": [
+                {"kind": "const_str", "out": "descriptor", "s_value":
+                    "{\"python_bodies\":{\"helper\":{\"symbol\":\"dead_body\"}}}"},
+                {"kind": "call", "s_value": "molt_gpu_kernel_descriptor_set", "args": ["kernel", "descriptor"]},
+                {"kind": "ret_void"}
+            ]},
+            {"return_abi": "void", "name": "live_body", "module": "used", "params": [], "ops": [{"kind": "ret_void"}]},
+            {"return_abi": "void", "name": "dead_body", "module": "unused", "params": [], "ops": [{"kind": "ret_void"}]}
+        ]
+    }))
+    .expect("valid application IR");
+    let partition = prune_and_partition_native_stdlib(
+        &mut ir,
+        "app",
+        Some(&std::collections::BTreeSet::from([
+            "used".into(),
+            "unused".into(),
+        ])),
+        &std::collections::BTreeSet::from(["registry_init".into()]),
+    );
+    assert_eq!(
+        partition.app_callable_manifest.compiled_bodies,
+        std::collections::BTreeSet::from(["live_body".into()])
+    );
+    let stdlib_symbols: std::collections::BTreeSet<_> = partition
+        .stdlib_funcs
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(
+        stdlib_symbols,
+        std::collections::BTreeSet::from(["registry_init", "live_body"])
+    );
 }
 
 #[test]

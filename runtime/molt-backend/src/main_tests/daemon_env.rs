@@ -166,7 +166,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         profile: None,
     };
     let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
+    let partition = prune_and_partition_native_stdlib(
         &mut partition_ir,
         "demo",
         Some(&stdlib_modules),
@@ -174,12 +174,17 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).
-    let user_names: Vec<_> = user_remaining
+    let user_names: Vec<_> = partition
+        .user_remaining
         .iter()
         .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
-    let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+    let stdlib_names: Vec<_> = partition
+        .stdlib_funcs
+        .iter()
+        .map(|func| func.name.as_str())
+        .collect();
     assert_eq!(
         user_names,
         vec![
