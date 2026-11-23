@@ -150,6 +150,8 @@ _RETIREMENT_SCHEMA = "molt.soft-retirement.v2"
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
 GC_STAMP = ("target", ".molt-checkout-state-gc")
+PRESSURE_INTERVAL_S = 15 * 60.0
+PRESSURE_STAMP = ("target", ".molt-checkout-state-pressure")
 _GC_LOCK = ("target", ".disk_guard", "checkout-state-gc.lock")
 # `molt.dx.checkout_component`: a sanitized name prefix and 12 hex digits.
 _COMPONENT = re.compile(r"[A-Za-z0-9_.-]{1,24}-[0-9a-f]{12}")
@@ -2146,7 +2148,7 @@ def checkout_state_decision(
 
 @dataclass(frozen=True, slots=True)
 class CheckoutStateGcEpoch:
-    """Cadence and attempt identity from one observation of the daily stamp."""
+    """Cadence and attempt identity from the checkout maintenance stamp."""
 
     generation_ns: int | None
     due: bool
@@ -2157,30 +2159,42 @@ class CheckoutStateGcEpoch:
 
 
 def checkout_state_gc_epoch(
-    artifact_root: Path, *, now: float | None = None
+    artifact_root: Path, *, now: float | None = None, pressure_only: bool = False
 ) -> CheckoutStateGcEpoch | None:
     """Unreadable cadence defers; a missing stamp names the initial epoch."""
     moment = time.time() if now is None else now
-    try:
-        stamp = artifact_root.joinpath(*GC_STAMP).stat()
-    except FileNotFoundError:
+    stamps = (PRESSURE_STAMP, GC_STAMP) if pressure_only else (GC_STAMP,)
+    latest = None
+    for path in stamps:
+        try:
+            stamp = artifact_root.joinpath(*path).stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        if latest is None or stamp.st_mtime_ns > latest.st_mtime_ns:
+            latest = stamp
+    if latest is None:
         return CheckoutStateGcEpoch(None, True)
-    except OSError:
-        return None
+    interval = PRESSURE_INTERVAL_S if pressure_only else GC_INTERVAL_S
     return CheckoutStateGcEpoch(
-        stamp.st_mtime_ns, not 0 <= moment - stamp.st_mtime < GC_INTERVAL_S
+        latest.st_mtime_ns, not 0 <= moment - latest.st_mtime < interval
     )
 
 
-def checkout_state_gc_due(artifact_root: Path, *, now: float | None = None) -> bool:
-    """Whether the daily GC of ``artifact_root``'s checkout state is due."""
-    epoch = checkout_state_gc_epoch(artifact_root, now=now)
+def checkout_state_gc_due(
+    artifact_root: Path, *, now: float | None = None, pressure_only: bool = False
+) -> bool:
+    """Whether maintenance of the artifact root's checkout state is due."""
+    epoch = checkout_state_gc_epoch(artifact_root, now=now, pressure_only=pressure_only)
     return epoch is not None and epoch.due
 
 
 @contextmanager
-def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
-    """Admit one daily attempt without waiting, retaining ownership until done.
+def checkout_state_gc(
+    artifact_root: Path, *, pressure_only: bool = False
+) -> Generator[bool, None, None]:
+    """Admit one maintenance attempt without waiting, holding ownership until done.
 
     The stamp remains the cadence authority. The stable external interlock
     coalesces callers that observed the same due stamp, including collections
@@ -2189,7 +2203,7 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
     the next due epoch. Hard interruption keeps the start-time throttle.
     Explicit collection retains its own root locks.
     """
-    if not checkout_state_gc_due(artifact_root):
+    if not checkout_state_gc_due(artifact_root, pressure_only=pressure_only):
         yield False
         return
     from .file_locks import (
@@ -2205,10 +2219,12 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
         return
     try:
         with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
-            if not checkout_state_gc_due(artifact_root):
+            if not checkout_state_gc_due(artifact_root, pressure_only=pressure_only):
                 yield False
                 return
-            stamp = artifact_root.joinpath(*GC_STAMP)
+            stamp = artifact_root.joinpath(
+                *(PRESSURE_STAMP if pressure_only else GC_STAMP)
+            )
             stamp.touch()
             os.utime(stamp)
             failure: BaseException | None = None
@@ -2223,7 +2239,9 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
                 except OSError as exc:
                     if failure is None:
                         raise
-                    failure.add_note(f"daily GC completion stamp failed: {exc}")
+                    failure.add_note(
+                        f"checkout maintenance completion stamp failed: {exc}"
+                    )
     finally:
         _release_file_lock(handle)
 

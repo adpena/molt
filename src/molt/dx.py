@@ -903,7 +903,7 @@ def checkout_state_maintenance_environment(
 
 
 def collect_checkout_state_after_result(env: Mapping[str, str], *, cwd: Path) -> None:
-    """Schedule source-only daily maintenance after result publication.
+    """Schedule due source-only maintenance after result publication.
 
     Call only after terminal publication and any source verification. An
     enclosing guard owns its later completion; never spend its payload budget
@@ -920,19 +920,27 @@ def collect_checkout_state_after_result(env: Mapping[str, str], *, cwd: Path) ->
     ):
         return
     try:
-        ext_root = configured_artifact_root(env, relative_to=cwd)
+        ext_root = reclaimable_artifact_root(env, relative_to=cwd)
         if ext_root is None:
             return
         from molt.checkout_state import checkout_state_gc_due
+        from molt.disk_capacity import hot_state_under_pressure
 
-        if not checkout_state_gc_due(ext_root):
+        pressure_only = not checkout_state_gc_due(ext_root)
+        if pressure_only and (
+            not checkout_state_gc_due(ext_root, pressure_only=True)
+            or not hot_state_under_pressure(ext_root, env)
+        ):
             return
         if not ext_root.is_dir():
             return
         scheduler = _source_checkout_maintenance()
         if scheduler is None:
             return
-        state = scheduler.schedule(ext_root, env, cwd=cwd)
+        if pressure_only:
+            state = scheduler.schedule(ext_root, env, cwd=cwd, pressure_only=True)
+        else:
+            state = scheduler.schedule(ext_root, env, cwd=cwd)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
         return

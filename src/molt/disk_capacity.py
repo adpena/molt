@@ -303,6 +303,20 @@ def _default_measure_free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
+def hot_state_under_pressure(artifact_root: Path, env: Mapping[str, str]) -> bool:
+    """Cheap raw-space trigger for maintenance of an existing hot mirror."""
+    from molt.default_paths import HOT_STATE_MIN_FREE_BYTES, hot_state
+
+    hot = hot_state(artifact_root)
+    if hot is None or not hot.root.is_dir():
+        return False
+    try:
+        free = _default_measure_free_bytes(hot.root)
+    except OSError:
+        return False
+    return free < max(HOT_STATE_MIN_FREE_BYTES, minimum_headroom_bytes(env))
+
+
 @typed_cache(maxsize=None)
 def _darwin_capacity_api() -> tuple[ctypes.CDLL, ctypes.c_void_p]:
     """Retain only immutable ABI bindings, never an observed capacity."""
