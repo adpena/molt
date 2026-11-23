@@ -113,6 +113,7 @@ use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     FastPathExpansionRule, opcode_fast_path_expansion_rule_table,
+    opcode_requires_i64_shift_count_guard_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -140,7 +141,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     }) {
         return stats;
     }
-    record_inline_int_proofs(func, &repr);
+    record_inline_int_proofs(func, &repr, &vr, &exact);
     let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
     while let Some(block) = pending.pop() {
@@ -202,7 +203,12 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
 /// it sits in, so it stays true; this stage is the last point where it can be
 /// read, and the op is where it travels. Phis and copies need no mark: the
 /// plan derives them from their sources.
-fn record_inline_int_proofs(func: &mut TirFunction, repr: &HashMap<ValueId, Repr>) {
+fn record_inline_int_proofs(
+    func: &mut TirFunction,
+    repr: &HashMap<ValueId, Repr>,
+    ranges: &crate::tir::ValueRangeResult,
+    exact: &HashMap<ValueId, TirType>,
+) {
     let is_int = |func: &TirFunction, value: ValueId| {
         matches!(
             func.value_types.get(&value),
@@ -225,11 +231,30 @@ fn record_inline_int_proofs(func: &mut TirFunction, repr: &HashMap<ValueId, Repr
         .map(|(block, index, _)| (block, index))
         .collect();
     for (block, index) in proven {
-        func.blocks
+        let op = &mut func
+            .blocks
             .get_mut(&block)
             .expect("the block was just scanned")
-            .ops[index]
-            .mark_inline_int_proof();
+            .ops[index];
+        op.mark_inline_int_proof();
+        // The result fits inline and both operands are already integer
+        // carriers. Carry the count proof as well: later block splitting
+        // can hide the range without reintroducing any Python fallibility.
+        if opcode_requires_i64_shift_count_guard_table(op.opcode)
+            && let [left, count] = op.operands.as_slice()
+            && [left, count].into_iter().all(|value| {
+                repr.get(value)
+                    .is_some_and(|repr| repr.is_raw_i64_carrier())
+            })
+            && super::effects::guarded_throw_condition_disproven(
+                op,
+                exact,
+                ranges.range_at(block, *count).proves_i64_shift_count(),
+                false,
+            )
+        {
+            op.mark_nothrow_proof();
+        }
     }
 }
 
