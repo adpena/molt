@@ -3400,6 +3400,19 @@ result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# Strict raw-f64 square root; Python domain policy lives in shared late TIR.
+[[opcode]]
+name = "FloatSqrt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["f64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 # IntToFloat is a raw i64 as the nearest f64. On an inline-int payload
 # (|x| < 2**46) it is exact, so a mixed int and float operation computes what
 # CPython computes: the int converted, then the float operation (HF-821).
