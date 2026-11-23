@@ -1746,8 +1746,12 @@ def release_evidence_inputs(
 
 
 def _assemble_transport_inputs(
-    tmp_path: Path, snapshot, *, version="1.0.001", preview=False
-):
+    tmp_path: Path,
+    snapshot: compiler_payload.GitSourceSnapshot,
+    *,
+    version: str = "1.0.001",
+    preview: bool = False,
+) -> tuple[Path, Path]:
     from packaging.version import Version
 
     wheel = _wheel(tmp_path / f"molt-{version}-py3-none-any.whl", str(Version(version)))
@@ -3731,12 +3735,12 @@ def test_component_consumer_cli_dispatch_is_explicit_and_source_derived(
 
 
 def test_preview_index_publishes_exact_tier1_hosts_and_authenticated_consumer_scope(
-    tmp_path,
-    release_source,
-    release_evidence_inputs,
-    consumer_transport_boundary,
-    monkeypatch,
-):
+    tmp_path: Path,
+    release_source: compiler_payload.GitSourceSnapshot,
+    release_evidence_inputs: dict[str, object],
+    consumer_transport_boundary: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Transport fixtures exercise real scope, hash, role and index validation.
     # Their sealed command/provider boundaries do not qualify either flagship.
     version = "0.9.0"
@@ -3823,8 +3827,8 @@ def test_preview_index_publishes_exact_tier1_hosts_and_authenticated_consumer_sc
 
 
 def test_e3_signer_checks_exact_selected_subjects_and_rejects_a_carried_role(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sha = "a" * 40
     rows = []
     for name in ("linux", "macos"):

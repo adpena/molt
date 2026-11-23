@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 from molt.verified_subset import load_verified_subset_policy
@@ -626,13 +626,24 @@ def _write_typed_receipts(
     return verified_receipts, [canonical, degrade, fail_closed, structural]
 
 
+class _BundleInputs(TypedDict):
+    source_sha: str
+    e1_receipts: list[Path]
+    e2_scoreboard: Path | None
+    e3_receipts: list[Path]
+    e4_receipts: list[Path]
+    repo_root: Path
+    output_root: Path
+    now: dt.datetime
+
+
 def _inputs(
     tmp_path: Path,
     gate,
     *,
     failing_kind: str | None = None,
     source_sha: str = SOURCE_SHA,
-) -> dict[str, Any]:
+) -> _BundleInputs:
     inputs = tmp_path / "inputs"
     e1_root = inputs / "e1"
     e1 = [
@@ -660,8 +671,12 @@ def _inputs(
     }
 
 
-def _select_preview_receipts(inputs, gate):
-    ids = {coord.id for coord in gate.tier1_coordinates().values() if coord is not None}
+def _select_preview_receipts(inputs: _BundleInputs) -> None:
+    ids = {
+        coord.id
+        for coord in release_exit_gate.tier1_coordinates().values()
+        if coord is not None
+    }
     inputs.update(
         e1_receipts=[],
         e2_scoreboard=None,
@@ -1580,7 +1595,7 @@ def test_unclassified_finding_holds_both_source_release_lines(
 
     inputs = _inputs(tmp_path, gate)
     if version == "0.9.0":
-        _select_preview_receipts(inputs, gate)
+        _select_preview_receipts(inputs)
     manifest_path, report = gate.assemble_release_bundle(**inputs)
 
     assert report.problems == ()
@@ -1648,8 +1663,8 @@ def test_unreadable_source_version_fails_closed(
 
 
 def test_preview_gate_records_known_issues_and_refuses_extra_criteria(
-    tmp_path, monkeypatch, ledger_repo
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger_repo: Path
+) -> None:
     gate = _load_gate(monkeypatch)
     ledger = ONE_OPEN_LEDGER.replace(
         "## Fixed",
@@ -1664,7 +1679,7 @@ def test_preview_gate_records_known_issues_and_refuses_extra_criteria(
         if _read(path)["facts"]["coordinate"]["id"].endswith("-dev")
     )
     e1, e2 = inputs["e1_receipts"], inputs["e2_scoreboard"]
-    _select_preview_receipts(inputs, gate)
+    _select_preview_receipts(inputs)
     for extra in (
         {"e1_receipts": e1},
         {"e2_scoreboard": e2},
@@ -1691,7 +1706,9 @@ def test_preview_gate_records_known_issues_and_refuses_extra_criteria(
         ).passed
 
 
-def test_missing_tier1_coordinate_is_a_fail_input(tmp_path, monkeypatch):
+def test_missing_tier1_coordinate_is_a_fail_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     gate = _load_gate(monkeypatch)
     monkeypatch.setattr(
         gate,
@@ -1707,7 +1724,7 @@ def test_missing_tier1_coordinate_is_a_fail_input(tmp_path, monkeypatch):
     missing = next(iter(mapping))
     mapping[missing] = None
     monkeypatch.setattr(gate, "tier1_coordinates", lambda **kwargs: mapping)
-    _select_preview_receipts(inputs, gate)
+    _select_preview_receipts(inputs)
     manifest, report = gate.assemble_release_bundle(**inputs)
     assert not report.passed and report.status == "FAIL" and not report.problems
     assert report.missing_cells == (missing,)
