@@ -1034,6 +1034,7 @@ def _carry_prior_gates(
     rerun = _interaction_rerun(
         git,
         repo,
+        head=commit,
         lane_paths=_changed(git, base, commit),
         tested_base=prior_base,
         base=base,

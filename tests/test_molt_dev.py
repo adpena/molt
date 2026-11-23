@@ -5131,6 +5131,21 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
     assert streams[1].read_text(encoding="utf-8") == "the reason\n"
 
 
+def test_gate_logs_reserve_a_private_directory_per_invocation(tmp_path: Path) -> None:
+    from tools import molt_dev_gates
+
+    receipt = tmp_path / "precheck.json"
+    first = molt_dev_gates.gate_output_dir(receipt)
+    second = molt_dev_gates.gate_output_dir(receipt)
+
+    for directory, outcome in ((first, "first"), (second, "second")):
+        with (directory / "gate-001.stdout.log").open("x", encoding="utf-8") as log:
+            log.write(outcome)
+
+    assert first.parent == second.parent == receipt.with_suffix(".d")
+    assert (first / "gate-001.stdout.log").read_text(encoding="utf-8") == "first"
+
+
 def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
@@ -7421,7 +7436,12 @@ def test_replay_reruns_a_pytest_cohort_that_shares_a_file_with_the_move(
     monkeypatch.setattr(molt_dev_queue, "queue_paths", lambda repo: None)
     monkeypatch.setattr(molt_dev_queue, "recent_postsubmit_failures", lambda paths: ())
     rerun = land_fast._interaction_rerun(
-        None, tmp_path, lane_paths=["src/a.py"], tested_base="b0", base="b1"
+        None,
+        tmp_path,
+        head="candidate",
+        lane_paths=["src/a.py"],
+        tested_base="b0",
+        base="b1",
     )
 
     assert rerun(cohort("tests/a.py", "tests/b.py::test_one"))
@@ -8392,8 +8412,7 @@ def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
 def test_land_fast_retests_when_main_moves_before_publication(
     drv, origin_and_clone, tmp_path
 ):
-    """A main that moved during the tests is merged and tested again; the
-    stale tree never reaches main."""
+    """Replay uses the merged sources and policy after a lane retires a test."""
     origin, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
     mover = work.parent / "mover"
@@ -8411,11 +8430,21 @@ def test_land_fast_retests_when_main_moves_before_publication(
         f" && git -C {shlex.quote(str(mover))} push -q origin HEAD:main; fi"
         f" && echo try >> {shlex.quote(str(counter))}"
     )
-    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    policy = _try_run_policy(counter, try_gate=move)
+    retired_test = "tests/test_retired.py"
+    _commit_file(work, retired_test, "def test_unused(): pass\n", "add test")
+    _publish_policy(
+        work,
+        policy
+        + f'\n[[command]]\npytest = ["{retired_test}"]\npytest_worker_memory_gb = 1.0\n',
+    )
     lane = work.parent / "lane-fast-moved"
     _lane(work, "fast-moved", {"a.py": "a = 1\n"})
+    _git(lane, "rm", "--", retired_test)
+    _commit_file(lane, "tools/proof_plan.toml", policy, "retire the test")
 
     assert _land_fast(drv, lane, "--subject", "Land after main moved") == EXIT_OK
+    assert retired_test not in _origin_tree(work)
 
     assert counter.read_text(encoding="utf-8").split().count("try") == 2
     landed = _remote_main(work)

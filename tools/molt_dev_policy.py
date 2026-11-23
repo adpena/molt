@@ -1291,11 +1291,14 @@ def select_landing_gates(
     mode: LandingMode = LandingMode.PRESUBMIT,
     recent_failures: Collection[str] = (),
     diff_base: str | None = None,
+    trigger_paths: list[str] | None = None,
 ) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
     """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
 
     Policy comes from the same immutable commit whose clean source executes it.
-    Without a known green base, postsubmit selects every tracked input.
+    A replay may select the upstream move's trigger paths through that policy
+    and dependency graph. Without a known green base, postsubmit selects every
+    tracked input.
     ``{integration_upstream_commit}`` binds to ``diff_base`` when given, else
     to ``upstream``: postsubmit selects over everything since the last green
     main but measures its diff-relative gates (added lines, changed crates,
@@ -1314,19 +1317,20 @@ def select_landing_gates(
     except DriverError as exc:
         # The selected commit's own gate policy is invalid.
         raise CandidateFailure(str(exc), code=exc.code) from exc
-    touched = (
-        [
+    if trigger_paths is not None:
+        touched = trigger_paths
+    elif upstream is None:
+        touched = [
             path
             for path in git._run(
                 ["ls-tree", "--full-tree", "--name-only", "-r", "-z", commit]
             ).stdout.split("\0")
             if path
         ]
-        if upstream is None
-        else changed_paths(
+    else:
+        touched = changed_paths(
             upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
         )
-    )
     from tools.proof_plan import PLAN_PATH, bind_local_gate_command
     from tools.test_dependency_graph import cached_graph
 

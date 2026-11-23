@@ -294,10 +294,8 @@ class PrecheckResult:
     seconds: tuple[tuple[str, float], ...] = ()
     # Selected gates the precheck does not run: the queue batch's.
     waived: tuple[SelectedGate, ...] = ()
-    # Try-run gates an earlier run of this lane passed on an older base and
-    # that main's move since then cannot affect (``rerun``); the caller's
-    # receipt carries their earlier records.
-    carried: tuple[SelectedGate, ...] = ()
+    # Earlier passing records retained by the same admission used by queue replay.
+    carried: tuple[dict, ...] = ()
     # Data readers of the change that presubmit leaves to postsubmit.
     postsubmit_only: tuple[str, ...] = ()
 
@@ -346,16 +344,17 @@ def precheck_landing(
     session_id: str,
     budget: PrecheckBudget | None = None,
     static_only: bool = False,
-    rerun: Callable[[SelectedGate], bool] | None = None,
+    carry_prior: (
+        Callable[[list[SelectedGate]], tuple[list[SelectedGate], list[dict]]] | None
+    ) = None,
     proven: Callable[[SelectedGate], bool] | None = None,
 ) -> PrecheckResult:
     """Run ``head``'s static gates, then its try run within ``budget``.
 
     ``static_only`` stops after the static gates. ``land --fast`` passes
-    ``FAST_LANDING_BUDGET`` and pushes only a complete result. ``rerun``, when
-    given, keeps only the try-run gates it accepts; the others are ``carried``
-    (an earlier run passed them and the caller proved the change since cannot
-    affect them). Static gates always run unless ``proven`` accepts them:
+    ``FAST_LANDING_BUDGET`` and pushes only a complete result. ``carry_prior``
+    returns the gates to execute and the earlier passing records admitted for
+    reuse. Static gates always run unless ``proven`` accepts them:
     ``proven`` names the gates the consumer gate's receipt already ran on
     this exact tree, static or try-run, and the precheck skips them.
 
@@ -389,6 +388,7 @@ def precheck_landing(
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
     ]
+    waived = tuple(gate for gate in gates if gate not in selected)
     skipped: tuple[SelectedGate, ...] = ()
     if proven is not None:
         skipped = tuple(gate for gate in selected if proven(gate))
@@ -398,17 +398,10 @@ def precheck_landing(
                 f"the consumer gate's receipt for this tree ran {len(skipped)} "
                 "selected gate(s); the precheck does not run them again"
             )
-    carried: tuple[SelectedGate, ...] = ()
-    if rerun is not None:
-        carried = tuple(
-            gate for gate in selected if not gate.static and not rerun(gate)
-        )
-        selected = [gate for gate in selected if gate not in carried]
-    waived = tuple(
-        gate
-        for gate in gates
-        if gate not in selected and gate not in carried and gate not in skipped
-    )
+    carried: tuple[dict, ...] = ()
+    if carry_prior is not None:
+        selected, admitted_records = carry_prior(selected)
+        carried = tuple(admitted_records)
     tried = sum(1 for gate in selected if not gate.static)
     _step(
         f"static gates in the lane ({len(selected)} of {len(gates)} selected gate(s); "

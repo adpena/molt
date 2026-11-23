@@ -31,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, assert_never
@@ -260,10 +261,14 @@ FAILURE_TAIL_WIDTH = 400
 
 
 def gate_output_dir(receipt_path: Path) -> Path:
-    """This run's gate logs, beside the receipt, named by UTC time and pid so
-    a run never reuses another's."""
+    """Reserve one private directory for this invocation's append-only logs."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    return prerequisite_receipt_path(receipt_path).parent / f"{stamp}-{os.getpid()}"
+    parent = prerequisite_receipt_path(receipt_path).parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f"{stamp}-{os.getpid()}-", dir=parent))
+    except OSError as exc:
+        raise DriverError(f"cannot reserve gate logs under {parent}: {exc}") from exc
 
 
 def prerequisite_receipt_path(receipt_path: Path) -> Path:

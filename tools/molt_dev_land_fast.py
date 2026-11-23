@@ -20,6 +20,7 @@ import os
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -101,7 +102,6 @@ def _receipt_for(
     head: str,
     controller: str | None,
     started_at: str,
-    prior: dict | None = None,
 ) -> dict:
     from tools.molt_dev_gates import display
 
@@ -116,8 +116,7 @@ def _receipt_for(
         for run in precheck.runs
         for gate in run.gates
     ]
-    if prior is not None:
-        gates += _carried_records(prior, gates)
+    gates.extend(precheck.carried)
     # The crate-test gate's typed summary line, never its human text.
     from tools.check_changed_crate_tests import SCHEMA as CRATE_TESTS_SCHEMA
 
@@ -163,14 +162,16 @@ def _receipt_for(
 
 
 def _changed(git: Git, old: str, new: str) -> list[str]:
-    out = git._run(["diff", "--name-only", old, new]).stdout
-    return [line for line in out.splitlines() if line]
+    from tools.git_identity import changed_paths
+
+    return changed_paths(old, new, run_git=lambda args: git._run(args).stdout)
 
 
 def _interaction_rerun(
     git: Git,
     repo: Path,
     *,
+    head: str,
     lane_paths: list[str],
     tested_base: str,
     base: str,
@@ -199,10 +200,11 @@ def _interaction_rerun(
     _policy, _config, _touched, moved_gates, _matched = select_landing_gates(
         git,
         repo,
-        base,
+        head,
         tested_base,
         extra=[],
         recent_failures=recent_postsubmit_failures(queue_paths(repo)),
+        trigger_paths=moved_paths,
     )
     moved_tests = {
         target for gate in moved_gates if gate.pytest for target in _pytest_files(gate)
@@ -271,19 +273,6 @@ def _gate_identity(command: str) -> str:
             continue
         kept.append(word)
     return " ".join(kept)
-
-
-def _carried_records(prior: dict, rerun_records: list[dict]) -> list[dict]:
-    """The prior receipt's try-run records the new run did not repeat, each
-    marked with the base it passed on."""
-    ran = {_gate_identity(str(record["command"])) for record in rerun_records}
-    # A record carried twice keeps the base it actually passed on.
-    return [
-        {"carried_from_base": prior["base"], **record}
-        for record in prior["gates"]
-        if record["phase"] != "static"
-        and _gate_identity(str(record["command"])) not in ran
-    ]
 
 
 def split_carried(
@@ -491,17 +480,17 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
             )
         else:
             started_at = datetime.now(UTC).isoformat(timespec="seconds")
-            rerun = (
-                None
-                if prior is None
-                else _interaction_rerun(
+            carry_prior = None
+            if prior is not None:
+                rerun = _interaction_rerun(
                     git,
                     repo,
+                    head=head,
                     lane_paths=_changed(git, base, head),
                     tested_base=str(prior["base"]),
                     base=base,
                 )
-            )
+                carry_prior = partial(split_carried, prior=prior, rerun=rerun)
             precheck = precheck_landing(
                 git,
                 repo,
@@ -509,7 +498,7 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
                 upstream=base,
                 session_id=session_id,
                 budget=FAST_LANDING_BUDGET,
-                rerun=rerun,
+                carry_prior=carry_prior,
             )
             if not precheck.complete:
                 _fail(
@@ -524,7 +513,6 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
                 head=head,
                 controller=controller,
                 started_at=started_at,
-                prior=prior if precheck.carried else None,
             )
             path = landing_receipt.write_receipt(common_dir, receipt)
             _ok(f"receipt {path}")
