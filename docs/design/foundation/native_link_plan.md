@@ -249,13 +249,13 @@ hit as a coarse-timestamp backstop. Tool bytes and versions remain separately
 fingerprinted, so this removes repeated filesystem discovery without weakening
 executable custody.
 
-Archive scheduling is object-format policy, not a shared fallback. ELF uses one
-explicit archive group, COFF presents the runtime archive once, and Mach-O alone
-retains the measured second archive pass required by ld64's order-sensitive
-extraction. COFF also carries the linker-native `/Brepro` flag through the Clang
-driver so PE/COFF timestamps and build metadata are deterministic. The policy is
-constructed once in `native_link_plan.py`; the command builder does not grow a
-second target classifier.
+ELF uses one explicit archive group. COFF and Mach-O present the runtime archive
+once. Mach-O linkers can extract additional members from that archive when later
+inputs introduce references. The admitted Cargo link product retains its libSystem
+requirement. The executable and JIT image link plans use the selected Clang
+driver's default provider for ordinary macOS links and forward the Cargo operand
+when driver defaults are disabled. COFF carries the linker-native `/Brepro` flag
+through the Clang driver to make PE/COFF timestamps and build metadata deterministic.
 
 Every native rebuild links to a private candidate. Ordinary and BOLT builds
 share one finalizer that applies target stripping when planned, validates the

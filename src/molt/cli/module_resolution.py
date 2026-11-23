@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
     from molt.cli.stdlib_source_summaries import InstalledStdlibSourceSummaries
 
+from molt._python_release_generated import STDLIB_PATHFINDER_ROOTS
 from molt.cli import module_source as _module_source
 from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
@@ -1108,6 +1109,9 @@ def _roots_for_module(
         if module_name == "test" or module_name.startswith("test."):
             if os.environ.get("MOLT_REGRTEST_CPYTHON_DIR"):
                 return roots
+            return [stdlib_root]
+        if module_name.partition(".")[0] in STDLIB_PATHFINDER_ROOTS:
+            return roots if stdlib_root in roots else [*roots, stdlib_root]
         return [stdlib_root]
     if _is_runtime_owned_module(module_name, stdlib_root):
         # The selected compiler ships these with its stdlib; a program that

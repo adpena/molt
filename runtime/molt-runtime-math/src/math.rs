@@ -1076,7 +1076,12 @@ pub fn molt_math_sqrt_attached_body(_py: &molt_runtime_core::PyToken, val_bits: 
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return molt_runtime_core::rt_float_result_bits(_py, f);
+            // A square root quiets a signaling NaN while preserving its sign
+            // and payload. Set the IEEE-754 quiet bit explicitly so Wasm's
+            // permitted arithmetic NaN canonicalization cannot change them.
+            const F64_QUIET_BIT: u64 = 1 << 51;
+            let quieted = f64::from_bits(f.to_bits() | F64_QUIET_BIT);
+            return molt_runtime_core::rt_float_result_bits(_py, quieted);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {

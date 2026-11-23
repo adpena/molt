@@ -129,6 +129,17 @@ def _evidence_inputs(python: str, micro: int = 1) -> tuple[gen.SourceInput, ...]
             if role == "release"
             else f"{role} fixture\n"
         )
+        if role == "frozen_imports":
+            text = "".join(
+                f"static const struct _frozen {kind}_modules[] = {{\n"
+                f'    {{"{name}", NULL}},\n'
+                "    {0, 0, 0}\n};\n"
+                for kind, name in (
+                    ("bootstrap", "bootstrap"),
+                    ("stdlib", "abc"),
+                    ("test", "test"),
+                )
+            )
         inputs.append(
             gen.SourceInput(
                 role,
@@ -652,6 +663,7 @@ def test_fetch_reads_a_pinned_tag_without_blobs(
         "ast_schema",
         "grammar",
         "startup",
+        "frozen_imports",
         "import_execution",
         "stable_abi",
         "public_headers",
@@ -815,7 +827,9 @@ def test_generated_outputs_derive_every_supported_version(
     assert namespace["STDLIB_PACKAGE_UNION"] == EXPECTED_PACKAGES
     assert namespace["STDLIB_PY_MODULE_UNION"] == EXPECTED_PY_MODULES
     assert namespace["STDLIB_PY_PACKAGE_UNION"] == EXPECTED_PY_PACKAGES
-    releases = runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"]
+    installed = runpy.run_path(str(gen.OUT_RELEASE_PATH))
+    assert installed["STDLIB_PATHFINDER_ROOTS"] == {"asyncio", "email", "xml"}
+    releases = installed["CPYTHON_RELEASES"]
     assert releases == {"3.12": (3, 12, 1, "final", 0)}
     with pytest.raises(TypeError):
         releases["3.12"] = (3, 12, 0, "final", 0)

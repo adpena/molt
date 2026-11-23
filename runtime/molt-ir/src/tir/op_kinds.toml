@@ -1536,6 +1536,7 @@ final_tir_opcodes = [
     "UnboxInlineInt",
     "IsFloatWord",
     "UnboxFloatWord",
+    "FloatSqrt",
     "IntToFloat",
     "IsBoolWord",
     "UnboxBoolWord",
@@ -3390,6 +3391,19 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "UnboxFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["f64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Strict raw-f64 square root; Python domain policy lives in shared late TIR.
+[[opcode]]
+name = "FloatSqrt"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["f64"]

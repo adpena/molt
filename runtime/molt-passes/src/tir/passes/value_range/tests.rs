@@ -856,6 +856,26 @@ fn shl_count_outside_0_63_is_not_raw_i64_safe() {
 }
 
 #[test]
+fn shr_range_does_not_narrow_a_saturated_operand() {
+    let block = BlockId(0);
+    let left = ValueId(1);
+    let right = ValueId(2);
+    let mut ranges = ValueRangeResult::default();
+    ranges.record_global_range(right, IntRange::new(20, 24));
+    let shift = op(OpCode::Shr, vec![left, right], vec![ValueId(3)]);
+    ranges.record_global_range(left, IntRange::new(0, i64::MAX));
+    assert_eq!(
+        super::transfer::transfer_op_range(&shift, block, &ranges),
+        Some(IntRange::FULL_I64)
+    );
+    ranges.record_global_range(left, IntRange::new(0, 1 << 32));
+    assert_eq!(
+        super::transfer::transfer_op_range(&shift, block, &ranges),
+        Some(IntRange::new(0, 4_096))
+    );
+}
+
+#[test]
 fn e2e_unbounded_accumulator_stays_unranged() {
     // The mandatory bigint_accumulator soundness gate: an accumulator phi
     // `total = total + i` whose SCEV is NOT a proven AddRec must keep its

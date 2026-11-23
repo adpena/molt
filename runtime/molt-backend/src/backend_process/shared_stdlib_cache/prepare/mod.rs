@@ -32,9 +32,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         request.stdlib_archive_path,
     )?;
     let mut module_context = None;
-    let app_callable_manifest = request
-        .stdlib_archive_path
-        .map(|_| molt_backend::compute_app_callable_manifest_checked(&ir.functions));
+    let mut app_callable_manifest = None;
     let module_registry_roots: std::collections::BTreeSet<String> = request
         .module_registry
         .as_ref()
@@ -85,6 +83,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
                 produce()?
             }
         }
+        app_callable_manifest = Some(prepared.app_callable_manifest);
     }
 
     Ok(NativeApplicationArtifactOptions {

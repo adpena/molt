@@ -736,19 +736,71 @@ def test_run_runtime_route_follows_effective_build_request(
             '[build]\ntarget = "' + configured_target + '"\n', encoding="utf-8"
         )
     seen = []
+
+    def observe(target: str, argv: list[str], run_profile: str) -> int:
+        request = selection.resolve_build_arguments(
+            argv, file_path=str(source), module=None, project_root=tmp_path, env={}
+        )
+        assert request.profile == run_profile
+        seen.append((target, request.profile))
+        return 0
+
     monkeypatch.setattr(
-        script_commands,
-        "run_script",
-        lambda *a, **kw: seen.append(("native", a[11])) or 0,
+        script_commands, "run_script", lambda *a, **kw: observe("native", a[10], a[11])
     )
     monkeypatch.setattr(
         script_commands,
         "_run_script_cross",
-        lambda *a, **kw: seen.append((target_name(a[0]), a[12])) or 0,
+        lambda *a, **kw: observe(target_name(a[0]), a[11], a[12]),
     )
     monkeypatch.setattr("sys.argv", ["molt", "run", *flags, str(source)])
     assert entrypoint.main() == 0
     assert seen == [(expected, "dev")]
+
+
+@pytest.mark.parametrize(
+    "flags,expected_profile",
+    [
+        ([], "dev"),
+        (["--profile=release", "--backend=cranelift"], "release"),
+        (["--profile=release", "--build-arg=--build-profile=dev"], "dev"),
+    ],
+)
+def test_jit_run_admits_the_profile_forwarded_to_its_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    flags: list[str],
+    expected_profile: str,
+) -> None:
+    from typing import cast
+
+    from molt.cli import entrypoint, script_commands
+    from molt.cli.run_tier import RunTier
+    from molt.native_target import resolve_native_target_spec
+
+    host = resolve_native_target_spec(None)
+    if (host.os, host.arch) != ("macos", "aarch64"):
+        pytest.skip("the JIT run tier is admitted only for the verified host")
+
+    source = tmp_path / "main.py"
+    source.write_text("pass\n", encoding="utf-8")
+
+    def observe(*args: object, **kwargs: object) -> int:
+        built = selection.resolve_build_arguments(
+            cast("list[str]", args[10]),
+            file_path=str(source),
+            module=None,
+            project_root=tmp_path,
+            env={},
+        )
+        assert built.profile == args[11] == expected_profile
+        assert built.selected_backend() == "cranelift"
+        assert kwargs["tier"] is RunTier.JIT
+        return 0
+
+    monkeypatch.setattr(script_commands, "run_script", observe)
+    monkeypatch.setattr("sys.argv", ["molt", "run", "--tier=jit", *flags, str(source)])
+    assert entrypoint.main() == 0
 
 
 def test_wasm_run_checks_effective_flags_not_superseded_occurrences():

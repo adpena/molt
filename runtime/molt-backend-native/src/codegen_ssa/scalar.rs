@@ -811,6 +811,12 @@ pub(crate) mod tests {
                 FloatBinary::Remainder => l % r,
             })
         }
+        fn float_sqrt(&mut self, value: Value) -> Value {
+            let Value::Float(float) = value else {
+                panic!("a float square root takes a float");
+            };
+            Value::Float(float.sqrt())
+        }
         fn float_negate(&mut self, value: Value) -> Value {
             let Value::Float(float) = value else {
                 panic!("a float negation takes a float");

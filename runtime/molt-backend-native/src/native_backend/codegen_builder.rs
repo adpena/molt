@@ -291,6 +291,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.ins().bxor_imm_s(bit, 1)
     }
 
+    fn float_sqrt(&mut self, value: Value) -> Value {
+        self.ins().sqrt(value)
+    }
+
     fn float_binary(&mut self, op: FloatBinary, left: Value, right: Value, _fast: bool) -> Value {
         match op {
             FloatBinary::Add => self.ins().fadd(left, right),

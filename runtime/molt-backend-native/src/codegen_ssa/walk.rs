@@ -201,6 +201,11 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::IsBoolWord
             | OpCode::UnboxBoolWord
             | OpCode::BoxInlineInt => self.operator_op(b, op),
+            OpCode::FloatSqrt => {
+                let input = self.operands().resolve(b, op.operands[0]);
+                let value = b.float_sqrt(input);
+                self.bind(op.results[0], value, HeldCarrier::RawF64);
+            }
             OpCode::CodeIs => self.code_is_op(b, op),
             OpCode::DirectCall => self.guarded_direct_call_op(b, op),
             OpCode::FunctionClosure => self.function_closure_op(b, op),

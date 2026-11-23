@@ -248,6 +248,11 @@ def _run_script_cross(
     )
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
+    try:
+        if build_profile is not None and not _build_args_has_profile_flag(build_args):
+            build_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="run")
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -295,11 +300,6 @@ def _run_script_cross(
         wasm_host_command = [str(node.path), str(runner)]
 
     capabilities_tmp: Path | None = None
-    try:
-        if build_profile is not None and not _build_args_has_profile_flag(build_args):
-            build_args.extend(["--build-profile", build_profile])
-    except ValueError as exc:
-        return _fail(str(exc), json_output, command="run")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     try:
@@ -609,6 +609,11 @@ def run_script(
         env.update(environment_overrides)
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
+    try:
+        if build_profile is not None and not _build_args_has_profile_flag(build_args):
+            build_args.extend(["--build-profile", build_profile])
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="run")
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -639,11 +644,6 @@ def run_script(
     env = ProcessEnvironment(env)
 
     capabilities_tmp: Path | None = None
-    try:
-        if build_profile is not None and not _build_args_has_profile_flag(build_args):
-            build_args.extend(["--build-profile", build_profile])
-    except ValueError as exc:
-        return _fail(str(exc), json_output, command="run")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     try:
