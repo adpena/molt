@@ -2372,8 +2372,11 @@ def test_source_request_recency_requires_complete_admission(tmp_path: Path) -> N
 
     def aged_blob() -> tuple[Path, float]:
         assert files.save()
-        digest = FrontendRecordFiles(files.cache_root).addresses()[("import-scan", key)]
-        blob = files.blob_path(digest)
+        record = FrontendRecordFiles(files.cache_root).get(
+            "import-scan", key, max_bytes=2**31
+        )
+        assert record is not None and record.path is not None
+        blob = record.path
         stale = time.time() - 2 * 3600
         os.utime(blob, (stale, stale))
         return blob, stale

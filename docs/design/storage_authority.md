@@ -430,18 +430,19 @@ asyncio program did not change measurably (one run each): cold 450/440 s wall, s
 96/102 s. Two costs remain for slices 2 and 3: the first no-change rebuild
 after a cold build takes 31-35 s, and a one-line edit of a user module 96-102 s.
 
-Slice 2 (`molt.cli.frontend_record_files`): an import scan or module analysis
-is a blob named by the SHA-256 of its bytes (`frontend_records/v1/blobs`), and
-sorted index files map keys to digests (`frontend_records/v1/index/<digest>.idx`);
-one frontend operation publishes one index file. A reader orders files by
-publication time and seeks within them for the requested key, reading at most
-two rows per search step. Only requested answers are retained in process. On
-a miss it refreshes the index inventory when the directory generation changes.
-A blob must hash to its name, and the consumer still checks the exact input
-identity. The existing retention sweep compacts more than 64 index files. An
-HF-926 alias is an index entry naming the equal scan's blob. A consumer renews a
-blob's mtime, at most hourly, only after it admits the record. Eviction lists
-each blob and index file as an entry under the compile-cache budget and sweeps
+Slice 2 (`molt.cli.frontend_record_files`) stores immutable results under
+`frontend_records/v1/blobs` and action indexes under `frontend_records/v1/index`.
+A frontend operation packs up to 4 MiB of distinct results into a blob, then
+publishes the sorted `.idx2` index atomically. Each index row supplies the
+result hash and its extent. An HF-926 alias points to the same extent. Readers
+continue to admit the original standalone `.idx` rows. A reader orders files
+by publication time and seeks for the requested key, reading at most two rows
+per step. It checks the requested extent against its result hash, then checks
+the exact input identity. On a miss it refreshes the index inventory when the
+directory generation changes. The existing retention sweep compacts more than
+64 index files. An admitted result renews its blob's mtime at most hourly.
+This retains the other members of that bounded blob during the same window.
+Eviction lists each blob and index under the compile-cache budget and sweeps
 at background disk priority (`setiopolicy_np` throttle, `ioprio_set` idle class,
 `THREAD_MODE_BACKGROUND_BEGIN`). The SQLite table's `CHECK` admits only
 `intrinsic-facts` and `module-lowering`; the schema change moves it to a new

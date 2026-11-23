@@ -63,7 +63,9 @@ def test_records_are_blobs_named_by_their_bytes_and_shared_when_equal(
     for path in _index_files(tmp_path):
         parsed = parse_index(path.read_bytes())
         assert parsed is not None
-        entries.update(parsed)
+        entries.update(
+            {address: location.digest for address, location in parsed.items()}
+        )
     assert entries == {
         ("import-scan", _KEY): hashlib.sha256(b'{"scan": 1}').hexdigest(),
         ("import-scan", _OTHER): hashlib.sha256(b'{"scan": 1}').hexdigest(),
@@ -112,8 +114,81 @@ def test_an_operation_publishes_one_index_and_a_peer_sees_it_after_a_miss(
     assert _read(files, "import-scan", f"{3:024x}", max_bytes=_LIMIT) == b"[3]"
     assert files.save()
     assert len(_index_files(tmp_path)) == 1
+    assert len(_blobs(tmp_path)) == 1
     # The peer loaded the index before it existed; its next miss rescans.
     assert _read(peer, "import-scan", f"{4:024x}", max_bytes=_LIMIT) == b"[4]"
+
+
+def test_member_verification_is_independent_inside_a_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = FrontendRecordFiles(tmp_path)
+    monkeypatch.setattr(files, "_pinned_by_operation", lambda: True)
+    assert files.put("import-scan", _KEY, b"[1]")
+    assert files.put("import-scan", _OTHER, b"[2]")
+    assert files.save()
+    peer = FrontendRecordFiles(tmp_path)
+    first = peer.get("import-scan", _KEY, max_bytes=_LIMIT)
+    second = peer.get("import-scan", _OTHER, max_bytes=_LIMIT)
+    assert first is not None and second is not None
+    assert first.path is not None and first.path == second.path
+    with first.path.open("r+b") as stream:
+        stream.seek(first.offset)
+        stream.write(b"!")
+    assert peer.get("import-scan", _KEY, max_bytes=_LIMIT) is None
+    assert _read(peer, "import-scan", _OTHER, max_bytes=_LIMIT) == b"[2]"
+
+
+def test_a_long_lived_view_follows_republication_after_pack_eviction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial = FrontendRecordFiles(tmp_path)
+    latest = FrontendRecordFiles(tmp_path)
+    peer = FrontendRecordFiles(tmp_path)
+    for files, other in [(initial, b"[2]"), (latest, b"[3]")]:
+        monkeypatch.setattr(files, "_pinned_by_operation", lambda: True)
+        assert files.put("import-scan", _KEY, b"[1]")
+        assert files.put("import-scan", _OTHER, other)
+        assert files.save()
+        if files is initial:
+            record = peer.get("import-scan", _KEY, max_bytes=_LIMIT)
+            assert record is not None and record.path is not None
+            first_pack = record.path
+            old_index = _index_files(tmp_path)[0]
+            past = time.time() - 60
+            os.utime(old_index, (past, past))
+    first_pack.unlink()
+    for view in (initial, peer):
+        assert _read(view, "import-scan", _KEY, max_bytes=_LIMIT) == b"[1]"
+
+
+def test_failed_pack_index_leaves_legacy_record_visible_until_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = FrontendRecordFiles(tmp_path)
+    assert files.put("import-scan", _KEY, b"[1]")
+    (index,) = _index_files(tmp_path)
+    index.rename(index.with_suffix(records.LEGACY_INDEX_SUFFIX))
+    peer = FrontendRecordFiles(tmp_path)
+    assert _read(peer, "import-scan", _KEY, max_bytes=_LIMIT) == b"[1]"
+
+    monkeypatch.setattr(files, "_pinned_by_operation", lambda: True)
+    publish = files._publish
+
+    def refuse_index(path: Path, data: bytes) -> bool:
+        return path.suffix != records.INDEX_SUFFIX and publish(path, data)
+
+    monkeypatch.setattr(files, "_publish", refuse_index)
+    assert files.put("import-scan", _OTHER, b"[2]")
+    assert not files.save()
+    assert _index_files(tmp_path) == []
+    assert peer.get("import-scan", _OTHER, max_bytes=_LIMIT) is None
+    assert _read(files, "import-scan", _OTHER, max_bytes=_LIMIT) == b"[2]"
+
+    monkeypatch.setattr(files, "_publish", publish)
+    assert files.save()
+    assert _read(peer, "import-scan", _KEY, max_bytes=_LIMIT) == b"[1]"
+    assert _read(peer, "import-scan", _OTHER, max_bytes=_LIMIT) == b"[2]"
 
 
 def test_the_newest_index_entry_wins_and_own_writes_beat_loaded_files(
@@ -169,7 +244,10 @@ def test_retention_merges_many_index_files_without_foreground_compaction(
     (merged,) = _index_files(tmp_path)
     parsed = parse_index(merged.read_bytes())
     assert parsed is not None and len(parsed) == 6
-    assert merged.name == hashlib.sha256(merged.read_bytes()).hexdigest() + ".idx"
+    assert (
+        merged.name
+        == hashlib.sha256(merged.read_bytes()).hexdigest() + records.INDEX_SUFFIX
+    )
     assert all(
         _read(
             FrontendRecordFiles(tmp_path),
