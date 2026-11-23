@@ -186,3 +186,32 @@ except ValueError as exc:
     print("NewRaise caught:", exc)
 
 print("end")
+
+
+# __new__ chooses which descriptor the same constructor site will invoke.
+# Both forms must bind the freshly allocated receiver and forward its keywords.
+class SelectedInitializer:
+    def __get__(self, instance, owner):
+        print("descriptor", type(instance) is owner)
+
+        def initialize(select, *, value):
+            instance.value = -value
+
+        return initialize
+
+
+def selected_initializer(self, select, *, value):
+    self.value = value
+
+
+selected_descriptor = SelectedInitializer()
+
+
+class SelectAtAllocation:
+    def __new__(cls, select, *, value):
+        cls.__init__ = selected_descriptor if select else selected_initializer
+        return object.__new__(cls)
+
+
+for selection in (False, True, False):
+    print("selected", SelectAtAllocation(selection, value=7).value)
