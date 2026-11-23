@@ -564,9 +564,12 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    measured shortfall on the selected hot output volume invokes one pressure
    pass through `disk_guard.ensure_free`. The admission boundary measures the
    selected outputs again and starts the gates only when they pass. Explicit
-   external destinations are admitted as selected. This checks current capacity
-   before a run, and already admitted writers can continue allocating. The compile-cache
-   cap covers its own entries. Lane start only reports a volume below its
+   external destinations are admitted as selected. Detached collection also
+   measures the bound hot mirror against its raw reserve independently of
+   artifact volume headroom. Each pressure pass retires eligible state on its
+   measured device and checks live guard custody across the whole family.
+   Already admitted writers can continue allocating. The compile-cache cap
+   covers its own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
    state carries no byte budget because sizing it walks hundreds of GB (the
    `target/checkouts` census did not finish in 10 minutes); the floor is its
