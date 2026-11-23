@@ -1063,8 +1063,8 @@ pub(crate) unsafe fn visit_owned_values(
     visit: &mut dyn FnMut(u64),
 ) {
     unsafe {
-        // Module-state owners retire through a resource callback, never this
-        // managed sink. Capacity/tracking must not invoke extension traversal.
+        // Opaque C module state retires through its callbacks. Only declared
+        // runtime-owned module slots use the managed sink.
         visit_local_owned_gc_edges(py, ptr, &mut |edge| {
             if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
                 visit_bits(edge.value, visit);
@@ -1861,6 +1861,9 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             HeapLifecycleHandler::Module => {
                 clear_class_shaped_edges(py, ptr, sink);
                 detach(sink, detach_slots(ptr, [0]));
+                crate::c_api::c_api_module_detach_handle_slots(py, ptr, |bits| {
+                    sink.detach_if_heap(bits)
+                });
             }
             HeapLifecycleHandler::Type => {
                 detach(

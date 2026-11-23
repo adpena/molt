@@ -155,6 +155,7 @@ mod bridge;
 // `builtins/mod.rs`; only those are feature-conditional, never the core module.
 mod builtins;
 mod c_api;
+pub use c_api::module_handle_slots;
 mod call;
 mod marshal;
 pub use marshal::{
