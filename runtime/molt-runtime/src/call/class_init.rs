@@ -625,6 +625,31 @@ pub(crate) unsafe fn construct_regular_class(
         let Some(raw_init) = raw_init else {
             return instance;
         };
+        // slot_tp_init selects the actual instance type's initializer after
+        // __new__. A plain Python function already supplies the callable and
+        // receiver: its arguments forward regardless of the type's __new__.
+        // Retain both through binding just as the materialized method would.
+        use crate::builtins::attr::MethodLoadKind;
+        if matches!(
+            MethodLoadKind::from_value(py, raw_init),
+            Some(MethodLoadKind::PythonFunction)
+        ) && !callable_matches_runtime_symbol(Some(raw_init), fn_key!(molt_object_init))
+        {
+            let result = {
+                let receiver = crate::builtins::exceptions::ExceptionValue::pin(py, instance);
+                let function = crate::builtins::exceptions::ExceptionValue::pin(py, raw_init);
+                match arguments.constructor_child(None, arguments.positional()) {
+                    Ok(child) => crate::call::bind::call_bind_with_receiver(
+                        py,
+                        function.bits(),
+                        Some(receiver.bits()),
+                        child,
+                    ),
+                    Err(error) => error,
+                }
+            };
+            return resolve_construct_after_init(py, instance, result);
+        }
         let actual_new = match class_attr_lookup_raw_mro(py, actual, new_name) {
             Ok(value) => value,
             Err(()) => {

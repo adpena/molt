@@ -299,6 +299,18 @@ pub(crate) fn molt_call_bind_attached_body(
 pub(crate) unsafe fn call_bind_with_arguments(
     _py: &PyToken<'_>,
     call_bits: u64,
+    args: CallArguments<'_, '_>,
+) -> u64 {
+    unsafe { call_bind_with_receiver(_py, call_bits, None, args) }
+}
+
+/// A resolved Python method may lend its already selected receiver separately.
+/// The binder inserts it at the same point as a materialized bound method,
+/// after keyword validation and before frame argument binding.
+pub(crate) unsafe fn call_bind_with_receiver(
+    _py: &PyToken<'_>,
+    call_bits: u64,
+    mut self_bits: Option<u64>,
     mut args: CallArguments<'_, '_>,
 ) -> u64 {
     unsafe {
@@ -389,7 +401,6 @@ pub(crate) unsafe fn call_bind_with_arguments(
             StaticmethodCallTarget::NotStaticmethod => {}
         }
         let mut func_bits = call_bits;
-        let mut self_bits = None;
         // A public dictionary call lends its mapping directly to native tp_call
         // and tuple-based C methods. Vector C conventions validate after unpack;
         // source CALL still validates at its original instruction boundary.

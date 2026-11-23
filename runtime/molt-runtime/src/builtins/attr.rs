@@ -1534,6 +1534,31 @@ pub(crate) enum AttributeLookupMode<'a> {
     Method(&'a std::cell::Cell<Option<u64>>),
 }
 
+/// Functions that method-form attribute lookup can return with a separate
+/// receiver. Native descriptors still validate that receiver during CALL.
+#[derive(Clone, Copy)]
+pub(crate) enum MethodLoadKind {
+    PythonFunction,
+    NativeDescriptor,
+}
+
+impl MethodLoadKind {
+    pub(crate) unsafe fn from_value(py: &PyToken<'_>, value: u64) -> Option<Self> {
+        use crate::builtins::functions::native_callable::NativeCallableKind;
+        unsafe {
+            let function = maybe_ptr_from_bits(value)?;
+            if object_type_id(function) != TYPE_ID_FUNCTION {
+                return None;
+            }
+            match NativeCallableKind::from_class(py, object_class_bits(function)) {
+                None => Some(Self::PythonFunction),
+                Some(NativeCallableKind::MethodDescriptor) => Some(Self::NativeDescriptor),
+                Some(_) => None,
+            }
+        }
+    }
+}
+
 impl AttributeLookupMode<'_> {
     pub(crate) unsafe fn bind(
         self,
@@ -1546,14 +1571,7 @@ impl AttributeLookupMode<'_> {
         unsafe {
             if let Self::Method(receiver) = self
                 && let Some(instance) = instance
-                && let Some(function) = maybe_ptr_from_bits(value)
-                && object_type_id(function) == TYPE_ID_FUNCTION
-                && matches!(
-                    crate::builtins::functions::native_callable::NativeCallableKind::from_class(
-                        py, object_class_bits(function),
-                    ),
-                    None | Some(crate::builtins::functions::native_callable::NativeCallableKind::MethodDescriptor)
-                )
+                && MethodLoadKind::from_value(py, value).is_some()
             {
                 // Like _PyObject_GetMethod, leave receiver validation to CALL:
                 // argument expressions run after LOAD_ATTR selects its callable.
