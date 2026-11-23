@@ -169,6 +169,23 @@ impl ParsedPattern {
 }
 
 impl Program {
+    /// A search can reject a start before entering the VM only when its first
+    /// instruction must consume this exact literal, under its effective flags.
+    pub(super) fn leading_literal(&self) -> Option<(u32, &Atom)> {
+        let Instruction::Consume { atom, .. } = &self.code[self.entry] else {
+            return None;
+        };
+        if atom.flags & RE_IGNORECASE != 0 {
+            return None;
+        }
+        let first = match &atom.predicate {
+            Predicate::Unit(unit) => *unit,
+            Predicate::Literal(units) => *units.first()?,
+            _ => return None,
+        };
+        Some((first, atom))
+    }
+
     fn emit(&mut self, instruction: Instruction) -> Result<usize, MatchError> {
         let pc = self.code.len();
         checked_push(&mut self.code, instruction)?;

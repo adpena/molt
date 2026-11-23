@@ -85,10 +85,23 @@ pub(super) fn execute_match_subject(
     };
     let mut matcher = Matcher::new(compiled, subject, end)?;
     let last_start = if search { end } else { pos };
-    for start in pos..=last_start {
+    let prefix = if search {
+        compiled.program.leading_literal()
+    } else {
+        None
+    };
+    let mut start = pos;
+    while start <= last_start {
+        if let Some(prefix) = prefix {
+            let Some(candidate) = matcher.next_literal_start(start, prefix) else {
+                break;
+            };
+            start = candidate;
+        }
         if let Some(end) = matcher.run(start, fullmatch, require_advance)? {
             return Ok(Some(matcher.result(start, end)?));
         }
+        start += 1;
     }
     Ok(None)
 }

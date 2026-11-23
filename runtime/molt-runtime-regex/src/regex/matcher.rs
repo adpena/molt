@@ -344,6 +344,32 @@ impl<'a> Matcher<'a> {
         }
     }
 
+    /// Search in subject units (individual bytes or Python code points).
+    /// Confirm each full prefix with the same atom predicate used by the VM.
+    pub(super) fn next_literal_start(
+        &self,
+        mut start: usize,
+        (first, atom): (u32, &Atom),
+    ) -> Option<usize> {
+        while start < self.end {
+            let offset = match self.subject {
+                SubjectStorage::Text(text) => {
+                    text[start..self.end].iter().position(|&v| v == first)?
+                }
+                SubjectStorage::Bytes(bytes) => {
+                    let first = u8::try_from(first).ok()?;
+                    bytes[start..self.end].iter().position(|&v| v == first)?
+                }
+            };
+            start += offset;
+            if atom_matches(atom, self.subject, start, self.end, self.compiled.is_bytes).is_some() {
+                return Some(start);
+            }
+            start += 1;
+        }
+        None
+    }
+
     pub(super) fn run(
         &mut self,
         start: usize,
