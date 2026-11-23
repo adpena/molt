@@ -725,45 +725,49 @@ def checkout_cargo_target_roots(
     )
 
 
+class CargoTargetPlacement(StrEnum):
+    DEVELOPMENT = "development"
+    ARTIFACT = "artifact"
+
+
 def cargo_target_dir_for_artifact_root(
     artifact_root: Path,
     session_id: str | None,
     *,
     source_root: Path,
     env: Mapping[str, str] | None = None,
-    reclaim_hot_target: Callable[[DiskCapacityError, Mapping[str, str]], bool]
-    | None = None,
+    placement: CargoTargetPlacement = CargoTargetPlacement.DEVELOPMENT,
 ) -> Path:
     """Select persistent Cargo intermediates for one source checkout.
 
     Local targets already belong to their checkout. Shared artifact roots need
     the same stable checkout identity used by uv environments. Reusable
-    targets benefit from the hot volume's compiler cache. Pinned graphs use
-    the artifact volume so each session cannot grow the hot mirror. When
+    development targets benefit from the hot volume's compiler cache. Pinned
+    graphs and shared gate campaigns use the artifact volume. When
     selecting for a build environment, a hot volume below its reserve can
     use the same checkout coordinate on the artifact volume. Inventory omits
     the environment to address the default regardless of current capacity.
     """
     artifact = artifact_root.expanduser().resolve()
     source = source_root.expanduser().resolve()
-    target = _checkout_cargo_target(artifact, source, reusable=not session_id)
-    if env is not None and not session_id and not target.is_relative_to(artifact):
+    reusable = placement is CargoTargetPlacement.DEVELOPMENT and not session_id
+    target = _checkout_cargo_target(artifact, source, reusable=reusable)
+    if env is not None and (
+        placement is CargoTargetPlacement.ARTIFACT
+        or (reusable and not target.is_relative_to(artifact))
+    ):
         from molt.disk_capacity import require_build_capacity
 
-        for reclaim in (reclaim_hot_target, None):
-            try:
-                require_build_capacity((target,), env=env, artifact_root=artifact)
-            except DiskCapacityError as error:
-                if not error.is_hot_capacity_shortfall():
-                    raise
-                if reclaim is None or not reclaim(
-                    error, {**env, "CARGO_TARGET_DIR": str(target)}
-                ):
-                    break
-            else:
-                return target
-        target = _checkout_cargo_target(artifact, source, reusable=False)
-        require_build_capacity((target,), env=env, artifact_root=artifact)
+        try:
+            require_build_capacity((target,), env=env, artifact_root=artifact)
+        except DiskCapacityError as error:
+            if (
+                placement is CargoTargetPlacement.ARTIFACT
+                or not error.is_hot_capacity_shortfall()
+            ):
+                raise
+            target = _checkout_cargo_target(artifact, source, reusable=False)
+            require_build_capacity((target,), env=env, artifact_root=artifact)
     return session_scoped_target_dir(target, session_id)
 
 
@@ -2887,8 +2891,7 @@ class RunContext:
         force_default_keys: Collection[str] = (),
         admit_toolchain_root: bool = True,
         admit_cargo_target: bool = True,
-        reclaim_hot_target: Callable[[DiskCapacityError, Mapping[str, str]], bool]
-        | None = None,
+        cargo_target_placement: CargoTargetPlacement = CargoTargetPlacement.DEVELOPMENT,
     ) -> ProcessEnvironment:
         env = ProcessEnvironmentBuilder(os.environ if base is None else base)
         try:
@@ -2974,7 +2977,7 @@ class RunContext:
                     target_session_id,
                     source_root=self.root,
                     env=env if admit_cargo_target else None,
-                    reclaim_hot_target=reclaim_hot_target,
+                    placement=cargo_target_placement,
                 )
             )
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])

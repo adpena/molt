@@ -244,6 +244,11 @@ and bytecode policy still come from the existing gate/image owner.
 Actual gate preparation materializes the admitted environment snapshot after
 capacity checks, including provider provenance, without reselecting its image
 or roots. A dry run and a capacity refusal do not create output directories.
+Managed campaigns with shared Cargo gates default to one persistent checkout
+target on the artifact volume. Dependent gates see earlier build outputs at
+that same path after the read-only checks and throughout the campaign. An
+explicit Cargo target wins. Interactive DX builds continue to use the hot
+target when its capacity permits.
 The SDK and DX use the same memoized user-state selector; no second cache
 default lives in the inventory. Installation home keeps its original user
 custody rather than following a new binding for regenerable cache.

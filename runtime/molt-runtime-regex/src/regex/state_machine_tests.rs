@@ -56,6 +56,35 @@ fn assert_cpython_case(
 }
 
 #[test]
+fn literal_search_candidates_preserve_overlaps_captures_and_window_bounds() {
+    // Start 1 has the whole literal but its capture fails. Start 2 overlaps it.
+    let captures = Some(((2, 6), &[Some((5, 6))][..], Some(1)));
+    assert_cpython_case("aaa(b)", "xaaaab", "search", (0, 6), captures);
+    assert_cpython_case("aaa(b)", "xaaaab", "search", (0, 5), None);
+    assert_cpython_case("aaa(b)", "xaaaab", "search", (3, 6), None);
+    assert_cpython_case("aaa(b)", "xaaaab", "match", (0, 6), None);
+    assert_cpython_case("aaa(b)", "xaaaab", "search_nonempty", (2, 6), captures);
+    assert_cpython_case(
+        "(?i:abc)d",
+        "xxABCd",
+        "search",
+        (0, 6),
+        Some(((2, 6), &[], None)),
+    );
+    assert_cpython_case("abc|", "xyz", "search", (3, 3), Some(((3, 3), &[], None)));
+    // Prepared text preserves Python indices, including an unpaired surrogate.
+    let pattern = parse_pattern_typed(vec![0xd800, 0x1f600], 0, false)
+        .unwrap()
+        .compile()
+        .unwrap();
+    let subject = super::SubjectStorage::Text(&[0x1f600, 0xd800, 0xd800, 0x1f600]);
+    let found = super::execute_match_subject(&pattern, subject, 1, 4, MatchMode::Search)
+        .unwrap()
+        .unwrap();
+    assert_eq!((found.start, found.end), (2, 4));
+}
+
+#[test]
 fn cpython_continuations_restore_captures_and_closing_order() {
     let cases: &[CpythonCase<'_>] = &[
         (
