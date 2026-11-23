@@ -53,6 +53,9 @@ from molt._wasm_abi_generated import (
 )
 from molt._runtime_profile_schema_generated import RSS_SOURCE_BY_TARGET
 
+APP_BUDGET_BYTES = 1024 * 1024
+
+
 # Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
 RUNTIME_GZIP_BUDGET_MIB = 3.25
 
@@ -848,6 +851,15 @@ class TestSplitRuntimeArtifacts:
             )
         assert not (out_dir / "wrangler.toml").exists()
         assert not (out_dir / "output_linked.wasm").exists()
+
+    def test_app_wasm_size_budget(
+        self, split_build_a: tuple[Path, subprocess.CompletedProcess[str]]
+    ) -> None:
+        out_dir, _ = split_build_a
+        size = _require_split_artifact(out_dir, "app.wasm").stat().st_size
+        assert size < APP_BUDGET_BYTES, (
+            f"app.wasm is {size:,} bytes; budget {APP_BUDGET_BYTES:,}"
+        )
 
     def test_runtime_wasm_size(self, split_build_a):
         """The shared runtime's budget is its transfer size, with a raw ceiling.

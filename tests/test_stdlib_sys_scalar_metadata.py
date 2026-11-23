@@ -75,7 +75,9 @@ def _load_sys_shim(
         "molt_sys_hash_info": lambda: tuple(sys.hash_info),
         "molt_sys_thread_info": lambda: tuple(sys.thread_info),
         "molt_sys_version_info": lambda: tuple(sys.version_info),
-        "molt_sys_implementation_payload": lambda: sys.implementation,
+        "molt_sys_implementation": lambda version: types.SimpleNamespace(
+            **(vars(sys.implementation) | {"version": version})
+        ),
         "molt_sys_stdlib_module_names": lambda: tuple(sys.stdlib_module_names),
         "molt_sys_platform": lambda: sys.platform,
     }
@@ -227,6 +229,8 @@ def test_public_names_exist_before_attribute_access(
     )
     assert namespace["version_info"].major == sys.version_info.major
     assert namespace["implementation"].name == sys.implementation.name
+    assert type(namespace["implementation"]) is type(sys.implementation)
+    assert namespace["implementation"].version is namespace["version_info"]
     assert namespace["float_info"].max == sys.float_info.max
     assert isinstance(namespace["stdlib_module_names"], frozenset)
     assert namespace["displayhook"] is namespace["__displayhook__"]

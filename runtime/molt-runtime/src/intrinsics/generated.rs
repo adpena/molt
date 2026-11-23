@@ -10290,12 +10290,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_abiflags),
     },
     IntrinsicSpec {
-        name: "molt_sys_implementation_payload",
-        symbol: "molt_sys_implementation_payload",
-        arity: 0,
+        name: "molt_sys_implementation",
+        symbol: "molt_sys_implementation",
+        arity: 1,
         defaults: &[],
         public: None,
-        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_implementation_payload),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_implementation),
     },
     IntrinsicSpec {
         name: "molt_sys_flags_payload",
@@ -18859,4 +18859,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x019fd8f52a1315a6;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x0700e6a562ff02e1;
