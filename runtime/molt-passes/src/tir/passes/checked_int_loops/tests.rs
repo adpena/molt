@@ -740,6 +740,20 @@ fn short_ascii_region_preserves_the_generic_parser_and_observers() {
     );
     verify_function(&func).expect("versioned captured parser verifies");
     assert_eq!(count(&func, OpCode::OrdAt), 1, "generic ordinal retained");
+    let ranges = <ValueRange as crate::tir::analysis::Analysis>::compute(&func);
+    let raw = crate::representation_facts::raw_i64_safe_values_for(&func, &ranges);
+    let (block, shift) = func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter().map(move |op| (block.id, op)))
+        .find(|(_, op)| op.opcode == OpCode::Shr && ranges.const_int_of(op.operands[1]).is_none())
+        .expect("packed byte selection uses a variable shift");
+    assert!(
+        raw.contains(&shift.results[0]),
+        "variable byte extraction must stay raw (shift count {:?}, output {:?})",
+        ranges.range_at(block, shift.operands[1]),
+        ranges.range_of(shift.results[0])
+    );
     pipeline.run(&mut exposed);
     assert_eq!(count_admissions(&exposed), 0);
     let generic_polls = polls(&exposed);

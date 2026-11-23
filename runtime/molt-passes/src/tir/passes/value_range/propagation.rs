@@ -118,7 +118,7 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
 /// could never license a raw carrier even if narrowed.
 #[inline]
 fn is_phi_independent_bound(r: IntRange) -> bool {
-    r.lo > i64::MIN && r.hi < i64::MAX
+    r.is_bounded()
 }
 
 /// Narrow loop-header phis (block arguments of `LoopHeader` blocks) to the JOIN
