@@ -84,7 +84,10 @@ def _build_args_emit(args: list[str]) -> str | None:
 def _build_args_has_profile_flag(args: list[str]) -> bool:
     from molt.cli.build_request_resolution import parse_build_arguments
 
-    parsed = parse_build_arguments(args)
+    return _has_explicit_build_profile(parse_build_arguments(args))
+
+
+def _has_explicit_build_profile(parsed: argparse.Namespace) -> bool:
     return (
         parsed.build_profile is not None
         or parsed.profile in _build_profile_choices()
