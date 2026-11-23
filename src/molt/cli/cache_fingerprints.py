@@ -284,6 +284,24 @@ _FRONTEND_REFERENCE_SOURCES: tuple[str, ...] = tuple(
     if role is _FrontendInputRole.REFERENCE
 )
 
+# The scan producer is the compiler analysis package. Validate its imports at
+# development time so builds can identify the producer by bytes without running
+# an import analysis of the compiler before analyzing the user's program.
+_IMPORT_SCAN_PRODUCER_ROOTS = (
+    "compiler_analysis",
+    "__init__.py",
+    "_python_release_generated.py",
+    "_version.py",
+    "host_python.py",
+    "python_canonical_ast.py",
+    "python_private_names.py",
+    "target_python.py",
+    "target_python_policy.py",
+    "typed_cache.py",
+    "cli/module_graph_cache.py",
+    "cli/module_source.py",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _SourceFingerprintInputs:
@@ -778,9 +796,6 @@ def _frontend_semantic_tooling_fingerprint() -> str:
 
 def _import_scan_tooling_fingerprint() -> str:
     """Identify the source request producer, its codec and source decoder."""
-    from molt.cli.python_import_resolution import PythonImportPolicy
-    from molt.cli.python_source_closure import local_python_import_closure
-
     # The operation pins the source layout for each selected compiler.
     root = _compiler_root()
     scope = "import-scan-tooling"
@@ -791,36 +806,17 @@ def _import_scan_tooling_fingerprint() -> str:
 
     source_root = _operation_resolved(_compiler_python_source_root(root))
     package = source_root / "molt"
-    closure = local_python_import_closure(
-        source_root,
-        (package / "compiler_analysis" / "python_import_scan.py",),
-        policy=PythonImportPolicy(
-            module_level_only=False,
-            include_parent_packages=True,
-            fail_on_nonliteral_dynamic_import=True,
-            allowed_prefix="molt",
-            purpose="source_dependency",
-        ),
-        search_roots=(source_root,),
-        source_roots=(source_root,),
+    files = admitted_source_files(
+        tuple(package / name for name in _IMPORT_SCAN_PRODUCER_ROOTS),
+        follow_file_symlinks=True,
     )
-    for path in closure.paths:
-        if any(path.is_relative_to(package / name) for name in ("cli", "frontend")):
-            raise ValueError(
-                f"import scan producer reaches an orchestration module: {path}"
-            )
-    # Both driver files hold representation code. Their orchestration imports
-    # resolve and admit the request's inputs before the producer reads them.
-    hashes = dict(closure.source_sha256)
-    for name in ("module_graph_cache.py", "module_source.py"):
-        path = package / "cli" / name
-        hashes[path] = _file_content_signature(path)
+    hashes = {
+        path: _file_content_signature(path) for path in files if path.suffix == ".py"
+    }
     fingerprint = _compute_source_tree_content_digest(
-        _source_tree_content_signature(
-            source_root, tuple(str(path) for path in hashes), hashes
-        ),
+        _source_tree_content_signature(source_root, (), hashes),
         scope,
-        "",
+        "analysis-package-v1",
     )
     if transaction is not None:
         transaction.fingerprints[key] = fingerprint

@@ -42,6 +42,38 @@ MOLT = Path(CF.__file__).resolve().parents[1]
 ROOT = MOLT.parents[1]
 
 
+def test_import_scan_producer_is_closed_within_its_fingerprint() -> None:
+    from molt.cli.python_import_resolution import PythonImportPolicy
+    from molt.cli.python_source_closure import local_python_import_closure
+    from molt.source_admission import admitted_source_files
+
+    source = MOLT.parent
+    reached = local_python_import_closure(
+        source,
+        (MOLT / "compiler_analysis/python_import_scan.py",),
+        policy=PythonImportPolicy(
+            module_level_only=False,
+            include_parent_packages=True,
+            fail_on_nonliteral_dynamic_import=True,
+            allowed_prefix="molt",
+            purpose="source_dependency",
+        ),
+        search_roots=(source,),
+        source_roots=(source,),
+    )
+    inputs = frozenset(
+        admitted_source_files(
+            tuple(MOLT / name for name in CF._IMPORT_SCAN_PRODUCER_ROOTS),
+            follow_file_symlinks=True,
+        )
+    )
+    assert not {path.relative_to(MOLT) for path in reached.paths if path not in inputs}
+    assert all(
+        path.relative_to(MOLT).parts[0] not in {"cli", "frontend"}
+        for path in reached.paths
+    )
+
+
 def _module_files() -> dict[str, Path]:
     """Every importable ``molt`` module of the loaded compiler, by name."""
     modules: dict[str, Path] = {}
