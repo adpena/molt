@@ -546,14 +546,14 @@ def concurrent_gate_limit() -> int:
     )
 
 
-def _reclaim_failed_hot_output(
+def reclaim_hot_output(
     error: DiskCapacityError,
     environment: Mapping[str, str],
     attempted: set[Path],
 ) -> bool:
     """Try one bounded cleanup for a measured shortfall in the bound hot root."""
     root = error.hot_root
-    if root is None or root in attempted or not error.rejected:
+    if root is None or root in attempted or not error.is_hot_capacity_shortfall():
         return False
     try:
         device = root.stat().st_dev
@@ -607,7 +607,7 @@ def admit_selected_output_capacity(
         try:
             receipt = require_build_capacity(paths, env=environment)
         except DiskCapacityError as error:
-            if not _reclaim_failed_hot_output(error, environment, attempted):
+            if not reclaim_hot_output(error, environment, attempted):
                 raise
             receipt = require_build_capacity(paths, env=environment)
         observed.add(key)

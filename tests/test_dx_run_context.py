@@ -1365,12 +1365,15 @@ def test_family_binding_enforces_raw_hot_headroom_at_writer_boundaries(
         pytest.fail(f"raw admission queried a purgeable estimate at {path}")
 
     monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", reject_estimate)
-    cargo_target = dx.project_cargo_target_dir(lane, {})
+    cargo_target = dx.cargo_target_dir_for_artifact_root(
+        artifact, None, source_root=lane
+    )
     assert cargo_target.is_relative_to(hot)
     token = "a" * 32
     scratch_env = {
         "MOLT_MEMORY_GUARD_TOKEN": token,
         "MOLT_MEMORY_GUARD_MARKER": str(artifact / "guard.json"),
+        "MOLT_SCRATCH_STORAGE": f"disk:{hot}",
     }
     for admit in (
         lambda: require_cargo_build_capacity(

@@ -128,6 +128,21 @@ class DiskCapacityError(ValueError):
         )
         super().__init__(f"{message} diagnostic={serialized}")
 
+    def is_hot_capacity_shortfall(self) -> bool:
+        """Whether every rejection is measured low capacity on the bound hot root."""
+        hot_root = self.hot_root
+        return (
+            hot_root is not None
+            and bool(self.rejected)
+            and all(
+                probe.error is None
+                and (available := probe.available_bytes) is not None
+                and available < probe.required_bytes
+                and probe.requested_path.is_relative_to(hot_root)
+                for probe in self.rejected
+            )
+        )
+
 
 def _setting_error(
     name: str, default_bytes: int, raw_value: object, reason: str

@@ -428,9 +428,18 @@ def precheck_landing(
             postsubmit_only=postsubmit_only,
         )
     drv._assert_integration_source(git, head)
+    from molt.disk_capacity import DiskCapacityError
+
+    placement_refusal = None
+    try:
+        baseline = drv.gate_environment(repo, session_id=session_id, gates=selected)
+    except DiskCapacityError as exc:
+        # Keep disk exhaustion a try-run refusal and still run the static gates.
+        placement_refusal = exc
+        baseline = drv.gate_environment(repo, session_id=session_id)
     prepared = config.prepare(
         selected,
-        baseline=drv.gate_environment(repo, session_id=session_id),
+        baseline=baseline,
         prepare_python=lambda environment, needed: drv.prepare_gate_environment(
             repo, environment, requires_python=needed
         ),
@@ -523,11 +532,11 @@ def precheck_landing(
                 carried=carried,
                 postsubmit_only=postsubmit_only,
             )
-    from molt.disk_capacity import DiskCapacityError
-
     # Only the capacity verdict is a refusal; any other fault stays a fault.
     cargo_outputs = config.cargo_outputs(prepared.environments, trial)
     try:
+        if placement_refusal is not None and cargo_outputs:
+            raise placement_refusal
         capacity = admit_selected_output_capacity(cargo_outputs, prepared.environments)
     except DiskCapacityError as exc:
         result = PrecheckResult(

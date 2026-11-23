@@ -3539,6 +3539,7 @@ def test_postsubmit_continuation_preserves_real_cancelled_streams(
     from dataclasses import replace
     import threading
 
+    from molt import host_capacity
     from tools import molt_dev_common
     from tools.molt_dev_policy import LandingMode
 
@@ -3602,7 +3603,17 @@ def test_postsubmit_continuation_preserves_real_cancelled_streams(
         _heavy_runtime(molt_dev_gates, tmp_path, gates, run),
         mode=LandingMode.POSTSUBMIT,
     )
-    with pytest.raises(CandidateFailure, match=r"2 gate\(s\) failed"):
+    # The fixture needs two simultaneous children. Its private slot isolates
+    # the cancellation test from the enclosing pytest worker's resource grant.
+    with (
+        host_capacity.host_work_slot(
+            host_capacity.host_work_dir(runtime.repo),
+            label="postsubmit cancellation fixture",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=runtime.say,
+        ),
+        pytest.raises(CandidateFailure, match=r"2 gate\(s\) failed"),
+    ):
         molt_dev_gates.run_selected_gates(
             gates, runtime, [], host_limit=lambda: 2, keep_going=True
         )
@@ -8740,33 +8751,56 @@ def test_land_static_failure_stops_land_even_past_the_budget(
     assert queue.pending(queue.queue_paths(lane)) == []
 
 
-@pytest.mark.parametrize("verdict", [True, False], ids=["capacity", "fault"])
+@pytest.mark.parametrize("failure", ["capacity", "placement", "fault"])
 def test_land_names_a_disk_capacity_refusal_and_queues(
-    drv, origin_and_clone, tmp_path, monkeypatch, capsys, verdict
-):
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
     from molt.disk_capacity import DiskCapacityError
     from tools import molt_dev_precheck
     from tools import molt_dev_queue as queue
 
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
-    _publish_policy(
-        work,
-        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    policy = _try_run_policy(
+        counter,
+        try_gate=f"echo try >> {shlex.quote(str(counter))}",
+        cargo=failure == "placement",
     )
+    if failure == "placement":
+        policy = policy.replace(
+            'cargo_target_access = "isolated"', 'cargo_target_access = "shared"'
+        )
+    _publish_policy(work, policy)
     lane = work.parent / "lane-full-disk"
     head = _lane(work, "full-disk", {"a.py": "a = 1\n"})
 
-    def full(*_args, **_kwargs):
-        if verdict:
+    def full(*_args: object, **_kwargs: object) -> None:
+        if failure != "fault":
             raise DiskCapacityError(
                 "target volume below its build headroom", {"status": "insufficient"}
             )
         raise OSError("statfs failed: a controller fault, not a capacity verdict")
 
-    monkeypatch.setattr(molt_dev_precheck, "admit_selected_output_capacity", full)
+    if failure == "placement":
+        gate_environment = drv.gate_environment
 
-    if not verdict:
+        def exhaust_placement(
+            repo: Path, *, session_id: str, gates: Sequence[SelectedGate] = ()
+        ) -> ProcessEnvironmentBuilder:
+            if gates:
+                full()
+            return gate_environment(repo, session_id=session_id)
+
+        monkeypatch.setattr(drv, "gate_environment", exhaust_placement)
+    else:
+        monkeypatch.setattr(molt_dev_precheck, "admit_selected_output_capacity", full)
+
+    if failure == "fault":
         # Only the capacity verdict is a refusal; another fault stays a fault.
         with pytest.raises(OSError, match="controller fault"):
             _land_without_runner(drv, monkeypatch, lane)

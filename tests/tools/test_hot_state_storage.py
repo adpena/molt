@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import namedtuple
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -170,8 +171,14 @@ def test_stdlib_family_locks_stay_where_the_backend_takes_them(
     )
 
 
-def test_only_reusable_checkout_targets_follow_the_hot_record(tmp_path: Path) -> None:
-    from molt import checkout_state, dx
+def test_only_reusable_checkout_targets_follow_the_hot_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import checkout_state, disk_capacity, dx
+
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _path: 80 << 30
+    )
 
     source = tmp_path / "source"
     source.mkdir()
@@ -214,6 +221,129 @@ def test_only_reusable_checkout_targets_follow_the_hot_record(tmp_path: Path) ->
     assert dx.cargo_target_dir_for_artifact_root(source, None, source_root=source) == (
         source.resolve() / "target"
     )
+
+
+def test_hot_cargo_shortfall_selects_and_pins_the_artifact_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import disk_capacity, dx
+
+    source, artifact, hot = (tmp_path / name for name in ("source", "artifact", "hot"))
+    source.mkdir()
+    artifact.mkdir()
+    _bind(artifact, hot)
+    monkeypatch.setattr(
+        disk_capacity,
+        "_default_measure_free_bytes",
+        lambda path: (30 if path.is_relative_to(hot) else 80) << 30,
+    )
+    env = {"MOLT_EXT_ROOT": str(artifact)}
+    nominal = dx.cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
+    expected = artifact / "target" / "checkouts" / dx.checkout_component(source)
+    selected = dx.RunContext(source).canonical_env(env, create_dirs=False)
+
+    assert nominal.is_relative_to(hot)
+    assert dx.project_cargo_target_dir(source, env) == expected
+    assert selected["CARGO_TARGET_DIR"] == str(expected)
+    assert selected["MOLT_DIFF_CARGO_TARGET_DIR"] == str(expected)
+    assert not expected.exists()
+
+    explicit = dx.RunContext(source).canonical_env(
+        {**env, "CARGO_TARGET_DIR": str(nominal)}, create_dirs=False
+    )
+    assert explicit["CARGO_TARGET_DIR"] == str(nominal)
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_landing_reclaims_before_selecting_its_managed_cargo_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    from molt import disk_capacity, dx
+    from tools import disk_guard, molt_dev
+    from tools.molt_dev_policy import SelectedGate
+
+    source, artifact, hot = (tmp_path / name for name in ("source", "artifact", "hot"))
+    source.mkdir()
+    (source / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    artifact.mkdir()
+    _bind(artifact, hot)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    for name in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR", "MOLT_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    hot_free = 30 << 30
+    artifact_free = 80 << 30
+    reclaim_calls: list[Path] = []
+
+    def measure(path: Path) -> int:
+        return hot_free if path.is_relative_to(hot) else artifact_free
+
+    def reclaim(
+        minimum: float, *, root: Path, env: Mapping[str, str]
+    ) -> disk_guard.ReclaimResult:
+        nonlocal hot_free
+        assert root == hot
+        assert minimum == 50
+        assert Path(env["MOLT_EXT_ROOT"]) == artifact
+        assert Path(env["CARGO_TARGET_DIR"]) == nominal
+        reclaim_calls.append(root)
+        before = hot_free
+        hot_free = (70 if recovers else 34) << 30
+        return disk_guard.ReclaimResult("pressure", str(root), True, before, hot_free)
+
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", measure)
+    monkeypatch.setattr(disk_guard, "ensure_free", reclaim)
+    nominal = dx.cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
+    external = artifact / "target" / "checkouts" / dx.checkout_component(source)
+    gate = SelectedGate(("cargo", "test"), ("cargo",))
+
+    read_only = molt_dev.gate_environment(
+        source, session_id="inspect", create_dirs=False
+    )
+    assert read_only["CARGO_TARGET_DIR"] == str(nominal)
+    assert reclaim_calls == []
+
+    first = molt_dev.gate_environment(
+        source, session_id="first", create_dirs=False, gates=(gate,)
+    )
+    selected = nominal if recovers else external
+    assert (
+        first["CARGO_TARGET_DIR"]
+        == first["MOLT_DIFF_CARGO_TARGET_DIR"]
+        == str(selected)
+    )
+    assert reclaim_calls == [hot]
+
+    hot_free = 80 << 30
+    second = molt_dev.gate_environment(
+        source, session_id="second", create_dirs=False, gates=(gate,)
+    )
+    assert second["CARGO_TARGET_DIR"] == str(nominal)
+    assert first["CARGO_TARGET_DIR"] == str(selected)
+    assert reclaim_calls == [hot]
+
+    hot_free = 30 << 30
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(nominal))
+    pinned = molt_dev.gate_environment(
+        source, session_id="explicit", create_dirs=False, gates=(gate,)
+    )
+    assert pinned["CARGO_TARGET_DIR"] == str(nominal)
+    assert reclaim_calls == [hot]
+
+    if not recovers:
+        monkeypatch.delenv("CARGO_TARGET_DIR")
+        artifact_free = 10 << 30
+        with pytest.raises(disk_capacity.DiskCapacityError) as failure:
+            molt_dev.gate_environment(
+                source, session_id="exhausted", create_dirs=False, gates=(gate,)
+            )
+        assert failure.value.rejected[0].requested_path == external
+        assert reclaim_calls == [hot, hot]
+        read_only = molt_dev.gate_environment(
+            source, session_id="inspect-exhausted", create_dirs=False
+        )
+        assert read_only["CARGO_TARGET_DIR"] == str(nominal)
+        assert reclaim_calls == [hot, hot]
 
 
 def test_daemon_sweep_reaches_sessions_on_both_target_volumes(
