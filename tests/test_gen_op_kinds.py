@@ -3513,8 +3513,8 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     assert "OpCode::Call | OpCode::CallBuiltin" not in verify_body
     assert "OpCode::ObjectNewBoundStack" not in verify_body
 
-    assert "non_heap_boxed_values_for(func, &ranges)" in sroa
-    assert "non_heap_values_for(func, &ranges)" not in sroa
+    # The SROA execution test raw_i64_carriers_that_box_to_bigint_retain_slot_ownership
+    # covers the distinction between boxed storage and raw carrier ownership.
     assert "collect_const_immediates" not in sroa
     assert "store_value_is_refcount_neutral" not in sroa
 
