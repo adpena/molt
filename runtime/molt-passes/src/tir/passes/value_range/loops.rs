@@ -221,7 +221,7 @@ fn guard_comparison<'a>(
 /// extreme a saturated transfer reached: only such a range bounds a value
 /// independently of the loop phis (see `is_phi_independent_bound`).
 pub(super) fn interior_bound(range: IntRange) -> Option<IntRange> {
-    (range.lo > i64::MIN && range.hi < i64::MAX).then_some(range)
+    range.is_bounded().then_some(range)
 }
 
 /// One header phi with update `p * scale + d` and an independent range for `d`.

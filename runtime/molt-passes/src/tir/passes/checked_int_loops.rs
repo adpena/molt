@@ -601,7 +601,7 @@ fn select(
                 && !inline_safe.contains(&result)
                 // An op with no checked form is raw only with the proof.
                 && (rule != CheckedIntLoopRule::ExactSub
-                    || final_tir && interior(vr.range_of(result)))
+                    || final_tir && vr.range_of(result).is_bounded())
             {
                 arithmetic.push((bid, index, result, [lhs, rhs]));
             } else if is_checked(op.opcode)
@@ -671,7 +671,7 @@ fn select(
         if !capable.contains(&result) {
             continue;
         }
-        if final_tir && interior(vr.range_of(result)) {
+        if final_tir && vr.range_of(result).is_bounded() {
             selection.exact.push((block, index));
         } else {
             selection.checked.push((block, index));
@@ -680,7 +680,10 @@ fn select(
     // A checked op whose operands are raw and whose exact result the ranges
     // place inside i64 loses its check.
     for &(block, index, result, operands) in &checked_before {
-        if final_tir && interior(vr.range_of(result)) && operands.iter().all(|v| raw(v, &capable)) {
+        if final_tir
+            && vr.range_of(result).is_bounded()
+            && operands.iter().all(|v| raw(v, &capable))
+        {
             selection.unchecked.push((block, index));
         }
     }
@@ -694,12 +697,6 @@ fn select(
         .unchecked
         .sort_by_key(|&(block, index)| (block.0, index));
     Ok(selection)
-}
-
-/// A range that touches neither i64 extreme is the exact result's: the range
-/// analysis saturates a bound only when the value could leave i64.
-fn interior(range: crate::tir::numeric_facts::IntRange) -> bool {
-    range.lo > i64::MIN && range.hi < i64::MAX
 }
 
 /// The selected arithmetic ops, as (block, op index), in deterministic order.

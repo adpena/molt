@@ -83,10 +83,17 @@ pub(super) fn transfer_op_range(
                 Some(r(0).floordiv_range(r(1)))
             }
         }
-        ValueRangeTransferRule::Shr if op.operands.len() == 2 => match c(1) {
-            Some(s) => Some(r(0).shr_const(s)),
-            None => Some(IntRange::FULL_I64),
-        },
+        ValueRangeTransferRule::Shr if op.operands.len() == 2 => {
+            let value = match c(0) {
+                Some(value) => IntRange::point(value),
+                None if r(0).is_bounded() => r(0),
+                // Right shift can move a saturated endpoint back inside i64
+                // even when the actual Python integer is still too wide.
+                None => return Some(IntRange::FULL_I64),
+            };
+            let count = c(1).map_or_else(|| r(1), IntRange::point);
+            Some(value.shr_range(count))
+        }
         ValueRangeTransferRule::Shl if op.operands.len() == 2 => match c(1) {
             Some(s) => Some(r(0).shl_const(s)),
             None => Some(IntRange::FULL_I64),
