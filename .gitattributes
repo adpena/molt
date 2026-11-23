@@ -47,6 +47,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-jit/src/launch_abi_generated.rs" merge=binary
 "/runtime/molt-obj-model/src/python_version_generated.rs" merge=binary
 "/runtime/molt-obj-model/src/unicode_generated.rs" merge=binary
+"/runtime/molt-passes/src/tir/passes/local_raise_transfer/builtin_kinds_generated.rs" merge=binary
 "/runtime/molt-runtime-asyncio/src/attached_exports_generated/asyncio_core.rs" merge=binary
 "/runtime/molt-runtime-asyncio/src/attached_exports_generated/asyncio_helpers.rs" merge=binary
 "/runtime/molt-runtime-asyncio/src/attached_exports_generated/asyncio_queue.rs" merge=binary

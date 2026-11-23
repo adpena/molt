@@ -42,6 +42,9 @@ use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
 
+mod builtin_kinds_generated;
+mod prepare;
+
 /// A `raise v` whose check, the block's last op, transfers to label `label`.
 struct LocalRaise {
     block: BlockId,
@@ -117,14 +120,20 @@ fn local_raises(func: &TirFunction) -> Vec<LocalRaise> {
     found
 }
 
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, target: &crate::tir::target_info::TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "local_raise_transfer",
         ..Default::default()
     };
+    transfer_local_raises(func, &mut stats);
+    prepare::specialize(func, target, &mut stats);
+    stats
+}
+
+fn transfer_local_raises(func: &mut TirFunction, stats: &mut PassStats) {
     let sites = local_raises(func);
     if sites.is_empty() {
-        return stats;
+        return;
     }
     let mut label_blocks: HashMap<i64, Option<BlockId>> = HashMap::default();
     for (&block, &label) in &func.label_id_map {
@@ -154,7 +163,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         stats.ops_removed += 1;
         stats.ops_added += 2;
     }
-    stats
 }
 
 /// Split `handler` after its pending read; the new block's id and the number of

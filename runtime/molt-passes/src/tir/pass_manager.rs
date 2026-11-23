@@ -473,8 +473,8 @@ pub fn build_default_pipeline_for(target_info: TargetInfo, entry: PipelineEntry)
             passes::range_devirt::run(f)
         }),
         // A raise its own function catches branches to its handler (HF-906).
-        pass("local_raise_transfer", Cfg, |f, _am, _tti| {
-            passes::local_raise_transfer::run(f)
+        pass("local_raise_transfer", Cfg, |f, _am, tti| {
+            passes::local_raise_transfer::run(f, tti)
         }),
         pass("iter_devirt", Cfg, |f, _am, _tti| {
             passes::iter_devirt::run(f)

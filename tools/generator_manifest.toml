@@ -247,6 +247,7 @@ discovery_only = false
 tool = "tools/gen_exception_kinds.py"
 outputs = [
   "runtime/molt-codegen-abi/src/exception_kinds_generated.rs",
+  "runtime/molt-passes/src/tir/passes/local_raise_transfer/builtin_kinds_generated.rs",
   "src/molt/frontend/exception_kinds_generated.py",
 ]
 source = "runtime/exception_kinds.toml + tools/generator_io.py"
