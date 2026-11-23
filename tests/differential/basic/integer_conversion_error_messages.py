@@ -15,7 +15,7 @@ class Index:
 def attempt(label, fn):
     try:
         print(label, fn())
-    except (TypeError, ValueError, OverflowError) as exc:
+    except (TypeError, ValueError, OverflowError, LookupError) as exc:
         print(label, type(exc).__name__, exc)
 
 
@@ -37,3 +37,19 @@ for key in (1, True, Index(), -1, 1.0, "x", None):
     attempt("str-index", lambda k=key: text[k])
     attempt("bytes-index", lambda k=key: raw[k])
     attempt("ord-at", lambda k=key: ord(text[k]))
+
+
+# The fused ordinal must dispatch the selected receiver's indexing protocol.
+class IndexedText(str):
+    def __getitem__(self, key):
+        if key == 0:
+            return "雪"
+        raise LookupError("ordinal lookup")
+
+
+def indexed_ordinal(text, key):
+    return ord(text[key])
+
+
+print("ordinal-subclass", indexed_ordinal(IndexedText("012"), 0))
+attempt("ordinal-subclass-error", lambda: indexed_ordinal(IndexedText("012"), 1))
