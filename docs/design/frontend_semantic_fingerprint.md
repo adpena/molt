@@ -89,10 +89,12 @@ carry the scan mode and the namespace premise.
 
 Disk-backed stdlib import scans use the shared source-record store even when
 the caller has no application project root (HF-633). Their tooling identity
-digests the local import closure of `compiler_analysis/python_import_scan.py`
-and the source decoder and record codec (HF-938). The closure includes
-function-local imports and rejects nonliteral dynamic imports and dependencies
-on `cli/` or `frontend/`. The per-record key still covers source bytes, scan
+digests the compiler analysis package, its declared external dependencies,
+and the source decoder and record codec (HF-938). Source and installed builds
+use the same content identity. The compiler checks the producer's import
+closure in presubmit, including function-local imports and parent packages.
+This check rejects dependencies on `cli/` or `frontend/` and imports that
+cannot be represented in the declared boundary. The per-record key still covers source bytes, scan
 purpose, namespace premise, target and demanded bodies. Filesystem edges are
 resolved in the current operation. Explicit source/AST requests and rootless
 application sources remain uncached at this boundary. A helper that continues
