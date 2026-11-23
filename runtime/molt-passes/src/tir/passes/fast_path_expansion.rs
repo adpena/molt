@@ -127,16 +127,17 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         name: "fast_path_expansion",
         ..Default::default()
     };
-    let vr = crate::representation_facts::value_range_for(func);
-    let repr = crate::representation_facts::repr_by_value_for(func, Some(&vr));
+    let facts = super::value_identity::ScalarFacts::new(func);
+    let vr = super::value_range::compute_with_scalar_facts(&facts);
+    let repr = crate::representation_facts::repr_by_value_from(&facts, Some(&vr));
     // Exact types as they stand before any block is split.
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
-    let raise = super::check_exception_elim::classify::RaiseFacts::of(func);
+    let raise = super::check_exception_elim::classify::RaiseFacts::from_scalar_facts(facts);
+    let exact = raise.exact_types();
     if !func.blocks.values().any(|block| {
         block
             .ops
             .iter()
-            .any(|op| expansion_of(op, &repr, &exact, targets).is_some())
+            .any(|op| expansion_of(op, &repr, exact, targets).is_some())
     }) {
         return stats;
     }
@@ -148,7 +149,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
             .ops
             .iter()
             .enumerate()
-            .find_map(|(index, op)| expansion_of(op, &repr, &exact, targets).map(|e| (index, e)))
+            .find_map(|(index, op)| expansion_of(op, &repr, exact, targets).map(|e| (index, e)))
         else {
             continue;
         };
@@ -797,8 +798,7 @@ fn expansion_of(
 /// observation of the binding, and the representation plan would then box
 /// the whole loop carrier. Returns the edges it split.
 pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
-    let vr = crate::representation_facts::value_range_for(func);
-    let repr = crate::representation_facts::repr_by_value_for(func, Some(&vr));
+    let repr = crate::representation_facts::analyze_representations(func);
     let raw_scalar = |value: ValueId| {
         matches!(
             repr.get(&value),

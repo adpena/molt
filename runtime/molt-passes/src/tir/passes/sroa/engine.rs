@@ -29,8 +29,9 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
     let ranges: ValueRangeResult = am.get::<ValueRange>(func).clone();
-    let non_heap_values = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
-    let exact_types = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let facts = super::super::value_identity::ScalarFacts::new(func);
+    let non_heap_values = crate::representation_facts::non_heap_boxed_values_from(&facts, &ranges);
+    let exact_types = facts.into_types();
     let finalizer_roots: HashSet<ValueId> = finalizer_alloc_roots(func)
         .into_iter()
         .map(|value| alias.root(value))

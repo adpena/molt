@@ -19,8 +19,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     let block_ids: Vec<u32> = func.blocks.keys().map(|b| b.0).collect();
     let use_map = build_use_map(func, &block_ids);
-    let ranges = crate::representation_facts::value_range_for(func);
-    let nonallocating = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
+    let nonallocating = crate::representation_facts::analyze_non_heap_boxed(func);
     let types = crate::tir::type_refine::extract_type_map(func);
 
     let mut replacements: HashMap<ValueId, ValueId> = HashMap::default();

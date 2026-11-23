@@ -6,6 +6,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{ScevExpr, TripCount};
 use crate::tir::values::ValueId;
 
+use super::super::value_identity::ScalarFacts;
 use super::builder::ScevBuilder;
 use super::index::build_def_index;
 use super::result::ScevResult;
@@ -16,13 +17,13 @@ use super::trip_count::compute_trip_count;
 /// truth — no duplicate recurrence recognizer).
 pub fn compute_scev(func: &TirFunction) -> ScevResult {
     let loops = <LoopForest as Analysis>::compute(func);
-    compute_scev_with_loop_forest(func, &loops)
+    compute_scev_with_loop_forest(&ScalarFacts::new(func), &loops)
 }
 
 /// Compute scalar-evolution facts against the canonical LoopForest supplied by
 /// a caller that already owns loop-shape discovery.
 pub(crate) fn compute_scev_with_loop_forest(
-    func: &TirFunction,
+    facts: &ScalarFacts<'_>,
     loops: &LoopForestResult,
 ) -> ScevResult {
     if loops.headers.is_empty() {
@@ -32,7 +33,8 @@ pub(crate) fn compute_scev_with_loop_forest(
         return ScevResult::default();
     }
     let loop_headers: HashSet<BlockId> = loops.headers.iter().copied().collect();
-    let defs = build_def_index(func, &loop_headers);
+    let func = facts.body();
+    let defs = build_def_index(facts, &loop_headers);
     let mut builder = ScevBuilder::new(func, loops, &defs);
 
     // Compute SCEV for the IV header-arg of each loop (the primary recurrences),

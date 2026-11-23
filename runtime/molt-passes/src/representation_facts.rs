@@ -8,10 +8,13 @@ use crate::tir::op_kinds_generated::{
     opcode_requires_i64_shift_count_guard_table,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::passes::value_identity::ScalarFacts;
+use crate::tir::passes::value_range::compute_with_scalar_facts;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
+fn value_type_by_id_for(facts: &ScalarFacts<'_>) -> HashMap<ValueId, TirType> {
+    let tir_func = facts.body();
     let mut types = tir_func.value_types.clone();
     for block in tir_func.blocks.values() {
         for arg in &block.args {
@@ -24,7 +27,7 @@ fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
     // covers result slots, copies and executable phis without a predicate-only
     // exception or an annotation-based fallback into an unboxed lane.
     types.retain(|_, ty| crate::tir::op_kinds_generated::comparison_scalar_domain(ty).is_none());
-    types.extend(crate::tir::type_refine::extract_exact_scalar_map(tir_func));
+    types.extend(facts.types().iter().map(|(&id, ty)| (id, ty.clone())));
     types
 }
 
@@ -65,8 +68,22 @@ pub fn repr_by_value_for(
     tir_func: &TirFunction,
     vr: Option<&crate::tir::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
-    let value_types = value_type_by_id_for(tir_func);
-    repr_by_value_with_types(tir_func, vr, &value_types)
+    repr_by_value_from(&ScalarFacts::new(tir_func), vr)
+}
+
+/// Compute the full carrier plan, sharing one SSA proof with range analysis.
+pub fn analyze_representations(tir_func: &TirFunction) -> HashMap<ValueId, Repr> {
+    let facts = ScalarFacts::new(tir_func);
+    let ranges = compute_with_scalar_facts(&facts);
+    repr_by_value_from(&facts, Some(&ranges))
+}
+
+pub(crate) fn repr_by_value_from(
+    facts: &ScalarFacts<'_>,
+    vr: Option<&crate::tir::ValueRangeResult>,
+) -> HashMap<ValueId, Repr> {
+    let value_types = value_type_by_id_for(facts);
+    repr_by_value_with_types(facts.body(), vr, &value_types)
 }
 
 fn repr_by_value_with_types(
@@ -835,7 +852,7 @@ pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    let value_types = value_type_by_id_for(tir_func);
+    let value_types = value_type_by_id_for(&ScalarFacts::new(tir_func));
     raw_i64_safe_values_for_with_types(tir_func, vr, &value_types)
 }
 
@@ -959,7 +976,10 @@ pub(crate) fn non_heap_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    non_heap_values_in_domain(tir_func, vr, RefcountDomain::Carrier)
+    non_heap_values_in_domain(
+        repr_by_value_for(tir_func, Some(vr)),
+        RefcountDomain::Carrier,
+    )
 }
 
 /// Values that remain non-owning after boxing into an object field. A checked
@@ -970,7 +990,22 @@ pub(crate) fn non_heap_boxed_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    non_heap_values_in_domain(tir_func, vr, RefcountDomain::Boxed)
+    non_heap_boxed_values_from(&ScalarFacts::new(tir_func), vr)
+}
+
+pub(crate) fn non_heap_boxed_values_from(
+    facts: &ScalarFacts<'_>,
+    vr: &crate::tir::ValueRangeResult,
+) -> HashSet<ValueId> {
+    non_heap_values_in_domain(repr_by_value_from(facts, Some(vr)), RefcountDomain::Boxed)
+}
+
+pub(crate) fn analyze_non_heap_carriers(func: &TirFunction) -> HashSet<ValueId> {
+    non_heap_values_in_domain(analyze_representations(func), RefcountDomain::Carrier)
+}
+
+pub(crate) fn analyze_non_heap_boxed(func: &TirFunction) -> HashSet<ValueId> {
+    non_heap_values_in_domain(analyze_representations(func), RefcountDomain::Boxed)
 }
 
 enum RefcountDomain {
@@ -979,12 +1014,10 @@ enum RefcountDomain {
 }
 
 fn non_heap_values_in_domain(
-    tir_func: &TirFunction,
-    vr: &crate::tir::ValueRangeResult,
+    representations: HashMap<ValueId, Repr>,
     domain: RefcountDomain,
-) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    let value_types = value_type_by_id_for(tir_func);
-    repr_by_value_with_types(tir_func, Some(vr), &value_types)
+) -> HashSet<ValueId> {
+    representations
         .into_iter()
         .filter_map(|(value, repr)| {
             (matches!(

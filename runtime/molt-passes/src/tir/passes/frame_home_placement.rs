@@ -94,8 +94,7 @@ const PLACED_ATTR: &str = "frame_homes_placed";
 type Representation = HashMap<ValueId, Repr>;
 
 fn representation(func: &TirFunction) -> Representation {
-    let ranges = crate::representation_facts::value_range_for(func);
-    crate::representation_facts::repr_by_value_for(func, Some(&ranges))
+    crate::representation_facts::analyze_representations(func)
 }
 
 fn repr_of(repr: &Representation, value: ValueId) -> Repr {

@@ -12,6 +12,7 @@ use crate::tir::values::ValueId;
 
 use super::super::counted_loop::LoopGuardContext;
 use super::super::counted_loop::recognize_counted_loop_with_loop_forest;
+use super::super::value_identity::ScalarFacts;
 use super::ValueRangeResult;
 
 /// One placement authority for both recurrence producers. The header executes
@@ -57,12 +58,12 @@ pub(super) fn seed_recurrence_ranges(
 /// the shared global/body placement rule; ordinary site-aware op propagation
 /// derives update ranges from the successful-body operand facts.
 pub(super) fn seed_counted_loop_iv_ranges(
-    func: &TirFunction,
+    facts: &ScalarFacts<'_>,
     loop_forest: &LoopForestResult,
     result: &mut ValueRangeResult,
 ) {
     for &header in &loop_forest.headers {
-        let Some(c) = recognize_counted_loop_with_loop_forest(func, header, loop_forest) else {
+        let Some(c) = recognize_counted_loop_with_loop_forest(facts, header, loop_forest) else {
             continue;
         };
         let iv_canon = result.resolve(c.induction_var);
