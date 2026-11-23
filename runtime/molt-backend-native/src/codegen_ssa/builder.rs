@@ -281,6 +281,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         right: Self::Value,
         fast_math: bool,
     ) -> Self::Value;
+    /// Strict IEEE square root; late TIR owns Python domain checking.
+    fn float_sqrt(&mut self, value: Self::Value) -> Self::Value;
     fn float_negate(&mut self, value: Self::Value) -> Self::Value;
     fn float_constant(&mut self, value: f64) -> Self::Value;
     fn float_compare(

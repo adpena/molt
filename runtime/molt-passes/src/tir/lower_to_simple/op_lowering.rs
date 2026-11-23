@@ -350,6 +350,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         | OpCode::IsFloatWord
         | OpCode::UnboxFloatWord
         | OpCode::IntToFloat
+        | OpCode::FloatSqrt
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
         | OpCode::CodeIs

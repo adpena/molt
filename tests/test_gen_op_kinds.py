@@ -1411,6 +1411,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "UnboxInlineInt": "i64",
         "IsFloatWord": "bool",
         "UnboxFloatWord": "f64",
+        "FloatSqrt": "f64",
         "IsBoolWord": "bool",
         "UnboxBoolWord": "bool",
         "BoxInlineInt": "dynbox",
