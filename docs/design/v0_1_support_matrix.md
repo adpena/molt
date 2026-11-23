@@ -1,8 +1,7 @@
 # v0.1 support matrix: one typed Tier 1 authority (HF-620)
 
-Status: design, reviewed in two Goldfish rounds (section 9). After round 2 the release-line migration
-(4.2) is cut from the HF-620 lane and specified as its own slice (section 11); the lane implements 4.1,
-4.3, 4.4, 4.5 and 4.6. Owner decisions of 2026-11-05 bind it:
+Status: the matrix and release-line admission are implemented. The review in section 9 scoped
+the release-line migration as its own slice (section 11). Owner decisions of 2026-11-05 bind it:
 
 - "Both of the symposium's two recommendations are approved. But Python 3.15 belongs in there too."
 - "All of the symposium's recommendations are approved. We must not lose our project to process."
@@ -109,9 +108,8 @@ producers exist. Once they do, those runners read `TIER1_CELLS`.
 
 ### 4.2 Version rule: one function, three consumers
 
-`tools/release/release_model.py` owns version parsing. It gains
-`release_line(version) -> ReleaseLine` with `ReleaseLine = Literal["pre-1.0", "stable"]` (major 0 →
-`pre-1.0`). Consumers:
+`tools/release/release_model.py` owns version parsing. `ReleaseLine.for_version` selects
+`pre-1.0` for major 0 and `stable` for major 1 or later. Its consumers include:
 
 - **Release gate** (`tools/release_exit_gate.py`).
   - `stable`: holding findings = every open row; required roles = E1, E2, E4 and every verified-subset
@@ -120,7 +118,7 @@ producers exist. Once they do, those runners read `TIER1_CELLS`.
     blocking: an unclassified row cannot leave the release scope by omission, the rule `finding_status`
     already applies to sections). Required roles = E4 and the E3 coordinates of the Tier 1 cells. E1 (the
     numpy/scipy Pact witness) and E2 (the CPython-floor scoreboard, which includes LLVM `release-fast`)
-    evidence Tier 2 cells, so they do not hold a 0.x release; a bundle may still carry them. A Tier 1
+    evidence Tier 2 cells. The exact preview bundle refuses both roles. A Tier 1
     cell with no coordinate (its Python is not admitted) is a FAIL input like a holding finding, not an
     assembly problem, so the bundle still assembles and reports.
   - Every open row stays in the bundle's `open_findings` record; that is the report.
@@ -205,8 +203,7 @@ and the known-issues command, and links the version rule. `README.md` and
 2. A Tier 1 change changes the public contract surface.
 3. `stable` releases: unchanged hold (every open row; full E3; H0).
 4. `pre-1.0` releases: held by `v0_1_blocking` and unclassified rows and by Tier 1 E3 coordinates; never by
-   Tier 2 rows or cells. Invariants 3, 4 and 6 are the release-line slice's (section 11); until it lands,
-   every version keeps the 1.x hold.
+   Tier 2 rows or cells. Section 11 records the evidence and artifact selection rules.
 5. No presubmit or postsubmit cell runs an experimental backend; the schedule may.
 6. A Tier 1 Python that Molt does not admit fails the gate; it is never silently skipped.
 
@@ -329,12 +326,7 @@ source version throughout release admission and publication. See the current
 [public contract](../spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating). The
 Django and Falcon execution obligations in §4.1 remain separate.
 
-Two review rounds showed that "a 0.x release is held only by Tier 1" changes the release pipeline in
-more places than the gate. The rule says to cut scope after two rounds, so this lane does not change
-release code; the gate and release tooling still hold every version to the 1.x bar. The next slice
-moves these consumers in one landing, with the rewritten tests:
-
-| Consumer | Today | `pre-1.0` |
+| Consumer | `stable` | `pre-1.0` |
 | --- | --- | --- |
 | `tools/release_exit_gate.py` `_derive_status`, `source_findings` (`:141-144`, `:575-588`) | every open row holds | `v0_1_blocking` and unclassified rows hold |
 | gate E3 roles (`:106-117`, `:780-794`, `:913`, `:1141-1149`, `:1223`) | all 108 coordinates | `tier1_coordinates()`; a cell without a coordinate is a FAIL input |
