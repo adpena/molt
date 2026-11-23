@@ -6,8 +6,8 @@ use crate::builtins::exceptions::{
     record_memory_error_without_allocation,
 };
 use crate::call::type_policy::{
-    InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
-    resolved_new_is_default_object_new,
+    InitArgPolicy, callable_matches_runtime_symbol, resolved_callable_identity,
+    resolved_constructor_init_policy, resolved_new_is_default_object_new,
 };
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
@@ -591,8 +591,10 @@ pub(crate) unsafe fn construct_regular_class(
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
-                if resolved_constructor_init_policy(new, init)
-                    == InitArgPolicy::RejectConstructorArgs
+                if resolved_constructor_init_policy(
+                    resolved_callable_identity(new),
+                    resolved_callable_identity(init),
+                ) == InitArgPolicy::RejectConstructorArgs
                     && (!arguments.positional().is_empty() || arguments.keyword_count() != 0)
                 {
                     return raise_exception::<_>(
@@ -630,10 +632,11 @@ pub(crate) unsafe fn construct_regular_class(
         // receiver: its arguments forward regardless of the type's __new__.
         // Retain both through binding just as the materialized method would.
         use crate::builtins::attr::MethodLoadKind;
+        let init_identity = resolved_callable_identity(Some(raw_init));
         if matches!(
             MethodLoadKind::from_value(py, raw_init),
             Some(MethodLoadKind::PythonFunction)
-        ) && !callable_matches_runtime_symbol(Some(raw_init), fn_key!(molt_object_init))
+        ) && !init_identity.is_some_and(|identity| identity.is(fn_key!(molt_object_init)))
         {
             let result = {
                 let receiver = crate::builtins::exceptions::ExceptionValue::pin(py, instance);
@@ -657,7 +660,10 @@ pub(crate) unsafe fn construct_regular_class(
                 return MoltObject::none().bits();
             }
         };
-        match resolved_constructor_init_policy(actual_new, Some(raw_init)) {
+        match resolved_constructor_init_policy(
+            resolved_callable_identity(actual_new),
+            init_identity,
+        ) {
             InitArgPolicy::RejectConstructorArgs
                 if !arguments.positional().is_empty() || arguments.keyword_count() != 0 =>
             {
