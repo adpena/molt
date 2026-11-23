@@ -224,12 +224,42 @@ pub(super) fn interior_bound(range: IntRange) -> Option<IntRange> {
     (range.lo > i64::MIN && range.hi < i64::MAX).then_some(range)
 }
 
-/// One header phi that changes by a bounded step on its only back-edge value:
-/// `p = phi(init, p + d)` with `init` in `start` and `d` in `step`.
+/// One header phi with update `p * scale + d` and an independent range for `d`.
 struct BoundedRecurrence {
     phi: ValueId,
     start: IntRange,
+    scale: i64,
     step: IntRange,
+}
+
+impl BoundedRecurrence {
+    /// Global hull and (when the guard succeeds) the hull before the final
+    /// permitted update. Do not feed a saturated product into an addition:
+    /// a negative digit could otherwise bring a clipped bound back inside i64.
+    fn hulls(&self, trips: i128) -> Option<(IntRange, Option<IntRange>)> {
+        if self.scale == 1 {
+            let range = IntRange::from_i128(
+                i128::from(self.start.lo) + trips * i128::from(self.step.lo.min(0)),
+                i128::from(self.start.hi) + trips * i128::from(self.step.hi.max(0)),
+            );
+            return Some((interior_bound(range)?, None));
+        }
+        let mut hull = self.start;
+        let mut previous = None;
+        // With scale >= 2 a growing nonempty hull at least doubles its
+        // width each following step. Fixed points stop immediately and
+        // even an enormous trip limit takes at most an i64 width to refuse.
+        for _ in 0..trips {
+            previous = Some(hull);
+            let product = interior_bound(hull.mul(IntRange::point(self.scale)))?;
+            let next = self.start.join(interior_bound(product.add(self.step))?);
+            if next == hull {
+                break;
+            }
+            hull = next;
+        }
+        Some((hull, previous))
+    }
 }
 
 /// Range the header phis of each loop that change by a bounded step per
@@ -299,6 +329,7 @@ pub(super) fn seed_bounded_recurrence_ranges(
 
     let mut headers: Vec<BlockId> = loop_bodies.keys().copied().collect();
     headers.sort_unstable_by_key(|bid| bid.0);
+    let mut exact = None;
     let mut seeds: Vec<(ValueId, IntRange)> = Vec::new();
     for header in headers {
         if invalid.contains(&header) {
@@ -338,44 +369,108 @@ pub(super) fn seed_bounded_recurrence_ranges(
                 continue;
             };
             let (lhs, rhs) = (result.resolve(lhs), result.resolve(rhs));
-            let step = match opcode_value_range_transfer_rule_table(op.opcode) {
-                ValueRangeTransferRule::Add if lhs == phi => independent.range_of(rhs),
-                ValueRangeTransferRule::Add if rhs == phi => independent.range_of(lhs),
-                ValueRangeTransferRule::Sub if lhs == phi => independent.range_of(rhs).neg(),
-                _ => continue,
+            if op.results.first() != Some(&back) {
+                continue;
+            }
+            let scale_of = |term| {
+                if term == phi {
+                    return Some(1);
+                }
+                let product = defs.get(&term)?;
+                if opcode_value_range_transfer_rule_table(product.opcode)
+                    != ValueRangeTransferRule::Mul
+                    || product.results.as_slice() != [term]
+                {
+                    return None;
+                }
+                let [a, b] = product.operands[..] else {
+                    return None;
+                };
+                let factor = if result.resolve(a) == phi {
+                    b
+                } else if result.resolve(b) == phi {
+                    a
+                } else {
+                    return None;
+                };
+                independent.const_int_of(factor).filter(|k| *k >= 2)
             };
+            let update = match opcode_value_range_transfer_rule_table(op.opcode) {
+                ValueRangeTransferRule::Add => scale_of(lhs)
+                    .map(|k| (k, rhs, false))
+                    .or_else(|| scale_of(rhs).map(|k| (k, lhs, false))),
+                ValueRangeTransferRule::Sub => scale_of(lhs).map(|k| (k, rhs, true)),
+                _ => None,
+            };
+            let Some((scale, digit, subtract)) = update else {
+                continue;
+            };
+            if scale != 1 {
+                let exact = exact
+                    .get_or_insert_with(|| crate::tir::type_refine::extract_exact_scalar_map(func));
+                if ![phi, digit, back].iter().all(|v| {
+                    matches!(
+                        exact.get(v),
+                        Some(crate::tir::types::TirType::I64 | crate::tir::types::TirType::BigInt)
+                    )
+                }) {
+                    continue;
+                }
+            }
+            let delta = independent.range_of(digit);
+            let step = if subtract { delta.neg() } else { delta };
             let Some(step) = interior_bound(step) else {
                 continue;
             };
-            recurrences.push(BoundedRecurrence { phi, start, step });
+            recurrences.push(BoundedRecurrence {
+                phi,
+                start,
+                scale,
+                step,
+            });
         }
         if recurrences.is_empty() {
             continue;
         }
-        let Some(trips) = back_edge_bound(
-            func,
-            header,
-            body,
-            guards,
-            independent,
-            result,
-            &defs,
-            &recurrences,
-        ) else {
+        let Some(guard) = guards.material_guard(func, header, body) else {
+            continue;
+        };
+        if !guard.continue_on_true || !guards.recurrence_is_guarded(func, header, body, &guard) {
+            continue;
+        }
+        let Some(condition) = guard_comparison(&defs, result, guard.condition) else {
+            continue;
+        };
+        let Some(trips) = back_edge_bound(condition, independent, result, &recurrences) else {
             continue;
         };
         for recurrence in &recurrences {
+            if recurrence.scale != 1
+                && !condition.operands.iter().all(|v| {
+                    exact.as_ref().is_some_and(|facts| {
+                        matches!(
+                            facts.get(v),
+                            Some(
+                                crate::tir::types::TirType::I64
+                                    | crate::tir::types::TirType::BigInt
+                            )
+                        )
+                    })
+                })
+            {
+                continue;
+            }
             if result.has_global_range(recurrence.phi) {
                 continue;
             }
-            let (start, step) = (recurrence.start, recurrence.step);
-            let range = IntRange::from_i128(
-                start.lo as i128 + trips * (step.lo.min(0) as i128),
-                start.hi as i128 + trips * (step.hi.max(0) as i128),
-            );
-            // A saturated bound means the phi may leave i64 (a big int).
-            if let Some(range) = interior_bound(range) {
-                seeds.push((recurrence.phi, range));
+            if let Some((global, before_update)) = recurrence.hulls(trips) {
+                if let Some(before_update) = before_update {
+                    // At most trips - 1 back edges precede this successful guard.
+                    for &block in &guard.success_blocks {
+                        result.meet_block_range(block, recurrence.phi, before_update);
+                    }
+                }
+                seeds.push((recurrence.phi, global));
             }
         }
     }
@@ -387,29 +482,19 @@ pub(super) fn seed_bounded_recurrence_ranges(
 /// The most back edges the loop at `header` can take: its guard `i < n` (or
 /// `i <= n`) tests a recurrence `i` that grows by at least one per iteration
 /// toward a bound `n` whose largest value is known.
-#[allow(clippy::too_many_arguments)]
 fn back_edge_bound(
-    func: &TirFunction,
-    header: BlockId,
-    body: &HashSet<BlockId>,
-    guards: &LoopGuardContext,
+    condition: &TirOp,
     independent: &ValueRangeResult,
     result: &ValueRangeResult,
-    defs: &HashMap<ValueId, &TirOp>,
     recurrences: &[BoundedRecurrence],
 ) -> Option<i128> {
-    let guard = guards.material_guard(func, header, body)?;
-    if !guard.continue_on_true || !guards.recurrence_is_guarded(func, header, body, &guard) {
-        return None;
-    }
-    let condition = guard_comparison(defs, result, guard.condition)?;
     let [var, bound] = condition.operands[..] else {
         return None;
     };
     let var = result.resolve(var);
-    let induction = recurrences
-        .iter()
-        .find(|recurrence| recurrence.phi == var && recurrence.step.lo >= 1)?;
+    let induction = recurrences.iter().find(|recurrence| {
+        recurrence.phi == var && recurrence.scale == 1 && recurrence.step.lo >= 1
+    })?;
     let bound = result.resolve(bound);
     let top = result
         .const_int_of(bound)

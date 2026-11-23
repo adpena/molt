@@ -43,7 +43,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v13"
+_SCHEMA = "molt-build-record-v14"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -135,7 +135,7 @@ class RecordedBuildClaim:
     kind: BuildClaimKind
     root: Path
     resolved_root: Path
-    directory_identity: DurableFileIdentity
+    directory_identity: DurableFileIdentity | None
     cargo_target: Path | None = None
     product_identity: str | None = None
 
@@ -149,15 +149,25 @@ class RecordedBuildClaim:
         product_identity: str | None = None,
     ) -> RecordedBuildClaim:
         root = root.absolute()
-        resolved = root.resolve(strict=True)
-        metadata = resolved.stat()
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise ValueError(f"build claim is not a directory: {root}")
+        try:
+            resolved = root.resolve(strict=True)
+        except FileNotFoundError:
+            # Checkout state can hold its external lifetime lock before Cargo
+            # materializes a target. Installed prebuilt consumers leave it absent.
+            if kind is not BuildClaimKind.CHECKOUT or root.is_symlink():
+                raise
+            resolved = root.resolve(strict=False)
+            identity = None
+        else:
+            metadata = resolved.stat()
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"build claim is not a directory: {root}")
+            identity = file_identity(resolved, expected=metadata)
         return cls(
             kind,
             root,
             resolved,
-            file_identity(resolved, expected=metadata),
+            identity,
             None if cargo_target is None else cargo_target.absolute(),
             product_identity,
         )
@@ -179,7 +189,9 @@ class RecordedBuildClaim:
             "kind": self.kind.value,
             "root": str(self.root),
             "resolved_root": str(self.resolved_root),
-            "directory_identity": self.directory_identity.payload(),
+            "directory_identity": None
+            if self.directory_identity is None
+            else self.directory_identity.payload(),
             "cargo_target": None
             if self.cargo_target is None
             else str(self.cargo_target),
@@ -198,7 +210,10 @@ class RecordedBuildClaim:
         }:
             raise ValueError("invalid build claim")
         kind = BuildClaimKind(value["kind"])
-        identity = DurableFileIdentity.from_payload(value["directory_identity"])
+        if kind is BuildClaimKind.CHECKOUT and value["directory_identity"] is None:
+            identity = None
+        else:
+            identity = DurableFileIdentity.from_payload(value["directory_identity"])
         cargo_target = (
             None
             if value["cargo_target"] is None

@@ -2261,6 +2261,7 @@ pub enum RuntimeFn {
     ShlexJoin,
     ShlexQuote,
     ShlexSplitEx,
+    ShortAsciiSnapshot,
     ShutilChown,
     ShutilCopy,
     ShutilCopy2,
@@ -5117,6 +5118,7 @@ impl RuntimeFn {
         Self::ShlexJoin,
         Self::ShlexQuote,
         Self::ShlexSplitEx,
+        Self::ShortAsciiSnapshot,
         Self::ShutilChown,
         Self::ShutilCopy,
         Self::ShutilCopy2,
@@ -5829,7 +5831,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2852;
+    pub const COUNT: usize = 2853;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -37104,6 +37106,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_short_ascii_snapshot",
+        linker_symbol: "molt_short_ascii_snapshot__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::BorrowedObject,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::NothrowRead,
     },
     RuntimeFnAbi {
         symbol: "molt_shutil_chown",

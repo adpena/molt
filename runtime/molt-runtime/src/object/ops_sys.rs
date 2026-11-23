@@ -1257,6 +1257,33 @@ pub(crate) fn molt_len_list_attached_body(_py: &crate::PyToken<'_>, bits: u64) -
     })
 }
 
+/// A self-contained snapshot for loop versioning. Only the native base
+/// string layout with no class override is admitted. All other values keep
+/// their original length and indexing dispatch.
+pub(crate) fn molt_short_ascii_snapshot_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    let miss = MoltObject::none().bits();
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return miss;
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_STRING || object_class_bits(ptr) != 0 {
+            return miss;
+        }
+        let len = string_len(ptr);
+        if len > size_of::<u32>() {
+            return miss;
+        }
+        let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+        if !bytes.is_ascii() {
+            return miss;
+        }
+        let mut payload = [0; size_of::<u32>()];
+        payload[..len].copy_from_slice(bytes);
+        MoltObject::from_int(((len as i64) << u32::BITS) | i64::from(u32::from_le_bytes(payload)))
+            .bits()
+    }
+}
+
 /// Fast len for known-str values. Single type check, no 18-type dispatch.
 pub(crate) fn molt_len_str_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {

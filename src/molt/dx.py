@@ -25,6 +25,7 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 
 from molt.cargo_execution_policy import (
     cargo_compiler_wrappers,
+    memory_bounded_cargo_jobs,
     sccache_auto_selection_allowed,
     sccache_server_endpoint,
 )
@@ -784,40 +785,6 @@ def cargo_target_dir_for_environment(
         session_id = None
     return cargo_target_dir_for_artifact_root(
         artifact_root, session_id, source_root=source_root, env=env
-    )
-
-
-# Peak resident memory a single rustc codegen job for the heavy molt-runtime (and
-# source-recompiled numpy/scipy) build can reach. Cargo's default `-j<num_cpus>`
-# runs that many rustc processes in parallel, so on a small box (8GB) an unbounded
-# job count thrashes swap. Bounding jobs to available memory keeps a build inside a
-# memory ceiling AND — critically for throughput — scales UP to the CPU count on a
-# capable box instead of a fixed handful of jobs.
-_BYTES_PER_CARGO_JOB = 2 * 1024 * 1024 * 1024
-# Reserve headroom for the OS, the linker (peaks separately from parallel rustc),
-# sccache, and the driving Python before dividing the rest among parallel jobs.
-_CARGO_JOB_MEMORY_HEADROOM = 2 * 1024 * 1024 * 1024
-
-
-def _memory_bounded_cargo_jobs() -> int | None:
-    """Cargo ``--jobs`` ceiling from the canonical live resource snapshot.
-
-    Caps parallel rustc jobs by CPU, total physical memory, live available
-    memory, and active Linux cgroup capacity. Returns ``None`` only when neither
-    memory dimension can be observed, leaving Cargo's default untouched.
-    """
-    from molt import host_capacity
-
-    total_memory_bytes, available_memory_bytes = (
-        host_capacity.memory_capacity().bounded_bytes
-    )
-    if total_memory_bytes is None and available_memory_bytes is None:
-        return None
-    return host_capacity.worker_count_from_samples(
-        bytes_per_worker=_BYTES_PER_CARGO_JOB,
-        headroom_bytes=_CARGO_JOB_MEMORY_HEADROOM,
-        total_memory_bytes=total_memory_bytes,
-        available_memory_bytes=available_memory_bytes,
     )
 
 
@@ -3336,7 +3303,7 @@ class DxProject:
         # probed (then the build path's own _apply_memory_bounded_cargo_jobs runs).
         jobs_cfg = dx.get("cargo_build_jobs")
         if jobs_cfg is None:
-            jobs_cfg = _memory_bounded_cargo_jobs()
+            jobs_cfg = memory_bounded_cargo_jobs(env)
         if jobs_cfg is not None:
             env.setdefault("CARGO_BUILD_JOBS", str(jobs_cfg))
         return ProcessEnvironment(env)

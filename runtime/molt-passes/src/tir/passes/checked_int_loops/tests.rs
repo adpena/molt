@@ -693,3 +693,64 @@ fn a_range_stop_of_any_magnitude_takes_the_guard() {
     assert_eq!(count(&func, OpCode::IsInlineInt), 1);
     assert_eq!(count(&func, OpCode::UnboxInlineInt), 1);
 }
+
+// Captured from bench_etl_orders.parse_int. The CSV and wide CSV parsers
+// have the same loop. Keep real frame stores and exception observers.
+#[test]
+fn short_ascii_region_preserves_the_generic_parser_and_observers() {
+    let ir: molt_ir::FunctionIR = serde_json::from_str(include_str!("parse_int.json")).unwrap();
+    let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+    let polls = |f: &TirFunction| {
+        f.blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .filter(|op| op.is_async_work_poll())
+            .map(|op| {
+                (
+                    op.attrs["value"].clone(),
+                    op.attrs["_source_op_idx"].clone(),
+                    op.source_span,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut exposed = func.clone();
+    exposed
+        .attrs
+        .insert("frame_locals_exposed".into(), AttrValue::Bool(true));
+    let pipeline = crate::tir::pass_manager::build_default_pipeline(target);
+    let count_admissions = |func: &TirFunction| {
+        func.blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .filter(|op| {
+                op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::ShortAsciiSnapshot)
+            })
+            .count()
+    };
+    // The admission lives inside the ordinary pass pipeline, including the
+    // preceding type refinement and exception analysis.
+    pipeline.run(&mut func);
+    assert_eq!(
+        count_admissions(&func),
+        1,
+        "{}",
+        crate::tir::printer::print_function(&func)
+    );
+    verify_function(&func).expect("versioned captured parser verifies");
+    assert_eq!(count(&func, OpCode::OrdAt), 1, "generic ordinal retained");
+    pipeline.run(&mut exposed);
+    assert_eq!(count_admissions(&exposed), 0);
+    let generic_polls = polls(&exposed);
+    assert_eq!(
+        generic_polls.len(),
+        2,
+        "existing integer versioning keeps a backedge observation in each loop"
+    );
+    assert_eq!(
+        polls(&func),
+        generic_polls,
+        "both arms retain the generic observer's target and source span"
+    );
+}

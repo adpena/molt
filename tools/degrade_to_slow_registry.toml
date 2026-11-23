@@ -274,9 +274,9 @@ runtime. Genuine cost cap, frozen.
 """
 
 [[site]]
-file = "src/molt/cli/cargo_execution.py"
-symbol = "_memory_bounded_cargo_jobs"
-signature = "def _memory_bounded_cargo_jobs() -> int | None  // bound rustc -j job count to available physical memory"
+file = "src/molt/cargo_execution_policy.py"
+symbol = "memory_bounded_cargo_jobs"
+signature = "def memory_bounded_cargo_jobs  // bound rustc -j job count to host memory and delegated tree allocation"
 classification = "sound_keep"
 justification = """
 Cargo/rustc parallel job count is bounded to fit available physical memory

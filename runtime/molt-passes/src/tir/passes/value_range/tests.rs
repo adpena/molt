@@ -1655,3 +1655,68 @@ fn a_step_that_reads_its_own_phi_proves_no_bound() {
     assert!(vr.range_of(acc.total).is_full());
     assert!(!vr.fits_inline_int47(acc.next_t));
 }
+
+/// Decimal-style folds with signed digits: the byte producer stands for any
+/// independently bounded exact integer, including a future admitted ASCII read.
+fn scaled_accumulator(trips: i64) -> (Accumulator, ValueId) {
+    let mut acc = masked_accumulator(false);
+    let scaled = acc.func.fresh_value();
+    let digit = acc.func.fresh_value();
+    let radix = acc.func.fresh_value();
+    let offset = acc.func.fresh_value();
+    mark_i64_values(&mut acc.func, [scaled, digit, radix, offset]);
+    let entry = acc.func.blocks.get_mut(&acc.func.entry_block).unwrap();
+    let bound = entry.ops.pop().unwrap().results[0];
+    // The body masks to [0, 127], then subtracts the same '0' offset as ord(s[i]).
+    let mask = entry.ops.pop().unwrap().results[0];
+    entry.ops.extend([
+        cint(mask, 127),
+        cint(bound, trips),
+        cint(radix, 10),
+        cint(offset, 48),
+    ]);
+    let body = acc.func.blocks.get_mut(&acc.body).unwrap();
+    let byte = body.ops[0].results[0];
+    body.ops.splice(
+        1..2,
+        [
+            op(OpCode::Sub, vec![byte, offset], vec![digit]),
+            op(OpCode::Mul, vec![acc.total, radix], vec![scaled]),
+            op(OpCode::Add, vec![scaled, digit], vec![acc.next_t]),
+        ],
+    );
+    (acc, scaled)
+}
+
+#[test]
+fn scaled_recurrence_bounds_every_digit_and_licenses_raw_arithmetic() {
+    let (acc, product) = scaled_accumulator(12);
+    let ranges = compute_value_range(&acc.func, &compute_scev(&acc.func));
+    let prefixes = 111_111_111_111_i64;
+    assert_eq!(
+        ranges.range_of(acc.total),
+        IntRange::new(-48 * prefixes, 79 * prefixes)
+    );
+    assert_eq!(
+        ranges.range_at(acc.body, acc.total),
+        IntRange::new(-48 * (prefixes / 10), 79 * (prefixes / 10))
+    );
+    let raw = crate::representation_facts::raw_i64_safe_values_for(&acc.func, &ranges);
+    for value in [acc.total, product, acc.next_t] {
+        assert!(raw.contains(&value), "{value:?} must reach the raw carrier");
+    }
+}
+
+#[test]
+fn scaled_recurrence_refuses_wide_and_unbounded_products() {
+    for trips in [13, 100, i64::MAX] {
+        let (acc, product) = scaled_accumulator(trips);
+        let ranges = compute_value_range(&acc.func, &compute_scev(&acc.func));
+        let raw = crate::representation_facts::raw_i64_safe_values_for(&acc.func, &ranges);
+        assert!(!raw.contains(&acc.total));
+        assert!(!raw.contains(&product));
+        if trips >= 100 {
+            assert!(ranges.range_of(acc.total).is_full());
+        }
+    }
+}

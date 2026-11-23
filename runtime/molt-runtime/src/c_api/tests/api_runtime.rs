@@ -2871,6 +2871,92 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
 }
 
 #[test]
+fn rust_module_handle_slots_own_values_until_cycle_collection() {
+    use crate::builtins::weakref_type::{
+        molt_weakref_call_attached_body, molt_weakref_new_attached_body,
+    };
+    use crate::module_handle_slots::{ModuleHandleSlot, declare_module_handle_slots};
+    use molt_runtime_core::OwnedRuntimeValue;
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        let token = py.core_token();
+        let def = 0xCAFEA115;
+        let new_module = || {
+            let name = molt_runtime_core::rt_string_from(token, "rust_module_handle_cycle");
+            // Construct the extension module without making it the compiler's
+            // intrinsic registry anchor, an independent runtime root.
+            let ptr = crate::object::builders::alloc_module_obj(py, name);
+            dec_ref_bits(py, name);
+            assert!(!ptr.is_null());
+            let module = unsafe {
+                OwnedRuntimeValue::from_owned_bits(token, MoltObject::from_ptr(ptr).bits())
+            };
+            assert_eq!(
+                molt_module_capi_register_attached_body(py, module.bits(), def, 0),
+                0
+            );
+            declare_module_handle_slots(token, &module, 2).unwrap();
+            (module, ptr)
+        };
+        let (module, module_ptr) = new_module();
+        let edge = ModuleHandleSlot(0);
+        let immediate = ModuleHandleSlot(1);
+        assert!(immediate.get_owned(token, &module).unwrap().is_none());
+        let plus_zero = OwnedRuntimeValue::retain(token, 0.0f64.to_bits());
+        // The immediate and the module both belong to the attached runtime.
+        unsafe { immediate.set(token, &module, Some(plus_zero)) }.unwrap();
+        assert_eq!(
+            immediate.get_owned(token, &module).unwrap().unwrap().bits(),
+            0.0f64.to_bits()
+        );
+        let refcount = || unsafe {
+            (*crate::object::header_from_obj_ptr(module_ptr)).owned_ref_count_snapshot()
+        };
+        let baseline = refcount();
+        // Explicitly promote this live borrow so the slot can take ownership.
+        let add_self_edge = || {
+            let value = OwnedRuntimeValue::retain(token, module.bits());
+            unsafe { edge.set(token, &module, Some(value)) }.unwrap();
+        };
+        add_self_edge();
+        assert_eq!(refcount(), baseline + 1);
+        assert_eq!(
+            edge.get_owned(token, &module).unwrap().unwrap().bits(),
+            module.bits()
+        );
+        unsafe { edge.set(token, &module, None) }.unwrap();
+        assert_eq!(refcount(), baseline);
+        unsafe { edge.set(token, &module, None) }.unwrap();
+        assert_eq!(refcount(), baseline);
+        add_self_edge();
+        let weak = molt_weakref_new_attached_body(
+            py,
+            builtin_classes(py).reference_type,
+            module.bits(),
+            MoltObject::none().bits(),
+        );
+        assert!(!obj_from_bits(weak).is_none());
+        let module_bits = module.bits();
+        drop(module);
+        // The slot is now the only owning module reference.
+        let live = molt_weakref_call_attached_body(py, weak);
+        assert_eq!(live, module_bits);
+        dec_ref_bits(py, live);
+        let generation = MoltObject::from_int(i64::from(crate::object::gc::OLDEST_GENERATION));
+        let collected =
+            crate::object::ops_sys::molt_gc_collect_attached_body(py, generation.bits());
+        assert!(crate::to_i64(obj_from_bits(collected)).is_some_and(|count| count >= 1));
+        assert!(obj_from_bits(molt_weakref_call_attached_body(py, weak)).is_none());
+        assert!(!c_api_module_registered(py, module_ptr, def));
+        dec_ref_bits(py, weak);
+        let (fresh, _) = new_module();
+        assert!(edge.get_owned(token, &fresh).unwrap().is_none());
+        assert!(immediate.get_owned(token, &fresh).unwrap().is_none());
+    });
+}
+
+#[test]
 fn module_capi_teardown_detaches_registry_edge_before_release() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {

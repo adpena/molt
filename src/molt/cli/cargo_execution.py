@@ -17,6 +17,7 @@ from molt.source_root import compiler_source_root
 from molt.cargo_execution_policy import (
     _wrapper_is_sccache,
     cargo_compiler_wrappers,
+    memory_bounded_cargo_jobs,
     normalize_cargo_environment,
     require_cargo_build_capacity,
     sccache_auto_selection_allowed,
@@ -26,7 +27,6 @@ from molt.cargo_execution_policy import (
 from molt.exact_json import loads_exact
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
-    _memory_bounded_cargo_jobs,
     control_state_dir,
     development_artifact_env,
     development_artifacts_requested,
@@ -229,8 +229,6 @@ def cargo_execution_evidence(
     }
 
 
-# Cargo `--jobs` memory-bounding authority now lives in molt.dx (the resource
-# authority, importable without a cycle). See dx._memory_bounded_cargo_jobs.
 def _apply_memory_bounded_cargo_jobs(env: ProcessEnvironmentBuilder) -> None:
     """Default ``CARGO_BUILD_JOBS`` to a memory-fit ceiling when unset.
 
@@ -240,7 +238,7 @@ def _apply_memory_bounded_cargo_jobs(env: ProcessEnvironmentBuilder) -> None:
     """
     if env.get("CARGO_BUILD_JOBS", "").strip():
         return
-    jobs = _memory_bounded_cargo_jobs()
+    jobs = memory_bounded_cargo_jobs(env)
     if jobs is not None:
         env["CARGO_BUILD_JOBS"] = str(jobs)
 

@@ -8,6 +8,7 @@ mod cpython_abi_wasm_exports;
 mod cpython_compat;
 #[cfg(test)]
 mod cpython_compat_test_support;
+pub mod module_handle_slots;
 pub(crate) mod molt_api;
 
 // Re-export Rust-callable helpers inside the runtime crate on every target.
@@ -40,6 +41,7 @@ pub use crate::object::memoryview::MoltBufferView;
 struct CApiModuleMetadata {
     module_def_ptr: usize,
     module_state: Option<Box<[u8]>>,
+    handle_slots: Option<Box<[Option<u64>]>>,
     module_state_size: usize,
     exec_started: bool,
     callbacks: molt_cpython_abi::hooks::ModuleGcCallbacks,
@@ -150,7 +152,11 @@ pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) 
             dec_ref_bits(_py, bits);
         }
         let metadata = c_api_module_state(_py).metadata.remove(&key);
-        drop(metadata);
+        if let Some(slots) = metadata.and_then(|metadata| metadata.handle_slots) {
+            for bits in slots.into_vec().into_iter().flatten() {
+                dec_ref_bits(_py, bits);
+            }
+        }
         dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
     }
     drop(by_module);
@@ -277,24 +283,16 @@ fn require_type_handle(_py: &PyToken<'_>, type_bits: MoltHandle) -> Result<*mut 
 }
 
 #[inline]
+fn module_handle_ptr(module_bits: MoltHandle) -> Option<*mut u8> {
+    obj_from_bits(module_bits)
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_MODULE })
+}
+
+#[inline]
 fn require_module_handle(_py: &PyToken<'_>, module_bits: MoltHandle) -> Result<*mut u8, i32> {
-    let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-        return Err(raise_i32(
-            _py,
-            BuiltinExc::TypeError,
-            "module object expected",
-        ));
-    };
-    unsafe {
-        if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            return Err(raise_i32(
-                _py,
-                BuiltinExc::TypeError,
-                "module object expected",
-            ));
-        }
-    }
-    Ok(module_ptr)
+    module_handle_ptr(module_bits)
+        .ok_or_else(|| raise_i32(_py, BuiltinExc::TypeError, "module object expected"))
 }
 
 #[inline]
@@ -413,6 +411,16 @@ pub(crate) fn c_api_module_visit_owned_edge(
     let module_key = module_ptr_key(module_ptr);
     let bits = {
         let guard = c_api_module_state(_py);
+        if let Some(slots) = guard
+            .metadata
+            .get(&module_key)
+            .and_then(|metadata| metadata.handle_slots.as_deref())
+        {
+            // This is the managed edge census, which cannot run extension code.
+            for &bits in slots.iter().flatten() {
+                visit(bits);
+            }
+        }
         guard
             .state_registry
             .by_module
@@ -428,6 +436,23 @@ pub(crate) fn c_api_module_visit_owned_edge(
         .is_some_and(|ptr| ptr != module_ptr)
     {
         visit(bits);
+    }
+}
+
+pub(crate) fn c_api_module_detach_handle_slots(
+    py: &PyToken<'_>,
+    module_ptr: *mut u8,
+    mut detach: impl FnMut(u64),
+) {
+    let mut guard = c_api_module_state(py);
+    if let Some(slots) = guard
+        .metadata
+        .get_mut(&module_ptr_key(module_ptr))
+        .and_then(|metadata| metadata.handle_slots.as_deref_mut())
+    {
+        for bits in slots.iter_mut().filter_map(Option::take) {
+            detach(bits);
+        }
     }
 }
 

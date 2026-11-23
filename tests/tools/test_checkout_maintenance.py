@@ -458,6 +458,9 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
+    uv_cache = artifacts / ".uv-cache"
+    if operation == "checkout":
+        uv_cache.mkdir()
     projects = tmp_path / "projects"
     owner = projects / "retired"
     owner.mkdir(parents=True)
@@ -490,7 +493,7 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
     environment = dict(os.environ)
     environment.update(
         MOLT_TARGET_ROOT=str(tmp_path / "target-root"),
-        UV_CACHE_DIR=str(artifacts / ".uv-cache"),
+        UV_CACHE_DIR=str(uv_cache),
         MOLT_CACHE=str(artifacts / ".molt_cache"),
         PIP_CACHE_DIR=str(artifacts / ".pip-cache"),
         RUFF_CACHE_DIR=str(artifacts / ".ruff-cache"),
@@ -619,6 +622,11 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
             == 1
         )
         return
+    assert {
+        "class": "uv-cache",
+        "path": str(uv_cache),
+        "action": "provider-prune",
+    } in json.loads((state / "run.log").read_text(encoding="utf-8"))["storage"]
     logs = list((artifacts / "logs/disk_guard").glob("disk_guard-*.json"))
     assert {
         json.loads(path.read_text(encoding="utf-8"))["operation"] for path in logs
