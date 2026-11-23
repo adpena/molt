@@ -1037,26 +1037,26 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
     ]);
     use OperandTransfer::{Adopted, Borrowed, Consumed};
     assert_eq!(
-        op_transferred_operands(&call),
+        op_transferred_operands(&call).collect::<Vec<_>>(),
         [Borrowed, Adopted, Adopted, Borrowed],
         "typed custody adopts each position, a repeated root included"
     );
     let mut bind = op(OpCode::Call, vec![borrowed, builder], vec![]);
     bind.origin = Some(molt_ir::OpKind::CallBind);
     assert_eq!(
-        op_transferred_operands(&bind),
+        op_transferred_operands(&bind).collect::<Vec<_>>(),
         [Borrowed, Consumed],
         "call_bind consumes the CallArgs builder it frees"
     );
     bind.set_argument_custody(&[ParameterCustody::Transferred, ParameterCustody::Transferred]);
     assert_eq!(
-        op_transferred_operands(&bind),
+        op_transferred_operands(&bind).collect::<Vec<_>>(),
         [Adopted, Consumed],
         "a position both declare is consumed"
     );
     let release = op(OpCode::DecRef, vec![value], vec![]);
     assert_eq!(
-        op_transferred_operands(&release),
+        op_transferred_operands(&release).collect::<Vec<_>>(),
         [Borrowed],
         "an explicit release ends the holder's own reference; it takes nothing"
     );
@@ -1353,7 +1353,7 @@ fn binding_views_join_through_block_arguments() {
         &store, first, &aliases
     ));
     assert_eq!(
-        op_transferred_operands(&store),
+        op_transferred_operands(&store).collect::<Vec<_>>(),
         [OperandTransfer::BindingStore]
     );
 }
