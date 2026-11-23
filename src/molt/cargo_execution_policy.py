@@ -18,6 +18,7 @@ import re
 import sys
 import tomllib
 
+from . import host_capacity
 from .disk_capacity import (
     DiskCapacityReceipt,
     FreeSpaceMeasurement,
@@ -78,6 +79,7 @@ _SCCACHE_SERVER_SOCKETS = os.name != "nt"
 _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES = len("/sccacheXXXXXX/sock")
 TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
+CARGO_MEMORY_SLICE_JOBS_POLICY = "cargo-memory-slice-jobs"
 CARGO_WRAPPER_ENV_NAMES = (
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
@@ -841,6 +843,27 @@ def admit_cargo_build(
     )
 
 
+# These are Cargo workload costs inside either a delegated slice or the host.
+# The headroom covers the driver, linker, cache server and other child work.
+_BYTES_PER_CARGO_JOB = 2 * 1024**3
+_CARGO_JOB_MEMORY_HEADROOM = 2 * 1024**3
+
+
+def memory_bounded_cargo_jobs(
+    environ: Mapping[str, str] | None = None,
+) -> int | None:
+    """Size Rust parallelism within the host and the caller's tree allocation."""
+    total, available = host_capacity.memory_capacity(environ).bounded_bytes
+    if total is None and available is None:
+        return None
+    return host_capacity.worker_count_from_samples(
+        bytes_per_worker=_BYTES_PER_CARGO_JOB,
+        headroom_bytes=_CARGO_JOB_MEMORY_HEADROOM,
+        total_memory_bytes=total,
+        available_memory_bytes=available,
+    )
+
+
 def cargo_subprocess_environment(
     command: Sequence[str],
     environ: Mapping[str, str] | None,
@@ -854,11 +877,35 @@ def cargo_subprocess_environment(
             if environ is None or isinstance(environ, ProcessEnvironment)
             else ProcessEnvironment(environ)
         ), ()
-    return normalize_cargo_environment(
+    environment, policies = normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,
         cwd=cwd,
     )
+    if not environment.get(
+        host_capacity.MEMORY_SLICE_ENV, ""
+    ).strip() or not cargo_compiles(command):
+        return environment, policies
+
+    requested = environment.get("CARGO_BUILD_JOBS", "").strip()
+    if requested in {"", "default"}:
+        requested_jobs = None
+    else:
+        digits = requested.removeprefix("+")
+        if not digits.isascii() or not digits.isdecimal():
+            # Cargo owns its relative CPU syntax and input validation.
+            return environment, policies
+        requested_jobs = int(digits)
+        if requested_jobs <= 1:
+            # Preserve the single-job floor and Cargo's rejection of zero.
+            return environment, policies
+    jobs = memory_bounded_cargo_jobs(environment)
+    if jobs is not None and (requested_jobs is None or jobs < requested_jobs):
+        return environment.updated({"CARGO_BUILD_JOBS": str(jobs)}), (
+            *policies,
+            CARGO_MEMORY_SLICE_JOBS_POLICY,
+        )
+    return environment, policies
 
 
 def proof_command_timeout_seconds(
