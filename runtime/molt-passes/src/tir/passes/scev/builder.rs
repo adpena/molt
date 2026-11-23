@@ -16,7 +16,7 @@ pub(super) struct ScevBuilder<'a> {
     func: &'a TirFunction,
     pub(super) loops: &'a LoopContext,
     pub(super) guards: super::super::counted_loop::LoopGuardContext,
-    defs: &'a DefIndex,
+    defs: &'a DefIndex<'a>,
     /// header → its IV header-arg value (the recurrence "phi"), once recognized.
     pub(super) iv_of_header: HashMap<BlockId, ValueId>,
     /// Memoized SCEV per value.
@@ -26,7 +26,11 @@ pub(super) struct ScevBuilder<'a> {
 }
 
 impl<'a> ScevBuilder<'a> {
-    pub(super) fn new(func: &'a TirFunction, loops: &'a LoopContext, defs: &'a DefIndex) -> Self {
+    pub(super) fn new(
+        func: &'a TirFunction,
+        loops: &'a LoopContext,
+        defs: &'a DefIndex<'a>,
+    ) -> Self {
         Self {
             func,
             loops,

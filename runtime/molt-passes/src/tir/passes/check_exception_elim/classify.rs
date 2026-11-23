@@ -73,10 +73,19 @@ pub(crate) struct RaiseFacts {
 
 impl RaiseFacts {
     pub(crate) fn of(func: &crate::tir::function::TirFunction) -> Self {
+        Self::from_scalar_facts(super::super::value_identity::ScalarFacts::new(func))
+    }
+
+    pub(crate) fn from_scalar_facts(facts: super::super::value_identity::ScalarFacts<'_>) -> Self {
+        let const_ints = const_int_values(facts.body());
         Self {
-            value_types: crate::tir::type_refine::extract_exact_scalar_map(func),
-            const_ints: const_int_values(func),
+            value_types: facts.into_types(),
+            const_ints,
         }
+    }
+
+    pub(crate) fn exact_types(&self) -> &HashMap<ValueId, TirType> {
+        &self.value_types
     }
 
     pub(crate) fn op_may_raise(&self, op: &TirOp) -> bool {

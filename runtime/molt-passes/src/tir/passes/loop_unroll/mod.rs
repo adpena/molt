@@ -182,10 +182,11 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
 
     let loop_forest = <LoopForest as Analysis>::compute(func);
 
+    let facts = super::value_identity::ScalarFacts::new(func);
     let mut candidates = Vec::new();
     for &header_id in &loop_forest.headers {
         let Some(loop_info) =
-            counted_loop::recognize_counted_loop_with_loop_forest(func, header_id, &loop_forest)
+            counted_loop::recognize_counted_loop_with_loop_forest(&facts, header_id, &loop_forest)
         else {
             continue;
         };

@@ -59,7 +59,8 @@ impl ShortAscii {
         }
         // Passing the original boxed owner may not introduce a fallible box
         // at a location that had no such operation.
-        let repr = crate::representation_facts::repr_by_value_for(func, Some(vr));
+        let facts = super::super::value_identity::ScalarFacts::new(func);
+        let repr = crate::representation_facts::repr_by_value_from(&facts, Some(vr));
         if repr.get(&owner) != Some(&molt_ir::repr::Repr::DynBox) {
             return None;
         }
@@ -80,14 +81,13 @@ impl ShortAscii {
                 return None;
             }
         }
-        let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
         let preview = super::super::value_range::under_length_guard(
-            func,
+            &facts,
             &lengths,
             i64::from(u32::BITS / u8::BITS),
         );
         if !ordinals.iter().all(|&(bid, index)| {
-            exact.get(&index) == Some(&TirType::I64)
+            facts.types().get(&index) == Some(&TirType::I64)
                 && preview.proves_index_lt_len_symbolically(bid, owner, index)
         }) {
             return None;

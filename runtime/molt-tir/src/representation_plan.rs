@@ -4,7 +4,9 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use molt_ir::deterministic_hash::HashMap;
 
-pub use molt_passes::representation_facts::{repr_by_value_for, value_range_for};
+pub use molt_passes::representation_facts::{
+    analyze_representations, repr_by_value_for, value_range_for,
+};
 
 /// Freeze the exact target-neutral parameter and return carriers used at independently
 /// compiled native-object boundaries.
@@ -123,8 +125,7 @@ impl ProducerCarrierPlan {
     }
     /// Build carrier facts from the exact TIR function being lowered.
     pub fn build(tir_func: &TirFunction) -> Self {
-        let vr = value_range_for(tir_func);
-        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+        let repr_by_value = analyze_representations(tir_func);
         Self { repr_by_value }
     }
 

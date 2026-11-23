@@ -6,6 +6,8 @@
 //! one SSA value unchanged, so loop recognition, range analysis, representation
 //! planning, and loop transforms cannot drift.
 
+use std::cell::OnceCell;
+
 use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::TirFunction;
@@ -13,6 +15,7 @@ use crate::tir::op_kinds_generated::{
     PredicateSemantics, opcode_negated_predicate_table, opcode_predicate_semantics,
 };
 use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 /// `Some(src)` when `op` is a `Copy` that holds the same value as one source.
@@ -82,7 +85,7 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
 /// Build a transitive copy-resolution map over value-forwarding Copy ops.
 ///
 /// This map retains the existing identity/alias contract. Numeric-only clients
-/// that need effectful scalar forwarding use `build_scalar_value_map` instead.
+/// that need effectful scalar forwarding use `ScalarFacts::forwarding` instead.
 pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
     let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
     for block in func.blocks.values() {
@@ -150,14 +153,54 @@ pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
         .then_some(op.operands[0])
 }
 
+/// Exact scalar provenance and its forwarding projection for one immutable
+/// SSA body. The shared borrow prevents reusing these facts after a rewrite.
+pub(crate) struct ScalarFacts<'f> {
+    body: &'f TirFunction,
+    types: OnceCell<HashMap<ValueId, TirType>>,
+    forwarding: OnceCell<HashMap<ValueId, ValueId>>,
+}
+
+impl<'f> ScalarFacts<'f> {
+    pub(crate) fn new(body: &'f TirFunction) -> Self {
+        Self {
+            body,
+            types: OnceCell::new(),
+            forwarding: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn body(&self) -> &'f TirFunction {
+        self.body
+    }
+
+    pub(crate) fn types(&self) -> &HashMap<ValueId, TirType> {
+        self.types
+            .get_or_init(|| crate::tir::type_refine::extract_exact_scalar_map(self.body))
+    }
+
+    pub(crate) fn into_types(self) -> HashMap<ValueId, TirType> {
+        self.types
+            .into_inner()
+            .unwrap_or_else(|| crate::tir::type_refine::extract_exact_scalar_map(self.body))
+    }
+
+    pub(crate) fn forwarding(&self) -> &HashMap<ValueId, ValueId> {
+        self.forwarding
+            .get_or_init(|| build_scalar_value_map(self.body, self.types()))
+    }
+}
+
 /// Numeric-only fact resolution, including effectful scalar publications.
 /// Never use this map to rewrite SSA uses, classify aliases or elide effects.
-pub fn build_scalar_value_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
+fn build_scalar_value_map(
+    func: &TirFunction,
+    exact: &HashMap<ValueId, TirType>,
+) -> HashMap<ValueId, ValueId> {
     // Range clients also track mutable container lengths. Only a proven
     // immutable scalar may cross an effectful publication: its displaced
     // owner's finalizer could mutate a forwarded container. The exact solver
     // calls scalar_value_source, not this map, so this query is non-recursive.
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let mut scalar_of = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {

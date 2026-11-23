@@ -15,7 +15,7 @@ use super::index::DefIndex;
 /// `Gt(iv, stop)` and the IV's `AddRec`.
 pub(super) fn compute_trip_count(
     func: &TirFunction,
-    defs: &DefIndex,
+    defs: &DefIndex<'_>,
     iv_of_header: &HashMap<BlockId, ValueId>,
     builder: &mut ScevBuilder,
     header: BlockId,

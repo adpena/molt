@@ -7,7 +7,7 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::tir::analysis::{Analysis, AnalysisManager};
+use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::{
     build_pred_map, exception_label_to_block, exception_successors, executable_reverse_postorder,
@@ -171,8 +171,7 @@ pub fn for_alias(func: &TirFunction, alias: &AliasAnalysisResult) -> TypedSlotAc
     if !has_candidates(func) {
         return TypedSlotAccessPlan::default();
     }
-    let ranges = ValueRange::compute(func);
-    let boxed_neutral = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
+    let boxed_neutral = crate::representation_facts::analyze_non_heap_boxed(func);
     analyze(func, alias, &boxed_neutral)
 }
 

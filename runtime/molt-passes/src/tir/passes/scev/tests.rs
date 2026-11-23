@@ -291,7 +291,8 @@ fn hundred_thousand_arithmetic_operands_fit_two_mib_stack() {
                 .extend(ops);
             let loops = LoopForest::compute(&func);
             let headers = loops.headers.iter().copied().collect();
-            let defs = build_def_index(&func, &headers);
+            let facts = super::super::value_identity::ScalarFacts::new(&func);
+            let defs = build_def_index(&facts, &headers);
             let mut builder = ScevBuilder::new(&func, &loops, &defs);
             assert_eq!(builder.scev(tail), ScevExpr::Constant(100_000));
             assert_eq!(builder.scev(tail), ScevExpr::Constant(100_000));
@@ -364,7 +365,8 @@ fn nested_header_starts_keep_direct_query_and_memo_order() {
         },
     );
     let loops = LoopForest::compute(&func);
-    let defs = build_def_index(&func, &loops.headers.iter().copied().collect());
+    let facts = super::super::value_identity::ScalarFacts::new(&func);
+    let defs = build_def_index(&facts, &loops.headers.iter().copied().collect());
     let mut outer_first = ScevBuilder::new(&func, &loops, &defs);
     let outer = outer_first.scev(outer_iv);
     assert!(matches!(outer, ScevExpr::AddRec { .. }));

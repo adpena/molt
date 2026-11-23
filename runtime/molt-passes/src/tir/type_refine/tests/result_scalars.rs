@@ -64,7 +64,7 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
         kind_consumed_operand_table, opcode_effects_table,
     };
     use crate::tir::passes::value_identity::{
-        build_scalar_value_map, copy_value_source, no_heap_alias_source, scalar_value_source,
+        ScalarFacts, copy_value_source, no_heap_alias_source, scalar_value_source,
     };
 
     for publication in [
@@ -130,7 +130,10 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
                 let exact = extract_exact_scalar_map(&func);
                 for value in [ValueId(1), ValueId(2), ValueId(3)] {
                     assert_eq!(exact.get(&value), Some(&expected));
-                    assert_eq!(build_scalar_value_map(&func).get(&value), Some(&ValueId(0)));
+                    assert_eq!(
+                        ScalarFacts::new(&func).forwarding().get(&value),
+                        Some(&ValueId(0))
+                    );
                 }
                 // Fact extraction/refinement must retain both effectful publications.
                 let current_ops = &func.blocks[&func.entry_block].ops;
@@ -148,7 +151,7 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
 
 #[test]
 fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
-    use crate::tir::passes::value_identity::{build_scalar_value_map, scalar_value_source};
+    use crate::tir::passes::value_identity::{ScalarFacts, scalar_value_source};
     let load_attrs = int_attr(0);
 
     let load = make_op(OpCode::Copy, vec![], vec![ValueId(4)], load_attrs)
@@ -182,7 +185,8 @@ fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
             refine_types(&mut func);
         }
         let exact = extract_exact_scalar_map(&func);
-        let forwarded = build_scalar_value_map(&func);
+        let facts = ScalarFacts::new(&func);
+        let forwarded = facts.forwarding();
         for value in [ValueId(0), ValueId(1), ValueId(2), ValueId(3), ValueId(4)] {
             assert!(!exact.contains_key(&value));
             assert!(!forwarded.contains_key(&value));

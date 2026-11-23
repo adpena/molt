@@ -25,8 +25,7 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
         let pass_stats = molt_backend::tir::passes::run_pipeline(&mut tir_func, &target);
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let ranges = molt_backend::representation_plan::value_range_for(&tir_func);
-        let repr = molt_backend::representation_plan::repr_by_value_for(&tir_func, Some(&ranges));
+        let repr = molt_backend::representation_plan::analyze_representations(&tir_func);
         let tir_errors = molt_backend::tir::verify::verify_function(&tir_func)
             .err()
             .unwrap_or_default();

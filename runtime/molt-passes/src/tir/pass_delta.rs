@@ -275,9 +275,7 @@ impl FactProfile {
             branch_census: BranchCensus::capture(func),
         };
 
-        let value_range = crate::representation_facts::value_range_for(func);
-        let repr_by_value =
-            crate::representation_facts::repr_by_value_for(func, Some(&value_range));
+        let repr_by_value = crate::representation_facts::analyze_representations(func);
 
         let mut seen_values = BTreeSet::new();
         for (&id, ty) in &func.value_types {
