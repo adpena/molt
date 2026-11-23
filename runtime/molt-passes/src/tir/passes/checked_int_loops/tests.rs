@@ -3,6 +3,7 @@ use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::LoopRole;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect};
 use crate::tir::verify::verify_function;
+use molt_ir::OpKind;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp::new(opcode, operands, results)
@@ -719,7 +720,7 @@ fn short_ascii_region_preserves_the_generic_parser_and_observers() {
     exposed
         .attrs
         .insert("frame_locals_exposed".into(), AttrValue::Bool(true));
-    let pipeline = crate::tir::pass_manager::build_default_pipeline(target);
+    let pipeline = crate::tir::pass_manager::build_default_pipeline(target.clone());
     let count_admissions = |func: &TirFunction| {
         func.blocks
             .values()
@@ -754,6 +755,7 @@ fn short_ascii_region_preserves_the_generic_parser_and_observers() {
         ranges.range_at(block, shift.operands[1]),
         ranges.range_of(shift.results[0])
     );
+    let shifted_byte = shift.results[0];
     pipeline.run(&mut exposed);
     assert_eq!(count_admissions(&exposed), 0);
     let generic_polls = polls(&exposed);
@@ -767,4 +769,39 @@ fn short_ascii_region_preserves_the_generic_parser_and_observers() {
         generic_polls,
         "both arms retain the generic observer's target and source span"
     );
+
+    crate::tir::pass_manager::run_late_lowering(&mut func, &target, None);
+    crate::tir::passes::run_drop_phase(&mut func, &target);
+    let (shift_block, shift) = func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter().map(move |op| (block.id, op)))
+        .find(|(_, op)| op.opcode == OpCode::Shr && op.results.as_slice() == [shifted_byte])
+        .expect("the bounded variable shift survives final lowering");
+    assert!(shift.has_nothrow_proof());
+
+    let mut analyses = AnalysisManager::new();
+    let forest = analyses.get::<crate::tir::analysis::LoopForest>(&func);
+    let fast_loop = forest
+        .bodies
+        .values()
+        .find(|body| body.contains(&shift_block))
+        .expect("the bounded shift is in the fast loop");
+    for &block in fast_loop {
+        let ops = &func.blocks[&block].ops;
+        if ops.iter().any(TirOp::is_async_work_poll) {
+            continue;
+        }
+        assert!(
+            !ops.iter().any(|op| matches!(
+                (op.origin, op.attrs.get("value")),
+                (Some(OpKind::FrameHomeStore), Some(AttrValue::Int(1 | 2)))
+            )),
+            "the numeric loop writes a home outside the poll's service block:\n{}",
+            crate::tir::printer::print_function(&func)
+        );
+    }
+    let final_polls = polls(&func);
+    assert_eq!(final_polls.len(), generic_polls.len());
+    assert!(final_polls.iter().all(|poll| generic_polls.contains(poll)));
 }
