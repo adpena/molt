@@ -649,9 +649,11 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         };
     }
     let (observation, raw_result_depends_on_operands) = match op.opcode {
-        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary | OpCode::FrameSetLocation => {
-            (IntegerOperandObservation::Never, false)
-        }
+        OpCode::IncRef
+        | OpCode::DecRef
+        | OpCode::DelBoundary
+        | OpCode::FrameSetLocation
+        | OpCode::FloatSqrt => (IntegerOperandObservation::Never, false),
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             (binary, false)

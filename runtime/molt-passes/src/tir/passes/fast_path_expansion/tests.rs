@@ -2004,3 +2004,75 @@ fn direct_closure_call_takes_the_capture_on_its_reaching_edge() {
         assert_eq!(definition.operands, [capture]);
     }
 }
+
+/// The frontend lifts direct intrinsics as Call with a typed runtime field;
+/// exercise that actual ingest boundary rather than a hand-made cold opcode.
+#[test]
+fn exact_float_sqrt_uses_the_frontend_call_shape_and_keeps_domain_continuation() {
+    use molt_ir::{FunctionIR, OpIR, OpKind};
+    let source = FunctionIR {
+        name: "sqrt_exact".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                f_value: Some(-4.0),
+                out: Some("x".into()),
+                ..OpIR::new(OpKind::ConstFloat)
+            },
+            OpIR {
+                s_value: Some(RuntimeFn::MathSqrt.symbol().into()),
+                args: Some(vec!["x".into()]),
+                out: Some("root".into()),
+                ..OpIR::new(OpKind::Call)
+            },
+            OpIR {
+                args: Some(vec!["root".into()]),
+                ..OpIR::new(OpKind::Ret)
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let mut func = crate::tir::lower_from_simple::lower_to_tir(&source);
+    let original = ops(&func, OpCode::Call)[0].1.clone();
+    assert_eq!(original.runtime, Some(RuntimeFn::MathSqrt));
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::FloatSqrt).len(), 1);
+    let cold = ops(&func, OpCode::CallRuntime);
+    assert_eq!(cold.len(), 1);
+    assert_eq!(cold[0].1.runtime, Some(RuntimeFn::MathSqrt));
+    assert_eq!(cold[0].1.attrs, original.attrs);
+    assert_eq!(cold[0].1.source_span, original.source_span);
+    assert_eq!(
+        run(&mut func).values_changed,
+        0,
+        "cold arm cannot re-expand"
+    );
+}
+
+#[test]
+fn sqrt_does_not_admit_unknown_or_integer_arguments() {
+    for ty in [TirType::DynBox, TirType::I64, TirType::Bool] {
+        let mut func = TirFunction::new(
+            "sqrt_generic".into(),
+            vec![ty],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        func.value_types.insert(result, TirType::DynBox);
+        let mut call = TirOp::new(OpCode::Call, vec![ValueId(0)], vec![result]);
+        call.runtime = Some(RuntimeFn::MathSqrt);
+        call.attrs.insert(
+            "s_value".into(),
+            AttrValue::Str(RuntimeFn::MathSqrt.symbol().into()),
+        );
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops.push(call);
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        assert_eq!(run(&mut func).values_changed, 0);
+        assert!(ops(&func, OpCode::FloatSqrt).is_empty());
+    }
+}

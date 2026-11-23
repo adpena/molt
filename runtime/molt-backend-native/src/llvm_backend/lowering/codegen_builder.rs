@@ -464,6 +464,22 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.words.builder.build_not(bit, "not").unwrap()
     }
 
+    fn float_sqrt(&mut self, value: Self::Value) -> Self::Value {
+        let declaration = inkwell::intrinsics::Intrinsic::find("llvm.sqrt")
+            .expect("LLVM has sqrt")
+            .get_declaration(
+                &self.backend.module,
+                &[self.words.context.f64_type().into()],
+            )
+            .expect("sqrt.f64 declares");
+        self.words
+            .builder
+            .build_execution_call(declaration, &[value.into()], "sqrt")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+    }
+
     fn float_binary(
         &mut self,
         op: FloatBinary,
