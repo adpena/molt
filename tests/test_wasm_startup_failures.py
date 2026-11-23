@@ -14,6 +14,7 @@ from tests.wasm_execution_manifest import (
 )
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -1699,6 +1700,7 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     generate_worker(output, tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
     assert source.count("export default {") == 1
+    source = re.sub(r"^import linkedModule .*;$", "", source, flags=re.MULTILINE)
     source = source.replace("export default {", "globalThis.worker = {", 1)
     _run_node(
         "const workerSource = "
@@ -1709,11 +1711,10 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const {webcrypto} = require('node:crypto');
+const linkedModule = new WebAssembly.Module(moduleBytes);
 
 async function exercise(status) {
   const events = [];
-  let compiles = 0;
   let pending = 0n;
   const exports = fixtureScopeExports({
     molt_attached_context_abi_fingerprint: () => BigInt(fixtureAbi.execution_context_abi.fingerprint),
@@ -1732,28 +1733,23 @@ async function exercise(status) {
   if (status !== 'missing') exports.molt_exception_pending_detached = () => pending;
   const context = {
     TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, DataView, Response, URL, performance,
-    crypto: webcrypto,
+    linkedModule,
     console: {error() {}},
     WebAssembly: {
       Module: WebAssembly.Module,
-      compile: async bytes => { compiles++; return WebAssembly.compile(bytes); },
-      instantiate: async () => ({exports}),
+      instantiate: async module => { assert.equal(module, linkedModule); return {exports}; },
     },
   };
   vm.createContext(context);
   vm.runInContext(workerSource, context);
-  const response = await context.worker.fetch(
-    {body: null, url: 'https://worker.example/route'}, {__STATIC_CONTENT: {get: async () => (status === 'corrupt-bytes'
-      ? new Uint8Array([0, 97, 115, 109, 1, 0, 0, 1]) : moduleBytes).buffer}}, {},
-  );
+  const response = await context.worker.fetch({body: null});
   assert.equal(response.status, status === 'ok' ? 200 : 500);
-  assert.deepEqual(events, status === 'corrupt-bytes' ? [] : status === 'missing'
+  assert.deepEqual(events, status === 'missing'
     ? ['enter', 'leave', 'shutdown'] : ['enter', 'main', 'status', 'leave', 'shutdown']);
-  assert.equal(compiles, status === 'corrupt-bytes' ? 0 : 1);
   assert.equal(pending, 0n, 'the runtime report, not the host, consumes the exception');
 }
 (async () => {
-  for (const status of ['missing', 'pending', 'ok', 'corrupt-bytes']) await exercise(status);
+  for (const status of ['missing', 'pending', 'ok']) await exercise(status);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
         tmp_path,

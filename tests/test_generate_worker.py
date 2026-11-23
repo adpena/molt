@@ -168,7 +168,8 @@ def test_generate_worker_contains_fetch_handler(tmp_path):
     write_wasm_execution_manifest(tmp_path, linked=module)
     generate_worker(output)
     content = output.read_text(encoding="utf-8")
-    assert "async fetch(request, env, ctx)" in content
+    assert "import linkedModule from './worker_linked.wasm';" in content
+    assert "async fetch(request)" in content
     assert "export default" in content
     assert "molt_main" in content
 
@@ -1195,7 +1196,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const [workerPath, modulePath, manifestPath, mode, root, emptyPath] = process.argv.slice(2);
-let source = fs.readFileSync(workerPath, 'utf8');
+let source = fs.readFileSync(workerPath, 'utf8').replace(/^import .*;$/gm, '');
 const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
 const lifetime = require(path.join(root, 'wasm/runtime_lifecycle.js'));
 const {MoltVfs} = require(path.join(root, 'wasm/molt_vfs_browser.js'));
@@ -1216,8 +1217,7 @@ const context = vm.createContext({WebAssembly, TextEncoder, TextDecoder, console
   } else {
     const boundary = '    // One shared function table: the runtime\'s functions, then the app\'s.';
     assert.ok(source.includes(boundary));
-    source = source.replace(/^import .*;$/gm, '')
-      .replace('export default {', 'globalThis.worker = {')
+    source = source.replace('export default {', 'globalThis.worker = {')
       .replace(boundary, '    return {wasi, memory:wasmMemory, admitted:deploymentManifest};\n' + boundary);
     vm.runInContext(source, context);
     probe = await context.worker.fetch({url:'https://worker.example/'}, {SECRET_BINDING:'never guest env'}, {});
@@ -1461,7 +1461,7 @@ def test_generated_worker_fetch_uses_real_module_instance_and_cleans_up(
     script = tmp_path / "worker-fetch.cjs"
     script.write_text(
         "const workerSource = "
-        + json.dumps(source.replace("export default {", "globalThis.worker = {", 1))
+        + json.dumps(source)
         + ";\nconst modulePath = "
         + json.dumps(str(module))
         + ";\n"
@@ -1469,44 +1469,22 @@ def test_generated_worker_fetch_uses_real_module_instance_and_cleans_up(
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const {webcrypto} = require('node:crypto');
-const bytes = fs.readFileSync(modulePath);
-const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+const linkedModule = new WebAssembly.Module(fs.readFileSync(modulePath));
 const errors = [];
-const originalCompile = WebAssembly.compile;
-let compiles = 0;
-WebAssembly.compile = async bytes => {
-  compiles++;
-  return originalCompile.call(WebAssembly, bytes);
-};
 const context = vm.createContext({WebAssembly, ArrayBuffer, Uint8Array, DataView,
-  TextEncoder, TextDecoder, Response, URL, performance, crypto: webcrypto,
+  TextEncoder, TextDecoder, Response, URL, performance, linkedModule,
   console: {error: (...args) => errors.push(args)}});
-vm.runInContext(workerSource, context);
+const source = workerSource.replace(/^import linkedModule .*;$/m, '')
+  .replace('export default {', 'globalThis.worker = {');
+vm.runInContext(source, context);
 (async () => {
-  try {
-    const response = await context.worker.fetch(new Request('https://worker.example/route'), {
-      __STATIC_CONTENT: {get: async (name, options) => {
-        assert.equal(name, 'worker_linked.wasm');
-        assert.equal(options.type, 'arrayBuffer');
-        return buffer;
-      }},
-    }, {});
+  const env = {__STATIC_CONTENT: {get() { throw new Error('static content accessed'); }}};
+  for (let request = 0; request < 2; request++) {
+    const response = await context.worker.fetch(new Request('https://worker.example/route'), env, {});
     assert.equal(response.status, 200, JSON.stringify(errors));
     assert.equal(await response.text(), 'enter\nworker-ok\nstatus\nleave\nshutdown\n');
-    assert.equal(compiles, 1);
     assert.equal(errors.length, 0);
-    const corrupt = buffer.slice(0);
-    new Uint8Array(corrupt)[corrupt.byteLength - 1] ^= 1;
-    const refused = await context.worker.fetch(new Request('https://worker.example/route'), {
-      __STATIC_CONTENT: {get: async () => corrupt},
-    }, {});
-    assert.equal(refused.status, 500);
-    assert.equal(await refused.text(), 'internal error');
-    assert.equal(compiles, 1, 'corrupted bytes reached WebAssembly.compile');
-    assert.match(String(errors.at(-1)), /SHA-256 mismatch/);
-    console.log('actual worker fetch, guest startup, runtime cleanup, byte refusal');
-  } finally { WebAssembly.compile = originalCompile; }
+  }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
         encoding="utf-8",
@@ -1514,9 +1492,11 @@ vm.runInContext(workerSource, context);
     result = run_guarded_test_process(["node", str(script)], cwd=tmp_path, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.descendants_closed
-    assert result.stdout.strip() == (
-        "actual worker fetch, guest startup, runtime cleanup, byte refusal"
-    )
+    admitted = module.read_bytes()
+    module.write_bytes(admitted[:-1] + bytes([admitted[-1] ^ 1]))
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        generate_worker(output)
+    assert output.read_text(encoding="utf-8") == source
 
 
 def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
@@ -1562,6 +1542,7 @@ const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
 const lifetime = require(path.join(root, 'wasm/runtime_lifecycle.js'));
 const {MoltVfs} = require(path.join(root, 'wasm/molt_vfs_browser.js'));
 async function observe(source, kind) {
+  source = source.replace(/^import .*;$/gm, '');
   const context = vm.createContext({
     WebAssembly, TextEncoder, TextDecoder, URL, Response, console, performance,
     MoltWasmLoaderBridge: bridge, MoltRuntimeLifecycle: lifetime, MoltVfs,
@@ -1580,8 +1561,7 @@ async function observe(source, kind) {
     // Execute the real request-owned import construction, stopping before runtime instantiation.
     const boundary = '    // One shared function table: the runtime\'s functions, then the app\'s.';
     assert.ok(source.includes(boundary));
-    source = source.replace(/^import .*;$/gm, '')
-      .replace('export default {', 'globalThis.worker = {')
+    source = source.replace('export default {', 'globalThis.worker = {')
       .replace(boundary, '    return {env:hostEnv,wasi_snapshot_preview1:wasi};\n' + boundary);
     vm.runInContext(source, context);
     context.probeImports = await context.worker.fetch({url:'https://worker.example/'}, {}, {});
