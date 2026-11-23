@@ -17,8 +17,10 @@ from molt.durable_file_identity import StatToken
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -175,10 +177,10 @@ def test_persisted_answers_survive_a_new_process(
     again = facts.host_toolchain_facts()
     assert again is not store
     assert again.lookup(key) == facts.ProbeAnswer("answer\n", "")
-    document = json.loads(store.path.read_text(encoding="utf-8"))
-    assert document["schema"] == facts.STORE_SCHEMA
-    assert list(document["facts"]) == [key.digest()]
-    assert document["facts"][key.digest()]["key"] == key.as_json()
+    with closing(sqlite3.connect(store.path)) as database:
+        [(digest, payload)] = database.execute("SELECT digest, payload FROM facts")
+    assert digest == key.digest()
+    assert json.loads(payload)["key"] == key.as_json()
 
 
 def test_provisional_answers_live_in_one_process_until_persisted(
@@ -201,42 +203,47 @@ def test_provisional_answers_live_in_one_process_until_persisted(
 
 @pytest.mark.parametrize(
     "damage",
-    ["garbage", "schema", "facts-shape", "record-shape", "tampered-key"],
+    ["garbage", "record-shape", "tampered-key"],
 )
-def test_corrupt_or_foreign_store_is_discarded_and_rewritten(
+def test_corrupt_row_is_replaced_without_losing_another_probe(
     store: facts.ToolchainFactStore, damage: str
 ) -> None:
     key = _key()
     kept = _key(argv=("--print", "sysroot"))
+    store.record(key, facts.ProbeAnswer("original", ""), persist=True)
     store.record(kept, facts.ProbeAnswer("kept", ""), persist=True)
-    document = json.loads(store.path.read_text(encoding="utf-8"))
-    if damage == "garbage":
-        store.path.write_bytes(b"\x00{not json")
-    elif damage == "schema":
-        document["schema"] = "molt.toolchain-facts.v0"
-        store.path.write_text(json.dumps(document), encoding="utf-8")
-    elif damage == "facts-shape":
-        document["facts"] = []
-        store.path.write_text(json.dumps(document), encoding="utf-8")
-    elif damage == "record-shape":
-        document["facts"][key.digest()] = {"stdout": "x"}
-        store.path.write_text(json.dumps(document), encoding="utf-8")
-    else:
-        # A record whose key no longer hashes to its digest answers nothing,
-        # not even the question its forged key names.
-        document["facts"][kept.digest()]["key"] = key.as_json()
-        store.path.write_text(json.dumps(document), encoding="utf-8")
-    # Only a malformed sibling leaves the valid record in place; every other
-    # damage discards the file or the record itself.
-    kept_survives = damage == "record-shape"
+    payload = {
+        "garbage": "{not json",
+        "record-shape": '{"stdout":"x"}',
+        "tampered-key": json.dumps(
+            {"key": kept.as_json(), "stdout": "x", "stderr": ""}
+        ),
+    }[damage]
+    with closing(sqlite3.connect(store.path)) as database, database:
+        database.execute(
+            "UPDATE facts SET payload=? WHERE digest=?", (payload, key.digest())
+        )
     fresh = facts.ToolchainFactStore(store.cache_root, max_age_ns=30 * DAY_NS)
     assert fresh.lookup(key) is None
-    assert fresh.persisted(kept) == kept_survives
     fresh.record(key, facts.ProbeAnswer("new", ""), persist=True)
-    rewritten = json.loads(fresh.path.read_text(encoding="utf-8"))
-    assert rewritten["schema"] == facts.STORE_SCHEMA
-    assert rewritten["facts"][key.digest()]["stdout"] == "new"
-    assert (kept.digest() in rewritten["facts"]) == kept_survives
+    reopened = facts.ToolchainFactStore(store.cache_root, max_age_ns=30 * DAY_NS)
+    assert reopened.lookup(key) == facts.ProbeAnswer("new", "")
+    assert reopened.lookup(kept) == facts.ProbeAnswer("kept", "")
+
+
+def test_damaged_database_does_not_supply_or_publish_an_answer(
+    store: facts.ToolchainFactStore,
+) -> None:
+    store.path.parent.mkdir(parents=True)
+    before = b"damaged cache bytes"
+    store.path.write_bytes(before)
+    key = _key()
+    assert store.lookup(key) is None
+    answer = facts.ProbeAnswer("from the live tool", "")
+    store.record(key, answer, persist=True)
+    assert store.lookup(key) == answer
+    assert not store.persisted(key)
+    assert store.path.read_bytes() == before
 
 
 def test_aged_records_are_dropped_and_used_records_refreshed(
@@ -248,19 +255,25 @@ def test_aged_records_are_dropped_and_used_records_refreshed(
     store.record(used, facts.ProbeAnswer("u", ""), persist=True)
     store.record(stale, facts.ProbeAnswer("s", ""), persist=True)
     store.record(old, facts.ProbeAnswer("o", ""), persist=True)
-    document = json.loads(store.path.read_text(encoding="utf-8"))
-    now = document["facts"][used.digest()]["recorded_ns"]
-    document["facts"][used.digest()]["recorded_ns"] = now - 20 * DAY_NS
-    document["facts"][stale.digest()]["recorded_ns"] = now - 20 * DAY_NS
-    document["facts"][old.digest()]["recorded_ns"] = now - 40 * DAY_NS
-    store.path.write_text(json.dumps(document), encoding="utf-8")
+    with closing(sqlite3.connect(store.path)) as database, database:
+        (now,) = database.execute(
+            "SELECT recorded_ns FROM facts WHERE digest=?", (used.digest(),)
+        ).fetchone()
+        database.executemany(
+            "UPDATE facts SET recorded_ns=? WHERE digest=?",
+            [
+                (now - age * DAY_NS, key.digest())
+                for key, age in [(used, 20), (stale, 20), (old, 40)]
+            ],
+        )
     fresh = facts.ToolchainFactStore(store.cache_root, max_age_ns=30 * DAY_NS)
     # A hit in the second half of the budget refreshes the record; that write
     # drops records past the budget and keeps unused ones inside it.
     assert fresh.lookup(used) == facts.ProbeAnswer("u", "")
-    rewritten = json.loads(fresh.path.read_text(encoding="utf-8"))["facts"]
-    assert rewritten[used.digest()]["recorded_ns"] >= now
-    assert rewritten[stale.digest()]["recorded_ns"] == now - 20 * DAY_NS
+    with closing(sqlite3.connect(store.path)) as database:
+        rewritten = dict(database.execute("SELECT digest, recorded_ns FROM facts"))
+    assert rewritten[used.digest()] >= now
+    assert rewritten[stale.digest()] == now - 20 * DAY_NS
     assert old.digest() not in rewritten
     assert fresh.lookup(old) is None
 
@@ -278,6 +291,21 @@ def test_parallel_writers_merge_instead_of_overwriting(
     assert third.lookup(one) == facts.ProbeAnswer("1", "")
     assert third.lookup(two) == facts.ProbeAnswer("2", "")
     assert second.lookup(one) == facts.ProbeAnswer("1", "")
+
+
+def test_committed_probe_remains_visible_while_writer_is_uncommitted(
+    store: facts.ToolchainFactStore,
+) -> None:
+    key = _key()
+    answer = facts.ProbeAnswer("committed", "")
+    store.record(key, answer, persist=True)
+    with closing(sqlite3.connect(store.path)) as writer:
+        writer.execute("DELETE FROM facts")
+        fresh = facts.ToolchainFactStore(store.cache_root, max_age_ns=30 * DAY_NS)
+        assert fresh.lookup(key) == answer
+        writer.commit()
+    fresh = facts.ToolchainFactStore(store.cache_root, max_age_ns=30 * DAY_NS)
+    assert fresh.lookup(key) is None
 
 
 def test_completed_probe_keeps_only_zero_exit_and_accepted_answers(
@@ -1425,7 +1453,7 @@ def test_new_probe_store_starts_cold_without_reading_legacy_answers(
     current = facts.ToolchainFactStore(tmp_path / "cache", max_age_ns=DAY_NS)
     answer = current.lookup(key)
     assert answer is None
-    assert current.path == legacy.with_name("v3.json")
+    assert current.path == legacy.with_name("v4.sqlite")
     assert legacy.read_bytes() == before
     assert not current.path.exists()
 

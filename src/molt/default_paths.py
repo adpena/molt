@@ -490,7 +490,7 @@ def file_digest_cache_path(cache_root: Path) -> Path:
 
 def toolchain_fact_store_path(cache_root: Path) -> Path:
     """The host's toolchain probe answers (`molt.toolchain_facts`) within one cache namespace."""
-    return cache_root / "toolchain-facts" / "v3.json"
+    return hot_path(cache_root.parent, cache_root.name, "toolchain-facts", "v4.sqlite")
 
 
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:

@@ -548,9 +548,9 @@ TestDurableIdentityModel.settings = settings(
             ".molt_cache/file-digests/v1.sqlite",
         ),
         (
-            ".molt_cache/toolchain-facts/v2.json",
             ".molt_cache/toolchain-facts/v3.json",
-            ".molt_cache/toolchain-facts/v2.json",
+            ".molt_cache/toolchain-facts/v4.sqlite",
+            ".molt_cache/toolchain-facts/v3.json",
         ),
         (
             ".molt_cache/source_hash_cache/ab/entry.json",

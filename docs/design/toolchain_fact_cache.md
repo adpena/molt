@@ -83,9 +83,9 @@ an unchanged build.
   the build cache depends on that tool ID, so a changed compiler invalidates
   its outputs without a per-build probe of the sources.
 
-Molt follows Cargo's shape (one host file of process outputs keyed by a
-tool fingerprint) with a stricter key, because a stale answer is a
-miscompile or a wrong link.
+Molt follows Cargo and Go in keying answers by the tools that produced them.
+Its host namespace spans many checkouts and toolchain generations, so lookup
+uses a database index on the full probe digest.
 
 ## Design
 
@@ -107,17 +107,18 @@ One authority, `molt.toolchain_facts`:
 - `ProbeAnswer`: the process's stdout and stderr. Only zero-exit answers are
   kept; a failure is raised by its consumer as today and asked again next
   time.
-- `ToolchainFactStore`: one JSON file,
+- `ToolchainFactStore`: one SQLite WAL database,
   `default_paths.toolchain_fact_store_path(cache_root)` =
-  the [current version namespace](durable_file_identity.md), beside the digest
-  cache in the host cache namespace. The file is read once per process under
-  the shared cache lock; a missing, corrupt or foreign file, or a record whose key does not
-  hash to its digest, reads as absent and is replaced by the next write.
-  Each write merges over the current host generation under the lock, drops
-  records older than the cache age budget (`MOLT_CACHE_MAX_AGE_DAYS`, 30 by
-  default) and replaces the file atomically. A record read in the second
-  half of its age is refreshed, so a toolchain in use is never re-probed for
-  age alone.
+  the [current version namespace](durable_file_identity.md), on the same hot
+  storage as the digest cache. A process reads a committed row by exact digest,
+  verifies the payload key, and memoizes that answer. A missing or invalid row
+  goes through ordinary tool qualification. A writer publishes one row and
+  prunes expired rows through the age index in the same transaction. The cache
+  age budget is `MOLT_CACHE_MAX_AGE_DAYS` (30 by default). A hit in the second
+  half of the budget conditionally refreshes the row it observed.
+  A writer that exceeds the bounded SQLite busy timeout leaves its answer in
+  process. Structural database damage bypasses the database with a diagnostic.
+  The old JSON namespace expires under the replaced-identity retention rule.
 - `completed_probe(store, key, run, accept)`: serve the recorded answer,
   else run the probe and record a zero-exit answer. `run` returns only after
   its own fence (`ProbeTool.fenced`) proved every executable unchanged
@@ -130,8 +131,7 @@ first draft proposed, for three reasons: the answers are host facts (a tool's
 output for its inputs) and are the same for every checkout; three of the
 six probe classes (`xcrun`, `xcode-select`, the link driver) have no
 project root to address a build-state root with; and the digest cache that
-proves tool bytes already lives there under the same budget and lock
-family.
+proves tool bytes already lives there under the same budget.
 
 ### Python capture uses the same file digests
 

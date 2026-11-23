@@ -187,7 +187,7 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                     ("compile-cache", "file-digests/v[12].sqlite"),
                     ("compile-cache", "file-digests/v[12].sqlite-wal"),
                     ("compile-cache", "file-digests/v[12].sqlite-shm"),
-                    ("compile-cache", "toolchain-facts/v[12].json"),
+                    ("compile-cache", "toolchain-facts/v[123].json"),
                     ("compile-cache", "source_hash_cache/[0-9a-f][0-9a-f]"),
                     ("compile-cache", "source_hash_cache/v2"),
                     ("compile-cache", "*.sync.json"),

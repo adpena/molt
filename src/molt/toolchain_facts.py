@@ -15,10 +15,9 @@ ID (``cmd/go/internal/work/buildid.go``). Molt's key is stricter than
 Cargo's: every executable carries its stat token and content digest, and the
 files a question reads are named by their own tokens.
 
-The store is one JSON file under the host cache namespace
-(`molt.default_paths.toolchain_fact_store_path`), read once per process and
-replaced atomically under the shared cache lock. A corrupt or foreign file is
-discarded, never trusted. Only zero-exit answers are kept.
+The host store indexes answers by probe digest. A read observes one committed
+row, and writing an answer leaves unrelated probes alone. Only zero-exit
+answers are kept.
 """
 
 from __future__ import annotations
@@ -29,11 +28,12 @@ from dataclasses import dataclass, field
 import os
 from molt.durable_file_identity import StatToken
 from pathlib import Path
+import sqlite3
 import stat
 import subprocess
+import sys
 import threading
 import time
-from typing import Any
 
 from molt.default_paths import (
     _default_molt_cache,
@@ -43,6 +43,7 @@ from molt.default_paths import (
 )
 from molt.exact_json import canonical_json_sha256, dumps_exact, loads_exact
 from molt.process_environment import ProcessEnvironment
+from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 from molt.toolchain_identity import (
     FileDigestCache,
     StableRegularFileIdentity,
@@ -52,7 +53,7 @@ from molt.toolchain_identity import (
 )
 
 
-STORE_SCHEMA = "molt.toolchain-facts.v3"
+_STORE_VERSION = 4
 
 # The environment each probe class reads, decided from the tool's own source
 # and documented in the design. A name outside its set cannot change the
@@ -332,18 +333,16 @@ class _Record:
             "key": self.key,
             "stdout": self.answer.stdout,
             "stderr": self.answer.stderr,
-            "recorded_ns": self.recorded_ns,
         }
 
 
-def _record_from_json(digest: str, value: object) -> _Record | None:
+def _record_from_json(digest: str, value: object, recorded_ns: int) -> _Record | None:
     """One stored record, or None when its shape or digest is not ours."""
     if not isinstance(value, dict):
         return None
     key = value.get("key")
     stdout = value.get("stdout")
     stderr = value.get("stderr")
-    recorded_ns = value.get("recorded_ns")
     if (
         not isinstance(key, dict)
         or not isinstance(stdout, str)
@@ -353,50 +352,6 @@ def _record_from_json(digest: str, value: object) -> _Record | None:
     ):
         return None
     return _Record(key, ProbeAnswer(stdout, stderr), recorded_ns)
-
-
-def _read_records(path: Path) -> dict[str, _Record]:
-    """The store's records; a missing, corrupt or foreign file reads as empty."""
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return {}
-    try:
-        document: Any = loads_exact(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return {}
-    if not isinstance(document, dict) or document.get("schema") != STORE_SCHEMA:
-        return {}
-    facts = document.get("facts")
-    if not isinstance(facts, dict):
-        return {}
-    records: dict[str, _Record] = {}
-    for digest, value in facts.items():
-        record = _record_from_json(digest, value)
-        if record is not None:
-            records[digest] = record
-    return records
-
-
-def _replace_records(path: Path, records: Mapping[str, _Record]) -> None:
-    """Publish the whole store in one atomic replace."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dumps_exact(
-        {
-            "schema": STORE_SCHEMA,
-            "facts": {
-                digest: record.as_json() for digest, record in sorted(records.items())
-            },
-        },
-        indent=None,
-    ).encode("utf-8")
-    staging = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        staging.write_bytes(payload)
-        os.replace(staging, path)
-    except BaseException:
-        staging.unlink(missing_ok=True)
-        raise
 
 
 class ToolchainFactStore:
@@ -418,19 +373,103 @@ class ToolchainFactStore:
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
         self._lock = threading.RLock()
-        self._persisted: dict[str, _Record] | None = None
+        self._connection: sqlite3.Connection | None = None
+        self._connection_pid = 0
+        self._unavailable = False
+        self._persisted: dict[str, _Record] = {}
         self._provisional: dict[str, _Record] = {}
 
-    def _host_lock(self):  # type: ignore[no-untyped-def]
-        from molt.file_locks import _shared_cache_lock
+    @contextmanager
+    def _database(
+        self, *, create: bool = False
+    ) -> Generator[sqlite3.Connection | None]:
+        try:
+            connection = (
+                None if self._unavailable else self._open_database(create=create)
+            )
+        except sqlite3.DatabaseError as error:
+            self._database_failure(error)
+            connection = None
+        try:
+            yield connection
+        except sqlite3.DatabaseError as error:
+            self._database_failure(error)
 
-        return _shared_cache_lock("toolchain-facts", cache_root=self.cache_root)
+    def _open_database(self, *, create: bool) -> sqlite3.Connection | None:
+        pid = os.getpid()
+        if self._connection is not None and self._connection_pid == pid:
+            return self._connection
+        if create:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        elif not self.path.exists():
+            return None
+        # The store lock serializes every use of this process's connection.
+        connection = sqlite3.connect(self.path, timeout=0.1, check_same_thread=False)
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                if not create:
+                    connection.close()
+                    return None
+                (mode,) = connection.execute("PRAGMA journal_mode=WAL").fetchone()
+                if mode != "wal":
+                    raise ValueError(
+                        f"toolchain fact cache requires WAL at {self.path}"
+                    )
+                with connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS facts ("
+                        "digest TEXT PRIMARY KEY, payload TEXT NOT NULL,"
+                        " recorded_ns INTEGER NOT NULL) WITHOUT ROWID"
+                    )
+                    connection.execute(
+                        "CREATE INDEX IF NOT EXISTS facts_age ON facts(recorded_ns)"
+                    )
+                    connection.execute(f"PRAGMA user_version={_STORE_VERSION}")
+            elif version != _STORE_VERSION:
+                raise ValueError(f"unsupported toolchain fact schema at {self.path}")
+            # This cache can reconstruct recent rows after a host crash.
+            connection.execute("PRAGMA synchronous=NORMAL")
+        except BaseException:
+            connection.close()
+            raise
+        self._connection = connection
+        self._connection_pid = pid
+        return connection
 
-    def _records(self) -> dict[str, _Record]:
-        if self._persisted is None:
-            with self._host_lock():
-                self._persisted = _read_records(self.path)
-        return self._persisted
+    def _database_failure(self, error: sqlite3.DatabaseError) -> None:
+        failure = classify_sqlite_failure(error)
+        if failure is SqliteFailure.CONTENTION:
+            return
+        if failure is not SqliteFailure.DAMAGED:
+            raise error
+        self._unavailable = True
+        print(
+            f"[molt toolchain facts] ignoring damaged cache {self.path}: {error}",
+            file=sys.stderr,
+        )
+
+    def _record(self, digest: str) -> _Record | None:
+        record = self._persisted.get(digest)
+        if record is not None:
+            return record
+        with self._database() as connection:
+            if connection is None:
+                return None
+            row = connection.execute(
+                "SELECT payload, recorded_ns FROM facts WHERE digest = ? AND recorded_ns >= ?",
+                (digest, self._started_ns - self._max_age_ns),
+            ).fetchone()
+            if row is not None:
+                try:
+                    record = _record_from_json(digest, loads_exact(row[0]), row[1])
+                except (TypeError, ValueError):
+                    return None
+                if record is not None:
+                    self._persisted[digest] = record
+                    return record
+        return None
 
     def lookup(self, key: ProbeKey) -> ProbeAnswer | None:
         """The recorded answer for ``key``: provisional first, then persisted."""
@@ -439,18 +478,18 @@ class ToolchainFactStore:
             provisional = self._provisional.get(digest)
             if provisional is not None:
                 return provisional.answer
-            record = self._records().get(digest)
+            record = self._record(digest)
             if record is None:
                 return None
             if record.recorded_ns < self._started_ns - self._max_age_ns // 2:
-                self._write(
-                    {digest: _Record(record.key, record.answer, self._started_ns)}
-                )
+                refreshed = _Record(record.key, record.answer, self._started_ns)
+                self._write(digest, refreshed, refresh_of=record.recorded_ns)
+                self._persisted[digest] = refreshed
             return record.answer
 
     def persisted(self, key: ProbeKey) -> bool:
         with self._lock:
-            return key.digest() in self._records()
+            return self._record(key.digest()) is not None
 
     def record(self, key: ProbeKey, answer: ProbeAnswer, *, persist: bool) -> None:
         """Keep ``answer`` for ``key``; ``persist`` publishes it to the host."""
@@ -458,8 +497,11 @@ class ToolchainFactStore:
         record = _Record(key.as_json(), answer, time.time_ns())
         with self._lock:
             if persist:
-                self._provisional.pop(digest, None)
-                self._write({digest: record})
+                if self._write(digest, record):
+                    self._persisted[digest] = record
+                    self._provisional.pop(digest, None)
+                else:
+                    self._provisional[digest] = record
             else:
                 self._provisional[digest] = record
 
@@ -468,18 +510,34 @@ class ToolchainFactStore:
         with self._lock:
             self._provisional.pop(key.digest(), None)
 
-    def _write(self, pending: Mapping[str, _Record]) -> None:
-        # Merge over the current host generation so parallel writers lose
-        # nothing, drop aged records, then replace the file atomically.
-        floor = self._started_ns - self._max_age_ns
-        with self._host_lock():
-            merged = {
-                digest: record
-                for digest, record in {**_read_records(self.path), **pending}.items()
-                if record.recorded_ns >= floor
-            }
-            _replace_records(self.path, merged)
-            self._persisted = merged
+    def _write(
+        self, digest: str, record: _Record, *, refresh_of: int | None = None
+    ) -> bool:
+        payload = dumps_exact(record.as_json(), indent=None)
+        with self._database(create=True) as connection:
+            if connection is None:
+                return False
+            with connection:
+                if refresh_of is None:
+                    cursor = connection.execute(
+                        "INSERT INTO facts VALUES (?, ?, ?) ON CONFLICT(digest) DO UPDATE"
+                        " SET payload=excluded.payload, recorded_ns=excluded.recorded_ns"
+                        " WHERE excluded.recorded_ns >= facts.recorded_ns",
+                        (digest, payload, record.recorded_ns),
+                    )
+                else:
+                    # An old reader cannot renew over a newer qualified answer.
+                    cursor = connection.execute(
+                        "UPDATE facts SET payload=?, recorded_ns=?"
+                        " WHERE digest=? AND recorded_ns=?",
+                        (payload, record.recorded_ns, digest, refresh_of),
+                    )
+                connection.execute(
+                    "DELETE FROM facts WHERE recorded_ns < ?",
+                    (self._started_ns - self._max_age_ns,),
+                )
+            return cursor.rowcount == 1
+        return False
 
 
 _STORES: dict[Path, ToolchainFactStore] = {}

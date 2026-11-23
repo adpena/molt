@@ -68,7 +68,7 @@ def _error(kind: type[sqlite3.Error], message: str, code: int) -> sqlite3.Error:
                 "database disk image is malformed",
                 sqlite3.SQLITE_CORRUPT,
             ),
-            SqliteFailure.OTHER,
+            SqliteFailure.DAMAGED,
         ),
         # A message alone is not a class: errors the sqlite3 module raises
         # itself carry no result code.

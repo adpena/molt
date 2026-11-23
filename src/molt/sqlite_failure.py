@@ -23,6 +23,8 @@ class SqliteFailure(enum.Enum):
     STALE_SNAPSHOT = enum.auto()
     # A same-connection or shared-cache ownership failure (SQLITE_LOCKED).
     OWNERSHIP = enum.auto()
+    # SQLite could not recognize the file or found structural damage.
+    DAMAGED = enum.auto()
     # Anything else, including SQLITE_ERROR from a statement defect. Stores keep
     # these loud.
     OTHER = enum.auto()
@@ -40,4 +42,6 @@ def classify_sqlite_failure(error: BaseException) -> SqliteFailure:
         return SqliteFailure.CONTENTION
     if primary == sqlite3.SQLITE_LOCKED:
         return SqliteFailure.OWNERSHIP
+    if primary in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+        return SqliteFailure.DAMAGED
     return SqliteFailure.OTHER
