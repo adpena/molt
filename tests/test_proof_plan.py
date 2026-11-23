@@ -3104,8 +3104,6 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
-        # HF-859's size budget, a strict expected failure.
-        "tests/findings/test_wasm_app_size.py",
         # HF-699's synchronous-run DB parity, a strict expected failure.
         "tests/findings/test_wasm_browser_db_host_sync_run.py",
         # HF-867's attention backend gate, a strict expected failure.

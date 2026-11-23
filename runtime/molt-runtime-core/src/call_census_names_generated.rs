@@ -2390,7 +2390,7 @@ pub static CALL_CENSUS_NAMES: [&str; CALL_CENSUS_SLOTS] = [
     "molt_sys_hexversion",
     "molt_sys_api_version",
     "molt_sys_abiflags",
-    "molt_sys_implementation_payload",
+    "molt_sys_implementation",
     "molt_sys_flags_payload",
     "molt_sys_executable",
     "molt_set_argv_utf16",
@@ -5848,7 +5848,7 @@ pub mod id {
     pub const molt_sys_hexversion: usize = 2383;
     pub const molt_sys_api_version: usize = 2384;
     pub const molt_sys_abiflags: usize = 2385;
-    pub const molt_sys_implementation_payload: usize = 2386;
+    pub const molt_sys_implementation: usize = 2386;
     pub const molt_sys_flags_payload: usize = 2387;
     pub const molt_sys_executable: usize = 2388;
     pub const molt_set_argv_utf16: usize = 2389;

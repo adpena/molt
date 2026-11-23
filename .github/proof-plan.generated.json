@@ -823,7 +823,6 @@
         "tests/test_wasm_longdouble_printf_link.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/test_browser_vfs.py/**",
-        "tests/findings/test_wasm_app_size.py/**",
         "tests/findings/test_wasm_browser_db_host_sync_run.py/**",
         "tests/findings/test_wasm_browser_gpu_attention_backend.py/**",
         "tests/test_wasm_runtime_heavy_regressions.py/**",
@@ -4558,7 +4557,6 @@
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
-        "tests/findings/test_wasm_app_size.py",
         "tests/findings/test_wasm_browser_db_host_sync_run.py",
         "tests/findings/test_wasm_browser_gpu_attention_backend.py"
       ],

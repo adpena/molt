@@ -3005,8 +3005,10 @@ runtime_name = "molt_sys_hexversion"
 callable_arity = 0
 
 [[import]]
-name = "sys_implementation_payload"
-type = 0
+name = "sys_implementation"
+type = 2
+runtime_name = "molt_sys_implementation"
+callable_arity = 1
 
 [[import]]
 name = "sys_platform"

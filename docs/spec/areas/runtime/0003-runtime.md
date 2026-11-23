@@ -504,6 +504,8 @@ accumulator, with the caller selecting its existing finalization policy.
 
 Structured `sys` metadata uses owned publication for tuples, dictionaries,
 and namespaces, with full-width object integer conversion for numeric fields.
+The native implementation namespace holds the same version object that the
+initializer publishes as `sys.version_info`.
 Allocation failure releases unpublished owned values and preserves the pending
 exception. Public recursion and integer-string limits accept `__index__`, check
 the C `int` range before changing state, and retain the prior value on failure.

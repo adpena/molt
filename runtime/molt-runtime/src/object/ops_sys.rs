@@ -2119,7 +2119,11 @@ fn sys_namespace_set_attr_owned(
     !exception_pending(_py)
 }
 
-pub(crate) fn molt_sys_implementation_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+/// Construct the public namespace with the initializer's borrowed version object.
+pub(crate) fn molt_sys_implementation_attached_body(
+    _py: &crate::PyToken<'_>,
+    version_bits: u64,
+) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let state = runtime_state(_py);
         let (info, _) = current_sys_version_info(state);
@@ -2139,17 +2143,10 @@ pub(crate) fn molt_sys_implementation_payload_attached_body(_py: &crate::PyToken
 
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let cache_tag_bits = MoltObject::from_ptr(cache_tag_ptr).bits();
-        let Some(version_bits) = alloc_sys_version_info_tuple(_py, &info) else {
-            dec_ref_bits(_py, name_bits);
-            dec_ref_bits(_py, cache_tag_bits);
-            return MoltObject::none().bits();
-        };
-
         let namespace_class_bits = crate::builtins::types::simplenamespace_class(_py);
         let Some(namespace_class_ptr) = obj_from_bits(namespace_class_bits).as_ptr() else {
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, cache_tag_bits);
-            dec_ref_bits(_py, version_bits);
             dec_ref_bits(_py, hexversion_bits);
             return MoltObject::none().bits();
         };
@@ -2157,11 +2154,11 @@ pub(crate) fn molt_sys_implementation_payload_attached_body(_py: &crate::PyToken
         if obj_from_bits(namespace_bits).is_none() {
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, cache_tag_bits);
-            dec_ref_bits(_py, version_bits);
             dec_ref_bits(_py, hexversion_bits);
             return MoltObject::none().bits();
         }
 
+        inc_ref_bits(_py, version_bits);
         let attrs: [(crate::NameId, u64); 4] = [
             (crate::NameId::Name, name_bits),
             (crate::NameId::CacheTag, cache_tag_bits),

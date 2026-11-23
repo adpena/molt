@@ -204,7 +204,7 @@
 - **Zipfile:** molt_zipfile_crc32
 - **Socket:** molt_socket_*, molt_socket_constants
 - **Importlib:** molt_module_import, transactional compiled-module execution, compiled Python finder protocol + molt_importlib_admit_spec, molt_importlib_metadata_*, molt_importlib_resources_*
-- **Sys metadata:** molt_sys_hexversion, molt_sys_api_version, molt_sys_abiflags, molt_sys_implementation_payload, molt_sys_flags_payload
+- **Sys metadata:** molt_sys_hexversion, molt_sys_api_version, molt_sys_abiflags, molt_sys_implementation, molt_sys_flags_payload
 - **Weakref:** molt_weakref_callback
 - **Traceback:** molt_traceback_format_exception, molt_traceback_extract_tb, molt_traceback_exception_chain_payload, molt_traceback_exception_suppress_context
 - **GPU:** molt_gpu_* (tensor, buffer, scheduler ops — see LANE 3)

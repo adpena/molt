@@ -3374,7 +3374,7 @@ macro_rules! attached_symbol {
     ("molt_sys_gettrace") => { "molt_sys_gettrace__molt_context_d1086a27578cda22" };
     ("molt_sys_hash_info") => { "molt_sys_hash_info__molt_context_d1086a27578cda22" };
     ("molt_sys_hexversion") => { "molt_sys_hexversion__molt_context_d1086a27578cda22" };
-    ("molt_sys_implementation_payload") => { "molt_sys_implementation_payload__molt_context_d1086a27578cda22" };
+    ("molt_sys_implementation") => { "molt_sys_implementation__molt_context_d1086a27578cda22" };
     ("molt_sys_int_info") => { "molt_sys_int_info__molt_context_d1086a27578cda22" };
     ("molt_sys_intern") => { "molt_sys_intern__molt_context_d1086a27578cda22" };
     ("molt_sys_is_finalizing") => { "molt_sys_is_finalizing__molt_context_d1086a27578cda22" };
