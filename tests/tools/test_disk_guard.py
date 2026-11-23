@@ -23,7 +23,8 @@ import errno
 import os
 import sys
 import tokenize
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -1989,6 +1990,111 @@ def test_automatic_collection_requires_an_eligible_outer_completion(
     monkeypatch.setattr(dx, "_source_checkout_maintenance", forbidden)
     dx.collect_checkout_state_after_result({**env, **extra}, cwd=tmp_path)
     assert not ext.joinpath(*checkout_state.GC_STAMP).exists()
+
+
+def test_completion_wakes_only_due_raw_hot_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from molt import checkout_state, default_paths, disk_capacity
+    from tools import checkout_maintenance, controller_source, detached_execution
+
+    artifact, _projects, env = _checkout_family(tmp_path)
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    (artifact / default_paths.HOT_STATE_RECORD).write_text(
+        json.dumps(
+            {
+                "schema": default_paths.HOT_STATE_SCHEMA,
+                "root": str(hot),
+                "budget_bytes": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    daily = artifact.joinpath(*checkout_state.GC_STAMP)
+    daily.parent.mkdir()
+    daily.touch()
+    last_daily = time.time() - HOUR
+    os.utime(daily, (last_daily, last_daily))
+    daily_identity = daily.stat().st_mtime_ns
+    raw_free = 80 * _GB
+    supported = False
+    launches: list[Path] = []
+    attempts: list[Path] = []
+    pin = "1" * 40
+
+    def measure(path: Path) -> int:
+        assert path == hot
+        return raw_free
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("pressure wakeup attempted build admission or full collection")
+
+    def git_bytes(_repo: Path, command: str, *_args: str) -> bytes:
+        if command == "rev-parse":
+            return pin.encode()
+        assert command == "cat-file"
+        return Path(checkout_maintenance.__file__).read_bytes() if supported else b""
+
+    @contextmanager
+    def controller(
+        _repo: Path, _common: Path, selected: str
+    ) -> Iterator[controller_source.Controller]:
+        assert supported and selected == pin
+        yield controller_source.Controller(pin, ROOT)
+
+    def reclaim(
+        minimum: float, *, root: Path, volume_root: Path, env: Mapping[str, str]
+    ) -> dg.ReclaimResult:
+        assert minimum == default_paths.HOT_STATE_MIN_FREE_BYTES / _GB
+        assert root == artifact and volume_root == hot
+        assert env["MOLT_EXT_ROOT"] == str(artifact)
+        attempts.append(volume_root)
+        return dg.ReclaimResult("pressure", str(hot), True, raw_free, raw_free)
+
+    def launch(
+        state: Path,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        controller: controller_source.Controller,
+    ) -> int:
+        assert cwd == ROOT and controller.key == pin
+        assert state.name == f"pressure-{daily_identity}"
+        assert environment["MOLT_DIFF_CARGO_TARGET_DIR"] == str(
+            artifact / "protected-target"
+        )
+        launches.append(state)
+        return checkout_maintenance.main(list(command[-5:]))
+
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", forbidden)
+    monkeypatch.setattr(dg, "collect", forbidden)
+    monkeypatch.setattr(dg, "ensure_free", reclaim)
+    monkeypatch.setattr(controller_source, "_git_bytes", git_bytes)
+    monkeypatch.setattr(controller_source, "controller_source", controller)
+    monkeypatch.setattr(detached_execution, "launch_detached", launch)
+
+    dx.collect_checkout_state_after_result(env, cwd=artifact)
+    assert not launches
+    raw_free = 18 * _GB
+    dx.collect_checkout_state_after_result(env, cwd=artifact)
+    assert (
+        not launches and not artifact.joinpath(*checkout_state.PRESSURE_STAMP).exists()
+    )
+
+    supported = True
+    protected_env = {**env, "MOLT_DIFF_CARGO_TARGET_DIR": "protected-target"}
+    dx.collect_checkout_state_after_result(protected_env, cwd=artifact)
+    assert len(launches) == 1 and attempts == [hot]
+    assert daily.stat().st_mtime_ns == daily_identity
+
+    dx.collect_checkout_state_after_result(protected_env, cwd=artifact)
+    assert len(launches) == 1 and attempts == [hot]
 
 
 def test_installed_completion_does_not_claim_source_collection(tmp_path, monkeypatch):

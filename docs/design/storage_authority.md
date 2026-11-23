@@ -568,6 +568,10 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    measures the bound hot mirror against its raw reserve independently of
    artifact volume headroom. Each pressure pass retires eligible state on its
    measured device and checks live guard custody across the whole family.
+   After result publication, a measured hot shortfall can wake the existing
+   detached worker for pressure only. Daily maintenance and pressure-only
+   passes share a lock, and pressure attempts have a 15-minute cooldown
+   without advancing the daily stamp.
    Already admitted writers can continue allocating. The compile-cache cap
    covers its own entries. Lane start only reports a volume below its
    floor (one statfs): a synchronous trim there stalled lane starts. Checkout
