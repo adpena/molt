@@ -3858,7 +3858,14 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         mode=LandingMode(mode),
     )
     heavy = SelectedGate(
-        command=("python", "-m", "pytest", "-q", "tests/test_heavy.py"),
+        command=(
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "--molt-worker-memory-gb=3",
+            "tests/test_heavy.py",
+        ),
         toolchains=("python",),
         pytest=True,
     )
@@ -3866,8 +3873,9 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
     ((work, demand),) = requests
     if mode == "postsubmit":
         assert work is host_capacity.HostWorkClass.DEVELOPMENT
-        assert demand == molt_dev_gates.postsubmit_demand()
-        assert demand.workers <= max(1, host_capacity.cpu_count() // 2)
+        assert demand == host_capacity.HostWorkDemand(
+            workers=1, bytes_per_worker=3 << 30, minimum_workers=1
+        )
     else:
         assert work is host_capacity.HostWorkClass.INTEGRATION
         assert demand is None
@@ -5329,6 +5337,79 @@ def test_gates_overlap_across_classes_and_rules_cargo_gates_overlap(
     # gates first, then the heavy block's four.
     assert len(slices) == len(gates) and all(int(value) > 0 for value in slices)
     assert len(set(slices[:2])) == 1 and len(set(slices[2:])) == 1
+
+
+def test_landing_demand_can_run_any_selected_gate(tmp_path: Path) -> None:
+    from tools import molt_dev_gates
+
+    tests = SelectedGate(
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-n",
+            "auto",
+            "--molt-worker-memory-gb=6.25",
+            "tests/test_fixture.py",
+        ),
+        ("python",),
+        pytest=True,
+    )
+    cargo = SelectedGate(("cargo", "check"), ("cargo",))
+    light = molt_dev_gates.gate_work_demand([tests], repo=tmp_path, requested_workers=6)
+    mixed = molt_dev_gates.gate_work_demand(
+        [tests, cargo], repo=tmp_path, requested_workers=6
+    )
+    assert (light.workers, light.bytes_per_worker) == (1, int(6.25 * 1024**3))
+    assert (mixed.workers, mixed.bytes_per_worker) == (2, 8 << 30)
+    assert mixed.minimum_workers == 1
+
+
+def test_landing_gate_executor_projects_the_live_host_grant(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from molt import host_capacity
+    from tools import molt_dev_gates
+
+    calls: list[tuple[tuple[str, ...], int, str | None]] = []
+
+    def run(
+        command: tuple[str, ...],
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path],
+    ) -> molt_dev_gates.GateOutcome:
+        for path in streams:
+            path.open("x").close()
+        env = environment.environment
+        calls.append(
+            (
+                tuple(command),
+                int(env[host_capacity.MEMORY_SLICE_ENV]),
+                env.get("CARGO_BUILD_JOBS"),
+            )
+        )
+        return _gate_outcome(0, "", "")
+
+    gates = [
+        SelectedGate(
+            ("python", "-m", "pytest", "-n", "auto", "tests/test_fixture.py"),
+            ("python",),
+            pytest=True,
+        ),
+        SelectedGate(("cargo", "check"), ("cargo",)),
+    ]
+    runtime = replace(
+        _heavy_runtime(molt_dev_gates, tmp_path, gates, run),
+        host_grant=host_capacity.HostWorkGrant(1, 1 << 30),
+    )
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 6)
+    assert len(calls) == 2
+    assert all(0 < memory <= 1 << 30 for _argv, memory, _jobs in calls)
+    pytest_run = next(argv for argv, _, _ in calls if "pytest" in argv)
+    assert pytest_run[pytest_run.index("-n", pytest_run.index("auto") + 1) + 1] == "1"
+    assert next(jobs for argv, _, jobs in calls if argv[0] == "cargo") == "1"
 
 
 def _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate):

@@ -647,6 +647,24 @@ _GIB_BYTES = 1024**3
 _BUDGET = host_capacity.HostWorkBudget(cpus=18, memory_bytes=100 * _GIB_BYTES)
 
 
+def test_elastic_host_work_uses_the_available_fraction() -> None:
+    budget = host_capacity.HostWorkBudget(cpus=6, memory_bytes=12 * _GIB_BYTES)
+    held = [host_capacity.HostWorkGrant(2, 6 * _GIB_BYTES)]
+    flexible = host_capacity.HostWorkDemand(5, 2 * _GIB_BYTES, minimum_workers=1)
+
+    assert budget.grant_beside(flexible, held) == host_capacity.HostWorkGrant(
+        3, 6 * _GIB_BYTES
+    )
+    assert (
+        budget.grant_beside(host_capacity.HostWorkDemand(5, 2 * _GIB_BYTES), held)
+        is None
+    )
+    assert (
+        budget.grant_beside(flexible, [host_capacity.HostWorkGrant(1, 11 * _GIB_BYTES)])
+        is None
+    )
+
+
 def _demand(workers: int, gib: float = 2.5) -> host_capacity.HostWorkDemand:
     return host_capacity.HostWorkDemand(workers, int(gib * _GIB_BYTES))
 
@@ -694,6 +712,20 @@ def test_two_moderate_gates_share_the_host_and_a_large_one_waits(
         assert admission.grant == host_capacity.HostWorkGrant(
             9, int(9 * 2.5 * _GIB_BYTES)
         )
+    # A try run can use the available half even when it preferred more.
+    with host_capacity.host_work_slot(
+        state,
+        label="elastic landing try run",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=beside.append,
+        demand=host_capacity.HostWorkDemand(
+            12, int(2.5 * _GIB_BYTES), minimum_workers=1
+        ),
+        budget=_BUDGET,
+    ) as admission:
+        assert beside == []
+        assert admission.grant == _BUDGET.grant_for(_demand(9))
+
     said: list[str] = []
     admitted = threading.Event()
 

@@ -421,7 +421,9 @@ def _private_presubmit_run(monkeypatch: pytest.MonkeyPatch) -> None:
             *tests,
         ],
     )
-    monkeypatch.setattr(consumer_gate, "_importer_demand", lambda argv, files: None)
+    monkeypatch.setattr(
+        consumer_gate, "_importer_demand", lambda argv, files, *, root: None
+    )
 
 
 def test_a_receipt_proves_the_gates_it_ran_and_no_other(
@@ -719,11 +721,12 @@ def test_an_importer_run_asks_one_worker_per_file_at_its_declared_memory(
     # gate no longer holds the whole development class.
     from molt import host_capacity
 
+    root = Path(consumer_gate.__file__).resolve().parents[1]
     argv = consumer_gate.presubmit_pytest_argv(
-        Path(consumer_gate.__file__).resolve().parents[1],
+        root,
         ["tests/tools/test_consumer_gate.py"] * 13,
     )
-    demand = consumer_gate._importer_demand(argv, 13)
+    demand = consumer_gate._importer_demand(argv, 13, root=root)
     unit = next(
         float(word.split("=", 1)[1])
         for word in argv
@@ -732,4 +735,4 @@ def test_an_importer_run_asks_one_worker_per_file_at_its_declared_memory(
     half = (host_capacity.cpu_count() + 1) // 2
     assert demand == host_capacity.HostWorkDemand(max(13, half), int(unit * 1024**3))
     # One file still asks for half the host: it may hold thousands of tests.
-    assert consumer_gate._importer_demand(argv, 1).workers == half
+    assert consumer_gate._importer_demand(argv, 1, root=root).workers == half

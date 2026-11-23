@@ -718,10 +718,16 @@ class HostWorkDemand:
 
     workers: int
     bytes_per_worker: int
+    minimum_workers: int | None = None
 
     def __post_init__(self) -> None:
         if self.workers < 1 or self.bytes_per_worker < 1:
             raise ValueError("a host-work demand needs a worker and a byte")
+        if (
+            self.minimum_workers is not None
+            and not 1 <= self.minimum_workers <= self.workers
+        ):
+            raise ValueError("host-work minimum must fit the requested workers")
 
 
 @dataclass(frozen=True, slots=True)
@@ -764,6 +770,27 @@ class HostWorkBudget:
         workers = min(demand.workers, self.cpus)
         if self.memory_bytes is not None:
             workers = max(1, min(workers, self.memory_bytes // demand.bytes_per_worker))
+        return HostWorkGrant(workers, workers * demand.bytes_per_worker)
+
+    def grant_beside(
+        self, demand: HostWorkDemand, held: Sequence[HostWorkGrant]
+    ) -> HostWorkGrant | None:
+        maximum = self.grant_for(demand)
+        if (
+            demand.minimum_workers is not None
+            and maximum.workers < demand.minimum_workers
+        ):
+            raise ValueError("host cannot grant the requested minimum workers")
+        if self.fits(maximum, held):
+            return maximum
+        if demand.minimum_workers is None:
+            return None
+        workers = min(maximum.workers, self.cpus - sum(item.workers for item in held))
+        if self.memory_bytes is not None:
+            remaining = self.memory_bytes - sum(item.memory_bytes for item in held)
+            workers = min(workers, remaining // demand.bytes_per_worker)
+        if workers < demand.minimum_workers:
+            return None
         return HostWorkGrant(workers, workers * demand.bytes_per_worker)
 
     def fits(self, grant: HostWorkGrant, held: Sequence[HostWorkGrant]) -> bool:
@@ -955,12 +982,12 @@ def _publish_grant(
 def _acquire_share(
     lock: Path,
     label: str,
-    grant: HostWorkGrant,
+    demand: HostWorkDemand,
     budget: HostWorkBudget,
     say: Callable[[str], None],
     clock: Callable[[], float],
-) -> tuple[Path, BinaryIO]:
-    """Block until ``grant`` fits beside the live grants; hold it.
+) -> tuple[HostWorkGrant, tuple[Path, BinaryIO]]:
+    """Acquire a fitting grant under the development-class lock.
 
     Waiters keep arrival order (the ticket queue): the first in line takes the
     class lock for an instant, reads the live grants and publishes its own
@@ -979,8 +1006,9 @@ def _acquire_share(
                 try:
                     if _try_exclusive(handle):
                         held = [item for _label, item in _live_grants(lock)]
-                        if budget.fits(grant, held):
-                            return _publish_grant(lock, label, grant)
+                        grant = budget.grant_beside(demand, held)
+                        if grant is not None:
+                            return grant, _publish_grant(lock, label, grant)
                 finally:
                     handle.close()
             now = clock()
@@ -988,8 +1016,10 @@ def _acquire_share(
                 holders = [name for name, _item in _live_grants(lock)] or [
                     _holder(lock)
                 ]
+                workers = budget.grant_for(demand).workers
+                prefix = "up to " if demand.minimum_workers is not None else ""
                 say(
-                    f"host-work: {label} ({grant.workers} workers) waits for "
+                    f"host-work: {label} ({prefix}{workers} workers) waits for "
                     f"{', '.join(holders)} ({now - started:.0f} s)"
                 )
                 reported, first = now, False
@@ -1095,8 +1125,7 @@ def host_work_slot(
                 time.sleep(_POLL_SECONDS)
         else:
             budget = budget or HostWorkBudget.observe()
-            grant = budget.grant_for(demand)
-            share = _acquire_share(heavy, label, grant, budget, say, clock)
+            grant, share = _acquire_share(heavy, label, demand, budget, say, clock)
         _HELD_SLOTS.add(slot)
         yield HostWorkAdmission(clock() - started, grant)
     finally:

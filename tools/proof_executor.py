@@ -30,7 +30,11 @@ class CommandAllocation:
     attempt: int = 1
 
 
-def _pytest_shares(plan: ProofPlan, commands: tuple[ReceiptCommand, ...]) -> list[int]:
+def _pytest_shares(
+    plan: ProofPlan,
+    commands: tuple[ReceiptCommand, ...],
+    granted_cpus: int | None,
+) -> list[int]:
     selected = Counter(
         str(command.data["resource_class"])
         for command in commands
@@ -39,6 +43,8 @@ def _pytest_shares(plan: ProofPlan, commands: tuple[ReceiptCommand, ...]) -> lis
     if not selected:
         return []
     cpus = host_capacity.execution_cpu_count()
+    if granted_cpus is not None:
+        cpus = min(cpus, granted_cpus)
     slots = min(
         cpus,
         plan.executor_max_workers,
@@ -68,6 +74,7 @@ def execute_commands(
     receipt_path: Path,
     *,
     failure_policy: FailurePolicy = FailurePolicy.COLLECT_INDEPENDENT,
+    granted_cpus: int | None = None,
     _source_tree_changes: Callable[[], tuple[str, ...]],
     toolchain_fingerprints: Callable[
         [Iterable[ToolchainPolicy], tuple[str, ...]], dict[str, dict[str, Any]]
@@ -114,7 +121,9 @@ def execute_commands(
         raise ValueError(
             f"receipt execution has unknown resources {sorted(unknown_resources)!r}"
         )
-    available_shares = _pytest_shares(plan, command_list)
+    if granted_cpus is not None and granted_cpus < 1:
+        raise ValueError("proof execution requires a positive CPU grant")
+    available_shares = _pytest_shares(plan, command_list, granted_cpus)
     cpu_budget = sum(available_shares)
     allocations: dict[str, CommandAllocation] = {}
     records_by_id: dict[str, dict[str, Any]] = {}
