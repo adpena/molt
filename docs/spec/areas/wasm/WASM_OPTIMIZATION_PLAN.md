@@ -559,10 +559,12 @@ wasm-ld, post-link transforms, wasm-opt and split-runtime processing) is keyed b
 the bytes of every file it reads, its options, the published linked module name,
 the link tool's source closure, the optimizer identity and
 `MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS` (`src/molt/cli/wasm_final_link_cache.py`).
-Its complete output family is a `final_link` bundle in the shared WASM link cache
-(`$MOLT_CACHE/wasm_link`), so a build into a fresh output directory restores the
-result instead of relinking. The per-output link receipt still skips republishing
-an unchanged deployment in place.
+The application products live in a `final_link` bundle in the shared WASM link
+cache (`$MOLT_CACHE/wasm_link`). The selected runtime generation supplies the
+shared WASM member on both linker execution and cache restore, through a verified
+clone or copy into the private deployment. Its bytes remain bound to the link
+key and included in the complete published deployment receipt. The per-output
+link receipt skips republishing an unchanged deployment in place.
 
 Dev builds run no post-link optimizer, as Go and Cargo debug builds run none;
 `--wasm-opt-level` opts in. The earlier dev default, `wasm-opt -O1 -g`, was

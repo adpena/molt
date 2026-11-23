@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -28,6 +27,7 @@ from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmTrust,
     read_trusted_runtime_wasm_generation,
 )
+from molt.artifact_publication import copy_reconstructible_artifact  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -98,7 +98,7 @@ def _link_admitted_standard_object(
     native_link_requirements: SourceExtensionLinkRequirements | None,
     input_versions: Sequence[StableRegularFileIdentity],
     side_sdk_archives: Sequence[Path],
-    deploy_runtime: Path,
+    deploy_runtime: StableRegularFileIdentity,
 ) -> int:
     """Link an admitted LLVM wasm32 application object with wasm-ld.
 
@@ -123,7 +123,7 @@ def _link_admitted_standard_object(
             inputs=(
                 runtime,
                 app_object,
-                deploy_runtime,
+                deploy_runtime.path,
                 *(identity.path for identity in input_versions),
             ),
             external_selection=bool(
@@ -183,10 +183,7 @@ def _link_admitted_standard_object(
                 phase_timings_ms=phase_timings_ms,
             )
             if status == 0:
-                runtime_output = outputs["runtime"]
-                staged_runtime = runtime_output.with_name(".molt_runtime.wasm.staged")
-                shutil.copyfile(deploy_runtime, staged_runtime)
-                staged_runtime.replace(runtime_output)
+                copy_reconstructible_artifact(deploy_runtime, outputs["runtime"])
         if status == 0 and selection_roles:
             from molt.cli.link_selection_admission import write_link_selection
 
@@ -392,7 +389,7 @@ def main() -> int:
         native_link_requirements=native_link_requirements,
         input_versions=input_versions,
         side_sdk_archives=tuple(sdk_versions),
-        deploy_runtime=generation.shared,
+        deploy_runtime=generation.shared_member_identity,
     )
 
 

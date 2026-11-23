@@ -23152,12 +23152,13 @@ def _install_fake_wasm_link_runner(
         if "--split-runtime" in command:
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
+            shared_runtime = Path(command[command.index("--runtime-shared") + 1])
             payloads.update(
                 app=(
                     split_dir / "app.wasm",
                     app_bytes if app_bytes is not None else valid_wasm,
                 ),
-                runtime=(split_dir / "molt_runtime.wasm", valid_wasm),
+                runtime=(split_dir / "molt_runtime.wasm", shared_runtime.read_bytes()),
             )
         payloads.update(
             mock_wasm_optimizer_publications(
@@ -23249,6 +23250,7 @@ def _prepared_runtime_pair_state(
     shared: Path, reloc: Path
 ) -> cli_models._RuntimeArtifactState:
     from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
+    from molt.toolchain_identity import stable_regular_file_identity
 
     manifest = shared.with_name("molt_runtime.generation.json")
     manifest.write_text("{}\n", encoding="utf-8")
@@ -23258,6 +23260,12 @@ def _prepared_runtime_pair_state(
             reloc=reloc,
             manifest=manifest,
             shared_identity=SimpleNamespace(family_digest="f" * 64),
+            shared_member_identity=stable_regular_file_identity(
+                shared, label="fixture runtime"
+            ),
+            reloc_member_identity=stable_regular_file_identity(
+                reloc, label="fixture reloc runtime"
+            ),
             receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
         ),
     )
@@ -23834,13 +23842,15 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     monkeypatch: pytest.MonkeyPatch,
     explicit_linked: bool,
 ) -> None:
+    from molt.cli.wasm_link_cache import _default_wasm_link_cache
+
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0\x00\x08\x07runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)
@@ -24105,6 +24115,16 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     }
     if explicit_linked:
         outputs["linked"] = linked_wasm
+    assert outputs["runtime"].read_bytes() == runtime_wasm.read_bytes()
+    [cached_link] = (_default_wasm_link_cache() / "final_link").rglob("metadata.json")
+    cached_roles = json.loads(cached_link.read_text(encoding="utf-8"))["roles"]
+    expected_cached_roles = set(outputs) - {"runtime"}
+    if explicit_linked:
+        expected_cached_roles.add("optimizer")
+    assert set(cached_roles) == expected_cached_roles
+    assert {member.name for member in (cached_link.parent / "roles").iterdir()} == set(
+        cached_roles
+    )
     assert ("linked" in receipt["outputs"]) is explicit_linked
     assert "app_optimizer" not in receipt["outputs"]
     assert set(outputs) < set(receipt["outputs"])
@@ -24185,10 +24205,12 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert cache_matches()
     manifest_bytes = outputs["manifest"].read_bytes()
     outputs["manifest"].unlink()
+    outputs["runtime"].unlink()
     repeat_build()
     # Publication recovery restores the admitted final-link result and rebuilds
     # its deployment metadata without paying for another linker invocation.
     assert len(link_calls) == 1
+    assert outputs["runtime"].read_bytes() == runtime_wasm.read_bytes()
     assert outputs["manifest"].read_bytes() == manifest_bytes
     assert cache_matches()
 
@@ -24531,7 +24553,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0\x00\x08\x07runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)

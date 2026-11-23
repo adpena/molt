@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 from typing import assert_never
 
+from molt.artifact_publication import copy_reconstructible_artifact
 from molt.cli.wasm_link_cache import (
     WasmLinkCacheBundleHit,
     WasmLinkCacheBundleMiss,
@@ -28,7 +29,6 @@ from molt.cli.wasm_link_cache import (
     _locked_wasm_link_cache_entry,
     _publish_wasm_link_cache_bundle,
     _read_wasm_link_cache_bundle,
-    _transfer_file,
     _wasm_link_cache_entry,
 )
 from molt.exact_json import canonical_json_bytes
@@ -37,7 +37,7 @@ from molt.toolchain_identity import StableRegularFileObservation
 FINAL_LINK_CACHE_FAMILY = "final_link"
 # Bump when the link tool's output contract changes in a way its source
 # closure digest cannot see (for example a new environment input).
-FINAL_LINK_CACHE_SCHEMA = "final-link-v1"
+FINAL_LINK_CACHE_SCHEMA = "final-link-v2"
 # The linked module's file name is embedded by wasm-ld; keep it, drop its dir.
 _NAMED_OUTPUT_OPTIONS = frozenset({"--output"})
 # Private locations whose names carry no output content: split roles have fixed
@@ -142,7 +142,7 @@ def ensure_final_link_result(
                     _invalidate_wasm_link_cache_bundle(entry)
             case WasmLinkCacheBundleHit(files=files):
                 for role, path in outputs.items():
-                    _transfer_file(files[role], path)
+                    copy_reconstructible_artifact(files[role], path)
                 return FinalLinkResult(reused=True)
             case _:
                 assert_never(cached)

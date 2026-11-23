@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from molt.file_publication import (
+    atomic_replace,
     clone_file,
     durable_namespace_replace as _durable_namespace_replace,
     durable_replace as _durable_replace,
@@ -265,6 +266,18 @@ def staged_output_path(
 def atomic_copy_file(src: Path, dst: Path) -> None:
     with staged_copy_file(src, dst) as tmp_path:
         publish_validated_outputs([(tmp_path, dst)])
+
+
+def copy_reconstructible_artifact(
+    source: StableRegularFileIdentity, destination: Path
+) -> None:
+    """Clone a verified artifact into a private generation or cache leaf."""
+    with staged_copy_file(
+        source.path, destination, expected_sha256=source.sha256
+    ) as stage:
+        atomic_replace(
+            stage, destination, durability=PublicationDurability.RECONSTRUCTIBLE
+        )
 
 
 @contextmanager

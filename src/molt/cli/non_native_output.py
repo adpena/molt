@@ -46,6 +46,7 @@ from molt.wasm_optimizer_identity import (
 )
 
 
+from molt.artifact_publication import copy_reconstructible_artifact
 from molt.file_publication import staged_file_path
 from molt.exact_json import canonical_json_bytes, encode_exact
 from molt.source_root import installed_distribution_root
@@ -1497,10 +1498,12 @@ def _prepare_non_native_build_result_in_generation(
                         link_run_cmd.extend(
                             ["--phase-timings-file", str(link_timings_path)]
                         )
-                    # The link result is keyed by content, never by where it is
-                    # published: a fresh output directory reuses it by copy.
+                    # The runtime pair already owns the shared member. Cache
+                    # only the products this application link generated.
                     link_result_outputs = {
-                        role: deployment.outputs[role] for role in link_outputs
+                        role: deployment.outputs[role]
+                        for role in link_outputs
+                        if role != "runtime"
                     }
                     link_result_entry = final_link_cache_entry(
                         final_link_cache_key(
@@ -1588,6 +1591,11 @@ def _prepare_non_native_build_result_in_generation(
                         )
                     if link_result_reused:
                         admit_link_result()
+                        if _split_runtime:
+                            copy_reconstructible_artifact(
+                                runtime_wasm_pair.shared_member_identity,
+                                deployment.outputs["runtime"],
+                            )
                     if (
                         link_result.publication_error is not None
                         and warnings is not None

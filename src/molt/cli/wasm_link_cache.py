@@ -18,12 +18,11 @@ from molt.default_paths import (
 )
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
-from molt.artifact_publication import staged_copy_file
+from molt.artifact_publication import copy_reconstructible_artifact
 from molt.exact_json import loads_exact
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.file_publication import (
     PublicationDurability,
-    atomic_replace,
 )
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -257,23 +256,6 @@ def _read_wasm_link_cache_bundle(
     return WasmLinkCacheBundleHit(files, bytes_read)
 
 
-def _transfer_file(source: StableRegularFileIdentity, destination: Path) -> None:
-    """Replace `destination` with a clone of `source` (see ``clone_file``).
-
-    A clone shares the source's blocks, so publishing or restoring a 60 MB
-    linked module writes no data. Cache entries and private link outputs are
-    reconstructible: readers verify their recorded digests.
-    """
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with staged_copy_file(
-        source.path, destination, expected_sha256=source.sha256
-    ) as stage:
-        atomic_replace(
-            stage, destination, durability=PublicationDurability.RECONSTRUCTIBLE
-        )
-
-
 def _publish_wasm_link_cache_bundle(
     entry: WasmLinkCacheEntry, files: Mapping[str, Path]
 ) -> None:
@@ -284,7 +266,7 @@ def _publish_wasm_link_cache_bundle(
     roles = {}
     for role, source in files.items():
         identity = stable_regular_file_identity(source, label="WASM link output")
-        _transfer_file(identity, _bundle_role_path(entry, role))
+        copy_reconstructible_artifact(identity, _bundle_role_path(entry, role))
         roles[role] = {"bytes": identity.size, "sha256": identity.sha256}
     _atomic_write_json(
         entry.metadata,
