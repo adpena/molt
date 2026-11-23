@@ -25,6 +25,7 @@ from molt.default_paths import (
     FRONTEND_RECORD_FILES_DIRECTORY,
     FRONTEND_RECORD_FILES_LAYOUT,
     FRONTEND_RECORD_INDEX_SUFFIX,
+    FRONTEND_RECORD_PACK_INDEX_SUFFIX,
     frontend_record_files_root,
     RETIRED_CACHE_LOCK_NAMES,
     HOT_STATE_MIN_FREE_BYTES,
@@ -717,10 +718,12 @@ def _collect_entries(
         if _is_direct_directory(index):
             for leaf in _children(index):
                 if (
-                    leaf.name.endswith(FRONTEND_RECORD_INDEX_SUFFIX)
-                    and _HEX64.fullmatch(
-                        leaf.name.removesuffix(FRONTEND_RECORD_INDEX_SUFFIX)
+                    leaf.suffix
+                    in (
+                        FRONTEND_RECORD_INDEX_SUFFIX,
+                        FRONTEND_RECORD_PACK_INDEX_SUFFIX,
                     )
+                    and _HEX64.fullmatch(leaf.stem)
                     and leaf.is_file()
                     and not leaf.is_symlink()
                 ):

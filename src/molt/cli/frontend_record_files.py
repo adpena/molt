@@ -1,12 +1,10 @@
 """Immutable content-addressed frontend records (cache frontier step 2).
 
-An import scan or a module analysis is a pure function of its key. Its result
-is one immutable file named by the SHA-256 of its bytes (``blobs/aa/<digest>``),
-and index files map keys to digests (``index/<digest>.idx``), as Go's GOCACHE
-pairs an action ID with an output ID. One frontend operation publishes one
-index file for the results it made. Publication is atomic and equal results
-share one blob. Readers seek to a requested row in the sorted index and
-verify the blob against its digest.
+An import scan or a module analysis is a pure function of its key. An index
+maps a key to its result digest and, for batched results, an extent in an
+immutable content-addressed pack. A producer publishes the pack before its
+index. Readers seek only the requested row and verify the returned extent
+against its result digest. Directly addressed products use whole blobs.
 
 Retention: an admitted read renews the blob's mtime at most hourly (a record
 its consumer refuses is not renewed); the compile cache's
@@ -29,7 +27,8 @@ from pathlib import Path
 from typing import Final, Literal, get_args
 
 from molt.default_paths import (
-    FRONTEND_RECORD_INDEX_SUFFIX as INDEX_SUFFIX,
+    FRONTEND_RECORD_INDEX_SUFFIX as LEGACY_INDEX_SUFFIX,
+    FRONTEND_RECORD_PACK_INDEX_SUFFIX as INDEX_SUFFIX,
     _default_molt_cache,
     frontend_record_files_root,
 )
@@ -44,10 +43,13 @@ _KEY: Final = re.compile(r"[0-9a-f]{16,64}")
 _RENEW_NS: Final = 3600 * 10**9
 # Retention merges index files past this count.
 _MERGE_INDEX_FILES: Final = 64
-# Longest line including its newline: kind, two spaces, two hex strings.
-_INDEX_ROW_LIMIT: Final = max(map(len, _KINDS)) + 2 + 64 + 64 + 1
+# Longest line including its newline: kind, key, result digest and optional
+# pack digest with its two fixed-width extents.
+_INDEX_ROW_LIMIT: Final = max(map(len, _KINDS)) + 2 + 64 + 64 + 3 + 64 + 16 + 1
 # An operation saves its queued index entries at most this many at a time.
 _PENDING_INDEX_ENTRIES: Final = 4096
+_PACK_BYTES: Final = 4 * 1024 * 1024
+_EXTENT: Final = re.compile(r"[0-9a-f]{8}")
 _READ_FLAGS: Final = (
     os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
 )
@@ -58,12 +60,13 @@ class FrontendRecord:
     """One read record; its consumer refreshes it only after admitting it."""
 
     payload: bytes
-    path: Path
+    path: Path | None
     mtime_ns: int
+    offset: int = 0
 
     def refresh(self) -> None:
         """Renew the blob's mtime when an hour stale; advisory, never raises."""
-        if time.time_ns() - self.mtime_ns >= _RENEW_NS:
+        if self.path is not None and time.time_ns() - self.mtime_ns >= _RENEW_NS:
             try:
                 os.utime(self.path)
             except OSError:
@@ -74,11 +77,52 @@ def record_digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def parse_index(data: bytes) -> dict[tuple[str, str], str] | None:
+@dataclass(frozen=True, slots=True)
+class _PackedExtent:
+    digest: str
+    offset: int
+    size: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RecordLocation:
+    digest: str
+    extent: _PackedExtent | None = None
+
+    def render(self) -> str:
+        extent = self.extent
+        if extent is None:
+            return self.digest
+        return f"{self.digest}:{extent.digest}:{extent.offset:08x}:{extent.size:08x}"
+
+    @classmethod
+    def parse(cls, text: str) -> _RecordLocation | None:
+        fields = text.split(":")
+        if _DIGEST.fullmatch(fields[0]) is None:
+            return None
+        if len(fields) == 1:
+            return cls(fields[0])
+        if (
+            len(fields) != 4
+            or _DIGEST.fullmatch(fields[1]) is None
+            or _EXTENT.fullmatch(fields[2]) is None
+            or _EXTENT.fullmatch(fields[3]) is None
+        ):
+            return None
+        offset, size = int(fields[2], 16), int(fields[3], 16)
+        if offset + size > _PACK_BYTES:
+            return None
+        return cls(fields[0], _PackedExtent(fields[1], offset, size))
+
+
+type _RecordIndex = dict[tuple[str, str], _RecordLocation]
+
+
+def parse_index(data: bytes) -> _RecordIndex | None:
     """The entries of one index file, or None when it is not one."""
     if not data.startswith(_INDEX_HEADER):
         return None
-    entries: dict[tuple[str, str], str] = {}
+    entries: _RecordIndex = {}
     try:
         text = data[len(_INDEX_HEADER) :].decode("ascii")
     except UnicodeDecodeError:
@@ -89,16 +133,17 @@ def parse_index(data: bytes) -> dict[tuple[str, str], str] | None:
             len(fields) != 3
             or fields[0] not in _KINDS
             or _KEY.fullmatch(fields[1]) is None
-            or _DIGEST.fullmatch(fields[2]) is None
+            or (location := _RecordLocation.parse(fields[2])) is None
         ):
             return None
-        entries[(fields[0], fields[1])] = fields[2]
+        entries[(fields[0], fields[1])] = location
     return entries
 
 
-def render_index(entries: dict[tuple[str, str], str]) -> bytes:
+def render_index(entries: _RecordIndex) -> bytes:
     return _INDEX_HEADER + "".join(
-        f"{kind} {key} {digest}\n" for (kind, key), digest in sorted(entries.items())
+        f"{kind} {key} {location.render()}\n"
+        for (kind, key), location in sorted(entries.items())
     ).encode("ascii")
 
 
@@ -107,7 +152,7 @@ def _index_paths(directory: Path) -> tuple[Path, ...]:
         with os.scandir(directory) as entries:
             files = []
             for entry in entries:
-                if not entry.name.endswith(INDEX_SUFFIX):
+                if not entry.name.endswith((LEGACY_INDEX_SUFFIX, INDEX_SUFFIX)):
                     continue
                 try:
                     metadata = entry.stat(follow_symlinks=False)
@@ -120,7 +165,7 @@ def _index_paths(directory: Path) -> tuple[Path, ...]:
     return tuple(directory / name for _, name in sorted(files, reverse=True))
 
 
-def _seek_index(path: Path, prefix: bytes) -> str | None:
+def _seek_index(path: Path, prefix: bytes) -> _RecordLocation | None:
     """Read at most two rows per step, even for a damaged index."""
     try:
         with open(
@@ -146,8 +191,7 @@ def _seek_index(path: Path, prefix: bytes) -> str | None:
                 if len(row) >= _INDEX_ROW_LIMIT:
                     return None
                 if row.startswith(prefix):
-                    digest = row[len(prefix) :].decode("ascii")
-                    return digest if _DIGEST.fullmatch(digest) is not None else None
+                    return _RecordLocation.parse(row[len(prefix) :].decode("ascii"))
                 if row < prefix:
                     lower = base + end + 1
                 else:
@@ -157,11 +201,16 @@ def _seek_index(path: Path, prefix: bytes) -> str | None:
     return None
 
 
-def _read_indices(indices: tuple[Path, ...]) -> dict[tuple[str, str], str]:
-    result: dict[tuple[str, str], str] = {}
+def _read_indices(indices: tuple[Path, ...]) -> _RecordIndex:
+    result: _RecordIndex = {}
     for index in reversed(indices):
         try:
-            entries = parse_index(index.read_bytes())
+            with open(
+                index, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
+            ) as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                entries = parse_index(stream.read())
         except OSError:
             continue
         if entries is not None:
@@ -178,13 +227,15 @@ class FrontendRecordFiles:
         self._blobs = self.root / "blobs"
         self._index = self.root / "index"
         self._pid = os.getpid()
-        self._lock = threading.Lock()
-        self._lookups: dict[tuple[str, str], str | None] = {}
+        self._lock = threading.RLock()
+        self._lookups: dict[tuple[str, str], _RecordLocation | None] = {}
         self._indices: tuple[Path, ...] = ()
         self._index_generation: tuple[int, int, int] | None = None
-        self._pending: dict[tuple[str, str], str] = {}
+        self._pending: _RecordIndex = {}
+        self._payloads: dict[str, bytes] = {}
+        self._payload_bytes = 0
         # Addresses this process recorded: newer than any index file it loads.
-        self._written: dict[tuple[str, str], str] = {}
+        self._written: _RecordIndex = {}
 
     def blob_path(self, digest: str) -> Path:
         return self._blobs / digest[:2] / digest
@@ -194,49 +245,87 @@ class FrontendRecordFiles:
     def get(
         self, kind: FrontendRecordKind, key: str, *, max_bytes: int
     ) -> FrontendRecord | None:
-        """The record, or None; never waits and never raises OSError."""
+        """Read the record from this view or an immutable published generation."""
         if self._pid != os.getpid():
             return None
-        digest = self.digest(kind, key)
-        return None if digest is None else self._read_blob(digest, max_bytes)
+        with self._lock:
+            location = self._location(kind, key)
+            if location is None:
+                return None
+            if (
+                location.extent is None
+                and (payload := self._payloads.get(location.digest)) is not None
+            ):
+                return (
+                    FrontendRecord(payload, None, 0)
+                    if len(payload) <= max_bytes
+                    else None
+                )
+        record = self._read_blob(location, max_bytes)
+        if record is not None:
+            return record
+        # The same result may have moved to another pack. A long-lived view
+        # must let the latest published index answer after retention evicts
+        # the physical extent it first cached.
+        address = (kind, key)
+        with self._lock:
+            if address in self._pending:
+                return None
+            if self._written.get(address) == location:
+                del self._written[address]
+            if self._lookups.get(address) == location:
+                del self._lookups[address]
+            current = self._location(kind, key)
+        if current is None or current == location:
+            return None
+        return self._read_blob(current, max_bytes)
 
     def get_blob(self, digest: str, *, max_bytes: int) -> FrontendRecord | None:
         """Read a bounded digest-addressed product owned by an external record."""
         if self._pid != os.getpid() or _DIGEST.fullmatch(digest) is None:
             return None
-        return self._read_blob(digest, max_bytes)
+        return self._read_blob(_RecordLocation(digest), max_bytes)
 
     def digest(self, kind: FrontendRecordKind, key: str) -> str | None:
+        with self._lock:
+            location = self._location(kind, key)
+            return None if location is None else location.digest
+
+    def _location(self, kind: FrontendRecordKind, key: str) -> _RecordLocation | None:
         if kind not in _KINDS or _KEY.fullmatch(key) is None:
             return None
         address = (kind, key)
-        with self._lock:
-            if address in self._written:
-                return self._written[address]
-            digest = self._lookups.get(address)
-            if digest is not None:
-                return digest
-            generation = self._directory_generation()
-            if generation != self._index_generation:
-                self._indices = _index_paths(self._index)
-                self._lookups.clear()
-                self._index_generation = generation
-            if address not in self._lookups:
-                prefix = f"{kind} {key} ".encode("ascii")
-                self._lookups[address] = next(
-                    (
-                        digest
-                        for index in self._indices
-                        if (digest := _seek_index(index, prefix)) is not None
-                    ),
-                    None,
-                )
-            return self._lookups[address]
+        if address in self._written:
+            return self._written[address]
+        location = self._lookups.get(address)
+        if location is not None:
+            return location
+        generation = self._directory_generation()
+        if generation != self._index_generation:
+            self._indices = _index_paths(self._index)
+            self._lookups.clear()
+            self._index_generation = generation
+        if address not in self._lookups:
+            prefix = f"{kind} {key} ".encode("ascii")
+            self._lookups[address] = next(
+                (
+                    found
+                    for index in self._indices
+                    if (found := _seek_index(index, prefix)) is not None
+                ),
+                None,
+            )
+        return self._lookups[address]
 
     def addresses(self) -> dict[tuple[str, str], str]:
         """Explicit inventory of every address, including this view's writes."""
         with self._lock:
-            return _read_indices(_index_paths(self._index)) | self._written
+            return {
+                address: location.digest
+                for address, location in (
+                    _read_indices(_index_paths(self._index)) | self._written
+                ).items()
+            }
 
     def _directory_generation(self) -> tuple[int, int, int] | None:
         try:
@@ -269,18 +358,30 @@ class FrontendRecordFiles:
                 # A peer merged it first, or (Windows) still reads it.
                 continue
 
-    def _read_blob(self, digest: str, max_bytes: int) -> FrontendRecord | None:
-        path = self.blob_path(digest)
+    def _read_blob(
+        self, location: _RecordLocation, max_bytes: int
+    ) -> FrontendRecord | None:
+        extent = location.extent
+        path = self.blob_path(location.digest if extent is None else extent.digest)
         try:
             descriptor = os.open(path, _READ_FLAGS)
         except OSError:
             return None
         try:
             info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            offset, size = (
+                (0, info.st_size) if extent is None else (extent.offset, extent.size)
+            )
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or size > max_bytes
+                or offset + size > info.st_size
+            ):
                 return None
+            if offset:
+                os.lseek(descriptor, offset, os.SEEK_SET)
             chunks = []
-            remaining = info.st_size
+            remaining = size
             while remaining:
                 chunk = os.read(descriptor, remaining)
                 if not chunk:
@@ -292,9 +393,9 @@ class FrontendRecordFiles:
         finally:
             os.close(descriptor)
         data = b"".join(chunks)
-        if record_digest(data) != digest:
+        if record_digest(data) != location.digest:
             return None
-        return FrontendRecord(data, path, info.st_mtime_ns)
+        return FrontendRecord(data, path, info.st_mtime_ns, offset)
 
     # Publication.
 
@@ -305,10 +406,22 @@ class FrontendRecordFiles:
         if self._pid != os.getpid():
             return False
         digest = record_digest(payload)
+        location = _RecordLocation(digest)
+        if len(payload) <= _PACK_BYTES and self._pinned_by_operation():
+            with self._lock:
+                if digest not in self._payloads:
+                    if (
+                        self._payload_bytes + len(payload) > _PACK_BYTES
+                        and not self.save()
+                    ):
+                        return False
+                    self._payloads[digest] = payload
+                    self._payload_bytes += len(payload)
+                return self._record(kind, key, location)
         path = self.blob_path(digest)
         if not os.path.exists(path) and not self._publish(path, payload):
             return False
-        return self._record(kind, key, digest)
+        return self._record(kind, key, location)
 
     def put_blob(self, payload: bytes) -> str | None:
         """Publish immutable bytes without inventing a second address index."""
@@ -322,34 +435,55 @@ class FrontendRecordFiles:
 
     def link(self, kind: FrontendRecordKind, key: str, same_as_key: str) -> bool:
         """Record that ``key`` has the result ``same_as_key`` has (HF-926)."""
-        digest = self.digest(kind, same_as_key)
-        return digest is not None and self._record(kind, key, digest)
+        with self._lock:
+            location = self._location(kind, same_as_key)
+            return location is not None and self._record(kind, key, location)
 
-    def _record(self, kind: FrontendRecordKind, key: str, digest: str) -> bool:
+    def _record(
+        self, kind: FrontendRecordKind, key: str, location: _RecordLocation
+    ) -> bool:
         if kind not in _KINDS or _KEY.fullmatch(key) is None:
             raise ValueError(f"invalid frontend record address: {kind} {key}")
         with self._lock:
-            self._written[(kind, key)] = digest
-            self._pending[(kind, key)] = digest
+            self._written[(kind, key)] = location
+            self._pending[(kind, key)] = location
             due = len(self._pending) >= _PENDING_INDEX_ENTRIES
         if due or not self._pinned_by_operation():
             return self.save()
         return True
 
     def save(self) -> bool:
-        """Publish one index file of the queued entries."""
+        """Publish the operation's bounded pack, then its index."""
         with self._lock:
-            pending, self._pending = self._pending, {}
-        if not pending:
+            if not self._pending:
+                return True
+            published = self._pending.copy()
+            if self._payloads:
+                # A shared digest has one extent, even when several premises
+                # alias that result. Sort by content to share equal packs.
+                rows = sorted(self._payloads.items())
+                pack = self.put_blob(b"".join(payload for _, payload in rows))
+                if pack is None:
+                    return False
+                offset = 0
+                locations = {}
+                for digest, payload in rows:
+                    locations[digest] = _RecordLocation(
+                        digest, _PackedExtent(pack, offset, len(payload))
+                    )
+                    offset += len(payload)
+                for address, location in published.items():
+                    if location.extent is None:
+                        published[address] = locations.get(location.digest, location)
+            content = render_index(published)
+            name = record_digest(content) + INDEX_SUFFIX
+            if not self._publish(self._index / name, content):
+                return False
+            self._written.update(published)
+            self._pending.clear()
+            self._payloads.clear()
+            self._payload_bytes = 0
             return True
-        content = render_index(pending)
-        name = record_digest(content) + INDEX_SUFFIX
-        if not self._publish(self._index / name, content):
-            with self._lock:
-                for address, digest in pending.items():
-                    self._pending.setdefault(address, digest)
-            return False
-        return True
 
     def pending_count(self) -> int:
         return len(self._pending)

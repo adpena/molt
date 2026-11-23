@@ -466,6 +466,7 @@ def hot_path(artifact_root: Path, *relative: str) -> Path:
 
 FRONTEND_RECORD_FILES_LAYOUT = "v1"
 FRONTEND_RECORD_INDEX_SUFFIX = ".idx"
+FRONTEND_RECORD_PACK_INDEX_SUFFIX = ".idx2"
 
 
 def frontend_record_files_root(cache_root: Path) -> Path:

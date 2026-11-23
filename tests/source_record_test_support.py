@@ -17,6 +17,7 @@ from molt.cli.function_records import (
     encode_lowering_record,
 )
 from molt.cli.frontend_record_files import (
+    FrontendRecord,
     FrontendRecordFiles,
     FrontendRecordKind,
     frontend_record_files,
@@ -43,6 +44,14 @@ def _file_digests(kind: str) -> dict[str, str]:
     return {key: digest for (k, key), digest in fresh.addresses().items() if k == kind}
 
 
+def _file_record(
+    files: FrontendRecordFiles, kind: FrontendRecordKind, key: str
+) -> FrontendRecord:
+    record = files.get(kind, key, max_bytes=2**31)
+    assert record is not None, f"no stored {kind} record {key}"
+    return record
+
+
 def _saved_store() -> SourceRecordStore:
     """The shared store after this process's queued records are saved.
 
@@ -59,10 +68,11 @@ def source_records(
 ) -> dict[str, dict[str, Any]]:
     """Every stored ``kind`` record in the caller's isolated shared cache."""
     if kind in _FILE_KINDS:
+        file_kind = cast(FrontendRecordKind, kind)
         files = _saved_files()
         return {
-            key: json.loads(files.blob_path(digest).read_bytes())
-            for key, digest in _file_digests(kind).items()
+            key: json.loads(_file_record(files, file_kind, key).payload)
+            for key in _file_digests(file_kind)
         }
     path = _saved_store().path
     if not path.exists():
@@ -120,9 +130,11 @@ def replace_source_record(
 def delete_source_record(kind: RecordKind | FrontendRecordKind, key: str) -> None:
     """Remove one stored record, as an evicted or never-published one."""
     if kind in _FILE_KINDS:
-        digests = _file_digests(kind)
-        assert key in digests, f"no stored {kind} record {key}"
-        _saved_files().blob_path(digests[key]).unlink()
+        record = _file_record(_saved_files(), cast(FrontendRecordKind, kind), key)
+        assert record.path is not None and record.payload
+        with record.path.open("r+b") as stream:
+            stream.seek(record.offset)
+            stream.write(bytes((record.payload[0] ^ 1,)))
         return
     with (
         closing(sqlite3.connect(_saved_store().path)) as connection,

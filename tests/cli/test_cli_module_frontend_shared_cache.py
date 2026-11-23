@@ -416,8 +416,11 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     # renews the blob's mtime once it is an hour stale.
     files = frontend_record_files()
     assert files.save()
-    digest = FrontendRecordFiles(files.cache_root).addresses()[("module-analysis", key)]
-    blob = files.blob_path(digest)
+    record = FrontendRecordFiles(files.cache_root).get(
+        "module-analysis", key, max_bytes=2**31
+    )
+    assert record is not None and record.path is not None
+    blob = record.path
     payload = blob.read_bytes()
     stale = time.time() - 2 * 3600
     os.utime(blob, (stale, stale))
