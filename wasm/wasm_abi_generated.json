@@ -13966,6 +13966,10 @@
       "context": "Attached",
       "physical_symbol": "molt_shlex_split_ex__molt_context_d1086a27578cda22"
     },
+    "molt_short_ascii_snapshot": {
+      "context": "Attached",
+      "physical_symbol": "molt_short_ascii_snapshot__molt_context_d1086a27578cda22"
+    },
     "molt_shutdown": {
       "context": "Boundary",
       "physical_symbol": "molt_shutdown"
@@ -23791,6 +23795,7 @@
     "molt_shlex_join__molt_context_d1086a27578cda22": "molt_shlex_join__molt_context_d1086a27578cda22",
     "molt_shlex_quote__molt_context_d1086a27578cda22": "molt_shlex_quote__molt_context_d1086a27578cda22",
     "molt_shlex_split_ex__molt_context_d1086a27578cda22": "molt_shlex_split_ex__molt_context_d1086a27578cda22",
+    "molt_short_ascii_snapshot__molt_context_d1086a27578cda22": "molt_short_ascii_snapshot__molt_context_d1086a27578cda22",
     "molt_shutdown": "molt_shutdown",
     "molt_shutil_chown__molt_context_d1086a27578cda22": "molt_shutil_chown__molt_context_d1086a27578cda22",
     "molt_shutil_copy2__molt_context_d1086a27578cda22": "molt_shutil_copy2__molt_context_d1086a27578cda22",
@@ -25098,6 +25103,7 @@
     "shlex_join": "molt_shlex_join__molt_context_d1086a27578cda22",
     "shlex_quote": "molt_shlex_quote__molt_context_d1086a27578cda22",
     "shlex_split_ex": "molt_shlex_split_ex__molt_context_d1086a27578cda22",
+    "short_ascii_snapshot": "molt_short_ascii_snapshot__molt_context_d1086a27578cda22",
     "shutil_chown": "molt_shutil_chown__molt_context_d1086a27578cda22",
     "shutil_copy": "molt_shutil_copy__molt_context_d1086a27578cda22",
     "shutil_copy2": "molt_shutil_copy2__molt_context_d1086a27578cda22",
