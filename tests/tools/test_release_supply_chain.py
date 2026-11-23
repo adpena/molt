@@ -3806,16 +3806,18 @@ def test_preview_index_publishes_exact_tier1_hosts_and_authenticated_consumer_sc
         for candidate in manifest["artifacts"]
     } == {"linux-x86_64", "macos-arm64"}
     assert len(manifest["artifacts"]) == 8
-    assert len((output / "SHA256SUMS").read_text().splitlines()) == 9
+    assert len((output / "SHA256SUMS").read_text(encoding="utf-8").splitlines()) == 9
     assert not (output / wheel.name).exists()
-    notes = (output / "RELEASE_NOTES.md").read_text()
+    notes = (output / "RELEASE_NOTES.md").read_text(encoding="utf-8")
     assert sha in notes and "Fails only on Windows" in notes and "Later work" in notes
     for key, value in (("phase_exit", {}), ("version", "1.0.0")):
         with pytest.raises(ValueError):
             release_model.validate_release_manifest({**manifest, key: value})
     for host in ("linux-x86_64", "macos-arm64"):
         directory = candidates / host
-        candidate = json.loads((directory / "candidate.json").read_text())
+        candidate = json.loads(
+            (directory / "candidate.json").read_text(encoding="utf-8")
+        )
         wrong = _consumer_transport_receipt(candidate)
         with pytest.raises(ValueError, match="proof header"):
             release_authority.validate_consumer_proof(
@@ -3833,7 +3835,7 @@ def test_e3_signer_checks_exact_selected_subjects_and_rejects_a_carried_role(
     rows = []
     for name in ("linux", "macos"):
         path = tmp_path / f"{name}.json"
-        path.write_text(name)
+        path.write_text(name, encoding="utf-8")
         rows.append(
             {
                 "role": release_exit_gate.verified_subset_evidence_role(name),
