@@ -1,8 +1,8 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
+use super::program_pipeline::preprocess_backend_tir_input;
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, NativeFinalFunctions, SimpleBackend, preprocess_backend_tir_input,
-    should_flush_deferred_codegen,
+    NativeBackendModuleContext, NativeFinalFunctions, SimpleBackend, should_flush_deferred_codegen,
 };
 use crate::GENERATOR_CONTROL_BYTES;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};

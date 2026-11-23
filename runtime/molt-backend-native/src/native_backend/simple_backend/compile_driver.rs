@@ -295,78 +295,14 @@ impl SimpleBackend {
             );
             let codegen_start = std::time::Instant::now();
 
-            // Unified cost model (Tier-0 S2) for the LLVM target, derived from
-            // the host CPU's vector feature string so the vectorizer can size
-            // lanes to the actual machine (behavior-neutral today: the width is
-            // a dead annotation, but structurally correct for real SIMD codegen).
-            let host_features = inkwell::targets::TargetMachine::get_host_cpu_features();
-            let llvm_tti = crate::tir::target_info::TargetInfo::from_llvm_feature_string(
-                if llvm_target.is_wasm() {
-                    ""
-                } else {
-                    host_features.to_str().unwrap_or("")
-                },
-            );
-            // Source ABI metadata survives transport retirement unchanged.
-            let mut program_signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
+            // Preserve ABI rows for the module phase's specialized clones.
             let mut parameter_custody: Vec<_> = ir
                 .functions
                 .iter()
                 .map(|function| function.parameter_custody.clone())
                 .collect();
-            let mut llvm_cached_tir = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                &ir.functions,
-                crate::tir::pipeline_cache::TirPipelineRunOptions {
-                    target_info: llvm_tti.clone(),
-                    cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
-                    cache: self.tir_cache.clone(),
-                    process_externs: false,
-                    tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
-                    tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
-                    progress_prefix: Some("MOLT_BACKEND(llvm)"),
-                    resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
-                },
-                preprocess_backend_tir_input,
-            )
-            .cached_tir;
-
-            // Run the shared module transformations on the LLVM lane's owned
-            // TIR, then lower those bodies directly to LLVM. Source SimpleIR
-            // bodies retire during assembly; neither pipeline materializes a
-            // SimpleIR projection.
-            // The Cranelift module phase is skipped for `use_llvm`, so inlining
-            // runs once under the LLVM target's cost model.
-            //
-            // Extern functions are runtime declarations with empty bodies (the
-            // shared-stdlib partition's `stdlib_shared.o` symbols, already
-            // externalized before this branch): they are not inlinable and stay
-            // OUT of the module, so calls to them remain opaque call-graph edges
-            // (exactly correct  an extern body is not owned by this object). They
-            // are re-declared below for call resolution. Because externalization
-            // has already physically removed their bodies, the module the inliner
-            // sees contains only locally-owned bodies, so the `non_inlinable` set
-            // is empty here (the native lane needs it only because its module
-            // phase runs *before* externalization).
-            let non_inlinable = molt_ir::deterministic_hash::HashSet::default();
-            // A guarded call names a row of this document (a body, or the
-            // extern row of a function another object defines): the row
-            // supplies its signature, by id (HF-847 slice 1).
-            let owned = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-                ir.functions,
-                &mut llvm_cached_tir,
-                crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
-                    target_info: &llvm_tti,
-                    module_name: "llvm_module",
-                    non_inlinable: &non_inlinable,
-                    missing_tir_context: "LLVM TIR cache runner",
-                    mode: if self.skip_ir_passes {
-                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
-                    } else {
-                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
-                    },
-                    linkage: Some(&program_signatures),
-                },
-            );
+            let (owned, mut program_signatures) =
+                self.prepare_final_tir(&mut ir, backend, &mut |_, _| {});
             // A specialized clone is another entry of its origin (design 78,
             // slice 3): the origin's signature and entry custody.
             for clone in &owned.clones {
