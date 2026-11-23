@@ -127,12 +127,27 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         name: "fast_path_expansion",
         ..Default::default()
     };
+    if !func.blocks.values().any(|block| {
+        block.ops.iter().any(|op| {
+            if sqrt_call_operand(op).is_some() {
+                return true;
+            }
+            match opcode_fast_path_expansion_rule_table(op.opcode) {
+                FastPathExpansionRule::None => false,
+                FastPathExpansionRule::GuardedCall => {
+                    guarded_target(op).is_some_and(|id| targets.contains_key(&id))
+                }
+                _ => true,
+            }
+        })
+    }) {
+        return stats;
+    }
+
     let facts = super::value_identity::ScalarFacts::new(func);
     let vr = super::value_range::compute_with_scalar_facts(&facts);
     let repr = crate::representation_facts::repr_by_value_from(&facts, Some(&vr));
-    // Exact types as they stand before any block is split.
-    let raise = super::check_exception_elim::classify::RaiseFacts::from_scalar_facts(facts);
-    let exact = raise.exact_types();
+    let exact = facts.types();
     if !func.blocks.values().any(|block| {
         block
             .ops
@@ -141,6 +156,9 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     }) {
         return stats;
     }
+    // Capture the original body's exception facts before the first rewrite.
+    let raise = super::check_exception_elim::classify::RaiseFacts::from_scalar_facts(facts);
+    let exact = raise.exact_types();
     record_inline_int_proofs(func, &repr);
     let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
@@ -528,6 +546,16 @@ fn num_operand(
     }
 }
 
+fn sqrt_call_operand(op: &TirOp) -> Option<ValueId> {
+    let [operand] = op.operands[..] else {
+        return None;
+    };
+    (op.opcode == OpCode::Call
+        && op.callee.is_none()
+        && op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::MathSqrt))
+    .then_some(operand)
+}
+
 fn expansion_of(
     op: &TirOp,
     repr: &HashMap<ValueId, Repr>,
@@ -539,12 +567,7 @@ fn expansion_of(
     }
     // Runtime identity is decoded and verified at ingest; annotations alone
     // do not prove the carrier of an exact semantic float.
-    if op.opcode == OpCode::Call
-        && op.callee.is_none()
-        && op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::MathSqrt)
-        && op.operands.len() == 1
-    {
-        let value = op.operands[0];
+    if let Some(value) = sqrt_call_operand(op) {
         let operand = num_operand(repr, value, false)?;
         if matches!(operand, NumOperand::RawFloat)
             || (matches!(operand, NumOperand::Boxed) && exact.get(&value) == Some(&TirType::F64))
@@ -798,6 +821,23 @@ fn expansion_of(
 /// observation of the binding, and the representation plan would then box
 /// the whole loop carrier. Returns the edges it split.
 pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
+    let mut blocks: Vec<_> = func
+        .blocks
+        .iter()
+        .filter_map(|(&id, block)| match &block.terminator {
+            Terminator::CondBranch {
+                then_args,
+                else_args,
+                ..
+            } if !then_args.is_empty() || !else_args.is_empty() => Some(id),
+            _ => None,
+        })
+        .collect();
+    if blocks.is_empty() {
+        return 0;
+    }
+    blocks.sort_unstable();
+
     let repr = crate::representation_facts::analyze_representations(func);
     let raw_scalar = |value: ValueId| {
         matches!(
@@ -805,8 +845,6 @@ pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
             Some(Repr::RawI64Safe | Repr::RawI64FullDeopt | Repr::FloatUnboxed)
         )
     };
-    let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
-    blocks.sort_unstable();
     let mut split = 0;
     for block in blocks {
         let Terminator::CondBranch {
@@ -819,18 +857,23 @@ pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
         else {
             continue;
         };
+        let to_split = |target, args: &[ValueId]| {
+            (!args.is_empty()
+                && args
+                    .iter()
+                    .zip(&func.blocks[&target].args)
+                    .any(|(&arg, param)| raw_scalar(arg) && is_boxed_word(&repr, param.id)))
+            .then(|| (target, args.to_vec()))
+        };
         let edges = [
-            (*then_block, then_args.clone()),
-            (*else_block, else_args.clone()),
+            to_split(*then_block, then_args),
+            to_split(*else_block, else_args),
         ];
         let mut retargets = [None, None];
-        for (side, (target, args)) in edges.into_iter().enumerate() {
-            let params: Vec<ValueId> = func.blocks[&target].args.iter().map(|a| a.id).collect();
-            let boxes = (0..args.len().min(params.len()))
-                .any(|i| raw_scalar(args[i]) && is_boxed_word(&repr, params[i]));
-            if !boxes {
+        for (side, edge) in edges.into_iter().enumerate() {
+            let Some((target, args)) = edge else {
                 continue;
-            }
+            };
             let edge = func.fresh_block();
             func.blocks.insert(
                 edge,
