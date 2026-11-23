@@ -130,6 +130,39 @@ def _cpython_origin(module: str, roots: list[Path]) -> str | None:
     return json.loads(result.stdout)
 
 
+def test_file_backed_stdlib_imports_follow_application_search_order(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_stdlib_policy import _stdlib_allowlist
+
+    stdlib = module_resolution._stdlib_root_path()
+    roots = [tmp_path, stdlib]
+    coverage = _stdlib_allowlist()
+    application = tmp_path / "fractions.py"
+    application.write_text("origin = 'application'\n", encoding="utf-8")
+    for name in ("sys", "os", "encodings"):
+        (tmp_path / f"{name}.py").write_text("raise AssertionError\n", encoding="utf-8")
+    # An earlier concrete package owns its children. A missing child cannot
+    # be recovered by taking the same-named package from a later root.
+    local_email = tmp_path / "email"
+    local_email.mkdir()
+    (local_email / "__init__.py").write_text("", encoding="utf-8")
+    cache = module_resolution._ModuleResolutionCache()
+
+    def source(name: str) -> Path | None:
+        return cache.resolve_module(name, roots, stdlib, coverage)
+
+    assert source("fractions") == application
+    assert _cpython_origin("fractions", roots) == str(application)
+    assert source("molt.stdlib.fractions") == stdlib / "fractions.py"
+    assert source("textwrap") == stdlib / "textwrap.py"
+    assert source("email") == local_email / "__init__.py"
+    assert cache.package_locations("email", roots, stdlib, coverage) == (local_email,)
+    assert source("email.message") is None
+    for name in ("sys", "os", "encodings"):
+        assert source(name) == module_resolution._resolve_module_path(name, [stdlib])
+
+
 def test_negative_resolution_and_earlier_shadow_cannot_cross_topology_generation(
     tmp_path,
 ):
