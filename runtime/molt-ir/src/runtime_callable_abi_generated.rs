@@ -24594,6 +24594,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_shlex_split_ex__molt_context_d1086a27578cda22",
         },
+        "molt_short_ascii_snapshot" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_short_ascii_snapshot__molt_context_d1086a27578cda22",
+        },
         "molt_shutdown" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_shutdown",

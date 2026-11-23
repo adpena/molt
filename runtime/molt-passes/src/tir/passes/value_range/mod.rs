@@ -91,6 +91,28 @@ pub(crate) fn compute_value_range_with_loop_forest(
     scev: &ScevResult,
     loop_forest: &LoopForestResult,
 ) -> ValueRangeResult {
+    compute_seeded(func, scev, loop_forest, None)
+}
+
+/// Preview only the arm of a loop version whose entry established a fixed
+/// upper bound for these explicit lengths of its immutable string. The
+/// symbolic relation between the original length and its owner survives.
+pub(super) fn under_length_guard(
+    func: &TirFunction,
+    lengths: &[crate::tir::values::ValueId],
+    upper: i64,
+) -> ValueRangeResult {
+    let forest = <LoopForest as Analysis>::compute(func);
+    let scev = compute_scev_with_loop_forest(func, &forest);
+    compute_seeded(func, &scev, &forest, Some((lengths, upper)))
+}
+
+fn compute_seeded(
+    func: &TirFunction,
+    scev: &ScevResult,
+    loop_forest: &LoopForestResult,
+    guarded_lengths: Option<(&[crate::tir::values::ValueId], i64)>,
+) -> ValueRangeResult {
     let mut result = ValueRangeResult::default();
 
     // This resolves pure transports and proven exact scalar views across
@@ -111,6 +133,12 @@ pub(crate) fn compute_value_range_with_loop_forest(
     let const_facts: Vec<_> = result.const_int_facts().collect();
     for (value, constant) in const_facts {
         result.record_global_range(value, IntRange::point(constant));
+    }
+
+    if let Some((lengths, upper)) = guarded_lengths {
+        for &length in lengths {
+            result.record_global_range(length, IntRange::new(0, upper));
+        }
     }
 
     // Freeze a genuinely phi-independent baseline before any recurrence or
