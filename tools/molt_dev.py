@@ -212,7 +212,6 @@ from tools.molt_dev_gates import (  # noqa: E402
     display as _gate_display,
     gate_output_dir,
     gate_time_summary,
-    reclaim_hot_output,
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
@@ -1206,7 +1205,7 @@ def gate_environment(
     writes_shared_cargo_target = any(
         gate.cargo_target_access is CargoTargetAccess.SHARED for gate in gates
     )
-    from molt.dx import RunContext
+    from molt.dx import CargoTargetPlacement, RunContext
 
     # Gates receive the same caches, scratch and toolchain selection as every
     # DX child, including shells without a lane env.sh.
@@ -1216,11 +1215,11 @@ def gate_environment(
             create_dirs=create_dirs,
             force_default_keys=("TMPDIR", "TMP", "TEMP"),
             admit_cargo_target=writes_shared_cargo_target,
-            reclaim_hot_target=(
-                lambda error, base: reclaim_hot_output(error, base, set())
-            )
-            if writes_shared_cargo_target
-            else None,
+            cargo_target_placement=(
+                CargoTargetPlacement.ARTIFACT
+                if writes_shared_cargo_target
+                else CargoTargetPlacement.DEVELOPMENT
+            ),
         )
     )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
@@ -1233,9 +1232,8 @@ def gate_environment(
     env["PYTHONPYCACHEPREFIX"] = str(_gate_pycache_prefix(repo, env))
     env["MOLT_SESSION_ID"] = session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
-    # Cargo gates build into the target Molt's own builds of this checkout use.
-    # Bare Cargo would compile cold into the worktree's ./target, which the
-    # worktree cleanup then deletes, so every landing paid a full build.
+    # Share the chosen checkout target with Cargo children. Bare Cargo would
+    # otherwise use the worktree's ./target and lose its reusable artifacts.
     env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
     return env
 

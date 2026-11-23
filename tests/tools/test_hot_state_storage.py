@@ -254,9 +254,8 @@ def test_hot_cargo_shortfall_selects_and_pins_the_artifact_target(
     assert explicit["CARGO_TARGET_DIR"] == str(nominal)
 
 
-@pytest.mark.parametrize("recovers", [False, True])
-def test_landing_reclaims_before_selecting_its_managed_cargo_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovers: bool
+def test_landing_pins_shared_gates_to_one_artifact_volume_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt import disk_capacity, dx
     from tools import disk_guard, molt_dev
@@ -270,7 +269,7 @@ def test_landing_reclaims_before_selecting_its_managed_cargo_target(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
     for name in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR", "MOLT_SESSION_ID"):
         monkeypatch.delenv(name, raising=False)
-    hot_free = 30 << 30
+    hot_free = 80 << 30
     artifact_free = 80 << 30
     reclaim_calls: list[Path] = []
 
@@ -280,15 +279,8 @@ def test_landing_reclaims_before_selecting_its_managed_cargo_target(
     def reclaim(
         minimum: float, *, root: Path, env: Mapping[str, str]
     ) -> disk_guard.ReclaimResult:
-        nonlocal hot_free
-        assert root == hot
-        assert minimum == 50
-        assert Path(env["MOLT_EXT_ROOT"]) == artifact
-        assert Path(env["CARGO_TARGET_DIR"]) == nominal
         reclaim_calls.append(root)
-        before = hot_free
-        hot_free = (70 if recovers else 34) << 30
-        return disk_guard.ReclaimResult("pressure", str(root), True, before, hot_free)
+        pytest.fail("shared gate planning must not reclaim unrelated hot state")
 
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
     monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", measure)
@@ -306,44 +298,42 @@ def test_landing_reclaims_before_selecting_its_managed_cargo_target(
     first = molt_dev.gate_environment(
         source, session_id="first", create_dirs=False, gates=(gate,)
     )
-    selected = nominal if recovers else external
     assert (
         first["CARGO_TARGET_DIR"]
         == first["MOLT_DIFF_CARGO_TARGET_DIR"]
-        == str(selected)
+        == str(external)
     )
-    assert reclaim_calls == [hot]
+    assert not external.exists()
 
-    hot_free = 80 << 30
+    hot_free = 30 << 30
     second = molt_dev.gate_environment(
         source, session_id="second", create_dirs=False, gates=(gate,)
     )
-    assert second["CARGO_TARGET_DIR"] == str(nominal)
-    assert first["CARGO_TARGET_DIR"] == str(selected)
-    assert reclaim_calls == [hot]
+    assert second["CARGO_TARGET_DIR"] == first["CARGO_TARGET_DIR"]
+    assert reclaim_calls == []
 
-    hot_free = 30 << 30
     monkeypatch.setenv("CARGO_TARGET_DIR", str(nominal))
+    diff = artifact / "explicit-diff-target"
+    monkeypatch.setenv("MOLT_DIFF_CARGO_TARGET_DIR", str(diff))
     pinned = molt_dev.gate_environment(
         source, session_id="explicit", create_dirs=False, gates=(gate,)
     )
     assert pinned["CARGO_TARGET_DIR"] == str(nominal)
-    assert reclaim_calls == [hot]
+    assert pinned["MOLT_DIFF_CARGO_TARGET_DIR"] == str(diff)
+    assert reclaim_calls == []
 
-    if not recovers:
-        monkeypatch.delenv("CARGO_TARGET_DIR")
-        artifact_free = 10 << 30
-        with pytest.raises(disk_capacity.DiskCapacityError) as failure:
-            molt_dev.gate_environment(
-                source, session_id="exhausted", create_dirs=False, gates=(gate,)
-            )
-        assert failure.value.rejected[0].requested_path == external
-        assert reclaim_calls == [hot, hot]
-        read_only = molt_dev.gate_environment(
-            source, session_id="inspect-exhausted", create_dirs=False
+    monkeypatch.delenv("CARGO_TARGET_DIR")
+    artifact_free = 10 << 30
+    with pytest.raises(disk_capacity.DiskCapacityError) as failure:
+        molt_dev.gate_environment(
+            source, session_id="exhausted", create_dirs=False, gates=(gate,)
         )
-        assert read_only["CARGO_TARGET_DIR"] == str(nominal)
-        assert reclaim_calls == [hot, hot]
+    assert failure.value.rejected[0].requested_path == external
+    read_only = molt_dev.gate_environment(
+        source, session_id="inspect-exhausted", create_dirs=False
+    )
+    assert read_only["CARGO_TARGET_DIR"] == str(nominal)
+    assert reclaim_calls == []
 
 
 def test_daemon_sweep_reaches_sessions_on_both_target_volumes(

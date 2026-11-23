@@ -1011,15 +1011,17 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             Path(captured["env"]["MOLT_PYTEST_CURRENT_TEST_FILE"]).parent
             == summary.parent
         )
-    # The guard and every test process start inside the run context (HF-114).
-    # Cargo keeps the reusable checkout target selected by DX, including its
-    # placement on a bound hot mirror.
+    # The guard and every test process start inside the run context (HF-114):
+    # Cargo keeps the artifact target's logical identity across hot placement,
+    # under this checkout's stable component when the root is shared (HF-45).
     child_env = captured["env"]
     assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
     child_target = Path(child_env["CARGO_TARGET_DIR"])
-    assert child_target == dx.cargo_target_dir_for_artifact_root(
-        Path(child_env["MOLT_EXT_ROOT"]), None, source_root=REPO_ROOT
+    artifact_root = Path(child_env["MOLT_EXT_ROOT"])
+    assert child_target in dx.checkout_cargo_target_roots(
+        artifact_root, source_root=REPO_ROOT
     )
+    assert child_env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(child_target)
     assert "MOLT_EXT_ROOT" not in env
 
 
