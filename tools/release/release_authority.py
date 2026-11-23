@@ -37,6 +37,7 @@ from molt.file_publication import durable_publish_directory_exclusive  # noqa: E
 from molt.python_identity_common import _valid_sha256  # noqa: E402
 from molt.toolchain_identity import snapshot_stable_regular_file  # noqa: E402
 from molt.verified_subset import capture_verified_subset_policy  # noqa: E402
+from molt.release_matrix import TIER1_CELLS  # noqa: E402
 from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import (  # noqa: E402
@@ -83,6 +84,7 @@ from tools.release.release_model import (  # noqa: E402
     SPDX_PREDICATE_TYPE,
     file_record,
     load_config,
+    ReleaseLine,
     normalized_version,
     release_targets,
     release_exit_archive_filename,
@@ -269,6 +271,46 @@ def consumer_python_policy(
     )
 
 
+def consumer_scope(
+    candidate: dict[str, Any],
+    component: ConsumerComponent | None,
+    coordinates: tuple[tuple[str, str], ...],
+) -> tuple[tuple[tuple[str, str], ...], tuple[ReleaseLane, ...]]:
+    if component is not None:
+        return tuple(
+            row for row in coordinates if row[0] == component.python_minor
+        ), component.lanes
+    lanes = consumer_lanes()
+    if ReleaseLine.for_version(candidate["version"]) is ReleaseLine.STABLE:
+        return coordinates, lanes
+    cells = [cell for cell in TIER1_CELLS if cell.host == candidate["target"]["id"]]
+    pairs = set()
+    for cell in cells:
+        matching = [
+            lane
+            for lane in lanes
+            if (lane.backend, lane.guest_profile, lane.runtime_profile)
+            == (cell.backend, cell.guest_profile, cell.runtime_profile)
+        ]
+        if len(matching) != 1 or cell.python not in dict(coordinates):
+            raise ValueError(
+                f"Tier 1 cell {cell.id} lacks an exact installed consumer coordinate"
+            )
+        pairs.add((cell.python, matching[0]))
+    minors = {minor for minor, _ in pairs}
+    required_lanes = {lane for _, lane in pairs}
+    selected = tuple(row for row in coordinates if row[0] in minors)
+    selected_lanes = tuple(lane for lane in lanes if lane in required_lanes)
+    if (
+        not pairs
+        or {(minor, lane) for minor, _ in selected for lane in selected_lanes} != pairs
+    ):
+        raise ValueError(
+            "candidate has no exact rectangular Tier 1 installed consumer scope"
+        )
+    return selected, selected_lanes
+
+
 def _git(*args: str) -> str:
     result = _COMMANDS.run(
         ["git", *args],
@@ -321,8 +363,15 @@ def resolve_source(requested_version: str, source_sha: str) -> dict[str, str]:
         "source_sha": head,
         "source_date_epoch": source_date_epoch,
         "release_exit_archive": release_exit_archive_filename(head),
-        "phase_exit_manifest": phase_exit_filename(head),
-        "phase_exit_attestation": phase_exit_attestation_filename(head),
+        "release_line": ReleaseLine.for_version(version).value,
+        **(
+            {
+                "phase_exit_manifest": phase_exit_filename(head),
+                "phase_exit_attestation": phase_exit_attestation_filename(head),
+            }
+            if ReleaseLine.for_version(version) is ReleaseLine.STABLE
+            else {}
+        ),
     }
 
 
@@ -335,14 +384,14 @@ def plan_release(
     source = resolve_source(requested_version, source_sha)
     identity = file_record(release_exit_archive, kind="release-exit-evidence")
     with OwnedTemporaryDirectory(prefix=".release-plan-") as temporary:
-        manifest = release_evidence.extract_release_exit(
+        release_evidence.extract_release_exit(
             archive=release_exit_archive,
             source_sha=source["source_sha"],
             source_date_epoch=int(source["source_date_epoch"]),
             output=Path(temporary) / "bundle",
             repo_root=ROOT,
+            authenticate=True,
         )
-        release_evidence.verify_e3_provenance(manifest, source_sha=source["source_sha"])
     if file_record(release_exit_archive, kind="release-exit-evidence") != identity:
         raise ValueError("release-exit archive changed during planning")
     matrix = {
@@ -354,7 +403,7 @@ def plan_release(
                 "arch": target.arch,
                 "archive": target.archive,
             }
-            for target in release_targets()
+            for target in ReleaseLine.for_version(source["version"]).targets()
         ]
     }
     return {
@@ -1081,11 +1130,7 @@ def _validate_consumer_scope(
 ) -> None:
     """Admit the exact installed Python x target x profile execution closure."""
     coordinates, policy_sha256 = consumer_python_policy()
-    lanes = consumer_lanes(None if component is None else component.lanes)
-    if component is not None:
-        coordinates = tuple(
-            row for row in coordinates if row[0] == component.python_minor
-        )
+    coordinates, lanes = consumer_scope(candidate, component, coordinates)
     for lane in lanes:
         if lane.compiler_profile != candidate["compiler"]["profile"] or not set(
             lane.compiler_features
@@ -1306,11 +1351,7 @@ def _validate_consumer_pip_proof(
         raise ValueError("release consumer pip proof is incomplete")
     wheel = wheels[0]
     coordinates, _policy = consumer_python_policy()
-    lanes = consumer_lanes(None if component is None else component.lanes)
-    if component is not None:
-        coordinates = tuple(
-            row for row in coordinates if row[0] == component.python_minor
-        )
+    coordinates, lanes = consumer_scope(candidate, component, coordinates)
     if (
         (proof["python"], proof["reference_python"]) != coordinates[0]
         or proof["wheel"] != {key: wheel[key] for key in ("filename", "sha256", "size")}
@@ -1473,7 +1514,7 @@ def assemble_index(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path,
+    phase_exit_manifest: Path | None,
 ) -> dict[str, object]:
     if type(source_date_epoch) is not int or source_date_epoch <= 0:
         raise ValueError("release epoch must be a positive integer")
@@ -1512,7 +1553,7 @@ def _assemble_index_stage(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path,
+    phase_exit_manifest: Path | None,
 ) -> dict[str, object]:
     evidence_record, phase_record = _stage_release_evidence(
         version=version,
@@ -1531,12 +1572,18 @@ def _assemble_index_stage(
         source_date_epoch=source_date_epoch,
         output=output,
     )
+    metadata_wheel = (
+        output / wheel.name
+        if phase_record is not None
+        else output
+        / next(str(item["filename"]) for item in published if item["kind"] == "wheel")
+    )
     return _compose_index_metadata(
         version=version,
         source_sha=source_sha,
         source_date_epoch=source_date_epoch,
         output=output,
-        wheel=output / wheel.name,
+        wheel=metadata_wheel,
         published=published,
         llvm_inputs=llvm_inputs,
         evidence_record=evidence_record,
@@ -1552,7 +1599,7 @@ def _stage_release_evidence(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path,
+    phase_exit_manifest: Path | None,
 ) -> tuple[dict[str, object], dict[str, dict[str, object]] | None]:
     """Snapshot and authenticate the planned source-named semantic evidence."""
     evidence_record = file_record(release_exit_archive, kind="release-exit-evidence")
@@ -1564,20 +1611,26 @@ def _stage_release_evidence(
     _copy_verified_release_file(
         release_exit_archive, output / release_exit_archive.name, evidence_record
     )
-    if phase_exit_manifest.name != phase_exit_filename(source_sha):
-        raise ValueError("H0 phase manifest must have its source-named filename")
-    phase_record: dict[str, dict[str, object]] = {}
-    for key, kind, path in (
-        ("manifest", PHASE_EXIT_KIND, phase_exit_manifest),
-        (
-            "attestation",
-            PHASE_ATTESTATION_KIND,
-            phase_exit_manifest.parent / phase_exit_attestation_filename(source_sha),
-        ),
-    ):
-        record = file_record(path, kind=kind)
-        _copy_verified_release_file(path, output / path.name, record)
-        phase_record[key] = record
+    stable = ReleaseLine.for_version(version) is ReleaseLine.STABLE
+    if stable != (phase_exit_manifest is not None):
+        raise ValueError("H0 phase evidence is required only for stable releases")
+    phase_record = None
+    if phase_exit_manifest is not None:
+        if phase_exit_manifest.name != phase_exit_filename(source_sha):
+            raise ValueError("H0 phase manifest must have its source-named filename")
+        phase_record = {}
+        for key, kind, path in (
+            ("manifest", PHASE_EXIT_KIND, phase_exit_manifest),
+            (
+                "attestation",
+                PHASE_ATTESTATION_KIND,
+                phase_exit_manifest.parent
+                / phase_exit_attestation_filename(source_sha),
+            ),
+        ):
+            record = file_record(path, kind=kind)
+            _copy_verified_release_file(path, output / path.name, record)
+            phase_record[key] = record
     # Admission uses the exact archived/staged bytes, including H0.
     with OwnedTemporaryDirectory(
         prefix=".release-admission-", dir=output.parent
@@ -1589,7 +1642,7 @@ def _stage_release_evidence(
             output=Path(temporary) / "bundle",
             repo_root=ROOT,
             version=version,
-            phase_manifest=output / phase_exit_filename(source_sha),
+            phase_manifest=output / phase_exit_filename(source_sha) if stable else None,
             authenticate=True,
         )
     return evidence_record, phase_record
@@ -1613,7 +1666,8 @@ def _stage_candidate_assets(
         if target_id in candidates_by_id:
             raise ValueError(f"duplicate release candidate: {target_id}")
         candidates_by_id[target_id] = (path.parent, candidate)
-    expected_ids = {target.id for target in release_targets()}
+    line = ReleaseLine.for_version(version)
+    expected_ids = {target.id for target in line.targets()}
     actual_ids = set(candidates_by_id)
     if actual_ids != expected_ids:
         raise ValueError(
@@ -1630,9 +1684,11 @@ def _stage_candidate_assets(
             "libc": None,
         }
     )
-    published: list[dict[str, object]] = [wheel_record]
+    published: list[dict[str, object]] = []
     validate_artifact_record(wheel_record, version=version)
-    _copy_verified_release_file(wheel, output / wheel.name, wheel_record)
+    if line is ReleaseLine.STABLE:
+        _copy_verified_release_file(wheel, output / wheel.name, wheel_record)
+        published.append(wheel_record)
     seen_names = {wheel.name}
     from tools.release import consumer_replay
 
@@ -1672,7 +1728,7 @@ def _compose_index_metadata(
     published: list[dict[str, object]],
     llvm_inputs: dict[str, dict[str, Any]],
     evidence_record: dict[str, object],
-    phase_record: dict[str, dict[str, object]],
+    phase_record: dict[str, dict[str, object]] | None,
 ) -> dict[str, object]:
     """Project the index, checksums and SBOM from the staged release subjects."""
     config = load_config()
@@ -1690,7 +1746,7 @@ def _compose_index_metadata(
         "source_date_epoch": source_date_epoch,
         "repo": f"{owner}/{repository}",
         "evidence_archive": evidence_record,
-        "phase_exit": phase_record,
+        **({"phase_exit": phase_record} if phase_record is not None else {}),
         "artifacts": published,
         "attestation": dict(ATTESTATION_POLICY),
     }
@@ -1714,16 +1770,19 @@ def _compose_index_metadata(
     (output / "SHA256SUMS").write_text(
         "\n".join(checksum_lines) + "\n", encoding="utf-8", newline="\n"
     )
-    (output / "RELEASE_NOTES.md").write_text(
+    notes = (
         f"Molt {version}\n\nSource: `{source_sha}`\n\n"
-        "All artifacts passed independent reproducibility and clean-consumer "
-        "verification on their target platform; the source-bound E1-E4 evidence "
-        "and any required stable H0 phase exit passed their owning gates. "
-        "These gates do not expand the advertised verified subset. Verify `SHA256SUMS` and the "
-        "published GitHub Sigstore attestations before installation.\n",
-        encoding="utf-8",
-        newline="\n",
+        "The release passed its source-bound evidence, reproducibility and installed-consumer checks. "
+        "Verify `SHA256SUMS` and the published GitHub Sigstore attestations before installation.\n"
     )
+    if ReleaseLine.for_version(version) is ReleaseLine.PRE_1:
+        from tools import known_issues, release_exit_gate
+
+        facts = release_exit_gate.source_findings(ROOT, source_sha)
+        if facts.version != version:
+            raise ValueError("release notes source differs from the release version")
+        notes += "\n" + known_issues.render(facts.status, source=source_sha)
+    (output / "RELEASE_NOTES.md").write_text(notes, encoding="utf-8", newline="\n")
     return manifest
 
 
@@ -1768,7 +1827,7 @@ def _release_directory_files(
     )
     if not isinstance(sbom, dict):
         raise ValueError("release SBOM must be an object")
-    validate_spdx_llvm_inputs(sbom)
+    validate_spdx_llvm_inputs(sbom, line=ReleaseLine.for_version(manifest["version"]))
     expected_sbom_files = {
         f"./{record['filename']}": record["sha256"] for record in subjects
     }
@@ -1926,7 +1985,7 @@ def main() -> None:
     index.add_argument("--output", type=Path, required=True)
     index.add_argument("--release-exit-archive", type=Path, required=True)
     index.add_argument("--release-exit-sha256", required=True)
-    index.add_argument("--phase-exit-manifest", type=Path, required=True)
+    index.add_argument("--phase-exit-manifest", type=Path)
 
     verify = subparsers.add_parser("verify-promotion")
     verify.add_argument("--local", type=Path, required=True)

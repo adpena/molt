@@ -787,7 +787,7 @@ def test_live_h0_expands_over_the_generated_matrix_to_the_bundle_roles() -> None
     matrix = pem.generated_matrix()
     expanded = pem.expand_requirements(phase, matrix)
     assert {row.evidence_role for row in expanded} == reg._expected_evidence_roles(
-        vs.verified_subset_coordinates()
+        vs.verified_subset_coordinates(), reg.ReleaseLine.STABLE
     )
     verified = {
         row.evidence_role: row.matrix_cells

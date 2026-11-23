@@ -4,7 +4,7 @@ schema = "molt.public-contract.v1"
 public_schemas = [
   "molt.release-supply-chain.v1",
   "molt.release-candidate.v7",
-  "molt.release-manifest.v5",
+  "molt.release-manifest.v6",
   "molt.release-consumer-proof.v12",
   "molt.release-compiler-source.v8",
   "molt.installed-runtime.v3",

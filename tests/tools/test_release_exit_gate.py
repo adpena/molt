@@ -660,6 +660,19 @@ def _inputs(
     }
 
 
+def _select_preview_receipts(inputs, gate):
+    ids = {coord.id for coord in gate.tier1_coordinates().values() if coord is not None}
+    inputs.update(
+        e1_receipts=[],
+        e2_scoreboard=None,
+        e3_receipts=[
+            path
+            for path in inputs["e3_receipts"]
+            if _read(path)["facts"]["coordinate"]["id"] in ids
+        ],
+    )
+
+
 def _assemble(tmp_path: Path, gate, *, failing_kind: str | None = None):
     return gate.assemble_release_bundle(
         **_inputs(tmp_path, gate, failing_kind=failing_kind)
@@ -726,7 +739,9 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
     assert report.open_findings == ()
     assert report.version == "1.0.0"
     assert [item["role"] for item in payload["evidence"]] == sorted(
-        gate._expected_evidence_roles(verified_subset.verified_subset_coordinates())
+        gate._expected_evidence_roles(
+            verified_subset.verified_subset_coordinates(), gate.ReleaseLine.STABLE
+        )
     )
     for item in payload["evidence"]:
         relative = PurePosixPath(item["path"])
@@ -1460,8 +1475,8 @@ def test_open_finding_at_the_source_refuses_pass_and_names_every_id(
     }
     gate._print_report(report)
     printed = capsys.readouterr().out
-    assert "version 1.0.0 is held to the v1.0 quality contract" in printed
-    assert "open findings (2, hold this release): HF-7, V1-3" in printed
+    assert "version 1.0.0 uses the stable release contract" in printed
+    assert "holding findings (2): HF-7, V1-3" in printed
 
     payload["status"] = gate.STATUS_PASS
     _write(manifest_path, payload)
@@ -1551,7 +1566,7 @@ def test_invalid_source_ledger_is_refused(
     [(PYPROJECT_V1, "1.0.0"), (PYPROJECT_V0, "0.9.0")],
     ids=["v1", "v0-first-release"],
 )
-def test_an_open_finding_holds_every_release_whatever_its_version(
+def test_unclassified_finding_holds_both_source_release_lines(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     ledger_repo: Path,
@@ -1559,13 +1574,14 @@ def test_an_open_finding_holds_every_release_whatever_its_version(
     pyproject: str,
     version: str,
 ) -> None:
-    # The first public release is numbered v0.0.1 and held to the v1.0 quality
-    # contract: the version number never relaxes the gate.
     gate = _load_gate(monkeypatch)
     source = _commit_ledger(ledger_repo, ONE_OPEN_LEDGER, pyproject)
     _ledger_from(monkeypatch, gate, ledger_repo, source)
 
-    manifest_path, report = _assemble(tmp_path, gate)
+    inputs = _inputs(tmp_path, gate)
+    if version == "0.9.0":
+        _select_preview_receipts(inputs, gate)
+    manifest_path, report = gate.assemble_release_bundle(**inputs)
 
     assert report.problems == ()
     assert report.status == "FAIL"
@@ -1577,8 +1593,11 @@ def test_an_open_finding_holds_every_release_whatever_its_version(
     assert "v1_contract" not in findings
     gate._print_report(report)
     printed = capsys.readouterr().out
-    assert f"version {version} is held to the v1.0 quality contract" in printed
-    assert "open findings (1, hold this release): HF-7" in printed
+    assert (
+        f"version {version} uses the {gate.ReleaseLine.for_version(version)} release contract"
+        in printed
+    )
+    assert "holding findings (1): HF-7" in printed
 
     # A recorded version still has to be the project version at the source.
     payload = _read(manifest_path)
@@ -1626,3 +1645,71 @@ def test_unreadable_source_version_fails_closed(
         for problem in reread.problems
     )
     assert any("status is not derived" in problem for problem in reread.problems)
+
+
+def test_preview_gate_records_known_issues_and_refuses_extra_criteria(
+    tmp_path, monkeypatch, ledger_repo
+):
+    gate = _load_gate(monkeypatch)
+    ledger = ONE_OPEN_LEDGER.replace(
+        "## Fixed",
+        "### Family dependency order (2026-10-29)\n\n| Family | Stratum | HF-459 axes | Cause | Keys |\n| --- | --- | --- | --- | --- |\n| A. Alpha | engine | loop/per_op | cause a | HF-7 |\n\n| Row | V1 class |\n| --- | --- |\n| HF-7 | release_blocking |\n\n| Row | v0.1 class |\n| --- | --- |\n| HF-7 | tier2 |\n\n## Fixed",
+    )
+    source = _commit_ledger(ledger_repo, ledger, PYPROJECT_V0)
+    _ledger_from(monkeypatch, gate, ledger_repo, source)
+    inputs = _inputs(tmp_path, gate)
+    extra_e3 = next(
+        path
+        for path in inputs["e3_receipts"]
+        if _read(path)["facts"]["coordinate"]["id"].endswith("-dev")
+    )
+    e1, e2 = inputs["e1_receipts"], inputs["e2_scoreboard"]
+    _select_preview_receipts(inputs, gate)
+    for extra in (
+        {"e1_receipts": e1},
+        {"e2_scoreboard": e2},
+        {"e3_receipts": [*inputs["e3_receipts"], extra_e3]},
+    ):
+        with pytest.raises(ValueError):
+            gate.assemble_release_bundle(**{**inputs, **extra})
+    manifest, report = gate.assemble_release_bundle(**inputs)
+    assert report.passed and report.problems == ()
+    assert report.open_findings == ("HF-7",) and report.holding_findings == ()
+    payload = _read(manifest)
+    assert "registry" not in payload
+    assert len(report.e3_roles) == 2 and len(payload["evidence"]) == 6
+    for key, value in (
+        ("registry", []),
+        (
+            "evidence",
+            [*payload["evidence"], {**payload["evidence"][0], "role": "e1_native"}],
+        ),
+    ):
+        _write(manifest, {**payload, key: value})
+        assert not gate.verify_release_bundle(
+            manifest, repo_root=REPO_ROOT, now=NOW
+        ).passed
+
+
+def test_missing_tier1_coordinate_is_a_fail_input(tmp_path, monkeypatch):
+    gate = _load_gate(monkeypatch)
+    monkeypatch.setattr(
+        gate,
+        "_blob_at_source",
+        lambda root, sha, path: (
+            ("d" * 40, PYPROJECT_V0)
+            if path == gate.PYPROJECT_PATH
+            else ("c" * 40, CLOSED_LEDGER)
+        ),
+    )
+    inputs = _inputs(tmp_path, gate)
+    mapping = gate.tier1_coordinates()
+    missing = next(iter(mapping))
+    mapping[missing] = None
+    monkeypatch.setattr(gate, "tier1_coordinates", lambda **kwargs: mapping)
+    _select_preview_receipts(inputs, gate)
+    manifest, report = gate.assemble_release_bundle(**inputs)
+    assert not report.passed and report.status == "FAIL" and not report.problems
+    assert report.missing_cells == (missing,)
+    _write(manifest, {**_read(manifest), "status": "PASS"})
+    assert not gate.verify_release_bundle(manifest, repo_root=REPO_ROOT, now=NOW).passed

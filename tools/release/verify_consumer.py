@@ -42,6 +42,7 @@ from tools.release.release_authority import (  # noqa: E402
     CONSUMER_EXPECTED_STDOUT,
     CONSUMER_GUEST_ARGV,
     consumer_lanes,
+    consumer_scope,
     CONSUMER_SCHEMA,
     COMPONENT_CONSUMER_SCHEMA,
     ConsumerComponent,
@@ -843,6 +844,7 @@ def _verify_pip_distribution(
     generation: dict[str, Any],
     projection: SealedExecutionProjection,
     component: ConsumerComponent | None = None,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> dict[str, Any]:
     """Install one platform wheel and produce the complete logical lane set."""
     root.mkdir(parents=True)
@@ -917,7 +919,7 @@ def _verify_pip_distribution(
         supervisor=supervisor,
         generation=generation,
         projection=projection,
-        selected_lanes=None if component is None else component.lanes,
+        selected_lanes=selected_lanes if component is None else component.lanes,
     )
     if (
         _capture_python_execution(
@@ -969,6 +971,7 @@ def _verify_python_coordinate(
     generation: dict[str, Any],
     projection: SealedExecutionProjection,
     component: ConsumerComponent | None = None,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> dict[str, Any]:
     project = root / "project"
     project.mkdir(parents=True)
@@ -1046,7 +1049,7 @@ def _verify_python_coordinate(
         supervisor=supervisor,
         generation=generation,
         projection=projection,
-        selected_lanes=None if component is None else component.lanes,
+        selected_lanes=selected_lanes if component is None else component.lanes,
     )
     if (
         _capture_python_execution(
@@ -1155,11 +1158,7 @@ def verify(
     ):
         raise ValueError("release consumer must run on its candidate host")
     all_coordinates, policy_sha256 = consumer_python_policy()
-    coordinates = all_coordinates
-    if component is not None:
-        coordinates = tuple(
-            row for row in coordinates if row[0] == component.python_minor
-        )
+    coordinates, lanes = consumer_scope(candidate, component, all_coordinates)
     artifacts = candidate.get("artifacts", [])
     if not isinstance(artifacts, list):
         raise ValueError("candidate artifacts must be a list")
@@ -1245,7 +1244,6 @@ def verify(
             != candidate["native_build"]["llvm"]["policy_sha256"]
         ):
             raise ValueError("Bundle LLVM policy differs from native build receipt")
-        lanes = consumer_lanes(None if component is None else component.lanes)
         for profile in sorted({lane.compiler_profile for lane in lanes}):
             features = {
                 feature
@@ -1322,6 +1320,7 @@ def verify(
                 generation=generation,
                 projection=projection,
                 component=component,
+                selected_lanes=lanes,
             )
             for minor, reference in coordinates
         ]
@@ -1347,6 +1346,7 @@ def verify(
             generation=generation,
             projection=projection,
             component=component,
+            selected_lanes=lanes,
         )
         standalone_evidence = receipt.parent / "consumer-evidence"
         replay = consumer_replay.prepare(
@@ -1359,7 +1359,7 @@ def verify(
             supervisor=supervisor,
             generation=generation,
             argv=CONSUMER_GUEST_ARGV,
-            selected_lanes=None if component is None else component.lanes,
+            selected_lanes=lanes,
         )
         standalone = _uninstall_and_replay(
             root=root,
@@ -1372,7 +1372,6 @@ def verify(
             supervisor=supervisor,
         )
 
-        lanes = consumer_lanes(None if component is None else component.lanes)
         count = (len(coordinates) + 1) * len(lanes)
         payload: dict[str, object] = {
             "schema": CONSUMER_SCHEMA

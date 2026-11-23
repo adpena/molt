@@ -12,7 +12,7 @@ see [current status](docs/spec/STATUS.md) before choosing a workload.
 
 The first public release is v0.1. It makes a narrow claim: two flagship
 witnesses, Django offload on native and Falcon OCR on Cloudflare Workers, in
-four Tier 1 cells, with a known-issues list generated from the findings ledger.
+two Tier 1 cells, with a known-issues list generated from the findings ledger.
 See [the v0.1 claim](docs/spec/PUBLIC_CLAIM_V0_1.md). What holds a release is
 stated once, in the
 [public contract](docs/spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating);

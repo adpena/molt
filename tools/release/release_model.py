@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime as dt
+from enum import StrEnum
 from email.parser import Parser
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any, Iterable
 import zipfile
 
 from molt.exact_json import canonical_json_sha256, loads_exact
-from molt.release_matrix import RELEASE_TARGETS
+from molt.release_matrix import RELEASE_TARGETS, TIER1_CELLS
 from molt.portable_paths import portable_relative_path
 from molt.toolchain_identity import stable_regular_file_identity
 from packaging.utils import parse_wheel_filename
@@ -26,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
 CONFIG_SCHEMA = "molt.release-supply-chain.v1"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-MANIFEST_SCHEMA = "molt.release-manifest.v5"
+MANIFEST_SCHEMA = "molt.release-manifest.v6"
 SPDX_VERSION = "2.3"
 SPDX_PREDICATE_TYPE = f"https://spdx.dev/Document/v{SPDX_VERSION}"
 RELEASE_EXIT_ARCHIVE_KIND = "release-exit-evidence"
@@ -141,6 +142,29 @@ def _numeric_version_identity(value: str) -> tuple[int, int, int]:
     return int(major), int(minor), int(patch)
 
 
+class ReleaseLine(StrEnum):
+    STABLE = "stable"
+    PRE_1 = "pre-1.0"
+
+    @classmethod
+    def for_version(cls, version: str | None) -> ReleaseLine:
+        try:
+            major, _, _ = _numeric_version_identity(version or "")
+        except ValueError:
+            return cls.STABLE
+        return cls.PRE_1 if major == 0 else cls.STABLE
+
+    def targets(self) -> tuple[ReleaseTarget, ...]:
+        targets = release_targets()
+        if self is ReleaseLine.STABLE:
+            return targets
+        hosts = {cell.host for cell in TIER1_CELLS}
+        selected = tuple(target for target in targets if target.id in hosts)
+        if {target.id for target in selected} != hosts:
+            raise ValueError("Tier 1 cell has no admitted release target")
+        return selected
+
+
 def sha256_file(path: Path) -> str:
     return stable_regular_file_identity(path, label="release file").sha256
 
@@ -248,19 +272,19 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
         "source_date_epoch",
         "repo",
         "evidence_archive",
-        "phase_exit",
         "artifacts",
         "attestation",
     }
-    if (
-        not isinstance(value, dict)
-        or set(value) != keys
-        or value.get("schema") != MANIFEST_SCHEMA
-    ):
-        raise ValueError(f"release manifest must use exact {MANIFEST_SCHEMA} schema")
-    version = value["version"]
+    if not isinstance(value, dict):
+        raise ValueError("release manifest must be an object")
+    version = value.get("version")
     if not isinstance(version, str) or normalized_version(version) != version:
         raise ValueError("release manifest version is invalid")
+    line = ReleaseLine.for_version(version)
+    if line is ReleaseLine.STABLE:
+        keys.add("phase_exit")
+    if set(value) != keys or value.get("schema") != MANIFEST_SCHEMA:
+        raise ValueError(f"release manifest must use exact {MANIFEST_SCHEMA} schema")
     source_sha = require_git_object_id(
         value["source_sha"], label="release manifest source SHA"
     )
@@ -277,29 +301,32 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
         or evidence["filename"] != release_exit_archive_filename(source_sha)
     ):
         raise ValueError("release manifest evidence archive is invalid")
-    phase = value["phase_exit"]
-    if not isinstance(phase, dict) or set(phase) != {"manifest", "attestation"}:
-        raise ValueError("release manifest H0 phase evidence is invalid")
-    for key, kind, filename in (
-        ("manifest", PHASE_EXIT_KIND, phase_exit_filename(source_sha)),
-        (
-            "attestation",
-            PHASE_ATTESTATION_KIND,
-            phase_exit_attestation_filename(source_sha),
-        ),
-    ):
-        record = validate_file_record(phase[key])
-        if set(record) != FILE_FIELDS or (record["kind"], record["filename"]) != (
-            kind,
-            filename,
-        ):
+    if line is ReleaseLine.STABLE:
+        phase = value["phase_exit"]
+        if not isinstance(phase, dict) or set(phase) != {"manifest", "attestation"}:
             raise ValueError("release manifest H0 phase evidence is invalid")
+        for key, kind, filename in (
+            ("manifest", PHASE_EXIT_KIND, phase_exit_filename(source_sha)),
+            (
+                "attestation",
+                PHASE_ATTESTATION_KIND,
+                phase_exit_attestation_filename(source_sha),
+            ),
+        ):
+            record = validate_file_record(phase[key])
+            if set(record) != FILE_FIELDS or (record["kind"], record["filename"]) != (
+                kind,
+                filename,
+            ):
+                raise ValueError("release manifest H0 phase evidence is invalid")
     artifacts = value["artifacts"]
-    expected = {("molt-wheel", "any", "any")} | {
+    expected = {
         (name, target.platform, target.arch)
-        for target in release_targets()
+        for target in line.targets()
         for name in ("molt", "molt-worker", "molt-wheel", "molt-consumer-evidence")
     }
+    if line is ReleaseLine.STABLE:
+        expected.add(("molt-wheel", "any", "any"))
     if not isinstance(artifacts, list) or len(artifacts) != len(expected):
         raise ValueError("release manifest artifact matrix is incomplete")
     names: list[str] = []
@@ -323,7 +350,7 @@ def release_subjects(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     subjects = [
         *manifest["artifacts"],
         manifest["evidence_archive"],
-        *manifest["phase_exit"].values(),
+        *manifest.get("phase_exit", {}).values(),
     ]
     return sorted(subjects, key=lambda record: record["filename"])
 
@@ -354,10 +381,12 @@ def _wheel_requirements(wheel: Path) -> tuple[str, tuple[str, ...]]:
 
 def _llvm_spdx_packages(
     llvm_inputs: dict[str, dict[str, Any]],
+    *,
+    line: ReleaseLine = ReleaseLine.STABLE,
 ) -> list[dict[str, object]]:
     from .native_build import validate_llvm_inputs
 
-    expected = {target.id for target in release_targets()}
+    expected = {target.id for target in line.targets()}
     if set(llvm_inputs) != expected:
         raise ValueError("LLVM SBOM inputs must cover every release target")
     packages = []
@@ -419,13 +448,15 @@ def _llvm_spdx_packages(
     return sorted(packages, key=lambda item: item["SPDXID"])
 
 
-def validate_spdx_llvm_inputs(document: dict[str, Any]) -> None:
+def validate_spdx_llvm_inputs(
+    document: dict[str, Any], *, line: ReleaseLine = ReleaseLine.STABLE
+) -> None:
     """Reapply the native input authority to the signed SPDX projection."""
     packages = document.get("packages")
     if not isinstance(packages, list):
         raise ValueError("release SBOM omits package inventory")
     expected = {
-        _spdx_id("LLVM-SDK-" + target.id): target.id for target in release_targets()
+        _spdx_id("LLVM-SDK-" + target.id): target.id for target in line.targets()
     }
     actual = [
         item
@@ -447,12 +478,12 @@ def validate_spdx_llvm_inputs(document: dict[str, Any]) -> None:
         for item in packages
         if isinstance(item, dict)
         and (
-            item.get("SPDXID") in expected
+            str(item.get("SPDXID", "")).startswith("SPDXRef-LLVM-SDK-")
             or str(item.get("SPDXID", "")).startswith("SPDXRef-SystemStatic-")
         )
     ]
     if sorted(projected, key=lambda item: item["SPDXID"]) != _llvm_spdx_packages(
-        inputs
+        inputs, line=line
     ):
         raise ValueError("release SBOM LLVM projection differs from input custody")
 
@@ -543,7 +574,9 @@ def spdx_document(
             }
         )
 
-    llvm_packages = _llvm_spdx_packages(llvm_inputs)
+    llvm_packages = _llvm_spdx_packages(
+        llvm_inputs, line=ReleaseLine.for_version(version)
+    )
     packages.extend(llvm_packages)
     relationships.extend(
         {

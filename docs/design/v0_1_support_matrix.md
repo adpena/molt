@@ -324,6 +324,11 @@ Round 2 (2026-11-05): the same reviewers, given only the revised file.
 
 ## 11. Release-line slice (cut from the HF-620 lane after round 2)
 
+The table below records the reviewed migration. The implementation now uses the tagged
+source version throughout release admission and publication. See the current
+[public contract](../spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating). The
+Django and Falcon execution obligations in §4.1 remain separate.
+
 Two review rounds showed that "a 0.x release is held only by Tier 1" changes the release pipeline in
 more places than the gate. The rule says to cut scope after two rounds, so this lane does not change
 release code; the gate and release tooling still hold every version to the 1.x bar. The next slice

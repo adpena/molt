@@ -8,7 +8,7 @@ by its v0.1 class (``finding_status.V01Class``): the rows that hold v0.1 (class
 
 Rendering is pure: ``render`` takes the ledger text. The CLI reads the checkout's
 ledger, or with ``--source-sha`` the ledger blob at that commit, as the release
-exit gate does. The release-line slice of HF-620 appends this list to a 0.x
+exit gate does. The release index appends this list to a 0.x
 release's notes (docs/design/v0_1_support_matrix.md, section 11).
 
 Usage (`uv run python -B` as the interpreter):

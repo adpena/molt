@@ -20,13 +20,13 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from molt.verified_subset import verified_subset_coordinates
 from tools.command_execution import CommandExecutor
 from tools.git_identity import require_git_object_id
 from tools import phase_exit_manifest, release_exit_gate
 
 from .archive import extract_zip_strict, same_regular_file_bytes, write_reproducible_zip
 from .release_model import (
+    ReleaseLine,
     ROOT,
     RELEASE_EXIT_ARCHIVE_KIND,
     file_record,
@@ -96,8 +96,12 @@ def verify_release_exit_manifest(
         )
     if not report.passed or report.problems:
         reasons = list(report.problems)
-        if report.open_findings:
-            reasons.append("open findings: " + ", ".join(report.open_findings))
+        if report.holding_findings:
+            reasons.append("holding findings: " + ", ".join(report.holding_findings))
+        if report.missing_cells:
+            reasons.append(
+                "missing Tier 1 coordinates: " + ", ".join(report.missing_cells)
+            )
         raise ValueError(
             "release-exit gate did not pass: "
             + ("; ".join(reasons) or f"status is {report.status!r}")
@@ -105,16 +109,35 @@ def verify_release_exit_manifest(
     return report
 
 
-def verify_e3_provenance(manifest: Path, *, source_sha: str) -> None:
+def verify_e3_provenance(
+    manifest: Path, *, report: release_exit_gate.ReleaseGateReport
+) -> None:
     """Authenticate the exact E3 receipt set, never an optional filesystem glob."""
     payload = read_exact(
         manifest, max_bytes=16 * 1024 * 1024, label="release-exit manifest"
     )
-    roles = {
-        release_exit_gate.verified_subset_evidence_role(cell.id)
-        for cell in verified_subset_coordinates()
-    }
-    rows = [row for row in payload["evidence"] if row["role"] in roles]
+    if (
+        not report.passed
+        or report.problems
+        or not report.source_sha
+        or not report.e3_roles
+    ):
+        raise ValueError(
+            "E3 provenance requires a passing source-bound gate report with exact roles"
+        )
+    if (
+        payload.get("source_sha") != report.source_sha
+        or payload.get("findings", {}).get("version") != report.version
+    ):
+        raise ValueError(
+            "E3 provenance source or version differs from the verified gate report"
+        )
+    roles = set(report.e3_roles)
+    rows = [
+        row
+        for row in payload["evidence"]
+        if row["role"].startswith(release_exit_gate.VERIFIED_SUBSET_EVIDENCE_PREFIX)
+    ]
     if len(rows) != len(roles) or {row["role"] for row in rows} != roles:
         raise ValueError("release-exit provenance requires every exact E3 receipt")
     for row in sorted(rows, key=lambda row: row["role"]):
@@ -123,7 +146,7 @@ def verify_e3_provenance(manifest: Path, *, source_sha: str) -> None:
         if (identity.sha256, identity.size) != (row["sha256"], row["size"]):
             raise ValueError(f"E3 provenance subject changed: {row['role']}")
         verify_provenance(
-            receipt, source_sha=source_sha, workflow="verified-subset.yml"
+            receipt, source_sha=report.source_sha, workflow="verified-subset.yml"
         )
         verify_stable_regular_file_identity(
             identity, label="verified E3 provenance subject"
@@ -171,23 +194,31 @@ def verify_evidence(
             "release-exit bundle version differs from release plan: "
             f"expected {selected_version!r}, got {report.version!r}"
         )
+    if ReleaseLine.for_version(report.version) is ReleaseLine.PRE_1:
+        if phase_manifest is not None:
+            raise ValueError("pre-1.0 releases refuse H0 phase evidence")
+        if authenticate:
+            verify_e3_provenance(manifest, report=report)
+        return
     if phase_manifest is None:
         raise ValueError(
             f"release {version} requires a green H0 phase-exit manifest for {source_sha}"
         )
-    report = phase_exit_manifest.verify_phase_manifest(
+    phase_report = phase_exit_manifest.verify_phase_manifest(
         phase_manifest,
         release_commit=source_sha,
         bundle_manifest=manifest,
         root=repo_root,
     )
     if (
-        report.phase != "H0"
-        or report.commit != source_sha
-        or not report.green
-        or report.problems
+        phase_report.phase != "H0"
+        or phase_report.commit != source_sha
+        or not phase_report.green
+        or phase_report.problems
     ):
-        raise ValueError("H0 phase exit is not green: " + "; ".join(report.problems))
+        raise ValueError(
+            "H0 phase exit is not green: " + "; ".join(phase_report.problems)
+        )
     payload = read_exact(
         phase_manifest, max_bytes=16 * 1024 * 1024, label="H0 phase manifest"
     )
@@ -209,7 +240,7 @@ def verify_evidence(
             )
     verify_full_release_acceptance(manifest, source_sha=source_sha, repo_root=repo_root)
     if authenticate:
-        verify_e3_provenance(manifest, source_sha=source_sha)
+        verify_e3_provenance(manifest, report=report)
 
 
 def archive_release_exit(
@@ -276,11 +307,13 @@ def extract_release_exit(
         extracted = stage / "bundle"
         identity = extract_zip_strict(archive, extracted)
         if version is None:
-            verify_release_exit_manifest(
+            report = verify_release_exit_manifest(
                 extracted / "release-exit.json",
                 source_sha=source_sha,
                 repo_root=repo_root,
             )
+            if authenticate:
+                verify_e3_provenance(extracted / "release-exit.json", report=report)
         else:
             verify_evidence(
                 extracted / "release-exit.json",

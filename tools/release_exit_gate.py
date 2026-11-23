@@ -5,9 +5,7 @@ The bundle also joins the findings ledger at its source revision. The gate
 reads the ledger blob and the `pyproject.toml` blob that `source_sha` names. It
 records every open finding (`tools/finding_status.py`) and the project version
 (`tools/release/release_model.py`). Status is PASS only when every typed receipt
-passes and no finding is open. This holds every version to the 1.x rule; the
-decided 0.x rule (docs/spec/PUBLIC_CONTRACT_V1.md, "Versioning and release
-gating") lands with the release-line slice of docs/design/v0_1_support_matrix.md.
+passes and the source version has no holding findings or missing coordinates.
 """
 
 from __future__ import annotations
@@ -38,12 +36,13 @@ bind_repository_imports(__file__)
 from molt.exact_json import ExactJsonError, loads_exact, write_exact  # noqa: E402
 from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
-from molt.verified_subset import VerifiedSubsetCoordinate  # noqa: E402
+from molt.verified_subset import VerifiedSubsetCoordinate, tier1_coordinates  # noqa: E402
 from tools import finding_status  # noqa: E402
 from tools import pact_witness_receipt as pwr  # noqa: E402
 from tools import perf_authority as pa  # noqa: E402
 from tools import release_criterion_receipt as rcr  # noqa: E402
 from tools import verified_subset  # noqa: E402
+from tools.release.release_model import ReleaseLine  # noqa: E402
 from tools.release import release_model  # noqa: E402
 from tools.git_identity import immutable_git_environment, is_git_object_id  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
@@ -105,15 +104,32 @@ def verified_subset_evidence_role(coordinate_id: str) -> str:
 
 def _expected_evidence_roles(
     coordinates: Sequence[VerifiedSubsetCoordinate],
+    line: ReleaseLine,
 ) -> frozenset[str]:
     return frozenset(
         {
-            *BASE_EVIDENCE_ROLES,
+            *(
+                role
+                for role in BASE_EVIDENCE_ROLES
+                if line is ReleaseLine.STABLE or role.startswith("e4_")
+            ),
             *(
                 verified_subset_evidence_role(coordinate.id)
                 for coordinate in coordinates
             ),
         }
+    )
+
+
+def _release_coordinates(
+    validation: verified_subset.VerifiedSubsetValidation, line: ReleaseLine
+) -> tuple[tuple[VerifiedSubsetCoordinate, ...], tuple[str, ...]]:
+    if line is ReleaseLine.STABLE:
+        return validation.coordinates, ()
+    mapped = tier1_coordinates(policy=validation.policy)
+    return (
+        tuple(coord for coord in mapped.values() if coord is not None),
+        tuple(cell for cell, coord in mapped.items() if coord is None),
     )
 
 
@@ -127,6 +143,9 @@ class ReleaseGateReport:
     open_findings: tuple[str, ...]
     # The project version at source_sha; None when the verifier cannot read it.
     version: str | None
+    e3_roles: tuple[str, ...] = ()
+    holding_findings: tuple[str, ...] = ()
+    missing_cells: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +158,8 @@ class SourceFindings:
 
     @property
     def holding_findings(self) -> tuple[str, ...]:
-        """The open findings that hold a release at FAIL: every one of them."""
+        if ReleaseLine.for_version(self.version) is ReleaseLine.PRE_1:
+            return self.status.v01_holding_keys
         return self.status.open_keys
 
 
@@ -575,14 +595,13 @@ def _typed_receipt_problems(
 def _derive_status(
     typed_receipts: Sequence[Mapping[str, Any]],
     holding_findings: Sequence[str],
+    missing_cells: Sequence[str],
 ) -> str:
-    """PASS needs every typed receipt to pass and no finding to hold it.
-
-    Only a version that claims the v1 contract is held by open findings.
-    """
+    """Apply the source line’s holding findings and coordinate obligations."""
     return (
         STATUS_PASS
         if not holding_findings
+        and not missing_cells
         and all(receipt.get("status") == rcr.STATUS_PASS for receipt in typed_receipts)
         else STATUS_FAIL
     )
@@ -706,12 +725,6 @@ def verify_release_bundle(
     except ValueError as exc:
         return ReleaseGateReport(None, None, False, (str(exc),), (), None)
     problems: list[str] = []
-    if set(payload) != _ROOT_KEYS:
-        problems.append(
-            "release-exit manifest keys differ from schema: "
-            f"missing={sorted(_ROOT_KEYS - set(payload), key=str)!r}, "
-            f"unknown={sorted(set(payload) - _ROOT_KEYS, key=str)!r}"
-        )
     if payload.get("schema_version") != SCHEMA_VERSION:
         problems.append(f"release-exit schema_version must be {SCHEMA_VERSION}")
     if payload.get("kind") != KIND:
@@ -753,21 +766,33 @@ def verify_release_bundle(
                     _findings_drift(payload["findings"], source, recorded_findings)
                 )
 
+    line = ReleaseLine.for_version(source_version)
+    root_keys = _ROOT_KEYS if line is ReleaseLine.STABLE else _ROOT_KEYS - {"registry"}
+    if set(payload) != root_keys:
+        problems.append(
+            "release-exit manifest keys differ from schema: "
+            f"missing={sorted(root_keys - set(payload), key=str)!r}, "
+            f"unknown={sorted(set(payload) - root_keys, key=str)!r}"
+        )
     bundle_root = manifest.parent
     expected_bundle_files = {manifest.resolve()}
-    registry, registry_problems = _validate_registry_snapshot(payload.get("registry"))
-    problems.extend(registry_problems)
-    try:
-        canonical_registry = _shared_scientific_registry_coordinates(repo_root)
-    except (OSError, ValueError) as exc:
-        problems.append(f"cannot load canonical scientific registry: {exc}")
-    else:
-        canonical_snapshot = _registry_snapshot(canonical_registry)
-        if payload.get("registry") != canonical_snapshot:
-            problems.append(
-                "release-exit registry differs from the checked-out canonical "
-                "scientific registry"
-            )
+    registry = {}
+    if line is ReleaseLine.STABLE:
+        registry, registry_problems = _validate_registry_snapshot(
+            payload.get("registry")
+        )
+        problems.extend(registry_problems)
+        try:
+            canonical_registry = _shared_scientific_registry_coordinates(repo_root)
+        except (OSError, ValueError) as exc:
+            problems.append(f"cannot load canonical scientific registry: {exc}")
+        else:
+            canonical_snapshot = _registry_snapshot(canonical_registry)
+            if payload.get("registry") != canonical_snapshot:
+                problems.append(
+                    "release-exit registry differs from the checked-out canonical "
+                    "scientific registry"
+                )
     try:
         if verified_subset_validation is None:
             verified_subset_validation = verified_subset.validate_manifest(
@@ -777,19 +802,17 @@ def verify_release_bundle(
     except (OSError, ValueError) as exc:
         problems.append(f"E3 source inventory is invalid: {exc}")
         verified_subset_validation = None
-    expected_e3_coordinates = {
-        coordinate.id: coordinate
-        for coordinate in (
-            verified_subset_validation.coordinates
-            if verified_subset_validation is not None
-            else ()
-        )
-    }
+    coordinates, missing_cells = (
+        _release_coordinates(verified_subset_validation, line)
+        if verified_subset_validation is not None
+        else ((), ())
+    )
+    expected_e3_coordinates = {coord.id: coord for coord in coordinates}
     evidence, evidence_problems = _validate_evidence_records(
         payload.get("evidence"),
         bundle_root=bundle_root,
         expected_roles=_expected_evidence_roles(
-            tuple(expected_e3_coordinates.values())
+            tuple(expected_e3_coordinates.values()), line
         ),
     )
     problems.extend(evidence_problems)
@@ -909,7 +932,7 @@ def verify_release_bundle(
         if receipt is not None:
             typed_payloads.append(receipt)
 
-    derived_status = _derive_status(typed_payloads, holding_findings)
+    derived_status = _derive_status(typed_payloads, holding_findings, missing_cells)
     expected_typed_receipt_count = len(expected_e3_coordinates) + len(typed_roles)
     if len(typed_payloads) != expected_typed_receipt_count or not findings_proved:
         derived_status = STATUS_FAIL
@@ -937,6 +960,13 @@ def verify_release_bundle(
         tuple(problems),
         open_findings,
         source_version,
+        tuple(
+            sorted(
+                verified_subset_evidence_role(key) for key in expected_e3_coordinates
+            )
+        ),
+        holding_findings,
+        missing_cells,
     )
 
 
@@ -1117,7 +1147,7 @@ def assemble_release_bundle(
     *,
     source_sha: str,
     e1_receipts: Sequence[Path],
-    e2_scoreboard: Path,
+    e2_scoreboard: Path | None,
     e3_receipts: Sequence[Path],
     e4_receipts: Sequence[Path],
     repo_root: Path = ROOT,
@@ -1134,20 +1164,29 @@ def assemble_release_bundle(
             "findings ledger at the release source is invalid: "
             + "; ".join(findings.status.problems)
         )
-    if len(e1_receipts) != 2:
-        raise ValueError("release assembly requires exactly two E1 receipts")
+    line = ReleaseLine.for_version(findings.version)
+    if line is ReleaseLine.STABLE:
+        if len(e1_receipts) != 2 or e2_scoreboard is None:
+            raise ValueError(
+                "stable release assembly requires exactly two E1 receipts and the E2 scoreboard"
+            )
+    elif e1_receipts or e2_scoreboard is not None:
+        raise ValueError("pre-1.0 release assembly refuses E1 and E2 evidence")
     if len(e4_receipts) != 4:
         raise ValueError("release assembly requires exactly four E4 receipts")
     validation = verified_subset.validate_manifest(repo_root=root)
-    expected_e3_coordinates = {
-        coordinate.id: coordinate for coordinate in validation.coordinates
-    }
+    coordinates, missing_cells = _release_coordinates(validation, line)
+    expected_e3_coordinates = {coordinate.id: coordinate for coordinate in coordinates}
     if len(e3_receipts) != len(expected_e3_coordinates):
         raise ValueError(
             "release assembly requires the exact verified-subset E3 receipt count: "
             f"expected={len(expected_e3_coordinates)}, got={len(e3_receipts)}"
         )
-    registry = _shared_scientific_registry_coordinates(root)
+    registry = (
+        _shared_scientific_registry_coordinates(root)
+        if line is ReleaseLine.STABLE
+        else {}
+    )
 
     e1_by_target: dict[str, tuple[Path, Mapping[str, Any]]] = {}
     seen_coordinates: set[tuple[str, str, str]] = set()
@@ -1178,20 +1217,24 @@ def assemble_release_bundle(
         e1_by_target[target] = (resolved, payload)
         assert coordinate is not None
         seen_coordinates.add(coordinate)
-    if set(e1_by_target) != {"native", "wasm"} or seen_coordinates != set(registry):
+    if seen_coordinates != set(registry) or (
+        line is ReleaseLine.STABLE and set(e1_by_target) != {"native", "wasm"}
+    ):
         raise ValueError(
             "E1 receipts must cover exact shared native and WASM coordinates"
         )
 
-    scoreboard_path = e2_scoreboard.resolve(strict=True)
-    scoreboard = _load_json(scoreboard_path, label="E2 scoreboard")
-    scoreboard_problems = pa.release_scoreboard_problems(
-        scoreboard,
-        expected_source_sha=source_sha,
-        now=now,
-    )
-    if scoreboard_problems:
-        raise ValueError("invalid E2 scoreboard: " + "; ".join(scoreboard_problems))
+    scoreboard_path = None
+    if e2_scoreboard is not None:
+        scoreboard_path = e2_scoreboard.resolve(strict=True)
+        scoreboard = _load_json(scoreboard_path, label="E2 scoreboard")
+        scoreboard_problems = pa.release_scoreboard_problems(
+            scoreboard,
+            expected_source_sha=source_sha,
+            now=now,
+        )
+        if scoreboard_problems:
+            raise ValueError("invalid E2 scoreboard: " + "; ".join(scoreboard_problems))
 
     e3_by_coordinate: dict[str, tuple[Path, Mapping[str, Any]]] = {}
     for path in e3_receipts:
@@ -1257,8 +1300,7 @@ def assemble_release_bundle(
     stage_manifest = stage / "release-exit.json"
     try:
         evidence: list[dict[str, Any]] = []
-        for target in ("native", "wasm"):
-            source_path, payload = e1_by_target[target]
+        for target, (source_path, payload) in sorted(e1_by_target.items()):
             copied = _copy_e1_closure(
                 source_path,
                 payload,
@@ -1267,17 +1309,18 @@ def assemble_release_bundle(
             evidence.append(
                 _evidence_record(f"e1_{target}", copied, manifest_path=stage_manifest)
             )
-        copied_scoreboard = _copy_exact(
-            scoreboard_path,
-            stage / "evidence" / "e2" / "scoreboard.json",
-        )
-        evidence.append(
-            _evidence_record(
-                "e2_scoreboard",
-                copied_scoreboard,
-                manifest_path=stage_manifest,
+        if scoreboard_path is not None:
+            copied_scoreboard = _copy_exact(
+                scoreboard_path,
+                stage / "evidence" / "e2" / "scoreboard.json",
             )
-        )
+            evidence.append(
+                _evidence_record(
+                    "e2_scoreboard",
+                    copied_scoreboard,
+                    manifest_path=stage_manifest,
+                )
+            )
         for coordinate_id in sorted(e3_by_coordinate):
             source_path, _ = e3_by_coordinate[coordinate_id]
             copied = _copy_exact(
@@ -1315,8 +1358,14 @@ def assemble_release_bundle(
             "schema_version": SCHEMA_VERSION,
             "kind": KIND,
             "source_sha": source_sha,
-            "status": _derive_status(typed_payloads, findings.holding_findings),
-            "registry": _registry_snapshot(registry),
+            "status": _derive_status(
+                typed_payloads, findings.holding_findings, missing_cells
+            ),
+            **(
+                {"registry": _registry_snapshot(registry)}
+                if line is ReleaseLine.STABLE
+                else {}
+            ),
             "evidence": evidence,
             "findings": _findings_record(findings),
         }
@@ -1351,13 +1400,17 @@ def _print_report(report: ReleaseGateReport) -> None:
             print(f"[release-exit] {problem}")
     if report.version is not None:
         print(
-            f"[release-exit] version {report.version} is held to the v1.0 quality "
-            "contract"
+            f"[release-exit] version {report.version} uses the {ReleaseLine.for_version(report.version)} release contract"
         )
-    if report.open_findings:
+    if report.holding_findings:
         print(
-            f"[release-exit] open findings ({len(report.open_findings)}, "
-            "hold this release): " + ", ".join(report.open_findings)
+            f"[release-exit] holding findings ({len(report.holding_findings)}): "
+            + ", ".join(report.holding_findings)
+        )
+    if report.missing_cells:
+        print(
+            "[release-exit] missing Tier 1 coordinates: "
+            + ", ".join(report.missing_cells)
         )
     if report.passed:
         print(
@@ -1380,8 +1433,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="assemble the canonical source-addressed release bundle",
     )
     assemble.add_argument("--source-sha", required=True)
-    assemble.add_argument("--e1-receipt", type=Path, action="append", required=True)
-    assemble.add_argument("--e2-scoreboard", type=Path, required=True)
+    assemble.add_argument("--e1-receipt", type=Path, action="append", default=[])
+    assemble.add_argument("--e2-scoreboard", type=Path)
     assemble.add_argument("--e3-receipt", type=Path, action="append", required=True)
     assemble.add_argument("--e4-receipt", type=Path, action="append", required=True)
 

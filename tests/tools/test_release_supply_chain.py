@@ -952,8 +952,8 @@ def test_release_plan_requires_exact_project_tag_and_source(
     assert plan["release_exit_archive"] == release_model.release_exit_archive_filename(
         "a" * 40
     )
-    # The first release carries the H0 phase exit like every release.
-    assert plan["phase_exit_manifest"] == release_model.phase_exit_filename("a" * 40)
+    assert plan["release_line"] == "pre-1.0"
+    assert "phase_exit_manifest" not in plan and "phase_exit_attestation" not in plan
     assert "matrix" not in plan  # Source resolution alone never admits release builds.
 
     monkeypatch.setattr(
@@ -965,8 +965,8 @@ def test_release_plan_requires_exact_project_tag_and_source(
         release_authority.resolve_source("0.0.001", "a" * 40)
 
 
-@pytest.mark.parametrize("version", ["0.0.1", "1.0.0"])
-def test_every_release_requires_green_h0_phase_exit(
+@pytest.mark.parametrize("version", ["1.0.0", "2.1.0"])
+def test_stable_release_requires_green_h0_phase_exit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str
 ) -> None:
     from tools import phase_exit_manifest as pem
@@ -1022,8 +1022,8 @@ def test_every_release_requires_green_h0_phase_exit(
 @pytest.mark.parametrize(
     ("source_version", "requested_version", "expected"),
     [
-        ("0.0.1", "0.0.1", "requires a green H0 phase-exit manifest"),
-        ("0.0.1", " v0.0.1 ", "requires a green H0 phase-exit manifest"),
+        ("0.0.1", "0.0.1", None),
+        ("0.0.1", " v0.0.1 ", None),
         ("1.0.0", "v1.0.0", "requires a green H0 phase-exit manifest"),
         ("0.0.1", "1.0.0", "expected '1.0.0', got '0.0.1'"),
         ("1.0.0", "0.0.1", "expected '0.0.1', got '1.0.0'"),
@@ -1036,7 +1036,7 @@ def test_evidence_version_binding_precedes_phase_admission(
     monkeypatch: pytest.MonkeyPatch,
     source_version: str | None,
     requested_version: str,
-    expected: str,
+    expected: str | None,
 ) -> None:
     """Source-version substitution refuses before H0 or provider admission."""
     report = release_exit_gate.ReleaseGateReport(
@@ -1050,6 +1050,20 @@ def test_evidence_version_binding_precedes_phase_admission(
     monkeypatch.setattr(
         release_exit_gate, "verify_release_bundle", lambda *_a, **_k: report
     )
+    if expected is None:
+        release_evidence.verify_evidence(
+            tmp_path / "release-exit.json",
+            source_sha="a" * 40,
+            version=requested_version,
+        )
+        with pytest.raises(ValueError, match="refuse H0"):
+            release_evidence.verify_evidence(
+                tmp_path / "release-exit.json",
+                source_sha="a" * 40,
+                version=requested_version,
+                phase_manifest=tmp_path / "H0.json",
+            )
+        return
     with pytest.raises(ValueError, match=re.escape(expected)):
         release_evidence.verify_evidence(
             tmp_path / "release-exit.json",
@@ -1662,13 +1676,13 @@ def release_evidence_inputs(
     monkeypatch.setattr(release_authority, "source_commit_epoch", lambda *_: 1700000000)
     # Transport/admission unit fixture: semantic producers are tested by their
     # owning gate suite. No fixture is release acceptance evidence.
-    monkeypatch.setattr(release_authority, "_project_version", lambda: "0.0.001")
+    monkeypatch.setattr(release_authority, "_project_version", lambda: "1.0.001")
     monkeypatch.setattr(
         release_authority,
         "_git",
         lambda *args: {
             ("rev-parse", "HEAD"): "a" * 40,
-            ("tag", "--points-at", "HEAD", "--list", "v0.0.001"): "v0.0.001",
+            ("tag", "--points-at", "HEAD", "--list", "v1.0.001"): "v1.0.001",
             clean_checkout_status_arguments(): "",
             ("merge-base", "--is-ancestor", "a" * 40, "origin/main"): "",
         }[args],
@@ -1682,7 +1696,7 @@ def release_evidence_inputs(
             True,
             (),
             (),
-            "0.0.001",
+            "1.0.001",
         ),
     )
     monkeypatch.setattr(
@@ -1701,8 +1715,7 @@ def release_evidence_inputs(
         source_date_epoch=1_700_000_000,
         output=archive,
     )
-    # Every release, v0.0.1 included, carries a green H0 phase exit. The owning
-    # phase-exit and acceptance suites prove those producers; here they pass.
+    # This stable transport fixture supplies its H0 and full-acceptance boundary.
     from tools import phase_exit_manifest as pem
 
     monkeypatch.setattr(
@@ -1723,7 +1736,7 @@ def release_evidence_inputs(
         encoding="utf-8",
     )
     return dict(
-        version="0.0.001",
+        version="1.0.001",
         source_sha="a" * 40,
         source_date_epoch=1_700_000_000,
         release_exit_archive=archive,
@@ -1732,11 +1745,17 @@ def release_evidence_inputs(
     )
 
 
-def _assemble_transport_inputs(tmp_path: Path, snapshot):
-    wheel = _wheel(tmp_path / "molt-0.0.001-py3-none-any.whl")
+def _assemble_transport_inputs(
+    tmp_path: Path, snapshot, *, version="1.0.001", preview=False
+):
+    from packaging.version import Version
+
+    wheel = _wheel(tmp_path / f"molt-{version}-py3-none-any.whl", str(Version(version)))
     candidate_root = tmp_path / "candidates"
     candidate_root.mkdir()
     for target in release_model.release_targets():
+        if preview and target.id not in {"macos-arm64", "linux-x86_64"}:
+            continue
         primary = tmp_path / target.id / "primary"
         secondary = tmp_path / target.id / "secondary"
         for native_root in (primary, secondary):
@@ -1755,7 +1774,7 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
         output = candidate_root / target.id
         candidate = release_authority.assemble_candidate(
             target_id=target.id,
-            version="0.0.001",
+            version=version,
             source_sha="a" * 40,
             source_date_epoch=1_700_000_000,
             wheel=wheel,
@@ -1765,31 +1784,39 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
             secondary_runtime_cells=cells["secondary"],
             output=output,
         )
-        release_model.write_json(
-            output / "consumer-verification.json",
-            _consumer_transport_receipt(candidate),
-        )
+        if preview:
+            backend = "wasm" if target.id == "macos-arm64" else "native"
+            lane = (
+                backend,
+                backend,
+                "release",
+                "wasm-release" if backend == "wasm" else "release-output",
+                "release",
+            )
+            proof = _consumer_transport_receipt(
+                candidate, python_minor="3.15", lane_values=(lane,)
+            )
+        else:
+            proof = _consumer_transport_receipt(candidate)
+        release_model.write_json(output / "consumer-verification.json", proof)
         from tools.release import consumer_replay
 
         evidence = output / "consumer-evidence"
         evidence.mkdir()
         (evidence / "replay.json").write_bytes(_transport_replay_bytes(candidate))
-        for owner, proof in [
-            *(
-                ("bundle", row)
-                for row in _consumer_transport_receipt(candidate)["python_proofs"]
-            ),
-            ("pip", _consumer_transport_receipt(candidate)["pip_proof"]),
+        for owner, coordinate in [
+            *(("bundle", row) for row in proof["python_proofs"]),
+            ("pip", proof["pip_proof"]),
         ]:
             record = (
                 output
-                / _transport_compilation_reference(candidate, owner, proof["python"])[
-                    "path"
-                ]
+                / _transport_compilation_reference(
+                    candidate, owner, coordinate["python"]
+                )["path"]
             )
             record.parent.mkdir(parents=True)
             record.write_bytes(
-                _transport_compilation_bytes(candidate, owner, proof["python"])
+                _transport_compilation_bytes(candidate, owner, coordinate["python"])
             )
             cold = record.parent.with_name(record.parent.name + "-cold") / record.name
             cold.parent.mkdir(parents=True)
@@ -1947,7 +1974,7 @@ def release_inputs(
         destination.write_bytes(content)
     return dict(
         candidate_root=tmp_path / "candidates",
-        wheel=tmp_path / "molt-0.0.001-py3-none-any.whl",
+        wheel=tmp_path / "molt-1.0.001-py3-none-any.whl",
         **release_evidence_inputs,
     )
 
@@ -2361,9 +2388,9 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     )
     projections = tmp_path / "projections"
     monkeypatch.setattr(update_manifests, "OUTPUT", projections)
-    update_manifests._render_homebrew(artifacts, "0.0.001")
-    update_manifests._render_scoop(artifacts, "0.0.001")
-    update_manifests._render_winget(artifacts, "0.0.001")
+    update_manifests._render_homebrew(artifacts, "1.0.001")
+    update_manifests._render_scoop(artifacts, "1.0.001")
+    update_manifests._render_winget(artifacts, "1.0.001")
     assert len([path for path in projections.rglob("*") if path.is_file()]) == 10
 
     receipt = (
@@ -2678,7 +2705,13 @@ def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -
             "a" * 40, "PASS", True, ("tampered receipt",), (), "1.0.0"
         ),
         release_exit_gate.ReleaseGateReport(
-            "a" * 40, "FAIL", False, (), ("HF-7", "V1-3"), "1.0.0"
+            "a" * 40,
+            "FAIL",
+            False,
+            (),
+            ("HF-7", "V1-3"),
+            "1.0.0",
+            holding_findings=("HF-7", "V1-3"),
         ),
     ],
 )
@@ -2693,7 +2726,7 @@ def test_evidence_binding_rejects_other_source_failure_or_problems(
             tmp_path / "release-exit.json", source_sha="a" * 40
         )
     if report.open_findings:
-        assert "open findings: HF-7, V1-3" in str(exc_info.value)
+        assert "holding findings: HF-7, V1-3" in str(exc_info.value)
 
 
 def test_no_release_version_can_admit_a_missing_semantic_bundle(tmp_path):
@@ -2740,7 +2773,7 @@ def test_evidence_cli_rejects_epoch_different_from_commit(
 
 def test_plan_admits_original_evidence_digest_and_exact_matrix(release_evidence_inputs):
     result = release_authority.plan_release(
-        "v0.0.001",
+        "v1.0.001",
         "a" * 40,
         release_exit_archive=release_evidence_inputs["release_exit_archive"],
     )
@@ -2763,7 +2796,7 @@ def test_index_rejects_plan_archive_drift_without_publishing(tmp_path, release_i
 def test_index_keeps_h0_gate_before_artifact_publication(
     tmp_path, monkeypatch, release_inputs
 ):
-    # The first release (v0.0.1) is held to the same H0 gate as v1.0.
+    # Stable indexing cannot publish artifacts before authenticated H0 admission.
     from tools import phase_exit_manifest as pem
 
     monkeypatch.setattr(
@@ -3444,9 +3477,19 @@ def test_provenance_failure_is_not_a_digest_only_success(tmp_path, monkeypatch):
 
 def test_e3_provenance_cannot_succeed_with_an_empty_subject_glob(tmp_path):
     manifest = tmp_path / "release-exit.json"
-    manifest.write_text('{"evidence":[]}', encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {"source_sha": "a" * 40, "findings": {"version": "1.0.0"}, "evidence": []}
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="every exact E3"):
-        release_evidence.verify_e3_provenance(manifest, source_sha="a" * 40)
+        release_evidence.verify_e3_provenance(
+            manifest,
+            report=release_exit_gate.ReleaseGateReport(
+                "a" * 40, "PASS", True, (), (), "1.0.0", ("e3_verified_subset.example",)
+            ),
+        )
 
 
 def test_release_workflow_binds_all_admission_and_publication_consumers():
@@ -3685,3 +3728,141 @@ def test_component_consumer_cli_dispatch_is_explicit_and_source_derived(
         with pytest.raises(SystemExit) as error:
             verify_consumer.main()
         assert error.value.code == 2 and calls == []
+
+
+def test_preview_index_publishes_exact_tier1_hosts_and_authenticated_consumer_scope(
+    tmp_path,
+    release_source,
+    release_evidence_inputs,
+    consumer_transport_boundary,
+    monkeypatch,
+):
+    # Transport fixtures exercise real scope, hash, role and index validation.
+    # Their sealed command/provider boundaries do not qualify either flagship.
+    version = "0.9.0"
+    monkeypatch.setattr(release_authority, "_project_version", lambda: version)
+    fixture_git = release_authority._git
+    monkeypatch.setattr(
+        release_authority,
+        "_git",
+        lambda *args: (
+            f"v{version}"
+            if args == ("tag", "--points-at", "HEAD", "--list", f"v{version}")
+            else fixture_git(*args)
+        ),
+    )
+    sha = release_evidence_inputs["source_sha"]
+    wheel, candidates = _assemble_transport_inputs(
+        tmp_path, release_source, version=version, preview=True
+    )
+    from tests.tools.test_known_issues import _LEDGER
+
+    ledger = _LEDGER.replace("HF-1 | v0_1_blocking", "HF-1 | tier2").replace(
+        "| HF-3 | post_v0_1 |", "| HF-3 | post_v0_1 |\n| HF-4 | post_v0_1 |"
+    )
+    findings = release_exit_gate.SourceFindings(
+        "b" * 40, release_exit_gate.finding_status.project(ledger), version
+    )
+    assert not findings.status.problems and not findings.holding_findings
+    monkeypatch.setattr(
+        release_exit_gate, "source_findings", lambda root, source_sha: findings
+    )
+    monkeypatch.setattr(
+        release_exit_gate,
+        "verify_release_bundle",
+        lambda manifest, **kwargs: release_exit_gate.ReleaseGateReport(
+            sha,
+            "PASS",
+            True,
+            (),
+            (),
+            version,
+            ("e3_verified_subset.one", "e3_verified_subset.two"),
+        ),
+    )
+    authentications = []
+    monkeypatch.setattr(
+        release_evidence,
+        "verify_e3_provenance",
+        lambda manifest, *, report: authentications.append(report.version),
+    )
+    output = tmp_path / "publish"
+    inputs = {
+        **release_evidence_inputs,
+        "version": version,
+        "phase_exit_manifest": None,
+        "wheel": wheel,
+        "candidate_root": candidates,
+    }
+    manifest = release_authority.assemble_index(**inputs, output=output)
+    assert authentications == [version]
+    assert "phase_exit" not in manifest
+    assert {
+        candidate["platform"] + "-" + candidate["arch"]
+        for candidate in manifest["artifacts"]
+    } == {"linux-x86_64", "macos-arm64"}
+    assert len(manifest["artifacts"]) == 8
+    assert len((output / "SHA256SUMS").read_text().splitlines()) == 9
+    assert not (output / wheel.name).exists()
+    notes = (output / "RELEASE_NOTES.md").read_text()
+    assert sha in notes and "Fails only on Windows" in notes and "Later work" in notes
+    for key, value in (("phase_exit", {}), ("version", "1.0.0")):
+        with pytest.raises(ValueError):
+            release_model.validate_release_manifest({**manifest, key: value})
+    for host in ("linux-x86_64", "macos-arm64"):
+        directory = candidates / host
+        candidate = json.loads((directory / "candidate.json").read_text())
+        wrong = _consumer_transport_receipt(candidate)
+        with pytest.raises(ValueError, match="proof header"):
+            release_authority.validate_consumer_proof(
+                wrong,
+                candidate,
+                evidence_root=directory,
+                supervisor=Path("/fixture-supervisor"),
+            )
+
+
+def test_e3_signer_checks_exact_selected_subjects_and_rejects_a_carried_role(
+    tmp_path, monkeypatch
+):
+    sha = "a" * 40
+    rows = []
+    for name in ("linux", "macos"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(name)
+        rows.append(
+            {
+                "role": release_exit_gate.verified_subset_evidence_role(name),
+                "path": path.name,
+                "sha256": release_model.sha256_file(path),
+                "size": path.stat().st_size,
+            }
+        )
+    report = release_exit_gate.ReleaseGateReport(
+        sha, "PASS", True, (), (), "0.9.0", tuple(row["role"] for row in rows)
+    )
+    manifest = tmp_path / "release-exit.json"
+    payload = {
+        "source_sha": sha,
+        "findings": {"version": report.version},
+        "evidence": rows,
+    }
+    release_model.write_json(manifest, payload)
+    signatures = []
+    monkeypatch.setattr(
+        release_evidence,
+        "verify_provenance",
+        lambda path, *, source_sha, workflow: signatures.append(
+            (path.name, source_sha, workflow)
+        ),
+    )
+    release_evidence.verify_e3_provenance(manifest, report=report)
+    assert signatures == [
+        (name + ".json", sha, "verified-subset.yml") for name in ("linux", "macos")
+    ]
+    rows.append(
+        {**rows[0], "role": release_exit_gate.verified_subset_evidence_role("extra")}
+    )
+    release_model.write_json(manifest, payload)
+    with pytest.raises(ValueError, match="every exact E3"):
+        release_evidence.verify_e3_provenance(manifest, report=report)

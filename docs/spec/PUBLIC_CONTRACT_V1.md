@@ -118,10 +118,11 @@ option in the stable build surface does not certify those obligations.
   carries no stability promise and needs no H0 phase exit. It is held only by
   its Tier 1 cells and by open rows classified `v0_1_blocking` (or not yet
   classified); every other open row is reported in its generated known-issues
-  list (`tools/known_issues.py`). The release tooling does not implement this
-  0.x rule yet: until HF-620's release-line slice lands
-  ([design §11](../design/v0_1_support_matrix.md)), the gate, release evidence
-  and release authority hold every version to the 1.x rule above.
+  list (`tools/known_issues.py`). The gate verifies the Tier 1 E3 coordinates and all four E4 criteria.
+  Signing authenticates each selected E3 receipt. The index admits platform wheels,
+  bundles and consumer evidence for the two Tier 1 hosts. The flagship Django
+  and Falcon/workerd executions have separate open witness obligations. See
+  [the v0.1 claim](PUBLIC_CLAIM_V0_1.md).
 - Deprecation is a time-bounded public transition: the superseded lane is
   registered in `config/legacy_inventory.toml` with its replacement and a
   `removal_release`, and `legacy_count` must be zero before a phase exit is

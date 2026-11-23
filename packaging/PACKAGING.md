@@ -17,18 +17,16 @@ diagnostic-only cells do not count as passes. The packaging workflow below does
 not currently establish that complete acceptance matrix by itself.
 
 The semantic evidence authority is `tools/release_exit_gate.py`, which verifies
-the source-addressed E1-E4 bundle. Every release must pass that gate. The gate also joins
-[the findings ledger](../docs/agent/V1_HANDOFF_FINDINGS.md) at the bundle source
-commit. It reads the ledger blob and the `pyproject.toml` project version
-through Git, and records both and every open finding in the bundle and its
-report. Today the gate holds every version to the 1.x rule: its bundle is PASS
-only when every typed receipt passes and no finding is open. The decided 0.x rule
-(the first release is v0.1) and its pending implementation are stated in the
-[public contract](../docs/spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating). An invalid ledger, such as a resurrected row or a fixed row without
-evidence, or an unreadable version stops assembly. The original canonical ZIP is admitted before builds, pinned by its
-digest, reverified in the signing checkout, and published unchanged. Today
-every release also requires a green H0 phase exit, projected
-from those same receipts and cryptographically authenticated in the signing job.
+the source-addressed evidence bundle. It reads the ledger and project version at the
+bundle's Git commit and records every open finding. Stable releases require E1, E2, every
+E3 coordinate, all four E4 criteria and a closed ledger. For 0.x, only the Tier 1 E3
+coordinates and the four E4 criteria are admitted. Unclassified and v0.1-blocking
+rows hold the release. An invalid ledger or unreadable version stops assembly.
+The original ZIP is admitted before builds, pinned by digest and reverified in the
+signing checkout. Both lines authenticate the E3 receipts and published subjects.
+Stable indexing additionally authenticates the green H0 phase exit for that source.
+The [public contract](../docs/spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating)
+defines the corresponding release claims.
 The current verified-subset
 coordinates and scientific witness also do not establish complete public/C-API
 coverage, browser execution, or determinism across every advertised profile.
@@ -62,10 +60,10 @@ permission to omit cells or raise every timeout without diagnosis.
 
 1. `config/release_targets.toml` generates the release target matrix;
    `config/release_supply_chain.toml` owns downloaded tool URL, digest, and size
-   pins. Admission requires the complete source-bound E1-E4 evidence closure.
+   pins. The plan selects the required source-bound evidence and host matrix by release line.
 2. One Linux job builds the pure-Python wheel. It builds twice from independent
    `git archive` exports and admits exactly one byte-identical wheel.
-3. Every target independently builds `molt-worker`, the production compiler,
+3. Every selected target independently builds `molt-worker`, the production compiler,
    `molt-wasm-facts` and the native `molt` launcher twice through
    `tools/release/native_build.py`.
    `build_compiler.py` is its public entry point. Each invocation materializes
@@ -151,14 +149,13 @@ permission to omit cells or raise every timeout without diagnosis.
    worker archives twice, compares them, and emits a target candidate receipt.
 5. `tools/release/verify_consumer.py` extracts that immutable candidate into a
    clean temporary root, explicitly authorizes its private CLI dependencies, and
-   runs the shipped launcher for every Python version
-   in the candidate source's verified-subset policy. Each coordinate selects its
+   runs the shipped launcher for the Python versions selected by the source release line. Each coordinate selects its
    exact reference interpreter and explicit guest Python semantics, with Cargo,
    rustc and rustup unavailable. It verifies the shipped runtime cells equal the
-   candidate and the derived policy, then executes all eleven logical lanes for
-   each declared reference Python. The platform wheel is installed into a separate
-   environment and uses that same eleven-lane producer and receiver for the first
-   reference Python. Each lane binds backend, target, guest profile, runtime Cargo
+   candidate and the derived policy, then executes the selected lanes for each required reference Python.
+   Stable releases exercise the full Python and lane matrix. The 0.x consumer runs
+   the declared Tier 1 lane and Python for its host. A separate environment installs
+   the platform wheel and exercises the same lanes for the first selected Python. Each lane binds backend, target, guest profile, runtime Cargo
    profile and compiler Cargo profile. Native and LLVM use explicit
    `molt build --target native --backend cranelift|llvm`, followed by direct execution
    of the requested executable. Each WASM lane uses public `molt run --target wasm`, which
