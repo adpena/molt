@@ -208,9 +208,9 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
         module.parent.mkdir(parents=True)
         module.write_bytes(source)
         os.utime(module, (install_time, install_time))
-        # Compileall's parallel workers need not inherit the parent's cache
-        # prefix. Give every explicit output one fresh test-owned tree while
-        # keeping the source path stable for the independent bytecode oracle.
+        # Pass the file directly: the oracle compares bytecode for one source
+        # across installations. A directory would also start a process pool
+        # whose POSIX socket may not fit in the guard-owned scratch path.
         cache = active / "imports"
         cache.mkdir()
         completed = run_guarded_test_process(
@@ -220,7 +220,7 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
                 "-m",
                 "compileall",
                 *options,
-                str(module.parent),
+                str(module),
             ],
             prefix="MOLT_PYTEST",
             capture_output=True,
