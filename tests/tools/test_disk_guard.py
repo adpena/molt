@@ -2902,7 +2902,9 @@ def test_a_session_use_keeps_its_target_from_retiring(tmp_path, monkeypatch):
     assert str(local.resolve()) in _reclaimed(_gc(ext, env, now))
 
 
-def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path):
+def test_pressure_evicts_session_targets_by_last_use_outside_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import time
 
     from molt import checkout_state
@@ -2927,6 +2929,14 @@ def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path
         _last_used([targets[name]], age, now)
     # Every session is inside its idle limit, so the GC keeps them all.
     assert _gc(ext, env, now).reclaimed == []
+    probed: set[Path] = set()
+    root_lock_held = dg._root_lock_held
+
+    def observe_lock_probe(path: Path, scope_roots: Sequence[Path]) -> bool:
+        probed.add(path)
+        return root_lock_held(path, scope_roots)
+
+    monkeypatch.setattr(dg, "_root_lock_held", observe_lock_probe)
     volume = _SimulatedVolume(
         start_free=1 * _GB, sized={targets["older"]: 50 * _GB, targets["old"]: 50 * _GB}
     )
@@ -2937,6 +2947,9 @@ def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path
         )
 
     assert _reclaimed(evict()) == {str(targets["older"].resolve())}
+    assert targets["older"] in probed
+    assert roots["cargo-target"] not in probed
+    assert targets["recent"] not in probed
     assert targets["old"].is_dir()
     volume.start_free = -100 * _GB
     pressed = evict()
