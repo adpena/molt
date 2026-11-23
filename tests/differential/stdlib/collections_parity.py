@@ -40,6 +40,37 @@ pd = PointDefault(1)
 print("nt defaults", pd)
 print("nt field_defaults", PointDefault._field_defaults)
 
+# Field descriptors read the original tuple item, including a captured default.
+default_calls = []
+default_token = []
+
+
+def one_default():
+    default_calls.append(1)
+    yield default_token
+
+
+DefaultPoint = namedtuple("DefaultPoint", "x y", defaults=one_default())
+
+
+class OverrideIndex(DefaultPoint):
+    def __getitem__(self, index):
+        return "override"
+
+
+subpoint = OverrideIndex(7)
+print("nt storage", subpoint.x, subpoint[0])
+print("nt captured default", subpoint.y is default_token, default_calls == [1])
+print(
+    "nt defaults identity",
+    DefaultPoint.__new__.__defaults__[0] is default_token,
+    DefaultPoint._field_defaults["y"] is default_token,
+)
+print("nt field doc", DefaultPoint.x.__doc__, DefaultPoint.x.__doc__ is Point.x.__doc__)
+DefaultPoint.x.__doc__ = "custom"
+print("nt field doc edit", DefaultPoint.x.__doc__, Point.x.__doc__)
+
+
 # namedtuple with rename
 NT = namedtuple("NT", ["class", "x", "def", "y"], rename=True)
 print("nt rename fields", NT._fields)
