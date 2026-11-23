@@ -75,6 +75,7 @@ def _plan(
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_path: Path | None = None,
     runtime_image: Path | None = None,
+    runtime_flags: tuple[str, ...] = (),
 ):
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -98,7 +99,9 @@ def _plan(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib, **_kwargs: SimpleNamespace(flags=(), verify=lambda: None),
+        lambda _runtime_lib, **_kwargs: SimpleNamespace(
+            flags=runtime_flags, verify=lambda: None
+        ),
     )
     monkeypatch.setattr(
         native_link_command,
@@ -783,7 +786,10 @@ def test_extension_link_applies_identity_policy_after_user_link_arguments(
 def test_macho_plan_preserves_identity_without_suppressing_warnings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    plan = _plan(monkeypatch, tmp_path, host_platform="darwin")
+    runtime_flags = ("-lSystem", "-lobjc")
+    plan = _plan(
+        monkeypatch, tmp_path, host_platform="darwin", runtime_flags=runtime_flags
+    )
 
     assert "-Wl,-no_deduplicate" in plan.command
     assert "-Wl,-w" not in plan.command
@@ -792,9 +798,22 @@ def test_macho_plan_preserves_identity_without_suppressing_warnings(
     assert "-Wl,-x" in plan.command
     assert "-Wl,-S" in plan.command
     assert "-Wl,/Brepro" not in plan.command
-    # ld64 archive extraction is order-sensitive; the deliberate second pass
-    # is confined to Mach-O rather than leaking into COFF.
-    assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 2
+    assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 1
+    assert plan.runtime_inputs is not None
+    assert plan.runtime_inputs.flags == runtime_flags
+    assert "-lSystem" not in plan.command
+    assert "-lobjc" in plan.command
+
+    explicit_root = tmp_path / "explicit"
+    explicit_root.mkdir()
+    explicit_plan = _plan(
+        monkeypatch,
+        explicit_root,
+        host_platform="darwin",
+        cc="clang -nodefaultlibs",
+        runtime_flags=runtime_flags,
+    )
+    assert explicit_plan.command[-2:] == runtime_flags
 
 
 def test_explicit_driver_linker_selection_gets_matching_capability_policy(

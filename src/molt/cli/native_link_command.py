@@ -268,6 +268,25 @@ def _build_native_link_driver_command(
     return link_cmd, linker_hint, normalized_target
 
 
+def _append_runtime_link_flags(
+    command: list[str], *, target: NativeTargetSpec, flags: tuple[str, ...]
+) -> None:
+    # Clang supplies libSystem for ordinary Darwin links. Keep Cargo's
+    # requirement in the admitted product and project it only if needed.
+    if (
+        target.os == "macos"
+        and executable_entrypoint_name(Path(command[0])) in {"clang", "clang++"}
+        and not any(
+            flag in {"-nostdlib", "-nodefaultlibs", "-nolibc", "-static", "-fapple-kext"}
+            or flag.startswith(("@", "--config"))
+            for flag in command[1:]
+        )
+    ):
+        command.extend(flag for flag in flags if flag != "-lSystem")
+    else:
+        command.extend(flags)
+
+
 def _build_native_link_plan(
     *,
     output_obj: Path,
@@ -399,18 +418,12 @@ def _build_native_link_plan(
             ]
         )
     else:
-        # ld64 has no ELF-style archive group.  Preserve its explicit second
-        # archive pass until the Mach-O runtime is represented as one acyclic
-        # archive graph or a measured -force_load policy replaces it.
+        # Mach-O linkers keep searching admitted archives as new references
+        # appear, including references from later Cargo dependencies.
         link_inputs.extend(
             [
                 *external_link_arguments,
-                # A shared image resolves in one pass.
-                *(
-                    [runtime_lib_str, runtime_lib_str]
-                    if runtime_image is None
-                    else runtime_link_inputs
-                ),
+                *runtime_link_inputs,
                 "-o",
                 str(output_binary),
             ]
@@ -525,7 +538,7 @@ def _build_native_link_plan(
         runtime_build_identity=runtime_build_identity,
         runtime_codegen_binding=runtime_codegen_binding,
     )
-    link_cmd.extend(runtime_inputs.flags)
+    _append_runtime_link_flags(link_cmd, target=target, flags=runtime_inputs.flags)
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,
@@ -645,7 +658,7 @@ def _build_native_runtime_image_link_plan(
         runtime_build_identity=runtime_codegen_binding.build_identity,
         runtime_codegen_binding=runtime_codegen_binding,
     )
-    link_cmd.extend(runtime_inputs.flags)
+    _append_runtime_link_flags(link_cmd, target=target, flags=runtime_inputs.flags)
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,
