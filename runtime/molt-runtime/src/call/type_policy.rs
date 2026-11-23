@@ -1,3 +1,4 @@
+use crate::builtins::functions::CallableIdentity;
 use crate::{
     PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
     class_attr_lookup_raw_mro, obj_from_bits, object_type_id,
@@ -16,29 +17,26 @@ pub(crate) enum ObjectConstructorCall {
     Init,
 }
 
+/// Read the identity while its namespace still lends the callable. The
+/// identity can outlive a subsequent callback and never owns a Python value.
+#[inline]
+pub(crate) unsafe fn resolved_callable_identity(bits: Option<u64>) -> Option<CallableIdentity> {
+    unsafe {
+        let mut function = obj_from_bits(bits?).as_ptr()?;
+        if object_type_id(function) == TYPE_ID_BOUND_METHOD {
+            function = obj_from_bits(bound_method_func_bits(function)).as_ptr()?;
+        }
+        (object_type_id(function) == TYPE_ID_FUNCTION)
+            .then(|| CallableIdentity::of_function(function))
+    }
+}
+
 #[inline]
 pub(crate) unsafe fn callable_matches_runtime_symbol(
     bits: Option<u64>,
     symbol_fn_ptr: u64,
 ) -> bool {
-    unsafe {
-        let bits = bits.unwrap_or(0);
-        let mut func_ptr = match obj_from_bits(bits).as_ptr() {
-            Some(ptr) => ptr,
-            None => return false,
-        };
-        if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
-            let inner_bits = bound_method_func_bits(func_ptr);
-            func_ptr = match obj_from_bits(inner_bits).as_ptr() {
-                Some(ptr) => ptr,
-                None => return false,
-            };
-        }
-        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return false;
-        }
-        crate::builtins::functions::CallableIdentity::of_function(func_ptr).is(symbol_fn_ptr)
-    }
+    unsafe { resolved_callable_identity(bits).is_some_and(|identity| identity.is(symbol_fn_ptr)) }
 }
 
 #[inline]
@@ -72,11 +70,10 @@ pub(crate) unsafe fn object_constructor_extra_args_allowed(
         let Some(resolved_new) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)? else {
             return Ok(false);
         };
+        let new_is_object = resolved_new_is_default_object_new(Some(resolved_new));
         let Some(resolved_init) = class_attr_lookup_raw_mro(_py, class_ptr, init_name_bits)? else {
             return Ok(false);
         };
-        let new_is_object =
-            callable_matches_runtime_symbol(Some(resolved_new), fn_key!(molt_object_new_bound));
         let init_is_object =
             callable_matches_runtime_symbol(Some(resolved_init), fn_key!(molt_object_init));
 
@@ -88,30 +85,25 @@ pub(crate) unsafe fn object_constructor_extra_args_allowed(
 }
 
 #[inline]
-pub(crate) unsafe fn resolved_constructor_init_policy(
-    new_bits: Option<u64>,
-    init_bits: Option<u64>,
+pub(crate) fn resolved_constructor_init_policy(
+    new: Option<CallableIdentity>,
+    init: Option<CallableIdentity>,
 ) -> InitArgPolicy {
-    unsafe {
-        let init_is_object = callable_matches_runtime_symbol(init_bits, fn_key!(molt_object_init));
-        if !init_is_object {
-            return InitArgPolicy::ForwardArgs;
-        }
-        let new_is_object = resolved_new_is_default_object_new(new_bits);
-        if new_is_object {
-            // Both __init__ and __new__ are inherited from object.
-            // CPython rejects extra args: "X() takes no arguments".
-            return InitArgPolicy::RejectConstructorArgs;
-        }
-        // __init__ is object.__init__ but __new__ is overridden —
-        // CPython 3.12+ accepts and ignores extra args in __init__
-        // when __new__ is custom (the custom __new__ consumes them).
+    if !init.is_some_and(|identity| identity.is(fn_key!(molt_object_init))) {
+        return InitArgPolicy::ForwardArgs;
+    }
+    if new.is_some_and(|identity| identity.is(fn_key!(molt_object_new_bound))) {
+        // Both slots are inherited from object.
+        InitArgPolicy::RejectConstructorArgs
+    } else {
+        // A custom __new__ consumes the constructor arguments.
         InitArgPolicy::SkipObjectInit
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::resolved_callable_identity;
     use super::{
         InitArgPolicy, ObjectConstructorCall, callable_matches_runtime_symbol,
         object_constructor_extra_args_allowed, resolved_constructor_init_policy,
@@ -251,7 +243,12 @@ mod tests {
             let init_bits =
                 object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert_eq!(
-                unsafe { resolved_constructor_init_policy(new_bits, init_bits) },
+                unsafe {
+                    resolved_constructor_init_policy(
+                        resolved_callable_identity(new_bits),
+                        resolved_callable_identity(init_bits),
+                    )
+                },
                 InitArgPolicy::RejectConstructorArgs
             );
         });
@@ -271,7 +268,12 @@ mod tests {
             let init_bits =
                 object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert_eq!(
-                unsafe { resolved_constructor_init_policy(Some(new_bits), init_bits) },
+                unsafe {
+                    resolved_constructor_init_policy(
+                        resolved_callable_identity(Some(new_bits)),
+                        resolved_callable_identity(init_bits),
+                    )
+                },
                 InitArgPolicy::SkipObjectInit
             );
             dec_ref_bits(_py, new_bits);
@@ -296,12 +298,16 @@ mod tests {
             assert!(!init_ptr.is_null());
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
             let init_bits = MoltObject::from_ptr(init_ptr).bits();
-            assert_eq!(
-                unsafe { resolved_constructor_init_policy(Some(new_bits), Some(init_bits)) },
-                InitArgPolicy::ForwardArgs
-            );
+            let new_identity = unsafe { resolved_callable_identity(Some(new_bits)) };
+            let init_identity = unsafe { resolved_callable_identity(Some(init_bits)) };
+            // A later slot lookup can retire either callable. This decision
+            // uses only the identities sampled at each original lookup.
             dec_ref_bits(_py, init_bits);
             dec_ref_bits(_py, new_bits);
+            assert_eq!(
+                resolved_constructor_init_policy(new_identity, init_identity),
+                InitArgPolicy::ForwardArgs
+            );
         });
     }
 

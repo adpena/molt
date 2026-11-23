@@ -2916,7 +2916,10 @@ mod runtime_callable_identity_tests {
             unsafe {
                 assert!(crate::call::type_policy::resolved_new_is_default_object_new(new));
                 assert_eq!(
-                    crate::call::type_policy::resolved_constructor_init_policy(new, init),
+                    crate::call::type_policy::resolved_constructor_init_policy(
+                        crate::call::type_policy::resolved_callable_identity(new),
+                        crate::call::type_policy::resolved_callable_identity(init)
+                    ),
                     crate::call::type_policy::InitArgPolicy::RejectConstructorArgs
                 );
                 for (actual, expected) in [

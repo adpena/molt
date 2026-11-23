@@ -1,6 +1,8 @@
 use crate::BuiltinExc;
 use crate::call::ExceptionBaselineGuard;
-use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
+use crate::call::type_policy::{
+    InitArgPolicy, resolved_callable_identity, resolved_constructor_init_policy,
+};
 use crate::call::{StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target};
 use crate::{
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
@@ -34,13 +36,17 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
+                let new_identity = resolved_callable_identity(new_bits);
                 let init_name_bits = crate::NameId::DunderInit.bits(_py);
                 let init_bits = match class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
                 if matches!(
-                    resolved_constructor_init_policy(new_bits, init_bits),
+                    resolved_constructor_init_policy(
+                        new_identity,
+                        resolved_callable_identity(init_bits)
+                    ),
                     InitArgPolicy::RejectConstructorArgs
                 ) {
                     let class_name = class_name_for_error(call_bits);
