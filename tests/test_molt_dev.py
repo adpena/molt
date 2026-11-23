@@ -3633,10 +3633,15 @@ def test_postsubmit_continuation_preserves_real_cancelled_streams(
 
 
 def test_postsubmit_stops_on_runner_fault_after_candidate_failure(
-    drv: ModuleType, tmp_path: Path
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
 
+    from molt import host_capacity
+
+    # Both simulated partitions must be admitted to exercise their cancellation
+    # ordering. Their callback runner does not start any subprocesses.
+    monkeypatch.setattr(host_capacity, "execution_cpu_count", lambda: 2)
     started = threading.Event()
     launched: list[str] = []
 

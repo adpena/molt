@@ -2306,6 +2306,8 @@ def test_outer_completion_publishes_payload_before_maintenance_dispatch(
             environ=selected,
         )
     else:
+        # DX selects the toolchain root independently of the artifact root.
+        selected["MOLT_TARGET_ROOT"] = str(ext / "target-root")
         monkeypatch.setattr(dx_cli, "os", ModuleView(os, environ=selected))
         result = dx_cli._handle_run(argparse.Namespace(child_command=command))
     assert result == 7
