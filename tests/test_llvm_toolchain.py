@@ -636,6 +636,35 @@ def _mock_llvm_config(
     monkeypatch.setattr("molt.llvm_toolchain._run_llvm_config", run)
 
 
+def test_sdk_content_inventory_preserves_lexical_file_links(tmp_path: Path) -> None:
+    prefix = tmp_path / "sdk"
+    header = prefix / "include" / "llvm" / "State.h"
+    resource = prefix / "lib" / "clang" / "22" / "include" / "stddef.h"
+    library = prefix / "lib" / "libLLVMCore.a"
+    unrelated = prefix / "lib" / "clang" / "22" / "share" / "ignored.h"
+    for path in (header, resource, library, unrelated):
+        _write(path, "fixture input")
+
+    file_link = prefix / "include" / "Alias.h"
+    dead_link = prefix / "include" / "Missing.h"
+    directory_link = prefix / "include" / "Directory"
+    alternate = prefix / "lib" / "clang" / "alternate" / "include"
+    alternate.parent.mkdir()
+    try:
+        file_link.symlink_to(header)
+        dead_link.symlink_to(prefix / "absent.h")
+        directory_link.symlink_to(header.parent, target_is_directory=True)
+        alternate.symlink_to(resource.parent, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        pytest.skip("this Windows host cannot create SDK symlink fixtures")
+
+    assert llvm_toolchain._content_paths(prefix, (library,)) == tuple(
+        sorted((header, resource, library, file_link, alternate / resource.name))
+    )
+
+
 @pytest.mark.parametrize("prefix_name", ["llvm", "llvm sdk with spaces"])
 def test_complete_prefix_verifier_and_attestation_share_one_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix_name: str

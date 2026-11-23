@@ -1766,17 +1766,29 @@ def _content_paths(
     Only regular files enter, so unrelated trees (lldb's Python bindings, tools,
     docs) and dangling distro symlinks never become build inputs.
     """
-    headers: set[Path] = set()
-    headers.update(path for path in (prefix / "include").rglob("*") if path.is_file())
+    selected = set(required_libraries)
+    pending = [prefix / "include"]
     clang_resource_root = prefix / "lib" / "clang"
     if clang_resource_root.is_dir():
-        headers.update(
-            path
-            for resource_include in clang_resource_root.glob("*/include")
-            for path in resource_include.rglob("*")
-            if path.is_file()
-        )
-    return tuple(sorted(headers.union(required_libraries)))
+        pending.extend(clang_resource_root.glob("*/include"))
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    # Walk real directories once. File symlinks select their
+                    # target's type, and directory symlinks remain leaves.
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        selected.add(Path(entry.path))
+                    elif entry.is_symlink():
+                        path = Path(entry.path)
+                        if path.is_file():
+                            selected.add(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return tuple(sorted(selected))
 
 
 def sdk_content_paths(verification: LlvmPrefixVerification) -> tuple[Path, ...]:
