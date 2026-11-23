@@ -40,12 +40,10 @@ pub(crate) use deferred_codegen::{
 };
 pub(crate) use deferred_codegen::{DeferredDefine, should_flush_deferred_codegen};
 mod app_resolver;
+mod code_owner;
 mod module_registry;
 mod program_pipeline;
 mod program_slots;
-#[cfg(any(test, feature = "llvm"))]
-pub(crate) use program_pipeline::preprocess_backend_tir_input;
-mod code_owner;
 pub(crate) use code_owner::{CodeOwner, CodePlacement};
 mod compile_driver;
 #[cfg(feature = "jit")]
