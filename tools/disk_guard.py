@@ -2672,8 +2672,9 @@ def collect_due(
     root: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     auxiliary: Callable[[], None] | None = None,
+    pressure_only: bool = False,
 ) -> list[ReclaimResult]:
-    """Collect one due daily attempt, retaining admission through completion.
+    """Collect one due maintenance attempt, holding admission through completion.
 
     The existing context owns the nonblocking lock, due recheck and start
     stamp. A recent or competing attempt does no collection. Exceptions stay
@@ -2683,9 +2684,23 @@ def collect_due(
 
     environment = os.environ if env is None else env
     resolved_root = resolve_root(root, env=environment)
-    with checkout_state_gc(resolved_root) as admitted:
+    with checkout_state_gc(resolved_root, pressure_only=pressure_only) as admitted:
         if not admitted:
             return []
+        if pressure_only:
+            from molt.default_paths import HOT_STATE_MIN_FREE_BYTES, hot_state
+
+            hot = hot_state(resolved_root)
+            if hot is None or not hot.root.is_dir():
+                return []
+            return [
+                ensure_free(
+                    HOT_STATE_MIN_FREE_BYTES / _GB,
+                    root=resolved_root,
+                    volume_root=hot.root,
+                    env=environment,
+                )
+            ]
         results = collect(root=resolved_root, env=environment)
         if auxiliary is not None:
             auxiliary()
