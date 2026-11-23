@@ -4581,13 +4581,14 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert not (WORKFLOW_ROOT / "perf-validation.yml").exists()
 
 
-def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
+def test_perf_demo_workflow_uses_stack_environment_authority() -> None:
     perf_demo_text = _read(".github/workflows/perf_demo.yml")
     run_stack_text = _read("bench/scripts/run_stack.sh")
 
     assert "MOLT_SESSION_ID: perf-demo-${{ github.run_id }}" in perf_demo_text
-    assert 'MOLT_UV_SYNC: "0"' in perf_demo_text
-    assert 'if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]' in run_stack_text
+    assert "sync-groups:" not in perf_demo_text
+    assert "python find --no-project --managed-python" in run_stack_text
+    assert "--prepare-environment" in run_stack_text
     assert 'cargo build --profile "$CARGO_PROFILE" -p molt-worker' in run_stack_text
     assert (
         'CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target/sessions/${MOLT_SESSION_ID:-demo-stack}}"'

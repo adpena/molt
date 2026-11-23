@@ -31,6 +31,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
+from molt import checkout_provisioning, uv_environment  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
 from molt.process_environment import (  # noqa: E402
     ProcessEnvironment,
@@ -54,6 +55,22 @@ SCOPE_NOTE = (
 )
 _RUN_ID = re.compile(r"[a-z0-9][a-z0-9-]{7,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def demo_python(checkout: Path, selector: str, environ: Mapping[str, str]) -> Path:
+    group = environ.get("MOLT_UV_GROUP", "demo")
+    groups = (*uv_environment.default_groups(checkout), group)
+    # The DX selection belongs to the caller and may omit the demo dependencies.
+    selection = ProcessEnvironment(environ).without(
+        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PYTHON")
+    )
+    result = checkout_provisioning.ensure(
+        "uv-environment", checkout, selection, python=selector, groups=groups
+    )
+    root = result.environment_root
+    if root is None:
+        raise checkout_provisioning.ProvisioningError("demo environment has no root")
+    return uv_environment.python_path(root)
 
 
 def base_env(env: Mapping[str, str] | None = None) -> ProcessEnvironment:
@@ -1059,6 +1076,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-environment":
+        try:
+            print(demo_python(ROOT, sys.argv[2], os.environ))
+        except (
+            checkout_provisioning.ProvisioningError,
+            uv_environment.UvEnvironmentError,
+        ) as exc:
+            raise SystemExit(f"Cannot provision demo environment: {exc}") from exc
+        raise SystemExit(0)
     if sys.argv[1:] == ["--prepare-run"]:
         try:
             run_directory = prepare_run(

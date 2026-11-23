@@ -19,7 +19,6 @@ jobs:
       # One exclusive evidence directory per job attempt: the stack creates it
       # before startup and the regression check reads nothing else.
       MOLT_DEMO_RUN_DIR: ${{ github.workspace }}/bench/results/demo-runs/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
-      MOLT_UV_SYNC: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,10 +29,6 @@ jobs:
           rust-toolchain: pinned
           cache-cargo: "true"
           cache-namespace: perf-demo
-          sync: "true"
-          sync-frozen: "true"
-          sync-dev: "true"
-          sync-groups: demo
       - name: Install k6
         run: |
           if ! command -v k6 >/dev/null 2>&1; then
@@ -50,7 +45,7 @@ jobs:
           ./bench/scripts/run_stack.sh
       - name: Check regressions (p95 thresholds)
         if: always()
-        run: python bench/scripts/run_demo_bench.py --check-regressions "${MOLT_DEMO_RUN_DIR:?}"
+        run: python -B bench/scripts/run_demo_bench.py --check-regressions "${MOLT_DEMO_RUN_DIR:?}"
       - name: Upload k6 artifacts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

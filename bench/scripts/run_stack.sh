@@ -3,28 +3,36 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 export MOLT_REPO_ROOT="$ROOT"
+UV_BIN="${UV:-uv}"
+DEFAULT_UV_PYTHON="$(tr -d '[:space:]' < "$ROOT/.python-version")"
+UV_PYTHON="${MOLT_UV_PYTHON:-$DEFAULT_UV_PYTHON}"
+if ! BOOT_PY="$("$UV_BIN" python find --no-project --managed-python "$UV_PYTHON")"; then
+  printf 'Install uv and provision the stack interpreter with uv python install %s\n' "$UV_PYTHON" >&2
+  exit 1
+fi
 # Bind this invocation's exclusive run directory (MOLT_DEMO_RUN_DIR, or a fresh
 # UUID) before configuration, worker build, preflight or readiness, so a failed
 # startup can only fail its own run. Assign before export: `export V="$(...)"`
 # would mask a failed bind. The guarded inner layer reuses the same binding.
 if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
-  MOLT_DEMO_RUN_DIR="$(python3 "$ROOT/bench/scripts/run_demo_bench.py" --prepare-run)"
+  MOLT_DEMO_RUN_DIR="$("$BOOT_PY" -B "$ROOT/bench/scripts/run_demo_bench.py" --prepare-run)"
   export MOLT_DEMO_RUN_DIR
 fi
 : "${MOLT_DEMO_RUN_DIR:?the outer stack must bind the demo run directory}"
-eval "$(
-  python3 "$ROOT/tools/run_context_env.py" \
+DX_EXPORTS="$(
+  "$BOOT_PY" -B "$ROOT/tools/run_context_env.py" \
     --root "$ROOT" \
     --session-prefix "${MOLT_SESSION_PREFIX:-demo-stack}" \
     --prefer-external-artifacts \
     --dx \
     --format posix
 )"
+eval "$DX_EXPORTS"
 mkdir -p "$MOLT_DIFF_TMPDIR" "$ROOT/logs"
 
 if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
   export MOLT_GUARDED_STACK_INNER=1
-  exec python3 "$ROOT/tools/guarded_exec.py" \
+  exec "$BOOT_PY" -B "$ROOT/tools/guarded_exec.py" \
     --prefix MOLT_BENCH \
     --cwd "$ROOT" \
     --timeout-env MOLT_DEMO_STACK_TIMEOUT_SEC \
@@ -32,23 +40,10 @@ if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
     bash "$0" "$@"
 fi
 
-# Use uv for reproducible demo deps when available.
-if command -v uv >/dev/null 2>&1; then
-  UV_GROUP="${MOLT_UV_GROUP:-demo}"
-  DEFAULT_UV_PYTHON="$(tr -d '[:space:]' < "$ROOT/.python-version")"
-  UV_PYTHON="${MOLT_UV_PYTHON:-$DEFAULT_UV_PYTHON}"
-  RUN_PY=(uv run --project "$ROOT" --group "$UV_GROUP" --python "$UV_PYTHON" python3)
-  if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]; then
-    uv sync --group "$UV_GROUP" --python "$UV_PYTHON"
-  fi
-else
-  RUN_PY=(python3)
-fi
-
-# Resolve uv's interpreter once. Service PIDs must identify the actual server,
-# not an intermediary uv process that can exit before its children.
-PYTHON_BIN="$("${RUN_PY[@]}" -c 'import sys; print(sys.executable)')"
-RUN_PY=("$PYTHON_BIN")
+# Use the sealed image with the demo dependency group. The interpreter runs
+# services directly so the recorded PIDs belong to the service processes.
+PYTHON_BIN="$("$BOOT_PY" -B "$ROOT/bench/scripts/run_demo_bench.py" --prepare-environment "$UV_PYTHON")"
+RUN_PY=("$PYTHON_BIN" -B)
 
 SERVER="${MOLT_SERVER:-auto}"
 SERVER_PORT="${MOLT_SERVER_PORT:-8000}"

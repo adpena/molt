@@ -13,12 +13,14 @@ from pathlib import Path
 import molt.dx as molt_dx
 from molt import custody_layout
 from molt.checkout_state import scratch_state_root
+from molt import uv_environment
 import pytest
 
 from tests.process_guard_common import (
     run_custody_subject_process,
     run_guarded_test_process,
 )
+from tests.uv_environment_test_support import fake_uv_environ, make_checkout, uv_calls
 
 # The demo bench defaults its roots to the checkout on a developer host; a
 # hosted job's custody root and caps would decide them instead.
@@ -669,6 +671,25 @@ def test_demo_source_change_or_loss_unbinds_the_run(monkeypatch, tmp_path, end):
     assert [path.name for path in runs_root.iterdir()] == [run_dir.name]
 
 
+def test_demo_environment_does_not_sync_the_callers_image(tmp_path: Path) -> None:
+    checkout = make_checkout(tmp_path / "checkout")
+    environ, log = fake_uv_environ(tmp_path)
+    caller = uv_environment.environment(checkout, environ=environ)
+    environ["UV_PROJECT_ENVIRONMENT"] = str(caller)
+    environ["MOLT_UV_PROJECT_PYTHON"] = "0.0.0"
+    pin = uv_environment.pinned_python(checkout)
+
+    python = demo_bench.demo_python(checkout, pin, environ)
+
+    assert python != uv_environment.python_path(caller)
+    assert python.is_file()
+    assert demo_bench.demo_python(checkout, pin, environ) == python
+    caller_sync, demo_sync = map(json.loads, uv_calls(log))
+    assert "demo" not in caller_sync
+    assert "demo" in demo_sync
+    assert "dev" in demo_sync
+
+
 def test_stack_and_nightly_bind_and_check_one_run_directory():
     import yaml
 
@@ -677,7 +698,7 @@ def test_stack_and_nightly_bind_and_check_one_run_directory():
     for startup in (
         "tools/run_context_env.py",
         "tools/guarded_exec.py",
-        "uv sync",
+        "--prepare-environment",
         "cargo build",
         "# Start worker",
         "/health/",

@@ -111,7 +111,7 @@ Set `MOLT_ACCEL_RETRY_ON_TIMEOUT=1` to opt into timeout retries for idempotent c
 Set `MOLT_ACCEL_RETRY_ON_BUSY=1` to retry `Busy` responses for idempotent calls.
 Set `MOLT_ACCEL_RETRY_BACKOFF_MS=10` and `MOLT_ACCEL_RETRY_BACKOFF_MAX_MS=80` for exponential retry backoff.
 Set `MOLT_WORKER_THREADS` or `MOLT_WORKER_MAX_QUEUE` to override worker thread count or queue depth.
-Set `MOLT_UV_SYNC=0` to skip the automatic `uv sync --group demo` step in the bench script.
+The bench script uses the managed Python pin and a locked environment that includes the `demo` group.
 Set `MOLT_SERVER=gunicorn|uvicorn|django` to choose the server (default `auto` prefers gunicorn, then uvicorn).
 Set `MOLT_SERVER_THREADS=2` to control gunicorn threads (defaults to 2 and uses the `gthread` worker class).
 Set `MOLT_SERVER_WORKERS` to override server worker count (defaults to min(4, CPU cores)).

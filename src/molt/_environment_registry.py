@@ -6934,8 +6934,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_UV_GROUP",
       "output_neutral": false,
-      "owner": "bench/scripts/run_stack.sh",
-      "summary": "uv dependency group that bench/scripts/run_stack.sh syncs and runs the demo stack with; default demo.",
+      "owner": "bench/scripts/run_demo_bench.py",
+      "summary": "Locked uv dependency group added to the development environment for the demo stack; default demo.",
       "values": []
     },
     {
@@ -6955,17 +6955,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_UV_PYTHON",
       "output_neutral": false,
       "owner": "bench/scripts/run_stack.sh",
-      "summary": "Python version or interpreter that bench/scripts/run_stack.sh passes to uv run and uv sync; unset means the version pinned in .python-version.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "1",
-      "kind": "bool",
-      "name": "MOLT_UV_SYNC",
-      "output_neutral": false,
-      "owner": "bench/scripts/run_stack.sh",
-      "summary": "Set to 0 to skip the uv sync step before bench/scripts/run_stack.sh starts the demo stack; any other value or unset runs uv sync for the selected group and Python; the perf_demo workflow sets 0.",
+      "summary": "Managed CPython release or minor used by the demo stack; unset uses the checkout .python-version pin.",
       "values": []
     },
     {
