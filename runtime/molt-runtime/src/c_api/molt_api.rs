@@ -959,6 +959,7 @@ pub(crate) fn register_module_capi_with_callbacks(
         let metadata = CApiModuleMetadata {
             module_def_ptr,
             module_state: state,
+            handle_slots: None,
             module_state_size: size,
             exec_started: false,
             callbacks,
