@@ -42,7 +42,7 @@ from tools.molt_dev_common import _say, _warn  # noqa: E402
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityError, DiskCapacityProbe
-    from molt.host_capacity import HostWorkDemand
+    from molt.host_capacity import HostWorkDemand, HostWorkGrant
     from tools.proof_plan import ToolchainPolicy
 
 # Local always gates share the repository-policy resource class with their CI
@@ -63,8 +63,6 @@ LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
 # 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
 CONCURRENT_GATE_BYTES = 1 << 30
-# Postsubmit's pytest gates declare up to 2.5 GB per worker; its share books 2 GiB.
-POSTSUBMIT_BYTES_PER_WORKER = 2 << 30
 
 
 class CancelReason(StrEnum):
@@ -362,6 +360,7 @@ class GateRuntime:
     cancelled: Callable[[], bool] = lambda: False
     cancel_reason: CancelReason = CancelReason.PENDING_LANDING
     deferred: tuple[Deferred, ...] = ()
+    host_grant: HostWorkGrant | None = None
     # Every gate that passed, in completion order: the typed outcome a caller
     # reads instead of matching rendered commands.
     passed: list[Gate] = field(default_factory=list)
@@ -526,18 +525,39 @@ def gate_failure(
     return failure
 
 
-def postsubmit_demand() -> HostWorkDemand:
-    """Postsubmit's share of the development class: half the host.
+def gate_work_demand(
+    gates: Sequence[Gate], *, repo: Path, requested_workers: int
+) -> HostWorkDemand:
+    """One gate slot must accommodate any selected gate's workspace.
 
-    Postsubmit qualifies landed main in the background after every landing;
-    holding the whole class made every lane's consumer gate wait for its full
-    run (HF-937). A share leaves the other half to interactive gates.
+    A Cargo-backed gate may build while running pytest, so it retains its
+    charged Cargo envelope even when the child also has a pytest worker unit.
     """
-    from molt import host_capacity
+    import shlex
 
-    return host_capacity.HostWorkDemand(
-        workers=max(1, host_capacity.cpu_count() // 2),
-        bytes_per_worker=POSTSUBMIT_BYTES_PER_WORKER,
+    from molt.host_capacity import HostWorkDemand
+    from tools.proof_command_argv import pytest_allocation_request
+
+    bytes_per_worker = CONCURRENT_GATE_BYTES
+    for gate in gates:
+        if gate.cargo_target_access is not CargoTargetAccess.NONE:
+            bytes_per_worker = max(bytes_per_worker, LOCAL_CARGO_GATE_BYTES)
+        if gate_runs_pytest(gate, repo=repo):
+            argv = (
+                shlex.split(gate.command)
+                if isinstance(gate.command, str)
+                else gate.command
+            )
+            _arguments, bytes_per_pytest_worker, _requested = pytest_allocation_request(
+                argv, root=repo
+            )
+            # The executor may allocate several pytest workers to a single gate.
+            # Its actual worker count is bounded by the grant's memory slice.
+            bytes_per_worker = max(bytes_per_worker, bytes_per_pytest_worker)
+    return HostWorkDemand(
+        workers=max(1, min(len(gates), requested_workers)),
+        bytes_per_worker=bytes_per_worker,
+        minimum_workers=1,
     )
 
 
@@ -830,15 +850,17 @@ def run_selected_gates(
             ),
             say=runtime.say,
             demand=(
-                postsubmit_demand() if runtime.mode is LandingMode.POSTSUBMIT else None
+                gate_work_demand(
+                    [gate for _ordinal, gate in heavy],
+                    repo=runtime.repo,
+                    requested_workers=max(1, host_capacity.cpu_count() // 2),
+                )
+                if runtime.mode is LandingMode.POSTSUBMIT
+                else None
             ),
         ) as admission:
-            grant = admission.grant
-            limit = (
-                host_limit
-                if grant is None
-                else (lambda: max(1, min(host_limit(), grant.workers)))
-            )
+            grant = admission.grant or runtime.host_grant
+            runtime = replace(runtime, host_grant=grant)
             remaining = heavy
             continuation = 0
             while remaining:
@@ -851,7 +873,7 @@ def run_selected_gates(
                         receipt_path=output / runtime.receipt_path.name,
                     )
                 try:
-                    _run_heavy_gates(remaining, attempt, gate_seconds, limit)
+                    _run_heavy_gates(remaining, attempt, gate_seconds, host_limit)
                     break
                 except GateFailure as failure:
                     if (
@@ -1541,7 +1563,9 @@ def _local_cargo_gates() -> int:
     )
 
 
-def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
+def _memory_slice(
+    plan: _LocalGatePlan, classes: dict[str, int], grant: HostWorkGrant | None
+) -> int | None:
     """The memory one gate may claim while the executor runs others beside it.
 
     The proof executor's own rule (``proof_plan._command_memory_share``): the
@@ -1551,14 +1575,23 @@ def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
 
     capacity = host_capacity.memory_capacity(os.environ)
     _total, available = capacity.bounded_bytes
-    if available is None:
+    if available is None and grant is None:
         return None
     slots = sum(
         min(classes[policy.name], policy.max_parallel)
         for policy in plan.resource_policies
     )
     concurrency = max(1, min(plan.executor_max_workers, slots))
-    usable = max(0, available - host_capacity.headroom_bytes(capacity))
+    usable = (
+        None
+        if available is None
+        else max(0, available - host_capacity.headroom_bytes(capacity))
+    )
+    if grant is not None:
+        usable = (
+            grant.memory_bytes if usable is None else min(usable, grant.memory_bytes)
+        )
+    assert usable is not None
     return max(1, usable // concurrency)
 
 
@@ -1624,6 +1657,9 @@ def _run_executor_block(
     for _ordinal, gate in gates:
         name = gate_resource_class(gate)
         classes[name] = classes.get(name, 0) + 1
+    grant = runtime.host_grant
+    if grant is not None:
+        host = min(host, grant.workers)
     plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
     commands = _shared_target_order(
@@ -1642,7 +1678,18 @@ def _run_executor_block(
     )
     from molt import host_capacity
 
-    memory_slice = _memory_slice(plan, classes)
+    memory_slice = _memory_slice(plan, classes, grant)
+    cargo_jobs = None
+    pytest_cpu_budget = None
+    if grant is not None:
+        # Reserve a share for the non-pytest gates before dividing the remaining
+        # CPUs among the concurrent pytest sessions.
+        cargo_jobs = max(1, grant.workers // plan.executor_max_workers)
+        occupied = min(
+            sum(not command.data["pytest"] for command in commands),
+            plan.executor_max_workers - 1,
+        )
+        pytest_cpu_budget = max(1, grant.workers - occupied * cargo_jobs)
     environments = {
         toolchains: (
             environment
@@ -1702,6 +1749,17 @@ def _run_executor_block(
                     )
                 }
             )
+            if (
+                cargo_jobs is not None
+                and command.gate.cargo_target_access is not CargoTargetAccess.NONE
+            ):
+                requested_jobs = environment.environment.get("CARGO_BUILD_JOBS", "")
+                if not requested_jobs or (
+                    requested_jobs.isdecimal() and int(requested_jobs) > cargo_jobs
+                ):
+                    environment = environment.overlay(
+                        {"CARGO_BUILD_JOBS": str(cargo_jobs)}
+                    )
             argv = command.gate.command
             if allocation.pytest_cpus is not None:
                 from tools.proof_command_argv import allocated_pytest_argv
@@ -1788,6 +1846,7 @@ def _run_executor_block(
         commands,
         receipt_path,
         failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        granted_cpus=pytest_cpu_budget,
         _source_tree_changes=runtime.source_changes,
         toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),
         _authority_sha256=lambda _plan: authority.hexdigest(),

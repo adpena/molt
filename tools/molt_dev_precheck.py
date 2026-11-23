@@ -32,7 +32,7 @@ import json
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
@@ -55,6 +55,7 @@ from tools.molt_dev_gates import (
     concurrent_gate_limit,
     display,
     gate_time_summary,
+    gate_work_demand,
     run_selected_gates,
 )
 
@@ -546,15 +547,16 @@ def precheck_landing(
         return result
     from molt import host_capacity
 
-    # The try run is suite-sized: it takes the host's development slot (it
-    # tests the lane, not main, so it never waits out a batch), in arrival
-    # order, and its budget starts only once it holds the slot, so waiting
-    # never spends the budget (HF-623).
+    # Reserve an actual development share before the try-run budget starts.
+    # Waiting for a fitting share never spends the lane's test budget (HF-623).
     with host_capacity.host_work_slot(
         host_capacity.host_work_dir(repo),
         label=f"landing try run ({git.short(head)})",
         work=host_capacity.HostWorkClass.DEVELOPMENT,
         say=_say,
+        demand=gate_work_demand(
+            trial, repo=repo, requested_workers=concurrent_gate_limit()
+        ),
     ) as admission:
         if admission.waited_seconds >= 1:
             _say(
@@ -569,6 +571,7 @@ def precheck_landing(
             cancelled=lambda: time.monotonic() >= deadline,
             cancel_reason=CancelReason.PRECHECK_BUDGET,
         )
+        tried_runtime = replace(tried_runtime, host_grant=admission.grant)
         refusal = None
         try:
             run_selected_gates(

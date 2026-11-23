@@ -687,27 +687,15 @@ def pytest_run_selections(arguments: Sequence[str], *, root: Path) -> tuple[str,
     return tuple(selections)
 
 
-def allocated_pytest_argv(
-    argv: Sequence[str],
-    *,
-    root: Path,
-    cpus: int,
-    environment: Mapping[str, str],
-) -> tuple[tuple[str, ...], int]:
-    """Resolve a recognized pytest launch to the executor's explicit count.
-
-    Use pytest's parser, including plugin options, so a value of -k/-o never
-    becomes a worker option. The final -n overrides config/addopts and earlier
-    worker flags; insert before -- so positional target semantics survive.
-    """
-    from molt import host_capacity
+def pytest_allocation_request(
+    argv: Sequence[str], *, root: Path
+) -> tuple[tuple[str, ...], int, int | None]:
+    """Read the worker request using the actual pytest option grammar."""
     from molt.pytest_memory_guard_bootstrap import _pytest_argument_parser
 
     arguments = pytest_arguments(argv, root=root)
-    if arguments is None or cpus < 1:
-        raise ValueError(
-            "pytest allocation requires a recognized launch and positive CPUs"
-        )
+    if arguments is None:
+        raise ValueError("pytest allocation requires a recognized launch")
     if any(value.startswith("@") for value in arguments):
         raise ValueError("executor pytest commands cannot use argument files")
     namespace, _unknown = _pytest_argument_parser(True).parse_known_and_unknown_args(
@@ -721,17 +709,37 @@ def allocated_pytest_argv(
         or gigabytes * 1024**3 < 1
     ):
         raise ValueError("--molt-worker-memory-gb must be positive and finite")
+    requested = namespace.numprocesses
+    return (
+        arguments,
+        int(gigabytes * 1024**3),
+        requested if isinstance(requested, int) else None,
+    )
+
+
+def allocated_pytest_argv(
+    argv: Sequence[str],
+    *,
+    root: Path,
+    cpus: int,
+    environment: Mapping[str, str],
+) -> tuple[tuple[str, ...], int]:
+    """Bind pytest's final -n to the executor allocation, before any --."""
+    from molt import host_capacity
+
+    if cpus < 1:
+        raise ValueError("pytest allocation requires positive CPUs")
+    arguments, bytes_per_worker, requested = pytest_allocation_request(argv, root=root)
     capacity = host_capacity.memory_capacity(environment)
     total, available = capacity.bounded_bytes
     workers = host_capacity.worker_count_from_samples(
-        bytes_per_worker=int(gigabytes * 1024**3),
+        bytes_per_worker=bytes_per_worker,
         headroom_bytes=host_capacity.headroom_bytes(capacity),
         total_memory_bytes=total,
         available_memory_bytes=available,
         cpus=cpus,
     )
-    requested = namespace.numprocesses
-    if isinstance(requested, int):
+    if requested is not None:
         workers = min(workers, requested)
     offset = len(argv) - len(arguments)
     boundary = offset + (arguments.index("--") if "--" in arguments else len(arguments))
