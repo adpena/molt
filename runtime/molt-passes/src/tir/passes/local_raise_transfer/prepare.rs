@@ -74,7 +74,11 @@ fn omitted_preparation(block: &TirBlock) -> Option<(usize, ValueId, ValueId)> {
     .then_some((index, exception, cause))
 }
 
-pub(super) fn specialize(func: &mut TirFunction, stats: &mut PassStats) {
+pub(super) fn specialize(
+    func: &mut TirFunction,
+    target: &crate::tir::target_info::TargetInfo,
+    stats: &mut PassStats,
+) {
     let mut sites = Vec::new();
     for from in func.blocks.values() {
         let Terminator::Branch { target, .. } = &from.terminator else {
@@ -125,16 +129,26 @@ pub(super) fn specialize(func: &mut TirFunction, stats: &mut PassStats) {
             .with_origin(OpKind::BindingAlias);
         alias.inherit_source_from(&call);
         let ops = &mut func.blocks.get_mut(&block).unwrap().ops;
+        // A common check beyond the result phi has two predecessors. Keep the
+        // authored transfer beside each producer so the fallback's call-return
+        // service and the original service on the fast arm stay identifiable.
+        let mut check = ops.remove(index + 1);
+        if target.supports_pending_call_eval_breaker_poll()
+            && super::super::async_work_poll::is_call_return_poll(&call)
+        {
+            check.mark_async_work_poll();
+        }
         ops[index] = alias;
         ops.insert(index, constant);
-        select_guarded_result(func, block, index + 1, guards, call, ty);
-        stats.ops_added += 4;
+        select_guarded_result(func, block, index + 1, guards, call, ty, Some(check));
+        stats.ops_added += 5;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tir::target_info::TargetInfo;
 
     fn source() -> TirFunction {
         let program = molt_ir::ir::SimpleIR::from_json_str(r#"{"functions":[{
@@ -159,7 +173,8 @@ mod tests {
 
     #[test]
     fn checked_builtin_omitted_cause_preserves_both_refusals_and_result_credit() {
-        let base = source();
+        let mut base = source();
+        let native = TargetInfo::llvm_release_fast();
         let ctor = base
             .blocks
             .values()
@@ -171,10 +186,30 @@ mod tests {
         };
         let (index, exception, cause) =
             omitted_preparation(&base.blocks[&target]).expect("omitted raise");
+        // Transport the operation result itself in the handler environment.
+        let result = base.blocks[&target].ops[index].results[0];
+        let arg = base.blocks[&base.entry_block].args[0].id;
+        let handler = exception_label_to_block(&base)[&5];
+        let param = base.fresh_value();
+        base.value_types.insert(param, TirType::DynBox);
+        base.blocks.get_mut(&handler).unwrap().args.push(TirValue {
+            id: param,
+            ty: TirType::DynBox,
+        });
+        for block in base.blocks.values_mut() {
+            for check in &mut block.ops {
+                if matches!(check.opcode, OpCode::CheckException | OpCode::TryStart)
+                    && label_of(check) == Some(5)
+                {
+                    check
+                        .operands
+                        .push(if block.id == target { result } else { arg });
+                }
+            }
+        }
         let original = &base.blocks[&target].ops[index];
-        let result = original.results[0];
         let mut f = base.clone();
-        assert_eq!(super::super::run(&mut f).ops_added, 4);
+        assert_eq!(super::super::run(&mut f, &native).ops_added, 5);
         assert_eq!(
             serde_json::to_value(&f.blocks[&ctor]).unwrap(),
             serde_json::to_value(&base.blocks[&ctor]).unwrap()
@@ -228,18 +263,43 @@ mod tests {
         };
         assert_eq!(cold_join, join);
         assert_eq!(cold_result, &cold.ops[0].results);
+        let mut expected = base.blocks[&target].ops[index + 1].clone();
+        assert!(expected.mark_async_work_poll());
+        for arm in [fast, cold] {
+            assert_eq!(arm.ops.len(), 2);
+            *expected.operands.last_mut().unwrap() = arm.ops[0].results[0];
+            assert_eq!(
+                serde_json::to_value(&arm.ops[1]).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+        }
         assert_eq!(f.blocks[join].args[0].id, result);
         assert_eq!(
             serde_json::to_value(&f.blocks[join].ops).unwrap(),
-            serde_json::to_value(&base.blocks[&target].ops[index + 1..]).unwrap()
+            serde_json::to_value(&base.blocks[&target].ops[index + 2..]).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&f.blocks[join].terminator).unwrap(),
             serde_json::to_value(&base.blocks[&target].terminator).unwrap()
         );
-        assert_eq!(super::super::run(&mut f).ops_added, 0);
+        assert_eq!(super::super::run(&mut f, &native).ops_added, 0);
         molt_ir::tir::verify::verify_function(&f).unwrap();
         crate::tir::exception_regions::verify_exception_regions(&f).unwrap();
+        let mut am = crate::tir::analysis::AnalysisManager::new();
+        super::super::super::async_work_poll::run(&mut f, &mut am);
+        assert!(super::super::super::async_work_poll::is_materialized(&f));
+        let mut synchronous = base.clone();
+        assert_eq!(
+            super::super::run(&mut synchronous, &TargetInfo::mlir_release_fast()).ops_added,
+            5
+        );
+        assert!(
+            !synchronous
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .any(TirOp::is_async_work_poll)
+        );
         for refusal in 0..8 {
             let mut f = base.clone();
             match refusal {
@@ -297,7 +357,11 @@ mod tests {
                         .insert("value".into(), AttrValue::Int(91));
                 }
             }
-            assert_eq!(super::super::run(&mut f).ops_added, 0, "refusal {refusal}");
+            assert_eq!(
+                super::super::run(&mut f, &native).ops_added,
+                0,
+                "refusal {refusal}"
+            );
         }
     }
 }

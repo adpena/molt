@@ -120,13 +120,13 @@ fn local_raises(func: &TirFunction) -> Vec<LocalRaise> {
     found
 }
 
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, target: &crate::tir::target_info::TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "local_raise_transfer",
         ..Default::default()
     };
     transfer_local_raises(func, &mut stats);
-    prepare::specialize(func, &mut stats);
+    prepare::specialize(func, target, &mut stats);
     stats
 }
 

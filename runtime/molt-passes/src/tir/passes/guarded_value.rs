@@ -35,6 +35,7 @@ pub(super) fn select_guarded_result<const N: usize>(
     guards: [TirOp; N],
     generic: TirOp,
     ty: TirType,
+    observation: Option<TirOp>,
 ) -> BlockId {
     let yes = func.fresh_block();
     let no = func.fresh_block();
@@ -85,12 +86,23 @@ pub(super) fn select_guarded_result<const N: usize>(
         let returned = func.fresh_value();
         call.results = vec![returned];
         func.value_types.insert(returned, ty.clone());
+        let mut ops = vec![call];
+        if let Some(mut check) = observation.clone() {
+            // A handler can receive the operation's result. The join value
+            // does not dominate an arm's exceptional edge.
+            for operand in &mut check.operands {
+                if *operand == result {
+                    *operand = returned;
+                }
+            }
+            ops.push(check);
+        }
         func.blocks.insert(
             id,
             TirBlock {
                 id,
                 args: vec![],
-                ops: vec![call],
+                ops,
                 terminator: Terminator::Branch {
                     target: join,
                     args: vec![returned],
