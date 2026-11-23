@@ -511,6 +511,13 @@ the admitted generation in the child. Resource captures and their cached
 content projections are reused: no second SDK enumeration or executable probe
 is introduced to compute this key.
 
+LLVM SDK file selection uses one listing per directory. Directory entries
+provide regular-file types, and file symlinks retain their lexical path and
+resolved type. Verification and attestation continue to measure the selected
+contents. In ten interleaved pairs on the macOS arm64 managed SDK, selection
+returned the same 6,113 paths in the same order and took a median of 49.9 ms,
+down from 61.0 ms. The measurement covers file selection.
+
 Rust source, job counts, output paths and unrelated Cargo
 configuration bytes are excluded from this graph key. Ordinary source edits
 retain Cargo's incremental graph; actual toolchain/resource changes pay for a
