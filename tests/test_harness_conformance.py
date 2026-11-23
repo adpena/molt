@@ -184,19 +184,31 @@ def test_write_summary_and_exit_code_contract(tmp_path: Path) -> None:
     )
 
 
-def test_build_env_keeps_the_callers_artifact_root(tmp_path: Path) -> None:
-    # Resolving from the session ID alone dropped the caller's custody
-    # selectors, so a CI shard's artifacts landed in the checkout and CI
-    # custody refused them (Nightly run 38010917812).
+def test_build_env_keeps_the_callers_independent_storage_selectors(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     repo = tmp_path / "repo"
-    chosen = tmp_path / "chosen-artifacts"
+    artifacts = tmp_path / "chosen-artifacts"
+    toolchains = tmp_path / "chosen-toolchains"
+    previously_derived_target = tmp_path / "previous-target"
     repo.mkdir()
-    chosen.mkdir()
+    artifacts.mkdir()
+    toolchains.mkdir()
 
     env = module.build_molt_conformance_env(
-        repo, "suite", {"MOLT_EXT_ROOT": str(chosen)}
+        repo,
+        "suite",
+        {
+            "MOLT_EXT_ROOT": str(artifacts),
+            "MOLT_TARGET_ROOT": str(toolchains),
+            "CARGO_TARGET_DIR": str(previously_derived_target),
+        },
+        create_dirs=True,
     )
 
-    assert Path(env["MOLT_EXT_ROOT"]) == chosen
-    assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(chosen)
+    assert Path(env["MOLT_EXT_ROOT"]) == artifacts
+    assert Path(env["MOLT_TARGET_ROOT"]) == toolchains
+    assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(artifacts)
+    assert not previously_derived_target.exists()
+    assert not (repo / "target-root").exists()

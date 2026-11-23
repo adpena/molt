@@ -21,10 +21,10 @@ def build_molt_conformance_env(
 ) -> ProcessEnvironment:
     """Resolve a conformance run's DX roots from the caller's environment.
 
-    The caller's artifact-root and custody selectors (``MOLT_EXT_ROOT``, CI's
-    ephemeral custody root) decide where artifacts go; resolving from the
-    session ID alone put them in the checkout, which CI custody refuses. The
-    roots derived from them are recomputed, so ambient values never leak in.
+    The caller's artifact-root and residency selectors decide where artifacts
+    go. The independently selected toolchain store remains the source of
+    compiler and SDK bytes. DX recomputes derived cache, target, and scratch
+    paths for this invocation.
 
     A ``session_id`` pins the run's session, which scopes its Cargo target.
     ``None`` lets the run context generate one, so the run builds in the warm
@@ -38,7 +38,8 @@ def build_molt_conformance_env(
         [
             key
             for key in CANONICAL_RUN_ENV_KEYS
-            if key not in {ARTIFACT_ROOT_ENV, "UV_PROJECT_ENVIRONMENT"}
+            if key
+            not in {ARTIFACT_ROOT_ENV, "MOLT_TARGET_ROOT", "UV_PROJECT_ENVIRONMENT"}
         ]
         + ["PYTHONPATH"]
     )

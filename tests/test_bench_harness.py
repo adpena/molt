@@ -56,7 +56,9 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     ):
         monkeypatch.delenv(key, raising=False)
     artifact_root = (tmp_path / "artifacts").resolve()
+    toolchain_root = (tmp_path / "toolchains").resolve()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
 
     outcome = bench_harness.run_cmd(
         ["python3", "--version"],
@@ -81,6 +83,8 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     assert call["errors"] == "surrogateescape"
     assert call["timeout"] == 9.0
     assert call["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
+    assert call["env"]["MOLT_TARGET_ROOT"] == str(toolchain_root)
+    assert toolchain_root.is_dir()
     assert call["env"]["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
             artifact_root, call["env"], source_root=bench_harness.REPO_ROOT
