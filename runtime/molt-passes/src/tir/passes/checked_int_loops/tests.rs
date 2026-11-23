@@ -3,6 +3,7 @@ use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::LoopRole;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect};
 use crate::tir::verify::verify_function;
+use molt_ir::OpKind;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp::new(opcode, operands, results)
@@ -692,4 +693,115 @@ fn a_range_stop_of_any_magnitude_takes_the_guard() {
     verify_function(&func).expect("versioned function verifies");
     assert_eq!(count(&func, OpCode::IsInlineInt), 1);
     assert_eq!(count(&func, OpCode::UnboxInlineInt), 1);
+}
+
+// Captured from bench_etl_orders.parse_int. The CSV and wide CSV parsers
+// have the same loop. Keep real frame stores and exception observers.
+#[test]
+fn short_ascii_region_preserves_the_generic_parser_and_observers() {
+    let ir: molt_ir::FunctionIR = serde_json::from_str(include_str!("parse_int.json")).unwrap();
+    let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+    let polls = |f: &TirFunction| {
+        f.blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .filter(|op| op.is_async_work_poll())
+            .map(|op| {
+                (
+                    op.attrs["value"].clone(),
+                    op.attrs["_source_op_idx"].clone(),
+                    op.source_span,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut exposed = func.clone();
+    exposed
+        .attrs
+        .insert("frame_locals_exposed".into(), AttrValue::Bool(true));
+    let pipeline = crate::tir::pass_manager::build_default_pipeline(target.clone());
+    let count_admissions = |func: &TirFunction| {
+        func.blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .filter(|op| {
+                op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::ShortAsciiSnapshot)
+            })
+            .count()
+    };
+    // The admission lives inside the ordinary pass pipeline, including the
+    // preceding type refinement and exception analysis.
+    pipeline.run(&mut func);
+    assert_eq!(
+        count_admissions(&func),
+        1,
+        "{}",
+        crate::tir::printer::print_function(&func)
+    );
+    verify_function(&func).expect("versioned captured parser verifies");
+    assert_eq!(count(&func, OpCode::OrdAt), 1, "generic ordinal retained");
+    let ranges = <ValueRange as crate::tir::analysis::Analysis>::compute(&func);
+    let raw = crate::representation_facts::raw_i64_safe_values_for(&func, &ranges);
+    let (block, shift) = func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter().map(move |op| (block.id, op)))
+        .find(|(_, op)| op.opcode == OpCode::Shr && ranges.const_int_of(op.operands[1]).is_none())
+        .expect("packed byte selection uses a variable shift");
+    assert!(
+        raw.contains(&shift.results[0]),
+        "variable byte extraction must stay raw (shift count {:?}, output {:?})",
+        ranges.range_at(block, shift.operands[1]),
+        ranges.range_of(shift.results[0])
+    );
+    let shifted_byte = shift.results[0];
+    pipeline.run(&mut exposed);
+    assert_eq!(count_admissions(&exposed), 0);
+    let generic_polls = polls(&exposed);
+    assert_eq!(
+        generic_polls.len(),
+        2,
+        "existing integer versioning keeps a backedge observation in each loop"
+    );
+    assert_eq!(
+        polls(&func),
+        generic_polls,
+        "both arms retain the generic observer's target and source span"
+    );
+
+    crate::tir::pass_manager::run_late_lowering(&mut func, &target, None);
+    crate::tir::passes::run_drop_phase(&mut func, &target);
+    let (shift_block, shift) = func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter().map(move |op| (block.id, op)))
+        .find(|(_, op)| op.opcode == OpCode::Shr && op.results.as_slice() == [shifted_byte])
+        .expect("the bounded variable shift survives final lowering");
+    assert!(shift.has_nothrow_proof());
+
+    let mut analyses = AnalysisManager::new();
+    let forest = analyses.get::<crate::tir::analysis::LoopForest>(&func);
+    let fast_loop = forest
+        .bodies
+        .values()
+        .find(|body| body.contains(&shift_block))
+        .expect("the bounded shift is in the fast loop");
+    for &block in fast_loop {
+        let ops = &func.blocks[&block].ops;
+        if ops.iter().any(TirOp::is_async_work_poll) {
+            continue;
+        }
+        assert!(
+            !ops.iter().any(|op| matches!(
+                (op.origin, op.attrs.get("value")),
+                (Some(OpKind::FrameHomeStore), Some(AttrValue::Int(1 | 2)))
+            )),
+            "the numeric loop writes a home outside the poll's service block:\n{}",
+            crate::tir::printer::print_function(&func)
+        );
+    }
+    let final_polls = polls(&func);
+    assert_eq!(final_polls.len(), generic_polls.len());
+    assert!(final_polls.iter().all(|poll| generic_polls.contains(poll)));
 }

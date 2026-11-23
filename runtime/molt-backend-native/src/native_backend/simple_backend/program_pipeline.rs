@@ -1,3 +1,4 @@
+use super::backend_selection::NativeCodegenBackend;
 use super::*;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
@@ -21,6 +22,107 @@ impl SimpleBackend {
         } else {
             self.app_callable_manifest.take().unwrap_or_default()
         }
+    }
+
+    /// Consume transported operations into the terminal TIR used by every code owner.
+    pub(super) fn prepare_final_tir(
+        &mut self,
+        ir: &mut SimpleIR,
+        backend: NativeCodegenBackend,
+        mark: &mut impl FnMut(&str, usize),
+    ) -> (
+        crate::tir::pipeline_cache::TirOwnedModule,
+        molt_ir::linkage_abi::FunctionSignatures,
+    ) {
+        use crate::tir::pipeline_cache::{
+            TirOwnedModulePipelineMode, TirOwnedModulePipelineOptions, TirPipelineCacheFlavor,
+            TirPipelineRunOptions, partition_cached_functions_before_drops,
+            run_cached_tir_pipeline, run_owned_module_pipeline_from_cached_tir,
+            tir_optimization_resource_plan,
+        };
+        use crate::tir::target_info::TargetInfo;
+
+        let (target, cache_flavor, progress, module_name) = match backend {
+            NativeCodegenBackend::Cranelift => (
+                TargetInfo::native_from_simd_caps(self.target_simd_caps()),
+                TirPipelineCacheFlavor::Native,
+                "MOLT_BACKEND",
+                "native_module",
+            ),
+            #[cfg(feature = "llvm")]
+            NativeCodegenBackend::Llvm => {
+                let host_features = inkwell::targets::TargetMachine::get_host_cpu_features();
+                let target = TargetInfo::from_llvm_feature_string(if self.llvm_target.is_wasm() {
+                    ""
+                } else {
+                    host_features.to_str().unwrap_or("")
+                });
+                (
+                    target,
+                    TirPipelineCacheFlavor::Llvm,
+                    "MOLT_BACKEND(llvm)",
+                    "llvm_module",
+                )
+            }
+        };
+        let mut cached = run_cached_tir_pipeline(
+            &ir.functions,
+            TirPipelineRunOptions {
+                target_info: target.clone(),
+                cache_flavor,
+                cache: self.tir_cache.clone(),
+                process_externs: false,
+                tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
+                tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
+                progress_prefix: Some(progress),
+                resource_plan: tir_optimization_resource_plan(),
+            },
+            preprocess_backend_tir_input,
+        )
+        .cached_tir;
+        mark("cached TIR pipeline", ir.functions.len());
+
+        // Cranelift caps the size of bodies after mid-end expansion and thus
+        // needs to build new transport chunks before terminal ownership runs.
+        // LLVM's extern declarations have already lost their source bodies.
+        let non_inlinable = if backend.uses_llvm() {
+            for source in ir.functions.iter_mut().filter(|source| !source.is_extern) {
+                source.ops = Vec::new();
+            }
+            HashSet::default()
+        } else {
+            partition_cached_functions_before_drops(
+                ir,
+                &mut cached,
+                &target,
+                molt_tir::passes::max_function_ops(),
+            );
+            if self.skip_shared_stdlib_partition {
+                HashSet::default()
+            } else {
+                shared_stdlib_external_symbols(ir).into_iter().collect()
+            }
+        };
+        mark("partition before drops", ir.functions.len());
+        let signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
+        let typed = run_owned_module_pipeline_from_cached_tir(
+            &ir.functions,
+            &mut cached,
+            TirOwnedModulePipelineOptions {
+                target_info: &target,
+                module_name,
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "final TIR preparation",
+                mode: if self.skip_ir_passes {
+                    TirOwnedModulePipelineMode::TerminalDropsOnly
+                } else {
+                    TirOwnedModulePipelineMode::ModulePhase
+                },
+                linkage: Some(&signatures),
+            },
+        );
+        mark("module pipeline", ir.functions.len());
+        (typed, signatures)
     }
 
     pub(in crate::native_backend::simple_backend) fn prepare_program_for_codegen(
@@ -80,14 +182,6 @@ impl SimpleBackend {
             }
             manifest
         });
-        // One lane target answers every target query below: the Cranelift TIR
-        // cache. The TIR pipeline is the one optimizer.
-        let lane_target_info = if use_llvm {
-            crate::tir::target_info::TargetInfo::llvm_release_fast()
-        } else {
-            crate::tir::target_info::TargetInfo::native_from_simd_caps(self.target_simd_caps())
-        };
-
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
         mark("callable metadata", ir.functions.len());
@@ -97,69 +191,10 @@ impl SimpleBackend {
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
 
-        let native_tti = (!use_llvm).then(|| lane_target_info.clone());
-        let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
-            crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                &ir.functions,
-                crate::tir::pipeline_cache::TirPipelineRunOptions {
-                    target_info: native_tti.clone(),
-                    cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
-                    cache: self.tir_cache.clone(),
-                    process_externs: false,
-                    tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
-                    tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
-                    progress_prefix: Some("MOLT_BACKEND"),
-                    resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
-                },
-                preprocess_backend_tir_input,
-            )
-            .cached_tir
-        });
-        mark("cached TIR pipeline", ir.functions.len());
-
-        // Bound per-function optimization growth while transport allocations
-        // can still be planned by the shared terminal ownership phase.
-        if let (Some(target), Some(cached)) = (native_tti.as_ref(), native_cached_tir.as_mut()) {
-            crate::tir::pipeline_cache::partition_cached_functions_before_drops(
-                ir,
-                cached,
-                target,
-                molt_tir::passes::max_function_ops(),
-            );
-        }
-        mark("partition before drops", ir.functions.len());
-
         let mut final_functions = if use_llvm {
             None
         } else {
-            let native_tti = native_tti.as_ref().expect("native target missing");
-            let non_inlinable: HashSet<String> = if self.skip_shared_stdlib_partition {
-                BTreeSet::new()
-            } else {
-                shared_stdlib_external_symbols(ir)
-            }
-            .into_iter()
-            .collect();
-            let signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
-            let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-                &ir.functions,
-                native_cached_tir
-                    .as_mut()
-                    .expect("native finalization requires typed custody"),
-                crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
-                    target_info: native_tti,
-                    module_name: "native_module",
-                    non_inlinable: &non_inlinable,
-                    missing_tir_context: "native final function custody",
-                    mode: if self.skip_ir_passes {
-                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
-                    } else {
-                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
-                    },
-                    linkage: Some(&signatures),
-                },
-            );
-            mark("module pipeline", ir.functions.len());
+            let (typed, _) = self.prepare_final_tir(ir, NativeCodegenBackend::Cranelift, &mut mark);
             // A specialized clone is another entry of its origin's row.
             typed.append_clone_rows(&mut ir.functions);
             let mut final_functions = NativeFinalFunctions::from_final_tir(
@@ -303,7 +338,7 @@ pub(super) fn rewritten_ir_text(function: &crate::tir::TirFunction) -> String {
     dump
 }
 
-pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
+pub(super) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
     if tmp_func.ops.iter().any(|op| op.kind == OpKind::Phi) {
         rewrite_phi_to_store_load(&mut tmp_func.ops);
         crate::tir::pipeline_cache::trace_tir_function_stage(

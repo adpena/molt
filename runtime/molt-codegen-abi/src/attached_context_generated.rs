@@ -2956,6 +2956,7 @@ macro_rules! attached_symbol {
     ("molt_shlex_join") => { "molt_shlex_join__molt_context_d1086a27578cda22" };
     ("molt_shlex_quote") => { "molt_shlex_quote__molt_context_d1086a27578cda22" };
     ("molt_shlex_split_ex") => { "molt_shlex_split_ex__molt_context_d1086a27578cda22" };
+    ("molt_short_ascii_snapshot") => { "molt_short_ascii_snapshot__molt_context_d1086a27578cda22" };
     ("molt_shutil_chown") => { "molt_shutil_chown__molt_context_d1086a27578cda22" };
     ("molt_shutil_copy") => { "molt_shutil_copy__molt_context_d1086a27578cda22" };
     ("molt_shutil_copy2") => { "molt_shutil_copy2__molt_context_d1086a27578cda22" };
@@ -3373,7 +3374,7 @@ macro_rules! attached_symbol {
     ("molt_sys_gettrace") => { "molt_sys_gettrace__molt_context_d1086a27578cda22" };
     ("molt_sys_hash_info") => { "molt_sys_hash_info__molt_context_d1086a27578cda22" };
     ("molt_sys_hexversion") => { "molt_sys_hexversion__molt_context_d1086a27578cda22" };
-    ("molt_sys_implementation_payload") => { "molt_sys_implementation_payload__molt_context_d1086a27578cda22" };
+    ("molt_sys_implementation") => { "molt_sys_implementation__molt_context_d1086a27578cda22" };
     ("molt_sys_int_info") => { "molt_sys_int_info__molt_context_d1086a27578cda22" };
     ("molt_sys_intern") => { "molt_sys_intern__molt_context_d1086a27578cda22" };
     ("molt_sys_is_finalizing") => { "molt_sys_is_finalizing__molt_context_d1086a27578cda22" };

@@ -11602,17 +11602,19 @@ def test_selected_output_capacity_reclaims_only_a_measured_hot_shortfall(
         return free
 
     def reclaim(
-        minimum: float, *, root: Path, env: ProcessEnvironment
+        minimum: float, *, volume_root: Path, env: ProcessEnvironment
     ) -> disk_guard.ReclaimResult:
         nonlocal free
-        assert root == hot
+        assert volume_root == hot
         assert env == environment
         assert minimum > 0
-        reclaim_calls.append(root)
+        reclaim_calls.append(volume_root)
         before = free
         if recovery_succeeds:
             free = 1 << 40
-        return disk_guard.ReclaimResult("pressure", str(root), True, before, free)
+        return disk_guard.ReclaimResult(
+            "pressure", str(volume_root), True, before, free
+        )
 
     _capacity_measurement(monkeypatch, measure)
     monkeypatch.setattr(disk_guard, "ensure_free", reclaim)

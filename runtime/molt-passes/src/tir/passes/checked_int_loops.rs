@@ -83,6 +83,8 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 use super::PassStats;
 
+mod short_ascii;
+
 /// The largest loop, in operations, that the pass clones. Versioning doubles
 /// the loop's code; past this size the code growth outweighs the gain.
 const MAX_VERSIONED_OPS: usize = 2048;
@@ -163,6 +165,13 @@ fn try_version_loop(
 ) -> Result<usize, Refusal> {
     check_loop_shape(func, body)?;
     let snapshot = func.clone();
+    if final_tir && let Some(ascii) = short_ascii::ShortAscii::admit(func, header, body, vr) {
+        let outcome = version(func, body, &Selection::default(), None, Some(&ascii));
+        if outcome.is_err() {
+            *func = snapshot;
+        }
+        return outcome;
+    }
     let guard = if final_tir {
         invariant_guard(func, header, body, vr)
     } else {
@@ -210,7 +219,7 @@ fn try_version_loop(
         }
         return Ok(0);
     }
-    match version(func, body, &selection, guard.as_ref()) {
+    match version(func, body, &selection, guard.as_ref(), None) {
         Ok(added) => Ok(added),
         Err(refusal) => {
             *func = snapshot;
@@ -348,23 +357,7 @@ fn invariant_guard(
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
 ) -> Option<InvariantGuard> {
-    let labels = exception_label_to_block(func);
-    // The lift keeps unreachable `loop_end -> header` edges as loop metadata;
-    // only an executable edge enters the loop.
-    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
-    let mut entries = func.blocks.values().filter(|block| {
-        reachable.contains(&block.id)
-            && !body.contains(&block.id)
-            && block.terminator.successors().contains(&header)
-    });
-    let preheader = entries.next()?;
-    if entries.next().is_some()
-        || !matches!(preheader.terminator, Terminator::Branch { target, .. } if target == header)
-        || crate::tir::dominators::exception_successors(preheader, &labels).contains(&header)
-    {
-        return None;
-    }
-    let preheader = preheader.id;
+    let preheader = plain_preheader(func, header, body)?;
     let mut defined: HashSet<ValueId> = HashSet::default();
     for bid in body {
         let block = &func.blocks[bid];
@@ -429,6 +422,30 @@ fn invariant_guard(
         payloads,
         reads: read_payloads,
     })
+}
+
+fn plain_preheader(
+    func: &TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+) -> Option<BlockId> {
+    let labels = exception_label_to_block(func);
+    // The lift keeps unreachable `loop_end -> header` edges as loop metadata;
+    // only an executable edge enters the loop.
+    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
+    let mut entries = func.blocks.values().filter(|block| {
+        reachable.contains(&block.id)
+            && !body.contains(&block.id)
+            && block.terminator.successors().contains(&header)
+    });
+    let preheader = entries.next()?;
+    if entries.next().is_some()
+        || !matches!(preheader.terminator, Terminator::Branch { target, .. } if target == header)
+        || crate::tir::dominators::exception_successors(preheader, &labels).contains(&header)
+    {
+        return None;
+    }
+    Some(preheader.id)
 }
 
 /// The header parameters that carry one value defined outside the loop
@@ -584,7 +601,7 @@ fn select(
                 && !inline_safe.contains(&result)
                 // An op with no checked form is raw only with the proof.
                 && (rule != CheckedIntLoopRule::ExactSub
-                    || final_tir && interior(vr.range_of(result)))
+                    || final_tir && vr.range_of(result).is_bounded())
             {
                 arithmetic.push((bid, index, result, [lhs, rhs]));
             } else if is_checked(op.opcode)
@@ -654,7 +671,7 @@ fn select(
         if !capable.contains(&result) {
             continue;
         }
-        if final_tir && interior(vr.range_of(result)) {
+        if final_tir && vr.range_of(result).is_bounded() {
             selection.exact.push((block, index));
         } else {
             selection.checked.push((block, index));
@@ -663,7 +680,10 @@ fn select(
     // A checked op whose operands are raw and whose exact result the ranges
     // place inside i64 loses its check.
     for &(block, index, result, operands) in &checked_before {
-        if final_tir && interior(vr.range_of(result)) && operands.iter().all(|v| raw(v, &capable)) {
+        if final_tir
+            && vr.range_of(result).is_bounded()
+            && operands.iter().all(|v| raw(v, &capable))
+        {
             selection.unchecked.push((block, index));
         }
     }
@@ -677,12 +697,6 @@ fn select(
         .unchecked
         .sort_by_key(|&(block, index)| (block.0, index));
     Ok(selection)
-}
-
-/// A range that touches neither i64 extreme is the exact result's: the range
-/// analysis saturates a bound only when the value could leave i64.
-fn interior(range: crate::tir::numeric_facts::IntRange) -> bool {
-    range.lo > i64::MIN && range.hi < i64::MAX
 }
 
 /// The selected arithmetic ops, as (block, op index), in deterministic order.
@@ -767,6 +781,7 @@ fn version(
     body: &HashSet<BlockId>,
     selection: &Selection,
     guard: Option<&InvariantGuard>,
+    ascii: Option<&short_ascii::ShortAscii>,
 ) -> Result<usize, Refusal> {
     let selected = &selection.checked[..];
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
@@ -965,6 +980,10 @@ fn version(
     //    one is an inline int, and the slow loop from the start otherwise.
     if let Some(guard) = guard {
         added += guard.enter(func, block_map[&guard.header]);
+    }
+
+    if let Some(ascii) = ascii {
+        added += ascii.version_fast(func, body, &block_map);
     }
 
     // 5. Every use reads the definition that reaches it.

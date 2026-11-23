@@ -9,9 +9,7 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_sys_hexversion" => Some(crate::molt_sys_hexversion as *const ()),
         "molt_sys_api_version" => Some(crate::molt_sys_api_version as *const ()),
         "molt_sys_abiflags" => Some(crate::molt_sys_abiflags as *const ()),
-        "molt_sys_implementation_payload" => {
-            Some(crate::molt_sys_implementation_payload as *const ())
-        }
+        "molt_sys_implementation" => Some(crate::molt_sys_implementation as *const ()),
         "molt_sys_flags_payload" => Some(crate::molt_sys_flags_payload as *const ()),
         "molt_sys_platform" => Some(crate::molt_sys_platform as *const ()),
         "molt_sys_is_finalizing" => Some(crate::molt_sys_is_finalizing as *const ()),

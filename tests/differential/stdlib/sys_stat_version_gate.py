@@ -2,6 +2,10 @@
 
 import stat
 import sys
+from types import SimpleNamespace
+
+assert type(sys.implementation) is SimpleNamespace
+assert sys.implementation.version is sys.version_info
 
 version_triplet = tuple(sys.version_info[:3])
 expect_313 = sys.version_info >= (3, 13)

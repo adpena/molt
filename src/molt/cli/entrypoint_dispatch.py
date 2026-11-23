@@ -13,7 +13,10 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cas
 # its early-cutoff check without loading the extension, packaging, script and
 # frontend stacks (HF-250). Only helpers that the parser and the build path
 # load anyway stay here.
-from molt.cli.arg_helpers import _strip_leading_double_dash
+from molt.cli.arg_helpers import (
+    _has_explicit_build_profile,
+    _strip_leading_double_dash,
+)
 from molt.cli.build_request import BuildRequest
 from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES
 from molt.cli.config_resolution import (
@@ -446,6 +449,21 @@ def _dispatch_entrypoint_command(
                 command="run",
             )
 
+        run_profile = (
+            ("release" if getattr(args, "release", False) else None)
+            or args.profile
+            or run_cfg.get("profile")
+            or run_cfg.get("build_profile")
+            or build_cfg.get("profile")
+            or build_cfg.get("build_profile")
+            or "dev"
+        )
+        if run_profile not in _BUILD_PROFILE_CHOICES:
+            return _fail(
+                f"Invalid run profile: {run_profile}",
+                args.json,
+                command="run",
+            )
         try:
             build_selection = parse_build_arguments(
                 build_args, file_path=args.file, module=args.module
@@ -458,6 +476,9 @@ def _dispatch_entrypoint_command(
                 # frontend work (run_tier.jit_tier_refusal).
                 build_args.extend(["--emit", run_tier.build_emit])
                 build_selection.emit = run_tier.build_emit
+            if not _has_explicit_build_profile(build_selection):
+                build_args.extend(("--build-profile", run_profile))
+                build_selection.build_profile = run_profile
             effective_build = resolve_build_request(
                 build_selection,
                 build_cfg=build_cfg,
@@ -465,23 +486,9 @@ def _dispatch_entrypoint_command(
                 env=os.environ,
             )
             run_target = effective_build.target
+            run_profile = effective_build.profile
         except ValueError as exc:
             return _fail(str(exc), args.json, command="run")
-        run_profile = (
-            ("release" if getattr(args, "release", False) else None)
-            or args.profile
-            or run_cfg.get("profile")
-            or run_cfg.get("build_profile")
-            or build_cfg.get("profile")
-            or build_cfg.get("build_profile")
-            or "dev"
-        )
-        if run_profile is not None and run_profile not in _BUILD_PROFILE_CHOICES:
-            return _fail(
-                f"Invalid run profile: {run_profile}",
-                args.json,
-                command="run",
-            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(run_cfg.get("trusted"), False)

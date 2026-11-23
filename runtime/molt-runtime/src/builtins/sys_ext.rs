@@ -1285,9 +1285,44 @@ mod tests {
         });
     }
 
+    fn assert_atomic_metadata_construction(py: &PyToken<'_>, construct: impl Fn() -> u64) {
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+        // Stabilize immortal string interning before exercising every
+        // remaining field/tuple allocation boundary.
+        let warm = construct();
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, warm);
+        let mut completed = false;
+        let mut failed = false;
+        for limit in 0..=64 {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(limit),
+                ..Default::default()
+            })));
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
+            let result = construct();
+            if obj_from_bits(result).is_none() {
+                assert!(exception_pending(py), "silent metadata failure at {limit}");
+                failed = true;
+            } else {
+                assert!(
+                    !exception_pending(py),
+                    "partial metadata escaped at {limit}"
+                );
+                completed = true;
+                dec_ref_bits(py, result);
+            }
+            drop(budget);
+            clear_exception(py);
+            if completed {
+                break;
+            }
+        }
+        assert!(failed && completed);
+    }
+
     #[test]
     fn sys_metadata_constructors_never_publish_partial_results_under_denial() {
-        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for constructor in [
@@ -1298,42 +1333,21 @@ mod tests {
                 molt_sys_stdlib_module_names,
                 molt_sys_builtin_module_names,
                 crate::molt_sys_flags_payload,
-                crate::molt_sys_implementation_payload,
                 crate::molt_sys_version_info,
             ] {
-                // Stabilize immortal string interning before exercising every
-                // remaining field/tuple allocation boundary.
-                let warm = unsafe { constructor(py.attached_context()) };
-                assert!(!exception_pending(py));
-                dec_ref_bits(py, warm);
-                let mut completed = false;
-                let mut failed = false;
-                for limit in 0..=64 {
-                    set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-                        max_allocations: Some(limit),
-                        ..Default::default()
-                    })));
-                    let budget = crate::test_support::restore_unlimited_tracker_on_drop();
-                    let result = unsafe { constructor(py.attached_context()) };
-                    if obj_from_bits(result).is_none() {
-                        assert!(exception_pending(py), "silent metadata failure at {limit}");
-                        failed = true;
-                    } else {
-                        assert!(
-                            !exception_pending(py),
-                            "partial metadata escaped at {limit}"
-                        );
-                        completed = true;
-                        dec_ref_bits(py, result);
-                    }
-                    drop(budget);
-                    clear_exception(py);
-                    if completed {
-                        break;
-                    }
-                }
-                assert!(failed && completed);
+                assert_atomic_metadata_construction(py, || unsafe {
+                    constructor(py.attached_context())
+                });
             }
+
+            let version = crate::object::ops_sys::molt_sys_version_info_attached_body(py);
+            let ptr = obj_from_bits(version).as_ptr().unwrap();
+            let initial = ref_count(ptr);
+            assert_atomic_metadata_construction(py, || unsafe {
+                crate::molt_sys_implementation(py.attached_context(), version)
+            });
+            assert_eq!(ref_count(ptr), initial);
+            dec_ref_bits(py, version);
         });
     }
 

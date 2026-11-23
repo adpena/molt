@@ -2754,7 +2754,7 @@ pub enum RuntimeCallable {
     molt_sys_gettrace = 0xFFFFFF3FE604D55A,
     molt_sys_hash_info = 0xFFFFFF477EB798BB,
     molt_sys_hexversion = 0xFFFFFF8267947A0F,
-    molt_sys_implementation_payload = 0xFFFFFF02F4CAB2DA,
+    molt_sys_implementation = 0xFFFFFF2994FEB040,
     molt_sys_int_info = 0xFFFFFF4018D82604,
     molt_sys_intern = 0xFFFFFF3155411A51,
     molt_sys_is_finalizing = 0xFFFFFF96FACF50EC,
@@ -5933,7 +5933,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_sys_gettrace.key() == runtime_callable_key("molt_sys_gettrace"));
     assert!(RuntimeCallable::molt_sys_hash_info.key() == runtime_callable_key("molt_sys_hash_info"));
     assert!(RuntimeCallable::molt_sys_hexversion.key() == runtime_callable_key("molt_sys_hexversion"));
-    assert!(RuntimeCallable::molt_sys_implementation_payload.key() == runtime_callable_key("molt_sys_implementation_payload"));
+    assert!(RuntimeCallable::molt_sys_implementation.key() == runtime_callable_key("molt_sys_implementation"));
     assert!(RuntimeCallable::molt_sys_int_info.key() == runtime_callable_key("molt_sys_int_info"));
     assert!(RuntimeCallable::molt_sys_intern.key() == runtime_callable_key("molt_sys_intern"));
     assert!(RuntimeCallable::molt_sys_is_finalizing.key() == runtime_callable_key("molt_sys_is_finalizing"));

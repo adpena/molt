@@ -1287,7 +1287,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_sys_hexversion": ("molt_sys_hexversion", 0),
     "molt_sys_api_version": ("molt_sys_api_version", 0),
     "molt_sys_abiflags": ("molt_sys_abiflags", 0),
-    "molt_sys_implementation_payload": ("molt_sys_implementation_payload", 0),
+    "molt_sys_implementation": ("molt_sys_implementation", 1),
     "molt_sys_flags_payload": ("molt_sys_flags_payload", 0),
     "molt_sys_platform": ("molt_sys_platform", 0),
     "molt_sys_is_finalizing": ("molt_sys_is_finalizing", 0),
@@ -2380,7 +2380,7 @@ INTRINSIC_RUNTIME_ROOTS: dict[str, tuple[str, ...]] = {
     "molt_urllib_request_open": ("socketserver",),
 }
 RUNTIME_ROOTS_FINGERPRINT = 0x650eaa14af1188ea
-INTRINSIC_MANIFEST_FINGERPRINT = 0x019fd8f52a1315a6
+INTRINSIC_MANIFEST_FINGERPRINT = 0x0700e6a562ff02e1
 
 
 def intrinsic_runtime_symbol_name(name: str) -> str:

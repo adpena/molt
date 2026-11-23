@@ -2745,6 +2745,14 @@ type = 2
 runtime_name = "molt_ord"
 callable_arity = 1
 
+# Compiler-only immutable snapshot: None on refusal, otherwise an inline int
+# with the length above four little-endian ASCII bytes. Neither arm allocates.
+[[import]]
+name = "short_ascii_snapshot"
+type = 2
+effects = "nothrow_read"
+return_contract = "borrowed_object"
+
 [[import]]
 name = "ord_at"
 type = 3
@@ -2997,8 +3005,10 @@ runtime_name = "molt_sys_hexversion"
 callable_arity = 0
 
 [[import]]
-name = "sys_implementation_payload"
-type = 0
+name = "sys_implementation"
+type = 2
+runtime_name = "molt_sys_implementation"
+callable_arity = 1
 
 [[import]]
 name = "sys_platform"

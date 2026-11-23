@@ -65,6 +65,16 @@ pub unsafe extern "C" fn molt_len_list(__context: u64, bits: u64) -> u64 {
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_len_list_attached_body(_py, bits)
 }
+#[unsafe(export_name = "molt_short_ascii_snapshot__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_short_ascii_snapshot(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_short_ascii_snapshot,
+    );
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_short_ascii_snapshot_attached_body(_py, bits)
+}
 #[unsafe(export_name = "molt_len_str__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_len_str(__context: u64, bits: u64) -> u64 {
@@ -416,15 +426,15 @@ pub unsafe extern "C" fn molt_sys_abiflags(__context: u64) -> u64 {
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_sys_abiflags_attached_body(_py)
 }
-#[unsafe(export_name = "molt_sys_implementation_payload__molt_context_d1086a27578cda22")]
+#[unsafe(export_name = "molt_sys_implementation__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_sys_implementation_payload(__context: u64) -> u64 {
+pub unsafe extern "C" fn molt_sys_implementation(__context: u64, version_bits: u64) -> u64 {
     molt_runtime_core::call_census::hit(
-        molt_runtime_core::call_census::id::molt_sys_implementation_payload,
+        molt_runtime_core::call_census::id::molt_sys_implementation,
     );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_sys_implementation_payload_attached_body(_py)
+    molt_sys_implementation_attached_body(_py, version_bits)
 }
 #[unsafe(export_name = "molt_sys_flags_payload__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

@@ -80,20 +80,33 @@ impl Analysis for ValueRange {
 pub(crate) fn compute_with_scalar_facts(facts: &ScalarFacts<'_>) -> ValueRangeResult {
     let loop_forest = <LoopForest as Analysis>::compute(facts.body());
     let scev = compute_scev_with_loop_forest(facts, &loop_forest);
-    compute_value_range_with_loop_forest(facts, &scev, &loop_forest)
+    compute_seeded(facts, &scev, &loop_forest, None)
 }
 
 /// Compute value-range facts from the function + its scalar-evolution facts.
 pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeResult {
     let loop_forest = <LoopForest as Analysis>::compute(func);
-    compute_value_range_with_loop_forest(&ScalarFacts::new(func), scev, &loop_forest)
+    compute_seeded(&ScalarFacts::new(func), scev, &loop_forest, None)
 }
 
-/// Compute value-range facts using the caller-provided canonical LoopForest.
-fn compute_value_range_with_loop_forest(
+/// Preview only the arm of a loop version whose entry established a fixed
+/// upper bound for these explicit lengths of its immutable string. The
+/// symbolic relation between the original length and its owner survives.
+pub(super) fn under_length_guard(
+    facts: &ScalarFacts<'_>,
+    lengths: &[crate::tir::values::ValueId],
+    upper: i64,
+) -> ValueRangeResult {
+    let forest = <LoopForest as Analysis>::compute(facts.body());
+    let scev = compute_scev_with_loop_forest(facts, &forest);
+    compute_seeded(facts, &scev, &forest, Some((lengths, upper)))
+}
+
+fn compute_seeded(
     facts: &ScalarFacts<'_>,
     scev: &ScevResult,
     loop_forest: &LoopForestResult,
+    guarded_lengths: Option<(&[crate::tir::values::ValueId], i64)>,
 ) -> ValueRangeResult {
     let func = facts.body();
     let mut result = ValueRangeResult::default();
@@ -116,6 +129,12 @@ fn compute_value_range_with_loop_forest(
     let const_facts: Vec<_> = result.const_int_facts().collect();
     for (value, constant) in const_facts {
         result.record_global_range(value, IntRange::point(constant));
+    }
+
+    if let Some((lengths, upper)) = guarded_lengths {
+        for &length in lengths {
+            result.record_global_range(length, IntRange::new(0, upper));
+        }
     }
 
     // Freeze a genuinely phi-independent baseline before any recurrence or

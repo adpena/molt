@@ -91,73 +91,6 @@ def _expect_int(value: object, intrinsic_name: str, field: str) -> int:
     return value
 
 
-def _expect_version_info_tuple(
-    value: object, intrinsic_name: str, field: str
-) -> tuple[int, int, int, str, int]:
-    if not isinstance(value, (list, tuple)) or len(value) != 5:
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}")
-    major = _expect_int(value[0], intrinsic_name, f"{field}[0]")
-    minor = _expect_int(value[1], intrinsic_name, f"{field}[1]")
-    micro = _expect_int(value[2], intrinsic_name, f"{field}[2]")
-    releaselevel_obj = value[3]
-    if not isinstance(releaselevel_obj, str):
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}[3]")
-    serial = _expect_int(value[4], intrinsic_name, f"{field}[4]")
-    return major, minor, micro, (releaselevel_obj), serial
-
-
-class _ImplementationNamespace:
-    __slots__ = ("name", "cache_tag", "version", "hexversion")
-
-    def __init__(
-        self,
-        name: str,
-        cache_tag: str,
-        version: tuple[int, int, int, str, int],
-        hexversion: int,
-    ) -> None:
-        self.name = name
-        self.cache_tag = cache_tag
-        self.version = version
-        self.hexversion = hexversion
-
-    def __repr__(self) -> str:
-        return (
-            "namespace("
-            f"name={self.name!r}, "
-            f"cache_tag={self.cache_tag!r}, "
-            f"version={self.version!r}, "
-            f"hexversion={self.hexversion!r})"
-        )
-
-
-def _resolve_implementation(payload: object) -> object:
-    intrinsic_name = "molt_sys_implementation_payload"
-    if isinstance(payload, dict):
-        name_obj = payload.get("name")
-        cache_tag_obj = payload.get("cache_tag")
-        version_obj = payload.get("version")
-        hexversion_obj = payload.get("hexversion")
-    else:
-        name_obj = getattr(payload, "name", None)
-        cache_tag_obj = getattr(payload, "cache_tag", None)
-        version_obj = getattr(payload, "version", None)
-        hexversion_obj = getattr(payload, "hexversion", None)
-    if not isinstance(name_obj, str):
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
-    if not isinstance(cache_tag_obj, str):
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
-    name = name_obj
-    cache_tag = cache_tag_obj
-    if not name:
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
-    if not cache_tag:
-        raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
-    version = _expect_version_info_tuple(version_obj, intrinsic_name, "version")
-    hexversion = _expect_int(hexversion_obj, intrinsic_name, "hexversion")
-    return _ImplementationNamespace(name, cache_tag, version, hexversion)
-
-
 _SYS_FLAGS_SEQUENCE_FIELDS = (
     "debug",
     "inspect",
@@ -363,14 +296,9 @@ def _metadata_tuple(payload: object, name: str, count: int) -> tuple[object, ...
 
 def _metadata_views() -> tuple[object, ...]:
     """Shape the native metadata once, during the canonical module initializer."""
-    raw_version = _expect_version_info_tuple(
-        _require_intrinsic("molt_sys_version_info")(),
-        "molt_sys_version_info",
-        "version_info",
-    )
-    implementation_value = _resolve_implementation(
-        _require_intrinsic("molt_sys_implementation_payload")()
-    )
+    raw_version = _require_intrinsic("molt_sys_version_info")()
+    version_info = _struct_sequence_new(_VersionInfo, raw_version)
+    implementation_value = _require_intrinsic("molt_sys_implementation")(version_info)
     flags_values, flag_extras = _resolve_flags_payload(
         _MOLT_SYS_FLAGS_PAYLOAD(), raw_version[1]
     )
@@ -415,7 +343,7 @@ def _metadata_views() -> tuple[object, ...]:
         doc="sys.flags\n\nFlags provided through command line arguments or environment vars.",
     )
     return (
-        _struct_sequence_new(_VersionInfo, raw_version),
+        version_info,
         implementation_value,
         _struct_sequence_new(flags_type, flags_values + tuple(flag_extras.values())),
         _struct_sequence_new(_FloatInfo, float_values),

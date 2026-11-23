@@ -1053,6 +1053,7 @@ def discover_candidates(
     measure_sizes: bool = True,
     size_budget_s: float = 30.0,
     guards: _GuardProtection | None = None,
+    pressure_device: int | None = None,
 ) -> list[Candidate]:
     """Scan every registered worktree's allow-set into one candidate family."""
     root = root.resolve()
@@ -1065,6 +1066,8 @@ def discover_candidates(
     def add(path: Path, kind: CandidateKind, owner_root: Path) -> None:
         norm = _norm(path)
         if norm in seen or not path.is_dir():
+            return
+        if pressure_device is not None and _device_of(path) != pressure_device:
             return
         if _is_reclaimable(path, owner_root, config.lane_globs) is None:
             return
@@ -1086,6 +1089,8 @@ def discover_candidates(
         )
 
     for owner_root in scan_roots:
+        if pressure_device is not None and _device_of(owner_root) != pressure_device:
+            continue
         # pinned session targets, evicted by last use under pressure
         for child in session_target_dirs(owner_root):
             add(child, "session-target", owner_root)
@@ -1244,6 +1249,13 @@ def _default_free_fn(root: Path) -> Callable[[], int]:
     return lambda: shutil.disk_usage(root).free
 
 
+def _device_of(path: Path) -> int | None:
+    try:
+        return path.stat().st_dev
+    except OSError:
+        return None
+
+
 def _elapsed_since(started: float) -> float:
     return max(0.0, time.monotonic() - started)
 
@@ -1266,6 +1278,7 @@ def ensure_free(
     min_gb: float | None = None,
     *,
     root: str | os.PathLike[str] | None = None,
+    volume_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     config: GuardConfig | None = None,
     free_bytes_fn: Callable[[], int] | None = None,
@@ -1283,6 +1296,10 @@ def ensure_free(
     ``min_gb`` is given the effective target is ``max(target, min_gb)`` and the
     trigger is ``max(high_water, min_gb)`` -- a caller can demand more headroom.
 
+    ``root`` identifies the custody family. By default its own volume is under
+    pressure. ``volume_root`` may select its bound hot mirror, retaining the
+    same custody and live guard discovery across both volumes.
+
     Deterministic and idempotent. Does NOT raise on a per-candidate delete
     error (recorded in ``errors``). This result describes reclamation only;
     build admission belongs to ``molt.disk_capacity.require_build_capacity``.
@@ -1291,6 +1308,17 @@ def ensure_free(
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
     scope_roots = reclaim_roots(resolved_root)
+    pressure_root = resolved_root
+    if volume_root is not None:
+        from molt.default_paths import hot_state
+
+        hot = hot_state(resolved_root)
+        pressure_root = volume_root.resolve()
+        if hot is None or pressure_root != hot.root.resolve():
+            raise ValueError("pressure volume must be the bound hot-state root")
+    pressure_device = _device_of(pressure_root)
+    if pressure_device is None:
+        raise ValueError(f"cannot observe pressure volume device: {pressure_root}")
     cfg = config or GuardConfig.from_env(env)
     high_water = cfg.high_water_bytes
     target = cfg.target_bytes
@@ -1298,13 +1326,13 @@ def ensure_free(
         floor = int(min_gb * _GB)
         high_water = max(high_water, floor)
         target = max(target, floor)
-    free_fn = free_bytes_fn or _default_free_fn(resolved_root)
+    free_fn = free_bytes_fn or _default_free_fn(pressure_root)
     now = now_fn()
 
     free_before = free_fn()
     result = ReclaimResult(
         operation="pressure",
-        root=str(resolved_root),
+        root=str(pressure_root),
         triggered=free_before < high_water,
         free_before=free_before,
         free_after=free_before,
@@ -1321,7 +1349,7 @@ def ensure_free(
     deadline = started + budget_s
     phase_started = time.monotonic()
     guards = _guard_protection(scope_roots)
-    walks = WalkRotation.load(resolved_root)
+    walks = WalkRotation.load(pressure_root)
     _collect_retired_roots(
         scope_roots,
         result,
@@ -1333,6 +1361,7 @@ def ensure_free(
         deadline=deadline,
         free_bytes_fn=free_fn,
         target_bytes=target,
+        pressure_device=pressure_device,
     )
     result.walk_rotation = walks.report()
     if apply:
@@ -1350,7 +1379,12 @@ def ensure_free(
         return result
     phase_started = time.monotonic()
     candidates = discover_candidates(
-        resolved_root, cfg, roots=scope_roots, guards=guards, measure_sizes=False
+        resolved_root,
+        cfg,
+        roots=scope_roots,
+        guards=guards,
+        measure_sizes=False,
+        pressure_device=pressure_device,
     )
     result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
@@ -1385,6 +1419,8 @@ def ensure_free(
             def still_pressure_eligible(
                 current: Candidate, current_now: float
             ) -> str | None:
+                if _device_of(current.path) != pressure_device:
+                    return "pressure-volume-changed"
                 checked = plan_reclaim(
                     [current],
                     free_bytes=0,
@@ -1867,6 +1903,7 @@ def _collect_retired_roots(
     max_roots: int | None = None,
     free_bytes_fn: Callable[[], int] | None = None,
     target_bytes: int | None = None,
+    pressure_device: int | None = None,
 ) -> None:
     """Resolve historical retirements through current custody, without new grace.
 
@@ -1889,11 +1926,15 @@ def _collect_retired_roots(
                 {"path": str(retired_dir), "reason": "unproven-retirement"}
             )
             continue
+        if pressure_device is not None and _device_of(retired_dir) != pressure_device:
+            continue
         for date in _iter_dir(retired_dir, errors=result.errors):
             if date.is_symlink() or not date.is_dir():
                 result.skipped.append(
                     {"path": str(date), "reason": "unproven-retirement"}
                 )
+                continue
+            if pressure_device is not None and _device_of(date) != pressure_device:
                 continue
             for entry in _iter_dir(date, errors=result.errors):
                 # Include payloads without a sidecar and sidecars without a
@@ -1935,6 +1976,12 @@ def _collect_retired_roots(
                 identity = None
         except OSError as error:
             result.errors.append(f"{record}: {error}")
+            continue
+        if (
+            pressure_device is not None
+            and identity is not None
+            and _device_of(retirement.path) != pressure_device
+        ):
             continue
 
         def kept(
@@ -2537,16 +2584,30 @@ def collect(
     """The daily collection: retirement by policy, then reclaim under pressure.
 
     The GC retires checkout state and pinned session targets by last use and
-    checkout state by owner. The pressure pass is a no-op above the high-water
-    mark and otherwise evicts the least recently used reclaimable roots until
-    the free target is met, as BuildKit keeps a minimum of free space.
+    checkout state by owner. Pressure is measured once per volume. A bound hot
+    mirror uses its raw build reserve even when the artifact volume is healthy.
     """
+    from molt.default_paths import HOT_STATE_MIN_FREE_BYTES, hot_state
     from molt.disk_capacity import below_free_space_floor
 
-    return [
-        gc(root=root, env=env, free_space_low=below_free_space_floor),
-        retire_environments(root=root, env=env),
-        ensure_free(root=root, env=env),
+    resolved_root = resolve_root(root, env=env)
+    results = []
+    artifact_min_gb = None
+    if (hot := hot_state(resolved_root)) is not None:
+        hot_min_gb = HOT_STATE_MIN_FREE_BYTES / _GB
+        if (hot_device := _device_of(hot.root)) is not None:
+            if hot_device == _device_of(resolved_root):
+                artifact_min_gb = hot_min_gb
+            else:
+                results.append(
+                    ensure_free(
+                        hot_min_gb, root=resolved_root, volume_root=hot.root, env=env
+                    )
+                )
+    return results + [
+        gc(root=resolved_root, env=env, free_space_low=below_free_space_floor),
+        retire_environments(root=resolved_root, env=env),
+        ensure_free(artifact_min_gb, root=resolved_root, env=env),
     ]
 
 
@@ -2611,8 +2672,9 @@ def collect_due(
     root: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     auxiliary: Callable[[], None] | None = None,
+    pressure_only: bool = False,
 ) -> list[ReclaimResult]:
-    """Collect one due daily attempt, retaining admission through completion.
+    """Collect one due maintenance attempt, holding admission through completion.
 
     The existing context owns the nonblocking lock, due recheck and start
     stamp. A recent or competing attempt does no collection. Exceptions stay
@@ -2622,9 +2684,23 @@ def collect_due(
 
     environment = os.environ if env is None else env
     resolved_root = resolve_root(root, env=environment)
-    with checkout_state_gc(resolved_root) as admitted:
+    with checkout_state_gc(resolved_root, pressure_only=pressure_only) as admitted:
         if not admitted:
             return []
+        if pressure_only:
+            from molt.default_paths import HOT_STATE_MIN_FREE_BYTES, hot_state
+
+            hot = hot_state(resolved_root)
+            if hot is None or not hot.root.is_dir():
+                return []
+            return [
+                ensure_free(
+                    HOT_STATE_MIN_FREE_BYTES / _GB,
+                    root=resolved_root,
+                    volume_root=hot.root,
+                    env=environment,
+                )
+            ]
         results = collect(root=resolved_root, env=environment)
         if auxiliary is not None:
             auxiliary()

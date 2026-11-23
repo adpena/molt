@@ -10523,8 +10523,8 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_sys_implementation_payload",
-        arity: 0,
+        symbol: "molt_sys_implementation",
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -24594,6 +24594,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_shlex_split_ex__molt_context_d1086a27578cda22",
         },
+        "molt_short_ascii_snapshot" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_short_ascii_snapshot__molt_context_d1086a27578cda22",
+        },
         "molt_shutdown" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_shutdown",
@@ -26270,9 +26274,9 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_sys_hexversion__molt_context_d1086a27578cda22",
         },
-        "molt_sys_implementation_payload" => RuntimeExecutionAbi {
+        "molt_sys_implementation" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_sys_implementation_payload__molt_context_d1086a27578cda22",
+            physical_symbol: "molt_sys_implementation__molt_context_d1086a27578cda22",
         },
         "molt_sys_int_info" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

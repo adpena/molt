@@ -162,9 +162,13 @@ tens of seconds every time, the shape Molt's WASM no-op had.
 
 ## Not done
 
-JSON WASM requests still run the pipeline: they need a typed WASM result to
-replay, as native JSON has. The edit and cold costs belong to HF-26 (link and
-facts scans), HF-371 and the stdlib content seed. The native JSON link warning
-(finding 6) needs either a measured removal of the second archive pass or a
-typed classification of that warning. The source-record store's growth
-(finding 7) needs a retention decision by its owners.
+The Mach-O link plan now gives the runtime archive to the linker once and
+lets Clang provide libSystem. A release relink of the retained installed
+regex workload with the macOS system linker emitted zero stderr and matched
+the original binary and CPython's stdout. Explicit ld64.lld still warns that
+it does not implement `-stack_size`.
+
+JSON WASM requests still run the pipeline because they need a typed WASM
+result to replay. The edit and cold costs belong to HF-26, HF-371 and the
+stdlib content seed. The source-record store's growth in finding 7 still
+needs a retention decision.

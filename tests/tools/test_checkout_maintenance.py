@@ -421,13 +421,13 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         else "src/molt/cache_eviction.py"
     )
     binding = (
-        "\n_real_collect_due = collect_due\ndef collect_due(*, root=None, env=None, auxiliary=None):\n"
+        "\n_real_collect_due = collect_due\ndef collect_due(*, env, **kwargs):\n"
         if operation == "checkout"
         else "\n_real_collect_due = automatic_retention\n"
         "def automatic_retention(env, *, cache_root=None, min_interval_seconds=0, wait_for_lock=False):\n"
     )
     invocation = (
-        "    return _real_collect_due(root=root, env=env, auxiliary=auxiliary)\n"
+        "    return _real_collect_due(env=env, **kwargs)\n"
         if operation == "checkout"
         else "    return _real_collect_due(env, cache_root=cache_root, min_interval_seconds=min_interval_seconds, wait_for_lock=wait_for_lock)\n"
     )

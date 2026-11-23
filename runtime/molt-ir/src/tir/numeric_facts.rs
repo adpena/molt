@@ -37,6 +37,12 @@ impl IntRange {
         IntRange { lo: v, hi: v }
     }
 
+    /// Saturating transfers use either i64 extreme for a bound that may
+    /// exceed the machine range. Only interior endpoints prove finite bounds.
+    pub fn is_bounded(self) -> bool {
+        self.lo > i64::MIN && self.hi < i64::MAX
+    }
+
     /// A range `[lo, hi]`, normalized: an inverted/empty input saturates to
     /// `FULL_I64` (we model emptiness conservatively as "unknown", never as a
     /// proof of anything).
@@ -298,6 +304,16 @@ impl IntRange {
             floor_div_i128(self.lo as i128, div),
             floor_div_i128(self.hi as i128, div),
         )
+    }
+
+    /// For each possible value, an arithmetic right shift is monotone in its
+    /// count. Negative values grow toward -1 and non-negative values shrink
+    /// toward 0, so the two endpoint counts bound the entire interval.
+    pub fn shr_range(self, count: IntRange) -> IntRange {
+        if count.lo < 0 {
+            return IntRange::FULL_I64;
+        }
+        self.shr_const(count.lo).join(self.shr_const(count.hi))
     }
 
     /// Python left shift `self << s` by a *constant* `s >= 0`:
@@ -826,6 +842,25 @@ mod tests {
         assert!(IntRange::new(0, 100).shr_const(-1).is_full());
         // huge shift ⇒ sign-preserving [-1, 0] band.
         assert_eq!(IntRange::new(-5, 9).shr_const(200), IntRange::new(-1, 0));
+    }
+
+    #[test]
+    fn transfer_shr_range() {
+        let counts = IntRange::new(2, 4);
+        assert_eq!(IntRange::new(16, 32).shr_range(counts), IntRange::new(1, 8));
+        assert_eq!(
+            IntRange::new(-32, -16).shr_range(counts),
+            IntRange::new(-8, -1)
+        );
+        assert_eq!(
+            IntRange::new(-32, 32).shr_range(counts),
+            IntRange::new(-8, 8)
+        );
+        assert!(IntRange::point(0).shr_range(IntRange::new(-1, 2)).is_full());
+        assert_eq!(
+            IntRange::FULL_I64.shr_range(IntRange::new(63, i64::MAX)),
+            IntRange::new(-1, 0)
+        );
     }
 
     #[test]

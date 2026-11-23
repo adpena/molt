@@ -25,19 +25,31 @@ from molt.checkout_state import checkout_state_gc_epoch  # noqa: E402
 from molt.custody_layout import git_directories  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 
+_PRESSURE_FLAG = "--pressure-only"
 
-def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path | None:
-    """Dispatch one due epoch; the worker owns daily admission and its result.
+
+def schedule(
+    root: Path,
+    environment: Mapping[str, str],
+    *,
+    cwd: Path,
+    pressure_only: bool = False,
+) -> Path | None:
+    """Dispatch one due epoch; the worker owns admission and its result.
 
     Locally known published main supplies collector policy; captured environment
     supplies scope. No fetch, package installation or retention sweep occurs.
     """
     root = root.resolve(strict=True)
-    epoch = checkout_state_gc_epoch(root)
+    epoch = checkout_state_gc_epoch(root, pressure_only=pressure_only)
     if epoch is None or not epoch.due:
         return None
     return _schedule(
-        root, environment, cwd=cwd, epoch=epoch.identity, operation="checkout"
+        root,
+        environment,
+        cwd=cwd,
+        epoch=epoch.identity,
+        operation="checkout-pressure" if pressure_only else "checkout",
     )
 
 
@@ -52,9 +64,11 @@ def schedule_cache(
     """
     if epoch != "initial" and (not epoch.isascii() or not epoch.isdecimal()):
         raise ValueError("invalid cache retention epoch")
-    return _schedule(
+    state = _schedule(
         root.resolve(strict=True), environment, cwd=cwd, epoch=epoch, operation="cache"
     )
+    assert state is not None
+    return state
 
 
 def _schedule(
@@ -63,8 +77,8 @@ def _schedule(
     *,
     cwd: Path,
     epoch: str,
-    operation: Literal["checkout", "cache"],
-) -> Path:
+    operation: Literal["checkout", "checkout-pressure", "cache"],
+) -> Path | None:
     from tools.driver_errors import DriverError
     from tools.controller_source import (
         _git_bytes,
@@ -74,8 +88,12 @@ def _schedule(
     from tools.detached_execution import launch_detached
     from tools.git_identity import require_git_object_id
 
-    directory = "disk_guard" if operation == "checkout" else "cache_retention"
-    prefix = "gc" if operation == "checkout" else "prune"
+    checkout = operation != "cache"
+    pressure_only = operation == "checkout-pressure"
+    directory = "disk_guard" if checkout else "cache_retention"
+    prefix = {"checkout": "gc", "checkout-pressure": "pressure", "cache": "prune"}[
+        operation
+    ]
     state = root / "logs" / directory / "automatic" / f"{prefix}-{epoch}"
     if state.exists():
         # A run that is over (terminal rc, or its worker proven dead) is
@@ -93,7 +111,7 @@ def _schedule(
             ) from exc
         state.rename(state.with_name(f"{state.name}.ended-{time.time_ns()}"))
     captured = dict(environment)
-    if operation == "checkout":
+    if checkout:
         captured["MOLT_EXT_ROOT"] = str(root)
     policy_cwd = cwd.resolve()
     if operation == "cache":
@@ -128,13 +146,16 @@ def _schedule(
             repository = common_dir
         else:
             _, common_dir = directories
-        if operation == "checkout":
+        if checkout:
             from molt.dx import RunContext
 
             # Capture selectors while their original source/cwd custody exists.
             # The retained controller supplies policy, never new storage roots.
             captured = RunContext(common_dir.parent).canonical_env(
-                captured, create_dirs=False
+                captured,
+                create_dirs=False,
+                admit_cargo_target=not pressure_only,
+                admit_toolchain_root=not pressure_only,
             )
         published = require_git_object_id(
             os.fsdecode(
@@ -147,15 +168,16 @@ def _schedule(
             ).strip(),
             label="published maintenance source",
         )
+        if pressure_only and _PRESSURE_FLAG.encode() not in _git_bytes(
+            repository, "cat-file", "blob", f"{published}:tools/checkout_maintenance.py"
+        ):
+            # A topic checkout may reach this hook before its controller lands.
+            return None
         with controller_source(repository, common_dir, published) as controller:
             entrypoint = (
                 controller.root
                 / "tools"
-                / (
-                    "checkout_maintenance.py"
-                    if operation == "checkout"
-                    else "cache_maintenance.py"
-                )
+                / ("checkout_maintenance.py" if checkout else "cache_maintenance.py")
             )
             if not entrypoint.is_file():
                 raise RuntimeError(
@@ -177,6 +199,8 @@ def _schedule(
                 "--policy-cwd",
                 str(policy_cwd),
             ]
+            if pressure_only:
+                command.append(_PRESSURE_FLAG)
             launch_detached(
                 state,
                 command,
@@ -189,16 +213,20 @@ def _schedule(
     return state
 
 
-def maintenance_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+def maintenance_arguments(
+    argv: list[str] | None = None, *, checkout: bool = False
+) -> argparse.Namespace:
     """Parse the common captured scope without loading collection policy."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--policy-cwd", required=True, type=Path)
+    if checkout:
+        parser.add_argument(_PRESSURE_FLAG, action="store_true")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = maintenance_arguments(argv)
+    args = maintenance_arguments(argv, checkout=True)
     from tools.disk_guard import collect_due
 
     auxiliary_results = []
@@ -223,7 +251,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     results = collect_due(
-        root=args.root, env=ProcessEnvironment(os.environ), auxiliary=auxiliary
+        root=args.root,
+        env=ProcessEnvironment(os.environ),
+        auxiliary=auxiliary,
+        pressure_only=args.pressure_only,
     )
     print(
         json.dumps(

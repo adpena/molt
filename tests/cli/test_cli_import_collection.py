@@ -13621,11 +13621,11 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         *force_load_arguments,
         *external_link_arguments,
         str(runtime_lib),
-        str(runtime_lib),
     )
     assert link_plan.command[start : start + len(expected_link_arguments)] == (
         expected_link_arguments
     )
+    assert link_plan.command.count(str(runtime_lib)) == 1
     assert link_plan.command[link_plan.command.index("-isysroot") + 1] == str(
         sdk.resolve()
     )

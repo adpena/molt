@@ -15,6 +15,7 @@ pub(crate) struct PreparedStdlibPartition {
     pub(crate) stdlib_funcs: Vec<molt_backend::FunctionIR>,
     pub(crate) current_partition_manifest: String,
     pub(crate) module_context: molt_backend::NativeBackendModuleContext,
+    pub(crate) app_callable_manifest: molt_backend::passes::AppCallableManifest,
 }
 
 pub(crate) fn prepare_stdlib_partition(
@@ -23,7 +24,7 @@ pub(crate) fn prepare_stdlib_partition(
     module_registry_roots: &std::collections::BTreeSet<String>,
     stdlib_path: &Path,
 ) -> io::Result<PreparedStdlibPartition> {
-    let (user_remaining, stdlib_funcs, module_context) = prune_and_partition_native_stdlib(
+    let partition = prune_and_partition_native_stdlib(
         ir,
         request.entry_module,
         request.explicit_stdlib_modules,
@@ -32,14 +33,18 @@ pub(crate) fn prepare_stdlib_partition(
     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))?;
 
     let current_partition_manifest =
-        shared_stdlib_partition_manifest(&stdlib_funcs, &module_context).map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("failed to compute shared stdlib partition manifest: {err}"),
-            )
-        })?;
-    let split_function_names = shared_stdlib_split_function_names(&user_remaining, &stdlib_funcs);
-    if let Err(err) = validate_shared_stdlib_partition(&stdlib_funcs, &split_function_names) {
+        shared_stdlib_partition_manifest(&partition.stdlib_funcs, &partition.module_context)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to compute shared stdlib partition manifest: {err}"),
+                )
+            })?;
+    let split_function_names =
+        shared_stdlib_split_function_names(&partition.user_remaining, &partition.stdlib_funcs);
+    if let Err(err) =
+        validate_shared_stdlib_partition(&partition.stdlib_funcs, &split_function_names)
+    {
         return Err(io::Error::new(
             err.kind(),
             format!("invalid shared stdlib partition: {err}"),
@@ -47,9 +52,10 @@ pub(crate) fn prepare_stdlib_partition(
     }
 
     Ok(PreparedStdlibPartition {
-        user_remaining,
-        stdlib_funcs,
+        user_remaining: partition.user_remaining,
+        stdlib_funcs: partition.stdlib_funcs,
         current_partition_manifest,
-        module_context,
+        module_context: partition.module_context,
+        app_callable_manifest: partition.app_callable_manifest,
     })
 }
