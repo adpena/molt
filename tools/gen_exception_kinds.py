@@ -45,7 +45,8 @@ OUT_MODEL = (
 )
 OUT_PYTHON = ROOT / "src" / "molt" / "frontend" / "exception_kinds_generated.py"
 OUT_PASSES = (
-    ROOT / "runtime/molt-passes/src/tir/passes/local_raise_transfer/builtin_kinds_generated.rs"
+    ROOT
+    / "runtime/molt-passes/src/tir/passes/local_raise_transfer/builtin_kinds_generated.rs"
 )
 OUTPUTS = (OUT_MODEL, OUT_PYTHON, OUT_PASSES)
 
