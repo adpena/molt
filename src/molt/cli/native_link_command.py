@@ -277,7 +277,8 @@ def _append_runtime_link_flags(
         target.os == "macos"
         and executable_entrypoint_name(Path(command[0])) in {"clang", "clang++"}
         and not any(
-            flag in {"-nostdlib", "-nodefaultlibs", "-nolibc", "-static", "-fapple-kext"}
+            flag
+            in {"-nostdlib", "-nodefaultlibs", "-nolibc", "-static", "-fapple-kext"}
             or flag.startswith(("@", "--config"))
             for flag in command[1:]
         )
