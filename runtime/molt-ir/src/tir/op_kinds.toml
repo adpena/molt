@@ -1536,6 +1536,7 @@ final_tir_opcodes = [
     "UnboxInlineInt",
     "IsFloatWord",
     "UnboxFloatWord",
+    "FloatSqrt",
     "IntToFloat",
     "IsBoolWord",
     "UnboxBoolWord",
