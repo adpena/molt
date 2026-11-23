@@ -15,6 +15,24 @@ all generated slots through the existing atomic-cache release authority. Failure
 to allocate a name remains raw zero and must propagate as allocation failure,
 never an attribute miss. There is no byte-keyed static-slot dispatcher.
 
+The dynamic decoder samples three bounded byte windows to index a generated
+bucket. One packed word gives its candidate range. Byte equality against the
+canonical spelling decides membership, including for unknown inputs that land
+in the same bucket. The generator selected a mix with at most three candidates
+for the 838-name registry at `05554771b0`. This keeps the generated lookup data
+small and avoids emitting a branch for every spelling.
+
+The module registry's existing hash, displace, and compress algorithm was
+also tested here. In the 838-name ARM64 probe it reduced emitted code size
+but slowed mixed and repeatedly accessed names. A packed candidate range
+suits this smaller fixed vocabulary. In paired, optimized standalone probes,
+it reduced mixed lookup time by 28% on ARM64 and wasm32. The six-name probe
+varied by −2.1% and +1.3%, respectively. The wasm32 probe binary shrank by
+66,294 bytes. These are decoder measurements, with program-level impact still
+to be measured. [Hash, Displace, and Compress](https://cmph.sourceforge.net/papers/esa09.pdf)
+and [PtrHash](https://arxiv.org/abs/2502.15539) describe lookup tradeoffs for
+larger immutable dictionaries.
+
 The census excludes its own generated name declarations, comments, string literals, inline
 test modules, and test-only source files. Every registered identity needs a
 production consumer. It rejects the retired byte-keyed static interfaces.

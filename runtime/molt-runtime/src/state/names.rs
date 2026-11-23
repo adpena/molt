@@ -7,9 +7,46 @@ use crate::{
 
 use std::sync::atomic::Ordering;
 
+use super::names_generated::{
+    NAME_BUCKET_BITS, NAME_BUCKET_FACTOR, NAME_BUCKETS, NAME_COUNT_BITS, NAME_MAX_BYTES, NAME_ROWS,
+};
 pub(crate) use super::names_generated::{NameId, RuntimeNames};
 
 impl NameId {
+    /// Select a short bucket by sampling the byte window. Equality against
+    /// the canonical spelling is the membership test, including collisions.
+    #[inline]
+    pub(crate) fn from_bytes(name: &[u8]) -> Option<Self> {
+        let len = name.len();
+        let sample = match name {
+            [] => return None,
+            [a] => u32::from(*a),
+            [a, b] => u32::from(u16::from_le_bytes([*a, *b])),
+            [a, b, c] => u32::from_le_bytes([*a, *b, *c, 0]),
+            [a, b, c, d, ..] if len <= NAME_MAX_BYTES => {
+                let middle = (len - 4) / 2;
+                let center = u32::from_le_bytes(name[middle..middle + 4].try_into().unwrap());
+                let suffix = u32::from_le_bytes(name[len - 4..].try_into().unwrap());
+                u32::from_le_bytes([*a, *b, *c, *d])
+                    ^ center.rotate_left(11)
+                    ^ suffix.rotate_left(23)
+            }
+            _ => return None,
+        };
+        let hash = (sample ^ ((len as u32) << 24)).wrapping_mul(NAME_BUCKET_FACTOR);
+        let bucket = (hash >> (32 - NAME_BUCKET_BITS)) as usize;
+        let range = u64::from(NAME_BUCKETS[bucket]);
+        let count = (range & ((1 << NAME_COUNT_BITS) - 1)) as usize;
+        let start = (range >> NAME_COUNT_BITS) as usize;
+        for &row in &NAME_ROWS[start..start + count] {
+            let candidate = Self::ALL[usize::from(row)];
+            if candidate.as_str().as_bytes() == name {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     /// Decode at the dynamic input boundary. Once observed, a canonical name
     /// is classified by pointer; the owning slot keeps that pointer live.
     pub(crate) fn from_bits(py: &PyToken<'_>, bits: u64) -> Option<Self> {
@@ -150,5 +187,29 @@ impl From<molt_obj_model::ExceptionAttributeField> for NameId {
             Field::SuppressContext => crate::NameId::DunderSuppressContext,
             Field::Typed(field) => field.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NameId;
+
+    #[test]
+    fn lookup_validates_every_name_and_rejects_nearby_byte_sequences() {
+        assert_eq!(NameId::from_bytes(b""), None);
+        for name in NameId::ALL {
+            let spelling = name.as_str().as_bytes();
+            assert_eq!(NameId::from_bytes(spelling), Some(name));
+            let mut miss = spelling.to_vec();
+            miss[0] = 0xff;
+            assert_eq!(NameId::from_bytes(&miss), None);
+        }
+        // Length and all three sample windows match a real name, so the
+        // candidate check must reject this miss using the unsampled bytes.
+        assert_eq!(
+            NameId::from_bytes(b"__getattribute__"),
+            Some(NameId::DunderGetattribute)
+        );
+        assert_eq!(NameId::from_bytes(b"__geZattribute__"), None);
     }
 }
