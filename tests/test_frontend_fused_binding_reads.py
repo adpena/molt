@@ -15,9 +15,9 @@ source read clean; 3.12 keeps it. A read the fused op moves ahead of the
 source's own must also be unable to raise: a callback may rebind a fast local
 but never delete it, while a global or a cell it may delete.
 
-Fills of ``bytearray(n)`` need an exact builtin identity for ``bytearray``,
-which the binding analysis does not give these fixtures; they are covered here
-by decline only. The CPython-observable consequences are pinned by
+Fills of ``bytearray(n)`` need an exact builtin identity for ``bytearray``
+and a proved length for the constructor's argument. The CPython-observable
+consequences are pinned by
 ``tests/differential/basic/fused_loop_semantics.py`` and
 ``tests/differential/basic/locals_mutation_semantics.py``.
 """
@@ -29,6 +29,7 @@ import inspect
 
 import pytest
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import SimpleTIRGenerator
 
 TARGETS = [(3, 12), (3, 13), (3, 14)]
@@ -315,6 +316,45 @@ def test_fusion_never_follows_a_shadowed_builtin_spelling(
         ops = _function_ops(SHADOWED, name, target_python)
         assert not _vector_kinds(ops), name
         assert "bytearray_fill_range" not in _kinds(ops), name
+
+
+@pytest.mark.parametrize(
+    ("target_python", "frame_writer", "fuses"),
+    [
+        ((3, 12), "observer:1", True),
+        ((3, 15), None, True),
+        ((3, 15), "observer:1", False),
+    ],
+)
+def test_bytearray_fill_uses_the_reaching_constructor_length(
+    target_python: tuple[int, int], frame_writer: str | None, fuses: bool
+) -> None:
+    source = """
+def fill():
+    size = 16
+    data = bytearray(size)
+    i = 0
+    while i < size:
+        data[i] = 97
+        i += 1
+    return data, i
+"""
+    generator = SimpleTIRGenerator(
+        module_name="__main__",
+        target_python=target_python,
+        namespace_premise=PythonNamespacePremise(
+            (), 0, 0, (), (), frame_locals_writer=frame_writer
+        ),
+    )
+    generator.visit(ast.parse(source))
+    (ops,) = [
+        function["ops"]
+        for function in generator.to_json()["functions"]
+        if function["name"] == "py.__main__.fill"
+    ]
+    kinds = _kinds(ops)
+    assert {"bytearray_from_obj", "store_index"} <= kinds
+    assert ("bytearray_fill_range" in kinds) == fuses
 
 
 COUNTED = """
