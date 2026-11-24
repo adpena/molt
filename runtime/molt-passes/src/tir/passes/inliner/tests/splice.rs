@@ -420,3 +420,351 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         );
     }
 }
+
+/// Design 78 5.10/5.11: a closure callee inlines at a proven guarded call,
+/// whose operand 0 is the callee's own function object. The splice reads that
+/// object's closure tuple (`FunctionClosure`) and binds the environment
+/// parameter to an owned alias of it, so the inlined body never depends on
+/// the function object outliving its last use.
+#[test]
+fn a_closure_callee_inlines_at_a_proven_call_with_its_own_environment() {
+    let mut callee = TirFunction::new(
+        "clos".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    callee.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.into(), "x".into()];
+    let entry = callee.entry_block;
+    let x = callee.blocks[&entry].args[1].id;
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![x] };
+
+    let mut caller = TirFunction::new(
+        "g".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let centry = caller.entry_block;
+    let (function, argument) = (
+        caller.blocks[&centry].args[0].id,
+        caller.blocks[&centry].args[1].id,
+    );
+    let result = caller.fresh_value();
+    caller.value_types.insert(result, TirType::DynBox);
+    let mut call = TirOp::new(OpCode::Call, vec![function, argument], vec![result]);
+    call.origin = Some(molt_ir::OpKind::CallGuarded);
+    call.callee = Some(molt_ir::FunctionId(1));
+    call.set_proven_target(true);
+    let block = caller.blocks.get_mut(&centry).unwrap();
+    block.ops.push(call);
+    block.terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let (mut caller, sites) = sites_in(caller, &["clos"]);
+    assert_eq!(sites.len(), 1);
+    assert!(
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some()
+    );
+    crate::tir::verify::verify_function(&caller)
+        .unwrap_or_else(|e| panic!("closure splice invalid: {e:?}"));
+    let ops: Vec<&TirOp> = caller.blocks.values().flat_map(|b| &b.ops).collect();
+    assert!(
+        ops.iter().all(|op| op.opcode != OpCode::Call),
+        "the call is gone"
+    );
+    let load = ops
+        .iter()
+        .find(|op| op.opcode == OpCode::FunctionClosure)
+        .expect("the environment comes from the callee's function object");
+    let held = load.operands[0];
+    assert!(
+        ops.iter().any(|op| {
+            op.origin == Some(molt_ir::OpKind::BindingAlias)
+                && op.operands == [function]
+                && op.results == [held]
+        }),
+        "the activation holds the function that owns its environment"
+    );
+    let view = load.results[0];
+    assert!(
+        ops.iter().any(|op| {
+            op.operands == [view] && op.origin == Some(molt_ir::OpKind::BindingAlias)
+        }),
+        "the environment binds through an owned alias of the closure tuple"
+    );
+}
+
+/// A direct internal call of a closure carries no environment operand, so
+/// the splice refuses it rather than bind the environment to an argument.
+#[test]
+fn a_closure_callee_refuses_a_call_without_a_function_object() {
+    let mut callee = TirFunction::new(
+        "clos".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    callee.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.into(), "x".into()];
+    let entry = callee.entry_block;
+    let x = callee.blocks[&entry].args[1].id;
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![x] };
+    let mut caller = TirFunction::new(
+        "g".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let centry = caller.entry_block;
+    let (a, b) = (
+        caller.blocks[&centry].args[0].id,
+        caller.blocks[&centry].args[1].id,
+    );
+    let result = caller.fresh_value();
+    let mut call = TirOp::new(OpCode::Call, vec![a, b], vec![result]);
+    call.callee = Some(molt_ir::FunctionId(1));
+    let block = caller.blocks.get_mut(&centry).unwrap();
+    block.ops.push(call);
+    block.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let (mut caller, sites) = sites_in(caller, &["clos"]);
+    assert_eq!(sites.len(), 1);
+    assert!(
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_none()
+    );
+}
+
+#[test]
+fn refused_closure_splices_preserve_the_complete_caller() {
+    #[derive(Debug)]
+    enum Refusal {
+        Arity,
+        ArgumentRetain,
+        PreparedDrops,
+        MissingReturnValue,
+    }
+
+    for refusal in [
+        Refusal::Arity,
+        Refusal::ArgumentRetain,
+        Refusal::PreparedDrops,
+        Refusal::MissingReturnValue,
+    ] {
+        let mut callee = TirFunction::new(
+            "clos".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        callee.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.into(), "x".into()];
+        let entry = callee.entry_block;
+        let x = callee.blocks[&entry].args[1].id;
+        callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+            values: if matches!(refusal, Refusal::MissingReturnValue) {
+                vec![]
+            } else {
+                vec![x]
+            },
+        };
+        if matches!(refusal, Refusal::PreparedDrops) {
+            callee.attrs.insert(
+                crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.into(),
+                AttrValue::Bool(true),
+            );
+        }
+
+        let mut caller = TirFunction::new(
+            "caller".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let entry = caller.entry_block;
+        let function = caller.blocks[&entry].args[0].id;
+        let argument = caller.blocks[&entry].args[1].id;
+        let result = caller.fresh_value();
+        caller.value_types.insert(result, TirType::DynBox);
+        let operands = if matches!(refusal, Refusal::Arity) {
+            vec![function]
+        } else {
+            vec![function, argument]
+        };
+        let mut call = TirOp::new(OpCode::Call, operands, vec![result]);
+        call.origin = Some(molt_ir::OpKind::CallGuarded);
+        call.callee = Some(molt_ir::FunctionId(1));
+        call.set_proven_target(true);
+        let block = caller.blocks.get_mut(&entry).unwrap();
+        if matches!(refusal, Refusal::ArgumentRetain) {
+            block
+                .ops
+                .push(TirOp::new(OpCode::IncRef, vec![argument], vec![]));
+        }
+        block.ops.push(call);
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let (mut caller, sites) = sites_in(caller, &["clos"]);
+        assert_eq!(sites.len(), 1);
+        // The serialized function includes its SSA allocator, type facts,
+        // attributes and CFG, rather than only the surviving call instruction.
+        let before = rmp_serde::to_vec_named(&caller).unwrap();
+        assert!(
+            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+                .is_none(),
+            "the {refusal:?} control must exercise a refusal"
+        );
+        assert_eq!(
+            rmp_serde::to_vec_named(&caller).unwrap(),
+            before,
+            "{refusal:?} must preserve every field of the caller"
+        );
+    }
+}
+
+#[test]
+fn closure_argument_custody_skips_the_environment_parameter() {
+    let mut callee = TirFunction::new(
+        "clos".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    callee.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.into(), "x".into()];
+    callee.set_parameter_custody(&[
+        molt_ir::ParameterCustody::Borrowed,
+        molt_ir::ParameterCustody::Transferred,
+    ]);
+    let entry = callee.entry_block;
+    let argument = callee.blocks[&entry].args[1].id;
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![argument],
+    };
+
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = caller.entry_block;
+    let function = caller.blocks[&entry].args[0].id;
+    let argument = caller.blocks[&entry].args[1].id;
+    let result = caller.fresh_value();
+    caller.value_types.insert(result, TirType::DynBox);
+    let mut call = TirOp::new(OpCode::Call, vec![function, argument], vec![result]);
+    call.origin = Some(molt_ir::OpKind::CallGuarded);
+    call.callee = Some(molt_ir::FunctionId(1));
+    call.set_proven_target(true);
+    let block = caller.blocks.get_mut(&entry).unwrap();
+    block.ops.push(call);
+    block.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let (mut caller, sites) = sites_in(caller, &["clos"]);
+    assert_eq!(sites.len(), 1);
+    assert!(
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some()
+    );
+    crate::tir::verify::verify_function(&caller)
+        .unwrap_or_else(|e| panic!("closure custody splice invalid: {e:?}"));
+    // The caller parameter outlives the call, but the callee's second
+    // physical parameter adopts a reference. Reading custody from the
+    // borrowed environment parameter would incorrectly bind it directly.
+    let binding = caller.blocks[&entry]
+        .ops
+        .iter()
+        .find(|op| op.opcode == OpCode::Copy && op.operands == [argument])
+        .expect("the transferred argument has its own binding");
+    let owned = binding.results[0];
+    assert!(
+        caller
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| { op.opcode == OpCode::DelBoundary && op.operands.contains(&owned) }),
+        "the activation must clear its adopted argument reference"
+    );
+}
+
+#[test]
+fn an_inlined_closure_keeps_its_temporary_callable_until_each_activation_exit() {
+    // The closure returns its environment on the normal path, and propagates
+    // a pending exception on the other. Returning the environment exercises
+    // result capture before the activation's owners are cleared.
+    let mut callee = observation_callee_with_type("clos", 7, TirType::DynBox);
+    callee.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.into()];
+    let mut caller = caller_calling_obs_with_label_and_type("caller", "clos", 90, TirType::DynBox);
+    let entry = caller.entry_block;
+    let block = caller.blocks.get_mut(&entry).unwrap();
+    let function = block.ops[0].results[0];
+    // This is an OWNED temporary function, not a borrowed parameter or a
+    // static cell whose independent owner would mask early destruction.
+    block.ops[0] = TirOp::new(OpCode::Call, vec![], vec![function]);
+    block.ops[0].attrs.insert(
+        "s_value".into(),
+        AttrValue::Str("fixture_make_closure".into()),
+    );
+    block.ops[1].origin = Some(molt_ir::OpKind::CallGuarded);
+    block.ops[1].set_proven_target(true);
+    let (mut caller, sites) = sites_in(caller, &["clos"]);
+    assert_eq!(sites.len(), 1);
+    assert!(
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some()
+    );
+
+    crate::tir::passes::drop_insertion::run(
+        &mut caller,
+        &mut crate::tir::analysis::AnalysisManager::new(),
+    );
+    crate::tir::verify::verify_function(&caller)
+        .unwrap_or_else(|e| panic!("closure lifetime after terminal drops: {e:?}"));
+    let prefix = &caller.blocks[&entry].ops;
+    let load = prefix
+        .iter()
+        .position(|op| op.opcode == OpCode::FunctionClosure)
+        .unwrap();
+    let function_owner = prefix[load].operands[0];
+    assert!(
+        prefix[load..]
+            .iter()
+            .all(|op| { op.opcode != OpCode::DecRef || !op.operands.contains(&function_owner) }),
+        "the function must outlive environment acquisition and the inlined body"
+    );
+    let view = prefix[load].results[0];
+    let environment = prefix
+        .iter()
+        .find(|op| op.origin == Some(molt_ir::OpKind::BindingAlias) && op.operands == [view])
+        .unwrap()
+        .results[0];
+    let mut exits = 0;
+    for block in caller.blocks.values() {
+        let releases: Vec<_> = block
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef && op.operands.contains(&function_owner))
+            .collect();
+        if releases.is_empty() {
+            continue;
+        }
+        exits += 1;
+        assert_eq!(
+            releases.len(),
+            1,
+            "one function reference per activation exit"
+        );
+        let release = releases[0].0;
+        assert!(
+            block.ops[..release]
+                .iter()
+                .any(|op| { op.opcode == OpCode::DecRef && op.operands.contains(&environment) }),
+            "callee cleanup must finish before its function can be destroyed"
+        );
+    }
+    assert_eq!(
+        exits, 2,
+        "normal and implicit exceptional exits release the function"
+    );
+}

@@ -59,53 +59,50 @@ pub(super) fn splice_call_site(
     let block_id = site.block;
     let op_index = site.op_index;
 
-    let (call_args, call_result, multi_result, call_span) = {
+    let (mut call_args, call_result, multi_result, call_span, callable) = {
         let block = &caller.blocks[&block_id];
         let op = &block.ops[op_index];
         if op.opcode != OpCode::Call {
             return None;
         }
         // A proven guarded call's operand 0 is the callee's function object,
-        // which the inlined activation does not read: only the arguments bind.
+        // which the inlined activation does not read, except a closure
+        // callee's environment (below): only the arguments bind.
         let call = crate::tir::call_targets::static_call(op)?;
+        let guarded = op.origin == Some(molt_ir::OpKind::CallGuarded) && op.proven_target();
         (
             call.arguments.to_vec(),
             op.results.first().copied(),
             op.results.len() > 1,
             op.source_span,
+            guarded.then(|| op.operands[0]),
         )
     };
     if multi_result {
         return None;
     }
 
-    // DEFENSE-IN-DEPTH: never splice a closure here. `is_inlineable` already
-    // excludes closures (see `is_closure`), so a closure should never reach this
-    // splice. But the arity guard below CANNOT distinguish a closure from a
-    // legitimate same-arity call - a closure's leading `__molt_closure__` param
-    // re-balances against the `Call`'s leading function-value operand, so the
-    // guard would pass (false match) and the splice would bind the env-param to
-    // the function object, miscompiling `__molt_closure__[i]` into a subscript of
-    // a function. Refuse structurally so a future `is_inlineable` change cannot
-    // silently re-open the hole. Refusal (not panic) keeps a release build sound;
-    // the debug assert flags the invariant violation in tests.
-    debug_assert!(
-        !is_closure(callee),
-        "splice_call_site: closure '{}' reached splice - is_inlineable must \
-         exclude closures (the arity guard cannot, its env-param re-balances \
-         the operand count)",
-        callee.name
-    );
-    if is_closure(callee) {
-        return None;
-    }
+    // A closure callee takes its environment first. Only a proven guarded
+    // call supplies it: its operand 0 is the callee's own function object,
+    // whose closure tuple is exactly what the runtime's binding would pass
+    // (design 78 5.10). Eligibility admits closure callees only on final-TIR
+    // targets, where `FunctionClosure` lowers. Any other call of a closure is
+    // refused here: its operands carry no environment, and binding the
+    // environment parameter to an argument would miscompile
+    // `__molt_closure__[i]`.
+    let closure_callable = if is_closure(callee) {
+        Some(callable?)
+    } else {
+        None
+    };
+    let first_parameter = usize::from(closure_callable.is_some());
 
     // Arity must match (params bind 1:1 to args). A static call whose arg count
     // disagrees with the callee's param count is a shape we will not splice
     // (defensive - the frontend should keep these aligned, but a mismatch must
     // not produce malformed SSA).
     let callee_entry = &callee.blocks[&callee.entry_block];
-    if callee_entry.args.len() != call_args.len() {
+    if callee_entry.args.len() != call_args.len() + first_parameter {
         return None;
     }
 
@@ -118,7 +115,14 @@ pub(super) fn splice_call_site(
     // parameter binds its argument or an owned binding alias of it, and every
     // exit clears the callee frame before it leaves. From here on `callee` is
     // that prepared body.
-    let bindings = activations.bindings(caller, callee, site, &call_args);
+    let mut bindings = activations.bindings(caller, callee, site, &call_args, first_parameter);
+    if closure_callable.is_some() {
+        // The environment is a view the function object owns, and the inlined
+        // body may outlive that object's last use in the caller. An owned
+        // binding retains the tuple for the activation and releases it at the
+        // frame clear.
+        bindings.insert(0, Binding::Owned);
+    }
     let callee = activations.prepare(callee, &bindings)?;
 
     // Classify the callee's `Return` blocks on its **terminator-only** CFG:
@@ -163,6 +167,29 @@ pub(super) fn splice_call_site(
     // facts its clone was compiled under.
     let callee_entry = &callee.blocks[&callee.entry_block];
     let mut binding_ops = Vec::new();
+    let mut held_callable = None;
+    if let Some(callable) = closure_callable {
+        // Every refusal has been checked. Allocate the environment view only
+        // now, so a refused splice preserves all caller state, including its
+        // value allocator and type facts. CallerFacts sees only original
+        // arguments; the splice owns the environment binding explicitly.
+        // Keep the function itself alive until the activation exits, as the
+        // original call did. Retaining only the environment after its load
+        // permits a last-use function release between that load and retain,
+        // and can run function weakref callbacks before the inlined body.
+        // The existing explicit lifetime boundaries below pin this owner;
+        // no new borrowing or drop-placement rule is needed.
+        let held = caller.fresh_value();
+        caller.value_types.insert(held, TirType::DynBox);
+        binding_ops.push(owned_alias(callable, held, call_span));
+        held_callable = Some(held);
+        let view = caller.fresh_value();
+        caller.value_types.insert(view, TirType::DynBox);
+        let mut load = TirOp::new(OpCode::FunctionClosure, vec![held], vec![view]);
+        load.source_span = call_span;
+        binding_ops.push(load);
+        call_args.insert(0, view);
+    }
     let parameter_values: Vec<ValueId> = call_args
         .iter()
         .zip(&bindings)
@@ -295,6 +322,20 @@ pub(super) fn splice_call_site(
         let Some(values) = return_values else {
             continue;
         };
+
+        if let Some(held) = held_callable {
+            // Site-owned, after the prepared result capture and frame clear,
+            // on both normal and implicit exceptional exits. Do not put it
+            // in the shared prepared body or the caller's continuation.
+            let mut release = TirOp::new(OpCode::DelBoundary, vec![held], vec![]);
+            release.source_span = call_span;
+            caller
+                .blocks
+                .get_mut(&cloned_bid)
+                .expect("cloned return block")
+                .ops
+                .push(release);
+        }
 
         if exception_exit_clones.contains(&cloned_bid)
             && let Some(target) = direct_exception_target

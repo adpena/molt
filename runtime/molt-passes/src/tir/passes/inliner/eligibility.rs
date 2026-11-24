@@ -96,7 +96,11 @@ pub fn classify_inline_eligibility(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> InlineEligibility {
-    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph) {
+    // A closure callee inlines where its environment is the callee's own
+    // closure tuple, which a final-TIR target reads from the proven call's
+    // function object (design 78 5.10); the splice admits only those sites.
+    let closures = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
+    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph, closures) {
         return InlineEligibility::WhyNot(reason);
     }
     if callee_op_count(callee_id, callee, summaries) > tti.inline_budget(&callee.name) {
@@ -146,6 +150,7 @@ fn inline_safety_gate(
     callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
     call_graph: &CallGraph,
+    closures_at_proven_sites: bool,
 ) -> Option<InlineWhyNot> {
     if callee.execution_context != molt_ir::ExecutionContextPolicy::None {
         return Some(InlineWhyNot::ExecutionContext);
@@ -169,7 +174,7 @@ fn inline_safety_gate(
     if entry_block_has_predecessor(callee) {
         return Some(InlineWhyNot::EntryHasPredecessor);
     }
-    if is_closure(callee) {
+    if is_closure(callee) && !closures_at_proven_sites {
         return Some(InlineWhyNot::Closure);
     }
     if releases_unowned_parameter(callee, |position| {
@@ -199,7 +204,7 @@ pub(super) fn is_inline_safe(
     callee: &TirFunction,
     call_graph: &CallGraph,
 ) -> bool {
-    inline_safety_gate(callee_id, callee, call_graph).is_none()
+    inline_safety_gate(callee_id, callee, call_graph, false).is_none()
 }
 
 /// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
