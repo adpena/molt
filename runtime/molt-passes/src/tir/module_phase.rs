@@ -120,16 +120,7 @@ pub fn run_module_pipeline(
     // call's callee per exact argument context before the call graph, so the
     // inliner and every later analysis see the clones as ordinary rows.
     let report_type_flow = backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1");
-    let mut flow = super::passes::type_flow::run(module, tti, non_inlinable, report_type_flow);
-    // Attribute accesses on receivers the exact solver proves one class
-    // statement's instance become field loads and stores (design 78, 5.8): the
-    // clones the type flow just made carry their exact parameters.
-    let slots = super::passes::exact_receiver_fields::class_field_slots(module);
-    for (func, id) in module.functions.iter_mut().zip(&module.ids) {
-        if super::passes::exact_receiver_fields::run(func, &slots) > 0 {
-            flow.changed.insert(*id);
-        }
-    }
+    let flow = super::passes::type_flow::run(module, tti, non_inlinable, report_type_flow);
     emit_module_stage_audit(
         "after-type-flow",
         module,
