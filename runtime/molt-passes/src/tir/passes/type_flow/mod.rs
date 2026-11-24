@@ -570,18 +570,22 @@ fn generic_argument(
     facts: &HashMap<ValueId, TirType>,
     relevant: &[bool],
 ) -> String {
-    if !relevant.iter().any(|flag| *flag) {
+    if !relevant
+        .iter()
+        .skip(site.first_parameter())
+        .any(|flag| *flag)
+    {
         return "no parameter's type changes the callee's code".to_string();
     }
-    for (position, arg) in site.args.iter().enumerate() {
+    for (position, arg) in site.parameter_arguments() {
         if !relevant.get(position).copied().unwrap_or(true) {
             continue;
         }
-        let fact = facts.get(arg).cloned().unwrap_or(TirType::DynBox);
+        let fact = facts.get(&arg).cloned().unwrap_or(TirType::DynBox);
         if ArgKind::of(&fact) == Some(ArgKind::Dyn) {
             return format!(
                 "argument {position} is not an exact scalar; it comes from {}",
-                producer(func, *arg)
+                producer(func, arg)
             );
         }
     }

@@ -210,23 +210,28 @@ fn observation_only_callee_is_inlineable() {
 }
 
 #[test]
-fn closure_callee_not_inlined() {
-    // task #44: a closure (first param == __molt_closure__) must NOT be
-    // inlinable. The direct param->operand splice cannot bind the captured
-    // env (it would bind the call's leading function-value operand instead),
-    // so `is_inlineable` refuses it - conservative-correct exclusion.
+fn a_closure_callee_requires_final_tir() {
     let callee = closure_callee("__main____add");
     assert!(
-        is_closure(&callee),
+        callee.has_closure_parameter(),
         "first param is the env marker => closure"
     );
     let m = module(vec![callee]);
     let (cg, sm) = analysis(&m);
-    let tti = TargetInfo::native_release_fast();
-    assert!(
-        !is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti),
-        "closure callee must be refused (task #44 miscompile gate)"
-    );
+    assert!(is_inlineable(
+        m.ids[0],
+        &m.functions[0],
+        &cg,
+        &sm,
+        &TargetInfo::native_release_fast()
+    ));
+    assert!(!is_inlineable(
+        m.ids[0],
+        &m.functions[0],
+        &cg,
+        &sm,
+        &TargetInfo::mlir_release_fast()
+    ));
 }
 
 #[test]
@@ -237,7 +242,7 @@ fn non_closure_same_arity_still_inlineable() {
     // de-inlined by the fix.
     let callee = identity_callee(); // params ["p0", "p1"] - not a closure
     assert!(
-        !is_closure(&callee),
+        !callee.has_closure_parameter(),
         "identity_callee's first param is not the env marker"
     );
     let m = module(vec![callee]);
@@ -250,14 +255,11 @@ fn non_closure_same_arity_still_inlineable() {
 }
 
 #[test]
-fn run_inliner_refuses_closure_call_site() {
-    // End-to-end through the production chokepoint: a caller that calls a
-    // closure must NOT have the call spliced away. The Call op survives and
-    // the closure body is NOT cloned into the caller (no Index over the
-    // function value), so the miscompile cannot occur.
+fn run_inliner_refuses_a_closure_site_without_its_captured_callable() {
+    // A direct call can have the right physical arity and still lack the
+    // captured function object that authorizes an environment load.
     let callee = closure_callee("__main____add");
     // caller g(): r = __main____add(<func>, 10); return r.
-    // Operands model the real call ABI [callee_value, arg0].
     let mut g = TirFunction::new(
         "g".into(),
         vec![],
@@ -272,11 +274,6 @@ fn run_inliner_refuses_closure_call_site() {
     fattrs.insert("value".into(), AttrValue::Int(0)); // stand-in producer
     let mut tattrs = AttrDict::default();
     tattrs.insert("value".into(), AttrValue::Int(10));
-    let mut call_attrs = AttrDict::default();
-    call_attrs.insert(
-        "s_value".into(),
-        AttrValue::Str("__main____add".to_string()),
-    );
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
@@ -301,22 +298,24 @@ fn run_inliner_refuses_closure_call_site() {
         source_span: None,
     });
     block.ops.push(TirOp {
-        origin: None,
+        origin: Some(molt_ir::OpKind::CallInternal),
         runtime: None,
-        callee: None,
+        callee: Some(molt_ir::FunctionId(1)),
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![func_val, ten],
         results: vec![res],
-        attrs: call_attrs,
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![res] };
     g.value_types.insert(res, TirType::I64);
 
-    let mut m = module(vec![g, callee]);
+    let mut m = TirModule::with_own_table("m", vec![g, callee]);
     let (cg, sm) = analysis(&m);
+    assert_eq!(CallGraph::callees(&cg, m.ids[0]), &[m.ids[1]]);
     let tti = TargetInfo::native_release_fast();
+    assert!(is_inlineable(m.ids[1], &m.functions[1], &cg, &sm, &tti));
     let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 0, "closure call site is NOT inlined");
     let g = m.functions.iter().find(|f| f.name == "g").unwrap();
@@ -327,14 +326,12 @@ fn run_inliner_refuses_closure_call_site() {
         .filter(|op| op.opcode == OpCode::Call)
         .count();
     assert_eq!(calls, 1, "the Call op survives (closure not spliced)");
-    // No Index op leaked into the caller (the closure body was not cloned).
-    let indexes: usize = g
-        .blocks
-        .values()
-        .flat_map(|b| b.ops.iter())
-        .filter(|op| op.opcode == OpCode::Index)
-        .count();
-    assert_eq!(indexes, 0, "closure body not cloned into caller");
+    assert!(
+        g.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .all(|op| op.opcode != OpCode::FunctionClosure)
+    );
 }
 
 // -- run_inliner end-to-end ----------------------------------------------

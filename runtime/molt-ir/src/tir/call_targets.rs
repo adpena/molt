@@ -142,6 +142,8 @@ pub fn final_call_arguments(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StaticCall<'a> {
     pub callee: crate::FunctionId,
+    /// The function object captured by a proven guarded call, when carried.
+    pub callable: Option<super::values::ValueId>,
     pub arguments: &'a [super::values::ValueId],
 }
 
@@ -156,15 +158,18 @@ pub fn static_call(op: &TirOp) -> Option<StaticCall<'_>> {
     if let Some(callee) = direct_callee(op) {
         return Some(StaticCall {
             callee,
+            callable: None,
             arguments: &op.operands,
         });
     }
     if !is_guarded_call(op) || !op.has_valid_shape() || !op.proven_target() {
         return None;
     }
+    let (&callable, arguments) = op.operands.split_first()?;
     Some(StaticCall {
         callee: op.callee?,
-        arguments: op.operands.get(1..)?,
+        callable: Some(callable),
+        arguments,
     })
 }
 
@@ -374,6 +379,7 @@ mod tests {
             static_call(&op),
             Some(StaticCall {
                 callee: crate::FunctionId(4),
+                callable: None,
                 arguments: &[ValueId(7), ValueId(8)],
             })
         );
@@ -388,6 +394,7 @@ mod tests {
             static_call(&op),
             Some(StaticCall {
                 callee: crate::FunctionId(4),
+                callable: Some(ValueId(7)),
                 arguments: &[ValueId(8)],
             })
         );

@@ -1,6 +1,7 @@
 //! The call sites the type flow resolves, and the callees it may specialize.
 
 use crate::tir::blocks::BlockId;
+use crate::tir::call_targets::static_call;
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -25,13 +26,21 @@ pub(super) struct Site {
     pub(super) index: usize,
     pub(super) kind: SiteKind,
     pub(super) callee: FunctionId,
-    /// The arguments, one per callee parameter.
-    pub(super) args: Vec<ValueId>,
+    first_parameter: usize,
+    args: Vec<ValueId>,
 }
 
 impl Site {
     pub(super) fn position(&self) -> (BlockId, usize) {
         (self.block, self.index)
+    }
+
+    pub(super) fn parameter_arguments(&self) -> impl Iterator<Item = (usize, ValueId)> + '_ {
+        (self.first_parameter..).zip(self.args.iter().copied())
+    }
+
+    pub(super) fn first_parameter(&self) -> usize {
+        self.first_parameter
     }
 }
 
@@ -46,8 +55,6 @@ pub(super) enum Unspecializable {
     ExecutionContext,
     /// A physical partition of a larger function.
     CodegenPartition,
-    /// Its first parameter is a closure's captured environment.
-    Closure,
     /// The target's backend checks a guarded call's code against its
     /// target, so another entry of the same function would always miss.
     TargetChecksGuardedCode,
@@ -60,7 +67,6 @@ impl Unspecializable {
             Self::StateMachine => "the callee is a generator or coroutine body",
             Self::ExecutionContext => "the callee runs in its caller's frame (a module chunk)",
             Self::CodegenPartition => "the callee is a codegen partition",
-            Self::Closure => "the callee takes a closure environment",
             Self::TargetChecksGuardedCode => {
                 "this target's backend compares a guarded call's code with its target"
             }
@@ -91,13 +97,6 @@ pub(super) fn specializable(
     if func.is_codegen_partition() {
         return Err(Unspecializable::CodegenPartition);
     }
-    if func
-        .param_names
-        .first()
-        .is_some_and(|name| name == crate::MOLT_CLOSURE_PARAM_NAME)
-    {
-        return Err(Unspecializable::Closure);
-    }
     if !final_tir {
         return Err(Unspecializable::TargetChecksGuardedCode);
     }
@@ -123,24 +122,27 @@ pub(super) fn site_of(
     if op.opcode != OpCode::Call || op.results.len() != 1 {
         return None;
     }
-    let callee = op.callee?;
-    let callee_index = body_index.get(callee.index()).copied().flatten()?;
-    let (kind, args) = match op.origin {
-        Some(molt_ir::OpKind::CallGuarded) if op.proven_target() => {
-            (SiteKind::ProvenGuarded, op.operands.get(1..)?.to_vec())
-        }
-        Some(molt_ir::OpKind::CallInternal) => (SiteKind::Internal, op.operands.clone()),
+    let call = static_call(op)?;
+    let callee_index = body_index.get(call.callee.index()).copied().flatten()?;
+    let body = &module.functions[callee_index];
+    let kind = match op.origin {
+        Some(molt_ir::OpKind::CallGuarded) if call.callable.is_some() => SiteKind::ProvenGuarded,
+        Some(molt_ir::OpKind::CallInternal) => SiteKind::Internal,
         _ => return None,
     };
-    if args.len() != module.functions[callee_index].param_names.len() {
+    let first_parameter = usize::from(body.has_closure_parameter());
+    if (first_parameter != 0 && call.callable.is_none())
+        || first_parameter + call.arguments.len() != body.param_names.len()
+    {
         return None;
     }
     Some(Site {
         block,
         index,
         kind,
-        callee,
-        args,
+        callee: call.callee,
+        first_parameter,
+        args: call.arguments.to_vec(),
     })
 }
 

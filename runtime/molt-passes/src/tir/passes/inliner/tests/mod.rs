@@ -2,7 +2,6 @@ use molt_ir::deterministic_hash::HashSet;
 
 use super::activation::Activations;
 use super::clone_body::clone_function_body_with_fresh_ids;
-use super::eligibility::is_closure;
 use super::splice::splice_call_site;
 use super::*;
 use crate::tir::clone_support::clone_attrs_without_simple_names;
@@ -61,14 +60,7 @@ fn identity_callee() -> TirFunction {
     binary_callee("identityfn", OpCode::Is, TirType::Bool)
 }
 
-/// A CLOSURE callee shaped like the frontend's lowering of
-/// `def add(x): return base + x` capturing `base`: `param_names =
-/// ["__molt_closure__", "x"]`, body unpacks the captured env
-/// (`index [__molt_closure__, 0] -> cell; index [cell, 0] -> base`) and
-/// returns `base + x`. This is the exact shape that miscompiled (task #44):
-/// the splice would have bound `__molt_closure__` to the call's leading
-/// function-value operand, so `index [__molt_closure__, 0]` subscripts a
-/// function. `is_inlineable` must refuse it via the env-param marker.
+/// A closure with the callback-free body left after dead environment reads.
 fn closure_callee(name: &str) -> TirFunction {
     let mut f = TirFunction::new(
         name.into(),
@@ -76,61 +68,11 @@ fn closure_callee(name: &str) -> TirFunction {
         TirType::I64,
         molt_ir::FunctionReturnAbi::Value,
     );
-    // The production lift sets param_names from the frontend params; mirror
-    // that here (TirFunction::new defaults to "p0"/"p1", test-only). The
-    // FIRST param is the captured-environment marker -> this is a closure.
-    f.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.to_string(), "x".into()];
-    let env = ValueId(0); // __molt_closure__
-    let x = ValueId(1);
-    let cell = f.fresh_value();
-    let base = f.fresh_value();
-    let sum = f.fresh_value();
-    let entry = f.entry_block;
-    let mut idx0a = AttrDict::default();
-    idx0a.insert("value".into(), AttrValue::Int(0));
-    let mut idx0b = AttrDict::default();
-    idx0b.insert("value".into(), AttrValue::Int(0));
-    let block = f.blocks.get_mut(&entry).unwrap();
-    // cell = __molt_closure__[0]
-    block.ops.push(TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::Index,
-        operands: vec![env],
-        results: vec![cell],
-        attrs: idx0a,
-        source_span: None,
-    });
-    // base = cell[0]
-    block.ops.push(TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::Index,
-        operands: vec![cell],
-        results: vec![base],
-        attrs: idx0b,
-        source_span: None,
-    });
-    // sum = base + x
-    block.ops.push(TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::Add,
-        operands: vec![base, x],
-        results: vec![sum],
-        attrs: AttrDict::default(),
-        source_span: None,
-    });
-    block.terminator = Terminator::Return { values: vec![sum] };
-    f.value_types.insert(cell, TirType::DynBox);
-    f.value_types.insert(base, TirType::I64);
-    f.value_types.insert(sum, TirType::I64);
+    f.param_names[0] = crate::MOLT_CLOSURE_PARAM_NAME.into();
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.terminator = Terminator::Return {
+        values: vec![entry.args[1].id],
+    };
     f
 }
 
