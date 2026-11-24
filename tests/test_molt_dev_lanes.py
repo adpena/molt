@@ -2607,7 +2607,7 @@ def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
     # the refusal happens before any slot, branch or record exists.
     with pytest.raises(
         DriverError,
-        match=r"engine capacity rule.*active lanes: none",
+        match=r"rows are not ready: HF-2 waits on HF-1",
     ):
         start("second", "HF-2")
     assert not (family / "molt-src" / "logs" / "agents" / "lane-second").exists()
@@ -2695,7 +2695,7 @@ def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) 
         )
 
     # Re-admission runs the same gate; its own earlier record does not count.
-    with pytest.raises(DriverError, match="engine capacity rule"):
+    with pytest.raises(DriverError, match="rows are not ready: HF-2 waits on HF-1"):
         dispatch("HF-2")
     assert dispatch("HF-1") == EXIT_OK
     assert dispatch("HF-1") == EXIT_OK
