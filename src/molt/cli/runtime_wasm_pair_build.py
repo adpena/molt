@@ -882,7 +882,11 @@ def _build_and_publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
     families in this checkout share one Cargo target, and one must not
     rewrite the archives while the other fingerprints them (HF-F227).
     """
-    if reason := source_build_disabled_reason("Runtime WASM pair"):
+    if reason := source_build_disabled_reason(
+        "Runtime WASM pair"
+        if ctx.shared_spec is not None
+        else "Relocatable WASM runtime"
+    ):
         return ctx.fail("rebuild-policy", reason)
     with _build_lock(
         ctx.project_root, f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair"

@@ -1,8 +1,8 @@
-"""Runtime WASM pair generations: one receipt and two content-named members.
+"""Runtime WASM generations: one receipt selects its immutable members.
 
-A source build's pair lives in the host's product store
+A source build's generation lives in the host's product store
 (``molt.cli.product_store``, kind ``wasm-runtime``): one entry per family
-digest, which names both member identities, and one variant per observed Cargo
+digest, which names the selected member identities, and one variant per observed Cargo
 environment, as the native runtime does (design 56, section 2.8). A variant is
 staged whole and published by one exclusive rename, so it is immutable and a
 reader sees it whole or not at all. An installed Molt's shipped cell keeps its
@@ -22,7 +22,7 @@ from functools import cached_property
 from enum import Enum
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.generation_store import (
@@ -115,6 +115,7 @@ class RuntimeWasmCodegenUse(Enum):
 
 @dataclass(frozen=True, kw_only=True)
 class RuntimeWasmRelocGeneration:
+    receipt_role: ClassVar[RuntimeWasmReceiptRole]
     manifest: Path
     reloc: Path
     reloc_identity: RuntimeBuildIdentity
@@ -124,10 +125,6 @@ class RuntimeWasmRelocGeneration:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", _freeze_json(self.payload))
-
-    @property
-    def receipt_role(self) -> RuntimeWasmReceiptRole:
-        raise NotImplementedError
 
     def product_payload(self) -> dict[str, object]:
         """Serialize the canonical product without granting source-build custody."""
@@ -248,13 +245,10 @@ class RuntimeWasmRelocGeneration:
 
 @dataclass(frozen=True, kw_only=True)
 class RuntimeWasmGeneration(RuntimeWasmRelocGeneration):
+    receipt_role = RuntimeWasmReceiptRole.INSTALLED_PRODUCT
     shared: Path
     shared_identity: RuntimeBuildIdentity
     shared_member_identity: StableRegularFileIdentity
-
-    @property
-    def receipt_role(self) -> RuntimeWasmReceiptRole:
-        return RuntimeWasmReceiptRole.INSTALLED_PRODUCT
 
     def member_observations(
         self, use: RuntimeWasmCodegenUse
@@ -319,16 +313,13 @@ def _source_generation_payload(
 class SourceRuntimeWasmGeneration(RuntimeWasmGeneration):
     """A final product and the exact observations required for source reuse."""
 
+    receipt_role = RuntimeWasmReceiptRole.SOURCE_BUILD
     cargo_environment: CargoEnvironmentInputs
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if not isinstance(self.cargo_environment, CargoEnvironmentInputs):
             raise ValueError("source runtime WASM requires Cargo environment evidence")
-
-    @property
-    def receipt_role(self) -> RuntimeWasmReceiptRole:
-        return RuntimeWasmReceiptRole.SOURCE_BUILD
 
     def source_payload(self) -> dict[str, object]:
         return _source_generation_payload(
@@ -342,16 +333,13 @@ class SourceRuntimeWasmGeneration(RuntimeWasmGeneration):
 
 @dataclass(frozen=True, kw_only=True)
 class SourceLinkedRuntimeWasmGeneration(RuntimeWasmRelocGeneration):
+    receipt_role = RuntimeWasmReceiptRole.SOURCE_BUILD
     cargo_environment: CargoEnvironmentInputs
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if not isinstance(self.cargo_environment, CargoEnvironmentInputs):
             raise ValueError("source runtime WASM requires Cargo environment evidence")
-
-    @property
-    def receipt_role(self) -> RuntimeWasmReceiptRole:
-        return RuntimeWasmReceiptRole.SOURCE_BUILD
 
 
 type SourceWasmGeneration = (
@@ -642,7 +630,7 @@ def _publish_immutable_member(staged: Path, member: Path, source: Path) -> None:
 
 
 def runtime_wasm_store(project_root: Path) -> ProductStore:
-    """The product store a runtime WASM pair build of ``project_root`` uses."""
+    """The product store a runtime WASM build of ``project_root`` uses."""
     return ProductStore.of("wasm-runtime", project_root)
 
 
@@ -653,9 +641,9 @@ def stored_runtime_wasm_generation(
     reloc_identity: RuntimeBuildIdentity,
     environment: ProcessEnvironment,
 ) -> SourceWasmGeneration | None:
-    """The stored variant of this pair built under ``environment``, admitted.
+    """The stored variant of this family built under ``environment``, admitted.
 
-    The entry is the pair's family digest. A reader reads each variant's
+    The entry is the selected family digest. A reader reads each variant's
     receipt envelope and admits only its own variant, the one whose recorded
     Cargo environment matches ``environment``, so another variant's damage
     never fails it. Its own variant, when it does not admit, raises
@@ -704,7 +692,7 @@ def publish_stored_runtime_wasm_generation(
     source_shared: Path | None,
     source_reloc: Path,
 ) -> SourceWasmGeneration:
-    """Publish one built pair as its environment's variant, then admit it.
+    """Publish one built generation as its environment's variant, then admit it.
 
     The caller holds the family's build lock (``ProductStore.ensure``) and
     found no admissible variant, so an existing variant for this environment
