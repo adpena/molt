@@ -287,7 +287,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_propagate_container_hints")
     assert hasattr(SimpleTIRGenerator, "_emit_function_annotate")
     assert hasattr(SimpleTIRGenerator, "_iterable_element_hint")
-    assert hasattr(SimpleTIRGenerator, "_emit_guard_type")
     assert hasattr(SimpleTIRGenerator, "_apply_explicit_hint")
     # loop lowering and loop guards
     assert hasattr(SimpleTIRGenerator, "_emit_for_loop")

@@ -13,7 +13,6 @@ from molt.frontend import (
     SimpleTIRGenerator,
     compile_to_tir,
 )
-from molt.frontend._types import BUILTIN_TYPE_TAGS
 
 
 # The module is the whole closed program, so no code holds a PEP 667
@@ -1311,23 +1310,18 @@ def test_format_keyword_call_preserves_method_pair_and_keyword_binding():
     assert definitions[keyword["args"][2]]["s_value"] == "a"
 
 
-def test_type_hint_check_lowering():
-    src = "def verify(value):\n    checked: int = value\n    return checked\n"
-    ir = compile_to_tir(src, type_hint_policy="check")
-    ops = _ops_by_func_suffix(ir, "verify")
-    assert any(op["kind"] == "guard_tag" for op in ops)
-
-
-def test_type_hint_check_publishes_constant_guard_for_tir() -> None:
-    ir = compile_to_tir("x: int = 42", type_hint_policy="check")
-    (guard,) = _ops_by_kind(ir, "guard_tag")
-    definitions = {op["out"]: op for op in _all_ops(ir) if "out" in op}
-    value, tag = (definitions[arg] for arg in guard["args"])
-    assert value["kind"] == tag["kind"] == "const"
-    assert value["value"] == 42
-    assert tag["value"] == BUILTIN_TYPE_TAGS["int"]
-    # Rust owns proving this authored check redundant. The frontend publishes
-    # the real initializer and annotation instead of performing SCCP itself.
+def test_local_annotation_keeps_the_original_value_and_body() -> None:
+    annotated = compile_to_tir(
+        "def verify(value):\n    checked: int = value\n    return checked\n",
+        type_hint_policy="check",
+    )
+    plain = compile_to_tir(
+        "def verify(value):\n    checked = value\n    return checked\n",
+        type_hint_policy="check",
+    )
+    assert [op["kind"] for op in _ops_by_func_suffix(annotated, "verify")] == [
+        op["kind"] for op in _ops_by_func_suffix(plain, "verify")
+    ]
 
 
 def test_type_hint_integer_lowering_preserves_semantic_op_shapes():

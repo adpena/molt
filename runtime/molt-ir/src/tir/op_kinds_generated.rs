@@ -545,10 +545,6 @@ pub enum OpKind {
     GuardNone,
     #[serde(rename = "guard_str")]
     GuardStr,
-    #[serde(rename = "guard_tag")]
-    GuardTag,
-    #[serde(rename = "guard_type")]
-    GuardType,
     #[serde(rename = "guarded_field_get")]
     GuardedFieldGet,
     #[serde(rename = "guarded_field_set")]
@@ -1303,8 +1299,6 @@ impl OpKind {
         Self::GuardLayout,
         Self::GuardNone,
         Self::GuardStr,
-        Self::GuardTag,
-        Self::GuardType,
         Self::GuardedFieldGet,
         Self::GuardedFieldSet,
         Self::GuardedLoad,
@@ -1816,8 +1810,6 @@ impl OpKind {
             Self::GuardLayout => "guard_layout",
             Self::GuardNone => "guard_none",
             Self::GuardStr => "guard_str",
-            Self::GuardTag => "guard_tag",
-            Self::GuardType => "guard_type",
             Self::GuardedFieldGet => "guarded_field_get",
             Self::GuardedFieldSet => "guarded_field_set",
             Self::GuardedLoad => "guarded_load",
@@ -2340,8 +2332,6 @@ impl std::str::FromStr for OpKind {
             "guard_layout" => Ok(Self::GuardLayout),
             "guard_none" => Ok(Self::GuardNone),
             "guard_str" => Ok(Self::GuardStr),
-            "guard_tag" => Ok(Self::GuardTag),
-            "guard_type" => Ok(Self::GuardType),
             "guarded_field_get" => Ok(Self::GuardedFieldGet),
             "guarded_field_set" => Ok(Self::GuardedFieldSet),
             "guarded_load" => Ok(Self::GuardedLoad),
@@ -2876,8 +2866,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -3480,8 +3468,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -4003,8 +3989,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -4522,8 +4506,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -5039,8 +5021,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -5555,8 +5535,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -6075,8 +6053,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -6592,8 +6568,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -7111,8 +7085,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -7628,8 +7600,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -8146,8 +8116,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -8659,8 +8627,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -9181,8 +9147,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -9699,8 +9663,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -10212,8 +10174,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -10733,8 +10693,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -11255,8 +11213,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -11776,8 +11732,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -12288,8 +12242,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -12808,8 +12760,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -13564,8 +13514,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Zip => SimpleIrVarFieldRole::Read,
         OpKind::Box
         | OpKind::BoxFromRawInt
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::ModuleSlot
         | OpKind::Pos
         | OpKind::Ret
@@ -13846,8 +13794,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedLoad
         | OpKind::HasAttrName
@@ -14368,8 +14314,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -14648,18 +14592,6 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         kind: OpKind::UnaryPos,
         family: "unary_numeric",
         operands: 1,
-        value_rule: SimpleIrOpValueRule::Unconstrained,
-    },
-    SimpleIrOpShape {
-        kind: OpKind::GuardTag,
-        family: "runtime_type_guard",
-        operands: 2,
-        value_rule: SimpleIrOpValueRule::Unconstrained,
-    },
-    SimpleIrOpShape {
-        kind: OpKind::GuardType,
-        family: "runtime_type_guard",
-        operands: 2,
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
@@ -15281,33 +15213,31 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,
-        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[23]),
-        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[24]),
-        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[22]),
+        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[21]),
+        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[22]),
+        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[20]),
         OpKind::CallargsPushMethodReceiver => Some(&SIMPLEIR_OP_SHAPES[0]),
-        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[19]),
-        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[16]),
-        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[17]),
-        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[20]),
-        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[6]),
-        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[9]),
-        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[13]),
-        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[11]),
-        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[10]),
-        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[8]),
-        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[12]),
-        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[7]),
-        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[18]),
-        OpKind::GuardTag => Some(&SIMPLEIR_OP_SHAPES[3]),
-        OpKind::GuardType => Some(&SIMPLEIR_OP_SHAPES[4]),
-        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[14]),
+        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[17]),
+        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[14]),
+        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[15]),
+        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[18]),
+        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[4]),
+        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[7]),
+        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[11]),
+        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[9]),
+        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[8]),
+        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[6]),
+        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[10]),
+        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[5]),
+        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[16]),
+        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[12]),
         OpKind::Pos => Some(&SIMPLEIR_OP_SHAPES[1]),
-        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[15]),
-        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[21]),
+        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[13]),
+        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[19]),
         OpKind::UnaryPos => Some(&SIMPLEIR_OP_SHAPES[2]),
-        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[25]),
-        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[26]),
-        OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[5]),
+        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[23]),
+        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[24]),
+        OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[3]),
     }
 }
 
@@ -15591,8 +15521,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -16228,8 +16156,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::HasAttrName
         | OpKind::Id
         | OpKind::InplaceDiv
@@ -16914,8 +16840,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -17442,8 +17366,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -17962,8 +17884,6 @@ impl OpKind {
             | OpKind::GuardInt
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedLoad
             | OpKind::HasAttrName
             | OpKind::Id
@@ -18480,8 +18400,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -18999,8 +18917,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -19450,8 +19366,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::HasAttrName
         | OpKind::Id
         | OpKind::IdentityAlias
@@ -20309,8 +20223,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::HasAttrName
             | OpKind::Id
             | OpKind::IdentityAlias
@@ -20736,8 +20648,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -21359,8 +21269,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -21870,8 +21778,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -22384,8 +22290,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::GpuGridDim
         | OpKind::GpuThreadId
         | OpKind::Gt
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -22898,8 +22802,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -23660,8 +23562,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Zip => false,
         OpKind::Copy
         | OpKind::CopyVar
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::IdentityAlias
         | OpKind::LoadVar
         | OpKind::StoreVar => true,
@@ -23931,8 +23831,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -24448,8 +24346,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -25992,8 +25888,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::Line
         | OpKind::ListReverseSlice
         | OpKind::Missing
@@ -26265,8 +26159,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -26782,8 +26674,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -27289,8 +27179,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -27814,8 +27702,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -28332,8 +28218,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -28848,8 +28732,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -29365,8 +29247,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -29882,8 +29762,6 @@ impl OpKind {
             | OpKind::GuardLayout
             | OpKind::GuardNone
             | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
             | OpKind::GuardedLoad
@@ -41887,8 +41765,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -42396,8 +42272,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -42913,8 +42787,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -43435,8 +43307,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -44111,8 +43981,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -44626,8 +44494,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad
@@ -45147,8 +45013,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::GuardLayout
         | OpKind::GuardNone
         | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
         | OpKind::GuardedFieldGet
         | OpKind::GuardedFieldSet
         | OpKind::GuardedLoad

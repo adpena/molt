@@ -1592,12 +1592,6 @@ return_contract = "owned_object"
 type = 4
 
 [[import]]
-name = "guard_type"
-boxed_call = true
-return_contract = "borrowed_object"
-type = 3
-
-[[import]]
 name = "guarded_field_get"
 return_contract = "owned_object"
 type = 8
@@ -5876,18 +5870,6 @@ required_imports = [
 kind = "abs"
 import_name = "abs_builtin"
 args = ["local:0"]
-
-[[op_loop_runtime_call]]
-kind = "guard_tag"
-import_name = "guard_type"
-args = ["local:0", "local:1"]
-required_imports = ["guard_type"]
-
-[[op_loop_runtime_call]]
-kind = "guard_type"
-import_name = "guard_type"
-args = ["local:0", "local:1"]
-required_imports = ["guard_type"]
 
 [[op_loop_runtime_call]]
 kind = "string_format"

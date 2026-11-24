@@ -1168,7 +1168,6 @@ pub(crate) mod tests {
                 | RuntimeFn::Ellipsis
                 | RuntimeFn::GeneratorSend
                 | RuntimeFn::TypeOf
-                | RuntimeFn::GuardType
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer

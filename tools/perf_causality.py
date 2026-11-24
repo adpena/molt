@@ -124,7 +124,6 @@ CAUSALITY_RULES: tuple[CausalityRule, ...] = (
             "bound_method",
             "method",
             "call_function",
-            "guard_type",
             "molt_call",
         ),
         benchmark_needles=("attr", "method", "dispatch", "class"),

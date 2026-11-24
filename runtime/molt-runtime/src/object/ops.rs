@@ -604,8 +604,6 @@ pub(crate) fn runtime_profile_payload(
         CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
     let invoke_ffi_bridge_capability_denied =
         INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT.load(AtomicOrdering::Relaxed);
-    let guard_tag_type_mismatch_deopt =
-        GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
     let guard_dict_shape_layout_mismatch_deopt =
         GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
     let guard_dict_shape_layout_fail_null_obj =
@@ -750,7 +748,6 @@ pub(crate) fn runtime_profile_payload(
         dict_str_int_prehash_deopt,
         call_indirect_noncallable: call_indirect_noncallable_deopt,
         invoke_ffi_bridge_capability_denied,
-        guard_tag_type_mismatch: guard_tag_type_mismatch_deopt,
         guard_dict_shape_layout_mismatch: guard_dict_shape_layout_mismatch_deopt,
         guard_dict_shape_layout_fail_null_obj,
         guard_dict_shape_layout_fail_non_object,

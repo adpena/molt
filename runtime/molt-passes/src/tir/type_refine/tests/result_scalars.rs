@@ -1388,10 +1388,6 @@ fn raw_carrier_type_is_scoped_to_scalar_conversions() {
         copy_kind_raw_carrier_type(Some(molt_ir::OpKind::CopyVar)),
         None
     );
-    assert_eq!(
-        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::GuardTag)),
-        None
-    );
     assert_eq!(copy_kind_raw_carrier_type(None), None);
 }
 

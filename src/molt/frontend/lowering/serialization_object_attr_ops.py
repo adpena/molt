@@ -5,7 +5,6 @@ from __future__ import annotations
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
     FrontendOpKind,
-    frontend_wire_kind,
 )
 
 
@@ -321,14 +320,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.GUARD_TAG:
-            guard: SimpleIROp = {
-                "kind": frontend_wire_kind(op.kind),
-                "args": [arg.name for arg in op.args],
-            }
-            if op.result.name != "none":
-                guard["out"] = op.result.name
-            ctx.json_ops.append(guard)
         elif op.kind == FrontendKinds.DEC_REF:
             ctx.json_ops.append(
                 {

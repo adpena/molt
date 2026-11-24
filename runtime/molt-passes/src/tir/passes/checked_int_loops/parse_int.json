@@ -10,7 +10,6 @@
     {"kind":"trace_enter_slot","s_value":"py.bench_etl_orders.parse_int","value":3},
     {"kind":"check_exception","exception_edge":"origin","value":2},
     {"kind":"const","value":5,"out":"v0"},
-    {"kind":"guard_tag","args":["text","v0"]},
     {"kind":"check_exception","exception_edge":"origin","value":1},
     {"kind":"frame_home_store","value":0,"args":["text"],"out":"v1"},
     {"kind":"check_exception","exception_edge":"origin","value":1},

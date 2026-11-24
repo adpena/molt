@@ -139,17 +139,6 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
                                 && producer.has_valid_shape()
                                 && dominance.definition_available(b, Some(i), use_bid, at)
                         }),
-                    Some(molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType)
-                        if position == 0 && user.operands.len() == 2 && user.results.is_empty() =>
-                    {
-                        definitions.get(&user.operands[1]).is_some_and(|&(b, i)| {
-                            let tag = &func.blocks[&b].ops[i];
-                            tag.opcode == OpCode::ConstInt
-                                && tag.has_valid_shape()
-                                && tag.attrs.get("value") == Some(&AttrValue::Int(5))
-                                && dominance.definition_available(b, Some(i), use_bid, at)
-                        })
-                    }
                     _ => false,
                 };
                 if !valid {
@@ -163,7 +152,6 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         }
     }
     let mut replacements = HashMap::default();
-    let mut removed = HashSet::default();
     for (bid, index, value, reads) in candidates {
         let producer = func.blocks[&bid].ops[index].clone();
         let [hay, sep, field_index] = producer.operands.as_slice() else {
@@ -201,9 +189,6 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
                         vec![hay, sep, field_index, constant],
                     );
                 }
-                Some(molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType) => {
-                    removed.insert((use_bid, at));
-                }
                 _ => unreachable!("split-field use changed during rewrite"),
             }
         }
@@ -234,7 +219,7 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         for (index, op) in std::mem::take(&mut block.ops).into_iter().enumerate() {
             if let Some(properties) = replacements.remove(&(bid, index)) {
                 ops.extend(properties);
-            } else if !removed.contains(&(bid, index)) {
+            } else {
                 ops.push(op);
             }
         }

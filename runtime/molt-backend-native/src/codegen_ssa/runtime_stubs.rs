@@ -132,9 +132,6 @@ extern "C" fn ellipsis(_: u64) -> u64 {
 extern "C" fn generator_send(_: u64, a: u64, b: u64) -> u64 {
     runtime(RuntimeFn::GeneratorSend, &[a, b])
 }
-extern "C" fn guard_type(_: u64, a: u64, b: u64) -> u64 {
-    runtime(RuntimeFn::GuardType, &[a, b])
-}
 extern "C" fn type_of(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::TypeOf, &[a])
 }
@@ -518,7 +515,6 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::Ellipsis => ellipsis as *const u8,
         RuntimeFn::GeneratorSend => generator_send as *const u8,
         RuntimeFn::TypeOf => type_of as *const u8,
-        RuntimeFn::GuardType => guard_type as *const u8,
         RuntimeFn::FrameHomeLoad => frame_home_load as *const u8,
         RuntimeFn::IntFromI64 => int_from_i64 as *const u8,
         RuntimeFn::IntAsI64 => int_as_i64 as *const u8,

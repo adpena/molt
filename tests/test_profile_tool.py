@@ -35,7 +35,7 @@ def test_profile_tool_parses_runtime_json_profile() -> None:
         }
     )
     payload["hot_paths"]["dict_str_int_prehash_hit"] = 5
-    payload["deopt_reasons"]["guard_tag_type_mismatch"] = 4
+    payload["deopt_reasons"]["guard_dict_shape_layout_mismatch"] = 4
     payload["memory"].update({"peak_rss_bytes": 1234, "current_rss_bytes": 999})
     log_text = "noise\nmolt_profile_json " + json.dumps(payload) + "\n"
 

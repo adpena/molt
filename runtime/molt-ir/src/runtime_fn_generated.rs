@@ -1265,7 +1265,6 @@ pub enum RuntimeFn {
     Gt,
     GuardBuiltinBindings,
     GuardLayout,
-    GuardType,
     GuardedClassDef,
     GuardedFieldGet,
     GuardedFieldSet,
@@ -4123,7 +4122,6 @@ impl RuntimeFn {
         Self::Gt,
         Self::GuardBuiltinBindings,
         Self::GuardLayout,
-        Self::GuardType,
         Self::GuardedClassDef,
         Self::GuardedFieldGet,
         Self::GuardedFieldSet,
@@ -5833,7 +5831,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2854;
+    pub const COUNT: usize = 2853;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -22584,18 +22582,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable: None,
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_guard_type",
-        linker_symbol: "molt_guard_type__molt_context_d1086a27578cda22",
-        context: RuntimeExecutionContext::Attached,
-        params: 2,
-        param_types: PARAMS_WW,
-        result_type: Some(RuntimeMachineType::Word),
-        callable: None,
-        result: RuntimeReturnContract::BorrowedObject,
-        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::BorrowedValue),
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
@@ -47990,7 +47976,6 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::GpuThreadId => Some(RuntimeFn::GpuThreadId),
         crate::OpKind::Gt => Some(RuntimeFn::Gt),
         crate::OpKind::GuardLayout => Some(RuntimeFn::GuardLayout),
-        crate::OpKind::GuardType => Some(RuntimeFn::GuardType),
         crate::OpKind::GuardedFieldGet => Some(RuntimeFn::GuardedFieldGet),
         crate::OpKind::GuardedFieldSet => Some(RuntimeFn::GuardedFieldSet),
         crate::OpKind::HasAttrName => Some(RuntimeFn::HasAttrName),

@@ -340,58 +340,6 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
 }
 
 #[test]
-fn native_runtime_guards_check_expected_tags_and_define_used_results() {
-    for kind in [OpKind::GuardTag, OpKind::GuardType] {
-        let input = FunctionIR {
-            name: "molt_main".into(),
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            ops: vec![
-                OpIR {
-                    out: Some("source".into()),
-                    value: Some(7),
-                    ..OpIR::new(OpKind::Const)
-                },
-                OpIR {
-                    out: Some("tag".into()),
-                    value: Some(5),
-                    ..OpIR::new(OpKind::Const)
-                },
-                OpIR {
-                    args: Some(vec!["source".into(), "tag".into()]),
-                    out: Some("checked".into()),
-                    s_value: Some("int".into()),
-                    ..OpIR::new(kind)
-                },
-                OpIR {
-                    args: Some(vec!["checked".into()]),
-                    ..OpIR::new(OpKind::Ret)
-                },
-            ],
-            ..Default::default()
-        };
-        let object = SimpleBackend::new().compile(SimpleIR {
-            functions: vec![input],
-            profile: None,
-        });
-        assert!(
-            native_object_symbols(&object.bytes)
-                .undefined
-                .contains(physical_runtime_symbol("molt_guard_type")),
-            "{kind}: two raw integers and a misleading hint must not erase the check"
-        );
-        // The profile flag gating the admitted check is the thread-record word
-        // THREAD_RECORD_PROFILE_ENABLED_OFFSET, read without a runtime call.
-        assert!(
-            !native_object_symbols(&object.bytes)
-                .undefined
-                .iter()
-                .any(|symbol| symbol.contains("molt_profile_enabled")),
-            "{kind}: the profile flag must not cost a runtime call"
-        );
-    }
-}
-
-#[test]
 fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
     use crate::native_backend::simple_backend::tests::{
         compile_selected_functions_direct, emit_direct_object,

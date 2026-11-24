@@ -140,10 +140,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         (OpKind::Borrow, 1, true, None, "__molt_inline_retain"),
         (OpKind::BindingAlias, 1, true, None, "__molt_inline_retain"),
         (OpKind::Release, 1, true, None, "__molt_inline_release"),
-        (OpKind::GuardTag, 2, false, None, "molt_guard_type"),
-        (OpKind::GuardTag, 2, true, None, "molt_guard_type"),
-        (OpKind::GuardType, 2, false, None, "molt_guard_type"),
-        (OpKind::GuardType, 2, true, None, "molt_guard_type"),
         (
             OpKind::FunctionClosureBits,
             1,
@@ -2097,110 +2093,6 @@ fn lower_preserved_context_exit_calls_runtime() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains_execution("molt_context_exit"), "{ir}");
-}
-
-#[test]
-fn runtime_guard_results_return_the_original_operand_after_checking() {
-    for kind in [OpKind::GuardTag, OpKind::GuardType] {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let mut func = TirFunction::new(
-            format!("checked_alias_{kind}"),
-            vec![TirType::DynBox, TirType::DynBox],
-            TirType::DynBox,
-            molt_ir::FunctionReturnAbi::Value,
-        );
-        let result = func.fresh_value();
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let source = entry.args[0].id;
-        let tag = entry.args[1].id;
-        entry.ops.push(TirOp {
-            origin: Some(kind),
-            runtime: None,
-            callee: None,
-            dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
-            operands: vec![source, tag],
-            results: vec![result],
-            attrs: AttrDict::from_iter([]),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
-        let ir = try_lower_tir_to_llvm(&func, &backend)
-            .expect("guard lowering")
-            .print_to_string()
-            .to_string();
-        assert!(
-            ir.contains_execution("@molt_guard_type(i64 %0, i64 %1)"),
-            "{ir}"
-        );
-        assert!(
-            ir.contains_execution("ret i64 %0"),
-            "guard must return its source: {ir}"
-        );
-    }
-}
-
-#[test]
-fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
-    for kind in [OpKind::GuardTag, OpKind::GuardType] {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let mut func = TirFunction::new(
-            format!("profile_guard_{kind}"),
-            vec![TirType::DynBox],
-            TirType::DynBox,
-            molt_ir::FunctionReturnAbi::Value,
-        );
-        let tag = func.fresh_value();
-        let result = func.fresh_value();
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let source = entry.args[0].id;
-        entry.ops.push(const_int_def(tag, 5));
-        for _ in 0..2 {
-            entry.ops.push(TirOp {
-                origin: Some(kind),
-                runtime: None,
-                callee: None,
-                dialect: Dialect::Molt,
-                opcode: OpCode::Copy,
-                operands: vec![source, tag],
-                results: vec![],
-                attrs: AttrDict::from_iter([]),
-                source_span: None,
-            });
-        }
-        entry.ops.last_mut().unwrap().results = vec![result];
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
-        // Final TIR carries the profile-only fact on each guard.
-        assert_eq!(
-            molt_tir::tir::passes::guard_profile::mark_profile_only_guards(&mut func),
-            2
-        );
-        let llvm = try_lower_tir_to_llvm(&func, &backend).expect("profile guard lowering");
-        assert!(llvm.verify(true));
-        let ir = llvm.print_to_string().to_string();
-        // The profile flag is one entry load of its thread-record word.
-        assert!(!ir.contains("@molt_profile_enabled"), "{ir}");
-        assert_eq!(
-            ir.matches("%runtime_profile_enabled = load i64").count(),
-            1,
-            "{ir}"
-        );
-        assert_eq!(
-            ir.matches_execution("call i64 @molt_guard_type(").count(),
-            2,
-            "{ir}"
-        );
-        assert!(
-            ir.contains_execution("guard_profile") && ir.contains_execution("ret i64 %0"),
-            "{ir}"
-        );
-    }
 }
 
 #[test]

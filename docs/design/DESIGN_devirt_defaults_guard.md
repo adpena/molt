@@ -34,11 +34,10 @@ the additional binding/global/default custody below. [mypyc's annotation
 contract](https://mypyc.readthedocs.io/en/stable/using_type_annotations.html)
 checks dynamic/static boundaries. It supports using *proved* entry facts;
 it does not make an annotation or a source name an exact Python identity.
-In current Molt, object/ops_convert.rs::molt_guard_type counts a mismatch and
-returns the original value. Check-policy GUARD_TAG is therefore a hint, not an
-enforced admission proof. D0's annotation nullness solve is counterfactual;
-D1'/D2' must not seed parameters from it. Any later enforced-annotation change
-needs its own semantic contract and complete consumer migration.
+The default source-annotation policy supplies hints. D0's annotation nullness
+solve is counterfactual, and D1'/D2' require proven call evidence to seed
+parameters. Any later enforced-annotation change needs its own semantic
+contract and complete consumer migration.
 Existing Molt precedents are the TIR inliner, its activation/drop protocol,
 the runtime's compiled-body materialization admission, and HF-821's shared
 fast-path lowering. Reuse them rather than creating a second optimizer.

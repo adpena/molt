@@ -432,11 +432,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             self._publish_python_frame_context()
             self._push_qualname(
                 python_definition_name(item), True, qualname=method_qualname
@@ -629,11 +624,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if receiver is not None and exact_receiver is not None:
                 self._stamp_exact_class(self.locals[receiver], exact_receiver)
                 self._publish_exact_local(receiver, exact_receiver)
-            if self.type_hint_policy == "check":
-                for arg in item.args.args:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(self.locals[arg.arg], hint)
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
@@ -815,13 +805,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 self._prebox_scope_cell_vars(
                     cell_plan.captured, private_cells=cell_plan.private
                 )
-                if self.type_hint_policy == "check":
-                    for arg in arg_nodes:
-                        hint = self.explicit_type_hints.get(arg.arg)
-                        if hint is not None:
-                            self._emit_guard_type(
-                                MoltValue(arg.arg, type_hint=hint), hint
-                            )
                 self._publish_python_frame_context()
                 self._push_qualname(
                     python_definition_name(item), True, qualname=method_qualname
@@ -979,11 +962,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             self._publish_python_frame_context()
             self._push_qualname(
                 python_definition_name(item), True, qualname=method_qualname

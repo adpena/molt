@@ -1059,9 +1059,7 @@ pub(crate) mod machine {
         inputs: &[Value],
         fail_allocation: bool,
     ) -> Run<K::Fact> {
-        run_with(inputs, fail_allocation, 0, false, |b, args| {
-            kernel.build(b, args)
-        })
+        run_with(inputs, fail_allocation, 0, |b, args| kernel.build(b, args))
     }
 
     pub(crate) fn run_with_pending_byte<K: Kernel>(
@@ -1070,15 +1068,9 @@ pub(crate) mod machine {
         fail_allocation: bool,
         pending: u8,
     ) -> Run<K::Fact> {
-        run_with(inputs, fail_allocation, pending, false, |b, args| {
+        run_with(inputs, fail_allocation, pending, |b, args| {
             kernel.build(b, args)
         })
-    }
-
-    /// [`run`] while the process collects runtime profile counters: the
-    /// thread record's profile-enabled word is 1.
-    pub(crate) fn run_with_profile<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact> {
-        run_with(inputs, false, 0, true, |b, args| kernel.build(b, args))
     }
 
     /// [`run`] over a body that builds with `NativeCodegen` itself.
@@ -1086,7 +1078,6 @@ pub(crate) mod machine {
         inputs: &[Value],
         fail_allocation: bool,
         pending: u8,
-        profile_enabled: bool,
         body: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> (F, Vec<Value_>),
     ) -> Run<F> {
         let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
@@ -1176,9 +1167,6 @@ pub(crate) mod machine {
         let mut bytes = first.to_ne_bytes();
         bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = pending;
         *first = u64::from_ne_bytes(bytes);
-        let profile =
-            molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled.offset() as usize / 8;
-        record[profile] = u64::from(profile_enabled);
         let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
         attached.bind_thread_record(record.as_mut_ptr() as u64);
         kernel_code(
@@ -1352,7 +1340,7 @@ pub(crate) mod machine {
         ] {
             for (left, right) in cases {
                 let inputs = [Value::Word(left as u64), Value::Word(right as u64)];
-                let run = run_with(&inputs, false, 0, false, |b, args| {
+                let run = run_with(&inputs, false, 0, |b, args| {
                     let (value, overflow) = b.int_checked_portable(op, args[0], args[1]);
                     ((), vec![value, overflow])
                 });

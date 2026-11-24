@@ -558,7 +558,7 @@ simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 # Canonical shaped kinds whose args are their sole input carrier. Aliases
 # inherit this field role; return-family roles remain owned by return_shape.
 simpleir_var_forbidden_kinds = [
-    "box", "unbox", "pos", "warn_stderr", "guard_tag", "guard_type", "module_slot",
+    "box", "unbox", "pos", "warn_stderr", "module_slot",
 ]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
@@ -654,7 +654,7 @@ simpleir_host_capability_semantics_kinds = [
 # binding_alias only retains its operand (+1) and releases nothing.
 callback_free_copy_kinds = [
     "binding_alias", "call_async", "guard_bool", "guard_float", "guard_int",
-    "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
+    "guard_layout", "guard_none", "guard_str",
     "line", "list_reverse_slice", "missing", "nop", "print_newline",
 ]
 
@@ -1991,8 +1991,6 @@ classifier_scalar_value_forward = ["frame_home_store", "binding_alias"]
 classifier_no_heap_move = [
     "copy",
     "copy_var",
-    "guard_tag",
-    "guard_type",
     "identity_alias",
     "load_var",
     "store_var",
@@ -2014,20 +2012,6 @@ value_rule = "unconstrained"
 kind = "pos"
 family = "unary_numeric"
 operands = 1
-value_rule = "unconstrained"
-
-# Runtime validation reads both the value and its dynamic expected tag. The
-# result aliases operand zero; no-heap-move ownership does not make it unary.
-[[simpleir_op_shape]]
-kind = "guard_tag"
-family = "runtime_type_guard"
-operands = 2
-value_rule = "unconstrained"
-
-[[simpleir_op_shape]]
-kind = "guard_type"
-family = "runtime_type_guard"
-operands = 2
 value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
@@ -6097,16 +6081,6 @@ reason = "control-flow: pending-exception branch/check node"
 kind = "GUARD_LAYOUT"
 effect = "control"
 reason = "control-flow: object layout guard deopt/check"
-
-[[frontend_effect_kind]]
-kind = "GUARD_TAG"
-effect = "control"
-reason = "control-flow: type tag guard deopt/check"
-
-[[frontend_effect_kind]]
-kind = "GUARD_TYPE"
-effect = "control"
-reason = "control-flow: type guard deopt/check"
 
 [[frontend_effect_kind]]
 kind = "RAISE_CAUSE"

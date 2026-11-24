@@ -5,9 +5,9 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Mapping
 
-PROCESS_PROFILE_SCHEMA_VERSION = 3
+PROCESS_PROFILE_SCHEMA_VERSION = 4
 PROCESS_PROFILE_KIND = "runtime_feedback"
-PROFILE_EPOCH_SCHEMA_VERSION = 2
+PROFILE_EPOCH_SCHEMA_VERSION = 3
 PROFILE_EPOCH_KIND = "runtime_profile_epoch"
 
 PROCESS_SECTION_ORDER = (
@@ -115,7 +115,6 @@ PROCESS_COUNTER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
             (
                 "call_indirect_noncallable",
                 "invoke_ffi_bridge_capability_denied",
-                "guard_tag_type_mismatch",
                 "guard_dict_shape_layout_mismatch",
                 "guard_dict_shape_layout_fail_null_obj",
                 "guard_dict_shape_layout_fail_non_object",

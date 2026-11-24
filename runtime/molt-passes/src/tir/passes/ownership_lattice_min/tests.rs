@@ -245,38 +245,6 @@ fn copy_transparent_alias_obeys_declared_source_shape() {
 
     let non_copy = op(OpCode::Call, vec![source], vec![alias_result]);
     assert_eq!(copy_transparent_alias(&non_copy), None);
-
-    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
-        let guard = original_kind_copy(kind, vec![source, extra], vec![alias_result]);
-        assert_eq!(
-            copy_transparent_alias(&guard),
-            Some(NoHeapCopyAlias {
-                source,
-                result: alias_result,
-            })
-        );
-        assert!(super::super::value_identity::copy_value_source(&guard).is_none());
-        assert!(!super::super::effects::op_effects_with_types(&guard, &HashMap::default()).nothrow);
-        let mut guarded = func();
-        guarded
-            .blocks
-            .get_mut(&guarded.entry_block)
-            .unwrap()
-            .ops
-            .push(guard.clone());
-        let aliases = build_alias_union_find(&guarded);
-        assert_eq!(aliases.root(alias_result), aliases.root(source), "{kind}");
-        assert_ne!(
-            aliases.root(extra),
-            aliases.root(source),
-            "tag is a separate read"
-        );
-        for count in [0, 1, 3] {
-            let malformed = original_kind_copy(kind, vec![source; count], vec![alias_result]);
-            assert_eq!(copy_transparent_alias(&malformed), None, "{kind}/{count}");
-            assert!(super::super::value_identity::no_heap_alias_source(&malformed).is_none());
-        }
-    }
 }
 
 #[test]

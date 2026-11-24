@@ -590,9 +590,6 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some(molt_ir::OpKind::StoreVar),
         Some(molt_ir::OpKind::LoadVar),
         Some(molt_ir::OpKind::IdentityAlias),
-        // validate-and-pass-through guards: result == operand 0, no incref.
-        Some(molt_ir::OpKind::GuardTag),
-        Some(molt_ir::OpKind::GuardType),
     ];
     let inert = [
         Some(molt_ir::OpKind::Line),

@@ -427,48 +427,6 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
         assert!(rewritten.ops.iter().any(|op| op.kind == OpKind::DecRef));
     }
 
-    for (tag, guard_output, transformed) in [
-        (5, None, true),
-        (1, None, false),
-        (5, Some("observed"), false),
-    ] {
-        let mut tag_op = callback_op(OpKind::Const, &[], Some("tag"));
-        tag_op.value = Some(tag);
-        let mut check = callback_op(OpKind::CheckException, &[], None);
-        check.value = Some(9);
-        let mut label = callback_op(OpKind::Label, &[], None);
-        label.value = Some(9);
-        let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
-            "field_callbacks",
-            &["hay", "sep", "idx"],
-            vec![
-                tag_op,
-                callback_op(
-                    OpKind::StringSplitField,
-                    &["hay", "sep", "idx"],
-                    Some("field"),
-                ),
-                check,
-                callback_op(OpKind::GuardType, &["field", "tag"], guard_output),
-                callback_op(OpKind::Len, &["field"], Some("length")),
-                callback_op(OpKind::RetVoid, &[], None),
-                label,
-                callback_op(OpKind::RetVoid, &[], None),
-            ],
-        ));
-        assert_eq!(
-            rewritten
-                .ops
-                .iter()
-                .any(|op| op.kind == OpKind::StringSplitFieldStart),
-            transformed
-        );
-        assert_eq!(
-            rewritten.ops.iter().any(|op| op.kind == OpKind::GuardType),
-            !transformed
-        );
-    }
-
     let mut constructor = callback_op(OpKind::ExceptionNewBuiltinEmpty, &[], Some("exc"));
     constructor.value = Some(5);
     let mut check = callback_op(OpKind::CheckException, &[], None);
