@@ -77,6 +77,7 @@ from molt.cli.product_store import ProductStore
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_build_spec import _RuntimeWasmBuildSpec
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
     SourceRuntimeWasmGeneration,
     publish_stored_runtime_wasm_generation,
 )
@@ -215,9 +216,14 @@ def test_disabled_pair_build_still_admits_stored_generation(
 
     # Generation identity and content admission remain real. These fixtures
     # contain synthetic module bytes, so only format/export validation is stubbed.
-    def synthetic_exports(generation, _required):
+    def synthetic_exports(
+        generation: SourceRuntimeWasmGeneration,
+        _required: set[str] | frozenset[str] | None,
+        *,
+        use: RuntimeWasmCodegenUse,
+    ) -> RuntimeWasmAdmissionReport:
         try:
-            generation.verify_members()
+            generation.verify_members(use=use)
         except ValueError as exc:
             return RuntimeWasmAdmissionReport(
                 (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
@@ -533,12 +539,17 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
         "missing-export",
         "member-corrupt",
         "receipt-damaged",
+        "mode-change",
     ],
+)
+@pytest.mark.parametrize(
+    "use", [RuntimeWasmCodegenUse.LINKED, RuntimeWasmCodegenUse.DEPLOYED_RUNTIME]
 )
 def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     outcome: str,
+    use: RuntimeWasmCodegenUse,
 ) -> None:
     monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "before-codegen")
     shared_identity = make_runtime_build_identity("shared", "bound")
@@ -551,7 +562,13 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     shared_spec, reloc_spec = _specs(tmp_path)
 
     def prepare(runtime_state, **kwargs):
-        plans.append((kwargs["required_exports"], kwargs["full_export_surface"]))
+        plans.append(
+            (
+                kwargs["required_exports"],
+                kwargs["full_export_surface"],
+                kwargs["codegen_use"],
+            )
+        )
         current_shared, current_reloc = shared_identity, reloc_identity
         if len(plans) > 1 and outcome == "source-drift":
             current_shared = make_runtime_build_identity("shared", "changed")
@@ -567,7 +584,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             )
             current_shared_spec = shared_spec.with_cargo_plan(plan)
             current_reloc_spec = reloc_spec.with_cargo_plan(plan)
-        return _pair_ctx(
+        ctx = _pair_ctx(
             tmp_path,
             runtime_state,
             current_shared_spec,
@@ -576,6 +593,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             current_reloc,
             required_exports=kwargs["required_exports"],
         )
+        ctx.codegen_use = kwargs["codegen_use"]
+        return ctx
 
     def ensure_stored(ctx: runtime_wasm_pair_build._RuntimeWasmPairBuild) -> bool:
         builds.append("admit-before-codegen")
@@ -585,14 +604,20 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         assert ctx.accept_generation(generation)
         return True
 
-    def shared_exports(generation, required):
-        generation.verify_members()
+    def runtime_exports(
+        generation: SourceRuntimeWasmGeneration,
+        required: set[str] | frozenset[str] | None,
+        *,
+        use: RuntimeWasmCodegenUse,
+    ) -> RuntimeWasmAdmissionReport:
+        generation.verify_members(use=use)
         admissions.append(required)
-        return RuntimeWasmAdmissionReport(
-            shared_missing_exports=("molt_hash_builtin",)
-            if outcome == "missing-export" and required == {"add", "hash_builtin"}
-            else ()
-        )
+        if outcome == "missing-export" and required == {"add", "hash_builtin"}:
+            missing = ("molt_hash_builtin",)
+            if use is RuntimeWasmCodegenUse.LINKED:
+                return RuntimeWasmAdmissionReport(reloc_missing_symbols=missing)
+            return RuntimeWasmAdmissionReport(shared_missing_exports=missing)
+        return RuntimeWasmAdmissionReport()
 
     monkeypatch.setattr(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
@@ -603,7 +628,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch.setattr(
         runtime_wasm_pair_build,
         "runtime_wasm_generation_admission",
-        shared_exports,
+        runtime_exports,
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build._RuntimeWasmPairBuild,
@@ -619,7 +644,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         freestanding=False,
     )
     assert runtime_wasm_pair_build._ensure_runtime_wasm_both(
-        state, build_profile="release", bind_for_codegen=True, **kwargs
+        state, build_profile="release", bind_for_codegen=True, codegen_use=use, **kwargs
     )
     binding = state.runtime_wasm_codegen_binding
     assert binding is not None
@@ -628,14 +653,25 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     if outcome == "receipt-damaged":
         # A store variant is immutable: damage to the pinned receipt is caught.
         generation.manifest.write_text("{}", encoding="utf-8")
+    final_use = None
+    if outcome == "mode-change":
+        final_use = (
+            RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+            if use is RuntimeWasmCodegenUse.LINKED
+            else RuntimeWasmCodegenUse.LINKED
+        )
     passed = runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
         build_profile="release",
         required_exports={"add", "hash_builtin"},
+        codegen_use=final_use,
         **kwargs,
     )
-    assert passed == (outcome == "stable")
-    assert plans == [(None, True), (None, True)]
+    assert passed == (
+        outcome == "stable"
+        or (outcome == "member-corrupt" and use is RuntimeWasmCodegenUse.LINKED)
+    )
+    assert plans == [(None, True, use)] * (1 if outcome == "mode-change" else 2)
     assert builds == ["admit-before-codegen"]
     assert state.runtime_wasm_codegen_binding is binding
     assert state.runtime_wasm_pair is generation
@@ -2377,18 +2413,28 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
 
 
 @pytest.mark.parametrize("flags, accepted", [(0, True), (2, False), (0x50, False)])
+@pytest.mark.parametrize(
+    "use", [RuntimeWasmCodegenUse.LINKED, RuntimeWasmCodegenUse.DEPLOYED_RUNTIME]
+)
 def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: int, accepted: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: int,
+    accepted: bool,
+    use: RuntimeWasmCodegenUse,
 ) -> None:
     from molt.cli import runtime_wasm_validation
 
     ctx, generation = _observed_pair_fixture(tmp_path, flags=flags)
+    ctx.codegen_use = use
+    if use is RuntimeWasmCodegenUse.LINKED:
+        generation.shared.unlink()
     # Structural wasm-tools execution is outside the observation/admission claim.
     monkeypatch.setattr(
         runtime_wasm_validation, "_validate_wasm_structural", lambda _: None
     )
     report = runtime_wasm_validation.runtime_wasm_generation_admission(
-        generation, {"add"}
+        generation, {"add"}, use=use
     )
     assert report.accepted is accepted
     assert report.shared_missing_exports == ()

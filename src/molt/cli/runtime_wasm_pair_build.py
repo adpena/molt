@@ -81,6 +81,7 @@ from molt.cli.runtime_wasm_build_timings import (
 from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
     RuntimeWasmGeneration,
     SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
@@ -430,6 +431,7 @@ class _RuntimeWasmPairBuild:
     reloc_spec: _RuntimeWasmBuildSpec
     store: ProductStore
     pre_identity: _RuntimeWasmPairIdentity | None
+    codegen_use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
     staging_root: Path | None = None
     staging_shared: Path | None = None
     staging_reloc: Path | None = None
@@ -499,7 +501,7 @@ class _RuntimeWasmPairBuild:
         except ValueError:
             return False
         self.admission_report = runtime_wasm_generation_admission(
-            generation, self.required_exports
+            generation, self.required_exports, use=self.codegen_use
         )
         if not self.admission_report.accepted:
             return False
@@ -684,6 +686,7 @@ def _prepare_runtime_wasm_pair_build(
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
     full_export_surface: bool = False,
+    codegen_use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
 ) -> _RuntimeWasmPairBuild | None:
     def fail(summary: str) -> None:
         record_runtime_wasm_failure(
@@ -737,6 +740,7 @@ def _prepare_runtime_wasm_pair_build(
         reloc_spec,
         store,
         identity,
+        codegen_use=codegen_use,
     )
     _bind_exact_family_fingerprints(ctx, identity)
     return ctx
@@ -903,6 +907,7 @@ def _ensure_installed_runtime_wasm(
     required_exports: set[str] | frozenset[str] | None,
     planned_exports: set[str] | frozenset[str] | None,
     bind_for_codegen: bool,
+    codegen_use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
 ) -> bool:
     """Admit the shipped pair once; an installed CLI never plans or runs Cargo.
 
@@ -952,7 +957,7 @@ def _ensure_installed_runtime_wasm(
             )
         generation = binding.generation
     exports = required_exports if binding is not None else planned_exports
-    report = runtime_wasm_generation_admission(generation, exports)
+    report = runtime_wasm_generation_admission(generation, exports, use=codegen_use)
     if not report.accepted:
         return fail(
             "installed-runtime-exports",
@@ -962,7 +967,9 @@ def _ensure_installed_runtime_wasm(
     _select_runtime_wasm_generation(runtime_state, generation)
     if bind_for_codegen and binding is None:
         try:
-            binding = bind_runtime_wasm_codegen(generation, planned_exports)
+            binding = bind_runtime_wasm_codegen(
+                generation, planned_exports, use=codegen_use
+            )
         except (OSError, ValueError) as exc:
             return fail(
                 "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
@@ -986,8 +993,23 @@ def _ensure_runtime_wasm_both(
     required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
     bind_for_codegen: bool = False,
+    codegen_use: RuntimeWasmCodegenUse | None = None,
 ) -> bool:
     runtime_state.runtime_wasm_build_failure = None
+    binding = runtime_state.runtime_wasm_codegen_binding
+    if codegen_use is None:
+        codegen_use = (
+            binding.use
+            if binding is not None
+            else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+        )
+    elif binding is not None and codegen_use is not binding.use:
+        return record_runtime_wasm_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="codegen-identity-stability",
+            summary="Runtime WASM output mode changed after code generation was bound.",
+        )
     # Validator availability is a prerequisite, not an artifact cache miss.
     # Refuse before source/toolchain identity planning or any Cargo transaction.
     if (
@@ -995,7 +1017,6 @@ def _ensure_runtime_wasm_both(
         is None
     ):
         return False
-    binding = runtime_state.runtime_wasm_codegen_binding
     # Once app layout is emitted, imports are admission obligations, not a new
     # runtime build plan. Recapture current source/toolchain identity using the
     # original plan; never rebuild or switch physical members beneath the app.
@@ -1026,6 +1047,7 @@ def _ensure_runtime_wasm_both(
             required_exports=required_exports,
             planned_exports=planned_exports,
             bind_for_codegen=bind_for_codegen,
+            codegen_use=codegen_use,
         )
     ctx = _prepare_runtime_wasm_pair_build(
         runtime_state,
@@ -1041,6 +1063,7 @@ def _ensure_runtime_wasm_both(
         required_link_features=required_link_features,
         required_exports=planned_exports,
         full_export_surface=bind_for_codegen or binding is not None,
+        codegen_use=codegen_use,
     )
     if ctx is None:
         return False
@@ -1088,7 +1111,9 @@ def _ensure_runtime_wasm_both(
                     "Runtime WASM pair lost admission before code generation.",
                 )
             try:
-                binding = bind_runtime_wasm_codegen(generation, planned_exports)
+                binding = bind_runtime_wasm_codegen(
+                    generation, planned_exports, use=codegen_use
+                )
             except (OSError, ValueError) as exc:
                 return ctx.fail(
                     "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"

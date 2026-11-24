@@ -57,7 +57,7 @@ from dataclasses import replace
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Iterator, Literal, Mapping, Sequence, cast
 
 import msgpack
 import pytest
@@ -21957,15 +21957,26 @@ def _stub_backend_binary_ensure(
     return backend_bin
 
 
-@pytest.mark.parametrize("is_wasm", [False, True])
+@pytest.mark.parametrize("mode", ["native", "linked", "split"])
 def test_prepare_backend_setup_materializes_backend_before_cache_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    is_wasm: bool,
+    mode: Literal["native", "linked", "split"],
 ) -> None:
     from molt.cli import runtime_wasm_validation
+    from molt.cli.runtime_wasm_generation import (
+        RuntimeWasmCodegenUse,
+        bind_runtime_wasm_codegen,
+    )
     from tests.runtime_build_identity_helper import wasm_validator_discovery
 
+    is_wasm = mode != "native"
+    split_runtime = mode == "split"
+    codegen_use = (
+        RuntimeWasmCodegenUse.LINKED
+        if mode == "linked"
+        else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+    )
     # Backend/cache ordering assumes the WASM validator prerequisite is admitted.
     discovery = wasm_validator_discovery(tmp_path)
     monkeypatch.setattr(
@@ -21977,9 +21988,12 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     backend_bin = _stub_backend_binary_ensure(monkeypatch, tmp_path, order=call_order)
 
     binding = runtime_wasm_codegen_binding_fixture(tmp_path) if is_wasm else None
+    if binding is not None:
+        binding = bind_runtime_wasm_codegen(binding.generation, None, use=codegen_use)
 
-    def bind_runtime(state, **kwargs):
+    def bind_runtime(state: cli_models._RuntimeArtifactState, **kwargs: object) -> bool:
         assert kwargs["bind_for_codegen"] is True
+        assert kwargs["codegen_use"] is codegen_use
         call_order.append("runtime_binding")
         state.runtime_wasm_codegen_binding = binding
         return True
@@ -22056,7 +22070,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
-            split_runtime=False,
+            split_runtime=split_runtime,
             is_wasm=is_wasm,
             emit_mode="wasm" if is_wasm else "bin",
             molt_root=tmp_path,

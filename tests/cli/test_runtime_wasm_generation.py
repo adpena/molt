@@ -13,6 +13,7 @@ from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.process_environment import ProcessEnvironment
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
     RuntimeWasmReceiptRole,
     RuntimeWasmGeneration,
     RuntimeWasmTrust,
@@ -142,9 +143,19 @@ def test_codegen_identity_tracks_member_bytes_separately_from_provenance(
         tmp_path, pair_seed="new-provenance", shared=shared, reloc=reloc
     )
     second = bind_runtime_wasm_codegen(republished, {"PyTuple_New"})
+    linked_first = bind_runtime_wasm_codegen(
+        generation, {"PyTuple_New"}, use=RuntimeWasmCodegenUse.LINKED
+    )
+    linked_second = bind_runtime_wasm_codegen(
+        republished, {"PyTuple_New"}, use=RuntimeWasmCodegenUse.LINKED
+    )
     assert first.generation.manifest != second.generation.manifest
     assert first.generation.manifest == generation.manifest
     assert (first.semantic_digest == second.semantic_digest) == (change == "provenance")
+    assert linked_first.semantic_digest != first.semantic_digest
+    assert (linked_first.semantic_digest == linked_second.semantic_digest) == (
+        change in {"provenance", "shared"}
+    )
     # Equal app inputs never authorize an old source/toolchain claim.
     assert (
         read_runtime_wasm_generation(
@@ -717,6 +728,12 @@ def test_linked_runtime_admits_exact_reloc_without_shared(
     trust = RuntimeWasmTrust.of(generation)
     generation.shared.unlink()
 
+    binding = bind_runtime_wasm_codegen(
+        generation, None, use=RuntimeWasmCodegenUse.LINKED
+    )
+    binding.verify()
+    with pytest.raises(ValueError):
+        bind_runtime_wasm_codegen(generation, None)
     admitted = read_trusted_runtime_wasm_reloc(generation.manifest, trust)
     assert admitted is not None
     assert admitted.reloc_member_identity == generation.reloc_member_identity
@@ -731,10 +748,20 @@ def test_linked_runtime_admits_exact_reloc_without_shared(
 
     receipt_bytes = generation.manifest.read_bytes()
     generation.manifest.write_bytes(receipt_bytes + b"\n")
+    with pytest.raises(ValueError):
+        binding.verify()
     assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
     generation.manifest.write_bytes(receipt_bytes)
     generation.reloc.write_bytes(b"other")
     assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    rebound = replace(
+        generation,
+        receipt_identity=stable_regular_file_identity(
+            generation.manifest, label="test receipt"
+        ),
+    )
+    with pytest.raises(ValueError):
+        bind_runtime_wasm_codegen(rebound, None, use=RuntimeWasmCodegenUse.LINKED)
 
 
 def test_codegen_binding_pins_the_immutable_receipt_in_place(tmp_path: Path) -> None:

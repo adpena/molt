@@ -103,6 +103,15 @@ class RuntimeWasmReceiptRole(Enum):
     INSTALLED_PRODUCT = "installed-product"
 
 
+class RuntimeWasmCodegenUse(Enum):
+    LINKED = "linked"
+    DEPLOYED_RUNTIME = "deployed-runtime"
+
+    @classmethod
+    def for_output(cls, *, linked: bool, split_runtime: bool) -> RuntimeWasmCodegenUse:
+        return cls.LINKED if linked and not split_runtime else cls.DEPLOYED_RUNTIME
+
+
 @dataclass(frozen=True)
 class RuntimeWasmGeneration:
     manifest: Path
@@ -131,11 +140,21 @@ class RuntimeWasmGeneration:
     def _publication_payload(self) -> Mapping[str, object]:
         return self.payload
 
-    def verify_members(self, *, hash_content: bool = False) -> None:
-        for path, member in (
-            (self.shared, self.shared_member_identity),
-            (self.reloc, self.reloc_member_identity),
-        ):
+    def member_observations(
+        self, use: RuntimeWasmCodegenUse
+    ) -> tuple[tuple[Path, StableRegularFileIdentity], ...]:
+        reloc = (self.reloc, self.reloc_member_identity)
+        if use is RuntimeWasmCodegenUse.LINKED:
+            return (reloc,)
+        return ((self.shared, self.shared_member_identity), reloc)
+
+    def verify_members(
+        self,
+        *,
+        hash_content: bool = False,
+        use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
+    ) -> None:
+        for path, member in self.member_observations(use):
             if path.absolute() != member.path:
                 raise ValueError("runtime WASM member observation changed path")
             verify_stable_regular_file_identity(
@@ -155,9 +174,12 @@ class RuntimeWasmGeneration:
         return read_wasm_runtime_facts(self.reloc_member_identity, relocatable=True)
 
     def facts(self, *, relocatable: bool = False) -> WasmRuntimeFacts:
-        # Parse only the selected member. Pair/binding admission may hash both
-        # members, but split layout does not parse the reloc module's sections.
-        self.verify_members()
+        use = (
+            RuntimeWasmCodegenUse.LINKED
+            if relocatable
+            else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+        )
+        self.verify_members(use=use)
         key = "_reloc_facts" if relocatable else "_shared_facts"
         member = (
             self.reloc_member_identity if relocatable else self.shared_member_identity
@@ -167,7 +189,7 @@ class RuntimeWasmGeneration:
                 member, label="runtime WASM cached facts", hash_content=True
             )
         facts = self._reloc_facts if relocatable else self._shared_facts
-        self.verify_members()
+        self.verify_members(use=use)
         return facts
 
     @cached_property
@@ -177,7 +199,7 @@ class RuntimeWasmGeneration:
     def linking_names(self, expected_kinds: Mapping[str, str]) -> frozenset[str]:
         from molt.wasm_linking_symbols import wasm_linking_defined_names
 
-        self.verify_members()
+        self.verify_members(use=RuntimeWasmCodegenUse.LINKED)
         previous = self._linking_obligations
         missing = {
             name: kind
@@ -197,16 +219,28 @@ class RuntimeWasmGeneration:
                 label="runtime WASM cached linking symbols",
                 hash_content=True,
             )
-        self.verify_members()
+        self.verify_members(use=RuntimeWasmCodegenUse.LINKED)
         return frozenset(
             name for name, kind in expected_kinds.items() if previous[(name, kind)]
         )
 
     @cached_property
-    def _structurally_validated(self) -> bool:
+    def _structurally_validated_members(self) -> set[StableRegularFileIdentity]:
+        return set()
+
+    def validate_structure(
+        self, *, use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+    ) -> None:
         from molt.cli.runtime_wasm_validation import _validate_wasm_structural
 
-        for member in (self.shared_member_identity, self.reloc_member_identity):
+        self.verify_members(use=use)
+        validated = self._structurally_validated_members
+        for _, member in self.member_observations(use):
+            if member in validated:
+                verify_stable_regular_file_identity(
+                    member, label="runtime WASM cached structure", hash_content=True
+                )
+                continue
             with open_stable_regular_file(
                 member.path, label="runtime WASM structural input", observed=member
             ) as opened:
@@ -222,7 +256,7 @@ class RuntimeWasmGeneration:
                 error = _validate_wasm_structural(member.path)
             if error is not None:
                 raise ValueError(error)
-        return True
+            validated.add(member)
 
     def shared_runtime_import_names(self) -> tuple[str, ...]:
         """Generated runtime ABI the shared member's own build must export."""
@@ -243,16 +277,6 @@ class RuntimeWasmGeneration:
         if not imports:
             raise ValueError("runtime generation selects an empty generated ABI")
         return imports
-
-    def validate_structure(self) -> None:
-        self.verify_members()
-        if "_structurally_validated" in self.__dict__:
-            for member in (self.shared_member_identity, self.reloc_member_identity):
-                verify_stable_regular_file_identity(
-                    member, label="runtime WASM cached structure", hash_content=True
-                )
-        if not self._structurally_validated:
-            raise ValueError("runtime WASM lacks structural admission")
 
 
 def _source_generation_payload(
@@ -292,13 +316,14 @@ class SourceRuntimeWasmGeneration(RuntimeWasmGeneration):
 
 @dataclass(frozen=True)
 class RuntimeWasmCodegenBinding:
-    """One physical runtime pair and build plan for an app's code generation."""
+    """The exact runtime receipt and members selected for an app's code generation."""
 
     generation: RuntimeWasmGeneration
     required_exports: frozenset[str] | None
+    use: RuntimeWasmCodegenUse
 
     def verify(self) -> None:
-        self.generation.verify_members(hash_content=True)
+        self.generation.verify_members(hash_content=True, use=self.use)
         receipt = self.generation.receipt_identity
         if receipt is None or receipt.path != self.generation.manifest.absolute():
             raise ValueError(
@@ -310,17 +335,17 @@ class RuntimeWasmCodegenBinding:
 
     @property
     def semantic_digest(self) -> str:
-        """Bind app caches to admitted bytes, independently of source receipts.
-
-        The complete pair determines layout and callable addresses. Its build
-        provenance still crosses live admission on every reuse; it is not an
-        additional code-generation input when both members are byte-identical.
-        """
+        """Bind app caches to selected bytes, independently of source receipts."""
+        reloc = self.generation.reloc_member_identity.sha256
+        if self.use is RuntimeWasmCodegenUse.LINKED:
+            return canonical_json_sha256(
+                {"schema": "molt.runtime-wasm-linked-codegen.v1", "reloc": reloc}
+            )
         return canonical_json_sha256(
             {
                 "schema": "molt.runtime-wasm-codegen.v1",
                 "shared": self.generation.shared_member_identity.sha256,
-                "reloc": self.generation.reloc_member_identity.sha256,
+                "reloc": reloc,
             }
         )
 
@@ -328,23 +353,25 @@ class RuntimeWasmCodegenBinding:
 def bind_runtime_wasm_codegen(
     generation: RuntimeWasmGeneration,
     required_exports: set[str] | frozenset[str] | None,
+    *,
+    use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
 ) -> RuntimeWasmCodegenBinding:
-    """Pin the admitted pair and its receipt for one app's code generation.
+    """Pin the exact receipt and selected members for one app's code generation.
 
-    A product store variant and an installed cell's retained receipt are
-    each written once, so the admitted receipt in place is the pin: the
-    binding fences it and both members, and final link admits exactly them.
+    A product store variant and an installed cell's retained receipt are each
+    written once. Final link can use the same receipt to admit those members.
     """
     receipt = generation.receipt_identity
     if receipt is None or receipt.path != generation.manifest.absolute():
         raise ValueError("runtime WASM binding requires its admitted receipt")
     verify_stable_regular_file_identity(receipt, label="pinned runtime WASM receipt")
-    generation.verify_members()
+    generation.verify_members(use=use)
     return RuntimeWasmCodegenBinding(
         generation=generation,
         required_exports=None
         if required_exports is None
         else frozenset(required_exports),
+        use=use,
     )
 
 

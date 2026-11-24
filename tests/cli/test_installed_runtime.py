@@ -45,10 +45,13 @@ from molt.cli.runtime_wasm_build_support import (
 )
 from molt.cli.product_store import ProductStore
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
+    RuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
     publish_stored_runtime_wasm_generation,
     publish_runtime_wasm_product,
 )
+from molt.cli.runtime_wasm_validation import RuntimeWasmAdmissionReport
 from molt.toolchain_identity import StableRegularFileHandle, StableRegularFileIdentity
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -1348,9 +1351,13 @@ def _forbid_wasm_readmission(monkeypatch) -> list:
     monkeypatch.setattr(installed_runtime, "stable_regular_file_identity", fail)
     admitted = []
 
-    def admits(generation, exports):
-        from molt.cli.runtime_wasm_validation import RuntimeWasmAdmissionReport
-
+    def admits(
+        generation: RuntimeWasmGeneration,
+        exports: set[str] | frozenset[str] | None,
+        *,
+        use: RuntimeWasmCodegenUse,
+    ) -> RuntimeWasmAdmissionReport:
+        assert use is RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
         admitted.append((generation, exports))
         return RuntimeWasmAdmissionReport()
 
