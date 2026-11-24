@@ -893,11 +893,13 @@ class TestSplitRuntimeArtifacts:
         assert runtime_imports, (
             "app.wasm must retain molt_runtime imports in split mode"
         )
-        assert compiled_execution_symbol("molt_string_from_bytes") in runtime_imports
+        runtime = _require_split_artifact(out_dir, "molt_runtime.wasm")
+        exports = set(_collect_export_names(runtime))
+        missing = sorted(set(runtime_imports) - exports)
+        assert not missing, f"the shared runtime lacks app imports: {missing}"
         # PROGRAM_A has no Python import operation. The shared runtime still
         # publishes import support for other applications using the same image.
-        runtime = _require_split_artifact(out_dir, "molt_runtime.wasm")
-        assert "molt_module_import" in _collect_export_names(runtime)
+        assert "molt_module_import" in exports
 
     def test_worker_publishes_no_table_base(
         self, split_build_a: tuple[Path, object]

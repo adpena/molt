@@ -49,7 +49,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2520 s | 120 s | 960 s | `repository-policy` | none | `docs-gates` needs none | 35 |
 | `repository_tests` | pre-push, pr, main | yes | `github-job` | 40 min | 1800 s | 120 s | 480 s | `repository-tests` | none | `repository-tests` needs `classify-changes` | 209 |
 | `repository_dev_tests` | pre-push, pr, main | yes | `github-job` | 30 min | 900 s | 120 s | 780 s | `repository-tests` | none | `repository-dev-tests` needs `classify-changes` | 3 |
-| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 57 |
+| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 59 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |

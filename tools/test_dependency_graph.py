@@ -2294,26 +2294,25 @@ def graph_selection(
     changed = tuple(changed)
     match mode:
         case LandingMode.PRESUBMIT:
-            recent = {
-                target.partition("::")[0]
-                for target in recent_failures
-                if target.partition("::")[0] in graph.tests
-            }
+            recent_nodes = frozenset(recent_failures)
+            recent = {target.partition("::")[0] for target in recent_nodes}
             readers = graph.direct_readers(
                 changed, observations=observations, before=before
             )
-            # A data reader that recently failed postsubmit stays in presubmit:
-            # this change touches what it reads.
+            # A file-level data edge cannot establish that a prior failing
+            # case read this input. Keep that file in postsubmit. Promote
+            # only a recorded failure with a matching observed case.
+            promoted = (
+                target
+                for target in readers.data_readers
+                if "::" in target and target in recent_nodes
+            )
             selected = tuple(
                 dict.fromkeys(
                     (
                         *(path for path in changed if path in graph.tests),
                         *readers.importers,
-                        *(
-                            target
-                            for target in readers.data_readers
-                            if target.partition("::")[0] in recent
-                        ),
+                        *promoted,
                     )
                 )
             )

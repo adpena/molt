@@ -60,9 +60,12 @@ the benchmark's source and a self-time breakdown by module):
   samples in native-call binding (`call::bind`) plus descriptor binding, thread-local reads and an
   allocation per call; the global weak-reference registry is under 4%. It belongs to stages 3 and 4.
   HF-817.
-- The `struct` module re-parses its format and converts integers through the C-API bridge on
-  every call (`molt-runtime-serial/src/structs.rs`; `struct.pack("<ii", i, i + 1)` costs 44,669
-  instructions against 1,627, section 0); CPython caches compiled formats. HF-818.
+- The historical `struct.pack("<ii", i, i + 1)` profile measured 44,669 instructions
+  against 1,627 in CPython (section 0). Since `da8d4a6adf`, the serial runtime uses
+  compiled field plans in a bounded per-thread cache and reads immediate integers and
+  booleans directly. `Struct` still passes the format text on every call. The current
+  costs of dispatch, plan lookup and the remaining numeric conversions need a fresh
+  profile. HF-818.
 
 The collector and `struct` costs need their own fixes and wait for no stage. Inside the call path the same profiles show frame
 push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
