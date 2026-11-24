@@ -1422,7 +1422,7 @@ two publications per iteration).
 1. The header `lt` compares the index with the `operator_index` result. TIR had no exact type for
    that result, so `lt` could call Python and stayed a read. `operator.index` returns an exact
    `int` (CPython 3.10+, `PyNumber_Index`). `op_kinds.toml` now lists
-   `exact_int_result_copy_kinds = ["operator_index"]`; the exact scalar solver gives the result
+   `operator_index` in `exact_scalar_result_copy_kinds`; the exact scalar solver gives the result
    `BigInt`, an exact int of any magnitude with a boxed carrier, as it does for `ConstBigInt`.
    The representation plan floors integer names to `MaybeBigInt`, so no consumer unboxes it
    without a range proof.
@@ -1443,7 +1443,7 @@ two publications per iteration).
 
 **Consumers.** SimpleIR schema and transport (`ir.rs`, `ir_schema.rs`, SSA lift,
 `lower_to_simple`, `addressed_program.rs`); `op_kinds.toml` and the generators (three new lists, one `callback_free_copy_kinds` entry);
-`target_info.rs` (feature); the exact scalar solver (`exact_int_result_copy_kinds`); the pass
+`target_info.rs` (feature); the exact scalar solver (`exact_scalar_result_copy_kinds`); the pass
 and its pipeline slot; native `exception_control.rs`,
 `scalar_carriers.rs` and the frame-home lend predicate; LLVM `op_dispatch.rs`,
 `value_materialization.rs` and the lend predicate; WASM `emission.rs`, `pending_work.rs`, both

@@ -3,6 +3,10 @@ from __future__ import annotations
 from molt.opcode_literal_payloads import LITERAL_PAYLOAD_KINDS as _LITERAL_PAYLOAD_KINDS
 
 # Valid enum values and structural fact vocabularies for op_kinds.toml.
+_EXACT_COPY_RESULT_TYPES = {
+    "BigInt": "TirType::BigInt",
+    "BoxedF64": "TirType::Box(Box::new(TirType::F64))",
+}
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "three", "variable"}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from .primitive_effects import comparison_warning_pairs
+from .render_wire import kind_ref
 
 from .schema import (
     _BOXED_ALLOCATION_LAYOUT_RULES,
     _CHECKED_INT_LOOP_RULES,
     _COUNTED_LOOP_COMPARISON_ROLES,
+    _EXACT_COPY_RESULT_TYPES,
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
     _MODULE_SLOT_ACCESS_ROLES,
     _RANGE_DEVIRT_ROLES,
@@ -97,13 +99,17 @@ def _render_predicate_semantics(opcodes: list[dict], data: dict) -> str:
         "    if category == PredicateSemantics::Equality || (category == PredicateSemantics::Ordering && left == right && left.1) { OPCODE_EFFECTS_PURE } else { OPCODE_EFFECTS_PURE_MAY_THROW }\n}\n\n"
     )
     lines.append(
-        "pub fn opcode_exact_scalar_result_tir_type(opcode: OpCode, result_index: usize) -> Option<crate::tir::types::TirType> {\n"
+        "pub fn opcode_exact_scalar_result_tir_type(opcode: OpCode, origin: Option<OpKind>, result_index: usize) -> Option<TirType> {\n"
     )
-    lines.append("    match (opcode, result_index) {\n")
+    lines.append("    match (opcode, origin, result_index) {\n")
+    for kind, ty in sorted(data["exact_scalar_result_copy_kinds"].items()):
+        lines.append(
+            f"        (OpCode::Copy, Some({kind_ref(kind)}), 0) => Some({_EXACT_COPY_RESULT_TYPES[ty]}),\n"
+        )
     for row in opcodes:
         if "exact_scalar_result_type" in row:
             lines.append(
-                f"        (OpCode::{row['name']}, 0) => Some(crate::tir::types::TirType::{row['exact_scalar_result_type']}),\n"
+                f"        (OpCode::{row['name']}, _, 0) => Some(TirType::{row['exact_scalar_result_type']}),\n"
             )
     lines.append(
         "        _ => opcode_operand_independent_result_tir_type(opcode, result_index).filter(|ty| comparison_scalar_domain(ty).is_some()),\n    }\n}\n\n"

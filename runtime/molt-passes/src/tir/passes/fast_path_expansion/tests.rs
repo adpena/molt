@@ -2120,6 +2120,50 @@ fn cold_module_expands_typed_sqrt_only_in_repeated_blocks() {
 }
 
 #[test]
+fn boxed_float_conversion_proves_the_sqrt_operand_without_reboxing_it() {
+    use molt_ir::{FunctionIR, OpIR, OpKind};
+
+    let source = FunctionIR {
+        name: "convert_then_sqrt".into(),
+        params: vec!["arg".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                args: Some(vec!["arg".into()]),
+                out: Some("converted".into()),
+                ..OpIR::new(OpKind::FloatFromObj)
+            },
+            OpIR {
+                s_value: Some(RuntimeFn::MathSqrt.symbol().into()),
+                args: Some(vec!["converted".into()]),
+                out: Some("root".into()),
+                ..OpIR::new(OpKind::Call)
+            },
+            OpIR {
+                args: Some(vec!["root".into()]),
+                ..OpIR::new(OpKind::Ret)
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let mut func = crate::tir::lower_from_simple::lower_to_tir(&source);
+    let input = ops(&func, OpCode::Call)[0].1.operands[0];
+    assert_eq!(
+        crate::tir::type_refine::extract_exact_scalar_map(&func)[&input],
+        TirType::Box(Box::new(TirType::F64)),
+    );
+    assert_eq!(
+        crate::representation_facts::analyze_representations(&func)[&input],
+        Repr::DynBox,
+    );
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::IsFloatWord)[0].1.operands, [input]);
+    assert_eq!(ops(&func, OpCode::FloatSqrt).len(), 1);
+    assert_eq!(ops(&func, OpCode::CallRuntime)[0].1.operands, [input]);
+}
+
+#[test]
 fn sqrt_does_not_admit_unknown_or_integer_arguments() {
     for ty in [TirType::DynBox, TirType::I64, TirType::Bool] {
         let mut func = TirFunction::new(

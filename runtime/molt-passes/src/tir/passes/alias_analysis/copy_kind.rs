@@ -147,9 +147,13 @@ pub(crate) fn copy_kind_raw_carrier_type(
         molt_ir::OpKind::IntFromObj
         | molt_ir::OpKind::IntFromStrOfObj
         | molt_ir::OpKind::OperatorIndex => Some(TirType::I64),
-        molt_ir::OpKind::FloatFromObj => Some(TirType::F64),
         molt_ir::OpKind::Contains => Some(TirType::Bool),
-        _ => None,
+        _ => crate::tir::op_kinds_generated::opcode_exact_scalar_result_tir_type(
+            crate::tir::ops::OpCode::Copy,
+            Some(k),
+            0,
+        )
+        .map(|ty| ty.semantic_type().clone()),
     }
 }
 
