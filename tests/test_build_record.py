@@ -19,6 +19,7 @@ import pytest
 
 from molt import build_record, input_report
 from molt.build_output_selection import BuildOutputSelection
+from molt.input_report import BuildOutputRole
 from molt.process_birth import current_process_started_ns
 
 KEY = "k" * 64
@@ -320,18 +321,32 @@ def test_reported_output_selection_uses_the_existing_worker_fact_protocol(
     )
     ledger = _future_ledger()
     monkeypatch.setattr(input_report, "_SINK", ledger)
-    input_report.report_build_output(selection.to_dict())
-    assert ledger.output_selection == selection
+    input_report.report_build_output(BuildOutputRole.PRIMARY, selection.to_dict())
+    assert ledger.output_selections[BuildOutputRole.PRIMARY] == selection
     worker_ledger = _future_ledger()
-    input_report._merge_worker_fact(
-        worker_ledger, ["build_output", selection.to_dict()]
+    linked = BuildOutputSelection.capture(
+        "named.wasm",
+        tmp_path / "output_linked.wasm",
+        out_dir=None,
+        project_root=tmp_path,
     )
-    assert worker_ledger.output_selection == selection
+    for role, item in (
+        (BuildOutputRole.PRIMARY, selection),
+        (BuildOutputRole.LINKED_WASM, linked),
+    ):
+        input_report._merge_worker_fact(
+            worker_ledger, ["build_output", role.value, item.to_dict()]
+        )
+    assert worker_ledger.output_selections == {
+        BuildOutputRole.PRIMARY: selection,
+        BuildOutputRole.LINKED_WASM: linked,
+    }
     other = BuildOutputSelection.capture(
         None, tmp_path / "other", out_dir=None, project_root=tmp_path
     )
-    worker_ledger.build_output(other.to_dict())
-    assert worker_ledger.refusals == ["build selected more than one native output"]
+    worker_ledger.build_output(BuildOutputRole.PRIMARY, other.to_dict())
+    assert worker_ledger.refusals == ["build selected conflicting primary outputs"]
+    assert worker_ledger.output_selections[BuildOutputRole.PRIMARY] == selection
 
 
 @pytest.mark.parametrize(

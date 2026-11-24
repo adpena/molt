@@ -242,11 +242,13 @@ def test_ir_lease_products_do_not_hide_explicit_source_inputs(
     "query,reusable",
     [
         ("positive", True),
-        ("negative", False),
-        ("missing-parent", False),
-        ("deep-missing-parent", False),
-        ("file-parent", False),
-        ("listing", False),
+        ("negative", True),
+        ("missing-parent", True),
+        ("deep-missing-parent", True),
+        ("file-parent", True),
+        ("listing", True),
+        ("exact-entry", True),
+        ("listing-with-raw-reader", False),
     ],
 )
 def test_import_fact_scope_controls_unrelated_parent_churn(
@@ -264,18 +266,9 @@ def test_import_fact_scope_controls_unrelated_parent_churn(
     _judge_changes_during_the_build(monkeypatch)
     calls: list[str] = []
     emit = _fake_build(calls)
-    boundaries: list[Path] = []
-    report_directory = input_report.report_directory
-
-    def capture_boundary(path: Path | str) -> None:
-        boundaries.append(Path(path))
-        report_directory(path)
-
-    monkeypatch.setattr(input_report, "report_directory", capture_boundary)
 
     def compile_with_import_fact(request: BuildRequest) -> int:
         topology = PythonImportTopology()
-        reports_before = len(boundaries)
         if query == "positive":
             observed = topology.probe(project)
             assert observed is not None and observed.path == project
@@ -294,12 +287,16 @@ def test_import_fact_scope_controls_unrelated_parent_churn(
                 "file-parent": tmp_path / "blocking-file" / "child",
             }[query]
             assert topology.probe(selected) is None
-            if query == "deep-missing-parent":
-                assert boundaries[reports_before:] == [tmp_path], (
-                    "one existing boundary, independent of missing depth"
-                )
+        elif query == "exact-entry":
+            assert (
+                topology.contains_exact(tmp_path, "candidate.py", "file")
+                == (tmp_path / "candidate.py").is_file()
+            )
         else:
             assert "project" in topology.directory_names(tmp_path)
+            if query == "listing-with-raw-reader":
+                with os.scandir(tmp_path) as unbound_entries:
+                    assert next(unbound_entries, None) is not None
         # The queried root and source stay unchanged; a sibling product appears.
         (tmp_path / f"unrelated-{len(calls)}.txt").write_text(
             "product", encoding="utf-8"
@@ -312,6 +309,10 @@ def test_import_fact_scope_controls_unrelated_parent_churn(
     _run(build, project, output)
     assert len(calls) == (1 if reusable else 2)
     assert output.read_text(encoding="utf-8") == "binary of print(1)\n"
+    if query == "exact-entry":
+        (tmp_path / "candidate.py").write_text("pass\n", encoding="utf-8")
+        _run(build, project, output)
+        assert len(calls) == 2, "a previously absent exact import now resolves"
 
 
 @pytest.mark.parametrize("change", ["kind", "symlink-target"])
@@ -883,29 +884,70 @@ def _run_wasm(build, request: BuildRequest) -> None:
     assert build(request) == 0
 
 
+@pytest.mark.parametrize("linked_output", [None, "custom.wasm"])
 def test_an_unchanged_linked_wasm_build_reuses_its_product_family(
-    project: Path, tmp_path: Path, capsys
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    linked_output: str | None,
 ) -> None:
     calls: list[str] = []
     build = build_command._in_build_scope(
         build_command._with_early_cutoff(_fake_wasm_build(calls))
     )
     out_dir = tmp_path / "web"
-    request = _wasm_request(project, out_dir)
+    request = _wasm_request(project, out_dir, linked_output=linked_output)
+    linked = out_dir / (linked_output or "output_linked.wasm")
     _run_wasm(build, request)
     capsys.readouterr()
     _run_wasm(build, request)
     assert len(calls) == 1, "the recorded WASM family was current"
     assert (
-        f"Successfully built {out_dir / 'output_linked.wasm'} (inputs unchanged)"
-        in capsys.readouterr().err
+        f"Successfully built {linked} (inputs unchanged)" in capsys.readouterr().err
     ), "a hit names the module a user runs"
     (project / "app.py").write_text("print(2)\n", encoding="utf-8")
     _run_wasm(build, request)
     assert len(calls) == 2, "an edited input rebuilds"
-    assert (out_dir / "output_linked.wasm").read_text(encoding="utf-8") == (
-        "linked print(2)\n"
+    assert linked.read_text(encoding="utf-8") == ("linked print(2)\n")
+
+
+def test_named_wasm_link_output_reselects_a_retargeted_directory(
+    project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "web"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for directory in (out, first, second):
+        directory.mkdir()
+    linked_name = "output_linked.wasm"
+    for name in (linked_name, f"{linked_name}.wasm-opt.json"):
+        (first / name).write_text("unbuilt", encoding="utf-8")
+        os.link(first / name, second / name)
+    alias = out / "named"
+    try:
+        alias.symlink_to(first, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"host cannot create output directory alias: {exc}")
+
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls))
     )
+    request = _wasm_request(project, out, linked_output="named")
+    _run_wasm(build, request)
+    _run_wasm(build, request)
+    assert len(calls) == 1
+    capsys.readouterr()
+
+    product = alias / linked_name
+    previous = input_report.stat_token(product)
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    assert input_report.stat_token(product) == previous
+    _run_wasm(build, request)
+    assert len(calls) == 2
+    assert "output selection changed" in capsys.readouterr().err
+    _run_wasm(build, request)
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -1001,7 +1043,6 @@ def test_split_cutoff_invalidates_the_full_publication(
     [
         {"json_output": True},
         {"precompile": True},
-        {"linked_output": "named_linked.wasm"},
     ],
 )
 def test_wasm_requests_beyond_the_verified_family_never_cut_off(

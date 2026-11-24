@@ -7,7 +7,7 @@ import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Literal, NamedTuple, TypeVar
 
 from molt import input_report as _input_report
@@ -89,9 +89,10 @@ def _directory_state(path: Path) -> _DirectoryState | None:
         return None
 
 
-def _read_entries(path: Path) -> tuple[os.DirEntry[str], ...]:
+def _read_entries(path: Path, *, recorded: bool) -> tuple[os.DirEntry[str], ...]:
+    scan = _input_report.scan_import_directory if recorded else os.scandir
     try:
-        with os.scandir(path) as entries:
+        with scan(path) as entries:
             return tuple(entries)
     except (FileNotFoundError, NotADirectoryError):
         return ()
@@ -174,6 +175,7 @@ class PythonImportTopology:
         if not isinstance(probes, list) or not isinstance(directories, list):
             raise ValueError("invalid import topology rows")
         result = cls()
+        probe_rows: list[tuple[Path, PythonImportPath | None]] = []
         for row in probes:
             if (
                 not isinstance(row, list)
@@ -189,11 +191,19 @@ class PythonImportTopology:
                 or type(expected[1]) is not int
             ):
                 raise ValueError("invalid import topology outcome")
-            current = result.probe(Path(row[0]))
-            actual = None if current is None else [str(current.path), current.mode]
-            if actual != expected:
+            probe_rows.append(
+                (
+                    _lexical_path(Path(row[0])),
+                    None
+                    if expected is None
+                    else PythonImportPath(Path(expected[0]), expected[1]),
+                )
+            )
+        result._reobserve_probes(path for path, _ in probe_rows)
+        for path, expected_path in probe_rows:
+            if result._probes[path] != expected_path:
                 raise PythonImportTopologyChangedError(
-                    f"recorded import lookup changed: {row[0]}"
+                    f"recorded import lookup changed: {path}"
                 )
         for row in directories:
             if (
@@ -289,7 +299,9 @@ class PythonImportTopology:
         # An absent parent is itself a negative lookup. Retain its existing
         # ancestor so creating or retargeting that path cannot grant old facts.
         if state is None and path.parent != path:
-            if self.probe(path) is not None:
+            if self.probe(
+                path
+            ) is not None and not _input_report.report_import_topology(self):
                 # ENOTDIR: the blocking entry exists but is not a directory.
                 # Its containing directory is the generation boundary.
                 _input_report.report_directory(path.parent)
@@ -299,8 +311,16 @@ class PythonImportTopology:
         self, path: Path, observation: _DirectoryObservation
     ) -> tuple[os.DirEntry[str], ...]:
         if observation.entries is None:
-            _input_report.report_directory(path)
-            before, entries = self._stable_read(path, lambda: _read_entries(path))
+            recorded = _input_report.report_import_topology(self)
+            if recorded:
+                _input_report.report_use(
+                    path, kind=_input_report.WorkerFactKind.DIRECTORY
+                )
+            else:
+                _input_report.report_directory(path)
+            before, entries = self._stable_read(
+                path, lambda: _read_entries(path, recorded=recorded)
+            )
             observation.entries = entries
             observation.entries_by_name = {entry.name: entry for entry in entries}
             observation.has_links = any(
@@ -310,25 +330,48 @@ class PythonImportTopology:
             observation.racy |= before != observation.state
         return observation.entries
 
+    def _remember_probe(
+        self, path: Path, value: PythonImportPath | None, parent: _DirectoryObservation
+    ) -> None:
+        self._probes[path] = value
+        if _input_report.report_import_topology(self):
+            _input_report.report_use(path, kind=_input_report.WorkerFactKind.PROBE)
+        else:
+            _input_report.report_probe(path)
+            if value is None and parent.state is not None:
+                # A worker records its nearest existing boundary through
+                # the recursive probes of missing parents.
+                _input_report.report_directory(path.parent)
+        parent.probes.add(path)
+        # A symlink target may change without changing the selector's
+        # parent. Verify that binding at every fence, even on POSIX.
+        parent.has_links |= (
+            path.is_symlink() or value is not None and value.path != path
+        )
+
+    def _reobserve_probes(self, paths: Iterable[Path]) -> None:
+        # Persisted queries are already known. Bracket siblings with one
+        # directory fence, and retain the individual facts for validation.
+        by_directory: dict[Path, dict[Path, None]] = {}
+        for path in paths:
+            by_directory.setdefault(path.parent, {})[path] = None
+        for directory, children in by_directory.items():
+            parent = self._directory(directory)
+            pending = tuple(path for path in children if path not in self._probes)
+            if pending:
+                _, values = self._stable_read(
+                    directory, lambda: tuple(_probe(path) for path in pending)
+                )
+                for path, value in zip(pending, values, strict=True):
+                    self._remember_probe(path, value, parent)
+
     def probe(self, path: Path) -> PythonImportPath | None:
         self._check()
         path = _lexical_path(path)
         if path not in self._probes:
             parent = self._directory(path.parent)
             _state, value = self._stable_read(path.parent, lambda: _probe(path))
-            self._probes[path] = value
-            _input_report.report_probe(path)
-            if value is None and parent.state is not None:
-                # Missing parents already retained their boundary through
-                # _directory's recursive probe. Report only the first absent
-                # component, rather than walking every ancestor suffix again.
-                _input_report.report_directory(path.parent)
-            parent.probes.add(path)
-            # A symlink target may change without changing the selector's
-            # parent. Verify that binding at every fence, even on POSIX.
-            parent.has_links |= (
-                path.is_symlink() or value is not None and value.path != path
-            )
+            self._remember_probe(path, value, parent)
         return self._probes[path]
 
     def is_dir(self, path: Path) -> bool:
@@ -397,10 +440,11 @@ class PythonImportTopology:
                 ):
                     continue
                 listed = bool(observation.exact_names or observation.name_queries)
+                recorded = listed and _input_report.report_import_topology(self)
                 state, (entries, probes) = self._stable_read(
                     path,
                     lambda: (
-                        _read_entries(path) if listed else (),
+                        _read_entries(path, recorded=recorded) if listed else (),
                         {
                             candidate: _probe(candidate)
                             for candidate in observation.probes

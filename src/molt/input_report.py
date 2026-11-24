@@ -21,11 +21,13 @@ import stat
 import sys
 import threading
 from enum import IntFlag, StrEnum
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeVar, assert_never
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from molt.durable_file_identity import StatToken
 
 # A lookup's resolved target and file type; an empty target carries the errno
@@ -38,6 +40,11 @@ class FileEvidence(IntFlag):
     UNBOUND = 1
     CUSTODY = 2
     CONSUMED = 4
+
+
+class BuildOutputRole(StrEnum):
+    PRIMARY = "primary"
+    LINKED_WASM = "linked_wasm"
 
 
 class WorkerFactKind(StrEnum):
@@ -112,6 +119,12 @@ def resolved_probe(path: Path | str) -> ProbeOutcome:
         return "", errno.ELOOP
 
 
+class ImportTopologyEvidence(Protocol):
+    """The import resolver's own validated semantic snapshot."""
+
+    def record(self) -> dict[str, object]: ...
+
+
 class FactSink(Protocol):
     """The recorder that receives facts in the recording process."""
 
@@ -141,7 +154,9 @@ class FactSink(Protocol):
 
     def observe(self, entry: tuple[str, str]) -> None: ...
 
-    def build_output(self, selection: object) -> None: ...
+    def import_topology(self, topology: ImportTopologyEvidence) -> None: ...
+
+    def build_output(self, role: BuildOutputRole, selection: object) -> None: ...
 
     def build_products(self, products: object, /) -> None: ...
 
@@ -323,7 +338,17 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
             if path is None:
                 path = "."
             if isinstance(path, (str, bytes, os.PathLike)):
-                _observe(("directory", os.path.abspath(os.fsdecode(path))))
+                name = os.path.abspath(os.fsdecode(path))
+                pending = getattr(_READ_CAPTURE, "import_scan", None)
+                if (
+                    event == "os.scandir"
+                    and pending is not None
+                    and pending[0] == name
+                    and pending[1] is _RECORDING_SESSION
+                ):
+                    _READ_CAPTURE.import_scan = None
+                else:
+                    _observe(("directory", name))
         else:
             executable, argv, cwd, env = args
             program = executable if executable is not None else (argv or [None])[0]
@@ -462,8 +487,8 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
     elif kind is WorkerFactKind.REFUSE:
         sink.refuse(entry[1])
     elif kind is WorkerFactKind.BUILD_OUTPUT:
-        _, selection = entry
-        sink.build_output(selection)
+        _, role, selection = entry
+        sink.build_output(BuildOutputRole(role), selection)
     elif kind is WorkerFactKind.BUILD_PRODUCTS:
         sink.build_products(entry[1])
     elif kind is WorkerFactKind.BUILD_CLAIM:
@@ -741,6 +766,31 @@ def report_data_file(path: Path | str) -> None:
         _report_file_fact(name, stat_token(name), None)
 
 
+def report_import_topology(topology: ImportTopologyEvidence) -> bool:
+    """Retain the topology that owns the meaning of these import reads."""
+    sink = _SINK
+    if sink is None:
+        return False
+    sink.import_topology(topology)
+    return True
+
+
+def scan_import_directory(
+    path: Path,
+) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    """Cover only the resolver's next scandir of this path.
+
+    The caller has enrolled the owning topology. Other opens and listings,
+    including another listing of the same path, remain unbound audit inputs.
+    """
+    pending = getattr(_READ_CAPTURE, "import_scan", None)
+    _READ_CAPTURE.import_scan = (os.path.abspath(path), _RECORDING_SESSION)
+    try:
+        return os.scandir(path)
+    finally:
+        _READ_CAPTURE.import_scan = pending
+
+
 def report_directory(path: Path | str) -> None:
     """Report a directory the build listed or searched. An absent directory is
     an absent lookup, so creating it later is a change."""
@@ -766,13 +816,15 @@ def report_probe(path: Path | str) -> None:
         _report_probe_fact(path, resolved_probe(path))
 
 
-def report_build_output(selection: Mapping[str, str | None]) -> None:
-    """Report the native layout's actual selection, not a guessed output name."""
+def report_build_output(
+    role: BuildOutputRole, selection: Mapping[str, str | None]
+) -> None:
+    """Report the layout's selected coordinate for this published output role."""
     sink = _SINK
     if sink is not None:
-        sink.build_output(dict(selection))
+        sink.build_output(role, dict(selection))
     else:
-        _worker_log([WorkerFactKind.BUILD_OUTPUT, dict(selection)])
+        _worker_log([WorkerFactKind.BUILD_OUTPUT, role, dict(selection)])
 
 
 def report_build_products(

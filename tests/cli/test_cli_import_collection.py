@@ -8774,9 +8774,11 @@ def test_case_exact_lookup_ignores_changes_above_its_root(
     read_entries = python_import_topology._read_entries
     churn = iter(range(1_000_000))
 
-    def read_while_parent_changes(path: Path):
+    def read_while_parent_changes(
+        path: Path, *, recorded: bool
+    ) -> tuple[os.DirEntry[str], ...]:
         (tmp_path / f"unrelated-{next(churn)}").mkdir()
-        return read_entries(path)
+        return read_entries(path, recorded=recorded)
 
     monkeypatch.setattr(
         python_import_topology, "_read_entries", read_while_parent_changes

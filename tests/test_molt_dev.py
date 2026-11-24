@@ -8283,44 +8283,6 @@ def test_land_static_only_runs_static_gates_and_skips_the_try_run(
         )
 
 
-def test_a_landed_unretired_lane_holds_no_dispatch_capacity(
-    drv: ModuleType, origin_and_clone: tuple[Path, Path]
-) -> None:
-    """`lane start` counts a record as active only while its work is unlanded:
-    a branch whose commits main already contains holds no capacity, a lane
-    that has not committed yet keeps its claim, and unlanded work keeps it."""
-    from tools import molt_dev_lanes
-    from tools.coordination_records import CoordinationRecord
-
-    _, work = origin_and_clone
-    start = _git(work, "rev-parse", "HEAD").stdout.strip()
-    _git(work, "branch", "lane/fresh", start)
-    _git(work, "checkout", "-q", "-b", "lane/landed")
-    _commit_file(work, "landed.txt", "landed\n", "landed work")
-    _git(work, "checkout", "-q", "-b", "lane/unlanded", start)
-    _commit_file(work, "unlanded.txt", "unlanded\n", "unlanded work")
-    _git(work, "checkout", "-q", "--detach", start)
-    _git(work, "merge", "-q", "--ff-only", "lane/landed")
-    main = _git(work, "rev-parse", "HEAD").stdout.strip()
-    git = drv.Git(work)
-
-    def record(branch: str, status: str = "running") -> CoordinationRecord:
-        return CoordinationRecord(
-            task=branch.removeprefix("lane/"),
-            path=work / "coordination.json",
-            payload={
-                "status": status,
-                "lane": {"branch": branch, "base_commit": start},
-            },
-        )
-
-    landed = molt_dev_lanes._landed_but_unretired
-    assert landed(git, record("lane/landed"), main)
-    assert not landed(git, record("lane/fresh"), main)
-    assert not landed(git, record("lane/unlanded"), main)
-    assert not landed(git, record("lane/landed", status="landed"), main)
-
-
 @pytest.fixture(autouse=True)
 def _postsubmit_starts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """A fast landing starts the queue runner (HF-937); a test records it

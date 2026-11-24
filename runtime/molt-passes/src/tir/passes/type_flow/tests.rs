@@ -208,6 +208,33 @@ fn id_of(module: &TirModule, name: &str) -> FunctionId {
 }
 
 #[test]
+fn generic_contexts_include_resolved_leaf_results_and_skip_isolated_bodies() {
+    let mut callee = function("leaf", 0);
+    let entry = callee.entry_block;
+    let value = const_int(&mut callee, entry, 41);
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![value],
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            callee,
+            function("unseen_entry", 0),
+            caller("main", FunctionId(0), &[]),
+        ],
+    );
+
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+
+    assert_eq!(outcome.contexts, 2);
+    assert_eq!(
+        calls(body(&module, "main"))[0].exact_result_proof(),
+        Some(TirType::I64)
+    );
+    assert!(!outcome.changed.contains(&id_of(&module, "unseen_entry")));
+}
+
+#[test]
 fn recursive_int_context_enters_its_own_clone() {
     let mut module = TirModule::with_own_table(
         "m",
@@ -371,6 +398,40 @@ fn clones_that_compile_alike_fold_into_their_origin() {
     for name in ["a", "b"] {
         assert_eq!(calls(body(&module, name))[0].callee, Some(FunctionId(0)));
     }
+}
+
+#[test]
+fn clone_merge_reports_the_representative_after_compaction() {
+    let constant_body = |name, value| {
+        let mut func = function(name, 0);
+        let entry = func.entry_block;
+        let result = const_int(&mut func, entry, value);
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            constant_body("f", 1),
+            constant_body("f__tf_i", 1),
+            constant_body("f__tf_f", 2),
+            constant_body("f__tf_b", 2),
+        ],
+    );
+    let mut outcome = TypeFlowOutcome::default();
+    let mut report = Vec::new();
+    merge_identical(&mut module, 1, &[0, 0, 0], 1, &mut outcome, &mut report);
+
+    assert_eq!(module.table.symbol(FunctionId(1)), "f__tf_f");
+    assert_eq!(
+        report,
+        [
+            "[type-flow] merged f__tf_b into f__tf_f",
+            "[type-flow] merged f__tf_i into f",
+        ]
+    );
 }
 
 #[test]

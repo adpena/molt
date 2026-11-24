@@ -5220,7 +5220,6 @@
         "tests/test_bench_dashboard.py",
         "tests/test_bench_generator_memory_guard.py",
         "tests/test_bench_suites.py",
-        "tests/test_bench_wasm_node_resolver.py",
         "tests/test_wasm_linked_runner_node_flags.py",
         "tests/test_l7_numeric_attestation_runner.py"
       ],
@@ -5292,7 +5291,6 @@
         "tests/test_bench_dashboard.py",
         "tests/test_bench_generator_memory_guard.py",
         "tests/test_bench_suites.py",
-        "tests/test_bench_wasm_node_resolver.py",
         "tests/test_wasm_linked_runner_node_flags.py",
         "tests/test_l7_numeric_attestation_runner.py"
       ],
@@ -6056,6 +6054,7 @@
       "family": "python_unit",
       "id": "python.unit.surface-contracts",
       "pytest": [
+        "tests/test_bench_wasm_node_resolver.py",
         "tests/c_api/test_c_api_parity.py",
         "tests/c_api/test_c_extension_basic.py",
         "tests/cloudflare/test_demo_endpoint_fuzz.py",
@@ -6377,6 +6376,7 @@
       "family": "python_unit",
       "id": "python.unit.surface-contracts.macos",
       "pytest": [
+        "tests/test_bench_wasm_node_resolver.py",
         "tests/c_api/test_c_api_parity.py",
         "tests/c_api/test_c_extension_basic.py",
         "tests/cloudflare/test_demo_endpoint_fuzz.py",

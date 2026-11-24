@@ -1,8 +1,9 @@
 //! The context worklist (design 78, section 3.3).
 //!
 //! A context is a body and one key: an [`ArgKind`] per parameter, `Dyn` for
-//! every parameter that is not relevant or not proven. Every body has its
-//! generic context (all `Dyn`), which every unseen caller enters. Evaluating
+//! every parameter that is not relevant or not proven. The worklist starts
+//! with generic contexts (all `Dyn`) for both endpoints of resolved calls.
+//! Unseen callers still enter the original compiled body. Evaluating
 //! a context solves the body's exact scalar facts from the key and from the
 //! return types of the contexts its resolved calls enter; each call's
 //! argument facts select that context, creating it on first use. Return
@@ -64,25 +65,40 @@ pub(super) struct Inputs<'a> {
 }
 
 impl Analysis {
-    pub(super) fn generic(&self, body: usize) -> ContextId {
-        self.index[&(body, Vec::new())]
+    pub(super) fn generic(&self, body: usize) -> Option<ContextId> {
+        self.index.get(&(body, Vec::new())).copied()
     }
 
     pub(super) fn context(&self, id: ContextId) -> &Context {
         &self.contexts[id.0]
     }
 
-    /// Solve every context reachable from the generic contexts.
+    /// Solve contexts that can change a resolved call or supply its result.
     pub(super) fn run(inputs: &Inputs<'_>) -> Self {
         let mut analysis = Analysis {
             contexts: Vec::new(),
             index: HashMap::default(),
             readers: Vec::new(),
         };
+        // A body without any resolved edge can still run through an unseen
+        // caller. Its generic code already exists, and this pass can neither
+        // change a call in it nor use its return type at another body.
+        let mut participates = vec![false; inputs.sites.len()];
+        for (caller, sites) in inputs.sites.iter().enumerate() {
+            participates[caller] |= !sites.is_empty();
+            for site in sites {
+                let callee =
+                    inputs.body_index[site.callee.index()].expect("a resolved site names a body");
+                participates[callee] = true;
+            }
+        }
+
         let mut queue = VecDeque::new();
-        for body in 0..inputs.module.functions.len() {
-            let id = analysis.intern(inputs, body, Vec::new());
-            queue.push_back(id);
+        for (body, participates) in participates.into_iter().enumerate() {
+            if participates {
+                let id = analysis.intern(inputs, body, Vec::new());
+                queue.push_back(id);
+            }
         }
         let mut queued: BTreeSet<ContextId> = queue.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
