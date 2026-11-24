@@ -51,12 +51,8 @@ impl SimpleBackend {
             ),
             #[cfg(feature = "llvm")]
             NativeCodegenBackend::Llvm => {
-                let host_features = inkwell::targets::TargetMachine::get_host_cpu_features();
-                let target = TargetInfo::from_llvm_feature_string(if self.llvm_target.is_wasm() {
-                    ""
-                } else {
-                    host_features.to_str().unwrap_or("")
-                });
+                let (_, features) = self.llvm_target.cpu_features();
+                let target = TargetInfo::from_llvm_feature_string(&features);
                 (
                     target,
                     TirPipelineCacheFlavor::Llvm,
