@@ -472,7 +472,7 @@ mod tests {
 
     use std::cell::{Cell, RefCell};
 
-    use super::super::differential::{Run, both, every_runtime_entry, kernel, machine};
+    use super::super::differential::{Run, both, every_runtime_entry, kernel};
     use super::super::scalar::tests::{NONE_WORD, Value, literal_word};
     use super::super::value_table::ValueTable;
     use super::*;
