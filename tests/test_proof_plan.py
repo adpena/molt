@@ -11108,86 +11108,65 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
         )
 
 
-def test_executor_divides_memory_among_the_commands_it_runs_at_once(
+def test_executor_charges_live_memory_and_reuses_the_whole_budget_when_alone(
+    tmp_path: Path,
+) -> None:
+    reservations: dict[str, int | None] = {}
+    lock = threading.Lock()
+    simultaneous = threading.Barrier(2)
+    first = _synthetic_executor_command("synthetic.first")
+    peer = _synthetic_executor_command("synthetic.peer")
+    last = _synthetic_executor_command(
+        "synthetic.last", dependencies=[first.id, peer.id]
+    )
+    commands = (first, peer, last)
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 2}, max_workers=4)
+    budget = 12 * 1024**3
+
+    def run(
+        _plan: proof_plan.ProofPlan,
+        command: proof_receipts.ReceiptCommand,
+        _event: threading.Event | None,
+        allocation: proof_executor.CommandAllocation,
+    ) -> dict[str, Any]:
+        with lock:
+            reservations[command.id] = allocation.memory_bytes
+        if command.id != last.id:
+            simultaneous.wait(timeout=10)
+        return _successful_synthetic_record(command)
+
+    report = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan, commands, report, run, granted_memory_bytes=budget
+        )
+        == 0
+    )
+    assert reservations == {
+        first.id: budget // 2,
+        peer.id: budget // 2,
+        last.id: budget,
+    }
+    receipt = json.loads(report.read_text(encoding="utf-8"))
+    assert sum(row["memory_slice_bytes"] for row in receipt["commands"][:2]) == budget
+    assert receipt["commands"][2]["memory_slice_bytes"] == budget
+
+
+def test_execution_memory_budget_preserves_the_parent_slice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Each concurrent command sizes `-n auto` within its own share; four
-    # commands sizing from the whole host would overcommit it fourfold.
     gib = 1024**3
     monkeypatch.setattr(
-        proof_plan.host_capacity,
-        "memory_capacity",
-        lambda environment: proof_plan.host_capacity.MemoryCapacity(64 * gib, 40 * gib),
+        proof_plan.host_capacity, "_probe_memory_bytes", lambda: (64 * gib, 40 * gib)
     )
-    monkeypatch.setattr(
-        proof_plan.host_capacity, "headroom_bytes", lambda capacity: 4 * gib
+    limit = proof_plan.host_capacity.MEMORY_SLICE_ENV
+    assert proof_executor.execution_memory_budget({limit: str(12 * gib)}) == 12 * gib
+    assert (
+        proof_executor.execution_memory_budget(
+            {limit: str(12 * gib)}, grant_bytes=4 * gib
+        )
+        == 4 * gib
     )
-    plan = replace(
-        PLAN,
-        executor_max_workers=4,
-        resource_policies=(proof_plan.ResourcePolicy("parallel", 4),),
-    )
-    commands = tuple(
-        proof_plan.ProofCommand(str(index), {"resource_class": "parallel"})
-        for index in range(9)
-    )
-    assert proof_plan._command_memory_share(plan, commands) == 9 * gib
-    assert proof_plan._command_memory_share(plan, commands[:2]) == 18 * gib
-    assert proof_plan._command_memory_share(plan, commands[:1]) == 36 * gib
-    command = next(c for c in PLAN.commands if "pytest" in c.data["argv"])
-    environment, _applied = proof_plan._command_environment(
-        PLAN, command, 30, environment=dict(os.environ), memory_share=9 * gib
-    )
-    assert environment[proof_plan.host_capacity.MEMORY_SLICE_ENV] == str(9 * gib)
-
-
-@pytest.mark.parametrize(
-    ("classes", "workers", "expected_divisor"),
-    [
-        (("compiler",) * 9, 4, 1),
-        (("compiler",) * 9 + ("python",) * 5, 4, 3),
-        (("compiler",) * 9 + ("python",) * 5, 2, 2),
-        (("python",), 4, 1),
-    ],
-)
-def test_executor_memory_share_uses_selected_resource_parallelism(
-    monkeypatch, classes, workers, expected_divisor
-):
-    gib = 1024**3
-    probes = []
-
-    def observe():
-        probes.append(None)
-        assert len(probes) == 1
-        return 64 * gib, 40 * gib
-
-    monkeypatch.setattr(proof_plan.host_capacity, "_probe_memory_bytes", observe)
-    monkeypatch.setenv(proof_plan.host_capacity.MEMORY_SLICE_ENV, str(12 * gib))
-    plan = replace(
-        PLAN,
-        executor_max_workers=workers,
-        resource_policies=(
-            proof_plan.ResourcePolicy("compiler", 1),
-            proof_plan.ResourcePolicy("python", 2),
-        ),
-    )
-    commands = tuple(
-        proof_plan.ProofCommand(str(index), {"resource_class": resource})
-        for index, resource in enumerate(classes)
-    )
-    assert proof_plan._command_memory_share(plan, commands) == (
-        12 * gib // expected_divisor
-    )
-    assert len(probes) == 1
-
-
-def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
-    monkeypatch.setattr(
-        proof_plan.host_capacity,
-        "memory_capacity",
-        lambda environment: pytest.fail("no commands need no allocation"),
-    )
-    assert proof_plan._command_memory_share(PLAN, ()) is None
 
 
 @pytest.mark.parametrize(

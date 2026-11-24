@@ -1373,6 +1373,13 @@ worker count, wall duration and child CPU usage from the guard's sole reaper.
 No operator worker override or cross-process jobserver owns this allocation.
 Non-pytest build commands retain their existing toolchain resource policies.
 
+Local and CI gates draw from one memory budget after host headroom and any
+parent allocation. Each command reserves a share at dispatch based on ready
+work and outstanding reservations. The executor returns it after the guard's
+verdict and records the assigned bytes. The next command can use the available
+budget once its peers finish. The existing Cargo and pytest policies size
+their own workers within the assigned memory.
+
 Keep deadlines, not a progress-based hang detector: CPU silence cannot tell
 blocked I/O from a hang. Managed-Python consumers reuse the existing 900-second
 identity-probe bound, rather than imposing an outer 120-second deadline.

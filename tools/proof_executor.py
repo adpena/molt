@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -24,10 +24,22 @@ from molt import host_capacity
 
 @dataclass(frozen=True, slots=True)
 class CommandAllocation:
-    """The executor's CPU share; the runner applies its memory bound second."""
+    """Resources reserved from launch through the guard's verdict."""
 
     pytest_cpus: int | None = None
     attempt: int = 1
+    memory_bytes: int | None = None
+
+
+def execution_memory_budget(
+    environ: Mapping[str, str], *, grant_bytes: int | None = None
+) -> int | None:
+    capacity = host_capacity.memory_capacity(environ)
+    _, available = capacity.bounded_bytes
+    if available is None:
+        return grant_bytes
+    usable = max(1, available - host_capacity.headroom_bytes(capacity))
+    return usable if grant_bytes is None else min(usable, grant_bytes)
 
 
 def _pytest_shares(
@@ -75,6 +87,7 @@ def execute_commands(
     *,
     failure_policy: FailurePolicy = FailurePolicy.COLLECT_INDEPENDENT,
     granted_cpus: int | None = None,
+    granted_memory_bytes: int | None = None,
     _source_tree_changes: Callable[[], tuple[str, ...]],
     toolchain_fingerprints: Callable[
         [Iterable[ToolchainPolicy], tuple[str, ...]], dict[str, dict[str, Any]]
@@ -123,6 +136,9 @@ def execute_commands(
         )
     if granted_cpus is not None and granted_cpus < 1:
         raise ValueError("proof execution requires a positive CPU grant")
+    if granted_memory_bytes is not None and granted_memory_bytes < 1:
+        raise ValueError("proof execution requires a positive memory grant")
+    available_memory = granted_memory_bytes
     available_shares = _pytest_shares(plan, command_list, granted_cpus)
     cpu_budget = sum(available_shares)
     allocations: dict[str, CommandAllocation] = {}
@@ -144,6 +160,7 @@ def execute_commands(
         "schema": "molt.proof-plan-dag-executor.v2",
         "max_workers": plan.executor_max_workers,
         "pytest_cpu_budget": cpu_budget,
+        "memory_budget_bytes": granted_memory_bytes,
         "pytest_cpu_shares": list(available_shares),
         "resource_limits": resource_limits,
         "declared_timeout_seconds": sum(
@@ -372,8 +389,21 @@ def execute_commands(
                                 or not command_by_id[ready[0][1]].data.get("pytest")
                             )
                         )
-                        if not available_resources:
+                        if not available_resources or available_memory == 0:
                             break
+                        memory_bytes = None
+                        if available_memory is not None:
+                            ready_slots = sum(
+                                min(
+                                    len(ready_by_resource[name]),
+                                    resource_limits[name] - active_by_resource[name],
+                                )
+                                for name in available_resources
+                            )
+                            slots = min(
+                                plan.executor_max_workers - len(active), ready_slots
+                            )
+                            memory_bytes = max(1, available_memory // slots)
                         resource = min(
                             available_resources,
                             key=lambda name: ready_by_resource[name][0][0],
@@ -384,10 +414,15 @@ def execute_commands(
                         command = command_by_id[command_id]
                         pending_ids.remove(command.id)
                         allocation = CommandAllocation(
-                            available_shares.pop(0)
-                            if command.data.get("pytest")
-                            else None
+                            pytest_cpus=(
+                                available_shares.pop(0)
+                                if command.data.get("pytest")
+                                else None
+                            ),
+                            memory_bytes=memory_bytes,
                         )
+                        if available_memory is not None and memory_bytes is not None:
+                            available_memory -= memory_bytes
                         allocations[command.id] = allocation
                         future = executor.submit(run_command, command, allocation)
                         active[future] = command
@@ -440,6 +475,12 @@ def execute_commands(
                     records_by_id[command.id] = record
                     allocation = allocations.pop(command.id)
                     record["pytest_cpu_share"] = allocation.pytest_cpus
+                    record["memory_slice_bytes"] = allocation.memory_bytes
+                    if (
+                        available_memory is not None
+                        and allocation.memory_bytes is not None
+                    ):
+                        available_memory += allocation.memory_bytes
                     if allocation.pytest_cpus is not None:
                         available_shares.append(allocation.pytest_cpus)
                         available_shares.sort(reverse=True)

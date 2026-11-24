@@ -1660,38 +1660,6 @@ def _local_cargo_gates() -> int:
     )
 
 
-def _memory_slice(
-    plan: _LocalGatePlan, classes: dict[str, int], grant: HostWorkGrant | None
-) -> int | None:
-    """The memory one gate may claim while the executor runs others beside it.
-
-    The proof executor's own rule (``proof_plan._command_memory_share``): the
-    memory beyond the reserve, divided by the most gates that can run at once.
-    """
-    from molt import host_capacity
-
-    capacity = host_capacity.memory_capacity(os.environ)
-    _total, available = capacity.bounded_bytes
-    if available is None and grant is None:
-        return None
-    slots = sum(
-        min(classes[policy.name], policy.max_parallel)
-        for policy in plan.resource_policies
-    )
-    concurrency = max(1, min(plan.executor_max_workers, slots))
-    usable = (
-        None
-        if available is None
-        else max(0, available - host_capacity.headroom_bytes(capacity))
-    )
-    if grant is not None:
-        usable = (
-            grant.memory_bytes if usable is None else min(usable, grant.memory_bytes)
-        )
-    assert usable is not None
-    return max(1, usable // concurrency)
-
-
 def _local_command(
     ordinal: int, gate: Gate, cell: str, *, repo: Path
 ) -> _LocalGateCommand:
@@ -1775,7 +1743,9 @@ def _run_executor_block(
     )
     from molt import host_capacity
 
-    memory_slice = _memory_slice(plan, classes, grant)
+    memory_budget = proof_executor.execution_memory_budget(
+        os.environ, grant_bytes=None if grant is None else grant.memory_bytes
+    )
     cargo_jobs = None
     pytest_cpu_budget = None
     if grant is not None:
@@ -1787,16 +1757,6 @@ def _run_executor_block(
             plan.executor_max_workers - 1,
         )
         pytest_cpu_budget = max(1, grant.workers - occupied * cargo_jobs)
-    environments = {
-        toolchains: (
-            environment
-            if memory_slice is None
-            else environment.overlay(
-                {host_capacity.MEMORY_SLICE_ENV: str(memory_slice)}
-            )
-        )
-        for toolchains, environment in runtime.environments.items()
-    }
 
     def run_command(
         _plan: Any,
@@ -1838,13 +1798,16 @@ def _run_executor_block(
         streams, stream_error = prepare_gate_streams(attempt_dir, command.ordinal)
         record.update(stream_record(streams, stream_error))
         try:
-            environment = environments[command.gate.toolchains].overlay(
-                {
-                    "MOLT_GUARD_PROFILE_LOG": str(
-                        log_dir
-                        / f"gate-{command.ordinal:03d}.attempt-{allocation.attempt}.profile.jsonl"
-                    )
-                }
+            overrides = {
+                "MOLT_GUARD_PROFILE_LOG": str(
+                    log_dir
+                    / f"gate-{command.ordinal:03d}.attempt-{allocation.attempt}.profile.jsonl"
+                )
+            }
+            if allocation.memory_bytes is not None:
+                overrides[host_capacity.MEMORY_SLICE_ENV] = str(allocation.memory_bytes)
+            environment = runtime.environments[command.gate.toolchains].overlay(
+                overrides
             )
             if (
                 cargo_jobs is not None
@@ -1937,6 +1900,7 @@ def _run_executor_block(
         commands,
         receipt_path,
         failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        granted_memory_bytes=memory_budget,
         granted_cpus=pytest_cpu_budget,
         _source_tree_changes=runtime.source_changes,
         toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),

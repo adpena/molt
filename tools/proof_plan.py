@@ -7,7 +7,6 @@ local gate commands live only in ``tools/proof_plan.toml``.
 
 from __future__ import annotations
 
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import fnmatch
@@ -83,6 +82,7 @@ from molt.cargo_execution_policy import (  # noqa: E402
 )
 
 from tools.proof_executor import (  # noqa: E402
+    execution_memory_budget,
     CommandAllocation,
     execute_commands as _execute_commands,
 )
@@ -5318,33 +5318,6 @@ def _topological_commands(
     return tuple(ordered)
 
 
-def _command_memory_share(
-    plan: ProofPlan, commands: Iterable[ProofCommand]
-) -> int | None:
-    """The memory each command may claim while the executor runs others beside it.
-
-    Count the selected resource classes within their existing parallel limits,
-    capped by ``executor_max_workers``. This static upper bound preserves room
-    for every possible concurrent command without dividing serialized compiler
-    work by unused executor slots. Dependencies may reduce actual concurrency;
-    this does not redistribute memory as commands finish.
-    """
-    selected = Counter(str(command.data["resource_class"]) for command in commands)
-    if not selected:
-        return None
-    capacity = host_capacity.memory_capacity(os.environ)
-    _total, available = capacity.bounded_bytes
-    if available is None:
-        return None
-    resource_slots = sum(
-        min(selected[policy.name], policy.max_parallel)
-        for policy in plan.resource_policies
-    )
-    concurrency = max(1, min(plan.executor_max_workers, resource_slots))
-    usable = max(0, available - host_capacity.headroom_bytes(capacity))
-    return max(1, usable // concurrency)
-
-
 def _command_environment(
     plan: ProofPlan,
     command: ProofCommand,
@@ -5776,7 +5749,7 @@ def execute_commands(
     profile_root = (
         harness_guard_artifact_dir(ROOT, baseline) / "proof-plan" / receipt_path.stem
     )
-    memory_share = _command_memory_share(plan, commands)
+    memory_budget = execution_memory_budget(baseline) if commands else None
     closures = {command.id: plan.required_toolchains(command) for command in commands}
     environments: dict[tuple[str, ...], Mapping[str, str]] = {}
 
@@ -5808,6 +5781,7 @@ def execute_commands(
         plan,
         commands,
         receipt_path,
+        granted_memory_bytes=memory_budget,
         _source_tree_changes=_source_tree_changes,
         toolchain_fingerprints=admit,
         _authority_sha256=_authority_sha256,
@@ -5828,7 +5802,7 @@ def execute_commands(
                     ),
                 }
             ),
-            memory_share=memory_share,
+            memory_share=allocation.memory_bytes,
             allocation=allocation,
         ),
         _cache_disposition=_cache_disposition,
