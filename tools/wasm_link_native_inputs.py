@@ -92,8 +92,9 @@ def _resolve_native_link_requirements(
         path = Path(item.path)
         eager = native_link_input_is_eager(item)
         local_definitions = input_definitions.setdefault(path, set())
-        for member in iter_wasm_object_members(path):
-            facts = facts_provider(member.data)
+        for facts in facts_provider.scan_many(
+            member.data for member in iter_wasm_object_members(path)
+        ):
             names = {fact.name for fact in facts.imports if fact.kind == 0}
             names.update(facts.linking_symbols.undefined_functions)
             imported.update(names)
@@ -177,10 +178,11 @@ def _resolve_native_link_requirements(
         path = roles.get(role)
         if path is None or path in original_items:
             continue
-        for member in iter_wasm_object_members(Path(captured[path].path)):
-            host_symbols.update(
-                facts_provider(member.data).linking_symbols.defined_functions
-            )
+        for facts in facts_provider.scan_many(
+            member.data
+            for member in iter_wasm_object_members(Path(captured[path].path))
+        ):
+            host_symbols.update(facts.linking_symbols.defined_functions)
     providers = tuple(
         captured[path]
         for path in dict.fromkeys(roles.values())

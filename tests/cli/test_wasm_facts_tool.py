@@ -104,7 +104,7 @@ def source_tool(tmp_path, monkeypatch):
         assert env["MOLT_TEST_BACKEND_INPUT"] == state.expected_probe_value
         if command[1] == "--scan-wasm-link-facts":
             # The facts tool reads the probe module from stdin.
-            assert command[2:] == []
+            assert command[2:] == ["8"]
             assert input == b"\0asm\x01\0\0\0"
             assert Path(command[0]).name.startswith("molt-wasm-facts.host_tool")
         else:
@@ -281,7 +281,7 @@ def test_facts_probe_timeout_retains_diagnostics_and_releases_probe(source_tool)
     assert "partial facts stderr" in str(rejected.value)
     assert len(state.builds) == len(state.probes) == 1
     # The probe module travels on stdin: no probe file exists to release.
-    assert state.probes[0][1:] == ("--scan-wasm-link-facts",)
+    assert state.probes[0][1:] == ("--scan-wasm-link-facts", "8")
 
 
 @pytest.mark.parametrize("timeout", ["invalid", "0", "-2"])

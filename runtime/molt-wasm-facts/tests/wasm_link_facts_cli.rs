@@ -51,8 +51,8 @@ fn clean_module() -> Vec<u8> {
     module.finish()
 }
 
-/// Run the facts tool with `args` and the module bytes on stdin.
-fn run_facts(args: &[&std::ffi::OsStr], module: &[u8]) -> Output {
+/// Run the facts tool with independently framed input.
+fn run_facts(args: &[&std::ffi::OsStr], input: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
         .args(args)
         .stdin(Stdio::piped())
@@ -61,12 +61,24 @@ fn run_facts(args: &[&std::ffi::OsStr], module: &[u8]) -> Output {
         .spawn()
         .expect("spawn facts CLI");
     // A refused command may exit before it reads its input.
-    let _ = child.stdin.take().expect("stdin").write_all(module);
+    let _ = child.stdin.take().expect("stdin").write_all(input);
     child.wait_with_output().expect("run facts CLI")
 }
 
+fn scan_modules(modules: &[&[u8]]) -> Output {
+    let lengths = modules
+        .iter()
+        .map(|module| module.len().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    run_facts(
+        &["--scan-wasm-link-facts".as_ref(), lengths.as_ref()],
+        &modules.concat(),
+    )
+}
+
 fn scan(module: &[u8]) -> Output {
-    run_facts(&["--scan-wasm-link-facts".as_ref()], module)
+    scan_modules(&[module])
 }
 
 #[test]
@@ -119,8 +131,7 @@ fn cli_emits_versioned_error_json_and_nonzero_exit() {
 
 #[test]
 fn cli_input_path_is_a_structured_error() {
-    // The module arrives on stdin; a path argument is a protocol error, not
-    // a file the tool opens.
+    // The tool opens no input pathname and accepts only lengths in argv.
     let fixture = temp_wasm("path-argument", &clean_module());
     let output = run_facts(
         &["--scan-wasm-link-facts".as_ref(), fixture.0.as_os_str()],
@@ -133,6 +144,38 @@ fn cli_input_path_is_a_structured_error() {
     assert!(
         payload["error"]
             .as_str()
-            .is_some_and(|error| error.contains("reads the module from stdin"))
+            .is_some_and(|error| error.contains("invalid wasm facts module length"))
     );
+}
+
+#[test]
+fn cli_keeps_order_and_stops_at_the_rejected_module() {
+    let clean = clean_module();
+    let empty = b"\0asm\x01\0\0\0";
+    let output = scan_modules(&[&clean, empty, b"\0asm", &clean]);
+    assert_eq!(output.status.code(), Some(2));
+    let rows: Vec<Value> = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .expect("parse ordered records");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["facts"]["code_body_count"], 2);
+    assert_eq!(rows[1]["facts"]["code_body_count"], 0);
+    assert_eq!(rows[2]["ok"], false);
+}
+
+#[test]
+fn cli_refuses_a_partial_frame_without_passing_the_prefix() {
+    let output = run_facts(
+        &["--scan-wasm-link-facts".as_ref(), "8,4096".as_ref()],
+        b"\0asm\x01\0\0\0\0asm",
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let rows: Vec<Value> = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .expect("parse ordered records");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["ok"], true);
+    assert_eq!(rows[1]["error"], "truncated wasm facts module");
 }

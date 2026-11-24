@@ -2,7 +2,7 @@ use molt_host_process::host_process_environment_generated::HostProcessEnv;
 use molt_host_process::{
     default_process_max_rss_gb, install_process_memory_limit, process_max_rss_bytes_from,
 };
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::{env, io};
 
 #[derive(serde::Serialize)]
@@ -20,46 +20,72 @@ struct WasmLinkFactsFailure<'a> {
 }
 
 fn emit_wasm_link_facts_result(
+    output: &mut impl Write,
     result: Result<molt_wasm_facts::WasmLinkFacts, String>,
-) -> io::Result<()> {
-    match result {
+) -> io::Result<bool> {
+    let passed = match result {
         Ok(facts) => {
             serde_json::to_writer(
-                io::stdout().lock(),
+                &mut *output,
                 &WasmLinkFactsSuccess {
                     schema_version: molt_wasm_facts::WASM_LINK_FACTS_SCHEMA_VERSION,
                     ok: true,
                     facts: &facts,
                 },
             )?;
-            println!();
+            true
         }
         Err(error) => {
             serde_json::to_writer(
-                io::stdout().lock(),
+                &mut *output,
                 &WasmLinkFactsFailure {
                     schema_version: molt_wasm_facts::WASM_LINK_FACTS_SCHEMA_VERSION,
                     ok: false,
                     error: &error,
                 },
             )?;
-            println!();
-            std::process::exit(2);
+            false
         }
-    }
-    Ok(())
+    };
+    writeln!(output)?;
+    Ok(passed)
 }
 
-/// Read the whole module from stdin. The producer holds these bytes in memory
-/// already, so a pipe replaces a scratch file: no module-sized write and read
-/// per scan (HF-26).
-fn read_wasm_facts_input() -> Result<Vec<u8>, String> {
+/// Process one declared module at a time. A length never causes an allocation
+/// until the corresponding bytes have actually arrived on stdin.
+fn scan_wasm_link_facts_batch(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    lengths: &str,
+) -> io::Result<bool> {
     let mut bytes = Vec::new();
-    io::stdin()
-        .lock()
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read wasm facts input from stdin: {error}"))?;
-    Ok(bytes)
+    for length in lengths.split(',') {
+        let Ok(size) = length.parse::<u64>() else {
+            return emit_wasm_link_facts_result(
+                output,
+                Err("invalid wasm facts module length".into()),
+            );
+        };
+        bytes.clear();
+        let result = match (&mut *input).take(size).read_to_end(&mut bytes) {
+            Ok(_) if bytes.len() as u64 == size => molt_wasm_facts::scan_wasm_link_facts(&bytes),
+            Ok(_) => Err("truncated wasm facts module".into()),
+            Err(error) => Err(format!("cannot read wasm facts module: {error}")),
+        };
+        if !emit_wasm_link_facts_result(output, result)? {
+            return Ok(false);
+        }
+    }
+    match input.read_exact(&mut [0]) {
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(true),
+        result => emit_wasm_link_facts_result(
+            output,
+            Err(match result {
+                Ok(()) => "unexpected bytes after the declared wasm facts modules".into(),
+                Err(error) => format!("cannot close wasm facts input: {error}"),
+            }),
+        ),
+    }
 }
 
 #[expect(
@@ -78,19 +104,19 @@ fn install_memory_guard() {
 fn main() -> io::Result<()> {
     install_memory_guard();
     let args: Vec<String> = env::args().collect();
-    match args.get(1).map(String::as_str) {
-        Some("--scan-wasm-link-facts") => {
-            let result = if args.len() == 2 {
-                read_wasm_facts_input()
-                    .and_then(|bytes| molt_wasm_facts::scan_wasm_link_facts(&bytes))
-            } else {
-                Err(
-                    "--scan-wasm-link-facts reads the module from stdin and takes no arguments"
-                        .to_string(),
-                )
-            };
-            emit_wasm_link_facts_result(result)
+    let mut output = BufWriter::new(io::stdout().lock());
+    let passed = match args.as_slice() {
+        [_, command, lengths] if command == "--scan-wasm-link-facts" => {
+            scan_wasm_link_facts_batch(&mut io::stdin().lock(), &mut output, lengths)?
         }
-        _ => emit_wasm_link_facts_result(Err("expected --scan-wasm-link-facts".into())),
+        _ => emit_wasm_link_facts_result(
+            &mut output,
+            Err("expected --scan-wasm-link-facts followed by comma-separated byte lengths".into()),
+        )?,
+    };
+    output.flush()?;
+    if !passed {
+        std::process::exit(2);
     }
+    Ok(())
 }

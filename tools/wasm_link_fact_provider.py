@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
@@ -24,6 +24,7 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
+from molt.wasm_artifact import encode_wasm_facts_request
 from molt.wasm_linking_symbols import (
     WasmLinkingSymbol,
     WasmLinkingSymbolTable,
@@ -34,6 +35,8 @@ from molt.wasm_linking_symbols import (
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WASM_LINK")
 WASM_LINK_FACTS_SCHEMA_VERSION = 9
 _WASM_FACTS_CACHE_ENTRIES = 16
+_WASM_FACTS_BATCH_MODULES = 64
+_WASM_FACTS_BATCH_BYTES = 8 * 1024 * 1024
 _SUCCESS_RESPONSE_KEYS = frozenset({"schema_version", "ok", "facts"})
 _FAILURE_RESPONSE_KEYS = frozenset({"schema_version", "ok", "error"})
 _FACT_KEYS = frozenset(
@@ -117,10 +120,7 @@ def preserve_rejected_wasm(data: bytes, evidence_root: Path, *, stage: str) -> P
 class WasmFactsProvider(Protocol):
     """Typed callable authority for decoded WASM-link facts."""
 
-    @property
-    def authority_digest(self) -> str: ...
-
-    def __call__(self, data: bytes) -> WasmLinkFacts: ...
+    def scan_many(self, modules: Iterable[bytes]) -> Iterator[WasmLinkFacts]: ...
 
 
 class _FrozenJsonDict(dict[str, object]):
@@ -433,23 +433,25 @@ class WasmLinkFacts(Mapping[str, object]):
 
 
 def _decode_wasm_facts_response(
-    process: subprocess.CompletedProcess[str],
+    response: str,
     *,
+    failed: bool,
+    stderr: str,
     operation: str,
 ) -> WasmLinkFacts:
     try:
-        payload = loads_exact(process.stdout)
+        payload = loads_exact(response)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{operation} returned invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{operation} returned a non-object response")
     if payload.get("schema_version") != WASM_LINK_FACTS_SCHEMA_VERSION:
         raise ValueError(f"{operation} returned an unsupported response schema")
-    if process.returncode != 0:
+    if failed:
         if set(payload) != _FAILURE_RESPONSE_KEYS or payload.get("ok") is not False:
             raise ValueError(f"{operation} returned an invalid failure response")
         error = payload.get("error")
-        detail = error if isinstance(error, str) and error else process.stderr.strip()
+        detail = error if isinstance(error, str) and error else stderr.strip()
         raise ValueError(f"{operation} failed: {detail or 'unknown scanner error'}")
     if set(payload) != _SUCCESS_RESPONSE_KEYS or payload.get("ok") is not True:
         raise ValueError(f"{operation} returned an invalid success response")
@@ -545,8 +547,25 @@ class RustWasmFactsProvider:
     )
 
     def __call__(self, data: bytes) -> WasmLinkFacts:
-        with self._lock:
-            return self._provide(data)
+        return self._provide_batch((data,))[0]
+
+    def scan_many(self, modules: Iterable[bytes]) -> Iterator[WasmLinkFacts]:
+        """Keep only a bounded group of source modules and scanner responses."""
+        batch: list[bytes] = []
+        size = 0
+        for data in modules:
+            module_size = len(data)
+            if batch and (
+                len(batch) >= _WASM_FACTS_BATCH_MODULES
+                or size + module_size > _WASM_FACTS_BATCH_BYTES
+            ):
+                yield from self._provide_batch(batch)
+                batch.clear()
+                size = 0
+            batch.append(data)
+            size += module_size
+        if batch:
+            yield from self._provide_batch(batch)
 
     def _remember(self, digest: str, facts: WasmLinkFacts) -> None:
         self._cache[digest] = facts
@@ -554,28 +573,45 @@ class RustWasmFactsProvider:
         while len(self._cache) > _WASM_FACTS_CACHE_ENTRIES:
             self._cache.popitem(last=False)
 
-    def _provide(self, data: bytes) -> WasmLinkFacts:
-        hash_start = time.perf_counter()
-        digest = hashlib.sha256(data).hexdigest()
-        if self.metrics is not None:
-            self.metrics["wasm_facts_hash_ms"] += max(
-                0.0, (time.perf_counter() - hash_start) * 1000.0
-            )
-        cached = self._cache.get(digest)
-        if cached is not None:
-            self._cache.move_to_end(digest)
+    def _provide_batch(self, modules: Sequence[bytes]) -> list[WasmLinkFacts]:
+        with self._lock:
+            hash_start = time.perf_counter()
+            digests = [hashlib.sha256(data).hexdigest() for data in modules]
             if self.metrics is not None:
-                self.metrics["wasm_facts_cache_hits"] += 1.0
-            return cached
+                self.metrics["wasm_facts_hash_ms"] += max(
+                    0.0, (time.perf_counter() - hash_start) * 1000.0
+                )
+            results: dict[str, WasmLinkFacts] = {}
+            missing: dict[str, bytes] = {}
+            for digest, data in zip(digests, modules, strict=True):
+                cached = self._cache.get(digest)
+                if cached is not None:
+                    self._cache.move_to_end(digest)
+                    results[digest] = cached
+                if cached is not None or digest in missing:
+                    if self.metrics is not None:
+                        self.metrics["wasm_facts_cache_hits"] += 1.0
+                else:
+                    missing[digest] = data
+            if missing:
+                for digest, facts in self._scan_batch(missing):
+                    self._remember(digest, facts)
+                    results[digest] = facts
+            return [results[digest] for digest in digests]
+
+    def _scan_batch(
+        self, modules: Mapping[str, bytes]
+    ) -> list[tuple[str, WasmLinkFacts]]:
         verify_stable_regular_file_identity(
             self.scanner_identity,
             label="WASM facts scanner before execution",
         )
         scan_start = time.perf_counter()
-        # The bytes are already in memory: a pipe replaces a scratch file, so a
-        # scan writes and rereads no module-sized file (HF-26).
+        # All members keep the same validator. The guarded process reads them
+        # from one bounded request, and emits one ordered record per member.
+        lengths, data = encode_wasm_facts_request(modules.values())
         process = _run_scanner(
-            [str(self.scanner_identity.path), "--scan-wasm-link-facts"], data
+            [str(self.scanner_identity.path), "--scan-wasm-link-facts", lengths], data
         )
         verify_stable_regular_file_identity(
             self.scanner_identity,
@@ -588,24 +624,41 @@ class RustWasmFactsProvider:
             self.metrics["wasm_facts_scan_calls"] += 1.0
             self.metrics["wasm_facts_input_bytes"] += float(len(data))
             self.metrics["wasm_facts_response_chars"] += float(len(process.stdout))
-        try:
-            facts = _decode_wasm_facts_response(
-                process,
-                operation=f"Rust WASM facts scan for module {digest}",
+        lines = process.stdout.removesuffix("\n").split("\n") if process.stdout else []
+        last = len(lines) - 1
+        if (
+            not lines
+            or len(lines) > len(modules)
+            or (process.returncode == 0 and len(lines) != len(modules))
+        ):
+            raise ValueError(
+                f"WASM facts scanner returned {len(lines)} records for {len(modules)} "
+                f"modules (exit {process.returncode}): {process.stderr.strip()}"
             )
-        except ValueError as exc:
+        results: list[tuple[str, WasmLinkFacts]] = []
+        for index, ((digest, data), line) in enumerate(
+            zip(modules.items(), lines, strict=False)
+        ):
             try:
-                evidence = preserve_rejected_wasm(
-                    data, self.evidence_root, stage="facts-scan"
+                facts = _decode_wasm_facts_response(
+                    line,
+                    failed=bool(process.returncode) and index == last,
+                    stderr=process.stderr,
+                    operation=f"Rust WASM facts scan for module {digest}",
                 )
-            except (OSError, ValueError) as evidence_error:
-                raise ValueError(
-                    f"{exc}; failed to preserve rejected input under "
-                    f"{self.evidence_root}: {evidence_error}"
-                ) from exc
-            raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
-        self._remember(digest, facts)
-        return facts
+            except ValueError as exc:
+                try:
+                    evidence = preserve_rejected_wasm(
+                        data, self.evidence_root, stage="facts-scan"
+                    )
+                except (OSError, ValueError) as evidence_error:
+                    raise ValueError(
+                        f"{exc}; failed to preserve rejected input under "
+                        f"{self.evidence_root}: {evidence_error}"
+                    ) from exc
+                raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
+            results.append((digest, facts))
+        return results
 
 
 def _run_scanner(command: list[str], data: bytes) -> subprocess.CompletedProcess[str]:

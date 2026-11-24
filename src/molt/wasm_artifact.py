@@ -22,6 +22,13 @@ if TYPE_CHECKING:
     from molt.wasm_linking_symbols import WasmLinkingSymbolTable
 
 
+def encode_wasm_facts_request(modules: Iterable[bytes]) -> tuple[str, bytes]:
+    """Frame the scanner's stdin with lengths carried separately in argv."""
+    buffers = tuple(modules)
+    lengths = ",".join(str(len(module)) for module in buffers)
+    return lengths, buffers[0] if len(buffers) == 1 else b"".join(buffers)
+
+
 def require_current_wasm_execution_manifest(payload: object) -> Mapping[str, object]:
     from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 

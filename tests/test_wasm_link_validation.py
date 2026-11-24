@@ -1,11 +1,10 @@
 import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import NoReturn
 
 from molt.cli.source_extension_link_requirements import (
@@ -70,12 +69,9 @@ def test_wasm_facts_decoder_rejects_schema_ambiguity(
     stdout: str,
     message: str,
 ) -> None:
-    process = subprocess.CompletedProcess(["scanner"], 0, stdout, "")
-
     with pytest.raises(ValueError, match=message):
         wasm_link_fact_provider._decode_wasm_facts_response(
-            process,
-            operation="test scan",
+            stdout, failed=False, stderr="", operation="test scan"
         )
 
 
@@ -1057,14 +1053,18 @@ def test_native_provider_planning_scans_members_and_compiler_rt_once(
     )
     scanned = []
 
-    def facts(data: bytes) -> wasm_link_fact_provider.WasmLinkFacts:
-        scanned.append(data)
-        return rust_facts(data)
+    class RecordingFacts:
+        def scan_many(
+            self, modules: Iterable[bytes]
+        ) -> Iterator[wasm_link_fact_provider.WasmLinkFacts]:
+            for data in modules:
+                scanned.append(data)
+                yield rust_facts(data)
 
     selected = wasm_link_native_inputs._resolve_native_link_requirements(
         _native_link_requirements(archive),
         source_paths={archive: archive},
-        facts_provider=facts,
+        facts_provider=RecordingFacts(),
         capture_input=lambda item: item,
     )
     assert len(scanned) == 2
