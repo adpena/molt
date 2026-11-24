@@ -90,7 +90,7 @@ becomes a fresh cold block:
 
 ```
 check_exception (Origin) -> X                        // backend: caller entry at the call site
-X:  call molt_spliced_frame_link(function, location, key_space)   // per level, outermost first
+X:  call molt_spliced_frame_link(function, location, identity_slot)   // per level, outermost first
     call molt_spliced_frame_bind(key_space, key, value)           // per binding of the level
     call molt_spliced_frame_origin(None, levels)
     br <the caller's handler of the call site>(<what the call site's check passes>)
@@ -177,19 +177,21 @@ operation's own Origin check follows the unlink and takes 4.2.
 
 ### 4.6 Lowering and runtime
 
-The splice emits only operations every backend already lowers: `ConstInt` and the runtime-call
-form of `Call` (a `Call` whose typed runtime entry its `s_value` names), which the native
-back-conversion carries to SimpleIR as a `call` and LLVM lowers through the boxed runtime ABI.
-No backend changes.
+The splice emits typed runtime calls and the caller's identity-slot operations.
+`SplicedFrameSlot` provides the activation's zeroed word and `SplicedFrameObserved`
+reads whether a cold observer has published a bindings payload there. Link receives
+the word's raw address. Finish consumes the owned payload taken from it. Neither
+entry is a generic Python callable.
 
-Four runtime entries (`runtime_abi.toml`, one row each), all nothrow:
+The five runtime entries are declared in `runtime/runtime_abi.toml`.
 
 | entry | arguments | effect |
 |---|---|---|
-| `molt_spliced_frame_link` | `(function, location, key_space)` | link one owned record for the level |
+| `molt_spliced_frame_link` | `(function, location, identity_slot)` | link one record for the level and reattach its observed bindings |
 | `molt_spliced_frame_bind` | `(key_space, key, value)` | bind one local in the newest record |
 | `molt_spliced_frame_origin` | `(exception or None, levels)` | insert the newest `levels` records' entries beneath the caller's head entry, then pop them |
 | `molt_spliced_frame_unlink` | `(levels)` | pop the newest `levels` records |
+| `molt_spliced_frame_finish` | `(bindings)` | retire the observed activation and release its ownership |
 
 `link` always links exactly one record (one without code for a malformed function, which
 observers skip), so every pop stays paired with its link.
@@ -198,18 +200,19 @@ observers skip), so every pop stays paired with its link.
 
 The design review (2026-11-18) required a mechanism for each of these, not a stated boundary.
 
-### 5.1 PEP 667 writes
+### 5.1 Frame mutation by an observer
 
 From 3.13 a write through `frame.f_locals` rebinds the running frame's local, and Molt's
 unspliced frames honour it (HF-901). A bracket gives Python code a snapshot of the spliced
 activation's locals, so a write through it would not reach the compiled bindings. HF-901
 (412df7e3f8) made the writer a closed-world fact: `PythonNamespacePremise.frame_locals_writer`,
-exposed to binding flow as `frame_locals_exposed(target, writer)`. The frontend publishes it on
-each function it serializes (`FunctionIR.frame_locals_exposed`, TIR attribute
-`frame_locals_exposed`). After fusion re-optimizes the caller and prunes its brackets, it undoes a
-splice whose poll is exposed and still keeps a bracket (`PollRefusal::FrameLocalsWriter`, reported
-under `MOLT_INLINE_STATS`). Without a writer no code can rebind the locals, so the snapshot is
-exact.
+exposed to binding flow as `frame_locals_exposed(target, writer)`. Before 3.13, clearing a
+suspended generator's frame synchronously closes its continuation. The frontend therefore marks
+generator poll bodies containing a yield on these targets, independent of the writer fact.
+Both cases use `FunctionIR.frame_locals_exposed` (TIR attribute `frame_locals_exposed`).
+After bracket pruning, a marked splice stays unfused if a callback or signal poll can expose its
+frame (`PollRefusal::MutableFrame` under `MOLT_INLINE_STATS`). Refreshes of an already observed
+frame at yield and return do not themselves expose it.
 
 A poll's bracket counts. Unspliced Molt frames honour a signal handler's write at a loop poll:
 in a loop whose only callback point is its poll (`while limit and i < bound: i += 1`, all
@@ -278,14 +281,27 @@ paragraph); spliced frames add nothing to it.
 
 CPython 3.11+ caches one frame object per activation (`_PyInterpreterFrame.frame_obj`), so
 `sys._getframe() is sys._getframe()` holds, and `f_back` and a later `tb_frame` are one object.
-Molt has no frame identity for any frame: `alloc_frame_obj` builds a new object per observation.
-Measured on LLVM release for an ordinary function: `sys._getframe() is sys._getframe()` is False,
-and so is `callee_frame.f_back is sys._getframe()`; CPython prints True for both. This is not a
-property of spliced frames, and a spliced level cannot have identity before an ordinary frame
-does. The fix is one frame-object cache on the activation's bindings payload, used by every
-producer. A spliced level then keeps one identity word in the caller's frame, zeroed at its
-activation's entry, and each link reuses its payload. That fix is its own finding (HF-905).
-Until it lands, spliced frames have exactly the identity ordinary Molt frames have.
+Molt publishes the completed Python frame on its activation's bindings payload. Ordinary
+records, generator tasks and lazy traceback nodes can all materialize that same frame.
+The activation and its lazy traceback nodes collectively retain one reference to it. The
+last such owner drops that reference. The materialized traceback and any escaped frame
+continue to own their binding edges, and ordinary refcounted exit promptly releases an
+unescaped frame. Cycle traversal and detachment account for both directions.
+
+A live `f_back` lookup follows the executing records from the observed activation. An
+unlinked, suspended generator has no caller. An escaped synchronous frame retains its
+terminal caller, including when the traceback is first materialized after unwind. A started
+generator retains its terminal resumer on 3.12. Newer targets clear that link.
+Traceback line and instruction offsets stay frozen independently of the live frame.
+Signal dispatch, back links, warning sites and traceback capture share the live record's
+Python visibility. A compiled adapter whose function has a native callable class contributes
+no Python frame. An ordinary Python stdlib function retains its frame.
+
+Each spliced activation borrows a zero-initialized identity word in the caller. Its first
+observer publishes the activation's bindings there. Subsequent brackets reattach that same
+payload to their current homes, and unlink freezes the location and bindings. The compiler
+transfers the word to the runtime when the activation ends, so a repeated invocation of
+the same splice site starts with its own identity. HF-905 records backend qualification.
 
 ## 6. Alternatives rejected
 
@@ -332,8 +348,7 @@ Until it lands, spliced frames have exactly the identity ordinary Molt frames ha
   target, unfused on 3.15 because its `f_locals` reads are a writer, 5.1);
   `tests/differential/stdlib/generator_fused_signal_frame.py` (a handler's frame argument inside
   a fused body, 5.2); `tests/differential/basic/generator_fused_locals_writer.py` (an `f_locals`
-  write under 3.13+, 5.1); `tests/differential/basic/frame_object_identity.py` (pinned as the
-  open finding HF-905, 5.3).
+  write under 3.13+, 5.1); `tests/differential/basic/frame_object_identity.py` (HF-905, 5.3).
 - Cost: instructions per yield of the generator idiom against C and CPython
   (`cref/measure.sh` method), and the `call_two_args` and `method_call` idioms for the inliner.
   Measured 2026-11-18 on LLVM release at the 3.15 target: 1,665.4 unfused, 20.9 fused, CPython

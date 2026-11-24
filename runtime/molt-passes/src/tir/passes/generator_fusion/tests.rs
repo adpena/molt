@@ -655,8 +655,24 @@ fn fusion_keeps_the_consumer_latch_poll_and_its_exception_transfer() {
             // The consumer body runs once per fused iteration: its latch poll
             // stays the fused loop's poll, in the consumer's own frame.
             let observation = caller.blocks[&body].ops.last().unwrap();
-            let expected = original;
+            let mut expected = original;
             assert_eq!(observation.opcode, OpCode::CheckException, "{opcode:?}");
+            let Some(AttrValue::Int(release_label)) = observation.attrs.get("value") else {
+                panic!("consumer poll must still transfer exceptional control");
+            };
+            let release_label = *release_label;
+            let release = &caller.blocks[&block_of_label(&caller, release_label)];
+            assert!(release.ops.iter().any(|op| {
+                op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::SplicedFrameFinish)
+            }));
+            assert!(
+                release
+                    .terminator
+                    .has_successor(block_of_label(&caller, 90))
+            );
+            expected
+                .attrs
+                .insert("value".into(), AttrValue::Int(release_label));
             assert_eq!(
                 observation.attrs, expected.attrs,
                 "{opcode:?}, split={split_latch}"
@@ -671,7 +687,7 @@ fn fusion_keeps_the_consumer_latch_poll_and_its_exception_transfer() {
             assert!(
                 caller.blocks[&body].ops.iter().any(|op| {
                     op.opcode == OpCode::CheckException
-                        && op.attrs.get("value") == Some(&AttrValue::Int(90))
+                        && op.attrs.get("value") == Some(&AttrValue::Int(release_label))
                 }),
                 "{opcode:?}, split={split_latch}"
             );
@@ -1503,8 +1519,17 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
                 }),
                 "the unread argument still has a frame home"
             );
+            let Terminator::Branch { target, args } = &cold.terminator else {
+                panic!("the origin must leave through its release landing");
+            };
+            assert!(args.is_empty());
+            let release = &caller.blocks[target];
+            assert!(release.ops.iter().any(|op| {
+                op.runtime == Some(RuntimeFn::SplicedFrameFinish)
+                    && op.operands == [link.operands[2]]
+            }));
             assert!(matches!(
-                &cold.terminator,
+                &release.terminator,
                 Terminator::Branch { target, args } if *target == handler && args.is_empty()
             ));
             origin_edges += 1;
@@ -1590,8 +1615,8 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
     );
     let _ = super::super::reoptimize(&mut caller, &tti);
     crate::tir::verify::verify_function(&caller).expect("pruned caller verifies");
-    // Only the generator's poll keeps its bracket: a signal handler runs
-    // there.
+    // The generator's poll keeps its bracket for signal handlers. A yield
+    // snapshots the frame only when an observer already materialized it.
     let unlinks = caller
         .blocks
         .values()
@@ -1604,8 +1629,14 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
         .flat_map(|block| &block.ops)
         .filter(|op| op.is_async_work_poll())
         .count();
+    let snapshots = caller
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::SplicedFrameObserved)
+        .count();
     assert!(
-        unlinks <= polls,
+        unlinks <= polls + snapshots,
         "{}",
         crate::tir::printer::print_function(&caller)
     );
@@ -1627,9 +1658,12 @@ fn exposed_poll_with_a_bracket_stays_unfused() {
     let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
     assert_eq!(stats.frames_elided, 0);
     assert!(stats.changed_functions.is_empty());
-    assert!(stats.refused_polls.iter().any(
-        |(name, refusal)| name == "counter_poll" && *refusal == PollRefusal::FrameLocalsWriter
-    ));
+    assert!(
+        stats
+            .refused_polls
+            .iter()
+            .any(|(name, refusal)| name == "counter_poll" && *refusal == PollRefusal::MutableFrame)
+    );
     assert_eq!(
         crate::tir::printer::print_function(&module.functions[1]),
         unfused

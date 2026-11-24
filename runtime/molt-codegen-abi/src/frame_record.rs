@@ -419,6 +419,8 @@ pub fn generate_stateful_frame_unlink<B: FrameBuilder>(b: &mut B, thread: B::Wor
                 b.require(persistent);
                 let prev = b.load_word(base, FRAME_RECORD_PREV_OFFSET);
                 b.store_word(thread, THREAD_RECORD_FRAME_TOP_OFFSET, prev);
+                let zero = b.constant(0);
+                b.store_word(base, FRAME_RECORD_PREV_OFFSET, zero);
             },
             |b| b.exit_slow(base),
         );

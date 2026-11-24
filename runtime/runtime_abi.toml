@@ -759,7 +759,8 @@ callable_arity = 1
 name = "spliced_frame_link"
 type = 4
 runtime_name = "molt_spliced_frame_link"
-callable_arity = 3
+return_contract = "raw_bits"
+raw_call = true
 
 [[import]]
 name = "spliced_frame_bind"
@@ -778,6 +779,13 @@ name = "spliced_frame_unlink"
 type = 2
 runtime_name = "molt_spliced_frame_unlink"
 callable_arity = 1
+
+[[import]]
+name = "spliced_frame_finish"
+type = 2
+runtime_name = "molt_spliced_frame_finish"
+return_contract = "raw_bits"
+raw_call = true
 
 [[import]]
 name = "exception_active"
@@ -10960,6 +10968,10 @@ path = "crate::builtins::types::concrete_types::molt_types_simplenamespace_repr"
 [[runtime_callable]]
 name = "numeric_member_get"
 path = "crate::builtins::attributes::scalar_attrs::numeric_member_get"
+
+[[runtime_callable]]
+name = "molt_frame_f_back_get"
+path = "crate::builtins::frames::locals_proxy::molt_frame_f_back_get"
 
 [[runtime_callable]]
 name = "molt_frame_f_lasti_get"

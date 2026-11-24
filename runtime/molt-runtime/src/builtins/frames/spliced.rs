@@ -39,7 +39,7 @@ fn int(bits: u64) -> Option<i64> {
     crate::to_i64(obj_from_bits(bits))
 }
 
-/// `molt_spliced_frame_link(function, location, key_space)`: link one owned
+/// `molt_spliced_frame_link(function, location, identity_slot)`: link one owned
 /// record for a spliced activation of `function` over the executing frame,
 /// its homes unbound. Always links exactly one record, so the pops that
 /// follow stay paired: a malformed function links a record without code,
@@ -48,7 +48,7 @@ pub(crate) fn molt_spliced_frame_link_attached_body(
     _py: &PyToken<'_>,
     function_bits: u64,
     location_bits: u64,
-    _key_space_bits: u64,
+    identity_slot: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let function = obj_from_bits(function_bits)
@@ -70,18 +70,34 @@ pub(crate) fn molt_spliced_frame_link_attached_body(
                 // A record without room for its homes is still linked: the
                 // frame keeps its code and line, as a `MemoryError`
                 // traceback keeps it.
-                super::frame_stack_enter(py, code, globals, builtins, plan);
+                let entered = super::frame_stack_enter(py, code, globals, builtins, plan);
                 let location = int(location_bits)
                     .and_then(|location| u64::try_from(location).ok())
                     .map_or(LocationId::from_word(0), LocationId::from_word);
-                records::top()
-                    .expect("an entered frame is linked")
-                    .bindings()
-                    .set_location(location);
+                let record = records::top().expect("an entered frame is linked");
+                record.bindings().set_location(location);
+                if entered {
+                    let slot = crate::provenance::abi::mut_ptr::<u64>(identity_slot)
+                        .expect("a spliced frame borrows its activation's identity slot");
+                    record.update_owned(|entry| entry.bindings.set_splice_slot(slot as usize));
+                    let observed = unsafe { *slot };
+                    if observed != 0 {
+                        super::bindings::resume_splice(py, record, observed);
+                    }
+                }
             }
             _ => super::frame_stack_push_owned(py, 0, 0, 0),
         }
-        MoltObject::none().bits()
+        0
+    })
+}
+
+/// The compiler took this owned word from a completed splice's slot. All its
+/// records are unlinked; an escaped frame now retains its final caller.
+pub(crate) fn molt_spliced_frame_finish_attached_body(_py: &PyToken<'_>, payload_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        super::bindings::finish_splice(py, payload_bits);
+        0
     })
 }
 

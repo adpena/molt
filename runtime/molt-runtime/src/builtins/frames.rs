@@ -784,19 +784,21 @@ impl FrameEntry {
 }
 
 /// Own snapshot edges while allocations or finalizers can reenter the runtime.
-struct FrameStackSnapshot<'a, 'py> {
+struct FrameStackSnapshot<'a, 'py, E: AsRef<[FrameEntry]> = Vec<FrameEntry>> {
     py: &'a PyToken<'py>,
-    entries: Vec<FrameEntry>,
+    entries: E,
 }
 
-impl<'a, 'py> FrameStackSnapshot<'a, 'py> {
-    fn retained(py: &'a PyToken<'py>, entries: Vec<FrameEntry>) -> Self {
-        for entry in &entries {
+impl<'a, 'py, E: AsRef<[FrameEntry]>> FrameStackSnapshot<'a, 'py, E> {
+    fn retained(py: &'a PyToken<'py>, entries: E) -> Self {
+        for entry in entries.as_ref() {
             entry.retain(py);
         }
         Self { py, entries }
     }
+}
 
+impl<'a, 'py> FrameStackSnapshot<'a, 'py> {
     /// Snapshot `records` (outermost first), each optimized frame's bindings
     /// payload attached first, so every frame object or traceback built from
     /// the snapshot shares its activation's bindings instead of copying them.
@@ -807,13 +809,14 @@ impl<'a, 'py> FrameStackSnapshot<'a, 'py> {
         py: &'a PyToken<'py>,
         records: &[records::FrameRecord],
     ) -> Result<Self, bindings::ObserveError> {
-        let mut payloads = Vec::with_capacity(records.len());
+        let mut observed = Vec::with_capacity(records.len());
         for &record in records {
-            payloads.push(bindings::frame_record_observe(py, record)?);
+            if record.python_visible(py) {
+                observed.push((record, bindings::frame_record_observe(py, record)?));
+            }
         }
-        let entries = records
-            .iter()
-            .zip(payloads)
+        let entries = observed
+            .into_iter()
             // A copy never owns homes: it shares the payload it retains.
             .map(|(record, payload)| record.entry_with(bindings::FrameBindings::captured(payload)))
             .collect();
@@ -821,9 +824,9 @@ impl<'a, 'py> FrameStackSnapshot<'a, 'py> {
     }
 }
 
-impl Drop for FrameStackSnapshot<'_, '_> {
+impl<E: AsRef<[FrameEntry]>> Drop for FrameStackSnapshot<'_, '_, E> {
     fn drop(&mut self) {
-        for entry in self.entries.drain(..) {
+        for entry in self.entries.as_ref() {
             entry.release(self.py);
         }
     }
@@ -894,6 +897,9 @@ pub(crate) fn python_frame_site(
 ) -> Option<PythonFrameSite> {
     crate::gil_assert();
     let mut frames = records::innermost_first().filter_map(|record| {
+        if !record.python_visible(py) {
+            return None;
+        }
         let entry = record.entry();
         let line = unsafe { frame_line_from_entry(entry) }?;
         Some(PythonFrameSite {
@@ -911,18 +917,27 @@ pub(crate) fn python_frame_site(
 pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     crate::gil_assert();
     // Only a module or class body, which the runtime links, binds a namespace.
-    let prev = records::top().and_then(|record| {
-        record.update_owned(|entry| {
-            // Replace and manage refcounts. 0 means "unset".
-            let prev = entry.locals_bits;
-            entry.locals_bits = 0;
-            if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                inc_ref_bits(_py, dict_bits);
-                entry.locals_bits = dict_bits;
-            }
-            prev
-        })
+    let Some(record) = records::top() else { return };
+    let prev = record.update_owned(|entry| {
+        // Replace and manage refcounts. 0 means "unset".
+        let prev = entry.locals_bits;
+        entry.locals_bits = 0;
+        if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+            inc_ref_bits(_py, dict_bits);
+            entry.locals_bits = dict_bits;
+        }
+        prev
     });
+    if prev.is_some()
+        && let Some(frame) = obj_from_bits(record.observer())
+            .as_ptr()
+            .and_then(bindings::cached_frame)
+    {
+        let entry = record.entry();
+        let source = frame_object_source(&entry);
+        let frame_ptr = obj_from_bits(frame).as_ptr().expect("cached Python frame");
+        locals_proxy::frame_object_set_source(_py, frame_ptr, source);
+    }
     if let Some(prev) = prev
         && prev != 0
         && !obj_from_bits(prev).is_none()
@@ -1112,6 +1127,13 @@ fn frame_binding_source(entry: &FrameEntry) -> u64 {
     }
 }
 
+fn frame_object_source(entry: &FrameEntry) -> u64 {
+    match frame_binding_source(entry) {
+        0 if unsafe { code_is_module(entry.code_bits) } => entry.globals_bits,
+        source => source,
+    }
+}
+
 unsafe fn frame_line_from_entry(entry: FrameEntry) -> Option<i64> {
     unsafe {
         if entry.code_bits == 0 {
@@ -1165,7 +1187,7 @@ fn frame_globals_field(_py: &PyToken<'_>, entry: FrameEntry) -> Option<FrameFiel
     None
 }
 
-unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) -> Option<u64> {
+unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry) -> Option<u64> {
     unsafe {
         let name = |name: crate::NameId| {
             let bits = name.bits(_py);
@@ -1174,7 +1196,6 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) 
         // Stop at the first failed intern before another allocation can replace
         // its exception or an unpublished frame acquires cleanup obligations.
         let f_code_bits = name(crate::NameId::FCode)?;
-        let f_back_bits = name(crate::NameId::FBack)?;
         let f_globals_bits = name(crate::NameId::FGlobals)?;
         let f_builtins_bits = name(crate::NameId::FBuiltins)?;
         let builtins = builtin_classes(_py);
@@ -1204,10 +1225,7 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) 
         // `f_locals` reads this source afresh at every access (the frame
         // class's descriptor): an optimized frame's bindings payload, or a
         // module body's namespace. No locals dict is copied here.
-        let source = match frame_binding_source(&entry) {
-            0 if code_is_module(entry.code_bits) => globals.bits,
-            source => source,
-        };
+        let source = frame_object_source(&entry);
         if source != 0 && !locals_proxy::frame_object_set_source(_py, frame_ptr, source) {
             dec_ref_bits(_py, frame_bits);
             return None;
@@ -1217,8 +1235,6 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) 
             &[
                 f_code_bits,
                 entry.code_bits,
-                f_back_bits,
-                back_bits,
                 f_globals_bits,
                 globals.bits,
                 f_builtins_bits,
@@ -1237,6 +1253,17 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) 
         object_mark_has_ptrs(_py, frame_ptr);
         Some(frame_bits)
     }
+}
+
+/// All Python-visible producers converge on the bindings of the activation.
+fn materialize_frame(py: &PyToken<'_>, entry: FrameEntry) -> Option<u64> {
+    let owner = bindings::frame_bindings_ptr(py, entry.bindings.payload_bits).ok()?;
+    if let Some(frame) = bindings::cached_frame(owner) {
+        inc_ref_bits(py, frame);
+        return Some(frame);
+    }
+    let frame = unsafe { alloc_frame_obj(py, entry)? };
+    Some(bindings::publish_frame(py, owner, frame))
 }
 
 /// Materialize every suspended view through the same frame authority as live
@@ -1276,8 +1303,7 @@ pub(crate) unsafe fn suspended_frame_bits(py: &PyToken<'_>, ptr: *mut u8) -> u64
                 "suspended frame has invalid code",
             );
         }
-        alloc_frame_obj(py, entry, MoltObject::none().bits())
-            .unwrap_or_else(|| MoltObject::none().bits())
+        materialize_frame(py, entry).unwrap_or_else(|| MoltObject::none().bits())
     }
 }
 
@@ -1359,6 +1385,9 @@ unsafe fn alloc_traceback_payload_obj(
             .word();
         *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *mut u64) =
             entry.bindings.payload_bits;
+        if let Some(owner) = obj_from_bits(entry.bindings.payload_bits).as_ptr() {
+            bindings::retain_identity_owner(owner);
+        }
         for slot in TRACEBACK_PAYLOAD_OWNED_SLOTS {
             inc_ref_bits(
                 _py,
@@ -1370,18 +1399,38 @@ unsafe fn alloc_traceback_payload_obj(
     }
 }
 
-unsafe fn build_frame_chain(
+pub(crate) unsafe fn traceback_frame_owner(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *const u64) }
+}
+
+/// Detaching an identity owner can transfer the shared cache edge into its
+/// sink. Reserve it independently of the graph edge, which the payload visits.
+pub(crate) fn frame_identity_detach_capacity(owner: u64) -> usize {
+    usize::from(
+        obj_from_bits(owner)
+            .as_ptr()
+            .and_then(bindings::cached_frame)
+            .is_some(),
+    )
+}
+
+pub(crate) unsafe fn traceback_release_identity(ptr: *mut u8) -> u64 {
+    obj_from_bits(unsafe { traceback_frame_owner(ptr) })
+        .as_ptr()
+        .map_or(0, bindings::release_identity_owner)
+}
+
+unsafe fn materialize_traceback_frames(
     _py: &PyToken<'_>,
     entries: &[FrameEntry],
 ) -> Option<Vec<(u64, i64, LocationId)>> {
     unsafe {
         let mut out: Vec<(u64, i64, LocationId)> = Vec::with_capacity(entries.len());
-        let mut back_bits = MoltObject::none().bits();
         for entry in entries {
             let Some(line) = frame_line_from_entry(*entry) else {
                 continue;
             };
-            let frame_bits = match alloc_frame_obj(_py, *entry, back_bits) {
+            let frame_bits = match materialize_frame(_py, *entry) {
                 Some(bits) => bits,
                 None => {
                     for (bits, _, _) in out {
@@ -1390,7 +1439,6 @@ unsafe fn build_frame_chain(
                     return None;
                 }
             };
-            back_bits = frame_bits;
             out.push((
                 frame_bits,
                 line,
@@ -1408,58 +1456,87 @@ unsafe fn build_frame_chain(
 /// `None` means the requested frame is absent; allocation/callback failures
 /// retain their pending exception and return `Err` instead.
 pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u64>, ()> {
-    // Select first, so only the selected frame and its `f_back` chain attach
-    // bindings payloads; frames above it stay unobserved.
-    let mut chain: Vec<records::FrameRecord> = records::innermost_first()
-        .skip_while({
-            let mut visible = 0;
-            move |record| {
-                if unsafe { frame_line_from_entry(record.entry()) }.is_none() {
-                    return true;
-                }
-                visible += 1;
-                visible <= depth
-            }
-        })
-        .collect();
-    if chain.is_empty() {
+    let mut visible = records::innermost_first().filter(|record| record.python_visible(_py));
+    materialize_record(_py, visible.nth(depth))
+}
+
+fn materialize_record(
+    py: &PyToken<'_>,
+    record: Option<records::FrameRecord>,
+) -> Result<Option<u64>, ()> {
+    let Some(record) = record else {
         return Ok(None);
-    }
-    // Outermost first, the selected frame last.
-    chain.reverse();
-    let snapshot = match FrameStackSnapshot::capture(_py, &chain) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            error.raise(_py);
+    };
+    if let Some(frame) = obj_from_bits(record.observer())
+        .as_ptr()
+        .and_then(bindings::cached_frame)
+    {
+        if exception_pending(py) {
             return Err(());
         }
-    };
-    let frames = unsafe { build_frame_chain(_py, &snapshot.entries) };
-    let Some(frames) = frames else {
-        if !exception_pending(_py) {
-            raise_exception::<()>(_py, BuiltinExc::MemoryError, "frame materialization failed");
+        inc_ref_bits(py, frame);
+        return Ok(Some(frame));
+    }
+    let payload = bindings::frame_record_observe(py, record).map_err(|error| error.raise(py))?;
+    let entry = record.entry_with(bindings::FrameBindings::captured(payload));
+    let snapshot = FrameStackSnapshot::retained(py, [entry]);
+    let frame = materialize_frame(py, snapshot.entries[0]).ok_or_else(|| {
+        if !exception_pending(py) {
+            raise_exception::<()>(py, BuiltinExc::MemoryError, "frame materialization failed");
         }
-        return Err(());
-    };
-    if exception_pending(_py) {
-        for (bits, _, _) in frames {
-            dec_ref_bits(_py, bits);
-        }
+    })?;
+    if exception_pending(py) {
+        dec_ref_bits(py, frame);
         return Err(());
     }
-    let Some((selected_bits, _, _)) = frames.last().copied() else {
-        raise_exception::<()>(
-            _py,
-            BuiltinExc::SystemError,
-            "selected Python frame was not materialized",
-        );
-        return Err(());
-    };
-    inc_ref_bits(_py, selected_bits);
-    for (bits, _, _) in frames {
-        dec_ref_bits(_py, bits);
+    Ok(Some(frame))
+}
+
+fn frame_back(py: &PyToken<'_>, owner: *mut u8) -> u64 {
+    while let Some(caller) = bindings::live_caller(py, owner) {
+        let entry = caller.entry();
+        if entry.bindings.payload_bits != 0 {
+            let entry = caller.entry_with(bindings::FrameBindings::captured(
+                entry.bindings.payload_bits,
+            ));
+            let snapshot = FrameStackSnapshot::retained(py, [entry]);
+            return materialize_frame(py, snapshot.entries[0])
+                .unwrap_or_else(|| MoltObject::none().bits());
+        }
+        // Pin all Python owners before an allocation can run a finalizer and
+        // yield execution to the thread that owns this stack. A replacement
+        // activation may reuse the same arena address: match its entire
+        // storage layout and semantic owners before publishing a payload.
+        let _owners = FrameStackSnapshot::retained(py, [entry]);
+        let selected = || {
+            bindings::live_caller(py, owner) == Some(caller)
+                && caller.code_bits() == entry.code_bits
+                && caller.activation_bits() == entry.activation_bits
+                && caller.bindings() == entry.bindings
+        };
+        match bindings::observe_record_while(py, caller, selected) {
+            Ok(0) if selected() => {
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "Python caller has no bindings payload",
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                error.raise(py);
+                return MoltObject::none().bits();
+            }
+        }
+        // Re-read after allocation, including when a concurrent pop saved the
+        // terminal caller instead. No borrowed record crosses iterations.
     }
-    Ok(Some(selected_bits))
+    let back = bindings::frozen_back(owner);
+    if back == 0 {
+        return MoltObject::none().bits();
+    }
+    inc_ref_bits(py, back);
+    back
 }
 
 #[cfg(test)]
@@ -1585,7 +1662,7 @@ pub(crate) fn traceback_payload_to_traceback_bits(
             let snapshot = FrameStackSnapshot::retained(_py, payload_entries);
             inc_ref_bits(_py, current_bits);
             unsafe {
-                let Some(frames) = build_frame_chain(_py, &snapshot.entries) else {
+                let Some(frames) = materialize_traceback_frames(_py, &snapshot.entries) else {
                     dec_ref_bits(_py, current_bits);
                     return None;
                 };

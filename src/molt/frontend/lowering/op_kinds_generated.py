@@ -456,6 +456,8 @@ FrontendOpKind = Literal[
     'SLICE',
     'SLICE_NEW',
     'SORTED',
+    'SPLICED_FRAME_OBSERVED',
+    'SPLICED_FRAME_SLOT',
     'STACK_ALLOC',
     'STATEFUL_LOCALS_REGISTER',
     'STATE_BLOCK_END',
@@ -973,6 +975,8 @@ WireOpKind = Literal[
     'slice',
     'slice_new',
     'sorted',
+    'spliced_frame_observed',
+    'spliced_frame_slot',
     'stack_alloc',
     'state_block_end',
     'state_block_start',
@@ -1493,6 +1497,8 @@ class FrontendKinds:
     SLICE: Final = 'SLICE'
     SLICE_NEW: Final = 'SLICE_NEW'
     SORTED: Final = 'SORTED'
+    SPLICED_FRAME_OBSERVED: Final = 'SPLICED_FRAME_OBSERVED'
+    SPLICED_FRAME_SLOT: Final = 'SPLICED_FRAME_SLOT'
     STACK_ALLOC: Final = 'STACK_ALLOC'
     STATEFUL_LOCALS_REGISTER: Final = 'STATEFUL_LOCALS_REGISTER'
     STATE_BLOCK_END: Final = 'STATE_BLOCK_END'
@@ -2010,6 +2016,8 @@ class WireKinds:
     SLICE: Final = 'slice'
     SLICE_NEW: Final = 'slice_new'
     SORTED: Final = 'sorted'
+    SPLICED_FRAME_OBSERVED: Final = 'spliced_frame_observed'
+    SPLICED_FRAME_SLOT: Final = 'spliced_frame_slot'
     STACK_ALLOC: Final = 'stack_alloc'
     STATE_BLOCK_END: Final = 'state_block_end'
     STATE_BLOCK_START: Final = 'state_block_start'
@@ -2514,6 +2522,8 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'SLICE': 'slice',
     'SLICE_NEW': 'slice_new',
     'SORTED': 'sorted',
+    'SPLICED_FRAME_OBSERVED': 'spliced_frame_observed',
+    'SPLICED_FRAME_SLOT': 'spliced_frame_slot',
     'STACK_ALLOC': 'stack_alloc',
     'STATEFUL_LOCALS_REGISTER': 'stateful_locals_register',
     'STATE_BLOCK_END': 'state_block_end',
@@ -3040,6 +3050,8 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "slice",
         "slice_new",
         "sorted",
+        "spliced_frame_observed",
+        "spliced_frame_slot",
         "stack_alloc",
         "state_block_end",
         "state_block_start",
@@ -3562,6 +3574,8 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "SLICE",
         "SLICE_NEW",
         "SORTED",
+        "SPLICED_FRAME_OBSERVED",
+        "SPLICED_FRAME_SLOT",
         "STACK_ALLOC",
         "STATEFUL_LOCALS_REGISTER",
         "STATE_BLOCK_END",
@@ -3717,6 +3731,8 @@ FRONTEND_REPOLL_KINDS: frozenset[FrontendOpKind] = frozenset(
 CANONICAL_KIND: dict[str, str] = {
     "add": "add",
     "frame_set_location": "frame_set_location",
+    "spliced_frame_slot": "spliced_frame_slot",
+    "spliced_frame_observed": "spliced_frame_observed",
     "sub": "sub",
     "mul": "mul",
     "inplace_add": "inplace_add",
@@ -3891,6 +3907,8 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
     {
         "add",
         "frame_set_location",
+        "spliced_frame_slot",
+        "spliced_frame_observed",
         "sub",
         "mul",
         "inplace_add",
@@ -4406,6 +4424,8 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "SHL": True,
     "SHR": True,
     "SLICE_NEW": False,
+    "SPLICED_FRAME_OBSERVED": False,
+    "SPLICED_FRAME_SLOT": False,
     "STACK_ALLOC": False,
     "STATE_BLOCK_END": True,
     "STATE_BLOCK_START": True,
@@ -4893,6 +4913,8 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "shl": 0,
     "shr": 0,
     "sorted": 64,
+    "spliced_frame_observed": 0,
+    "spliced_frame_slot": 0,
     "stack_alloc": 64,
     "state_block_end": 1024,
     "state_block_start": 1024,

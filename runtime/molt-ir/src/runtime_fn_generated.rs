@@ -2407,6 +2407,7 @@ pub enum RuntimeFn {
     SortedBuiltin,
     Spawn,
     SplicedFrameBind,
+    SplicedFrameFinish,
     SplicedFrameLink,
     SplicedFrameOrigin,
     SplicedFrameUnlink,
@@ -5264,6 +5265,7 @@ impl RuntimeFn {
         Self::SortedBuiltin,
         Self::Spawn,
         Self::SplicedFrameBind,
+        Self::SplicedFrameFinish,
         Self::SplicedFrameLink,
         Self::SplicedFrameOrigin,
         Self::SplicedFrameUnlink,
@@ -5831,7 +5833,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2853;
+    pub const COUNT: usize = 2854;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -39286,18 +39288,27 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
+        symbol: "molt_spliced_frame_finish",
+        linker_symbol: "molt_spliced_frame_finish__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::RawBits,
+        form: RuntimeCallForm::RawCall,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
         symbol: "molt_spliced_frame_link",
         linker_symbol: "molt_spliced_frame_link__molt_context_d1086a27578cda22",
         context: RuntimeExecutionContext::Attached,
         params: 3,
         param_types: PARAMS_WWW,
         result_type: Some(RuntimeMachineType::Word),
-        callable: Some(RuntimeCallableFacts {
-            key: 0xFFFFFF198DA6BAA3,
-            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
-        }),
-        result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        callable: None,
+        result: RuntimeReturnContract::RawBits,
+        form: RuntimeCallForm::RawCall,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

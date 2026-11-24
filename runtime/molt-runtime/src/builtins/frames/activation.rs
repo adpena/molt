@@ -710,6 +710,12 @@ pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8, st
         }
         let payload_bits = object_take_frame_bindings_bits(ptr);
         let payload = obj_from_bits(payload_bits).as_ptr();
+        if let Some(payload) = payload {
+            dec_ref_bits(py, super::bindings::release_identity_owner(payload));
+            if started && policy.keeps_generator_caller() {
+                super::bindings::freeze_back(py, payload);
+            }
+        }
         let Some(layout) = activation_layout(py, ptr) else {
             if let Some(payload) = payload {
                 frame_bindings_detach_activation(payload);
@@ -782,6 +788,10 @@ pub(crate) unsafe fn activation_detach_frame_bindings(
         let Some(payload) = obj_from_bits(payload_bits).as_ptr() else {
             return;
         };
+        let frame = super::bindings::release_identity_owner(payload);
+        if frame != 0 {
+            detach(frame);
+        }
         let code_bits = object_frame_code_bits(ptr);
         let layout = if shared(payload) && code_bits != 0 {
             activation_layout(py, ptr)
@@ -998,12 +1008,7 @@ pub(crate) unsafe fn activation_frame_clear(
         }
         let started = state != FrameState::Created;
         if started && policy.pep667() {
-            raise_exception::<u64>(
-                py,
-                BuiltinExc::RuntimeError,
-                "cannot clear a suspended frame",
-            );
-            return Err(());
+            return policy.reject_suspended_clear(py);
         }
         let generator = object_type_id(ptr) == TYPE_ID_GENERATOR;
         if !generator && !started {

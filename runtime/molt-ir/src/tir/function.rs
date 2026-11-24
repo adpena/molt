@@ -13,8 +13,8 @@ mod block_retention;
 
 /// Attribute projection of the typed SimpleIR physical partition fact.
 pub const CODEGEN_PARTITION_ATTR: &str = "codegen_partition";
-/// Function attr: on a 3.13+ target a PEP 667 frame-locals proxy may rebind
-/// the function's locals (`FunctionIR::frame_locals_exposed`, HF-901).
+/// An observer may mutate the activation through its frame
+/// (`FunctionIR::frame_locals_exposed`).
 pub const FRAME_LOCALS_EXPOSED_ATTR: &str = "frame_locals_exposed";
 
 /// Attribute projection of the typed FunctionIR parameter custody fact: the
@@ -102,8 +102,7 @@ impl TirFunction {
         )
     }
 
-    /// Whether a PEP 667 frame-locals proxy may rebind this function's
-    /// locals (`FRAME_LOCALS_EXPOSED_ATTR`).
+    /// Whether an observer can rebind locals or close the suspended activation.
     pub fn frame_locals_exposed(&self) -> bool {
         matches!(
             self.attrs.get(FRAME_LOCALS_EXPOSED_ATTR),

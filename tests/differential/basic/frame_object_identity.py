@@ -1,6 +1,6 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-905 expect_molt_returncode=0 expect_molt_stdout_sha256=83593c70a26a059c7586465234d7611bd0fc8b4a262b7038bb8ef88c6b96c036
 """One frame object per activation, for ordinary frames and fused generator frames."""
 
+import gc
 import sys
 
 
@@ -31,3 +31,83 @@ def consumer():
 
 
 print(same_frame(), parent(), consumer())
+
+def traced(frames):
+    frames.append(sys._getframe())
+    raise ValueError()
+
+
+def traceback_identity():
+    frames = []
+    caller = sys._getframe()
+    try:
+        traced(frames)
+    except ValueError as exc:
+        tb = exc.__traceback__
+        return tb.tb_frame is caller, tb.tb_next.tb_frame is frames[0], frames[0].f_back is caller
+
+
+def suspended():
+    yield sys._getframe()
+    yield sys._getframe(), sys._getframe().f_back
+
+
+def generator_identity():
+    activation = suspended()
+    created = activation.gi_frame
+    first = next(activation)
+    second, live_caller = next(activation)
+    suspended_back = first.f_back
+    activation.close()
+    return (
+        created is first is second,
+        live_caller is sys._getframe(),
+        suspended_back is None,
+        activation.gi_frame is None,
+    )
+
+
+def escaped_frames(n):
+    for index in range(n):
+        yield sys._getframe()
+    index = -1
+
+
+def escaped_splice():
+    seen = []
+    for frame in escaped_frames(2):
+        seen.append((frame, frame.f_back is None, frame.f_locals['index']))
+    last = seen[-1][0]
+    return (
+        seen[0][0] is last,
+        [(back, index) for _, back, index in seen],
+        last.f_locals["index"],
+        last.f_back is sys._getframe(),
+    )
+
+
+class Marker:
+    def __del__(self):
+        events.append("released")
+
+
+def observe_and_drop():
+    marker = Marker()
+    sys._getframe()
+
+
+events = []
+print(traceback_identity(), generator_identity(), escaped_splice())
+observe_and_drop()
+print(events)
+
+
+def leave_cycle():
+    marker = Marker()
+    frame = sys._getframe()
+    return frame is sys._getframe()
+
+
+print(leave_cycle())
+gc.collect()
+print(events)

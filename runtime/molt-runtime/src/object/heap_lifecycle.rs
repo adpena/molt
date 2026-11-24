@@ -1170,7 +1170,16 @@ pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8)
             _ => visit_owned_values(py, ptr, &mut count_value),
         }
     }
+    let identity_owner = if unsafe { object_type_id(ptr) } == crate::TYPE_ID_TRACEBACK_PAYLOAD {
+        unsafe { crate::builtins::frames::traceback_frame_owner(ptr) }
+    } else {
+        super::aux_header::object_frame_bindings_bits(ptr)
+    };
     count
+        .checked_add(crate::builtins::frames::frame_identity_detach_capacity(
+            identity_owner,
+        ))
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// How terminal retirement releases an object's owned edges.
@@ -2124,11 +2133,14 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                     sink.detach(MoltObject::from_ptr(cached).bits());
                 }
             }
-            HeapLifecycleHandler::TracebackPayload => detach_slots(
-                ptr,
-                crate::builtins::frames::TRACEBACK_PAYLOAD_OWNED_SLOTS,
-                sink,
-            ),
+            HeapLifecycleHandler::TracebackPayload => {
+                sink.detach_if_heap(crate::builtins::frames::traceback_release_identity(ptr));
+                detach_slots(
+                    ptr,
+                    crate::builtins::frames::TRACEBACK_PAYLOAD_OWNED_SLOTS,
+                    sink,
+                );
+            }
             HeapLifecycleHandler::ContextManager => {
                 let payload = ptr.add(2 * std::mem::size_of::<*const ()>()) as *mut u64;
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));

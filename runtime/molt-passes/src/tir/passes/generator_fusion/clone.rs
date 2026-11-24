@@ -72,8 +72,10 @@ pub(super) struct ClonedPoll {
     pub(super) yield_idx: usize,
     /// The yielded value (cloned).
     pub(super) yield_value: ValueId,
+    pub(super) yield_frame: Option<Level>,
     /// Cloned blocks terminating in `Return`.
     pub(super) return_blocks: Vec<BlockId>,
+    pub(super) return_frames: HashMap<BlockId, Level>,
     /// The cloned returns only an exception edge reaches: the body's exits
     /// with an exception pending.
     pub(super) exception_exits: HashSet<BlockId>,
@@ -84,6 +86,7 @@ pub(super) struct ClonedPoll {
 pub(super) struct FusedFrame {
     /// The caller value holding the generator function.
     pub(super) function: ValueId,
+    pub(super) identity: ValueId,
     /// The caller's handler of the iteration, and what its check passes.
     pub(super) handler: BlockId,
     pub(super) handler_args: Vec<ValueId>,
@@ -319,7 +322,8 @@ pub(super) fn clone_and_rewrite_poll(
         .map(|&block| (remap_block(block), block))
         .collect();
 
-    let mut yield_block_idx: Option<(BlockId, usize, ValueId)> = None;
+    let mut yield_block_idx = None;
+    let mut return_frames = HashMap::default();
     let mut return_blocks: Vec<BlockId> = Vec::new();
     let mut exception_exits: HashSet<BlockId> = HashSet::default();
 
@@ -372,6 +376,17 @@ pub(super) fn clone_and_rewrite_poll(
         // The check that observes a dropped runtime call (the locals
         // prologue) observes nothing once the call is gone.
         let mut after_dropped_call = false;
+        let frame_state = |op_index, state: &[Option<SlotDef>]| Level {
+            function: frame.function,
+            identity: frame.identity,
+            location: locations.get(&(bid, op_index)).copied(),
+            key_space: KeySpace::StatefulOffset,
+            bindings: state
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, def)| Some((plan.offsets[slot], resolve((*def)?))))
+                .collect(),
+        };
         for (op_index, op) in src.ops.iter().enumerate() {
             // Drop bookkeeping, the lone state_switch, and the completion
             // reports (`state_set` before each return): a fused body has no
@@ -444,7 +459,9 @@ pub(super) fn clone_and_rewrite_poll(
             // stream — the split happens at this index in the cloned block.
             if op.opcode == OpCode::StateYield {
                 let &value = op.operands.first()?;
-                yield_block_idx = Some((new_bid, new_ops.len(), remap(value, &value_map)));
+                let snapshot = state.as_deref().map(|state| frame_state(op_index, state));
+                yield_block_idx =
+                    Some((new_bid, new_ops.len(), remap(value, &value_map), snapshot));
                 continue;
             }
             // Drop the exception-stack restore-copies (a `Copy(exc_val, ..)`
@@ -480,16 +497,7 @@ pub(super) fn clone_and_rewrite_poll(
                 new_ops.push(cloned);
                 continue;
             };
-            let level = Level {
-                function: frame.function,
-                location: locations.get(&(bid, op_index)).copied(),
-                key_space: KeySpace::StatefulOffset,
-                bindings: state
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(slot, def)| Some((plan.offsets[slot], resolve((*def)?))))
-                    .collect(),
-            };
+            let level = frame_state(op_index, state);
             let span = op.source_span;
             if op.opcode == OpCode::CheckException {
                 // Every exception leaves the fused body at the caller's
@@ -579,7 +587,14 @@ pub(super) fn clone_and_rewrite_poll(
             // before it); every other return leaves with an exception pending,
             // including one a raise's transport branch reaches through
             // terminator edges.
-            if !src.ops.iter().any(|op| op.opcode == OpCode::StateSet) {
+            if src.ops.iter().any(|op| op.opcode == OpCode::StateSet) {
+                // `plan.exits` carries only arguments for successor joins.
+                // Return publication needs the binding state at the end of
+                // the block, including stores with no ordinary SSA reader.
+                if let Some(state) = state.as_deref() {
+                    return_frames.insert(new_bid, frame_state(src.ops.len() - 1, state));
+                }
+            } else {
                 exception_exits.insert(new_bid);
             }
         }
@@ -626,14 +641,16 @@ pub(super) fn clone_and_rewrite_poll(
         caller.blocks.insert(cold.id, cold);
     }
 
-    let (yield_block, yield_idx, yield_value) = yield_block_idx?;
+    let (yield_block, yield_idx, yield_value, yield_frame) = yield_block_idx?;
 
     Some(ClonedPoll {
         entry: entry_clone,
         yield_block,
         yield_idx,
         yield_value,
+        yield_frame,
         return_blocks,
+        return_frames,
         exception_exits,
     })
 }

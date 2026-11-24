@@ -670,6 +670,8 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::DecRef
         | OpCode::DelBoundary
         | OpCode::FrameSetLocation
+        | OpCode::SplicedFrameSlot
+        | OpCode::SplicedFrameObserved
         | OpCode::FloatSqrt => (IntegerOperandObservation::Never, false),
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
