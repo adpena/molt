@@ -2051,6 +2051,75 @@ fn exact_float_sqrt_uses_the_frontend_call_shape_and_keeps_domain_continuation()
 }
 
 #[test]
+fn cold_module_expands_typed_sqrt_only_in_repeated_blocks() {
+    let mut func = TirFunction::new(
+        "py.app.__molt_module_chunk_1".into(),
+        vec![TirType::Bool],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = func.entry_block;
+    let loop_body = func.fresh_block();
+    let exit = func.fresh_block();
+    let input = func.fresh_value();
+    func.value_types.insert(input, TirType::F64);
+    let prefix = func.fresh_value();
+    let repeated = func.fresh_value();
+    let result = func.fresh_value();
+    for value in [prefix, repeated, result] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    let sqrt = |output| {
+        let mut op = TirOp::new(OpCode::Call, vec![input], vec![output]);
+        op.runtime = Some(RuntimeFn::MathSqrt);
+        op.attrs.insert(
+            "s_value".into(),
+            AttrValue::Str(RuntimeFn::MathSqrt.symbol().into()),
+        );
+        op
+    };
+    let entry_block = func.blocks.get_mut(&entry).unwrap();
+    let mut value = TirOp::new(OpCode::ConstFloat, Vec::new(), vec![input]);
+    value.attrs.insert("f_value".into(), AttrValue::Float(9.0));
+    entry_block.ops.extend([value, sqrt(prefix)]);
+    entry_block.terminator = super::branch_to(loop_body);
+    func.blocks.insert(
+        loop_body,
+        super::new_block(
+            loop_body,
+            vec![sqrt(repeated)],
+            super::cond_branch(ValueId(0), loop_body, exit),
+        ),
+    );
+    func.blocks.insert(
+        exit,
+        super::new_block(
+            exit,
+            vec![sqrt(result)],
+            Terminator::Return {
+                values: vec![result],
+            },
+        ),
+    );
+
+    assert_valid(&func);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::FloatSqrt).len(), 1);
+    assert_eq!(
+        ops(&func, OpCode::Call)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        [entry, exit],
+    );
+    assert_eq!(
+        ops(&func, OpCode::CallRuntime)[0].1.runtime,
+        Some(RuntimeFn::MathSqrt)
+    );
+}
+
+#[test]
 fn sqrt_does_not_admit_unknown_or_integer_arguments() {
     for ty in [TirType::DynBox, TirType::I64, TirType::Bool] {
         let mut func = TirFunction::new(

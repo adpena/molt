@@ -507,8 +507,9 @@ pub fn is_module_chunk_function(name: &str) -> bool {
 /// How much machine code a function's body is worth: one policy that every
 /// backend reads, so no backend keeps a private notion of cold code.
 ///
-/// A module-body chunk is cold: it runs once, at import. Inline fast paths
-/// buy nothing there and cost size; the stdlib startup closure is mostly such
+/// A module-body chunk runs once, at import. Its default is to optimize for
+/// size. The shared late TIR stage can inline fast paths in its repeated
+/// natural-loop regions. The stdlib startup closure is mostly such
 /// chunks (an LLVM wasm32 split app for a 9-line program was 2.07 MB with
 /// them inline, 0.82 MB on the Cranelift-family lanes that already skipped
 /// them).
@@ -516,7 +517,7 @@ pub fn is_module_chunk_function(name: &str) -> bool {
 pub enum CodeTemperature {
     /// Ordinary code: take every proven inline fast path.
     Hot,
-    /// Run-once code: call the runtime, inline nothing, optimize for size.
+    /// Run-once code: prefer compact runtime calls and size optimization.
     Cold,
 }
 

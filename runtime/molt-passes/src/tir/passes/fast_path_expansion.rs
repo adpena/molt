@@ -106,7 +106,8 @@
 //! Truthiness keeps the original `Bool` as its slow arm until `CallRuntime` can
 //! carry a raw-bits result through type refinement.
 
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::ir::CodeTemperature;
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -128,29 +129,41 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         name: "fast_path_expansion",
         ..Default::default()
     };
-    if !func.blocks.values().any(|block| {
-        block.ops.iter().any(|op| {
-            if sqrt_call_operand(op).is_some() {
-                return true;
-            }
-            match opcode_fast_path_expansion_rule_table(op.opcode) {
-                FastPathExpansionRule::None => false,
-                FastPathExpansionRule::GuardedCall => {
-                    guarded_target(op).is_some_and(|id| targets.contains_key(&id))
-                }
-                _ => true,
-            }
+    let mut pending: Vec<_> = func
+        .blocks
+        .iter()
+        .filter_map(|(&id, block)| {
+            block
+                .ops
+                .iter()
+                .any(|op| may_expand(op, targets))
+                .then_some(id)
         })
-    }) {
+        .collect();
+    if pending.is_empty() {
         return stats;
     }
 
     let facts = super::value_identity::ScalarFacts::new(func);
+    if !CodeTemperature::of_function(&func.name).inline_fast_paths() {
+        // A module initializer runs once. A natural loop inside it can
+        // execute repeatedly. Keep the rest of the initializer compact.
+        let repeated: HashSet<_> = facts
+            .loops()
+            .bodies
+            .values()
+            .flat_map(|body| body.iter().copied())
+            .collect();
+        pending.retain(|id| repeated.contains(id));
+        if pending.is_empty() {
+            return stats;
+        }
+    }
     let vr = super::value_range::compute_with_scalar_facts(&facts);
     let repr = crate::representation_facts::repr_by_value_from(&facts, Some(&vr));
     let exact = facts.types();
-    if !func.blocks.values().any(|block| {
-        block
+    if !pending.iter().any(|block| {
+        func.blocks[block]
             .ops
             .iter()
             .any(|op| expansion_of(op, &repr, exact, targets).is_some())
@@ -161,7 +174,6 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let raise = super::check_exception_elim::classify::RaiseFacts::from_scalar_facts(facts);
     let exact = raise.exact_types();
     record_inline_int_proofs(func, &repr, &vr, exact);
-    let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
     while let Some(block) = pending.pop() {
         let Some((index, expansion)) = func.blocks[&block]
@@ -209,6 +221,19 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         pending.push(join);
     }
     stats
+}
+
+fn may_expand(op: &TirOp, targets: &GuardedTargets) -> bool {
+    if sqrt_call_operand(op).is_some() {
+        return true;
+    }
+    match opcode_fast_path_expansion_rule_table(op.opcode) {
+        FastPathExpansionRule::None => false,
+        FastPathExpansionRule::GuardedCall => {
+            guarded_target(op).is_some_and(|id| targets.contains_key(&id))
+        }
+        _ => true,
+    }
 }
 
 /// Record on each op the proof that its integer results fit the inline window.

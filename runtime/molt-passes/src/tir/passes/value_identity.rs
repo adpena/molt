@@ -10,6 +10,7 @@ use std::cell::OnceCell;
 
 use molt_ir::deterministic_hash::HashMap;
 
+use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     PredicateSemantics, opcode_negated_predicate_table, opcode_predicate_semantics,
@@ -159,6 +160,7 @@ pub(crate) struct ScalarFacts<'f> {
     body: &'f TirFunction,
     types: OnceCell<HashMap<ValueId, TirType>>,
     forwarding: OnceCell<HashMap<ValueId, ValueId>>,
+    loops: OnceCell<LoopForestResult>,
 }
 
 impl<'f> ScalarFacts<'f> {
@@ -167,11 +169,16 @@ impl<'f> ScalarFacts<'f> {
             body,
             types: OnceCell::new(),
             forwarding: OnceCell::new(),
+            loops: OnceCell::new(),
         }
     }
 
     pub(crate) fn body(&self) -> &'f TirFunction {
         self.body
+    }
+
+    pub(crate) fn loops(&self) -> &LoopForestResult {
+        self.loops.get_or_init(|| LoopForest::compute(self.body))
     }
 
     pub(crate) fn types(&self) -> &HashMap<ValueId, TirType> {

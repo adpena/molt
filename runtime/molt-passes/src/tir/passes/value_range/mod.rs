@@ -78,9 +78,9 @@ impl Analysis for ValueRange {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn compute_with_scalar_facts(facts: &ScalarFacts<'_>) -> ValueRangeResult {
-    let loop_forest = <LoopForest as Analysis>::compute(facts.body());
-    let scev = compute_scev_with_loop_forest(facts, &loop_forest);
-    compute_seeded(facts, &scev, &loop_forest, None)
+    let loop_forest = facts.loops();
+    let scev = compute_scev_with_loop_forest(facts, loop_forest);
+    compute_seeded(facts, &scev, loop_forest, None)
 }
 
 /// Compute value-range facts from the function + its scalar-evolution facts.
@@ -97,9 +97,9 @@ pub(super) fn under_length_guard(
     lengths: &[crate::tir::values::ValueId],
     upper: i64,
 ) -> ValueRangeResult {
-    let forest = <LoopForest as Analysis>::compute(facts.body());
-    let scev = compute_scev_with_loop_forest(facts, &forest);
-    compute_seeded(facts, &scev, &forest, Some((lengths, upper)))
+    let forest = facts.loops();
+    let scev = compute_scev_with_loop_forest(facts, forest);
+    compute_seeded(facts, &scev, forest, Some((lengths, upper)))
 }
 
 fn compute_seeded(
