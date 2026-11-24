@@ -89,9 +89,10 @@ def _directory_state(path: Path) -> _DirectoryState | None:
         return None
 
 
-def _read_entries(path: Path) -> tuple[os.DirEntry[str], ...]:
+def _read_entries(path: Path, *, recorded: bool) -> tuple[os.DirEntry[str], ...]:
+    scan = _input_report.scan_import_directory if recorded else os.scandir
     try:
-        with os.scandir(path) as entries:
+        with scan(path) as entries:
             return tuple(entries)
     except (FileNotFoundError, NotADirectoryError):
         return ()
@@ -289,7 +290,9 @@ class PythonImportTopology:
         # An absent parent is itself a negative lookup. Retain its existing
         # ancestor so creating or retargeting that path cannot grant old facts.
         if state is None and path.parent != path:
-            if self.probe(path) is not None:
+            if self.probe(
+                path
+            ) is not None and not _input_report.report_import_topology(self):
                 # ENOTDIR: the blocking entry exists but is not a directory.
                 # Its containing directory is the generation boundary.
                 _input_report.report_directory(path.parent)
@@ -299,8 +302,16 @@ class PythonImportTopology:
         self, path: Path, observation: _DirectoryObservation
     ) -> tuple[os.DirEntry[str], ...]:
         if observation.entries is None:
-            _input_report.report_directory(path)
-            before, entries = self._stable_read(path, lambda: _read_entries(path))
+            recorded = _input_report.report_import_topology(self)
+            if recorded:
+                _input_report.report_use(
+                    path, kind=_input_report.WorkerFactKind.DIRECTORY
+                )
+            else:
+                _input_report.report_directory(path)
+            before, entries = self._stable_read(
+                path, lambda: _read_entries(path, recorded=recorded)
+            )
             observation.entries = entries
             observation.entries_by_name = {entry.name: entry for entry in entries}
             observation.has_links = any(
@@ -317,12 +328,14 @@ class PythonImportTopology:
             parent = self._directory(path.parent)
             _state, value = self._stable_read(path.parent, lambda: _probe(path))
             self._probes[path] = value
-            _input_report.report_probe(path)
-            if value is None and parent.state is not None:
-                # Missing parents already retained their boundary through
-                # _directory's recursive probe. Report only the first absent
-                # component, rather than walking every ancestor suffix again.
-                _input_report.report_directory(path.parent)
+            if _input_report.report_import_topology(self):
+                _input_report.report_use(path, kind=_input_report.WorkerFactKind.PROBE)
+            else:
+                _input_report.report_probe(path)
+                if value is None and parent.state is not None:
+                    # A worker records its nearest existing boundary through
+                    # the recursive probes of missing parents.
+                    _input_report.report_directory(path.parent)
             parent.probes.add(path)
             # A symlink target may change without changing the selector's
             # parent. Verify that binding at every fence, even on POSIX.
@@ -397,10 +410,11 @@ class PythonImportTopology:
                 ):
                     continue
                 listed = bool(observation.exact_names or observation.name_queries)
+                recorded = listed and _input_report.report_import_topology(self)
                 state, (entries, probes) = self._stable_read(
                     path,
                     lambda: (
-                        _read_entries(path) if listed else (),
+                        _read_entries(path, recorded=recorded) if listed else (),
                         {
                             candidate: _probe(candidate)
                             for candidate in observation.probes

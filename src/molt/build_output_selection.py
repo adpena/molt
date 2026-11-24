@@ -32,7 +32,7 @@ def select_output_path(
 
 @dataclass(frozen=True, slots=True)
 class BuildOutputSelection:
-    """The actual layout decision of a successful native binary build.
+    """The actual layout decision for one output of a successful build.
 
     The request key and input ledger bind the entry, project and configuration
     that produced this context. Replaying the same selector also checks the

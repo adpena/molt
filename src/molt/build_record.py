@@ -35,7 +35,9 @@ from molt.durable_file_identity import (
 from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import (
+    BuildOutputRole,
     FileEvidence,
+    ImportTopologyEvidence,
     ProbeOutcome,
     ReadReceiptId,
     resolved_probe,
@@ -43,7 +45,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v14"
+_SCHEMA = "molt-build-record-v15"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -564,12 +566,15 @@ class InputLedger:
     # ("file" | "directory", absolute path) seen by the audit
     # hook; resolved against the excluded roots when the record is written.
     observed: set[tuple[str, str]] = field(default_factory=set)
-    output_selection: BuildOutputSelection | None = None
+    output_selections: dict[BuildOutputRole, BuildOutputSelection] = field(
+        default_factory=dict
+    )
     products: BuildProducts | None = None
     result: NativeBuildResult | None = None
     claims: list[RecordedBuildClaim] = field(default_factory=list)
     import_graph: str | None = None
     previous_import_graph: str | None = None
+    import_topologies: dict[int, ImportTopologyEvidence] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reads: dict[ReadReceiptId, str | None] = field(default_factory=dict, repr=False)
 
@@ -675,16 +680,20 @@ class InputLedger:
             if entry[0] == "file" and entry[1] in self.files:
                 self.files[entry[1]].evidence |= FileEvidence.UNBOUND
 
-    def build_output(self, selection: object) -> None:
+    def import_topology(self, topology: ImportTopologyEvidence) -> None:
+        with self._lock:
+            self.import_topologies[id(topology)] = topology
+
+    def build_output(self, role: BuildOutputRole, selection: object) -> None:
         try:
             selected = BuildOutputSelection.from_dict(selection)
         except (TypeError, ValueError) as exc:
             self.refuse(f"unreportable build output: {exc}")
             return
         with self._lock:
-            if self.output_selection is not None and self.output_selection != selected:
-                self.refusals.append("build selected more than one native output")
-            self.output_selection = selected
+            previous = self.output_selections.setdefault(role, selected)
+            if previous != selected:
+                self.refusals.append(f"build selected conflicting {role} outputs")
 
     def build_products(self, value: object) -> None:
         try:
@@ -1158,8 +1167,18 @@ def write_record(
     changed = _first_change(files, directories, probes)
     if changed is not None:
         return f"input changed during the build: {changed}"
+    linked_selection = ledger.output_selections.get(BuildOutputRole.LINKED_WASM)
     try:
+        import_topologies = [
+            owner.record() for owner in ledger.import_topologies.values()
+        ]
         output.verify()
+        if linked_selection is not None:
+            linked_selection.verify()
+            if ledger.products is None or (
+                linked_selection.path not in ledger.products.paths()
+            ):
+                return "selected WASM link output is not a published product"
         if ledger.result is not None:
             ledger.result.verify()
             ledger.result.verify_claims(ledger.claims)
@@ -1194,10 +1213,16 @@ def write_record(
             "token": output_token.payload(),
             "consumer": os.fspath(consumer),
             "products": products,
+            **(
+                {"linked_selection": linked_selection.to_dict()}
+                if linked_selection is not None
+                else {}
+            ),
         },
         "files": files,
         "directories": directories,
         "probes": probes,
+        "import_topologies": import_topologies,
         "import_graph": ledger.import_graph,
         "result": None if ledger.result is None else ledger.result.payload(),
         "claims": [claim.payload() for claim in ledger.claims]
@@ -1231,6 +1256,7 @@ def check(
     *,
     claim: Callable[[RecordedBuildClaim], None] | None = None,
     require_result: bool = False,
+    linked_output: str | None = None,
     graph_candidate: Callable[[str], None] | None = None,
 ) -> BuildRecordHit | str:
     """The verified output when current, otherwise the first difference.
@@ -1284,6 +1310,18 @@ def check(
             product_paths.add(product_path)
             if stat_token(product_path) != StatToken.from_payload(token):
                 return f"product {product_path} changed"
+        recorded_linked = recorded_output.get("linked_selection")
+        if linked_output is not None:
+            if recorded_linked is None:
+                return "no named WASM link output for this request"
+            linked_selection = BuildOutputSelection.from_dict(recorded_linked)
+            if linked_selection.output != linked_output:
+                return "named WASM link output differs from the request"
+            linked_selection.verify()
+            if linked_selection.path not in product_paths:
+                return "unreadable record: named WASM link output is not a product"
+        elif recorded_linked is not None:
+            return "unexpected named WASM link output"
         if consumer != selection.path and consumer not in product_paths:
             return "unreadable record: consumer is not a product"
         changed = _first_change(
@@ -1291,6 +1329,14 @@ def check(
         )
         if changed is not None:
             return changed
+        topologies = payload["import_topologies"]
+        if not isinstance(topologies, list):
+            return "unreadable record: invalid import topologies"
+        if topologies:
+            from molt.cli.python_import_topology import PythonImportTopology
+
+            for topology in topologies:
+                PythonImportTopology.from_record(topology)
         if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
             os.utime(path)
         if result is not None:
