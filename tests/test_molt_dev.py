@@ -4922,7 +4922,7 @@ def test_queue_bisects_a_candidate_failure_beside_a_cancelled_sibling(
     from tools import molt_dev_queue as _queue_mode
 
     # Batched mode, which a high pass rate enables.
-    monkeypatch.setattr(_queue_mode, "MAX_BATCH", 8)
+    monkeypatch.setattr(_queue_mode, "_fresh_batch_limit", lambda _paths: 8)
     from tools import molt_dev_queue as queue
 
     _, work = origin_and_clone
@@ -6919,7 +6919,7 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     from tools import molt_dev_queue as _queue_mode
 
     # Batched mode, which a high pass rate enables.
-    monkeypatch.setattr(_queue_mode, "MAX_BATCH", 8)
+    monkeypatch.setattr(_queue_mode, "_fresh_batch_limit", lambda _paths: 8)
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
     _counting_policy(work, counter)
@@ -6998,7 +6998,7 @@ def test_queue_lands_runnable_gates_with_absent_declared_toolchain(
     from tools import molt_dev_queue as _queue_mode
 
     # Batched mode, which a high pass rate enables.
-    monkeypatch.setattr(_queue_mode, "MAX_BATCH", 8)
+    monkeypatch.setattr(_queue_mode, "_fresh_batch_limit", lambda _paths: 8)
     _, work = origin_and_clone
     counter = tmp_path / "runnable.txt"
     forbidden = tmp_path / "deferred-must-not-run.txt"
@@ -7542,7 +7542,7 @@ def test_queue_bisects_a_failed_batch_and_lands_the_rest(
     from tools import molt_dev_queue as _queue_mode
 
     # Batched mode, which a high pass rate enables.
-    monkeypatch.setattr(_queue_mode, "MAX_BATCH", 8)
+    monkeypatch.setattr(_queue_mode, "_fresh_batch_limit", lambda _paths: 8)
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
     _counting_policy(work, counter, check="test ! -e broken.txt")
@@ -9565,13 +9565,53 @@ def test_queue_batches_one_request_by_default(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    ("landed", "age_hours", "batch_size"),
+    [(17, 1, 2), (16, 1, 1), (20, 25, 1)],
+)
+def test_queue_batch_size_follows_recent_landing_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    landed: int,
+    age_hours: int,
+    batch_size: int,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
+    timestamp = (datetime.now(UTC) - timedelta(hours=age_hours)).isoformat()
+    monkeypatch.setattr(queue, "_now", lambda: timestamp)
+    for index in range(1, 21):
+        request = queue.enqueue(
+            paths, head=f"{index:040x}", worktree=tmp_path, branch=None
+        )
+        status = (
+            queue.LandingStatus.LANDED
+            if index <= landed
+            else queue.LandingStatus.FAILED
+        )
+        queue.record_result(paths, request, status=status, detail="")
+    requests = [
+        queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
+        for index in range(21, 24)
+    ]
+    assert (
+        queue.next_batch(paths, queue.pending(paths), order=_code_order(requests))
+        == (requests[:batch_size])
+    )
+
+
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(
     tmp_path, monkeypatch
 ):
     from tools import molt_dev_queue as queue
 
     # The bisection plan serves batched mode, which a high pass rate enables.
-    monkeypatch.setattr(queue, "MAX_BATCH", 8)
+    monkeypatch.setattr(queue, "_fresh_batch_limit", lambda _paths: 8)
     paths = queue.QueuePaths(
         tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
     )
@@ -9613,7 +9653,7 @@ def test_queue_takes_non_closing_ledger_requests_first_in_runs_of_one_class(
     from tools import molt_dev_queue as queue
     from tools.molt_dev_policy import LandingClass
 
-    monkeypatch.setattr(queue, "MAX_BATCH", 8)
+    monkeypatch.setattr(queue, "_fresh_batch_limit", lambda _paths: 8)
     paths = queue.QueuePaths(
         tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
     )

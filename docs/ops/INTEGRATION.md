@@ -626,8 +626,8 @@ Git's error, and the other requests still run. A host-wide Git failure during
 classification therefore records every ready request `failed`: fix the host,
 then land them again. Each batch takes the bisection plan's next group, else
 the first request in that order and the requests of the same class behind it,
-up to `MAX_BATCH` (1 while the per-candidate pass rate is low;
-`tools/molt_dev_queue.py` states when to raise it):
+up to two when at least 17 of the latest 20 results recorded in the last
+24 hours were recorded as `landed`. Otherwise the batch takes one request.
 
 1. Materialize the candidate in the queue's repository-keyed external worktree
    (`<external-custody-root>/worktrees/landing-sandbox-<repository-key>`),
