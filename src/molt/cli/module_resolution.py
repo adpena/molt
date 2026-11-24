@@ -439,17 +439,19 @@ class _ModuleResolutionCache:
             right, ImportScanObservation
         ):
             return left.result == right.result
-        from molt.cli.import_graph_record import semantic_import_result_digest
+        from molt.cli.import_graph_record import ImportResultDigests
+
+        digests = ImportResultDigests()
 
         left_digest = (
             left.result_digest
             if isinstance(left, PersistedImportScanObservation)
-            else semantic_import_result_digest(left.query, left.result)
+            else digests.digest(left.query, left.result)
         )
         right_digest = (
             right.result_digest
             if isinstance(right, PersistedImportScanObservation)
-            else semantic_import_result_digest(right.query, right.result)
+            else digests.digest(right.query, right.result)
         )
         return left_digest == right_digest
 

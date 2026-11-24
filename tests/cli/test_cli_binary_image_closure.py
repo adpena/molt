@@ -231,9 +231,11 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
             original_digest, max_bytes=16 * 1024 * 1024
         )
         assert stored is not None
-        for defect in ("producer", "context", "topology", "observers"):
+        for defect in ("schema", "producer", "context", "topology", "observers"):
             damaged = json.loads(stored.payload)
-            if defect == "producer":
+            if defect == "schema":
+                damaged["schema"] -= 1
+            elif defect == "producer":
                 damaged["producer"] = "obsolete producer"
             elif defect == "context":
                 damaged["context"]["roots"].append(str(tmp_path / "other"))

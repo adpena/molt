@@ -37,12 +37,15 @@ from molt.cli.module_source import PythonSourceSnapshot, PythonSourceChangedErro
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
-from molt.compiler_analysis.python_imports import ImportScanMode
+from molt.compiler_analysis.python_imports import ImportScanMode, _ImportScanRequests
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
     python_namespace_name_universe,
 )
-from molt.compiler_analysis.python_source_keys import decode_python_source_key
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    decode_python_source_key,
+)
 from molt.compiler_analysis.python_import_redirects import (
     ImportRedirects,
     ImportWriter,
@@ -51,7 +54,7 @@ from molt.compiler_analysis.python_import_redirects import (
 from molt.target_python import TargetPythonVersion
 
 _MAX_BYTES = 16 * 1024 * 1024
-_SCHEMA = 4
+_SCHEMA = 5
 _T = TypeVar("_T")
 
 
@@ -249,49 +252,80 @@ class ImportGraphContext:
         }
 
 
-def _result_payload(
-    query: ImportScanQuery, result: _CompleteImportScan
-) -> dict[str, object]:
-    assert query.source_lease is not None
-    source = codec._import_scan_payload(
-        module_name=query.module_name,
-        is_package=query.is_package,
-        import_scan_mode=query.mode,
-        source_owner=query.source_owner,
-        source_arguments=query.source_arguments,
-        native_support_function_roots=query.body_selection.roots,
-        scan=result.source_requests,
-        source_sha256=query.source_lease.source_sha256,
-        source_size=query.source_lease.source_size,
-        target_python=query.target_python,
-        target_sys_platform=query.target_sys_platform,
-        runtime_catalog_owner=result.source_requests.runtime_catalog is not None,
-        purpose=query.purpose,
-    )
-    return {
-        "source": source,
-        "imports": result.imports,
-        "executions": [[name, str(path)] for name, path in result.source_executions],
-        "candidates": result.dynamic_relative_import_candidates,
-        "anchor": result.requires_runtime_package_anchor,
-        "sites": [codec._encode_source_site(site) for site in result.source_sites],
-        "exports": [[name, asdict(exports)] for name, exports in result.star_exports],
-    }
+@dataclass(frozen=True, slots=True)
+class _SourceRequestCoordinate:
+    module_name: str
+    is_package: bool
+    mode: ImportScanMode
+    owner: PythonSourceKey | None
+    arguments: tuple[str, ...]
+    body_roots: tuple[str, ...]
+    target_python: TargetPythonVersion
+    target_sys_platform: str | None
+    purpose: SourceImportPurpose
 
 
-def _semantic_result(value: Mapping[str, object]) -> bytes:
-    source = dict(_map(value["source"]))
-    # Bytes name the input generation, not the result of a graph query.
-    source.pop("source_sha256")
-    source.pop("size")
-    return _bytes({**value, "source": source})
+class ImportResultDigests:
+    """Reuse the source projection across one publication or replay operation."""
 
+    def __init__(self) -> None:
+        # Retain each request object for the lifetime of its identity key.
+        self._sources: dict[
+            tuple[int, _SourceRequestCoordinate], tuple[_ImportScanRequests, str]
+        ] = {}
 
-def semantic_import_result_digest(
-    query: ImportScanQuery, result: _CompleteImportScan
-) -> str:
-    """Digest every graph-facing output, independent of raw source generation."""
-    return hashlib.sha256(_semantic_result(_result_payload(query, result))).hexdigest()
+    def digest(self, query: ImportScanQuery, result: _CompleteImportScan) -> str:
+        """Digest every graph-facing output independently of the input generation."""
+        lease = query.source_lease
+        assert lease is not None
+        coordinate = _SourceRequestCoordinate(
+            query.module_name,
+            query.is_package,
+            query.mode,
+            query.source_owner,
+            query.source_arguments,
+            query.body_selection.roots,
+            query.target_python,
+            query.target_sys_platform,
+            query.purpose,
+        )
+        requests = result.source_requests
+        key = (id(requests), coordinate)
+        source = self._sources.get(key)
+        if source is None:
+            payload = codec._import_scan_payload(
+                module_name=coordinate.module_name,
+                is_package=coordinate.is_package,
+                import_scan_mode=coordinate.mode,
+                source_owner=coordinate.owner,
+                source_arguments=coordinate.arguments,
+                native_support_function_roots=coordinate.body_roots,
+                scan=requests,
+                source_sha256=lease.source_sha256,
+                source_size=lease.source_size,
+                target_python=coordinate.target_python,
+                target_sys_platform=coordinate.target_sys_platform,
+                runtime_catalog_owner=requests.runtime_catalog is not None,
+                purpose=coordinate.purpose,
+            )
+            payload.pop("source_sha256")
+            payload.pop("size")
+            source = (requests, hashlib.sha256(_bytes(payload)).hexdigest())
+            self._sources[key] = source
+        resolved = {
+            "source_digest": source[1],
+            "imports": result.imports,
+            "executions": [
+                [name, str(path)] for name, path in result.source_executions
+            ],
+            "candidates": result.dynamic_relative_import_candidates,
+            "anchor": result.requires_runtime_package_anchor,
+            "sites": [codec._encode_source_site(site) for site in result.source_sites],
+            "exports": [
+                [name, asdict(exports)] for name, exports in result.star_exports
+            ],
+        }
+        return hashlib.sha256(_bytes(resolved)).hexdigest()
 
 
 def _complete_observers(
@@ -351,6 +385,7 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
     custodies: dict[int, tuple[bytes, object]] = {}
     premises: list[object] = []
     premise_ids: dict[PythonNamespacePremise | None, int] = {}
+    digests = ImportResultDigests()
     for observation in plan.import_query_closure.observations:
         query = observation.query
         lease = query.source_lease
@@ -414,7 +449,7 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
                 "context": index,
                 "result_digest": observation.result_digest
                 if isinstance(observation, PersistedImportScanObservation)
-                else semantic_import_result_digest(query, observation.result),
+                else digests.digest(query, observation.result),
             }
         )
     authority = graph.scan_authority.payload()
@@ -554,6 +589,7 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
     )
     name_universes: dict[Path, frozenset[str] | None] = {}
     updated_queries = list(_list(value["queries"]))
+    digests = ImportResultDigests()
     for row_index, raw in enumerate(updated_queries):
         row = _map(raw)
         path = Path(_text(row["path"]))
@@ -620,7 +656,7 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
                 else replace(premise, foreign_universe=None),
                 native_support_function_roots=selection.roots,
             )
-            if semantic_import_result_digest(query, loaded.scan) != result_digest:
+            if digests.digest(query, loaded.scan) != result_digest:
                 return None
             updated_queries[row_index] = {
                 **row,

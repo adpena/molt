@@ -86,7 +86,7 @@ def test_import_query_records_preserve_python_string_identity(tmp_path: Path) ->
         path, **options, source_arguments=(pair,)
     ) != records._import_scan_cache_key(path, **options, source_arguments=(scalar,))
 
-    from molt.cli.import_graph_record import semantic_import_result_digest
+    from molt.cli.import_graph_record import ImportResultDigests
 
     assert cold.query is not None
     requests = cold.scan.source_requests
@@ -94,9 +94,10 @@ def test_import_query_records_preserve_python_string_identity(tmp_path: Path) ->
     scalar_scan = cold.scan._replace(
         source_requests=requests._replace(imports=(scalar,))
     )
-    assert semantic_import_result_digest(
-        cold.query, pair_scan
-    ) != semantic_import_result_digest(cold.query, scalar_scan)
+    digests = ImportResultDigests()
+    assert digests.digest(cold.query, pair_scan) != digests.digest(
+        cold.query, scalar_scan
+    )
 
 
 def test_import_query_capture_unifies_source_persisted_and_precomputed(
