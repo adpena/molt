@@ -175,6 +175,26 @@ def test_resolve_command_leaves_non_python_command_intact(tmp_path: Path) -> Non
     assert venv_exec.resolve_command(command, venv=tmp_path / ".venv") == command
 
 
+def test_direct_bootstrap_does_not_cache_repository_imports(tmp_path: Path) -> None:
+    # Give the bootstrap an empty cache outside the checkout, so a regression
+    # can be observed without writing beside any source.
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-X",
+            f"pycache_prefix={tmp_path}",
+            str(ROOT / "tools" / "venv_exec.py"),
+            "--help",
+        ],
+        cwd=ROOT,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not list(tmp_path.rglob("import_file.*.pyc"))
+
+
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("borrow", ["argument", "environment"])
 def test_wrapped_command_exit_status_propagates(status: int, borrow: str) -> None:

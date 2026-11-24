@@ -6748,11 +6748,17 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
 
 @pytest.mark.parametrize("separate_git_dir", [False, True])
 def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
-    tmp_path, drv, separate_git_dir
-):
+    tmp_path: Path,
+    drv: ModuleType,
+    separate_git_dir: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from molt.rust_toolchain import cargo_configuration_paths
     from tools import molt_dev_queue as queue
 
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     primary = tmp_path / "molt-src"
     _init_repo(primary)
     candidate_config = '[env]\nQUEUE_CONFIGURATION = "candidate"\n'
@@ -6772,6 +6778,7 @@ def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
     paths = queue.queue_paths(primary)
     assert paths.root == common / "molt" / "landing-queue"
     assert paths.runner_lock == paths.root / "runner.lock"
+    assert paths.sandbox.is_relative_to(artifacts)
     assert not paths.sandbox.is_relative_to(primary)
     sandbox = queue._sandbox_git(paths, drv.Git(primary), tip)
     assert sandbox.repo == paths.sandbox.resolve()
@@ -6813,9 +6820,14 @@ def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
         ),
     ],
 )
-def test_main_worktree_preserves_opaque_git_path(tmp_path, drv, name):
+def test_main_worktree_preserves_opaque_git_path(
+    tmp_path: Path, drv: ModuleType, name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tools import molt_dev_queue as queue
 
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     primary = tmp_path / name
     _init_repo(primary)
     tip = _commit_file(primary, "source.txt", "source\n", "base")
@@ -6824,6 +6836,7 @@ def test_main_worktree_preserves_opaque_git_path(tmp_path, drv, name):
     assert drv._main_worktree(drv.Git(linked)) == primary.resolve()
     paths = queue.queue_paths(linked)
     assert paths == queue.queue_paths(primary)
+    assert paths.sandbox.is_relative_to(artifacts)
     assert queue._sandbox_git(paths, drv.Git(linked), tip).repo == paths.sandbox
 
 
