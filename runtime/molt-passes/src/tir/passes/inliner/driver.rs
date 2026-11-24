@@ -81,7 +81,7 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
-use crate::tir::blocks::BlockId;
+use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
 use crate::tir::call_graph::CallGraph;
 use crate::tir::function::TirModule;
 use crate::tir::passes::async_work_poll;
@@ -90,11 +90,9 @@ use crate::tir::passes::ip_summary::ModuleSummaries;
 use crate::tir::target_info::TargetInfo;
 
 use super::activation::Activations;
-use super::call_sites::collect_call_sites;
-use super::eligibility::is_inlineable;
+use super::call_sites::{InlineSiteUses, collect_call_sites};
 use super::eligibility::{
-    callee_op_count, is_inline_safe, numeric_raw_lane_candidate_diagnostics,
-    numeric_raw_lane_enabled_callees, split_field_enabled_callees,
+    callee_op_count, classify_inline_eligibility, is_inline_safe, is_numeric_raw_lane_return_type,
 };
 use super::splice::splice_call_site;
 
@@ -114,6 +112,12 @@ pub struct InlinerStats {
     pub changed_functions: Vec<molt_ir::FunctionId>,
 }
 
+#[derive(Clone, Copy)]
+enum InlineBudget {
+    Ordinary,
+    NeedsBenefit { numeric: bool },
+}
+
 /// Run the inliner over `module` in **bottom-up SCC order** (callees finalized
 /// before callers). After a function has one or more sites inlined, re-run the
 /// per-function pipeline on the merged function so the inlined body is optimized
@@ -131,83 +135,38 @@ pub fn run_inliner(
 ) -> InlinerStats {
     let mut stats = InlinerStats::default();
 
-    // The set of callee names that are inlinable (computed once from the
-    // pre-pass call graph/summaries). Bodies stay module-owned and are borrowed
-    // live at the splice site, so bottom-up callee changes are visible to callers
-    // without cloning a second body authority.
-    let defined = module.body_index();
+    let index_of = module.body_index();
+    let hot_cap = tti.hot_inline_op_limit();
+    let mut diagnostics =
+        (backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1")).then(Vec::new);
 
-    // Callees that an in-budget inline misses but whose inlining unlocks the
-    // split-field deforestation (a caller hands them a non-escaping
-    // `string_split_field` result). These are admitted on the safety gate alone
-    // (over-budget but sound) - the targeted enabling the baton specifies.
-    let split_enabled = split_field_enabled_callees(module, &defined);
-    let numeric_raw_lane_enabled = numeric_raw_lane_enabled_callees(module, &defined);
-
-    // Row -> index in the module vector.
-    let index_of = &defined;
-
-    // Record inlinable callees by module index, not by cloned body. The module
-    // owns each body exactly once; call-site splicing borrows the caller mutably
-    // and the callee immutably via `split_at_mut` below. That preserves the
-    // bottom-up contract without a whole-module body snapshot.
-    let inlinable_indices: HashMap<molt_ir::FunctionId, usize> = module
+    // Evaluate a callee once, and look for an SSA witness at each site that
+    // requests a larger budget. The body stays module-owned.
+    let inlinable: HashMap<molt_ir::FunctionId, (usize, InlineBudget)> = module
         .functions
         .iter()
         .zip(module.ids.iter().copied())
         .enumerate()
-        // A callee whose canonical definition is linked externally (e.g. a
-        // shared-stdlib-partition symbol that the native/wasm driver will
-        // externalize into `stdlib_shared.o`) has external linkage: this module
-        // does not own its body, so splicing a private copy at the call site is
-        // unsound (it drops the external reference and forks the definition).
-        // Refused unconditionally - the `Call` survives as an external reference.
-        .filter(|(_, (f, _))| !non_inlinable.contains(&f.name))
         .filter(|(_, (f, id))| {
-            is_inlineable(*id, f, call_graph, summaries, tti)
-                || (split_enabled.contains(*id) && is_inline_safe(*id, f, call_graph))
-                || (numeric_raw_lane_enabled.contains(*id)
-                    && is_inline_safe(*id, f, call_graph)
-                    && callee_op_count(*id, f, summaries) <= tti.hot_inline_op_limit())
+            !call_graph.callers(*id).is_empty() && !non_inlinable.contains(&f.name)
         })
-        .map(|(idx, (_, id))| (id, idx))
+        .filter_map(|(idx, (f, id))| {
+            let budget = match classify_inline_eligibility(id, f, call_graph, summaries, tti) {
+                InlineEligibility::Eligible => InlineBudget::Ordinary,
+                InlineEligibility::WhyNot(InlineWhyNot::OverBudget)
+                    if is_inline_safe(id, f, call_graph) =>
+                {
+                    InlineBudget::NeedsBenefit {
+                        numeric: is_numeric_raw_lane_return_type(&f.return_type)
+                            && callee_op_count(id, f, summaries) <= hot_cap,
+                    }
+                }
+                InlineEligibility::WhyNot(_) | InlineEligibility::Unknown => return None,
+            };
+            Some((id, (idx, budget)))
+        })
         .collect();
-
-    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
-        let mut details: Vec<String> = numeric_raw_lane_enabled
-            .iter()
-            .filter_map(|id| {
-                let idx = index_of.get(id.index()).copied().flatten()?;
-                let f = &module.functions[idx];
-                let name = &f.name;
-                let op_count = callee_op_count(id, f, summaries);
-                let safe = is_inline_safe(id, f, call_graph);
-                let hot_cap = tti.hot_inline_op_limit();
-                let admitted = inlinable_indices.contains_key(&id);
-                Some(format!(
-                    "{name}:ops={op_count}:safe={safe}:hot_cap={hot_cap}:admitted={admitted}"
-                ))
-            })
-            .collect();
-        if details.is_empty() {
-            details = numeric_raw_lane_candidate_diagnostics(module, &defined);
-        }
-        if details.is_empty() {
-            details.push("no static direct call results feed numeric consumers".to_string());
-        }
-        let line = format!(
-            "[E1] module '{}': numeric raw-lane inline candidates {}\n",
-            module.name,
-            details.join(", ")
-        );
-        eprint!("{line}");
-        let _ = crate::debug_artifacts::append_debug_artifact(
-            "tir/inliner_numeric_raw_lane_candidates.txt",
-            line,
-        );
-    }
-
-    if inlinable_indices.is_empty() {
+    if inlinable.is_empty() && diagnostics.is_none() {
         return stats;
     }
 
@@ -235,47 +194,80 @@ pub fn run_inliner(
             // A refused site (refcount guard / shape mismatch) is simply skipped
             // (its `Call` survives, conservative-correct) and does NOT block the
             // remaining inlinable sites in the same caller.
+            let callees = call_graph.callees(caller_id);
+            if callees.is_empty()
+                || (diagnostics.is_none() && !callees.iter().any(|id| inlinable.contains_key(id)))
+            {
+                continue;
+            }
+            let caller = &module.functions[caller_idx];
+            let sites = collect_call_sites(caller, call_graph);
+            let mut uses = None;
+            let admitted: Vec<_> = sites
+                .iter()
+                .map(|site| {
+                    let budget = inlinable.get(&site.callee).map(|(_, budget)| *budget);
+                    let op = &caller.blocks[&site.block].ops[site.op_index];
+                    let admitted = match budget {
+                        Some(InlineBudget::Ordinary) => true,
+                        Some(InlineBudget::NeedsBenefit { numeric }) => {
+                            let uses = uses.get_or_insert_with(|| InlineSiteUses::of(caller));
+                            uses.receives_split_field(op)
+                                || (numeric && uses.numeric_consumer(op).is_some())
+                        }
+                        None => false,
+                    };
+                    if let Some(details) = &mut diagnostics
+                        && let Some((result, consumer)) = uses
+                            .get_or_insert_with(|| InlineSiteUses::of(caller))
+                            .numeric_consumer(op)
+                        && let Some(callee_idx) = index_of.get(site.callee.index()).copied().flatten()
+                    {
+                        let callee = &module.functions[callee_idx];
+                        let ops = callee_op_count(site.callee, callee, summaries);
+                        let return_type = &callee.return_type;
+                        let numeric_return = is_numeric_raw_lane_return_type(return_type);
+                        details.push(format!(
+                            "{}:{} result={result:?} return={return_type:?} numeric_return={numeric_return} consumer={consumer:?} ops={ops} hot_cap={hot_cap} admitted={admitted}",
+                            caller.name, callee.name
+                        ));
+                    }
+                    admitted
+                })
+                .collect();
+            if !admitted.iter().any(|&admitted| admitted) {
+                continue;
+            }
+
+            // Observe every original call before splicing. Once a site is
+            // spliced, its original poll may move to the continuation.
+            let predecessors = crate::tir::dominators::build_pred_map(caller);
+            let raise = RaiseFacts::of(caller);
+            let site_polls: Vec<_> = sites
+                .iter()
+                .zip(&admitted)
+                .map(|(site, &admitted)| {
+                    if admitted {
+                        async_work_poll::call_return_poll(
+                            caller,
+                            site.block,
+                            site.op_index,
+                            &predecessors,
+                            &raise,
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             let mut changed_this_fn = false;
             activations.enter_caller();
-            let sites = {
-                let caller = &module.functions[caller_idx];
-                collect_call_sites(caller, call_graph)
-            };
-            // Each site's call-return poll, found in the caller before any
-            // splice: a later splice puts binding copies where the call was,
-            // and the walk would then run on into the inlined body. Splicing
-            // in reverse order keeps every position before a site, so only a
-            // poll in the site's own block moves, into its continuation.
-            let site_polls: Vec<Option<(BlockId, usize)>> = {
-                let caller = &module.functions[caller_idx];
-                if sites
-                    .iter()
-                    .any(|site| inlinable_indices.contains_key(&site.callee))
-                {
-                    let predecessors = crate::tir::dominators::build_pred_map(caller);
-                    let raise = RaiseFacts::of(caller);
-                    sites
-                        .iter()
-                        .map(|site| {
-                            async_work_poll::call_return_poll(
-                                caller,
-                                site.block,
-                                site.op_index,
-                                &predecessors,
-                                &raise,
-                            )
-                        })
-                        .collect()
-                } else {
-                    vec![None; sites.len()]
-                }
-            };
             let mut inlined_call_polls = Vec::new();
-            for (site, poll) in sites.into_iter().zip(site_polls).rev() {
-                if site.callee == caller_id {
+            for ((site, poll), admitted) in sites.into_iter().zip(site_polls).zip(admitted).rev() {
+                if !admitted || site.callee == caller_id {
                     continue; // self-call (recursive) - never inline.
                 }
-                let Some(&callee_idx) = inlinable_indices.get(&site.callee) else {
+                let Some(&(callee_idx, _)) = inlinable.get(&site.callee) else {
                     continue;
                 };
                 if callee_idx == caller_idx {
@@ -333,6 +325,23 @@ pub fn run_inliner(
                 let _ = super::super::reoptimize(&mut module.functions[caller_idx], tti);
             }
         }
+    }
+
+    if let Some(mut details) = diagnostics {
+        details.sort_unstable();
+        if details.is_empty() {
+            details.push("no static direct call results feed numeric consumers".to_string());
+        }
+        let line = format!(
+            "[E1] module '{}': numeric raw-lane inline candidates {}\n",
+            module.name,
+            details.join(", ")
+        );
+        eprint!("{line}");
+        let _ = crate::debug_artifacts::append_debug_artifact(
+            "tir/inliner_numeric_raw_lane_candidates.txt",
+            line,
+        );
     }
 
     stats

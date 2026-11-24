@@ -1,10 +1,11 @@
-use molt_ir::deterministic_hash::HashSet;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::call_graph::CallGraph;
 use crate::tir::call_targets::{gpu_runtime_result_type_for_op, static_call};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::op_kinds_generated::opcode_is_inliner_numeric_raw_lane_consumer_table;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 /// One statically-resolvable, inlinable call site inside a caller block.
@@ -48,6 +49,46 @@ pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -
         }
     }
     sites
+}
+
+/// SSA witnesses for profitable inlining beyond the ordinary cost budget.
+#[derive(Default)]
+pub(super) struct InlineSiteUses {
+    split_fields: HashSet<ValueId>,
+    numeric_consumers: HashMap<ValueId, OpCode>,
+}
+
+impl InlineSiteUses {
+    pub(super) fn of(caller: &TirFunction) -> Self {
+        let mut uses = Self::default();
+        for op in caller.blocks.values().flat_map(|block| &block.ops) {
+            if op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::StringSplitField) {
+                uses.split_fields.extend(op.results.iter().copied());
+            }
+            if opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode) {
+                for &operand in &op.operands {
+                    uses.numeric_consumers.entry(operand).or_insert(op.opcode);
+                }
+            }
+        }
+        uses
+    }
+
+    pub(super) fn receives_split_field(&self, op: &TirOp) -> bool {
+        !self.split_fields.is_empty()
+            && static_call(op).is_some_and(|call| {
+                call.arguments
+                    .iter()
+                    .any(|arg| self.split_fields.contains(arg))
+            })
+    }
+
+    pub(super) fn numeric_consumer(&self, op: &TirOp) -> Option<(ValueId, OpCode)> {
+        let result = *op.results.first()?;
+        self.numeric_consumers
+            .get(&result)
+            .map(|&consumer| (result, consumer))
+    }
 }
 
 /// REFCOUNT guard: returns true if any of the call's argument values is the
