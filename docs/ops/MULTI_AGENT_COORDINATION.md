@@ -779,7 +779,5 @@ command should be treated as stale context, not an active lock.
 - [ ] Spec/status/roadmap/matrix docs moved with any changed claim.
 - [ ] No partner work was reverted or silently overwritten.
 
-Dispatch capacity follows the typed family strata in the V1 ledger: non-engine
-work requires an active engine lane, and a second active apparatus lane is refused.
-Only `landing_repair` or `integrator_ledger` reasons bypass capacity; see the
-[canonical integration procedure](INTEGRATION.md) for the apparatus budget.
+The [integration procedure](INTEGRATION.md#lanes-lane-start--retire--list)
+owns dispatch capacity and exceptions. The V1 ledger owns family strata.

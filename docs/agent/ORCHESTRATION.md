@@ -162,11 +162,8 @@ rereading the entire board before each commit.
    by mechanism, sibling sites and paths; return at the deliverable or budget,
    or when the assignment's explicit stop condition holds.
 
-Each family has one typed stratum (`engine`, `semantics`, `delivery`, or
-`apparatus`) in the ledger family table. Dispatch refuses a new apparatus lane
-while another apparatus lane is active, and refuses a non-engine lane when no
-engine lane is active. Only `landing_repair` and `integrator_ledger` bypass these
-capacity rules; other departure reasons cannot. Refusals name the active lanes.
+The [integration procedure](../ops/INTEGRATION.md#lanes-lane-start--retire--list)
+owns dispatch capacity and exceptions. The ledger owns each family's stratum.
 Engine ready rows show the instruction axes owned by their family table
 entries; the CPython ratio stays owned by `docs/design/foundation/call_anatomy.md`
 and the V1 ledger.
