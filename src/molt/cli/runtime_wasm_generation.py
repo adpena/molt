@@ -361,20 +361,22 @@ def _require_pair(shared: RuntimeBuildIdentity, reloc: RuntimeBuildIdentity) -> 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeWasmTrust:
-    """What a final link trusts: the pair's family digest and receipt role.
-
-    The family digest names both member identities (each member digest
-    covers the family and its kind), so a receipt whose family hashes to
-    this digest records exactly the identities the caller captured. The
-    caller passes it on the link command line; no trust file is kept.
-    """
+    """The final link's expected family, receipt role, and exact receipt bytes."""
 
     family_digest: str
     receipt_role: RuntimeWasmReceiptRole
+    receipt_sha256: str
 
     @classmethod
     def of(cls, generation: RuntimeWasmGeneration) -> RuntimeWasmTrust:
-        return cls(generation.shared_identity.family_digest, generation.receipt_role)
+        receipt = generation.receipt_identity
+        if receipt is None:
+            raise ValueError("runtime WASM link requires its admitted receipt")
+        return cls(
+            generation.reloc_identity.family_digest,
+            generation.receipt_role,
+            receipt.sha256,
+        )
 
     def arguments(self, manifest: Path) -> list[str]:
         return [
@@ -384,19 +386,31 @@ class RuntimeWasmTrust:
             self.family_digest,
             "--runtime-receipt-role",
             self.receipt_role.value,
+            "--runtime-receipt-sha256",
+            self.receipt_sha256,
         ]
 
 
-def read_trusted_runtime_wasm_generation(
+@dataclass(frozen=True, slots=True)
+class _TrustedRuntimeWasmReceipt:
+    identity: StableRegularFileIdentity
+    payload: object
+    product: object
+    shared: RuntimeBuildIdentity
+    reloc: RuntimeBuildIdentity
+
+
+def _read_trusted_runtime_wasm_receipt(
     manifest: Path, trust: RuntimeWasmTrust
-) -> RuntimeWasmGeneration | None:
-    """Admit ``manifest`` when its pair is the one ``trust`` names, else None."""
+) -> _TrustedRuntimeWasmReceipt | None:
     try:
         receipt_identity, payload = capture_exact(
             manifest,
             max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
             label="trusted runtime WASM receipt",
         )
+        if receipt_identity.sha256 != trust.receipt_sha256:
+            return None
         source = trust.receipt_role is RuntimeWasmReceiptRole.SOURCE_BUILD
         product = _source_envelope(payload)[0] if source else payload
         shared, reloc = runtime_wasm_product_identities(product)
@@ -404,14 +418,58 @@ def read_trusted_runtime_wasm_generation(
         return None
     if shared.family_digest != trust.family_digest:
         return None
+    return _TrustedRuntimeWasmReceipt(receipt_identity, payload, product, shared, reloc)
+
+
+def read_trusted_runtime_wasm_generation(
+    manifest: Path, trust: RuntimeWasmTrust
+) -> RuntimeWasmGeneration | None:
+    """Admit the exact receipt and both immutable members for a split link."""
+    receipt = _read_trusted_runtime_wasm_receipt(manifest, trust)
+    if receipt is None:
+        return None
+    source = trust.receipt_role is RuntimeWasmReceiptRole.SOURCE_BUILD
     validate = _validate_generation_payload if source else _validate_product_payload
     return validate(
         manifest,
-        payload,
-        expected_shared_identity=shared,
-        expected_reloc_identity=reloc,
-        receipt_identity=receipt_identity,
+        receipt.payload,
+        expected_shared_identity=receipt.shared,
+        expected_reloc_identity=receipt.reloc,
+        receipt_identity=receipt.identity,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWasmRelocAdmission:
+    reloc_member_identity: StableRegularFileIdentity
+    receipt_identity: StableRegularFileIdentity
+    # Reserve the family member's publication path without admitting its bytes.
+    shared_path: Path
+
+
+def read_trusted_runtime_wasm_reloc(
+    manifest: Path, trust: RuntimeWasmTrust
+) -> RuntimeWasmRelocAdmission | None:
+    """Admit only the receipt and the immutable reloc member for a linked module."""
+    receipt = _read_trusted_runtime_wasm_receipt(manifest, trust)
+    if receipt is None:
+        return None
+    descriptors = _product_record_descriptors(
+        manifest,
+        receipt.product,
+        expected_shared_identity=receipt.shared,
+        expected_reloc_identity=receipt.reloc,
+    )
+    if descriptors is None:
+        return None
+    try:
+        with ExitStack() as owned:
+            reloc_member = _admit_artifact_descriptor(
+                descriptors[1], observed=None, owned=owned
+            )
+    except (OSError, ValueError):
+        return None
+    return RuntimeWasmRelocAdmission(reloc_member, receipt.identity, descriptors[0][0])
 
 
 def runtime_wasm_generation_path(shared: Path) -> Path:

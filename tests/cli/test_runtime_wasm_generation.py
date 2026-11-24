@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
-
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -26,6 +25,7 @@ from molt.cli.runtime_wasm_generation import (
     read_runtime_wasm_generation,
     read_runtime_wasm_product,
     read_trusted_runtime_wasm_generation,
+    read_trusted_runtime_wasm_reloc,
     runtime_wasm_generation_identities,
     runtime_wasm_product_identities,
     runtime_wasm_generation_path,
@@ -33,6 +33,7 @@ from molt.cli.runtime_wasm_generation import (
 )
 from tests.runtime_build_identity_helper import (
     runtime_build_identity,
+    runtime_cargo_environment_inputs,
 )
 from molt.toolchain_identity import StableRegularFileError, stable_regular_file_identity
 
@@ -671,13 +672,14 @@ def test_store_admits_only_its_own_environment_variant(tmp_path: Path) -> None:
         admit(second_env)
 
 
-def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
+def test_trusted_link_admission_binds_the_exact_receipt_family_and_role(
     tmp_path: Path,
 ) -> None:
     generation, shared, _reloc = _publish_pair(tmp_path)
     trust = RuntimeWasmTrust.of(generation)
+    receipt_sha256 = hashlib.sha256(generation.manifest.read_bytes()).hexdigest()
     assert trust == RuntimeWasmTrust(
-        shared.family_digest, RuntimeWasmReceiptRole.SOURCE_BUILD
+        shared.family_digest, RuntimeWasmReceiptRole.SOURCE_BUILD, receipt_sha256
     )
     assert trust.arguments(generation.manifest) == [
         "--runtime-generation",
@@ -686,6 +688,8 @@ def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
         shared.family_digest,
         "--runtime-receipt-role",
         "source-build",
+        "--runtime-receipt-sha256",
+        receipt_sha256,
     ]
     assert read_trusted_runtime_wasm_generation(generation.manifest, trust) == (
         generation
@@ -700,6 +704,37 @@ def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("source_build", [False, True])
+def test_linked_runtime_admits_exact_reloc_without_shared(
+    tmp_path: Path, source_build: bool
+) -> None:
+    if source_build:
+        generation, _, _ = _publish_pair(tmp_path)
+    else:
+        generation = _publish_retained_product(tmp_path, "pair", b"shared", b"reloc")
+    trust = RuntimeWasmTrust.of(generation)
+    generation.shared.unlink()
+
+    admitted = read_trusted_runtime_wasm_reloc(generation.manifest, trust)
+    assert admitted is not None
+    assert admitted.reloc_member_identity == generation.reloc_member_identity
+    assert admitted.receipt_identity == generation.receipt_identity
+    assert read_trusted_runtime_wasm_generation(generation.manifest, trust) is None
+    assert (
+        read_trusted_runtime_wasm_reloc(
+            generation.manifest, replace(trust, family_digest="0" * 64)
+        )
+        is None
+    )
+
+    receipt_bytes = generation.manifest.read_bytes()
+    generation.manifest.write_bytes(receipt_bytes + b"\n")
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    generation.manifest.write_bytes(receipt_bytes)
+    generation.reloc.write_bytes(b"other")
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
 
 
 def test_codegen_binding_pins_the_immutable_receipt_in_place(tmp_path: Path) -> None:

@@ -181,6 +181,10 @@ projection adds object bounds and target-format checks; it owns no archive
 parser. Before linking, raw objects and whole archives create required provider
 and data-address obligations. Lazy archives contribute candidates only. Exact
 linker extraction evidence admits the requested link roles before publication.
+A monolithic final link admits the relocatable runtime against the exact
+producer-selected receipt. The shared member's record remains part of the
+runtime family receipt. Only the split deployment admits its bytes and includes
+them in the deployment fingerprint.
 A split deployment links its side module and uses the admitted shared runtime.
 An explicit monolithic request also links and publishes that module. Dormant
 member names cannot force runtime exports or missing provider/address failures.

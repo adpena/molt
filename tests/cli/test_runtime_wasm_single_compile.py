@@ -33,7 +33,6 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -1737,11 +1736,9 @@ def _run_app_ensure_routing(
 ) -> list[str]:
     """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
 
-    All ensures record their name; each configured return value is chosen so the
-    function short-circuits (returns a ``_fail``) right after the ensure
-    decision -- either because an ensure returns False, or because the shared
-    runtime artifact path does not exist.  The returned list is the ORDER of
-    ensures actually invoked, which is exactly the routing decision under test.
+    Each ensure records its call. A successful callback leaves no selected
+    generation so the receiver stops before final link. The returned list
+    records which ensure was invoked.
     """
     # Stub the wasm inspection helpers so no real module is parsed.
     monkeypatch.setattr(
@@ -1750,20 +1747,8 @@ def _run_app_ensure_routing(
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda *a, **k: None)
     output_wasm = tmp_path / "app_out.wasm"
     output_wasm.write_bytes(b"\0asm")
-    runtime_reloc = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_reloc.write_bytes(b"\0asm")
-    # Deliberately MISSING so the non-freestanding path _fails at exists() right
-    # after the shared-ensure decision (keeps the test off the real link path).
-    runtime_shared_missing = tmp_path / "molt_runtime.wasm"
-
     log: list[str] = []
-    state = _RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
-            shared=runtime_shared_missing,
-            reloc=runtime_reloc,
-            manifest=tmp_path / "molt_runtime.generation.json",
-        ),
-    )
+    state = _RuntimeArtifactState()
 
     def ensure(required_exports=None):
         log.append("both")
@@ -1920,25 +1905,15 @@ def _prepare_host_precompile_routing(
     manifest_path.write_text('{"previous":"deployment"}\n', encoding="utf-8")
     native_path = tmp_path / "output_linked.molt.cwasm"
     native_path.write_bytes(b"previous native generation")
-    pair_dir = tmp_path / "runtime-pair"
-    pair_dir.mkdir()
-    shared = pair_dir / "molt_runtime.wasm"
-    reloc = pair_dir / "molt_runtime_reloc.wasm"
-    generation = pair_dir / "runtime-generation.json"
-    for path in (shared, reloc):
-        path.write_bytes(output.read_bytes())
-    generation.write_text("{}", encoding="utf-8")
-    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
-
-    state = _RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
-            shared=shared,
-            reloc=reloc,
-            manifest=generation,
-            shared_identity=SimpleNamespace(family_digest="f" * 64),
-            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
-        ),
+    runtime_bytes = output.read_bytes()
+    generation = _publish_stored(
+        tmp_path,
+        make_runtime_build_identity("shared", "precompile"),
+        make_runtime_build_identity("reloc", "precompile"),
+        shared=runtime_bytes,
+        reloc=runtime_bytes,
     )
+    state = _RuntimeArtifactState(runtime_wasm_pair=generation)
     from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 
     source = tmp_path / "app.py"
