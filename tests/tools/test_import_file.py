@@ -34,10 +34,12 @@ def package_admission_loader(request):
     # Both bootstrap edges must obey the same independent loader/rollback
     # oracles. Only their standard importlib mechanics are duplicated.
     if request.param == "tool":
-        from tools import import_file as owner
-    else:
-        from molt import python_environment_identity as owner
-    return owner._load_package_import_custody
+        from tools import import_file
+
+        return functools.partial(import_file._load_package_authority, _ADMISSION_MODULE)
+    from molt import python_environment_identity
+
+    return python_environment_identity._load_package_import_custody
 
 
 def test_package_admission_reuses_one_neutral_module(package_admission_loader):
@@ -934,6 +936,7 @@ def test_neutral_authorities_declare_themselves() -> None:
     # its sibling, per checkout.
     assert declared == {
         "package_import_custody.py",
+        "package_install_layout.py",
         "process_guard.py",
         "cargo_execution_policy.py",
         "process_environment.py",
