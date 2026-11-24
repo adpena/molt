@@ -344,10 +344,11 @@ for a `--base` lane whose sccache pin differs, and either sccache serves its
 builds.
 
 Each family has one typed stratum (`engine`, `semantics`, `delivery`, or
-`apparatus`) in the ledger family table. Dispatch refuses a new apparatus lane
-while another apparatus lane is active, and refuses a non-engine lane when no
-engine lane is active. Only `landing_repair` and `integrator_ledger` bypass these
-capacity rules; other departure reasons cannot. Refusals name the active lanes.
+`apparatus`) in the ledger family table. Dispatch admits at most one apparatus
+lane and requires an active engine lane for ordinary apparatus work. Only
+`landing_repair` and `integrator_ledger` bypass apparatus capacity. Engine,
+semantics and delivery work follow their own recorded prerequisites and
+family custody. Refusals name the active lanes.
 The coordination record holds its dispatch claim until retirement closes it.
 Advancing a checkout to main preserves its existing claim, including while
 tracked or untracked work is still in progress.

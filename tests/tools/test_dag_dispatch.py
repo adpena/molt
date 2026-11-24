@@ -282,9 +282,8 @@ def test_coverage_and_dispatch_refuse_missing_or_unknown_strata(stratum) -> None
         DispatchReason.OWNER_DIRECTED,
     ],
 )
-@pytest.mark.parametrize("family,row", [("B", "HF-2"), ("C", "HF-6"), ("D", "HF-7")])
-def test_non_engine_capacity_cannot_be_bypassed_by_departure(
-    reason, family, row
+def test_apparatus_capacity_cannot_be_bypassed_by_departure(
+    reason: DispatchReason,
 ) -> None:
     with pytest.raises(
         DispatchRefused, match="engine capacity rule.*active lanes: B: semantic-owner"
@@ -292,10 +291,15 @@ def test_non_engine_capacity_cannot_be_bypassed_by_departure(
         dag_dispatch.plan_dispatch(
             STATUS,
             [_lane("semantic-owner", "B"), _lane("ended-engine", "A", active=False)],
-            [row],
+            ["HF-7"],
             reason=reason,
             text="recorded departure",
         )
+
+
+def test_ready_product_work_can_start_without_an_unrelated_engine_lane() -> None:
+    assert dag_dispatch.plan_dispatch(STATUS, [], ["HF-6"]).family == "C"
+    assert dag_dispatch.plan_dispatch(_closed_one(), [], ["HF-2"]).family == "B"
 
 
 def test_capacity_with_live_engine_and_apparatus_custody() -> None:

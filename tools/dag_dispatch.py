@@ -230,18 +230,21 @@ def plan_dispatch(
         if unassigned:
             details.append("unassigned: " + ", ".join(unassigned))
         active = "; ".join(details) or "none"
-        if strata[family] is finding_status.FamilyStratum.APPARATUS and any(
-            strata.get(key) is finding_status.FamilyStratum.APPARATUS for key in claimed
-        ):
-            raise DispatchRefused(
-                f"apparatus capacity rule: another apparatus lane is active; active lanes: {active}"
-            )
-        if strata[family] is not finding_status.FamilyStratum.ENGINE and not any(
-            strata.get(key) is finding_status.FamilyStratum.ENGINE for key in claimed
-        ):
-            raise DispatchRefused(
-                f"engine capacity rule: non-engine dispatch requires an active engine lane; active lanes: {active}"
-            )
+        if strata[family] is finding_status.FamilyStratum.APPARATUS:
+            if any(
+                strata.get(key) is finding_status.FamilyStratum.APPARATUS
+                for key in claimed
+            ):
+                raise DispatchRefused(
+                    f"apparatus capacity rule: another apparatus lane is active; active lanes: {active}"
+                )
+            if not any(
+                strata.get(key) is finding_status.FamilyStratum.ENGINE
+                for key in claimed
+            ):
+                raise DispatchRefused(
+                    f"engine capacity rule: apparatus requires an active engine lane; active lanes: {active}"
+                )
     if reason is DispatchReason.DAG_READY and family in claimed:
         raise DispatchRefused(
             f"family {family} already has a lane ({', '.join(claimed[family])}); one lane owns a family's cause. Extend that lane, or give --dispatch-reason with --reason TEXT"
