@@ -6,7 +6,7 @@
 //! not build these tables. [`CallFactsTable::build_local`] supplies the sound
 //! intraprocedural floor used by [`CallFactsAnalysis`] and local FactGraph views.
 //!
-//! Both paths use the shared [`FunctionCallSites`] projection and key each
+//! Both paths use the shared `visit_sites` projection and key each
 //! result-bearing site by its first result [`ValueId`]. Unknown facts remain
 //! pessimistic; neither path changes the function body.
 //!
@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use super::analysis::{Analysis, AnalysisId};
 use super::call_graph::CallGraph;
-use super::call_sites::FunctionCallSites;
+use super::call_sites::{CallEvent, visit_sites};
 use super::function::{TirFunction, TirModule};
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
@@ -117,20 +117,16 @@ impl CallFactsTable {
         };
 
         let mut table = CallFactsTable::default();
-        let sites = FunctionCallSites::for_function(func);
-        for (&bid, block) in &func.blocks {
-            for (index, op) in block.ops.iter().enumerate() {
-                let Some(site) = sites.at((bid, index)) else {
-                    continue;
-                };
-                let Some(result) = op.results.first().copied() else {
-                    continue;
-                };
+        visit_sites(func, |event| {
+            if let CallEvent::Operation { op, site, .. } = event
+                && let Some(result) = op.results.first()
+            {
                 let facts =
-                    analyze_call_site_module(op, site, func, call_graph, summaries, tti, &body_of);
+                    analyze_call_site_module(op, &site, func, call_graph, summaries, tti, &body_of);
                 table.facts.insert(result.0, facts);
             }
-        }
+            false
+        });
         table
     }
 
@@ -142,20 +138,16 @@ impl CallFactsTable {
     /// precise [`Self::build_for_function`] table.
     pub fn build_local(func: &TirFunction) -> CallFactsTable {
         let mut table = CallFactsTable::default();
-        let sites = FunctionCallSites::for_function(func);
-        for (&bid, block) in &func.blocks {
-            for (index, op) in block.ops.iter().enumerate() {
-                let Some(site) = sites.at((bid, index)) else {
-                    continue;
-                };
-                let Some(result) = op.results.first().copied() else {
-                    continue;
-                };
+        visit_sites(func, |event| {
+            if let CallEvent::Operation { op, site, .. } = event
+                && let Some(result) = op.results.first()
+            {
                 table
                     .facts
-                    .insert(result.0, analyze_call_site_local(op, site, func));
+                    .insert(result.0, analyze_call_site_local(op, &site, func));
             }
-        }
+            false
+        });
         table
     }
 }

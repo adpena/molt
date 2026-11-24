@@ -178,22 +178,21 @@ pub(super) fn unknown_callee_count(func: &TirFunction) -> usize {
 pub(super) fn unknown_callee_kinds(
     func: &TirFunction,
 ) -> std::collections::BTreeMap<String, usize> {
-    let sites = crate::tir::call_sites::FunctionCallSites::for_function(func);
+    use crate::tir::call_sites::{CallEvent, CallSiteTarget, visit_sites};
+
     let mut kinds = std::collections::BTreeMap::new();
-    for (&block, body) in &func.blocks {
-        for (index, op) in body.ops.iter().enumerate() {
-            let opaque = sites
-                .at((block, index))
-                .is_some_and(|site| site.target == crate::tir::call_sites::CallSiteTarget::Opaque);
-            if opaque {
-                let kind = op.origin.map_or_else(
-                    || format!("{:?}", op.opcode),
-                    |origin| origin.as_str().to_owned(),
-                );
-                *kinds.entry(kind).or_insert(0) += 1;
-            }
+    visit_sites(func, |event| {
+        if let CallEvent::Operation { op, site, .. } = event
+            && site.target == CallSiteTarget::Opaque
+        {
+            let kind = op.origin.map_or_else(
+                || format!("{:?}", op.opcode),
+                |origin| origin.as_str().to_owned(),
+            );
+            *kinds.entry(kind).or_insert(0) += 1;
         }
-    }
+        false
+    });
     kinds
 }
 

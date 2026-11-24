@@ -6,7 +6,7 @@
 
 
 `runtime/molt-passes/src/tir/call_facts.rs` owns the per-function CallFacts table.
-It records result-bearing sites from the shared `FunctionCallSites` projection,
+It records result-bearing sites from the shared `visit_sites` stream,
 including Python callbacks and proven runtime primitives. Each record is keyed
 by the call's first result `ValueId`; `BTreeMap<u32, CallFacts>` gives deterministic
 iteration. The table is read-only analysis, not part of executable op layout.

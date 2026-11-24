@@ -316,7 +316,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   branchless counting, fast-math type seeding, strength-reduction type seeding,
   and GVN consume that helper instead of carrying private
   Const*/comparison/module-result opcode matches.
-- Call graph and CallFacts share operation-aware `FunctionCallSites` from
+- Call graph and CallFacts share operation-aware `visit_sites` from
   mandatory `may_call_python` opcode effects, exact scalar provenance, typed-slot
   release/presence proofs, and direct/GPU target provenance. Dynamic protocols,
   namespace access, preserved runtime operations, async-work polls, and release

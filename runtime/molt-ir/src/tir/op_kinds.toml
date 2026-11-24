@@ -138,7 +138,7 @@ primitive_operator_effect_cases = [
 #                  inference. The registry owns opcode membership; type_refine.rs
 #                  owns the rule semantics and live operand/attr parsing.
 #   - may_call_python / async_work_poll_after_kinds - callback effects and
-#                  call-return observation protocol. FunctionCallSites combines
+#                  call-return observation protocol. visit_sites combines
 #                  callback effects with exact primitive/slot proofs and source
 #                  target provenance; the polling list never defines call edges.
 #   - ssa_s_value_attr_keys / ssa_original_kind_preserving_kinds - generated

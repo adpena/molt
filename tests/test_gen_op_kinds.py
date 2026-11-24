@@ -974,7 +974,7 @@ def test_call_sites_share_effect_authority() -> None:
     assert "CallOpcodeRole" not in rendered
     assert "opcode_call_role_table" not in rendered
     for consumer in (call_graph, call_facts):
-        assert "FunctionCallSites::for_function(func)" in consumer
+        assert "visit_sites(func, |event|" in consumer
         assert "opcode_call_role_table" not in consumer
     assert "op_effects_with_types(op, exact)" in call_sites
     assert "let exact = facts.types()" in call_sites

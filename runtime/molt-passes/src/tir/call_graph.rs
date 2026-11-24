@@ -20,23 +20,19 @@
 //!
 //! Every call-bearing op in a function body produces a [`CallEdge`]:
 //!
-//! * **[`CallEdge::StaticDirect`]** — an [`OpCode::Call`] whose `s_value` attr is
-//!   `Str(name)` AND `name` is a function defined in this module AND the
-//!   preserved source role proves a direct target. Registered direct-call Copy
-//!   transports can retain an edge but are not first-class inlining sites.
-//! * **[`CallEdge::Opaque`]** — every other call: a [`OpCode::Call`] with no
-//!   `s_value` (indirect / computed callee), a `Str(name)` that names a function
-//!   *not* in this module (extern / cross-batch), any dynamic-method opcode
-//!   such as [`OpCode::CallMethod`] / [`OpCode::CallLoadedMethod`] (Python
-//!   dynamic method dispatch), a method load ([`OpCode::LoadMethod`] /
-//!   [`OpCode::LoadSuperMethod`], whose lookup can run Python code), or a `Copy`
+//! * **[`CallEdge::StaticDirect`]** — a call whose typed callee is a
+//!   [`FunctionId`] with a body in this module and whose preserved source role
+//!   proves a direct target. Registered direct-call Copy transports retain an
+//!   edge but are not first-class inlining sites.
+//! * **[`CallEdge::Opaque`]** — a call with no proved direct callee, an extern
+//!   target, a dynamic method dispatch or lookup, or a `Copy`
 //!   op carrying a call-kind
 //!   `origin` (the SSA-lift fallback spelling of `call_func` /
 //!   `call_indirect` / `call_bind` / `invoke_ffi` etc. — see
 //!   [`crate::tir::ssa`]). An opaque call may reach *any* function (including
 //!   back into this one), so it is conservatively a recursion-capable edge.
 //!
-//! [`OpCode::CallBuiltin`] is an opaque call edge. Public names can resolve
+//! [`super::ops::OpCode::CallBuiltin`] is an opaque call edge. Public names can resolve
 //! to Python replacements, and dedicated runtime primitives may themselves
 //! invoke Python protocols. Acquiring a builtin reference can also invoke a
 //! custom namespace mapping; its preserved kind records the same opaque edge.
@@ -51,11 +47,10 @@
 //!
 //! ## Generator poll edges
 //!
-//! An [`OpCode::AllocTask`] whose `s_value` is `Str(poll_name)` references the
-//! generator/coroutine *poll* function (`"{base}_poll"`). That is a genuine
-//! callable reference (the runtime drives the task by calling its poll fn), so
-//! it produces a [`CallEdge`] to `poll_name` when that function is in the module
-//! — mirroring `eliminate_dead_functions`' `alloc_task` handling. It does *not*
+//! An [`super::ops::OpCode::AllocTask`] names its poll entry by typed callee id.
+//! That is a genuine callable reference: the runtime later drives the task by
+//! calling the poll function. The shared visitor reports it for SCC and
+//! reachability when its body is in this module. It does *not*
 //! disqualify the *enclosing* function from leaf-ness (allocating a task is not
 //! itself a call), so `AllocTask` edges are recorded for SCC/reachability but
 //! are excluded from the "makes no call" leaf test.
@@ -77,9 +72,8 @@ use std::sync::OnceLock;
 
 use molt_ir::{FunctionId, FunctionSet};
 
-use super::call_sites::{CallSite, CallSiteTarget, FunctionCallSites};
+use super::call_sites::{CallEvent, CallSite, CallSiteTarget, visit_sites};
 use super::function::TirModule;
-use super::ops::{OpCode, TirOp};
 
 /// A resolved or unresolved call target referenced by one call-bearing op.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,17 +99,6 @@ fn classify_call_site(site: &CallSite, has_body: &FunctionSet) -> Option<CallEdg
         }
         CallSiteTarget::Direct(_) | CallSiteTarget::Opaque => Some(CallEdge::Opaque),
     }
-}
-
-/// If `op` is an [`OpCode::AllocTask`] referencing a poll function with a
-/// body in this module, return it. This is a callable reference (the runtime
-/// drives the task by calling its poll fn) but not a call *out of* the
-/// enclosing function, so it feeds reachability/SCC but not the leaf test.
-fn alloc_task_poll_target(op: &TirOp, has_body: &FunctionSet) -> Option<FunctionId> {
-    if op.opcode != OpCode::AllocTask {
-        return None;
-    }
-    op.callee.filter(|callee| has_body.contains(*callee))
 }
 
 /// The whole-program call graph of a [`TirModule`].
@@ -180,34 +163,29 @@ impl CallGraph {
             let mut any_call = false;
             let mut opaque = false;
 
-            let sites = FunctionCallSites::for_function(func);
-            for (&bid, block) in &func.blocks {
-                for (index, op) in block.ops.iter().enumerate() {
-                    if let Some(edge) = sites
-                        .at((bid, index))
-                        .and_then(|site| classify_call_site(site, &has_body))
-                    {
-                        any_call = true;
-                        match edge {
-                            CallEdge::StaticDirect(callee) => static_callees.push(callee),
-                            CallEdge::Opaque => opaque = true,
+            visit_sites(func, |event| {
+                match event {
+                    CallEvent::Operation { site, .. } => {
+                        if let Some(edge) = classify_call_site(&site, &has_body) {
+                            any_call = true;
+                            match edge {
+                                CallEdge::StaticDirect(callee) => static_callees.push(callee),
+                                CallEdge::Opaque => opaque = true,
+                            }
                         }
                     }
-                    // Generator/coroutine poll references: a callable reference
-                    // that must appear in the reachability graph (so the poll fn
-                    // is not treated as unreachable), but not a call out of the
-                    // enclosing function.
-                    if let Some(poll) = alloc_task_poll_target(op, &has_body) {
-                        static_callees.push(poll);
+                    CallEvent::Terminator { .. } => {
+                        any_call = true;
+                        opaque = true;
+                    }
+                    CallEvent::PollReference(poll) => {
+                        if has_body.contains(poll) {
+                            static_callees.push(poll);
+                        }
                     }
                 }
-                // A conditional terminator can execute __bool__/__len__ even
-                // when the block has no Bool operation or result-bearing call.
-                if sites.terminator_at(bid).is_some() {
-                    any_call = true;
-                    opaque = true;
-                }
-            }
+                false
+            });
 
             static_callees.sort_unstable();
             static_callees.dedup();

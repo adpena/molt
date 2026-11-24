@@ -101,7 +101,7 @@ fn dynamic_protocol_families_are_callbacks_despite_scalar_annotations() {
         let site = append(&mut func, op(opcode, &args, &output));
         let sites = FunctionCallSites::for_function(&func);
         assert!(sites.may_call_python(), "{opcode:?}");
-        assert!(FunctionCallSites::may_call_python_in(&func), "{opcode:?}");
+        assert!(may_call_python(&func), "{opcode:?}");
         assert_eq!(
             sites.at(site).unwrap().target,
             CallSiteTarget::Opaque,
@@ -295,6 +295,7 @@ fn conditional_terminators_share_the_exact_truthiness_oracle() {
             FunctionCallSites::for_function(&func).may_call_python(),
             !known_scalar
         );
+        assert_eq!(may_call_python(&func), !known_scalar);
         let graph = crate::tir::call_graph::named::NamedCallGraph::build(
             &TirModule::decode_spelled("m", vec![func]),
         );
@@ -372,7 +373,7 @@ fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
         CallSiteTarget::RuntimePrimitive
     );
     assert!(!sites.may_call_python());
-    assert!(!FunctionCallSites::may_call_python_in(&func));
+    assert!(!may_call_python(&func));
     assert!(
         crate::tir::call_graph::named::NamedCallGraph::build(&TirModule::decode_spelled(
             "m",
@@ -380,5 +381,42 @@ fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
         ))
         .leaf_functions()
         .contains("callback")
+    );
+}
+
+#[test]
+fn deferred_poll_reference_does_not_hide_later_synchronous_callbacks() {
+    let mut func = function();
+    let task = func.fresh_value();
+    let poll = molt_ir::FunctionId(17);
+    let mut allocation = op(OpCode::AllocTask, &[], &[task]);
+    allocation.callee = Some(poll);
+    append(&mut func, allocation);
+
+    // A deferred task entry is reachable, but creating it runs no Python.
+    let mut polls = Vec::new();
+    visit_sites(&func, |event| {
+        if let CallEvent::PollReference(target) = event {
+            polls.push(target);
+        }
+        false
+    });
+    assert_eq!(polls, vec![poll]);
+    assert!(!may_call_python(&func));
+
+    // The early-exit leaf query must continue past a deferred reference.
+    // An annotated scalar operand can still call an overriding __add__.
+    let result = func.fresh_value();
+    append(
+        &mut func,
+        op(OpCode::Add, &[ValueId(0), ValueId(1)], &[result]),
+    );
+    assert!(may_call_python(&func));
+    assert_eq!(
+        CallFactsTable::build_local(&func)
+            .get(result)
+            .unwrap()
+            .target,
+        CallTargetFact::Opaque,
     );
 }

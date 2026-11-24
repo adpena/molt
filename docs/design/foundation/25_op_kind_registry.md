@@ -512,7 +512,7 @@ feeds `opcode_type_refine_operand_type_rule_table` for operand-dependent
 arithmetic, boolean, bitwise, iterator, indexing, tuple, Copy, BoxVal, and
 UnboxVal rules. `type_refine.rs` owns only the rule semantics and live
 operand/attr parsing, not private opcode membership.
-Call graph and CallFacts share `FunctionCallSites`, an exact-site projection of
+Call graph and CallFacts share `visit_sites`, an exact-site stream of
 the mandatory `may_call_python` opcode effect, exact scalar primitive matrix,
 GPU source provenance, and fixed-slot load/store lifetime facts. Callback
 capability is independent of throwing and global-memory effects. Unknown

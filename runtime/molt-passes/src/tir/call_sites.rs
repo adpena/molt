@@ -4,13 +4,16 @@
 //! Global mutation, exceptions, and deferred poll references are independent.
 //! Consumers must rebuild after transforms, especially lifetime finalization.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use super::analysis::AnalysisManager;
+#[cfg(test)]
 use super::blocks::BlockId;
 use super::call_targets::{gpu_runtime_result_type_for_op, static_call};
 use super::function::TirFunction;
 use super::op_kinds_generated::OpcodeEffects;
+use super::ops::{OpCode, TirOp};
 use super::passes::alias_analysis::AliasAnalysis;
 use super::passes::effects::op_effects_with_types;
 use super::passes::typed_slot_access::{self, LoadPurity};
@@ -34,30 +37,30 @@ pub struct CallSite {
     pub effects: OpcodeEffects,
 }
 
+#[cfg(test)]
 #[derive(Default, Debug)]
 pub struct FunctionCallSites {
     sites: BTreeMap<(BlockId, usize), CallSite>,
     terminators: BTreeMap<BlockId, CallSite>,
 }
 
+#[cfg(test)]
 impl FunctionCallSites {
     pub fn for_function(func: &TirFunction) -> Self {
         let mut result = Self::default();
-        visit_sites(func, |position, site| {
-            match position {
-                SitePosition::Op(position) => result.sites.insert(position, site),
-                SitePosition::Terminator(bid) => result.terminators.insert(bid, site),
-            };
+        visit_sites(func, |event| {
+            match event {
+                CallEvent::Operation { position, site, .. } => {
+                    result.sites.insert(position, site);
+                }
+                CallEvent::Terminator { block, site } => {
+                    result.terminators.insert(block, site);
+                }
+                CallEvent::PollReference(_) => {}
+            }
             false
         });
         result
-    }
-
-    /// Prove callback freedom without storing the individual call sites.
-    pub fn may_call_python_in(func: &TirFunction) -> bool {
-        visit_sites(func, |_, site| {
-            site.target != CallSiteTarget::RuntimePrimitive
-        })
     }
 
     /// Whether this function has a synchronous Python callback edge.
@@ -80,13 +83,35 @@ impl FunctionCallSites {
     }
 }
 
-enum SitePosition {
-    Op((BlockId, usize)),
-    Terminator(BlockId),
+/// Prove callback freedom without materializing individual call sites.
+pub fn may_call_python(func: &TirFunction) -> bool {
+    visit_sites(func, |event| match event {
+        CallEvent::Operation { site, .. } => site.target != CallSiteTarget::RuntimePrimitive,
+        CallEvent::Terminator { .. } => true,
+        CallEvent::PollReference(_) => false,
+    })
 }
 
-/// Return as soon as a consumer has enough evidence to answer its query.
-fn visit_sites(func: &TirFunction, mut stop: impl FnMut(SitePosition, CallSite) -> bool) -> bool {
+pub(crate) enum CallEvent<'a> {
+    Operation {
+        #[cfg(test)]
+        position: (BlockId, usize),
+        op: &'a TirOp,
+        site: CallSite,
+    },
+    Terminator {
+        #[cfg(test)]
+        block: BlockId,
+        #[cfg(test)]
+        site: CallSite,
+    },
+    /// A callable reference for reachability, not a synchronous call.
+    PollReference(molt_ir::FunctionId),
+}
+
+/// Stream call sites and deferred poll references in operation order.
+/// A visitor returning true asks to stop early.
+pub(crate) fn visit_sites(func: &TirFunction, mut stop: impl FnMut(CallEvent<'_>) -> bool) -> bool {
     // The shared plan skips alias/range computation without candidates.
     let mut analyses = AnalysisManager::new();
     let slots = typed_slot_access::for_function(func, &mut analyses);
@@ -111,27 +136,42 @@ fn visit_sites(func: &TirFunction, mut stop: impl FnMut(SitePosition, CallSite) 
                 effects.may_call_python = false;
             }
             let target = if gpu_runtime_result_type_for_op(op).is_some() {
-                CallSiteTarget::RuntimePrimitive
+                Some(CallSiteTarget::RuntimePrimitive)
             } else if !effects.may_call_python {
-                continue;
+                None
             } else if let Some(call) = static_call(op) {
-                CallSiteTarget::Direct(call.callee)
+                Some(CallSiteTarget::Direct(call.callee))
             } else {
-                CallSiteTarget::Opaque
+                Some(CallSiteTarget::Opaque)
             };
-            if stop(SitePosition::Op(position), CallSite { target, effects }) {
+            if let Some(target) = target
+                && stop(CallEvent::Operation {
+                    #[cfg(test)]
+                    position,
+                    op,
+                    site: CallSite { target, effects },
+                })
+            {
+                return true;
+            }
+            if op.opcode == OpCode::AllocTask
+                && let Some(poll) = op.callee
+                && stop(CallEvent::PollReference(poll))
+            {
                 return true;
             }
         }
         let effects = super::op_semantics::terminator_effects(&block.terminator, exact);
         if effects.may_call_python
-            && stop(
-                SitePosition::Terminator(bid),
-                CallSite {
+            && stop(CallEvent::Terminator {
+                #[cfg(test)]
+                block: bid,
+                #[cfg(test)]
+                site: CallSite {
                     target: CallSiteTarget::Opaque,
                     effects,
                 },
-            )
+            })
         {
             return true;
         }

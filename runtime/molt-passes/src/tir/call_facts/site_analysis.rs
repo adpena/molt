@@ -35,7 +35,8 @@ fn typed_return_for(result: ValueId, func: &TirFunction) -> Option<Repr> {
 }
 
 /// Resolve the shared site target; callback membership and source provenance
-/// were already proved by FunctionCallSites, including preserved Copy calls.
+/// were already proved by the shared call-site visitor, including preserved
+/// Copy calls.
 fn target_for_module(site: &CallSite, call_graph: &CallGraph) -> CallTargetFact {
     match &site.target {
         CallSiteTarget::Direct(callee) if call_graph.has_body(*callee) => {
