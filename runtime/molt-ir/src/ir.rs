@@ -571,12 +571,10 @@ pub struct FunctionIR {
     /// optimization shrinks the body; symbol spelling carries no authority.
     #[serde(default)]
     pub codegen_partition: bool,
-    /// Whether, on a 3.13+ target, a PEP 667 frame-locals proxy may rebind
-    /// this function's locals: the program holds a frame-locals writer
-    /// (HF-901, `PythonNamespacePremise.frame_locals_writer`;
-    /// `python_binding_flow.frame_locals_exposed`). A splice that would
-    /// snapshot the locals for Python code it runs reads this fact
-    /// (spliced_frames.md 5.1).
+    /// Whether Python code can mutate this activation through an observed frame.
+    /// On 3.13+ a PEP 667 writer can rebind locals (HF-901). Before 3.13
+    /// clearing a suspended generator's frame closes its continuation (HF-905).
+    /// An observable splice must keep the ordinary activation in either case.
     #[serde(default)]
     pub frame_locals_exposed: bool,
     /// Reference custody of each entry parameter, aligned with `params`

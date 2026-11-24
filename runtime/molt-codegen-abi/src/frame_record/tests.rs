@@ -445,6 +445,7 @@ fn a_resume_links_the_persistent_record_and_a_suspension_unlinks_it() {
         assert_eq!(machine.read(base, FRAME_RECORD_PREV_OFFSET), 0xCA11);
         assert_eq!(machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET), base);
         generate_stateful_frame_unlink(&mut machine, THREAD, base);
+        assert_eq!(machine.read(base, FRAME_RECORD_PREV_OFFSET), 0);
         assert_eq!(machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET), 0xCA11);
     }
     // Nothing is retained, released or saved: the record keeps its facts and

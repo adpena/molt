@@ -111,6 +111,7 @@ pub(crate) mod targets {
     pub(crate) use crate::builtins::exceptions::rendering::unicode_encode_str;
     pub(crate) use crate::builtins::exceptions::rendering::unicode_translate_str;
     pub(crate) use crate::builtins::frames::locals_proxy::molt_frame_clear;
+    pub(crate) use crate::builtins::frames::locals_proxy::molt_frame_f_back_get;
     pub(crate) use crate::builtins::frames::locals_proxy::molt_frame_f_lasti_get;
     pub(crate) use crate::builtins::frames::locals_proxy::molt_frame_f_lineno_get;
     pub(crate) use crate::builtins::frames::locals_proxy::molt_frame_f_locals_get;

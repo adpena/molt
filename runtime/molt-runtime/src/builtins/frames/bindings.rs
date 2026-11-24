@@ -91,7 +91,13 @@ const LOCALS_WORD: usize = 4;
 const HISTORY_WORD: usize = 5;
 const LOCATION_POINTER_WORD: usize = 6;
 const LOCATION_FROZEN_WORD: usize = 7;
-const SLOT_BASE_WORD: usize = 8;
+// Activations and lazy traceback nodes may materialize the canonical Python
+// frame. They collectively own one edge to it until their last owner exits.
+const IDENTITY_OWNERS_WORD: usize = 8;
+const FRAME_OBJECT_WORD: usize = 9;
+// The actual caller retained when this frame left the execution chain.
+const BACK_WORD: usize = 10;
+const SLOT_BASE_WORD: usize = 11;
 
 /// The bindings are the running frame's homes.
 const STATE_LIVE_HOMES: u64 = 1 << 0;
@@ -103,8 +109,13 @@ const STATE_RETIRED: u64 = 1 << 2;
 const STATE_DETACHED: u64 = 1 << 3;
 /// This owner projects optimized bindings; module owners carry locations only.
 const STATE_OPTIMIZED: u64 = 1 << 4;
-const STATE_SOURCE_MASK: u64 =
-    STATE_LIVE_HOMES | STATE_LIVE_ACTIVATION | STATE_RETIRED | STATE_DETACHED;
+/// A spliced generator retains its own frozen pairs between linked records.
+const STATE_SPLICE_SUSPENDED: u64 = 1 << 5;
+const STATE_SOURCE_MASK: u64 = STATE_LIVE_HOMES
+    | STATE_LIVE_ACTIVATION
+    | STATE_RETIRED
+    | STATE_DETACHED
+    | STATE_SPLICE_SUSPENDED;
 const STATE_POLICY_SHIFT: u32 = 8;
 
 /// A retired slot whose home held no valid kind when it retired. Never an
@@ -127,16 +138,26 @@ impl FramePolicy {
     /// Closing a created generator or coroutine releases its frame storage
     /// (3.14+); earlier targets keep it until the task dies.
     const RELEASES_UNSTARTED: u8 = 1 << 3;
-    const MASK: u8 =
-        Self::PEP667 | Self::DESCENDING | Self::KEEPS_HISTORY | Self::RELEASES_UNSTARTED;
+    const CLEAR_MESSAGE_315: u8 = 1 << 4;
+    /// 3.13+ unlinks the resumer before a terminal generator frame is saved.
+    const UNLINKS_GENERATOR_CALLER: u8 = 1 << 5;
+    const MASK: u8 = Self::PEP667
+        | Self::DESCENDING
+        | Self::KEEPS_HISTORY
+        | Self::RELEASES_UNSTARTED
+        | Self::CLEAR_MESSAGE_315
+        | Self::UNLINKS_GENERATOR_CALLER;
 
     pub(crate) fn for_minor(minor: i64) -> Self {
         let mut bits = 0;
         if minor >= 13 {
-            bits |= Self::PEP667;
+            bits |= Self::PEP667 | Self::UNLINKS_GENERATOR_CALLER;
         }
         if minor >= 14 {
             bits |= Self::DESCENDING | Self::KEEPS_HISTORY | Self::RELEASES_UNSTARTED;
+        }
+        if minor >= 15 {
+            bits |= Self::CLEAR_MESSAGE_315;
         }
         Self(bits)
     }
@@ -157,6 +178,20 @@ impl FramePolicy {
 
     pub(crate) fn pep667(self) -> bool {
         self.0 & Self::PEP667 != 0
+    }
+
+    pub(super) fn keeps_generator_caller(self) -> bool {
+        self.0 & Self::UNLINKS_GENERATOR_CALLER == 0
+    }
+
+    pub(super) fn reject_suspended_clear(self, py: &PyToken<'_>) -> Result<(), ()> {
+        let message = if self.0 & Self::CLEAR_MESSAGE_315 != 0 {
+            "cannot clear an suspended frame"
+        } else {
+            "cannot clear a suspended frame"
+        };
+        raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
+        Err(())
     }
 
     pub(crate) fn descending(self) -> bool {
@@ -309,7 +344,7 @@ fn history_keeps(bits: u64) -> bool {
 }
 
 /// One frame entry's binding homes and its observers' payload.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FrameBindings {
     /// Owned `FRAME_BINDINGS` payload of a synchronous frame, zero until an
     /// observer asks for one; the captured payload of a traceback frame. A
@@ -321,6 +356,9 @@ pub(crate) struct FrameBindings {
     /// location word sits; zero for a copy that owns no record.
     homes: usize,
     home_count: u32,
+    /// A cold spliced record borrows its activation's identity word for this
+    /// bracket. Its caller owns that word across yields and exception edges.
+    splice_slot: usize,
     policy: FramePolicy,
 }
 
@@ -347,6 +385,10 @@ impl FrameBindings {
             home_count: plan.homes,
             ..Self::default()
         }
+    }
+
+    pub(super) fn set_splice_slot(&mut self, slot: usize) {
+        self.splice_slot = slot;
     }
 
     pub(crate) fn has_python_bindings(self) -> bool {
@@ -436,6 +478,9 @@ fn alloc_payload(
         *word(ptr, SOURCE_WORD) = source;
         *word(ptr, LOCALS_WORD) = 0;
         *word(ptr, HISTORY_WORD) = 0;
+        *word(ptr, IDENTITY_OWNERS_WORD) = 1;
+        *word(ptr, FRAME_OBJECT_WORD) = 0;
+        *word(ptr, BACK_WORD) = 0;
         *word(ptr, LOCATION_POINTER_WORD) = 0;
         *word(ptr, LOCATION_FROZEN_WORD) = LocationId::ABSENT.word();
         std::ptr::write_bytes(word(ptr, SLOT_BASE_WORD), 0, count * FRAME_HOME_WORDS);
@@ -461,10 +506,21 @@ pub(crate) fn frame_record_observe(
     py: &PyToken<'_>,
     record: records::FrameRecord,
 ) -> Result<u64, ObserveError> {
+    observe_record_while(py, record, || true)
+}
+
+/// The caller holds the captured code and task across allocation. A remote
+/// record may disappear during that allocation; revalidate its selection
+/// before reading or publishing through the borrowed address again.
+pub(super) fn observe_record_while(
+    py: &PyToken<'_>,
+    record: records::FrameRecord,
+    selected: impl Fn() -> bool,
+) -> Result<u64, ObserveError> {
     let (code_bits, activation_bits) = (record.code_bits(), record.activation_bits());
     if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
         // The task owns its frame's payload; the record reads it there.
-        return frame_bindings_attach_activation(py, task, true);
+        return attach_activation_while(py, task, true, selected);
     }
     // An observed frame answers from its record alone.
     if code_bits == 0 || record.observer() != 0 {
@@ -494,6 +550,10 @@ pub(crate) fn frame_record_observe(
             },
         bindings.homes as u64,
     )?;
+    if !selected() {
+        dec_ref_bits(py, payload);
+        return Ok(0);
+    }
     unsafe {
         *word(
             obj_from_bits(payload).as_ptr().unwrap(),
@@ -502,10 +562,18 @@ pub(crate) fn frame_record_observe(
     }
     // Allocation can run a finalizer that observed this frame first.
     if record.attach_observer(payload) {
+        if bindings.splice_slot != 0 {
+            let slot = bindings.splice_slot as *mut u64;
+            debug_assert_eq!(unsafe { *slot }, 0);
+            inc_ref_bits(py, payload);
+            // The splice slot owns the activation pin across all brackets.
+            unsafe { slot.write(payload) };
+        }
         Ok(payload)
     } else {
+        let existing = record.observer();
         dec_ref_bits(py, payload);
-        Ok(record.observer())
+        Ok(existing)
     }
 }
 
@@ -518,6 +586,15 @@ pub(crate) fn frame_bindings_attach_activation(
     py: &PyToken<'_>,
     task: *mut u8,
     executing: bool,
+) -> Result<u64, ObserveError> {
+    attach_activation_while(py, task, executing, || true)
+}
+
+fn attach_activation_while(
+    py: &PyToken<'_>,
+    task: *mut u8,
+    executing: bool,
+    selected: impl Fn() -> bool,
 ) -> Result<u64, ObserveError> {
     if !executing && unsafe { super::activation::activation_finished(task) } {
         return Ok(0);
@@ -540,6 +617,10 @@ pub(crate) fn frame_bindings_attach_activation(
         STATE_LIVE_ACTIVATION | STATE_OPTIMIZED,
         task as usize as u64,
     )?;
+    if !selected() || (!executing && unsafe { super::activation::activation_finished(task) }) {
+        dec_ref_bits(py, payload);
+        return Ok(0);
+    }
     let ptr = obj_from_bits(payload).as_ptr().unwrap();
     // A live activation's payload reads its task's persistent record
     // (`payload_location`), running or suspended.
@@ -601,6 +682,88 @@ fn set_source_state(ptr: *mut u8, source_state: u64) {
         if source_state & (STATE_LIVE_HOMES | STATE_LIVE_ACTIVATION) == 0 {
             *word(ptr, SOURCE_WORD) = 0;
         }
+    }
+}
+
+/// A frame is published only after every allocation succeeds. Allocation can
+/// reenter this activation, so the first completed publication wins.
+pub(super) fn cached_frame(ptr: *mut u8) -> Option<u64> {
+    let bits = unsafe { *word(ptr, FRAME_OBJECT_WORD) };
+    (bits != 0).then_some(bits)
+}
+
+pub(super) fn publish_frame(py: &PyToken<'_>, ptr: *mut u8, fresh: u64) -> u64 {
+    if let Some(existing) = cached_frame(ptr) {
+        inc_ref_bits(py, existing);
+        dec_ref_bits(py, fresh);
+        return existing;
+    }
+    if unsafe { *word(ptr, IDENTITY_OWNERS_WORD) } != 0 {
+        inc_ref_bits(py, fresh);
+        unsafe { *word(ptr, FRAME_OBJECT_WORD) = fresh };
+    }
+    fresh
+}
+
+pub(super) fn retain_identity_owner(ptr: *mut u8) {
+    unsafe { *word(ptr, IDENTITY_OWNERS_WORD) += 1 };
+}
+
+/// Transfer the cache's reference when no activation or lazy traceback can
+/// ask for the frame again. A materialized traceback already owns its frame.
+pub(super) fn release_identity_owner(ptr: *mut u8) -> u64 {
+    unsafe {
+        let count = word(ptr, IDENTITY_OWNERS_WORD);
+        if state_of(ptr) & STATE_DETACHED != 0 {
+            return 0;
+        }
+        *count = count.read().checked_sub(1).expect("frame identity owner");
+        if *count == 0 {
+            return word(ptr, FRAME_OBJECT_WORD).replace(0);
+        }
+        0
+    }
+}
+
+/// The caller of a linked activation is borrowed while the GIL is held.
+/// Synchronous records withdraw their location pointer before running exit
+/// callbacks. A suspended task has a persistent record with a null caller.
+pub(super) fn live_caller(py: &PyToken<'_>, owner: *mut u8) -> Option<records::FrameRecord> {
+    let state = state_of(owner);
+    let base = if state & STATE_LIVE_HOMES != 0 {
+        let location = unsafe { *word(owner, LOCATION_POINTER_WORD) };
+        if location == 0 {
+            return None;
+        }
+        location + WORD as u64
+    } else if state & STATE_LIVE_ACTIVATION != 0 {
+        let task = unsafe { *word(owner, SOURCE_WORD) } as *mut u8;
+        crate::object::aux_header::object_frame_record_base(task)? as usize as u64
+    } else {
+        return None;
+    };
+    let record = records::FrameRecord::from_word(base)?;
+    std::iter::successors(record.prev(), |record| record.prev())
+        .find(|record| record.python_visible(py))
+}
+
+pub(super) fn frozen_back(ptr: *mut u8) -> u64 {
+    unsafe { *word(ptr, BACK_WORD) }
+}
+
+/// Take the last live caller before this observed activation relinquishes its
+/// record. A later traceback can then materialize the frame independently of
+/// its own, possibly shortened or re-raised, chain.
+pub(super) fn freeze_back(py: &PyToken<'_>, ptr: *mut u8) {
+    if shared(ptr) && frozen_back(ptr) == 0 {
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            match super::frame_at_depth(py, 0) {
+                Ok(Some(caller)) => unsafe { *word(ptr, BACK_WORD) = caller },
+                Ok(None) => {}
+                Err(()) => crate::clear_exception(py),
+            }
+            true
+        });
     }
 }
 
@@ -669,7 +832,7 @@ unsafe fn release_parts(
 /// Move a live payload's bindings from `homes` into its own pairs: CPython's
 /// frame object taking ownership of an exiting frame's locals. Nothing is
 /// retained or released.
-unsafe fn retire_homes(py: &PyToken<'_>, ptr: *mut u8, homes: *mut u64, count: usize) {
+unsafe fn retire_homes(py: &PyToken<'_>, ptr: *mut u8, homes: *mut u64, count: usize, state: u64) {
     let mut malformed = false;
     unsafe {
         for slot in 0..count {
@@ -688,10 +851,52 @@ unsafe fn retire_homes(py: &PyToken<'_>, ptr: *mut u8, homes: *mut u64, count: u
             *pair.add(1) = bits;
         }
     }
-    set_source_state(ptr, STATE_RETIRED);
+    set_source_state(ptr, state);
     if malformed {
         report_malformed(py);
     }
+}
+
+/// The previous bracket retired the frame's homes into this same payload.
+/// Reattach it to the new record before dropping the old bindings so any
+/// finalizer sees the currently executing activation.
+pub(super) fn resume_splice(py: &PyToken<'_>, record: records::FrameRecord, bits: u64) {
+    let ptr = obj_from_bits(bits)
+        .as_ptr()
+        .expect("observed splice has a payload");
+    let bindings = record.bindings();
+    debug_assert_eq!(bindings.home_count as usize, frame_bindings_slot_count(ptr));
+    inc_ref_bits(py, bits);
+    assert!(record.attach_observer(bits));
+    unsafe {
+        *word(ptr, SOURCE_WORD) = bindings.homes as u64;
+        *word(ptr, LOCATION_POINTER_WORD) = bindings.location_address() as u64;
+        set_source_state(ptr, STATE_LIVE_HOMES);
+        let released = release_parts(
+            py,
+            &[FramePart::Slots],
+            bindings.policy,
+            word(ptr, SLOT_BASE_WORD),
+            frame_bindings_slot_count(ptr),
+            0,
+            Vec::new(),
+        );
+        if released.is_err() {
+            report_malformed(py);
+        }
+    }
+}
+
+pub(super) fn finish_splice(py: &PyToken<'_>, bits: u64) {
+    let ptr = obj_from_bits(bits)
+        .as_ptr()
+        .expect("observed spliced frame");
+    set_source_state(ptr, STATE_RETIRED);
+    dec_ref_bits(py, release_identity_owner(ptr));
+    if frame_bindings_policy(ptr).keeps_generator_caller() {
+        freeze_back(py, ptr);
+    }
+    dec_ref_bits(py, bits);
 }
 
 /// The popped frame's bindings leave its homes. A payload an observer shares
@@ -704,10 +909,19 @@ unsafe fn retire_homes(py: &PyToken<'_>, ptr: *mut u8, homes: *mut u64, count: u
 pub(crate) fn frame_bindings_exit(py: &PyToken<'_>, bindings: &FrameBindings) {
     if let Some(ptr) = obj_from_bits(bindings.payload_bits).as_ptr() {
         freeze_location(ptr);
+        if bindings.splice_slot == 0 {
+            dec_ref_bits(py, release_identity_owner(ptr));
+            freeze_back(py, ptr);
+        }
     }
+    let state = if bindings.splice_slot == 0 {
+        STATE_RETIRED
+    } else {
+        STATE_RETIRED | STATE_SPLICE_SUSPENDED
+    };
     if !bindings.optimized {
         if let Some(ptr) = obj_from_bits(bindings.payload_bits).as_ptr() {
-            set_source_state(ptr, STATE_RETIRED);
+            set_source_state(ptr, state);
         }
         return;
     }
@@ -716,13 +930,13 @@ pub(crate) fn frame_bindings_exit(py: &PyToken<'_>, bindings: &FrameBindings) {
     let count = bindings.home_count as usize;
     let (locals, history) = match obj_from_bits(bindings.payload_bits).as_ptr() {
         Some(ptr) if shared(ptr) => {
-            unsafe { retire_homes(py, ptr, homes, count) };
+            unsafe { retire_homes(py, ptr, homes, count, state) };
             return;
         }
         Some(ptr) => {
             // Only the entry holds the frame object: it owns no binding from
             // here on and dies when the entry drops it.
-            set_source_state(ptr, STATE_RETIRED);
+            set_source_state(ptr, state);
             unsafe { take_extras(ptr) }
         }
         None => (0, Vec::new()),
@@ -1494,6 +1708,9 @@ pub(crate) fn frame_bindings_clear(py: &PyToken<'_>, payload_bits: u64) -> Resul
         );
         return Err(());
     }
+    if state & STATE_SPLICE_SUSPENDED != 0 && policy.pep667() {
+        return policy.reject_suspended_clear(py);
+    }
     if let Some(task) = frame_bindings_live_activation(ptr) {
         return unsafe { super::activation::activation_frame_clear(py, task, policy) };
     }
@@ -1522,6 +1739,8 @@ pub(crate) fn frame_bindings_clear(py: &PyToken<'_>, payload_bits: u64) -> Resul
 pub(crate) unsafe fn frame_bindings_visit(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
     unsafe {
         visit(*word(ptr, CODE_WORD));
+        visit(*word(ptr, FRAME_OBJECT_WORD));
+        visit(*word(ptr, BACK_WORD));
         visit(*word(ptr, LOCALS_WORD));
         let history = *word(ptr, HISTORY_WORD);
         if history != 0 {
@@ -1561,6 +1780,12 @@ pub(crate) unsafe fn frame_bindings_detach(
         let retired = state_of(ptr) & STATE_RETIRED != 0;
         let count = frame_bindings_slot_count(ptr);
         set_source_state(ptr, STATE_DETACHED);
+        for slot in [FRAME_OBJECT_WORD, BACK_WORD] {
+            let bits = word(ptr, slot).replace(0);
+            if bits != 0 {
+                detach(bits);
+            }
+        }
         let (locals, history) = take_extras(ptr);
         for part in entry.parts(policy) {
             match part {

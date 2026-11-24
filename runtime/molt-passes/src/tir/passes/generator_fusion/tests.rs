@@ -668,8 +668,24 @@ fn fusion_keeps_the_consumer_latch_poll_and_its_exception_transfer() {
             // The consumer body runs once per fused iteration: its latch poll
             // stays the fused loop's poll, in the consumer's own frame.
             let observation = caller.blocks[&body].ops.last().unwrap();
-            let expected = original;
+            let mut expected = original;
             assert_eq!(observation.opcode, OpCode::CheckException, "{opcode:?}");
+            let Some(AttrValue::Int(release_label)) = observation.attrs.get("value") else {
+                panic!("consumer poll must still transfer exceptional control");
+            };
+            let release_label = *release_label;
+            let release = &caller.blocks[&block_of_label(&caller, release_label)];
+            assert!(release.ops.iter().any(|op| {
+                op.runtime == Some(molt_ir::runtime_fn_generated::RuntimeFn::SplicedFrameFinish)
+            }));
+            assert!(
+                release
+                    .terminator
+                    .has_successor(block_of_label(&caller, 90))
+            );
+            expected
+                .attrs
+                .insert("value".into(), AttrValue::Int(release_label));
             assert_eq!(
                 observation.attrs, expected.attrs,
                 "{opcode:?}, split={split_latch}"
@@ -684,7 +700,7 @@ fn fusion_keeps_the_consumer_latch_poll_and_its_exception_transfer() {
             assert!(
                 caller.blocks[&body].ops.iter().any(|op| {
                     op.opcode == OpCode::CheckException
-                        && op.attrs.get("value") == Some(&AttrValue::Int(90))
+                        && op.attrs.get("value") == Some(&AttrValue::Int(release_label))
                 }),
                 "{opcode:?}, split={split_latch}"
             );
@@ -1316,6 +1332,8 @@ fn promoted_read_after_a_store_sees_the_stored_value() {
 /// not, and its read copies the join's argument.
 #[test]
 fn conditionally_stored_slot_joins_at_a_block_argument() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
     let mut poll = counter_poll();
     let entry = poll.entry_block;
     let zero = poll.blocks[&entry].ops[0].results[0];
@@ -1373,6 +1391,15 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
         },
     );
 
+    // A second, observer-only slot has no initial binding on the other arm.
+    let optional_offset = GEN_CONTROL_BYTES + 16;
+    poll.blocks.get_mut(&bump).unwrap().ops.push(op_v(
+        OpCode::ClosureStore,
+        vec![ValueId(0), zero],
+        vec![],
+        optional_offset,
+    ));
+
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
@@ -1393,10 +1420,141 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
                 .any(|operation| operation.results == read.results)
         })
         .expect("the read has a block");
+    assert_eq!(read.operands, [joined.args[0].id]);
+    // The common publication call gets the value and its independently joined
+    // presence. Neither None nor a falsey bound value decides whether to bind.
+    let mut published = false;
+    for op in caller.blocks.values().flat_map(|block| &block.ops) {
+        if op.runtime == Some(RuntimeFn::SplicedFrameBind)
+            && attr_value_int(definition(&caller, op.operands[1])) == Some(optional_offset)
+            && caller.blocks.values().any(|block| {
+                block
+                    .args
+                    .iter()
+                    .any(|arg| arg.id == op.operands[3] && arg.ty == TirType::Bool)
+            })
+        {
+            published = true;
+        }
+    }
+    assert!(
+        published,
+        "a fused snapshot carries the mixed binding's Boolean join"
+    );
+}
+
+#[test]
+fn frame_publication_reads_branch_bindings_without_a_closure_load() {
+    use super::slots::{SlotDef, plan_slots};
+
+    let mut poll = TirFunction::new(
+        "branch_poll".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = poll.entry_block;
+    let (left, right, join) = (poll.fresh_block(), poll.fresh_block(), poll.fresh_block());
+    let frame = poll.blocks[&entry].args[0].id;
+    let condition = poll.fresh_value();
+    poll.value_types.insert(condition, TirType::Bool);
+    let body = poll.blocks.get_mut(&entry).unwrap();
+    // The frame can escape before either arm. At yield, the surviving
+    // reference observes the selected binding even when the poll never loads it.
+    body.ops.push(op(OpCode::Call, vec![], vec![]));
+    body.ops
+        .push(op_v(OpCode::ConstBool, vec![], vec![condition], 1));
+    body.terminator = Terminator::CondBranch {
+        cond: condition,
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    for (id, number) in [(left, 11), (right, 22)] {
+        let value = const_int(&mut poll, number);
+        poll.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![
+                    op_v(OpCode::ConstInt, vec![], vec![value], number),
+                    op_v(
+                        OpCode::ClosureStore,
+                        vec![frame, value],
+                        vec![],
+                        GEN_CONTROL_BYTES,
+                    ),
+                ],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+    }
+    poll.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![op(OpCode::StateYield, vec![condition], vec![])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let plan = plan_slots(&poll, 0).expect("both observer predecessors bind the slot");
+    assert!(plan.reads.is_empty());
     assert_eq!(
-        joined.args.iter().map(|arg| arg.id).collect::<Vec<_>>(),
-        read.operands,
-        "the read copies its block's join argument"
+        plan.entry[&join],
+        [Some(SlotDef::Join {
+            block: join,
+            slot: 0
+        })]
+    );
+    for arm in [left, right] {
+        assert_eq!(
+            plan.exits[&arm],
+            [Some(SlotDef::Stored {
+                block: arm,
+                index: 1
+            })]
+        );
+    }
+
+    assert!(plan.optional_joins.is_empty());
+    poll.blocks.get_mut(&right).unwrap().ops.pop();
+    let plan = plan_slots(&poll, 0).expect("a frame can publish a mixed slot");
+    assert_eq!(
+        plan.optional_joins.into_iter().collect::<Vec<_>>(),
+        [(join, 0)]
+    );
+    assert_eq!(
+        plan.exits[&left][0],
+        Some(SlotDef::Stored {
+            block: left,
+            index: 1
+        })
+    );
+    assert_eq!(plan.exits[&right][0], None);
+    poll.blocks.get_mut(&entry).unwrap().ops.remove(0);
+    let plan = plan_slots(&poll, 0).expect("a yield with no first observer needs no snapshot");
+    assert!(plan.joins.is_empty());
+    let read = poll.fresh_value();
+    poll.value_types.insert(read, TirType::DynBox);
+    poll.blocks.get_mut(&join).unwrap().ops.insert(
+        0,
+        op_v(
+            OpCode::ClosureLoad,
+            vec![frame],
+            vec![read],
+            GEN_CONTROL_BYTES,
+        ),
+    );
+    assert!(
+        plan_slots(&poll, 0).is_none(),
+        "ordinary reads still require every incoming binding"
     );
 }
 
@@ -1620,8 +1778,17 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
                 }),
                 "the unread argument still has a frame home"
             );
+            let Terminator::Branch { target, args } = &cold.terminator else {
+                panic!("the origin must leave through its release landing");
+            };
+            assert!(args.is_empty());
+            let release = &caller.blocks[target];
+            assert!(release.ops.iter().any(|op| {
+                op.runtime == Some(RuntimeFn::SplicedFrameFinish)
+                    && op.operands == [link.operands[2]]
+            }));
             assert!(matches!(
-                &cold.terminator,
+                &release.terminator,
                 Terminator::Branch { target, args } if *target == handler && args.is_empty()
             ));
             origin_edges += 1;
@@ -1707,8 +1874,8 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
     );
     let _ = super::super::reoptimize(&mut caller, &tti);
     crate::tir::verify::verify_function(&caller).expect("pruned caller verifies");
-    // Only the generator's poll keeps its bracket: a signal handler runs
-    // there.
+    // The generator's poll keeps its bracket for signal handlers. A yield
+    // snapshots the frame only when an observer already materialized it.
     let unlinks = caller
         .blocks
         .values()
@@ -1721,8 +1888,14 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
         .flat_map(|block| &block.ops)
         .filter(|op| op.is_async_work_poll())
         .count();
+    let snapshots = caller
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::SplicedFrameObserved)
+        .count();
     assert!(
-        unlinks <= polls,
+        unlinks <= polls + snapshots,
         "{}",
         crate::tir::printer::print_function(&caller)
     );
@@ -1744,9 +1917,12 @@ fn exposed_poll_with_a_bracket_stays_unfused() {
     let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
     assert_eq!(stats.frames_elided, 0);
     assert!(stats.changed_functions.is_empty());
-    assert!(stats.refused_polls.iter().any(
-        |(name, refusal)| name == "counter_poll" && *refusal == PollRefusal::FrameLocalsWriter
-    ));
+    assert!(
+        stats
+            .refused_polls
+            .iter()
+            .any(|(name, refusal)| name == "counter_poll" && *refusal == PollRefusal::MutableFrame)
+    );
     assert_eq!(
         crate::tir::printer::print_function(&module.functions[1]),
         unfused

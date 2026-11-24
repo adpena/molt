@@ -239,7 +239,12 @@ def _exposure(
     gen = SimpleTIRGenerator(
         module_name="exposure", target_python=target, namespace_premise=premise
     )
-    gen.visit(ast.parse("def probe(n):\n    for i in range(n):\n        yield i\n"))
+    gen.visit(
+        ast.parse(
+            "def probe(n):\n    for i in range(n):\n        yield i\n"
+            "def probe_plain(): return 1\n"
+        )
+    )
     return {
         function["name"]: function.get("frame_locals_exposed", False)
         for function in gen.to_json()["functions"]
@@ -248,13 +253,15 @@ def _exposure(
 
 
 def test_function_entries_publish_frame_locals_exposure() -> None:
-    # A splice reads the published fact (spliced_frames.md 5.1): exposed only
-    # on a 3.13+ target whose closed program may hold a frame-locals writer.
     no_writer = PythonNamespacePremise(
         (), 0, entry_member_writes=0, noncanonical_imports=()
     )
     unknown_graph = None
     exposed = _exposure((3, 15), unknown_graph)
     assert exposed and all(exposed.values()), exposed
-    assert not any(_exposure((3, 12), unknown_graph).values())
+    for premise in (unknown_graph, no_writer):
+        assert _exposure((3, 12), premise) == {
+            "py.exposure.probe_plain": False,
+            "py.exposure.probe_poll": True,
+        }
     assert not any(_exposure((3, 15), no_writer).values())

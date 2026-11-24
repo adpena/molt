@@ -111,18 +111,17 @@ pub fn run_generator_fusion(
                 if super::super::spliced_frame::prune_brackets(caller) != 0 {
                     let _ = super::super::reoptimize(caller, tti);
                 }
-                // A bracket hands Python code a snapshot of the generator's
-                // locals. Where the program holds a PEP 667 frame-locals
-                // writer (HF-901) that code may rebind them, which the
-                // snapshot would drop: keep the generator unfused (5.1).
+                // An observer may write through the locals proxy (3.13+) or
+                // clear the escaped frame to close its suspended generator
+                // (before 3.13). Both need the ordinary activation (5.1).
                 if poll_owned.frame_locals_exposed()
-                    && super::super::spliced_frame::has_bracket(caller)
+                    && super::super::spliced_frame::has_observer_bracket(caller, unfused.next_value)
                 {
                     *caller = unfused;
                     stats = unfused_stats;
                     stats
                         .refused_polls
-                        .push((poll_owned.name.clone(), PollRefusal::FrameLocalsWriter));
+                        .push((poll_owned.name.clone(), PollRefusal::MutableFrame));
                     declined.insert(candidate.alloc_val);
                     continue;
                 }

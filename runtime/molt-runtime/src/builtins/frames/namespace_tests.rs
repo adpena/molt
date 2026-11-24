@@ -73,8 +73,12 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
         crate::molt_exception_clear_attached_body(py);
         dec_ref_bits(py, error);
         dec_ref_bits(py, unavailable);
-        dec_ref_bits(py, frame);
         molt_frame_class_locals_set_attached_body(py, namespace);
+        let now_available =
+            molt_frame_f_locals_get_attached_body(py, MoltObject::none().bits(), frame);
+        assert_eq!(now_available, namespace);
+        dec_ref_bits(py, now_available);
+        dec_ref_bits(py, frame);
         let observed = molt_locals_builtin_attached_body(py);
         assert_eq!(observed, namespace);
         assert_eq!(
@@ -787,6 +791,10 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
         frame_stack_push_owned(py, code, globals, builtins);
         frame_stack_set_locals_dict(py, locals);
         let payload = frame_stack_trace_payload_bits(py).unwrap();
+        let frame = frame_at_depth(py, 0).unwrap().unwrap();
+        // Drop the external observation before retirement. The lazy traceback
+        // must still refer to this frame even after its activation has gone.
+        dec_ref_bits(py, frame);
         frame_stack_pop(py);
         let entry =
             unsafe { traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap()) };
@@ -794,7 +802,8 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             [entry.globals_bits, entry.locals_bits, entry.builtins_bits],
             [globals, locals, builtins]
         );
-        let frame = unsafe { alloc_frame_obj(py, entry, MoltObject::none().bits()).unwrap() };
+        let observed = materialize_frame(py, entry).unwrap();
+        assert_eq!(observed, frame);
         assert_eq!(
             unsafe { crate::object_class_bits(obj_from_bits(frame).as_ptr().unwrap()) },
             builtin_classes(py).frame
@@ -814,7 +823,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             dec_ref_bits(py, actual);
             dec_ref_bits(py, key);
         }
-        dec_ref_bits(py, frame);
+        dec_ref_bits(py, observed);
         dec_ref_bits(py, payload);
         for bits in [code, globals, locals, builtins] {
             assert_eq!(refs(bits), 1);
@@ -872,7 +881,7 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         let snapshot = FrameStackSnapshot::capture(py, &[super::records::top().unwrap()]).unwrap();
         frame_stack_pop(py);
         let entry = snapshot.entries[0];
-        let construct = || unsafe { alloc_frame_obj(py, entry, MoltObject::none().bits()) };
+        let construct = || materialize_frame(py, entry);
         // Warm interned field names and sealed class metadata before denial.
         dec_ref_bits(py, construct().unwrap());
         let baseline = owned.map(refs);

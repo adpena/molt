@@ -74,6 +74,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
     let out_var = op.results.first().map(|v| value_var(*v));
 
     match op.opcode {
+        OpCode::SplicedFrameSlot | OpCode::SplicedFrameObserved => Some(OpIR {
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::new(
+                molt_ir::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode).unwrap(),
+            )
+        }),
         OpCode::FrameSetLocation => Some(OpIR {
             value: attr_int(&op.attrs, "value"),
             ..OpIR::new(molt_ir::OpKind::FrameSetLocation)

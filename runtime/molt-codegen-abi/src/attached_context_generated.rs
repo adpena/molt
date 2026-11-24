@@ -1536,6 +1536,7 @@ macro_rules! attached_symbol {
     ("molt_frame_class_locals_set") => { "molt_frame_class_locals_set__molt_context_d1086a27578cda22" };
     ("molt_frame_clear") => { "molt_frame_clear__molt_context_d1086a27578cda22" };
     ("molt_frame_context_set") => { "molt_frame_context_set__molt_context_d1086a27578cda22" };
+    ("molt_frame_f_back_get") => { "molt_frame_f_back_get__molt_context_d1086a27578cda22" };
     ("molt_frame_f_lasti_get") => { "molt_frame_f_lasti_get__molt_context_d1086a27578cda22" };
     ("molt_frame_f_lineno_get") => { "molt_frame_f_lineno_get__molt_context_d1086a27578cda22" };
     ("molt_frame_f_locals_get") => { "molt_frame_f_locals_get__molt_context_d1086a27578cda22" };
@@ -3108,6 +3109,7 @@ macro_rules! attached_symbol {
     ("molt_sorted_builtin") => { "molt_sorted_builtin__molt_context_d1086a27578cda22" };
     ("molt_spawn") => { "molt_spawn__molt_context_d1086a27578cda22" };
     ("molt_spliced_frame_bind") => { "molt_spliced_frame_bind__molt_context_d1086a27578cda22" };
+    ("molt_spliced_frame_finish") => { "molt_spliced_frame_finish__molt_context_d1086a27578cda22" };
     ("molt_spliced_frame_link") => { "molt_spliced_frame_link__molt_context_d1086a27578cda22" };
     ("molt_spliced_frame_origin") => { "molt_spliced_frame_origin__molt_context_d1086a27578cda22" };
     ("molt_spliced_frame_unlink") => { "molt_spliced_frame_unlink__molt_context_d1086a27578cda22" };

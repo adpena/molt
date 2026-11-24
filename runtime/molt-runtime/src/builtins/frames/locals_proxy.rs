@@ -164,6 +164,23 @@ fn frame_location_field(py: &PyToken<'_>, frame: u64, line: bool) -> u64 {
     }
 }
 
+pub(crate) fn molt_frame_f_back_get_attached_body(
+    py: &crate::PyToken<'_>,
+    _descriptor: u64,
+    frame: u64,
+) -> u64 {
+    let Some(slot) = obj_from_bits(frame)
+        .as_ptr()
+        .and_then(|ptr| unsafe { location_owner_slot(ptr) })
+    else {
+        return raise_exception::<u64>(py, BuiltinExc::TypeError, "f_back requires a frame");
+    };
+    match frame_bindings_ptr(py, unsafe { *slot }) {
+        Ok(owner) => super::frame_back(py, owner),
+        Err(()) => MoltObject::none().bits(),
+    }
+}
+
 pub(crate) fn molt_frame_f_lineno_get_attached_body(
     py: &crate::PyToken<'_>,
     _descriptor: u64,

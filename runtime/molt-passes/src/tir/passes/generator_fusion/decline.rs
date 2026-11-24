@@ -15,11 +15,11 @@
 use molt_ir::OpKind;
 
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::clone::{const_int_op, const_none_op};
+use super::clone::{const_bool_op, const_int_op, const_none_op};
 use super::recognize::terminator_uses;
 use super::{attr_original_kind, attr_task_kind, attr_value_int, is_get_iter_op};
 
@@ -29,22 +29,6 @@ fn is_reduction_kernel(op: &TirOp) -> bool {
             attr_original_kind(op),
             Some(OpKind::VecSum | OpKind::VecProd | OpKind::VecMin | OpKind::VecMax)
         )
-}
-
-fn const_bool_op(result: ValueId, value: bool) -> TirOp {
-    let mut attrs = AttrDict::default();
-    attrs.insert("value".into(), AttrValue::Bool(value));
-    TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::ConstBool,
-        operands: vec![],
-        results: vec![result],
-        attrs,
-        source_span: None,
-    }
 }
 
 /// The integer a `ConstInt` defines for `value`, if one does.

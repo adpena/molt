@@ -1423,6 +1423,11 @@ pub(crate) struct CanonicalObjectCache {
 }
 
 impl CanonicalObjectCache {
+    /// Compare an existing object to the isolate's sentinel without creating it.
+    pub(crate) fn is_published_missing(&self, ptr: *mut u8) -> bool {
+        !ptr.is_null() && self.missing.load(std::sync::atomic::Ordering::Acquire) == ptr
+    }
+
     /// The address of the missing singleton's slot, which compiled allocation
     /// reads through the thread record (`THREAD_RECORD_MISSING_SLOT_OFFSET`).
     pub(crate) fn missing_slot_address(&self) -> u64 {

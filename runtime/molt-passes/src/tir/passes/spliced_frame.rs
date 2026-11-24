@@ -25,7 +25,7 @@
 //!   typed facts have since proved callback-free, so a proven hot path pays
 //!   nothing.
 
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -42,16 +42,26 @@ pub(crate) enum KeySpace {
     StatefulOffset = 1,
 }
 
+/// A frame home at a publication point. The value is read only when the
+/// Boolean `present` is true, so a present Python None remains a binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Binding {
+    pub(crate) key: i64,
+    pub(crate) value: ValueId,
+    pub(crate) present: ValueId,
+}
+
 /// One spliced activation at one observer point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Level {
     /// The caller value holding the activation's function object.
     pub(crate) function: ValueId,
+    pub(crate) identity: ValueId,
     /// The activation's location; `None` when no single publication reaches.
     pub(crate) location: Option<i64>,
     pub(crate) key_space: KeySpace,
-    /// Each binding that holds a value at the point: key and value.
-    pub(crate) bindings: Vec<(i64, ValueId)>,
+    /// The homes this frame state may bind.
+    pub(crate) bindings: Vec<Binding>,
 }
 
 fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
@@ -71,10 +81,18 @@ fn runtime_call(
     operands: Vec<ValueId>,
     span: Option<(u32, u32)>,
     ops: &mut Vec<TirOp>,
-) -> ValueId {
-    let result = func.fresh_value();
-    func.value_types.insert(result, TirType::DynBox);
-    let mut op = TirOp::new(OpCode::Call, operands, vec![result]);
+) {
+    let results = if matches!(
+        runtime,
+        RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameFinish
+    ) {
+        Vec::new()
+    } else {
+        let result = func.fresh_value();
+        func.value_types.insert(result, TirType::DynBox);
+        vec![result]
+    };
+    let mut op = TirOp::new(OpCode::Call, operands, results);
     op.runtime = Some(runtime);
     // The call never raises: it keeps the selected exception and abandons
     // its own failures. It is no exception event of its own.
@@ -88,7 +106,6 @@ fn runtime_call(
     );
     op.source_span = span;
     ops.push(op);
-    result
 }
 
 /// The operations that link one record per level of `levels` over the
@@ -106,16 +123,16 @@ fn link_ops(
         runtime_call(
             func,
             RuntimeFn::SplicedFrameLink,
-            vec![level.function, location, key_space],
+            vec![level.function, location, level.identity],
             span,
             &mut ops,
         );
-        for &(key, value) in &level.bindings {
-            let key = const_int(func, key, &mut ops);
+        for binding in &level.bindings {
+            let key = const_int(func, binding.key, &mut ops);
             runtime_call(
                 func,
                 RuntimeFn::SplicedFrameBind,
-                vec![key_space, key, value],
+                vec![key_space, key, binding.value, binding.present],
                 span,
                 &mut ops,
             );
@@ -134,6 +151,7 @@ pub(crate) fn is_spliced_frame_call(op: &TirOp) -> bool {
                 | RuntimeFn::SplicedFrameBind
                 | RuntimeFn::SplicedFrameOrigin
                 | RuntimeFn::SplicedFrameUnlink
+                | RuntimeFn::SplicedFrameFinish
         )
     )
 }
@@ -261,13 +279,37 @@ pub(crate) fn bracket_ops(
     (enter, exit)
 }
 
-/// Whether `func` keeps a bracket: Python code may run with a snapshot of a
-/// spliced activation's locals.
-pub(crate) fn has_bracket(func: &TirFunction) -> bool {
-    func.blocks
-        .values()
-        .flat_map(|block| &block.ops)
-        .any(|op| op.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+pub(crate) fn finish_op(func: &mut TirFunction, identity: ValueId) -> TirOp {
+    let mut ops = Vec::with_capacity(1);
+    runtime_call(
+        func,
+        RuntimeFn::SplicedFrameFinish,
+        vec![identity],
+        None,
+        &mut ops,
+    );
+    ops.pop().unwrap()
+}
+
+/// Whether a callback or poll may first expose a frame from the current splice.
+pub(crate) fn has_observer_bracket(func: &TirFunction, first_new_value: u32) -> bool {
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    func.blocks.values().any(|block| {
+        let mut linked = false;
+        for op in &block.ops {
+            match op.runtime {
+                Some(RuntimeFn::SplicedFrameLink) => {
+                    linked |= op.operands[2].0 >= first_new_value;
+                }
+                Some(RuntimeFn::SplicedFrameUnlink | RuntimeFn::SplicedFrameOrigin) => {
+                    linked = false;
+                }
+                _ if linked && may_observe_frames(op, &exact) => return true,
+                _ => {}
+            }
+        }
+        false
+    })
 }
 
 /// Whether Python code that can observe the executing frame may run at `op`,
@@ -349,10 +391,30 @@ pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
 /// operand is the loop counter).
 pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let snapshots: HashMap<_, _> = func
+        .blocks
+        .iter()
+        .filter_map(|(&id, block)| {
+            let Terminator::CondBranch {
+                cond, then_block, ..
+            } = block.terminator
+            else {
+                return None;
+            };
+            let observed = block
+                .ops
+                .iter()
+                .find(|op| op.opcode == OpCode::SplicedFrameObserved && op.results == [cond])?;
+            Some((then_block, (id, observed.operands[0])))
+        })
+        .collect();
     let mut pruned = 0;
     let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
     blocks.sort_unstable();
     for block in blocks {
+        if snapshots.contains_key(&block) {
+            continue;
+        }
         let ops = &func.blocks[&block].ops;
         let mut dead: Vec<usize> = Vec::new();
         let mut index = 0;
@@ -409,6 +471,49 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
             at += 1;
             !remove
         });
+    }
+    let active: HashSet<_> = func
+        .blocks
+        .iter()
+        .filter(|(id, _)| !snapshots.contains_key(id))
+        .flat_map(|(_, block)| &block.ops)
+        .filter(|op| op.runtime == Some(RuntimeFn::SplicedFrameLink))
+        .map(|op| op.operands[2])
+        .collect();
+    for (_, (source, identity)) in snapshots {
+        if active.contains(&identity) {
+            continue;
+        }
+        let block = func.blocks.get_mut(&source).unwrap();
+        let Terminator::CondBranch {
+            else_block,
+            else_args,
+            ..
+        } = &mut block.terminator
+        else {
+            unreachable!("snapshot source is conditional");
+        };
+        block.terminator = Terminator::Branch {
+            target: *else_block,
+            args: std::mem::take(else_args),
+        };
+        pruned += 1;
+    }
+    // The guards and releases borrow a place only the remaining links can
+    // populate. A callback-free splice has no identity instructions at all.
+    for block in func.blocks.values_mut() {
+        block.ops.retain(|op| {
+            if op.opcode == OpCode::SplicedFrameSlot {
+                return active.contains(&op.results[0]);
+            }
+            op.spliced_frame_identity_operand()
+                .is_none_or(|index| active.contains(&op.operands[index]))
+        });
+    }
+    if pruned != 0 {
+        let retained = super::reachability::metadata_preserving_reachable_blocks(func);
+        func.retain_blocks(&retained)
+            .expect("pruning splice snapshots preserves live edges");
     }
     pruned
 }
