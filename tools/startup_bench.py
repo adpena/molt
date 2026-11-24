@@ -157,6 +157,12 @@ def _phase_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         samples.setdefault("preload_to_exit_ms", []).append(
             float(phase["preload_to_exit_ms"])
         )
+        if phase.get("node_to_preload_ms") is not None:
+            samples.setdefault("node_to_preload_ms", []).append(
+                float(phase["node_to_preload_ms"])
+            )
+        for name, duration in phase.get("runner_phases_ms", {}).items():
+            samples.setdefault(f"runner:{name}", []).append(float(duration))
         if phase.get("first_stdout_ms") is not None:
             samples.setdefault("first_stdout_ms", []).append(
                 float(phase["first_stdout_ms"])

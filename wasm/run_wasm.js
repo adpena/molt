@@ -85,6 +85,7 @@ let guestStderrCapture = null;
 const traceExit = process.env.MOLT_WASM_TRACE_EXIT === '1';
 const traceRun = process.env.MOLT_WASM_TRACE_RUN === '1';
 const traceRunFile = process.env.MOLT_WASM_TRACE_FILE || null;
+const observeStartup = process.listenerCount('molt:wasm:startup') > 0;
 const trapOnExit = process.env.MOLT_WASM_TRAP_ON_EXIT === '1';
 const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
 const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
@@ -112,6 +113,7 @@ const runtimeLifetime = (runtimeInst) => {
 };
 const withRuntimeExecution = (runtimeInst, operation) => runtimeLifetime(runtimeInst).execute(operation);
 const traceMark = (message) => {
+  if (observeStartup) process.emit('molt:wasm:startup', message);
   if (!traceRunFile) return;
   try {
     fs.appendFileSync(traceRunFile, `${message}\n`);
@@ -5422,6 +5424,7 @@ const runLinked = async () => {
 
   traceMark('linked:instantiate:enter');
   const linkedCompiledModule = await WebAssembly.compile(linkedBuffer);
+  traceMark('linked:compile:completed');
   requireAppExecutionAbi(linkedCompiledModule, wasmAbiGenerated);
   const linkedModule = { instance: await WebAssembly.instantiate(linkedCompiledModule, importObject) };
   requireAttachedExecutionAbi(linkedCompiledModule, linkedModule.instance, wasmAbiGenerated);
@@ -5472,6 +5475,7 @@ const runMain = async () => {
         primaryFd: fd, fds: new Set([fd]),
       };
     }
+    traceMark('runMain:assets:enter');
     initWasmAssets(invocation.manifestPath);
     traceMark('runMain:init');
     const outputMetadata = parseWasmMetadata(wasmBuffer, {
