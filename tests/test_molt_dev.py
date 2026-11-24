@@ -6748,8 +6748,11 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
 
 @pytest.mark.parametrize("separate_git_dir", [False, True])
 def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
-    tmp_path, drv, separate_git_dir, monkeypatch
-):
+    tmp_path: Path,
+    drv: ModuleType,
+    separate_git_dir: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from molt.rust_toolchain import cargo_configuration_paths
     from tools import molt_dev_queue as queue
 
@@ -6816,7 +6819,9 @@ def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
         ),
     ],
 )
-def test_main_worktree_preserves_opaque_git_path(tmp_path, drv, name, monkeypatch):
+def test_main_worktree_preserves_opaque_git_path(
+    tmp_path: Path, drv: ModuleType, name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tools import molt_dev_queue as queue
 
     artifacts = tmp_path / "artifacts"
