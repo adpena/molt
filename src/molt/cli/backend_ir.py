@@ -73,8 +73,7 @@ from molt.cli.static_module_cells import (
     FunctionCells,
     StaticCellPlan,
     apply_function_cells,
-    plan_function_cells,
-    plan_static_module_cells,
+    plan_module_cells,
     fold_init_once_constants,
     prove_init_once_calls,
 )
@@ -2787,7 +2786,7 @@ def _prepare_backend_ir(
         # carries each module's layout, so only registered modules are stamped.
         # Cell-eligible modules keep their globals in static cells (4.5a).
         registered = {row.name for row in module_registry.rows if row.init_symbol}
-        static_cells = plan_static_module_cells(
+        static_cells, function_cells = plan_module_cells(
             integration_state.module_functions,
             integration_state.module_namespace_facts,
             integration_state.global_layouts,
@@ -2798,13 +2797,6 @@ def _prepare_backend_ir(
             dep_closures=integration_state.module_dep_closures,
             program_functions=functions,
             initializers=initializers,
-        )
-        function_cells = plan_function_cells(
-            static_cells,
-            integration_state.module_functions,
-            integration_state.global_layouts,
-            functions,
-            initializers,
         )
         binding_diagnostics.extend(function_cells.diagnostics)
         stamp_global_slots(

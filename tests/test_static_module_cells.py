@@ -26,8 +26,7 @@ from molt.cli.static_module_cells import (
     InitOnce,
     StaticCellPlan,
     apply_function_cells,
-    plan_function_cells,
-    plan_static_module_cells,
+    plan_module_cells,
 )
 from molt.compiler_analysis.python_import_redirects import (
     NO_IMPORT_REDIRECTS,
@@ -111,7 +110,7 @@ def _plan(
     dep_closures: dict[str, set[str]] | None = None,
 ) -> StaticCellPlan:
     layouts = {"mod": module_global_layout(facts.initializer_bindings)}
-    return plan_static_module_cells(
+    plan, _ = plan_module_cells(
         {"mod": funcs},
         {"mod": facts},
         layouts,
@@ -119,8 +118,10 @@ def _plan(
         redirects,
         extension_modules,
         dep_closures=dep_closures,
+        program_functions=funcs,
         initializers={"mod": summarize_module_initializer("mod", funcs)},
     )
+    return plan
 
 
 def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
@@ -317,7 +318,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
     init = _init()
     layouts = {"mod": module_global_layout(_facts().initializer_bindings)}
     facts = {"mod": _facts()}
-    plan = plan_static_module_cells(
+    plan, _ = plan_module_cells(
         {"mod": [init]},
         facts,
         layouts,
@@ -325,10 +326,11 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib"}},
+        program_functions=[init],
         initializers={"mod": summarize_module_initializer("mod", [init])},
     )
     assert plan.modules == {"mod"}
-    plan = plan_static_module_cells(
+    plan, _ = plan_module_cells(
         {"mod": [init]},
         facts,
         layouts,
@@ -336,6 +338,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib", "mod"}},
+        program_functions=[init],
         initializers={"mod": summarize_module_initializer("mod", [init])},
     )
     assert "lib imports the entry module" in plan.ineligible["mod"]
@@ -446,7 +449,7 @@ _DOMINANCE_LAYOUT = module_global_layout(
 def _dominance_plan(
     funcs: list[dict[str, Any]], functions: list[dict[str, Any]]
 ) -> StaticCellPlan:
-    return plan_static_module_cells(
+    plan, _ = plan_module_cells(
         {"mod": funcs},
         {"mod": _facts()},
         {"mod": _DOMINANCE_LAYOUT},
@@ -455,6 +458,7 @@ def _dominance_plan(
         program_functions=functions,
         initializers={"mod": summarize_module_initializer("mod", funcs)},
     )
+    return plan
 
 
 def _lines(funcs: list[dict[str, Any]], sites: frozenset[tuple[str, int]]) -> set:
@@ -1281,17 +1285,19 @@ def _method_program(
 def _function_cells(
     funcs: list[dict[str, Any]],
 ) -> tuple[FunctionCells, dict[str, tuple[str, ...]]]:
-    plan = _plan(funcs, _facts())
-    assert plan.modules == frozenset({"mod"})
-    layouts = {"mod": module_global_layout({"run"})}
-    modules = {"mod": funcs}
-    return plan_function_cells(
-        plan,
-        modules,
+    facts = _facts(initializer_bindings=frozenset({"run"}))
+    layouts = {"mod": module_global_layout(facts.initializer_bindings)}
+    plan, cells = plan_module_cells(
+        {"mod": funcs},
+        {"mod": facts},
         layouts,
-        funcs,
-        {"mod": summarize_module_initializer("mod", funcs)},
-    ), layouts
+        {"mod"},
+        NO_IMPORT_REDIRECTS,
+        program_functions=funcs,
+        initializers={"mod": summarize_module_initializer("mod", funcs)},
+    )
+    assert plan.modules == frozenset({"mod"})
+    return cells, layouts
 
 
 @pytest.mark.parametrize("load_kind", ["load_method", "load_super_method"])
