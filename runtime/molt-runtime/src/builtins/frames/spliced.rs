@@ -116,17 +116,20 @@ fn code_slot(py: &PyToken<'_>, key_space: i64, key: i64, code_bits: u64) -> Opti
     }
 }
 
-/// `molt_spliced_frame_bind(key_space, key, value)`: bind `value` in the home
+/// `molt_spliced_frame_bind(key_space, key, value, present)`: bind `value` in the home
 /// `key` names of the record the last link made. A key the code does not name
-/// and a `missing` value bind nothing.
+/// and an absent or `missing` value bind nothing.
 pub(crate) fn molt_spliced_frame_bind_attached_body(
     _py: &PyToken<'_>,
     key_space_bits: u64,
     key_bits: u64,
     value: u64,
+    present: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        bind(py, key_space_bits, key_bits, value);
+        if obj_from_bits(present).as_bool() == Some(true) {
+            bind(py, key_space_bits, key_bits, value);
+        }
         MoltObject::none().bits()
     })
 }

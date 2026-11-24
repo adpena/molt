@@ -1215,6 +1215,8 @@ fn promoted_read_after_a_store_sees_the_stored_value() {
 /// not, and its read copies the join's argument.
 #[test]
 fn conditionally_stored_slot_joins_at_a_block_argument() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
     let mut poll = counter_poll();
     let entry = poll.entry_block;
     let zero = poll.blocks[&entry].ops[0].results[0];
@@ -1272,6 +1274,15 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
         },
     );
 
+    // A second, observer-only slot has no initial binding on the other arm.
+    let optional_offset = GEN_CONTROL_BYTES + 16;
+    poll.blocks.get_mut(&bump).unwrap().ops.push(op_v(
+        OpCode::ClosureStore,
+        vec![ValueId(0), zero],
+        vec![],
+        optional_offset,
+    ));
+
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
@@ -1292,10 +1303,26 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
                 .any(|operation| operation.results == read.results)
         })
         .expect("the read has a block");
-    assert_eq!(
-        joined.args.iter().map(|arg| arg.id).collect::<Vec<_>>(),
-        read.operands,
-        "the read copies its block's join argument"
+    assert_eq!(read.operands, [joined.args[0].id]);
+    // The common publication call gets the value and its independently joined
+    // presence. Neither None nor a falsey bound value decides whether to bind.
+    let mut published = false;
+    for op in caller.blocks.values().flat_map(|block| &block.ops) {
+        if op.runtime == Some(RuntimeFn::SplicedFrameBind)
+            && attr_value_int(definition(&caller, op.operands[1])) == Some(optional_offset)
+            && caller.blocks.values().any(|block| {
+                block
+                    .args
+                    .iter()
+                    .any(|arg| arg.id == op.operands[3] && arg.ty == TirType::Bool)
+            })
+        {
+            published = true;
+        }
+    }
+    assert!(
+        published,
+        "a fused snapshot carries the mixed binding's Boolean join"
     );
 }
 
@@ -1379,11 +1406,21 @@ fn frame_publication_reads_branch_bindings_without_a_closure_load() {
         );
     }
 
+    assert!(plan.optional_joins.is_empty());
     poll.blocks.get_mut(&right).unwrap().ops.pop();
-    assert!(
-        plan_slots(&poll, 0).is_none(),
-        "a missing incoming binding must stay absent"
+    let plan = plan_slots(&poll, 0).expect("a frame can publish a mixed slot");
+    assert_eq!(
+        plan.optional_joins.into_iter().collect::<Vec<_>>(),
+        [(join, 0)]
     );
+    assert_eq!(
+        plan.exits[&left][0],
+        Some(SlotDef::Stored {
+            block: left,
+            index: 1
+        })
+    );
+    assert_eq!(plan.exits[&right][0], None);
     poll.blocks.get_mut(&entry).unwrap().ops.remove(0);
     let plan = plan_slots(&poll, 0).expect("a yield with no first observer needs no snapshot");
     assert!(plan.joins.is_empty());

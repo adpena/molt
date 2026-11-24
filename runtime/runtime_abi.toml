@@ -764,9 +764,9 @@ raw_call = true
 
 [[import]]
 name = "spliced_frame_bind"
-type = 4
+type = 6
 runtime_name = "molt_spliced_frame_bind"
-callable_arity = 3
+callable_arity = 4
 
 [[import]]
 name = "spliced_frame_origin"

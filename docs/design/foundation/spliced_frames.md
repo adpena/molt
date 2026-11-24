@@ -91,7 +91,7 @@ becomes a fresh cold block:
 ```
 check_exception (Origin) -> X                        // backend: caller entry at the call site
 X:  call molt_spliced_frame_link(function, location, identity_slot)   // per level, outermost first
-    call molt_spliced_frame_bind(key_space, key, value)           // per binding of the level
+    call molt_spliced_frame_bind(key_space, key, value, present)           // per binding of the level
     call molt_spliced_frame_origin(None, levels)
     br <the caller's handler of the call site>(<what the call site's check passes>)
 ```
@@ -161,11 +161,11 @@ operation's own Origin check follows the unlink and takes 4.2.
   code's poll target; offsets the layout does not name (iterator and split temporaries) are
   ignored, and an offset with no reaching store is unbound. A publication reads the incoming
   bindings before the first store to each slot. Those reads and ordinary slot loads share the
-  liveness that places join arguments. If a required join has a bound and an unbound predecessor,
-  the ordinary generator preserves the distinction between an absent local and Python `None`.
-  A poll with no possible first observer needs no join for yield or completion alone.
-  A mixed join can still prevent fusion when only later caller specialization would remove
-  its last observer. Supporting that case requires an explicit presence value at the join.
+  liveness that places join arguments. A mixed join carries a Boolean presence argument
+  alongside the ordinary value. The shared runtime bind call reads the value only on a
+  present edge, so a bound Python `None` stays visible. The bit propagates between joins
+  across backedges. A poll with no possible first observer needs no join for yield or
+  completion alone. An ordinary slot load still requires a value on every incoming path.
   Fusion reads the poll with its resume
   edges made plain control flow (`generator_fusion/linearize.rs`: each yield continues at the
   dispatch case it saves, the dispatch enters at its default), so a read after a resume sees the
@@ -195,7 +195,7 @@ The five runtime entries are declared in `runtime/runtime_abi.toml`.
 | entry | arguments | effect |
 |---|---|---|
 | `molt_spliced_frame_link` | `(function, location, identity_slot)` | link one record for the level and reattach its observed bindings |
-| `molt_spliced_frame_bind` | `(key_space, key, value)` | bind one local in the newest record |
+| `molt_spliced_frame_bind` | `(key_space, key, value, present)` | bind one local in the newest record |
 | `molt_spliced_frame_origin` | `(exception or None, levels)` | insert the newest `levels` records' entries beneath the caller's head entry, then pop them |
 | `molt_spliced_frame_unlink` | `(levels)` | pop the newest `levels` records |
 | `molt_spliced_frame_finish` | `(bindings)` | retire the observed activation and release its ownership |

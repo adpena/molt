@@ -7,17 +7,17 @@ pub(crate) fn missing_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(crate) fn is_missing_bits(_py: &PyToken<'_>, bits: u64) -> bool {
-    if bits == missing_bits(_py) {
-        return true;
-    }
     let Some(ptr) = maybe_ptr_from_bits(bits) else {
         return false;
     };
-    unsafe {
-        object_type_id(ptr) == TYPE_ID_OBJECT
-            && object_class_bits(ptr) == 0
-            && object_payload_size(ptr) == 0
-    }
+    runtime_state(_py)
+        .canonical_objects
+        .is_published_missing(ptr)
+        || unsafe {
+            object_type_id(ptr) == TYPE_ID_OBJECT
+                && object_class_bits(ptr) == 0
+                && object_payload_size(ptr) == 0
+        }
 }
 
 pub(crate) fn not_implemented_bits(_py: &PyToken<'_>) -> u64 {
@@ -65,7 +65,12 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
-            assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT, builtins.object);
+            assert!(!is_missing_bits(_py, MoltObject::none().bits()));
+            assert!(!is_missing_bits(_py, MoltObject::from_bool(false).bits()));
+            assert!(!is_missing_bits(_py, ellipsis_bits(_py)));
+            let missing = missing_bits(_py);
+            assert!(is_missing_bits(_py, missing));
+            assert_immortal_singleton(_py, missing, TYPE_ID_OBJECT, builtins.object);
             assert_immortal_singleton(
                 _py,
                 not_implemented_bits(_py),

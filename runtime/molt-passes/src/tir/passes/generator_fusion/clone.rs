@@ -20,8 +20,8 @@ use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
 use crate::tir::passes::spliced_frame::{
-    KeySpace, Level, bracket_ops, linked_origin_block, may_observe_frames, origin_cold_block,
-    raise_ops,
+    Binding, KeySpace, Level, bracket_ops, linked_origin_block, may_observe_frames,
+    origin_cold_block, raise_ops,
 };
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -41,6 +41,22 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: a,
+        source_span: None,
+    }
+}
+
+pub(super) fn const_bool_op(result: ValueId, value: bool) -> TirOp {
+    let mut attrs = AttrDict::default();
+    attrs.insert("value".into(), AttrValue::Bool(value));
+    TirOp {
+        origin: None,
+        runtime: None,
+        callee: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstBool,
+        operands: vec![],
+        results: vec![result],
+        attrs,
         source_span: None,
     }
 }
@@ -233,6 +249,29 @@ pub(super) fn clone_and_rewrite_poll(
         }
     }
 
+    // Definite bindings share a constant true. Only mixed joins need a
+    // false edge value or a Boolean block argument.
+    let always_present = caller.fresh_value();
+    caller.value_types.insert(always_present, TirType::Bool);
+    let absent = (!plan.optional_joins.is_empty()).then(|| {
+        let id = caller.fresh_value();
+        caller.value_types.insert(id, TirType::Bool);
+        id
+    });
+    let mut presence_args = HashMap::default();
+    for &join in &plan.optional_joins {
+        let id = caller.fresh_value();
+        caller.value_types.insert(id, TirType::Bool);
+        presence_args.insert(join, id);
+    }
+    let presence_of = |def: SlotDef| match def {
+        SlotDef::Join { block, slot } => presence_args
+            .get(&(block, slot))
+            .copied()
+            .unwrap_or(always_present),
+        SlotDef::Stored { .. } | SlotDef::Argument(_) => always_present,
+    };
+
     // The argument each join takes for each slot it merges.
     let mut join_args: HashMap<(BlockId, usize), ValueId> = HashMap::default();
     for (&block, slots) in &plan.joins {
@@ -361,6 +400,12 @@ pub(super) fn clone_and_rewrite_poll(
                 id: join_args[&(bid, slot)],
                 ty: TirType::DynBox,
             });
+            if let Some(&id) = presence_args.get(&(bid, slot)) {
+                new_args.push(TirValue {
+                    id,
+                    ty: TirType::Bool,
+                });
+            }
         }
 
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len() + 1);
@@ -372,6 +417,10 @@ pub(super) fn clone_and_rewrite_poll(
         // definition across the recorded yield boundary into the continuation.
         if bid == poll.entry_block {
             new_ops.push(const_none_op(none_for_control));
+            new_ops.push(const_bool_op(always_present, true));
+            if let Some(absent) = absent {
+                new_ops.push(const_bool_op(absent, false));
+            }
         }
         // The check that observes a dropped runtime call (the locals
         // prologue) observes nothing once the call is gone.
@@ -384,7 +433,14 @@ pub(super) fn clone_and_rewrite_poll(
             bindings: state
                 .iter()
                 .enumerate()
-                .filter_map(|(slot, def)| Some((plan.offsets[slot], resolve((*def)?))))
+                .filter_map(|(slot, def)| {
+                    let def = (*def)?;
+                    Some(Binding {
+                        key: plan.offsets[slot],
+                        value: resolve(def),
+                        present: presence_of(def),
+                    })
+                })
                 .collect(),
         };
         for (op_index, op) in src.ops.iter().enumerate() {
@@ -568,12 +624,14 @@ pub(super) fn clone_and_rewrite_poll(
                 return;
             };
             for &slot in &plan.joins[join] {
-                args.push(match exit {
-                    Some(state) => {
-                        resolve(state[slot].expect("a slot plan defines every slot a join merges"))
-                    }
-                    None => none_for_control,
-                });
+                let def = exit.and_then(|state| state[slot]);
+                args.push(def.map_or(none_for_control, resolve));
+                if presence_args.contains_key(&(*join, slot)) {
+                    args.push(def.map_or_else(
+                        || absent.expect("an optional join has an absent edge value"),
+                        presence_of,
+                    ));
+                }
             }
         });
         if matches!(new_term, Terminator::Return { .. }) {

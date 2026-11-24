@@ -75,6 +75,9 @@ pub(super) struct SlotPlan {
     pub(super) reads: HashMap<ValueId, SlotDef>,
     /// Per join block, the slots its appended arguments carry, ascending.
     pub(super) joins: BTreeMap<BlockId, Vec<usize>>,
+    /// Joins reachable from an unbound predecessor without an intervening
+    /// store. These carry a Boolean presence argument alongside the value.
+    pub(super) optional_joins: BTreeSet<(BlockId, usize)>,
     /// Per block with an edge into a join, each slot's definition at its exit.
     pub(super) exits: HashMap<BlockId, Vec<Option<SlotDef>>>,
     /// Each slot's frame offset, by slot.
@@ -361,23 +364,52 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         exit_state.insert(block, state);
     }
 
-    // Each edge into a join carries a definition of every slot it merges.
-    let mut exits: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
+    // Propagate possible absence along the SSA edges between joins, including
+    // loop backedges. A store or constructor argument supplies a bound value.
+    let mut exits = HashMap::default();
+    let mut optional_joins = BTreeSet::new();
+    let mut users: HashMap<_, Vec<_>> = HashMap::default();
     for &block in &body {
-        let mut merged: Vec<usize> = Vec::new();
-        poll.blocks[&block].terminator.for_each_edge(|target, _| {
-            merged.extend(joins.get(&target).into_iter().flatten().copied());
-        });
-        if merged.is_empty() {
-            continue;
-        }
         let state = &exit_state[&block];
-        for slot in merged {
-            if let SlotDef::Argument(position) = state[slot]? {
-                arguments.insert(position);
+        let mut feeds_join = false;
+        poll.blocks[&block].terminator.for_each_edge(|target, _| {
+            for &slot in joins.get(&target).into_iter().flatten() {
+                feeds_join = true;
+                let join = (target, slot);
+                match state[slot] {
+                    None => {
+                        optional_joins.insert(join);
+                    }
+                    Some(SlotDef::Join { block, slot }) => {
+                        users.entry((block, slot)).or_default().push(join);
+                    }
+                    Some(SlotDef::Argument(position)) => {
+                        arguments.insert(position);
+                    }
+                    Some(SlotDef::Stored { .. }) => {}
+                }
+            }
+        });
+        if feeds_join {
+            exits.insert(block, state.clone());
+        }
+    }
+    let mut work: Vec<_> = optional_joins.iter().copied().collect();
+    while let Some(join) = work.pop() {
+        for &user in users.get(&join).into_iter().flatten() {
+            if optional_joins.insert(user) {
+                work.push(user);
             }
         }
-        exits.insert(block, state.clone());
+    }
+    // A snapshot can represent an unbound slot. A program load requires the
+    // actual stored value, and must never read the unused absence payload.
+    if reads.values().any(|def| {
+        matches!(
+            def, SlotDef::Join { block, slot } if optional_joins.contains(&(*block, *slot))
+        )
+    }) {
+        return None;
     }
 
     Some(SlotPlan {
@@ -386,6 +418,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         stores: promoted_stores,
         reads,
         joins,
+        optional_joins,
         exits,
         offsets: offsets.iter().copied().collect(),
         entry: entry_state,

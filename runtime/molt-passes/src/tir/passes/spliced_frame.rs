@@ -42,6 +42,15 @@ pub(crate) enum KeySpace {
     StatefulOffset = 1,
 }
 
+/// A frame home at a publication point. The value is read only when the
+/// Boolean `present` is true, so a present Python None remains a binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Binding {
+    pub(crate) key: i64,
+    pub(crate) value: ValueId,
+    pub(crate) present: ValueId,
+}
+
 /// One spliced activation at one observer point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Level {
@@ -51,8 +60,8 @@ pub(crate) struct Level {
     /// The activation's location; `None` when no single publication reaches.
     pub(crate) location: Option<i64>,
     pub(crate) key_space: KeySpace,
-    /// Each binding that holds a value at the point: key and value.
-    pub(crate) bindings: Vec<(i64, ValueId)>,
+    /// The homes this frame state may bind.
+    pub(crate) bindings: Vec<Binding>,
 }
 
 fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
@@ -118,12 +127,12 @@ fn link_ops(
             span,
             &mut ops,
         );
-        for &(key, value) in &level.bindings {
-            let key = const_int(func, key, &mut ops);
+        for binding in &level.bindings {
+            let key = const_int(func, binding.key, &mut ops);
             runtime_call(
                 func,
                 RuntimeFn::SplicedFrameBind,
-                vec![key_space, key, value],
+                vec![key_space, key, binding.value, binding.present],
                 span,
                 &mut ops,
             );

@@ -29,12 +29,13 @@ pub unsafe extern "C" fn molt_spliced_frame_bind(
     key_space_bits: u64,
     key_bits: u64,
     value: u64,
+    present: u64,
 ) -> u64 {
     molt_runtime_core::call_census::hit(
         molt_runtime_core::call_census::id::molt_spliced_frame_bind,
     );
     let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_spliced_frame_bind_attached_body(_py, key_space_bits, key_bits, value)
+    molt_spliced_frame_bind_attached_body(_py, key_space_bits, key_bits, value, present)
 }
 #[unsafe(export_name = "molt_spliced_frame_unlink__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
