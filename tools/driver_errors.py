@@ -60,5 +60,13 @@ class RebaseConflict(DriverError):
     """The candidate does not apply to the current upstream."""
 
 
-class PublicationRace(DriverError):
+class PublicationUnconfirmed(DriverError):
+    """The selected candidate has no confirmed publication."""
+
+    def __init__(self, message: str, *, tested_tree: str | None = None):
+        super().__init__(message)
+        self.tested_tree = tested_tree
+
+
+class PublicationRace(PublicationUnconfirmed):
     """Upstream moved after the candidate's upstream was selected."""

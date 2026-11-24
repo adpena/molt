@@ -655,13 +655,15 @@ up to `MAX_BATCH` (1 while the per-candidate pass rate is low;
    retirement path without repeating gates. A candidate failure (a gate, the committed gate policy or binding,
    a change citation) splits a batch of two or more into halves, first half
    next; a lone lane records `failed` with the reason. A moved main
-   (`RebaseConflict`, `PublicationRace`) rebuilds the batch. After a
-   `PublicationRace` the runner keeps the passed batch's `(tree, base)` in
-   `<git-common-dir>/molt/landing-queue/tested.json`; the rebuilt batch of the
-   same requests reruns the static gates and the gates main's move can affect
-   (`molt_dev_land_fast.split_carried`) and its receipt carries the rest with
-   `carried_from_base`. Any other driver
-   failure stops the runner with every request still queued.
+   (`RebaseConflict`, `PublicationRace`) rebuilds the batch. If publication
+   cannot be confirmed after the gates pass, the runner keeps the passing
+   `(tree, base)` in `<git-common-dir>/molt/landing-queue/tested.json`. A rejected
+   push or failed confirmation read stops the runner with the requests queued.
+   A retry on the same base carries gates only for the exact tested tree.
+   Across a main move the rebuilt batch reruns the gates the move can affect.
+   Static gates always rerun; the receipt marks carried gates with
+   `carried_from_base` (`molt_dev_land_fast.split_carried`). Other driver
+   failures stop the runner with the requests queued.
 
 The runner lands one batch per process, then re-runs through the controller
 handoff, so each batch runs under the driver of the main it lands on. Before

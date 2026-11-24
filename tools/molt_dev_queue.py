@@ -59,6 +59,7 @@ from tools.driver_errors import (
     DriverError,
     GateFailure,
     PublicationRace,
+    PublicationUnconfirmed,
     RebaseConflict,
 )  # noqa: E402
 from tools.molt_dev_common import _COMMANDS, _fail, _ok, _step, _warn  # noqa: E402
@@ -877,8 +878,7 @@ def _batch_key(batch: Sequence[LandingRequest]) -> list[list[str]]:
 def record_tested(
     paths: QueuePaths, batch: Sequence[LandingRequest], *, tree: str, base: str
 ) -> None:
-    """Keep the (tree, base) of a batch whose gates passed before main moved,
-    so its replay on the new base carries what the move cannot affect."""
+    """Keep the passing (tree, base) of a batch awaiting publication."""
     _write_json(
         paths.tested,
         {
@@ -1535,16 +1535,13 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
         # main moved under the batch; the next runner rebuilds it on the new tip.
         _warn(f"main moved; rebuilding the batch: {exc}")
         return False
-    except PublicationRace as exc:
-        # main moved under the push. When the gates had passed, their receipt
-        # is keyed by this tree on this base; the rebuilt batch reruns only
-        # the gates main's move can affect. Without a receipt, all run again.
-        record_tested(
-            paths,
-            candidate.included,
-            tree=sandbox.rev_parse(f"{sandbox.head_sha()}^{{tree}}"),
-            base=upstream,
-        )
+    except PublicationUnconfirmed as exc:
+        if exc.tested_tree is not None:
+            record_tested(
+                paths, candidate.included, tree=exc.tested_tree, base=upstream
+            )
+        if not isinstance(exc, PublicationRace):
+            raise
         _warn(f"main moved; rebuilding the batch: {exc}")
         return False
     except CandidateFailure as exc:

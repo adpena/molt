@@ -164,6 +164,7 @@ from tools.driver_errors import (  # noqa: E402
     EXIT_USAGE,
     DriverError,
     PublicationRace,
+    PublicationUnconfirmed,
     RebaseConflict,
 )
 from tools.molt_dev_common import (  # noqa: E402
@@ -1007,15 +1008,17 @@ def _carry_prior_gates(
     """For a queue replay, split the selected gates into those to run and the
     prior receipt's records to carry; None runs every gate.
 
-    The prior run tested the same batch on an earlier base of main. Its gates
-    that main's move cannot affect keep their verdicts, as land --fast keeps
-    them across a move (molt_dev_land_fast._interaction_rerun).
+    On the same base, reuse requires the exact tested tree. Across a main
+    move, keep only the gates whose verdicts the move cannot affect.
     """
     tree, prior_base = (
         getattr(args, "carry_tree", None),
         getattr(args, "carry_base", None),
     )
     if tree is None or prior_base is None:
+        return None
+    if prior_base == base and tree != git.rev_parse(f"{commit}^{{tree}}"):
+        _say("    replay tree differs from the tested tree; every gate runs")
         return None
     from tools import landing_receipt
     from tools.molt_dev_land_fast import _changed, _interaction_rerun, split_carried
@@ -1026,9 +1029,14 @@ def _carry_prior_gates(
         if common_dir is None
         else landing_receipt.read_receipt(common_dir, tree=tree, base=prior_base)
     )
-    if prior is None:
+    if (
+        prior is None
+        or prior.get("status") != "passed"
+        or prior.get("tree") != tree
+        or prior.get("base") != prior_base
+    ):
         _say(
-            f"    no receipt for tree {tree[:12]} on {prior_base[:12]}; every gate runs"
+            f"    no passing receipt for tree {tree[:12]} on {prior_base[:12]}; every gate runs"
         )
         return None
     rerun = _interaction_rerun(
@@ -1098,7 +1106,7 @@ def _write_queue_receipt(
     controller: str | None,
     postsubmit_only: Sequence[str] = (),
     carried: Sequence[Mapping[str, object]] = (),
-) -> None:
+) -> str:
     """The landing receipt of an integrate run: every selected gate passed,
     here or (``carried``) on the earlier base its record names. ``logs`` maps
     each shown command to the log of the run that passed."""
@@ -1118,10 +1126,11 @@ def _write_queue_receipt(
         )
         for gate in gates
     ] + [dict(record) for record in carried]
+    tree = git.rev_parse(f"{commit}^{{tree}}")
     receipt = landing_receipt.build_receipt(
         mode="queue",
         base=base,
-        tree=git.rev_parse(f"{commit}^{{tree}}"),
+        tree=tree,
         tested_commit=commit,
         controller=controller,
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -1129,6 +1138,7 @@ def _write_queue_receipt(
         postsubmit_only=postsubmit_only,
     )
     _ok(f"landing receipt {landing_receipt.write_receipt(common_dir, receipt)}")
+    return tree
 
 
 @dataclass
@@ -1603,11 +1613,12 @@ def _integrate_exclusive(
         )
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
+    tested_tree = None
     if not dry:
         # Every selected gate passed on this exact tree: the receipt the
         # pre-push hook requires (docs/design/landing_queue.md, section 9).
         _assert_integration_source(git, selected_commit)
-        _write_queue_receipt(
+        tested_tree = _write_queue_receipt(
             repo,
             git,
             base=upstream_before,
@@ -1655,17 +1666,27 @@ def _integrate_exclusive(
 
     # --- step 7: confirm the push by FETCH + ANCESTOR (hazard 2) ------------
     _step("confirm push landed (fetch + ancestor, not exit code)")
-    git.fetch(remote, branch)
-    upstream_after = git.rev_parse(upstream_ref)
-    landed = git.is_ancestor(head_to_push, upstream_after)
+    try:
+        git.fetch(remote, branch)
+        upstream_after = git.rev_parse(upstream_ref)
+        landed = git.is_ancestor(head_to_push, upstream_after)
+    except DriverError as exc:
+        raise PublicationUnconfirmed(
+            f"PUSH NOT CONFIRMED (hazard 2): {exc}", tested_tree=tested_tree
+        ) from exc
     if not landed:
-        error = PublicationRace if upstream_after != upstream_before else DriverError
+        error = (
+            PublicationRace
+            if upstream_after != upstream_before
+            else PublicationUnconfirmed
+        )
         raise error(
             f"PUSH NOT CONFIRMED (hazard 2): {upstream_ref} is now "
             f"{git.short(upstream_after)} but does NOT contain the pushed tip "
             f"{git.short(head_to_push)} (ancestor check failed). The push did "
             "not land (a swallowed exit code, a race, or a rejected non-fast-"
-            "forward). Cleanup is REFUSED. Investigate and re-run."
+            "forward). Cleanup is REFUSED. Investigate and re-run.",
+            tested_tree=tested_tree,
         )
     _ok(
         f"confirmed: {upstream_ref} ({git.short(upstream_after)}) contains tip "
