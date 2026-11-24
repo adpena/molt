@@ -83,13 +83,16 @@ def test_hello_world_size_budget(tmp_path: Path) -> None:
     assert "linked_bytes" in sizes, "No linked binary produced"
 
     linked_bytes = sizes["linked_bytes"]
-    linked_kb = linked_bytes / 1024
+    unlinked_bytes = sizes.get("unlinked_bytes", 0)
+    delta = linked_bytes - unlinked_bytes
     print(
-        f"\n[size-budget] linked binary: {linked_bytes} bytes ({linked_kb:.1f} KB)",
+        f"\n[size-budget] linked binary: {linked_bytes} bytes "
+        f"({linked_bytes / 1024:.1f} KiB), unlinked: {unlinked_bytes} bytes, "
+        f"link delta: {delta:+d} bytes",
         file=sys.stderr,
     )
     assert linked_bytes <= SIZE_BUDGET_BYTES, (
-        f"Linked binary {linked_bytes} bytes ({linked_kb:.1f} KB) "
+        f"Linked binary {linked_bytes} bytes ({linked_bytes / 1024:.1f} KiB) "
         f"exceeds budget of {SIZE_BUDGET_BYTES} bytes "
         f"({SIZE_BUDGET_BYTES / 1024:.1f} KB)"
     )
@@ -125,28 +128,3 @@ def test_freestanding_smaller_than_wasi(tmp_path: Path) -> None:
         f"Freestanding binary ({free_bytes} bytes) is not smaller than "
         f"WASI binary ({wasi_bytes} bytes)"
     )
-
-
-@pytest.mark.slow
-def test_size_report(tmp_path: Path) -> None:
-    """Print a structured size report for CI visibility (always passes)."""
-    sizes = _build_and_measure(FIXTURE, tmp_path, target="wasm")
-    if not sizes["ok"]:
-        print(
-            f"\n[size-report] Build failed, skipping report: {sizes.get('error', '')}",
-            file=sys.stderr,
-        )
-        return
-
-    unlinked = sizes.get("unlinked_bytes", 0)
-    linked = sizes.get("linked_bytes", 0)
-    delta = linked - unlinked
-    pct = (delta / unlinked * 100) if unlinked > 0 else 0.0
-
-    report = (
-        f"\nWASM Size Report:\n"
-        f"  Unlinked: {unlinked} bytes ({unlinked / 1024:.1f} KB)\n"
-        f"  Linked:   {linked} bytes ({linked / 1024:.1f} KB)\n"
-        f"  Delta:    {delta} bytes ({pct:.1f}% overhead from linking)"
-    )
-    print(report, file=sys.stderr)
