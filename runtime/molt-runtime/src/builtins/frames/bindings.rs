@@ -738,7 +738,7 @@ pub(super) fn live_caller(py: &PyToken<'_>, owner: *mut u8) -> Option<records::F
         location + WORD as u64
     } else if state & STATE_LIVE_ACTIVATION != 0 {
         let task = unsafe { *word(owner, SOURCE_WORD) } as *mut u8;
-        crate::object::aux_header::object_frame_record_base(task)? as usize as u64
+        crate::object::aux_header::object_frame_record_base(task)? as u64
     } else {
         return None;
     };
