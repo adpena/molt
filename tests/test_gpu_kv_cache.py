@@ -919,6 +919,7 @@ def test_native_turboquant_attention_cuda_fails_without_runtime_feature(
 
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "cuda"
+    env["MOLT_RUNTIME_GPU_CUDA"] = "0"
     run = run_native_test_process(
         [
             sys.executable,
@@ -938,7 +939,10 @@ def test_native_turboquant_attention_cuda_fails_without_runtime_feature(
     )
 
     assert run.returncode != 0
-    assert "molt_gpu_cuda" in run.stderr
+    assert (
+        "cuda gpu backend requested but molt-gpu was built without cuda-backend"
+        in run.stderr
+    )
 
 
 def test_native_turboquant_attention_cuda_reports_not_implemented_when_feature_enabled(
@@ -1016,6 +1020,7 @@ def test_native_turboquant_attention_hip_fails_without_runtime_feature(
 
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "hip"
+    env["MOLT_RUNTIME_GPU_HIP"] = "0"
     run = run_native_test_process(
         [
             sys.executable,
@@ -1035,7 +1040,10 @@ def test_native_turboquant_attention_hip_fails_without_runtime_feature(
     )
 
     assert run.returncode != 0
-    assert "molt_gpu_hip" in run.stderr
+    assert (
+        "hip gpu backend requested but molt-gpu was built without hip-backend"
+        in run.stderr
+    )
 
 
 def test_native_turboquant_attention_hip_reports_not_implemented_when_feature_enabled(
