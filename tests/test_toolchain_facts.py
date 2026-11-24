@@ -592,13 +592,14 @@ def test_rustc_metadata_is_asked_once_per_toolchain_generation(
 
     def ask(**kwargs: object) -> plans.RustcTargetMetadata:
         return rustc_probes.rust_target_metadata(
-            rustc,
+            rustc_probes.rust_probe_command(
+                rustc, wrappers, label="runtime rustc target metadata"
+            ),
             "aarch64-apple-darwin",
             ("--cfg", "x"),
             root=root,
             env=env,
-            wrappers=wrappers,
-            **kwargs,  # type: ignore[arg-type]
+            **kwargs,
         )
 
     discovered = ask()
@@ -650,12 +651,13 @@ def test_rustc_metadata_reprobes_when_a_key_input_changes(
 
     def ask() -> plans.RustcTargetMetadata:
         return rustc_probes.rust_target_metadata(
-            rustc,
+            rustc_probes.rust_probe_command(
+                rustc, wrappers, label="runtime rustc target metadata"
+            ),
             "custom-target",
             flags,
             root=root,
             env=env,
-            wrappers=wrappers,
             qualify=True,
         )
 
@@ -705,7 +707,14 @@ def test_rustc_metadata_qualification_persists_only_an_agreeing_answer(
 
     def ask(qualify: bool) -> plans.RustcTargetMetadata:
         return rustc_probes.rust_target_metadata(
-            rustc, None, (), root=root, env={}, qualify=qualify
+            rustc_probes.rust_probe_command(
+                rustc, {}, label="runtime rustc target metadata"
+            ),
+            None,
+            (),
+            root=root,
+            env={},
+            qualify=qualify,
         )
 
     assert ("first", None) in ask(False).cfg
@@ -742,12 +751,26 @@ def test_rustc_metadata_records_nothing_when_the_probe_fails(
     root.mkdir()
     with pytest.raises(ValueError, match="unsupported target"):
         rustc_probes.rust_target_metadata(
-            rustc, None, (), root=root, env={}, qualify=True
+            rustc_probes.rust_probe_command(
+                rustc, {}, label="runtime rustc target metadata"
+            ),
+            None,
+            (),
+            root=root,
+            env={},
+            qualify=True,
         )
     # A compiler replaced while it answered is not the key's generation.
     with pytest.raises(ValueError, match="changed"):
         rustc_probes.rust_target_metadata(
-            rustc, None, (), root=root, env={}, qualify=True
+            rustc_probes.rust_probe_command(
+                rustc, {}, label="runtime rustc target metadata"
+            ),
+            None,
+            (),
+            root=root,
+            env={},
+            qualify=True,
         )
     assert calls == 2
     assert not facts.host_toolchain_facts().path.exists()
@@ -776,10 +799,18 @@ def test_rustc_host_probe_failure_carries_the_wrapper_evidence(
     with pytest.raises(
         ValueError, match=r"host probe failed \(2\): sccache: error: Timed out"
     ):
-        rustc_probes.rustc_host_target(rustc, {}, root=root, env={})
+        rustc_probes.rustc_host_target(
+            rustc_probes.rust_probe_command(rustc, {}, label="runtime rustc host"),
+            root=root,
+            env={},
+        )
     assert not facts.host_toolchain_facts().path.exists()
     with pytest.raises(ValueError, match="reported no host triple"):
-        rustc_probes.rustc_host_target(rustc, {}, root=root, env={})
+        rustc_probes.rustc_host_target(
+            rustc_probes.rust_probe_command(rustc, {}, label="runtime rustc host"),
+            root=root,
+            env={},
+        )
 
 
 # --- rustup which --------------------------------------------------------------

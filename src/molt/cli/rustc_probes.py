@@ -17,7 +17,7 @@ from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from molt import process_guard
 from molt.cli.cargo_target_cfg import (
@@ -42,6 +42,9 @@ from molt.toolchain_facts import (
 )
 from molt.toolchain_identity import _capture_executable_content
 
+if TYPE_CHECKING:
+    from molt.cli.cargo_resource_custody import CargoExecutableCustody
+
 
 @dataclass(frozen=True, slots=True)
 class RustProbeCommand:
@@ -54,6 +57,24 @@ class RustProbeCommand:
     command: tuple[str, ...]
     tools: tuple[ProbeTool, ...]
     labels: tuple[str, ...]
+
+    @classmethod
+    def from_custody(
+        cls, rustc: CargoExecutableCustody, wrappers: tuple[CargoExecutableCustody, ...]
+    ) -> RustProbeCommand:
+        selected = (*wrappers, rustc)
+        tools = tuple(
+            ProbeTool.from_identity(item.entrypoint, item.identity) for item in selected
+        )
+        return cls(
+            tuple(tool.entrypoint for tool in tools),
+            tools,
+            tuple(item.label for item in selected),
+        )
+
+    @property
+    def has_wrappers(self) -> bool:
+        return len(self.tools) > 1
 
     @contextmanager
     def fenced(self) -> Generator[list[str]]:
@@ -197,13 +218,12 @@ def _rustc_probe_key(
 
 
 def rust_target_metadata(
-    rustc: Path,
+    probe: RustProbeCommand,
     target: str | None,
     flags: tuple[str, ...],
     *,
     root: Path,
     env: Mapping[str, str],
-    wrappers: Mapping[str, Path] = MappingProxyType({}),
     qualify: bool = False,
 ) -> RustcTargetMetadata:
     """rustc's target metadata for one question, through the toolchain facts.
@@ -216,7 +236,6 @@ def rust_target_metadata(
     """
     root = Path(os.path.abspath(root))
     facts = host_toolchain_facts()
-    probe = rust_probe_command(rustc, wrappers, label="runtime rustc target metadata")
     key = _rustc_probe_key(
         probe,
         cargo_target_query_arguments(
@@ -281,14 +300,12 @@ def rust_target_metadata(
 
 
 def rustc_host_target(
-    rustc: Path,
-    wrappers: Mapping[str, Path],
+    host_probe: RustProbeCommand,
     *,
     root: Path,
     env: Mapping[str, str],
 ) -> str:
     """The host triple rustc reports (`-vV`), through the toolchain facts."""
-    host_probe = rust_probe_command(rustc, wrappers, label="runtime rustc host")
 
     def run_host_probe() -> subprocess.CompletedProcess[str]:
         with host_probe.fenced() as command:

@@ -288,7 +288,9 @@ repair establishes input completeness for these authorities, not a whole-build
 speedup or release-wide performance qualification.
 
 **Rust metadata.** One Cargo plan owns its metadata answers in one frozen
-environment. Identical commands share a discovery answer; wrapped and unwrapped
+environment. Probe commands borrow the compiler and wrapper generations
+already captured by the plan. Discovery and qualification replay fence those
+same handles. Identical commands share a discovery answer; wrapped and unwrapped
 roles are identical when no wrapper is selected. The existing flag parser and
 resource custody retain provisional cfg inputs as well as the selected final
 inputs, including the named candidate files in declared custom-target search

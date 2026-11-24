@@ -104,39 +104,20 @@ class CargoConfigurationSource:
 
 
 def _rust_resource_roots(
-    rustc: Path,
     *,
-    root: Path,
-    env: Mapping[str, str],
     target: str,
     host: str,
     flag_lanes: tuple[tuple[str, ...], ...] = ((),),
-    wrappers: Mapping[str, Path] = MappingProxyType({}),
     target_argument: str | None,
-    metadata_probe: Callable[[str | None, tuple[str, ...], bool], RustcTargetMetadata]
-    | None = None,
+    metadata_probe: Callable[[str | None, tuple[str, ...], bool], RustcTargetMetadata],
 ) -> tuple[CargoResourceRoot, ...]:
-    def metadata(
-        query_target: str | None, flags: tuple[str, ...], wrapped: bool
-    ) -> RustcTargetMetadata:
-        if metadata_probe is not None:
-            return metadata_probe(query_target, flags, wrapped)
-        return rustc_probes.rust_target_metadata(
-            rustc,
-            query_target,
-            flags,
-            root=root,
-            env=env,
-            wrappers=wrappers if wrapped else {},
-        )
-
     # The selected compiler's installed driver remains a resource even when a
     # wrapper or explicit flags select a different target sysroot. Query the
     # compiler itself here, not the wrapper's virtualized target selection.
-    sysroot = metadata(None, (), False).sysroot.resolve(strict=True)
+    sysroot = metadata_probe(None, (), False).sysroot.resolve(strict=True)
     selected: list[CargoResourceRoot] = []
     for index, flags in enumerate(flag_lanes):
-        info = metadata(target_argument, flags, True)
+        info = metadata_probe(target_argument, flags, True)
         target_libdir = info.target_libdir(target).resolve(strict=True)
         selected.append(CargoResourceRoot(f"rust/target-libdir/{index}", target_libdir))
         if info.sysroot.resolve(strict=True) != sysroot:
@@ -164,7 +145,7 @@ def _rust_resource_roots(
         ),
     ]
     if target != host:
-        host_info = metadata(None, (), True)
+        host_info = metadata_probe(None, (), True)
         roots.append(
             CargoResourceRoot(
                 "rust/host-libdir", host_info.target_libdir(host).resolve(strict=True)
@@ -1717,9 +1698,15 @@ def resolve_runtime_cargo_plan(
         CargoExecutableCustody.capture("wrapper/" + role, path)
         for role, path in wrappers.items()
     )
+    bare_probe = rustc_probes.RustProbeCommand.from_custody(rustc_custody, ())
+    wrapped_probe = (
+        rustc_probes.RustProbeCommand.from_custody(rustc_custody, wrapper_custody)
+        if wrapper_custody
+        else bare_probe
+    )
     if host_target is None:
         host_target = rustc_probes.rustc_host_target(
-            rustc, wrappers, root=root, env=environment
+            wrapped_probe, root=root, env=environment
         )
     configured_target = cargo_requested_target(configuration, cli, environment, None)
     target = (
@@ -1792,7 +1779,7 @@ def resolve_runtime_cargo_plan(
         query_target: str | None, flags: tuple[str, ...], wrapped: bool
     ) -> RustcTargetMetadata:
         # Role names do not distinguish identical commands without wrappers.
-        wrapped = wrapped and bool(wrappers)
+        wrapped = wrapped and wrapped_probe.has_wrappers
         key = (query_target, flags, wrapped)
         if key not in metadata_answers:
             if flags not in metadata_flag_roots:
@@ -1811,12 +1798,11 @@ def resolve_runtime_cargo_plan(
                     wasi_plan=wasi_plan,
                 ).roots
             metadata_answers[key] = rustc_probes.rust_target_metadata(
-                rustc,
+                wrapped_probe if wrapped else bare_probe,
                 query_target,
                 flags,
                 root=root,
                 env=probe_environment,
-                wrappers=wrappers if wrapped else {},
             )
         return metadata_answers[key]
 
@@ -2032,9 +2018,6 @@ def resolve_runtime_cargo_plan(
         *wrapper_custody,
     )
     rust_roots = _rust_resource_roots(
-        rustc,
-        root=root,
-        env=environment,
         target=target,
         host=host_target,
         flag_lanes=tuple(
@@ -2049,7 +2032,6 @@ def resolve_runtime_cargo_plan(
                 )
             )
         ),
-        wrappers=wrappers,
         target_argument=target_argument,
         metadata_probe=metadata_for,
     )
@@ -2107,12 +2089,11 @@ def resolve_runtime_cargo_plan(
             item.verify()
         try:
             qualified = rustc_probes.rust_target_metadata(
-                rustc,
+                wrapped_probe if wrapped else bare_probe,
                 query_target,
                 flags,
                 root=root,
                 env=probe_environment,
-                wrappers=wrappers if wrapped else {},
                 qualify=True,
             )
         finally:

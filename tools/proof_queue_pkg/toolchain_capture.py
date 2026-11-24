@@ -2128,7 +2128,7 @@ def _cargo_flag_context(
         cargo_selected_value,
     )
     from molt.cli.runtime_tool_selection import runtime_tool_path
-    from molt.cli.rustc_probes import rust_probe_command
+    from molt.cli.rustc_probes import RustProbeCommand, rust_probe_command
     from molt.cli.cargo_target_cfg import (
         cargo_target_query_arguments,
         parse_rustc_target_metadata,
@@ -2270,17 +2270,21 @@ def _cargo_flag_context(
     ):
         raise ValueError("documenter cfg source differs from compiler custody")
 
+    probe_command: RustProbeCommand | None = None
+
     def probe(flags: tuple[str, ...]):
+        nonlocal probe_command
         if compiler_context is not None:
             row = next(reused_probes, None)
             if row is None or row["flags"] != list(flags):
                 raise ValueError("documenter cfg differs from compiler witness")
             context["cfg_probes"].append(dict(row))
             return parse_rustc_target_metadata(row["stdout"], row["stderr"]).cfg
-        probe = rust_probe_command(rustc, wrappers, label="proof Cargo cfg")
+        if probe_command is None:
+            probe_command = rust_probe_command(rustc, wrappers, label="proof Cargo cfg")
         with (
             tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
-            probe.fenced() as compiler_command,
+            probe_command.fenced() as compiler_command,
         ):
             root = Path(scratch)
             (root / "output").mkdir()

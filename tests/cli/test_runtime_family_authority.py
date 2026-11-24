@@ -36,6 +36,7 @@ from molt.cli.runtime_build_identity import (
     _runtime_build_environment_identity,
     _verify_plan_toolchain_content,
 )
+from molt.cli.cargo_target_cfg import RustcTargetMetadata
 from molt.cli.runtime_cargo_plan import _rust_resource_roots
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.runtime_identity_schema import (
@@ -918,7 +919,9 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
     monkeypatch.setattr(process_guard, "run_completed_command", run)
     if failure == "none":
         metadata = rustc_probes.rust_target_metadata(
-            rustc,
+            rustc_probes.rust_probe_command(
+                rustc, {}, label="runtime rustc target metadata"
+            ),
             "wasm32-wasip1",
             ("--cfg", "selected"),
             root=plan_root,
@@ -929,7 +932,9 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
     else:
         with pytest.raises((ValueError, OSError)) as exc:
             rustc_probes.rust_target_metadata(
-                rustc,
+                rustc_probes.rust_probe_command(
+                    rustc, {}, label="runtime rustc target metadata"
+                ),
                 "wasm32-wasip1",
                 ("--cfg", "selected"),
                 root=plan_root,
@@ -1099,8 +1104,13 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
     _config(plan_root, "[target.'cfg(normalized)']\nlinker=\"normalized-linker\"\n")
     probes = []
 
-    def metadata(rustc, target, flags, **kwargs):
-        wrapped = bool(kwargs["wrappers"])
+    def metadata(
+        probe: rustc_probes.RustProbeCommand,
+        target: str | None,
+        flags: tuple[str, ...],
+        **kwargs: object,
+    ) -> RustcTargetMetadata:
+        wrapped = probe.has_wrappers
         probes.append((target, flags, wrapped))
         if not wrapped:
             return _metadata(installed, "unix")
@@ -2316,15 +2326,32 @@ def test_selected_sysroot_supplies_target_resources_not_default(
         )
 
     monkeypatch.setattr(process_guard, "run_completed_command", probe)
+    bare_probe = rustc_probes.rust_probe_command(compiler, {}, label="compiler")
+    wrapped_probe = (
+        rustc_probes.rust_probe_command(compiler, wrappers, label="compiler")
+        if wrappers
+        else bare_probe
+    )
+
+    def metadata(
+        target: str | None,
+        flags: tuple[str, ...],
+        use_wrapper: bool,
+    ) -> RustcTargetMetadata:
+        return rustc_probes.rust_target_metadata(
+            wrapped_probe if use_wrapper else bare_probe,
+            target,
+            flags,
+            root=tmp_path,
+            env={},
+        )
+
     roots = plans._rust_resource_roots(
-        compiler,
-        root=tmp_path,
-        env={},
         target="target",
         host="host",
         flag_lanes=((),) if wrapped else (("--sysroot", str(selected)),),
-        wrappers=wrappers,
         target_argument="target",
+        metadata_probe=metadata,
     )
     target_roots = [
         entry.path for entry in roots if entry.label.startswith("rust/target-libdir/")
@@ -2363,22 +2390,24 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
     monkeypatch.setattr(process_guard, "run_completed_command", run)
     if mutated is None:
         assert ("selected", None) in rustc_probes.rust_target_metadata(
-            rustc,
+            rustc_probes.rust_probe_command(
+                rustc, wrappers, label="runtime rustc target metadata"
+            ),
             "target",
             ("--cfg", "selected"),
             root=tmp_path,
             env={},
-            wrappers=wrappers,
         ).cfg
     else:
         with pytest.raises((ValueError, OSError), match="changed"):
             rustc_probes.rust_target_metadata(
-                rustc,
+                rustc_probes.rust_probe_command(
+                    rustc, wrappers, label="runtime rustc target metadata"
+                ),
                 "target",
                 ("--cfg", "selected"),
                 root=tmp_path,
                 env={},
-                wrappers=wrappers,
             )
 
 
@@ -3454,7 +3483,9 @@ def test_runtime_metadata_preserves_resource_owned_unstable_backend_and_confines
 
     monkeypatch.setattr(process_guard, "run_completed_command", run)
     metadata = rustc_probes.rust_target_metadata(
-        rustc,
+        rustc_probes.rust_probe_command(
+            rustc, {}, label="runtime rustc target metadata"
+        ),
         "target",
         (
             *plan.rustflags,
@@ -3500,8 +3531,13 @@ def test_metadata_questions_are_fresh_for_each_plan(
     _config(plan_root, "[target.'cfg(changed)']\nlinker=\"changed-linker\"\n")
     observed = []
 
-    def query(rustc, target, flags, **kwargs):
-        paths = [rustc, backend, *kwargs["wrappers"].values()]
+    def query(
+        probe: rustc_probes.RustProbeCommand,
+        target: str | None,
+        flags: tuple[str, ...],
+        **kwargs: object,
+    ) -> RustcTargetMetadata:
+        paths = [backend, *(Path(tool) for tool in probe.command)]
         altered = any(b"new" in path.read_bytes() for path in paths)
         observed.append(altered)
         return _metadata(plan_root, "changed" if altered else "unix")
@@ -3592,8 +3628,13 @@ def test_metadata_memo_uses_actual_wrapper_command(
     (plan_root / "bin").mkdir()
     observed = []
 
-    def query(rustc, target, flags, **kwargs):
-        observed.append(bool(kwargs["wrappers"]))
+    def query(
+        probe: rustc_probes.RustProbeCommand,
+        target: str | None,
+        flags: tuple[str, ...],
+        **kwargs: object,
+    ) -> RustcTargetMetadata:
+        observed.append(probe.has_wrappers)
         return _metadata(plan_root, "unix")
 
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
