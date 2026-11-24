@@ -78,13 +78,13 @@ class CancelReason(StrEnum):
     PRECHECK_BUDGET = "the precheck try run reached its budget"
 
     @property
-    def stops_on_unresolved_closure(self) -> bool:
-        """Whether a cancelled gate whose guard closure stays indeterminate
-        stops the runner. A postsubmit verdict needs proven custody (HF-655).
-        A budget refusal names the gate and its unresolved closure instead:
-        the precheck proves nothing for it, and the batch reruns it in its own
-        sandbox."""
-        return self is not CancelReason.PRECHECK_BUDGET
+    def reports_unresolved_cancellation(self) -> bool:
+        """Retain the precheck or upstream cause and its unresolved cleanup.
+
+        Postsubmit still classifies unresolved custody as inconclusive (HF-655).
+        The precheck reports a refusal, and integration stops without a receipt.
+        """
+        return self is not CancelReason.PENDING_LANDING
 
 
 class GateCancellation(DriverError):
@@ -95,7 +95,10 @@ class GateCancellation(DriverError):
     """
 
     def __init__(self, reason: CancelReason, unresolved: tuple[str, ...] = ()) -> None:
-        super().__init__(reason.value)
+        cleanup = "".join(
+            f"\n    unresolved guard cleanup for {item}" for item in unresolved
+        )
+        super().__init__(reason.value + cleanup)
         self.reason = reason
         self.unresolved = unresolved
 
@@ -1567,7 +1570,7 @@ def _run_serial_gate(
     if classified["cancellation_cleanup"] is not None:
         if (
             runtime.cancelled()
-            and not runtime.cancel_reason.stops_on_unresolved_closure
+            and runtime.cancel_reason.reports_unresolved_cancellation
         ):
             raise GateCancellation(
                 runtime.cancel_reason,
@@ -2049,7 +2052,7 @@ def _run_executor_block(
         and not runner_errors
         and not control_failures
         and runtime.cancelled()
-        and not runtime.cancel_reason.stops_on_unresolved_closure
+        and runtime.cancel_reason.reports_unresolved_cancellation
     ):
         raise GateCancellation(runtime.cancel_reason, unresolved=tuple(unresolved))
     control_failures.extend(f"at {item}" for item in unresolved)
