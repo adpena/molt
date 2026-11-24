@@ -111,3 +111,32 @@ def leave_cycle():
 print(leave_cycle())
 gc.collect()
 print(events)
+
+
+def both_branch_bindings(flag):
+    frame = sys._getframe()
+    if flag:
+        choice = 11
+    else:
+        choice = 22
+    yield frame
+
+
+def optional_branch_binding(flag):
+    frame = sys._getframe()
+    if flag:
+        optional = None
+    yield frame
+
+
+def observed_branch_bindings():
+    values = []
+    for flag in (True, False):
+        for frame in both_branch_bindings(flag):
+            values.append(frame.f_locals["choice"])
+        for frame in optional_branch_binding(flag):
+            values.append(("optional" in frame.f_locals, frame.f_locals.get("optional")))
+    return values
+
+
+print(observed_branch_bindings())

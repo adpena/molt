@@ -159,7 +159,14 @@ operation's own Origin check follows the unlink and takes 4.2.
   key is its payload offset (`KeySpace::StatefulOffset`). The runtime maps offsets to code slots
   through the poll's registered stateful locals layout (`stateful_locals_register`), keyed by the
   code's poll target; offsets the layout does not name (iterator and split temporaries) are
-  ignored, and an offset with no reaching store is unbound. Fusion reads the poll with its resume
+  ignored, and an offset with no reaching store is unbound. A publication reads the incoming
+  bindings before the first store to each slot. Those reads and ordinary slot loads share the
+  liveness that places join arguments. If a required join has a bound and an unbound predecessor,
+  the ordinary generator preserves the distinction between an absent local and Python `None`.
+  A poll with no possible first observer needs no join for yield or completion alone.
+  A mixed join can still prevent fusion when only later caller specialization would remove
+  its last observer. Supporting that case requires an explicit presence value at the join.
+  Fusion reads the poll with its resume
   edges made plain control flow (`generator_fusion/linearize.rs`: each yield continues at the
   dispatch case it saves, the dispatch enters at its default), so a read after a resume sees the
   store before the yield. A poll whose prologue publishes cells into frame slots

@@ -1299,6 +1299,111 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
     );
 }
 
+#[test]
+fn frame_publication_reads_branch_bindings_without_a_closure_load() {
+    use super::slots::{SlotDef, plan_slots};
+
+    let mut poll = TirFunction::new(
+        "branch_poll".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = poll.entry_block;
+    let (left, right, join) = (poll.fresh_block(), poll.fresh_block(), poll.fresh_block());
+    let frame = poll.blocks[&entry].args[0].id;
+    let condition = poll.fresh_value();
+    poll.value_types.insert(condition, TirType::Bool);
+    let body = poll.blocks.get_mut(&entry).unwrap();
+    // The frame can escape before either arm. At yield, the surviving
+    // reference observes the selected binding even when the poll never loads it.
+    body.ops.push(op(OpCode::Call, vec![], vec![]));
+    body.ops
+        .push(op_v(OpCode::ConstBool, vec![], vec![condition], 1));
+    body.terminator = Terminator::CondBranch {
+        cond: condition,
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    for (id, number) in [(left, 11), (right, 22)] {
+        let value = const_int(&mut poll, number);
+        poll.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![
+                    op_v(OpCode::ConstInt, vec![], vec![value], number),
+                    op_v(
+                        OpCode::ClosureStore,
+                        vec![frame, value],
+                        vec![],
+                        GEN_CONTROL_BYTES,
+                    ),
+                ],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+    }
+    poll.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![op(OpCode::StateYield, vec![condition], vec![])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let plan = plan_slots(&poll, 0).expect("both observer predecessors bind the slot");
+    assert!(plan.reads.is_empty());
+    assert_eq!(
+        plan.entry[&join],
+        [Some(SlotDef::Join {
+            block: join,
+            slot: 0
+        })]
+    );
+    for arm in [left, right] {
+        assert_eq!(
+            plan.exits[&arm],
+            [Some(SlotDef::Stored {
+                block: arm,
+                index: 1
+            })]
+        );
+    }
+
+    poll.blocks.get_mut(&right).unwrap().ops.pop();
+    assert!(
+        plan_slots(&poll, 0).is_none(),
+        "a missing incoming binding must stay absent"
+    );
+    poll.blocks.get_mut(&entry).unwrap().ops.remove(0);
+    let plan = plan_slots(&poll, 0).expect("a yield with no first observer needs no snapshot");
+    assert!(plan.joins.is_empty());
+    let read = poll.fresh_value();
+    poll.value_types.insert(read, TirType::DynBox);
+    poll.blocks.get_mut(&join).unwrap().ops.insert(
+        0,
+        op_v(
+            OpCode::ClosureLoad,
+            vec![frame],
+            vec![read],
+            GEN_CONTROL_BYTES,
+        ),
+    );
+    assert!(
+        plan_slots(&poll, 0).is_none(),
+        "ordinary reads still require every incoming binding"
+    );
+}
+
 /// A straight-line generator, `def g(a): yield a`, fused over a string. Its
 /// parameter slot is the elided frame's own reference to the argument: an
 /// owned alias bound in the preheader, so a later rebinding of the caller's

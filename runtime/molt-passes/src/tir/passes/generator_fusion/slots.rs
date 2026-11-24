@@ -34,15 +34,17 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::tir::blocks::BlockId;
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::{
     CfgEdgePolicy, build_dom_children, build_pred_map_with, compute_dominance_frontiers,
     compute_dominator_tree_with, dom_tree_preorder, exception_label_to_block, exception_successors,
     iterated_dominance_frontier, reachable_blocks_with,
 };
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use super::clone::{exception_stack_values, is_bookkeeping_op};
 use super::{GEN_CONTROL_BYTES, attr_value_int};
@@ -181,6 +183,9 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let mut offsets: BTreeSet<_> = (GEN_CONTROL_BYTES..payload_end).step_by(8).collect();
     // Every user-slot access of the body, in op order.
     let mut accesses: HashMap<BlockId, Vec<FrameAccess>> = HashMap::default();
+    let mut publications = HashMap::default();
+    let mut has_observer = false;
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(poll);
     for (&bid, block) in &poll.blocks {
         let mut frame_used = false;
         block
@@ -189,9 +194,22 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         if frame_used {
             return None;
         }
+        let mut after_dropped_call = false;
         for (index, op) in block.ops.iter().enumerate() {
+            let skipped = super::frame_states::skip_frame_op(op, &mut after_dropped_call);
             let access = frame_access(op, index, frame).ok()?;
             let Some(access) = access else {
+                if body.contains(&bid) && !skipped {
+                    let yielding = op.opcode == OpCode::StateYield;
+                    let observes = !yielding
+                        && (op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin)
+                            || op.runtime == Some(RuntimeFn::ExceptionTracePrepend)
+                            || super::super::spliced_frame::may_observe_frames(op, &exact));
+                    if observes || yielding {
+                        has_observer |= observes;
+                        publications.entry(bid).or_insert(index);
+                    }
+                }
                 continue;
             };
             let (offset, read, stored) = match access {
@@ -214,6 +232,12 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
             } else if executable.contains(&bid) && read {
                 return None;
             }
+        }
+        if body.contains(&bid)
+            && matches!(block.terminator, Terminator::Return { .. })
+            && block.ops.iter().any(|op| op.opcode == OpCode::StateSet)
+        {
+            publications.entry(bid).or_insert(block.ops.len());
         }
         if executable.contains(&bid) && !body.contains(&bid) {
             let mut enters_body = false;
@@ -244,20 +268,30 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let slots = offsets.len();
     let mut stores: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
     let mut live: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
-    for (&bid, block_accesses) in &accesses {
-        let mut stored = vec![false; slots];
-        for access in block_accesses {
+    for &bid in &body {
+        let mut first_store = vec![usize::MAX; slots];
+        for access in accesses.get(&bid).into_iter().flatten() {
             match *access {
                 FrameAccess::Read { offset, .. } => {
                     let slot = slot_of[&offset];
-                    if !stored[slot] {
+                    if first_store[slot] == usize::MAX {
                         live[slot].insert(bid);
                     }
                 }
-                FrameAccess::Write { offset, .. } => {
+                FrameAccess::Write { offset, index, .. } => {
                     let slot = slot_of[&offset];
-                    stored[slot] = true;
+                    first_store[slot] = first_store[slot].min(index);
                     stores[slot].insert(bid);
+                }
+            }
+        }
+        // A publication reads every bound slot. Only its first occurrence
+        // can read the block's incoming value before the block overwrites it.
+        // Yield and completion only refresh a frame first exposed elsewhere.
+        if has_observer && let Some(&publish) = publications.get(&bid) {
+            for (slot, &written) in first_store.iter().enumerate() {
+                if publish <= written {
+                    live[slot].insert(bid);
                 }
             }
         }

@@ -391,12 +391,7 @@ pub(super) fn clone_and_rewrite_poll(
             // Drop bookkeeping, the lone state_switch, and the completion
             // reports (`state_set` before each return): a fused body has no
             // frame state, and its returns become the loop exit.
-            if matches!(op.opcode, OpCode::StateSwitch | OpCode::StateSet) || is_bookkeeping_op(op)
-            {
-                after_dropped_call = op.runtime.is_some();
-                continue;
-            }
-            if std::mem::take(&mut after_dropped_call) && op.opcode == OpCode::CheckException {
+            if super::frame_states::skip_frame_op(op, &mut after_dropped_call) {
                 continue;
             }
             // Frame accesses. A promoted store becomes a copy of its value that
