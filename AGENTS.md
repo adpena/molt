@@ -139,7 +139,7 @@ over stale prose or precedent.
 
 ## Work with the live repository
 
-- Start with `uv run --no-project python tools/venv_exec.py python
+- Start with `uv run --no-project python -B tools/venv_exec.py python
   tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
   nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
 - `.python-version` and `uv.lock` are the one environment authority (`docs/design/one_environment.md`);

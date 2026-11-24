@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command in the shared development environment.
 
-``uv run --no-project python tools/venv_exec.py python ...`` is the canonical
+``uv run --no-project python -B tools/venv_exec.py python ...`` is the canonical
 entry: it selects (and on first use syncs) the uv environment of this
 checkout's lock through ``molt.uv_environment``, then replaces itself with the
 command, so no extra process stays in the guarded process tree.
@@ -15,6 +15,10 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+
+if __name__ == "__main__":
+    # Only the forwarded command has selected an owned bytecode cache.
+    sys.dont_write_bytecode = True
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
