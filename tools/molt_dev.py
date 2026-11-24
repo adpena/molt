@@ -1604,13 +1604,18 @@ def _integrate_exclusive(
             toolchains=toolchains,
             deferred=prepared.deferred,
         )
+        from molt.disk_capacity import DiskCapacityError
+
         gate_logs = runtime.passed_logs
-        run_selected_gates(
-            gate_cmds,
-            runtime,
-            gate_seconds,
-            host_limit=lambda: concurrent_gate_limit(),
-        )
+        try:
+            run_selected_gates(
+                gate_cmds,
+                runtime,
+                gate_seconds,
+                host_limit=lambda: concurrent_gate_limit(),
+            )
+        except DiskCapacityError as exc:
+            raise DriverError(f"gate output capacity refused: {exc}") from exc
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
     tested_tree = None

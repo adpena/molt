@@ -566,6 +566,16 @@ def precheck_landing(
             gate_seconds,
             host_limit=lambda: concurrent_gate_limit(),
         )
+    except DiskCapacityError as exc:
+        refused = tuple(gate for gate in trial if gate not in tried_runtime.passed)
+        refusal = TryRunRefusal(
+            RefusalReason.DISK_CAPACITY,
+            refused,
+            str(exc),
+            record=_write_refused_record(
+                git, repo, head, refused, tried_runtime.output_dir
+            ),
+        )
     except GateCancellation as cancellation:
         if cancellation.reason is not CancelReason.PRECHECK_BUDGET:
             raise

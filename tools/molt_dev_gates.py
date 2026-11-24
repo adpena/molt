@@ -42,6 +42,8 @@ from tools.driver_errors import CandidateFailure, DriverError, GateFailure  # no
 from tools.molt_dev_common import _say, _warn  # noqa: E402
 
 if TYPE_CHECKING:
+    from _thread import LockType
+
     from molt.disk_capacity import DiskCapacityError, DiskCapacityProbe
     from molt.host_capacity import HostWorkDemand, HostWorkGrant
     from tools.proof_plan import ToolchainPolicy
@@ -389,6 +391,8 @@ class GateRuntime:
     # The stdout log of the run that passed, by shown command: after a rerun,
     # the rerun's log, never the failed first attempt's (landing receipt counts).
     passed_logs: dict[str, Path] = field(default_factory=dict)
+    capacity_recovery_lock: LockType = field(default_factory=threading.Lock)
+    failed_capacity_roots: set[Path] = field(default_factory=set)
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -673,14 +677,17 @@ def observe_gate_capacity(
     phase: str,
     gate: str,
     before: tuple[DiskCapacityProbe, ...] = (),
+    observed: tuple[DiskCapacityProbe, ...] | None = None,
 ) -> tuple[DiskCapacityProbe, ...]:
     """Record interval observations; telemetry cannot change a gate verdict."""
     from molt.disk_capacity import probe_capacity
 
     try:
-        probes = tuple(
-            probe_capacity(path, required_bytes=required_bytes) for path in paths
-        )
+        probes = observed
+        if probes is None:
+            probes = tuple(
+                probe_capacity(path, required_bytes=required_bytes) for path in paths
+            )
         previous = {probe.requested_path: probe.free_bytes for probe in before}
         changes = {
             str(probe.requested_path): (
@@ -710,6 +717,45 @@ def observe_gate_capacity(
             f"gate capacity observation unavailable ({phase}): {type(exc).__name__}: {exc}"
         )
         return ()
+
+
+def _admit_gate_launch_capacity(
+    runtime: GateRuntime,
+    paths: tuple[Path, ...],
+    environment: GateEnvironment,
+    shown: str,
+) -> tuple[DiskCapacityProbe, ...]:
+    if not paths:
+        return ()
+    from molt.disk_capacity import DiskCapacityError, require_build_capacity
+
+    env = environment.environment
+    try:
+        receipt = require_build_capacity(paths, env=env)
+    except DiskCapacityError as first:
+        if not first.is_hot_capacity_shortfall():
+            raise
+        # Only one launch can reclaim. Recheck under the lock so peers reuse
+        # recovered capacity or see the same unresolved shortfall.
+        with runtime.capacity_recovery_lock:
+            try:
+                receipt = require_build_capacity(paths, env=env)
+            except DiskCapacityError as current:
+                root = current.hot_root
+                if root is None or not reclaim_hot_output(
+                    current, env, runtime.failed_capacity_roots
+                ):
+                    raise
+                receipt = require_build_capacity(paths, env=env)
+                runtime.failed_capacity_roots.discard(root)
+    runtime.observe_capacity(
+        paths,
+        required_bytes=receipt.required_bytes,
+        phase="before",
+        gate=shown,
+        observed=receipt.probes,
+    )
+    return receipt.probes
 
 
 def gate_resource_class(gate: Gate) -> str:
@@ -1464,13 +1510,8 @@ def _run_serial_gate(
         else runtime.cargo_outputs.get(gate.toolchains, ())
     )
     required = runtime.capacity_requirements.get(gate.toolchains, 0)
-    before = (
-        runtime.observe_capacity(
-            paths, required_bytes=required, phase="before", gate=shown
-        )
-        if paths
-        else ()
-    )
+    environment = runtime.environments[gate.toolchains]
+    before = _admit_gate_launch_capacity(runtime, paths, environment, shown)
     started = time.monotonic()
     details = gate_details(ordinal, gate)
     if collection:
@@ -1488,7 +1529,7 @@ def _run_serial_gate(
         outcome = runtime.run_captured_gate(
             cmd,
             runtime.repo,
-            runtime.environments[gate.toolchains],
+            environment,
             runtime.cancelled,
             streams,
         )
@@ -1832,13 +1873,7 @@ def _run_executor_block(
             record["launch_argv"] = (
                 list(argv) if not isinstance(argv, str) else ["/bin/sh", "-c", argv]
             )
-            before = (
-                runtime.observe_capacity(
-                    paths, required_bytes=required, phase="before", gate=shown
-                )
-                if paths
-                else ()
-            )
+            before = _admit_gate_launch_capacity(runtime, paths, environment, shown)
             outcome = runtime.run_captured_gate(
                 argv,
                 runtime.repo,

@@ -9002,7 +9002,7 @@ def test_land_static_failure_stops_land_even_past_the_budget(
     assert queue.pending(queue.queue_paths(lane)) == []
 
 
-@pytest.mark.parametrize("failure", ["capacity", "placement", "fault"])
+@pytest.mark.parametrize("failure", ["capacity", "placement", "launch", "fault"])
 def test_land_names_a_disk_capacity_refusal_and_queues(
     drv: ModuleType,
     origin_and_clone: tuple[Path, Path],
@@ -9048,6 +9048,23 @@ def test_land_names_a_disk_capacity_refusal_and_queues(
             return gate_environment(repo, session_id=session_id)
 
         monkeypatch.setattr(drv, "gate_environment", exhaust_placement)
+    elif failure == "launch":
+        from tools import molt_dev_gates
+
+        run = molt_dev_precheck.run_selected_gates
+
+        def exhaust_at_launch(
+            gates: Sequence[SelectedGate],
+            runtime: molt_dev_gates.GateRuntime,
+            gate_seconds: list[tuple[float, str]],
+            *,
+            host_limit: Callable[[], int] = molt_dev_gates.concurrent_gate_limit,
+        ) -> None:
+            if runtime.cancel_reason is molt_dev_gates.CancelReason.PRECHECK_BUDGET:
+                full()
+            run(gates, runtime, gate_seconds, host_limit=host_limit)
+
+        monkeypatch.setattr(molt_dev_precheck, "run_selected_gates", exhaust_at_launch)
     else:
         monkeypatch.setattr(molt_dev_precheck, "admit_selected_output_capacity", full)
 
@@ -11903,13 +11920,17 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     if gate_rc:
-        with pytest.raises(DriverError, match="gate failed \\(exit 19\\)"):
+        from molt.disk_capacity import DiskCapacityError
+
+        with pytest.raises(
+            DriverError, match="gate output capacity refused"
+        ) as refused:
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        assert isinstance(refused.value.__cause__, DiskCapacityError)
+        assert "exit 19" in refused.value.__cause__.__notes__[0]
     else:
         assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
-    # A failing heavy gate reruns alone exactly once (the retry classifier).
-    runs = 2 if gate_rc else 1
-    assert ran == ["echo non-cargo-prefix", *["echo opaque-cargo-wrapper"] * runs]
+    assert ran == ["echo non-cargo-prefix", "echo opaque-cargo-wrapper"]
     output = capsys.readouterr().err
     readiness = json.loads(
         next(
@@ -11926,7 +11947,7 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
         for line in output.splitlines()
         if "gate capacity: " in line
     ]
-    assert [row["phase"] for row in observations] == ["before", "after"] * runs
+    assert [row["phase"] for row in observations] == ["before", "after"]
     assert observations[1]["free_bytes_delta"] == {str(target): -1_420_288_000}
     assert observations[0]["probes"][0]["free_bytes"] == 27_270_266_880
     assert observations[1]["probes"][0]["free_bytes"] == 25_849_978_880
@@ -11936,6 +11957,40 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
         assert row["probes"][0]["required_bytes"] == 26_843_545_600
         assert "measurement" in row["probes"][0]
         assert "available_bytes" in row["probes"][0]
+
+
+def test_integrate_refuses_cargo_gate_after_capacity_drops_during_read_only_gate(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from molt.disk_capacity import DiskCapacityError
+
+    _origin, work = origin_and_clone
+    _capacity_integration_policy(drv, work, monkeypatch)
+    target = tmp_path / "selected-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.delenv("MOLT_DISK_GUARD_HIGH_WATER_GB", raising=False)
+    available = 30 << 30
+    _capacity_measurement(monkeypatch, lambda path: available)
+    launched: list[str] = []
+
+    def gate(command: str, _repo: Path, _env: ProcessEnvironment) -> int:
+        nonlocal available
+        launched.append(command)
+        available = 20 << 30
+        return 0
+
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
+    with pytest.raises(DriverError, match="gate output capacity refused") as refused:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    cause = refused.value.__cause__
+    assert isinstance(cause, DiskCapacityError)
+    assert [(p.requested_path, p.available_bytes) for p in cause.rejected] == [
+        (target, available)
+    ]
+    assert launched == ["echo non-cargo-prefix"]
 
 
 @pytest.mark.parametrize("dry", [False, True])

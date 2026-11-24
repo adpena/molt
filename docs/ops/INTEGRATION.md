@@ -568,8 +568,12 @@ their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
 10 minutes, following the owner's 2026-11-05 correction) bounds the try run
 alone, from its first gate: at the limit the
 guards cancel running gates, later gates never start, and `land` names each
-refused gate, then queues; the batch runs every selected gate. A try run that
-the disk-capacity check refuses is named and queued the same way. It then writes one request under
+refused gate, then queues; the batch runs every selected gate. Shared Cargo
+output capacity is checked at selection and again at each gate launch, including
+retries. The launch receipt supplies the opening capacity measurement. A shortfall
+can trigger one serialized cleanup of its measured hot volume. An unresolved
+shortfall stops the gate as a runner refusal, and try runs retain completed gates
+and name the refused ones. The driver then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit.
 
