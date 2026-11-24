@@ -413,9 +413,13 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
             .is_some_and(|observation| observation_is_marked(func, observation))
     });
     calls_ready
-        && plan.latch_sites.iter().all(|(latch, _, _)| {
+        && plan.latch_sites.iter().all(|(latch, headers, _)| {
             latch_check_site(func, *latch, &plan.predecessors, &plan.raise)
                 .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
+                || super::spliced_frame::ends_with_poll_bracket(&func.blocks[latch].ops)
+                || headers.iter().all(|header| {
+                    super::spliced_frame::starts_with_poll_bracket(&func.blocks[header].ops)
+                })
         })
 }
 

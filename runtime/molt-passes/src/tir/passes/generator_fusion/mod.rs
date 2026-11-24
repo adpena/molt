@@ -79,8 +79,8 @@
 //!
 //! Phase 1 scope (doc 26): single- and multi-yield generators with no
 //! `YieldFrom`, no real exception HANDLER region (`has_exception_handlers()`),
-//! no `.send`/`.throw`/`.close`, single non-escaping `AllocTask` instance. See
-//! the bail table in [`collect_fusion_candidates`] / [`poll_fusion_refusal`].
+//! no `.send`/`.throw`/`.close`, one consumer per non-escaping `AllocTask` instance. See
+//! the bail table in [`next_fusion_candidate`] / [`poll_fusion_refusal`].
 
 mod attrs;
 mod clone;
@@ -106,7 +106,7 @@ pub(in crate::tir::passes::generator_fusion) use self::attrs::{
 pub(in crate::tir::passes::generator_fusion) use self::attrs::{attr_task_kind, poll_callee};
 pub use self::recognize::PollRefusal;
 pub(in crate::tir::passes::generator_fusion) use self::recognize::{
-    collect_fusion_candidates, poll_fusion_refusal,
+    next_fusion_candidate, poll_fusion_refusal,
 };
 pub(in crate::tir::passes::generator_fusion) use self::splice::apply_fusion;
 pub(in crate::tir::passes::generator_fusion) use self::types::FusionCandidate;

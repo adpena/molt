@@ -687,6 +687,10 @@ pub struct OpIR {
     /// Immutable task-frame payload size, in bytes, authored together with
     /// `task_kind` by `func_new` / `func_new_closure`.
     pub task_closure_size: Option<i64>,
+    /// A closure-free generator with only positional parameters and a final
+    /// vararg slot. Integration packs excess positional arguments into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_vararg_slot: Option<u32>,
     pub container_type: Option<String>,
     pub native_callable_export: Option<String>,
     pub native_callable_binding: Option<String>,
@@ -874,6 +878,7 @@ impl OpIR {
             frame_slot_release: Default::default(),
             task_kind: Default::default(),
             task_closure_size: Default::default(),
+            task_vararg_slot: None,
             container_type: Default::default(),
             native_callable_export: Default::default(),
             native_callable_binding: Default::default(),
@@ -2389,6 +2394,7 @@ mod json_parse_tests {
             frame_slot_release: Some(true),
             task_kind: Some("coroutine".to_string()),
             task_closure_size: Some(48),
+            task_vararg_slot: Some(0),
             state_targets: Some(vec![(0, 17), (3, 23)]),
             container_type: Some("list".to_string()),
             native_callable_export: Some("export".to_string()),
@@ -2487,6 +2493,33 @@ mod json_parse_tests {
         let constructor = &ir.functions[0].ops[0];
         assert_eq!(constructor.task_kind.as_deref(), Some("async_generator"));
         assert_eq!(constructor.task_closure_size, Some(48));
+    }
+
+    #[test]
+    fn generator_vararg_slot_is_the_last_parameter_of_an_unbound_generator() {
+        for (kind, arity, extra, valid) in [
+            ("generator", 2, "", true),
+            ("generator", 1, "", false),
+            ("coroutine", 2, "", false),
+            ("generator", 2, r#","direct_shape":true"#, false),
+        ] {
+            let source = format!(
+                r#"{{"functions":[{{"return_abi":"void","name":"f","params":[],"ops":[{{"kind":"func_new","s_value":"poll","value":{arity},"out":"f","task_kind":"{kind}","task_closure_size":64,"task_vararg_slot":1{extra}}},{{"kind":"ret_void"}}]}},{{"return_abi":"void","name":"poll","params":[],"ops":[{{"kind":"ret_void"}}]}}]}}"#
+            );
+            let result = SimpleIR::from_json_str(&source);
+            if valid {
+                assert_eq!(
+                    result.unwrap().functions[0].ops[0].task_vararg_slot,
+                    Some(1)
+                );
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .contains("invalid generator vararg slot")
+                );
+            }
+        }
     }
 
     #[test]

@@ -29,14 +29,11 @@ fn canonical_function_bytes(function: &TirFunction) -> Vec<u8> {
 
 fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
     let module = TirModule::decode_spelled("candidate", vec![poll.clone(), caller.clone()]);
-    let call_graph = crate::tir::call_graph::named::NamedCallGraph::build(&module);
     let polls = molt_ir::deterministic_hash::HashMap::from_iter([(
         module.ids[0],
         module.functions[0].clone(),
     )]);
-    collect_fusion_candidates(&module.functions[1], &polls, &call_graph)
-        .into_iter()
-        .next()
+    next_fusion_candidate(&module.functions[1], &polls, &Default::default())
         .expect("fixture must expose one fusion candidate")
 }
 
@@ -240,6 +237,16 @@ fn consumer() -> TirFunction {
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
     );
+    let entry = f.entry_block;
+    append_counter_consumer(&mut f, entry, 0);
+    f
+}
+
+fn append_counter_consumer(
+    f: &mut TirFunction,
+    entry: crate::tir::blocks::BlockId,
+    label_offset: i64,
+) -> crate::tir::blocks::BlockId {
     let guard = f.fresh_block();
     let loophdr = f.fresh_block();
     let condb = f.fresh_block();
@@ -247,7 +254,7 @@ fn consumer() -> TirFunction {
     let exit = f.fresh_block();
     let handler = f.fresh_block();
 
-    let n5 = const_int(&mut f, 5);
+    let n5 = const_int(f, 5);
     // The generator function (`alloc_task_operands`): the frame context its
     // fused activation's frame states name.
     let function = f.fresh_value();
@@ -261,7 +268,12 @@ fn consumer() -> TirFunction {
     let isnone = f.fresh_value();
     f.value_types.insert(isnone, TirType::Bool);
     {
-        let e = f.blocks.get_mut(&f.entry_block).unwrap();
+        let e = f.blocks.entry(entry).or_insert_with(|| TirBlock {
+            id: entry,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Unreachable,
+        });
         e.ops.push(op_v(OpCode::ConstInt, vec![], vec![n5], 5));
         e.ops.push(op(OpCode::ConstNone, vec![], vec![function]));
         let mut at = op(OpCode::AllocTask, vec![function, n5], vec![g]);
@@ -319,7 +331,7 @@ fn consumer() -> TirFunction {
             args: vec![],
             ops: vec![
                 op(OpCode::IterNextUnboxed, vec![it], vec![elem, done]),
-                origin_check(ITERATION_HANDLER_LABEL),
+                origin_check(ITERATION_HANDLER_LABEL + label_offset),
             ],
             terminator: Terminator::CondBranch {
                 cond: done,
@@ -341,7 +353,7 @@ fn consumer() -> TirFunction {
                 // a trivial use of elem
                 op(OpCode::Copy, vec![elem], vec![elem_use]),
                 {
-                    let mut poll = op_v(OpCode::CheckException, vec![], vec![], 90);
+                    let mut poll = op_v(OpCode::CheckException, vec![], vec![], 90 + label_offset);
                     poll.mark_async_work_poll();
                     poll
                 },
@@ -356,7 +368,7 @@ fn consumer() -> TirFunction {
         .insert(loophdr, crate::tir::blocks::LoopRole::LoopHeader);
     f.loop_cond_blocks.insert(loophdr, condb);
     f.loop_pairs.insert(loophdr, exit);
-    f.label_id_map.insert(exit.0, 90);
+    f.label_id_map.insert(exit.0, 90 + label_offset);
     f.blocks.insert(
         exit,
         TirBlock {
@@ -366,7 +378,8 @@ fn consumer() -> TirFunction {
             terminator: Terminator::Return { values: vec![] },
         },
     );
-    f.label_id_map.insert(handler.0, ITERATION_HANDLER_LABEL);
+    f.label_id_map
+        .insert(handler.0, ITERATION_HANDLER_LABEL + label_offset);
     f.blocks.insert(
         handler,
         TirBlock {
@@ -376,7 +389,7 @@ fn consumer() -> TirFunction {
             terminator: Terminator::Return { values: vec![] },
         },
     );
-    f
+    loophdr
 }
 
 /// An Origin `CheckException` whose exceptional successor is `label`.
@@ -779,6 +792,110 @@ fn callback_free_poll_is_fused_by_module_driver() {
             ))
     );
     crate::tir::verify::verify_function(caller).expect("module-driver fused caller must verify");
+}
+
+#[test]
+fn branch_exclusive_instances_of_one_poll_fuse_independently() {
+    for first_refuses in [false, true] {
+        let mut caller = TirFunction::new(
+            "two_consumers".into(),
+            vec![TirType::Bool],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let left = caller.fresh_block();
+        let right = caller.fresh_block();
+        let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: entry.args[0].id,
+            then_block: left,
+            then_args: vec![],
+            else_block: right,
+            else_args: vec![],
+        };
+        let header = append_counter_consumer(&mut caller, left, 0);
+        append_counter_consumer(&mut caller, right, 1000);
+        if first_refuses {
+            // A nonempty structured header cannot be retired. Recognition of
+            // its single-use value still succeeds before splice preflight.
+            let extra = const_int(&mut caller, 12);
+            caller.blocks.get_mut(&header).unwrap().ops.push(op_v(
+                OpCode::ConstInt,
+                vec![],
+                vec![extra],
+                12,
+            ));
+        }
+        let mut module = TirModule::decode_spelled("m", vec![counter_poll(), caller]);
+        let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+        let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+        assert_eq!(stats.frames_elided, if first_refuses { 1 } else { 2 });
+        let caller = &module.functions[1];
+        assert_eq!(
+            caller
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::AllocTask)
+                .count(),
+            usize::from(first_refuses)
+        );
+        crate::tir::verify::verify_function(caller).unwrap();
+    }
+}
+
+#[test]
+fn a_spliced_latch_requires_a_marked_poll_without_an_intervening_guest_operation() {
+    use super::super::spliced_frame::{ends_with_poll_bracket, starts_with_poll_bracket};
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let frame_call = |target| {
+        let mut call = op(OpCode::Call, vec![], vec![]);
+        call.runtime = Some(target);
+        call
+    };
+    let mut check = origin_check(90);
+    check.mark_async_work_poll();
+    let bracket = vec![
+        frame_call(RuntimeFn::SplicedFrameLink),
+        frame_call(RuntimeFn::SplicedFrameBind),
+        check,
+        frame_call(RuntimeFn::SplicedFrameUnlink),
+    ];
+    assert!(starts_with_poll_bracket(&bracket) && ends_with_poll_bracket(&bracket));
+    let mut unmarked = bracket.clone();
+    unmarked[2].clear_async_work_poll();
+    assert!(!starts_with_poll_bracket(&unmarked) && !ends_with_poll_bracket(&unmarked));
+    let mut interrupted = bracket.clone();
+    interrupted.insert(2, op(OpCode::Call, vec![], vec![]));
+    assert!(!starts_with_poll_bracket(&interrupted) && !ends_with_poll_bracket(&interrupted));
+    let mut delayed = bracket;
+    delayed.push(op(OpCode::Call, vec![], vec![]));
+    assert!(!ends_with_poll_bracket(&delayed));
+}
+
+#[test]
+fn identity_comparison_to_another_object_keeps_the_iterator() {
+    let mut caller = consumer();
+    let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+    // This is the sentinel used for a fused iterator. Identity against it
+    // must remain false, just as identity against another iterator must.
+    let constant = entry
+        .ops
+        .iter_mut()
+        .find(|op| op.opcode == OpCode::ConstInt)
+        .unwrap();
+    constant.attrs.insert("value".into(), AttrValue::Int(1));
+    let different = constant.results[0];
+    let guard = entry
+        .ops
+        .iter_mut()
+        .find(|op| op.opcode == OpCode::Is)
+        .unwrap();
+    guard.operands[1] = different;
+    let mut module = TirModule::decode_spelled("m", vec![counter_poll(), caller]);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+    let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+    assert_eq!(stats.frames_elided, 0);
 }
 
 #[test]
