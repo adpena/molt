@@ -2201,7 +2201,9 @@ def checkout_state_gc(
     lasting longer than the interval. An admitted attempt stamps its start and
     completion under that lock, so a terminal contended no-op cannot consume
     the next due epoch. Hard interruption keeps the start-time throttle.
-    Explicit collection retains its own root locks.
+    Collection retains its own root locks. Keep the maintenance lock live while
+    the collector runs, and pin its atomic operation only for cadence changes
+    so provider-owned cleanup can spawn its guarded commands.
     """
     if not checkout_state_gc_due(artifact_root, pressure_only=pressure_only):
         yield False
@@ -2218,30 +2220,29 @@ def checkout_state_gc(
         yield False
         return
     try:
+        stamp = artifact_root.joinpath(*(PRESSURE_STAMP if pressure_only else GC_STAMP))
         with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
-            if not checkout_state_gc_due(artifact_root, pressure_only=pressure_only):
-                yield False
-                return
-            stamp = artifact_root.joinpath(
-                *(PRESSURE_STAMP if pressure_only else GC_STAMP)
-            )
-            stamp.touch()
-            os.utime(stamp)
-            failure: BaseException | None = None
+            admitted = checkout_state_gc_due(artifact_root, pressure_only=pressure_only)
+            if admitted:
+                stamp.touch()
+                os.utime(stamp)
+        if not admitted:
+            yield False
+            return
+        failure: BaseException | None = None
+        try:
+            yield True
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
             try:
-                yield True
-            except BaseException as exc:
-                failure = exc
-                raise
-            finally:
-                try:
+                with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
                     os.utime(stamp)
-                except OSError as exc:
-                    if failure is None:
-                        raise
-                    failure.add_note(
-                        f"checkout maintenance completion stamp failed: {exc}"
-                    )
+            except OSError as exc:
+                if failure is None:
+                    raise
+                failure.add_note(f"checkout maintenance completion stamp failed: {exc}")
     finally:
         _release_file_lock(handle)
 
