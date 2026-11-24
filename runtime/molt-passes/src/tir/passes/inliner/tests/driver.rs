@@ -1,4 +1,5 @@
 use super::*;
+use crate::tir::values::TirValue;
 
 #[test]
 fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
@@ -215,7 +216,18 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
 fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
     let callee = over_base_budget_float_callee("eval_like");
     let caller = loop_numeric_caller("eval_like");
-    let mut m = module(vec![caller, callee]);
+    let mut forwarding_caller = caller.clone();
+    forwarding_caller.name = "forwarding_caller".into();
+    forwarding_caller.loop_roles.clear();
+    let block = forwarding_caller
+        .blocks
+        .get_mut(&forwarding_caller.entry_block)
+        .unwrap();
+    block.ops.truncate(1);
+    block.terminator = Terminator::Return {
+        values: block.ops[0].results.clone(),
+    };
+    let mut m = module(vec![caller, forwarding_caller, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
 
@@ -231,7 +243,7 @@ fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
     let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(
         stats.sites_inlined, 1,
-        "numeric scalar callee should inline when its call result feeds loop arithmetic"
+        "only the call that feeds arithmetic should spend the numeric inline budget"
     );
     let caller = m
         .functions
@@ -245,8 +257,72 @@ fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
         .filter(|op| op.opcode == OpCode::Call)
         .count();
     assert_eq!(calls, 0, "numeric raw-lane call boundary eliminated");
+    let forwarding_caller = m
+        .functions
+        .iter()
+        .find(|f| f.name == "forwarding_caller")
+        .unwrap();
+    assert_eq!(
+        forwarding_caller.blocks[&forwarding_caller.entry_block].ops[0].opcode,
+        OpCode::Call,
+        "forwarding the same callee's result should retain its call boundary"
+    );
     crate::tir::verify::verify_function(caller)
         .unwrap_or_else(|e| panic!("numeric_loop_caller invalid: {e:?}"));
+}
+
+#[test]
+fn split_field_budget_is_local_to_the_consuming_call() {
+    let mut callee = over_base_budget_float_callee("split_consumer");
+    let parameter = callee.fresh_value();
+    callee.param_types.push(TirType::Str);
+    callee.value_types.insert(parameter, TirType::Str);
+    callee
+        .blocks
+        .get_mut(&callee.entry_block)
+        .unwrap()
+        .args
+        .push(TirValue {
+            id: parameter,
+            ty: TirType::Str,
+        });
+    let caller = |name: &str, split: bool| {
+        let mut caller = TirFunction::new(
+            name.into(),
+            vec![TirType::Str, TirType::I64, TirType::I64],
+            TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let field = caller.fresh_value();
+        let result = caller.fresh_value();
+        caller.value_types.insert(field, TirType::Str);
+        caller.value_types.insert(result, TirType::F64);
+        let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
+        if split {
+            let mut op = TirOp::new(
+                OpCode::Copy,
+                vec![ValueId(0), ValueId(1), ValueId(2)],
+                vec![field],
+            );
+            op.origin = Some(molt_ir::OpKind::StringSplitField);
+            block.ops.push(op);
+        }
+        let argument = if split { field } else { ValueId(0) };
+        let mut call = TirOp::new(OpCode::Call, vec![argument], vec![result]);
+        call.attrs
+            .insert("s_value".into(), AttrValue::Str("split_consumer".into()));
+        block.ops.push(call);
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        caller
+    };
+    let mut module = module(vec![caller("field", true), caller("string", false), callee]);
+    let (graph, summaries) = analysis(&module);
+    let tti = TargetInfo::native_release_fast();
+    let stats = run_inliner(&mut module, &graph, &summaries, &tti, &HashSet::default());
+    assert_eq!(stats.changed_functions, vec![module.ids[0]]);
+    crate::tir::verify::verify_function(&module.functions[0]).unwrap();
 }
 
 #[test]

@@ -1,18 +1,12 @@
-use molt_ir::deterministic_hash::{HashMap, HashSet};
-
 use crate::ir::ParameterCustody;
 use crate::tir::blocks::Terminator;
 use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
 use crate::tir::call_graph::CallGraph;
-use crate::tir::function::{TirFunction, TirModule};
-use crate::tir::op_kinds_generated::{
-    opcode_is_inliner_numeric_raw_lane_consumer_table, opcode_is_state_machine_table,
-};
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_is_state_machine_table;
+use crate::tir::ops::OpCode;
 use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
-use crate::tir::values::ValueId;
-use molt_ir::{FunctionId, FunctionSet};
 
 use super::super::ip_summary::ModuleSummaries;
 use super::activation::releases_unowned_parameter;
@@ -178,20 +172,7 @@ fn inline_safety_gate(
     None
 }
 
-/// Whether `callee` is SAFE to inline - every correctness gate of
-/// [`is_inlineable`] EXCEPT the cost-model op-count budget. Used by the driver to
-/// admit a callee that is over-budget but whose inlining UNLOCKS a structural
-/// optimization the budget alone cannot see (the split-field deforestation: a
-/// caller passes a non-escaping `string_split_field` result into `callee`, so
-/// inlining turns the callee's `len(field)`/`ord(field[i])` consumers into
-/// bounds-once reads that never materialize the field - see
-/// [`split_field_enabled_callees`]). Admitting an over-budget callee here is
-/// sound for exactly the same reason every other inline is: the splice is
-/// SSA/refcount/loop-metadata preserving regardless of size.
-///
-/// Delegates to [`inline_safety_gate`] (the single source of truth for the safety
-/// verdict) so it can never drift from the typed reason
-/// [`classify_inline_eligibility`] reports.
+/// The conservative safety policy for exceeding the ordinary inline budget.
 pub(super) fn is_inline_safe(
     callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
@@ -200,71 +181,9 @@ pub(super) fn is_inline_safe(
     inline_safety_gate(callee_id, callee, call_graph, false).is_none()
 }
 
-/// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
-/// carrying `origin = "string_split_field"`). Its single result is the
-/// materialized field - the value whose materialization the deforestation
-/// eliminates when every consumer is bounds-expressible.
-fn is_string_split_field_op(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy
-        && matches!(
-            op.origin,
-            Some(k) if k == molt_ir::OpKind::StringSplitField
-        )
-}
-
-/// The set of module-defined callee names that have at least one direct `Call`
-/// site (in any caller) receiving a `string_split_field` result as an argument.
-///
-/// Inlining such a callee unlocks the split-field deforestation: once the
-/// callee body is spliced in, its `len(field)` / `ord(field[i])` consumers read
-/// the field that the caller produced, and the SimpleIR deforestation pass
-/// rewrites them to bounds-once reads (`molt_string_split_field_*`) so the field
-/// never materializes. This is the TARGETED enabling signal the baton specifies
-/// - strictly narrower (and icache-cheaper) than a global budget bump, which was
-///   measured NOT to help and to regress code size. A callee is admitted only if
-///   it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
-pub(super) fn split_field_enabled_callees(
-    module: &TirModule,
-    defined: &[Option<usize>],
-) -> FunctionSet {
-    let has_body = |id: FunctionId| defined.get(id.index()).copied().flatten().is_some();
-    let mut enabled = FunctionSet::with_capacity(defined.len());
-    for caller in &module.functions {
-        // ValueIds produced by a `string_split_field` op in THIS caller.
-        let mut field_values: HashSet<ValueId> = HashSet::default();
-        for block in caller.blocks.values() {
-            for op in &block.ops {
-                if is_string_split_field_op(op) {
-                    field_values.extend(op.results.iter().copied());
-                }
-            }
-        }
-        if field_values.is_empty() {
-            continue;
-        }
-        for block in caller.blocks.values() {
-            for op in &block.ops {
-                if op.opcode != OpCode::Call {
-                    continue;
-                }
-                let Some(callee) = op.callee.filter(|callee| has_body(*callee)) else {
-                    continue;
-                };
-                // Operands are `[args...]` for a resolved `Call` (the static
-                // target is its typed callee, not operand 0); any operand that
-                // is a split-field result enables the callee.
-                if op.operands.iter().any(|v| field_values.contains(v)) {
-                    enabled.insert(callee);
-                }
-            }
-        }
-    }
-    enabled
-}
-
 /// True when the callee return type can carry a raw numeric lane across the
 /// direct-call boundary.
-fn is_numeric_raw_lane_return_type(ty: &TirType) -> bool {
+pub(super) fn is_numeric_raw_lane_return_type(ty: &TirType) -> bool {
     match ty {
         TirType::I64 | TirType::F64 | TirType::Bool => true,
         TirType::Union(members) => {
@@ -283,109 +202,6 @@ fn is_numeric_raw_lane_return_type(ty: &TirType) -> bool {
         }
         _ => false,
     }
-}
-
-struct NumericRawLaneCandidate<'a> {
-    caller: &'a str,
-    callee: FunctionId,
-    result: ValueId,
-    return_type: &'a TirType,
-    consumer: OpCode,
-}
-
-fn numeric_raw_lane_candidates<'a>(
-    module: &'a TirModule,
-    defined: &[Option<usize>],
-) -> Vec<NumericRawLaneCandidate<'a>> {
-    let return_types: HashMap<FunctionId, &TirType> = module
-        .ids
-        .iter()
-        .filter(|id| defined.get(id.index()).copied().flatten().is_some())
-        .zip(&module.functions)
-        .map(|(id, f)| (*id, &f.return_type))
-        .collect();
-    if return_types.is_empty() {
-        return Vec::new();
-    }
-
-    let mut candidates = Vec::new();
-    for caller in &module.functions {
-        let mut call_result_to_callee: HashMap<ValueId, FunctionId> = HashMap::default();
-        for block in caller.blocks.values() {
-            for op in &block.ops {
-                if op.opcode == OpCode::Call {
-                    let Some(callee) = op.callee.filter(|c| return_types.contains_key(c)) else {
-                        continue;
-                    };
-                    if let Some(result) = op.results.first().copied() {
-                        call_result_to_callee.insert(result, callee);
-                    }
-                    continue;
-                }
-                if !opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode) {
-                    continue;
-                }
-                for operand in &op.operands {
-                    if let Some(&callee) = call_result_to_callee.get(operand) {
-                        let return_type = return_types
-                            .get(&callee)
-                            .expect("candidate callee came from return_types");
-                        candidates.push(NumericRawLaneCandidate {
-                            caller: caller.name.as_str(),
-                            callee,
-                            result: *operand,
-                            return_type,
-                            consumer: op.opcode,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    candidates
-}
-
-pub(super) fn numeric_raw_lane_candidate_diagnostics(
-    module: &TirModule,
-    defined: &[Option<usize>],
-) -> Vec<String> {
-    let mut lines: Vec<String> = numeric_raw_lane_candidates(module, defined)
-        .into_iter()
-        .map(|candidate| {
-            format!(
-                "{}:{} result={:?} return={:?} numeric_return={} consumer={:?}",
-                candidate.caller,
-                module.table.symbol(candidate.callee),
-                candidate.result,
-                candidate.return_type,
-                is_numeric_raw_lane_return_type(candidate.return_type),
-                candidate.consumer,
-            )
-        })
-        .collect();
-    lines.sort();
-    lines
-}
-
-/// The set of module-defined callees whose direct-call boundary blocks numeric
-/// raw-lane optimization in a caller.
-///
-/// This is intentionally shaped like [`split_field_enabled_callees`]: it is not a
-/// global inline-budget bump. A callee is only enabled when its structural return
-/// type is a scalar numeric carrier and one of its direct-call results feeds a
-/// numeric op. The driver still applies the full inliner safety gate and caps
-/// this exception at the hot-inline budget.
-pub(super) fn numeric_raw_lane_enabled_callees(
-    module: &TirModule,
-    defined: &[Option<usize>],
-) -> FunctionSet {
-    let mut enabled = FunctionSet::with_capacity(defined.len());
-    for candidate in numeric_raw_lane_candidates(module, defined) {
-        if is_numeric_raw_lane_return_type(candidate.return_type) {
-            enabled.insert(candidate.callee);
-        }
-    }
-    enabled
 }
 
 /// True if any block's terminator branches to `callee`'s entry block. The direct
