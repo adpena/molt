@@ -6,7 +6,7 @@
 //! one SSA value unchanged, so loop recognition, range analysis, representation
 //! planning, and loop transforms cannot drift.
 
-use std::cell::OnceCell;
+use std::{borrow::Cow, cell::OnceCell};
 
 use molt_ir::deterministic_hash::HashMap;
 
@@ -158,7 +158,7 @@ pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
 /// SSA body. The shared borrow prevents reusing these facts after a rewrite.
 pub(crate) struct ScalarFacts<'f> {
     body: &'f TirFunction,
-    types: OnceCell<HashMap<ValueId, TirType>>,
+    types: OnceCell<Cow<'f, HashMap<ValueId, TirType>>>,
     forwarding: OnceCell<HashMap<ValueId, ValueId>>,
     loops: OnceCell<LoopForestResult>,
 }
@@ -177,18 +177,27 @@ impl<'f> ScalarFacts<'f> {
         self.body
     }
 
+    pub(crate) fn with_types(body: &'f TirFunction, types: &'f HashMap<ValueId, TirType>) -> Self {
+        Self {
+            types: OnceCell::from(Cow::Borrowed(types)),
+            ..Self::new(body)
+        }
+    }
+
     pub(crate) fn loops(&self) -> &LoopForestResult {
         self.loops.get_or_init(|| LoopForest::compute(self.body))
     }
 
     pub(crate) fn types(&self) -> &HashMap<ValueId, TirType> {
-        self.types
-            .get_or_init(|| crate::tir::type_refine::extract_exact_scalar_map(self.body))
+        self.types.get_or_init(|| {
+            Cow::Owned(crate::tir::type_refine::extract_exact_scalar_map(self.body))
+        })
     }
 
     pub(crate) fn into_types(self) -> HashMap<ValueId, TirType> {
         self.types
             .into_inner()
+            .map(Cow::into_owned)
             .unwrap_or_else(|| crate::tir::type_refine::extract_exact_scalar_map(self.body))
     }
 

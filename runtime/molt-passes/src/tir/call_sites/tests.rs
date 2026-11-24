@@ -101,6 +101,7 @@ fn dynamic_protocol_families_are_callbacks_despite_scalar_annotations() {
         let site = append(&mut func, op(opcode, &args, &output));
         let sites = FunctionCallSites::for_function(&func);
         assert!(sites.may_call_python(), "{opcode:?}");
+        assert!(FunctionCallSites::may_call_python_in(&func), "{opcode:?}");
         assert_eq!(
             sites.at(site).unwrap().target,
             CallSiteTarget::Opaque,
@@ -371,6 +372,7 @@ fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
         CallSiteTarget::RuntimePrimitive
     );
     assert!(!sites.may_call_python());
+    assert!(!FunctionCallSites::may_call_python_in(&func));
     assert!(
         crate::tir::call_graph::named::NamedCallGraph::build(&TirModule::decode_spelled(
             "m",

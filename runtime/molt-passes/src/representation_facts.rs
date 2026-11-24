@@ -987,13 +987,6 @@ pub(crate) fn non_heap_values_for(
 /// full-i64 carrier has no local RC obligation but may box to a heap BigInt;
 /// only the inline-safe integer tier discharges a boxed storage obligation.
 /// Store elimination must use this projection, not [`non_heap_values_for`].
-pub(crate) fn non_heap_boxed_values_for(
-    tir_func: &TirFunction,
-    vr: &crate::tir::ValueRangeResult,
-) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    non_heap_boxed_values_from(&ScalarFacts::new(tir_func), vr)
-}
-
 pub(crate) fn non_heap_boxed_values_from(
     facts: &ScalarFacts<'_>,
     vr: &crate::tir::ValueRangeResult,

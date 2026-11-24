@@ -5,6 +5,7 @@ use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::PassStats;
+use crate::tir::passes::value_identity::ScalarFacts;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -398,7 +399,8 @@ fn range_only_impostor_does_not_prove_refcount_neutrality() {
         "a range derived from an annotation-admitting operand is not exact provenance"
     );
     assert!(
-        !crate::representation_facts::non_heap_boxed_values_for(&func, &ranges).contains(&narrowed)
+        !crate::representation_facts::non_heap_boxed_values_from(&ScalarFacts::new(&func), &ranges)
+            .contains(&narrowed)
     );
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(n_stores(&func), 1);
@@ -638,7 +640,10 @@ fn raw_i64_carriers_that_box_to_bigint_retain_slot_ownership() {
         entry.terminator = Terminator::Return { values: vec![] };
         let ranges = crate::representation_facts::value_range_for(&func);
         let carrier = crate::representation_facts::non_heap_values_for(&func, &ranges);
-        let boxed = crate::representation_facts::non_heap_boxed_values_for(&func, &ranges);
+        let boxed = crate::representation_facts::non_heap_boxed_values_from(
+            &ScalarFacts::new(&func),
+            &ranges,
+        );
         for value in [raw, copied] {
             assert!(carrier.contains(&value), "the SSA carrier is non-owning");
             assert!(!boxed.contains(&value), "field boxing can allocate BigInt");
