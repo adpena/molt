@@ -52,6 +52,8 @@ use crate::tir::values::ValueId;
 use analysis::{Analysis, ContextId, Inputs, Key, seeds_of};
 use sites::{ArgKind, Site, SiteKind, Unspecializable};
 
+use super::exact_receiver_fields::{self, ClassFieldSlots};
+
 /// A specialized clone the pass appended to the module's document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpecializedClone {
@@ -98,7 +100,9 @@ pub fn run(
         .iter()
         .map(|func| sites::sites_of(func, &body_index, module))
         .collect();
+    let slots = exact_receiver_fields::class_field_slots(module);
     if sites.iter().all(Vec::is_empty) {
+        optimize_bodies(module, tti, &slots, &mut outcome);
         return outcome;
     }
     let final_tir = tti.lowering.final_lowering == FinalLowering::FinalTir;
@@ -193,17 +197,7 @@ pub fn run(
         outcome.changed.insert(id);
     }
 
-    // Re-optimize every changed body under its new facts.
-    let changed_bodies: Vec<usize> = module
-        .ids
-        .iter()
-        .enumerate()
-        .filter(|(_, id)| outcome.changed.contains(id))
-        .map(|(index, _)| index)
-        .collect();
-    for &index in &changed_bodies {
-        let _ = super::reoptimize(&mut module.functions[index], tti);
-    }
+    optimize_bodies(module, tti, &slots, &mut outcome);
 
     merge_identical(
         module,
@@ -215,6 +209,24 @@ pub fn run(
     );
     outcome.report = report;
     outcome
+}
+
+/// Lower class fields before clone comparison: the generic body and its
+/// specialized version can differ solely in the receiver's field offsets.
+fn optimize_bodies(
+    module: &mut TirModule,
+    tti: &TargetInfo,
+    slots: &ClassFieldSlots,
+    outcome: &mut TypeFlowOutcome,
+) {
+    for (func, &id) in module.functions.iter_mut().zip(&module.ids) {
+        if exact_receiver_fields::run(func, slots) > 0 {
+            outcome.changed.insert(id);
+        }
+        if outcome.changed.contains(&id) {
+            let _ = super::reoptimize(func, tti);
+        }
+    }
 }
 
 /// The linker symbol of a clone: its origin's symbol and its key, one letter
@@ -250,14 +262,7 @@ fn decide(
             let retarget = target.and_then(|target| clone_of_context[target.0]);
             // The site enters exactly its target: that context's return
             // type is its result's.
-            let result = target
-                .map(|target| analysis.context(target).ret.clone())
-                .filter(|ty| {
-                    matches!(
-                        ty,
-                        TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64
-                    )
-                });
+            let result = target.map(|target| analysis.context(target).ret.clone());
             SiteDecision {
                 position: site.position(),
                 retarget,
