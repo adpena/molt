@@ -16,6 +16,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from enum import Enum
 import os
 from pathlib import Path
 import re
@@ -90,16 +91,41 @@ def verify_source_inventory(
     directory fences reject observed membership-generation changes. The
     optional root manifest participates in closure only.
     """
-    root = resolve_owned_path(root)
     if len(files) > MAX_SOURCE_FILES:
         raise ValueError("Compiler source exceeds file count policy")
-    expected = {entry["path"]: entry for entry in files}
-    directories = {
-        parent.as_posix()
-        for name in expected
-        for parent in Path(name).parents
-        if parent != Path(".")
-    }
+    return _verify_source_files(
+        root,
+        {entry["path"]: entry for entry in files},
+        scope=_SourceInventoryScope.RELEASE,
+        manifest_name=manifest_name,
+    )
+
+
+class _SourceInventoryScope(Enum):
+    RELEASE = "Compiler source"
+    EXECUTING_PACKAGE = "Installed Molt package"
+
+
+def _verify_source_files(
+    root: Path,
+    expected: Mapping[str, Mapping[str, Any]],
+    *,
+    scope: _SourceInventoryScope,
+    manifest_name: str | None = None,
+) -> Path:
+    root = resolve_owned_path(root)
+    label = scope.value
+    exact = scope is _SourceInventoryScope.RELEASE
+    directories = (
+        {
+            parent.as_posix()
+            for name in expected
+            for parent in Path(name).parents
+            if parent != Path(".")
+        }
+        if exact
+        else set()
+    )
     allowed = set(expected)
     if manifest_name is not None:
         allowed.add(manifest_name)
@@ -126,7 +152,7 @@ def verify_source_inventory(
             or not stat.S_ISDIR(current.st_mode)
             or directory_generation(current) != directory_generation(metadata)
         ):
-            raise ValueError(f"Compiler source directory changed: {path}")
+            raise ValueError(f"{label} directory changed: {path}")
 
     while pending:
         current, metadata = pending.pop()
@@ -141,34 +167,40 @@ def verify_source_inventory(
                     if os.name == "nt"
                     else entry.stat(follow_symlinks=False)
                 )
+                if not exact and entry.name == "__pycache__" and entry.is_dir():
+                    continue
                 if metadata_is_link_like(member):
-                    raise ValueError(f"Compiler source contains a link: {path}")
-                if stat.S_ISDIR(member.st_mode) and relative in directories:
+                    raise ValueError(f"{label} contains a link: {path}")
+                if stat.S_ISDIR(member.st_mode) and (
+                    not exact or relative in directories
+                ):
                     observed_dirs[relative] = member
                     pending.append((path, member))
                 elif stat.S_ISREG(member.st_mode) and relative in allowed:
                     observed[relative] = member
                 elif not (stat.S_ISDIR(member.st_mode) or stat.S_ISREG(member.st_mode)):
-                    raise ValueError(
-                        f"Compiler source is not a regular file: {relative}"
-                    )
-                else:
+                    raise ValueError(f"{label} is not a regular file: {relative}")
+                elif exact:
                     raise ValueError(
                         "Compiler source file/directory closure is not exact"
                     )
-    if set(observed) != allowed or set(observed_dirs) != directories:
+                else:
+                    raise ValueError(f"{label} file is not release source: {relative}")
+    if exact and (set(observed) != allowed or set(observed_dirs) != directories):
         raise ValueError("Compiler source file/directory closure is not exact")
-    check_modes = os.name != "nt"
+    check_modes = exact and os.name != "nt"
 
     # Check entries in manifest order. Most are small enough that scheduling
     # and contended metadata calls cost more than hashing their bytes.
     for name, entry in expected.items():
-        metadata = observed[name]
+        metadata = observed.get(name)
+        if metadata is None:
+            continue
         identity = stable_regular_file_identity(
-            root / name, label="compiler source", expected_path_stat=metadata
+            root / name, label=label.lower(), expected_path_stat=metadata
         )
         if (identity.size, identity.sha256) != (entry["size"], entry["sha256"]):
-            raise ValueError(f"Compiler source content changed: {name}")
+            raise ValueError(f"{label} content changed: {name}")
         # The supplied mode participated in the opened path/handle fence.
         # A later independent stat could instead inspect another generation.
         if check_modes and not _source_mode_matches_git(
@@ -179,7 +211,7 @@ def verify_source_inventory(
                 f"{metadata.st_mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
             )
     if resolve_owned_path(root) != root:
-        raise ValueError("Compiler source root changed during verification")
+        raise ValueError(f"{label} root changed during verification")
     check_directory(root, root_metadata)
     for name, metadata in observed_dirs.items():
         check_directory(root / name, metadata)
@@ -684,30 +716,16 @@ class InstalledCompiler:
         package = Path(__file__).resolve().parent
         if resolve_owned_path(self.source_root) in package.parents:
             return
-        inventory = {entry["path"]: entry for entry in self.files}
-        for current, dirs, names in os.walk(package, followlinks=False):
-            dirs[:] = [name for name in dirs if name != "__pycache__"]
-            for name in dirs + names:
-                if is_link_like(Path(current) / name):
-                    raise ValueError(f"Installed Molt package contains a link: {name}")
-            for name in names:
-                path = Path(current) / name
-                relative = "src/molt/" + path.relative_to(package).as_posix()
-                entry = inventory.get(relative)
-                if entry is None:
-                    raise ValueError(
-                        f"Installed Molt package file is not release source: {relative}"
-                    )
-                identity = stable_regular_file_content_identity(
-                    path, label="installed Molt package"
-                )
-                if (identity["sha256"], identity["size"]) != (
-                    entry["sha256"],
-                    entry["size"],
-                ):
-                    raise ValueError(
-                        f"Installed Molt package differs from its release source: {relative}"
-                    )
+        package_prefix = "src/molt/"
+        _verify_source_files(
+            package,
+            {
+                entry["path"][len(package_prefix) :]: entry
+                for entry in self.files
+                if entry["path"].startswith(package_prefix)
+            },
+            scope=_SourceInventoryScope.EXECUTING_PACKAGE,
+        )
 
 
 _INSTALLED_MANIFESTS: ContextVar[dict[Path, tuple[bytes, InstalledCompiler]] | None] = (
