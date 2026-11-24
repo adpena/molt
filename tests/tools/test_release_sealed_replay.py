@@ -2526,7 +2526,7 @@ def test_compilation_runtime_projection_receiver_independently_rejects_drift(
         projection=projection,
     )
     compilation = {
-        "schema": "molt.installed-compilation.v4",
+        "schema": "molt.installed-compilation.v5",
         "execution": projection.to_dict(),
         "root": sealed,
         "supervisor_generation": {},
@@ -3363,7 +3363,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     )
     prepared = consumer_replay.prepare_compilation(**args)
     assert staged == ["inputs"]
-    assert prepared["schema"] == "molt.installed-compilation.v4"
+    assert prepared["schema"] == "molt.installed-compilation.v5"
     assert prepared["origins"] == []
     assert prepared["cache_seed"] == []
     assert [row["id"] for row in prepared["cells"]] == [native.id, second.id]
@@ -3411,11 +3411,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
             and row["root_exit_disposition"] == "terminate"
             for row in policy["fixed_images"]
         )
-        assert (
-            "--capture-link-inputs"
-            if lane.target == "native"
-            else "--build-arg=--capture-link-inputs"
-        ) in config["command"]
+        assert "--capture-link-inputs" in config["command"]
     assert policies[0]["nonce"] != policies[1]["nonce"]
     execution_root.validate_sealed_tar(
         args["evidence"] / "rootfs.tar",
@@ -3597,7 +3593,7 @@ def test_retained_compilation_replays_export_before_accepting_summary(
         )
     }
     compilation.update(
-        schema="molt.installed-compilation.v4",
+        schema="molt.installed-compilation.v5",
         origins=[],
         cache_seed=[],
         execution=args["projection"].to_dict(),

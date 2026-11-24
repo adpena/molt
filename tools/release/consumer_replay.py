@@ -50,6 +50,7 @@ from .archive import (
 from .release_model import ROOT, validate_artifact_record, write_json
 
 SCHEMA = "molt.release-consumer-replay.v4"
+INSTALLED_COMPILATION_SCHEMA = "molt.installed-compilation.v5"
 # One admitted source closure already exceeds the generic 4096-member envelope.
 # Shared CAS paths can contain two nodes per unique input plus bucket parents;
 # the existing root bound is 65536 regular files. ZIP32 is the smaller hard
@@ -1957,9 +1958,7 @@ def validate_installed_compilation(
             by_role = {row["role"]: row for row in proof["commands"]}
             prefix = "pip_" if owner == "pip" else ""
             for lane, produced in zip(lanes, cold["cells"], strict=True):
-                command = by_role[
-                    f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
-                ]
+                command = by_role[f"{prefix}cold_build_{lane.id}"]
                 _validate_compilation_command(
                     command, produced["outputs"], cold_evidence / "outputs" / lane.id
                 )
@@ -1981,9 +1980,7 @@ def validate_installed_compilation(
                     raise ValueError(
                         "standalone product differs from its installed compilation"
                     )
-                command = by_role[
-                    f"{prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}"
-                ]
+                command = by_role[f"{prefix}build_{lane.id}"]
                 _validate_compilation_command(command, output, retained)
                 diagnostics = read_exact(
                     retained / "diagnostics.json",
@@ -2203,8 +2200,7 @@ def _compilation_cache_contract(
     from molt.compilation_target import admit_target
     from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
-    # consumer_guest_command selects native build's default bin emission or
-    # WASM run's wasm emission; exact command replay rejects other requests.
+    # The installed build command selects a native executable or linked Wasm.
     contract = resolve_backend_artifact_contract(
         target=admit_target(runtime_cell["key"]["target_triple"]),
         emit_mode="bin" if lane.target == "native" else "wasm",
@@ -2494,7 +2490,7 @@ def prepare_compilation(
         rootfs, evidence / "rootfs.tar", expected_files=files, projection=projection
     )
     return {
-        "schema": "molt.installed-compilation.v4",
+        "schema": INSTALLED_COMPILATION_SCHEMA,
         "origins": origins,
         "cache_seed": cache_seed,
         "execution": projection.to_dict(),
@@ -2814,7 +2810,7 @@ def _validate_compilation_plan(
     from molt.process_environment import NameRule
 
     if (
-        compilation.get("schema") != "molt.installed-compilation.v4"
+        compilation.get("schema") != INSTALLED_COMPILATION_SCHEMA
         or compilation.get("python") != python_minor
         or compilation.get("launcher") != launcher
         or compilation.get("controller_python") != controller_python.as_posix()

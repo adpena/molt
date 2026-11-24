@@ -1991,7 +1991,6 @@ def _consumer_transport_receipt(
     root = "C:/consumer" if windows else "/consumer"
     bin_dir = f"{root}/bundle/molt-{candidate['version']}/bin"
     launcher = [f"{bin_dir}/molt.exe" if windows else f"{bin_dir}/molt"]
-    guest_argv = ["--guest-flag", "two words"]
     guest_stdout = "MOLT_RELEASE_CONSUMER_OK|--guest-flag|two words\n"
     suffix = ".exe" if windows else ""
     # Each target minor's pinned source tag, read independently of the
@@ -2074,57 +2073,38 @@ def _consumer_transport_receipt(
             diagnostics = f"{cell}/diagnostics.json"
             if target == "native":
                 output = artifact = f"{cell}/release_consumer{suffix}"
-                commands.append(
-                    command(
-                        f"build_{lane_id}",
-                        [
-                            *launcher,
-                            "build",
-                            "--target",
-                            "native",
-                            "--backend",
-                            "llvm" if backend == "llvm" else "cranelift",
-                            "--profile",
-                            profile,
-                            "--python-version",
-                            minor,
-                            "--diagnostics-file",
-                            "/work/output/diagnostics.json",
-                            "--output",
-                            "/work/output/program",
-                            "--capture-link-inputs",
-                            "/app/source.py",
-                        ],
-                    )
-                )
-                commands.append(
-                    command(f"run_{lane_id}", [output, *guest_argv], guest_stdout)
-                )
+                target_flags = [
+                    "--backend",
+                    "llvm" if backend == "llvm" else "cranelift",
+                ]
+                requested_output = "/work/output/program"
             else:
                 output = f"{cell}/release_consumer.wasm"
                 artifact = f"{cell}/release_consumer_linked.wasm"
-                commands.append(
-                    command(
-                        f"run_{lane_id}",
-                        [
-                            *launcher,
-                            "run",
-                            "--target",
-                            "wasm",
-                            "--profile",
-                            profile,
-                            "--python-version",
-                            minor,
-                            "--build-arg=--diagnostics-file=/work/output/diagnostics.json",
-                            "--build-arg=--output=/work/output/program.wasm",
-                            "--build-arg=--capture-link-inputs",
-                            "/app/source.py",
-                            "--",
-                            *guest_argv,
-                        ],
-                        guest_stdout,
-                    )
+                target_flags = ["--linked", "--require-linked"]
+                requested_output = "/work/output/program.wasm"
+            commands.append(
+                command(
+                    f"build_{lane_id}",
+                    [
+                        *launcher,
+                        "build",
+                        "--target",
+                        target,
+                        *target_flags,
+                        "--profile",
+                        profile,
+                        "--python-version",
+                        minor,
+                        "--diagnostics-file",
+                        "/work/output/diagnostics.json",
+                        "--output",
+                        requested_output,
+                        "--capture-link-inputs",
+                        "/app/source.py",
+                    ],
                 )
+            )
             cells.append(
                 {
                     "lane": dict(zip(LANE_FIELDS, values, strict=True)),
@@ -2148,7 +2128,6 @@ def _consumer_transport_receipt(
         cold_commands = [
             {**copy.deepcopy(row), "role": "cold_" + row["role"]}
             for row in commands[4:]
-            if row["role"].startswith(("build_", "run_wasm-"))
         ]
         commands[4:4] = cold_commands
         python_proofs.append(
@@ -2227,7 +2206,7 @@ def _consumer_transport_receipt(
     ]
     count = (len(references) + 1) * len(lane_values)
     return {
-        "schema": "molt.release-consumer-proof.v12",
+        "schema": "molt.release-consumer-proof.v13",
         "candidate": "candidate.json",
         "candidate_sha256": canonical_json_sha256(candidate),
         "target": candidate["target"],
@@ -3176,19 +3155,15 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
     assert admitted[:-1] == candidate["artifacts"]
     assert admitted[-1]["kind"] == "molt-consumer-evidence"
     # Mutate independent transport transcripts, never validator expectations.
-    fabricated = hashlib.sha256(b"MOLT_RELEASE_CONSUMER_OK\n").hexdigest()
     elsewhere = "/consumer/elsewhere/release_consumer.py"
 
     def role(p, name):
         return next(command for command in p["commands"] if command["role"] == name)
 
     def collide_wasm_outputs(p):
-        # Internally consistent argv; only the per-cell directory invariant breaks.
+        # The sealed argv uses /work in both cells. Only the host outputs alias.
         dev, release = p["cells"][8:10]
         release.update(output=dev["output"], artifact=copy.deepcopy(dev["artifact"]))
-        role(p, "run_wasm-wasm-release-release-output-release")["argv"][9] = (
-            f"--build-arg=--output={dev['output']}"
-        )
 
     variants = []
     for field in (
@@ -3222,27 +3197,18 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         lambda p: role(p, "cold_build_native-native-dev-dev-fast-release")[
             "argv"
         ].__setitem__(9, "3.11"),
-        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release")[
+        lambda p: role(p, "cold_build_wasm-wasm-dev-dev-fast-release")[
             "argv"
         ].__setitem__(0, "/consumer/other-molt"),
-        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release").update(
-            role="run_wasm-wasm-dev-dev-fast-release"
+        lambda p: role(p, "cold_build_wasm-wasm-dev-dev-fast-release").update(
+            role="build_wasm-wasm-dev-dev-fast-release"
         ),
         # Missing installed commands and unbound native/WASM inputs.
         lambda p: p["commands"].pop(),
         lambda p: p["commands"].__delitem__(slice(-2, None)),
-        lambda p: role(p, "run_native-native-dev-dev-fast-release").update(
-            argv=["/another/executable", "--guest-flag", "two words"]
-        ),
         lambda p: p["cells"][8]["manifest"].update(path="/another/manifest.json"),
         lambda p: p["cells"][0].update(manifest={}),
-        lambda p: role(p, "run_native-native-dev-dev-fast-release").update(
-            stdout_sha256=fabricated
-        ),
-        lambda p: role(p, "run_native-native-release-release-output-release")[
-            "argv"
-        ].pop(),
-        # Wrong launcher, target, profile, Python, source and guest argv.
+        # Wrong launcher, target, profile, Python, source or build mode.
         lambda p: role(p, "build_native-native-release-release-output-release")[
             "argv"
         ].__setitem__(7, "dev"),
@@ -3252,24 +3218,27 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         lambda p: role(p, "build_native-native-dev-dev-fast-release")[
             "argv"
         ].__delitem__(slice(8, 10)),
-        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+        lambda p: role(p, "build_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
             0, "/consumer/molt"
         ),
-        lambda p: role(p, "run_wasm-wasm-release-release-output-release")[
+        lambda p: role(p, "build_wasm-wasm-release-release-output-release")[
             "argv"
         ].__setitem__(3, "native"),
-        lambda p: role(p, "run_wasm-wasm-release-release-output-release")[
+        lambda p: role(p, "build_wasm-wasm-release-release-output-release")[
             "argv"
-        ].__setitem__(5, "dev"),
-        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
-            7, "3.11"
+        ].__setitem__(7, "dev"),
+        lambda p: role(p, "build_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+            9, "3.11"
         ),
-        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
-            10, elsewhere
+        lambda p: role(p, "build_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+            -1, elsewhere
         ),
-        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].pop(),
-        lambda p: role(p, "run_wasm-wasm-release-release-output-release").update(
-            stdout_sha256=fabricated
+        lambda p: role(p, "build_wasm-wasm-dev-dev-fast-release")["argv"].pop(),
+        lambda p: role(p, "build_wasm-wasm-release-release-output-release")[
+            "argv"
+        ].__setitem__(1, "run"),
+        lambda p: role(p, "build_wasm-wasm-dev-dev-fast-release")["argv"].remove(
+            "--require-linked"
         ),
         lambda p: p.update(source=elsewhere),
         lambda p: p.update(source="relative/release_consumer.py"),
@@ -3631,7 +3600,7 @@ def test_component_scope_retains_transport_closure_but_never_release_acceptance(
         candidate, python_minor="3.12", lane_values=lane_values
     )
     payload.update(
-        schema="molt.release-consumer-component-proof.v2",
+        schema="molt.release-consumer-component-proof.v3",
         scope={
             "python": "3.12",
             "lanes": [dict(zip(LANE_FIELDS, row, strict=True)) for row in lane_values],
@@ -3658,7 +3627,7 @@ def test_component_scope_retains_transport_closure_but_never_release_acceptance(
     for promote in (False, True):
         invalid = copy.deepcopy(payload)
         if promote:
-            invalid["schema"] = "molt.release-consumer-proof.v12"
+            invalid["schema"] = "molt.release-consumer-proof.v13"
             invalid.pop("scope")
         with pytest.raises(ValueError):
             release_authority.validate_consumer_proof(invalid, candidate, **kwargs)
