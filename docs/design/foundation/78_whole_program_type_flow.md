@@ -543,7 +543,7 @@ every later analysis sees a clone as an ordinary row.
   to the debug artifact `tir/type_flow.txt`, one line per module (contexts, clones, sites
   specialized, results typed), one per body with resolved sites (contexts, clones, resolved
   and unknown-callee calls), and one per resolved site that stays generic with its reason:
-  the callee's refusal (generator, closure, execution context, partition, linked elsewhere,
+  the callee's refusal (generator, execution context, partition, linked elsewhere,
   target gate), "no parameter's type changes the callee's code", or the first relevant
   argument that is not an exact scalar and its producer.
 
@@ -826,9 +826,8 @@ gives a method the implicit `__class__` cell, and 5.7 refused every closure targ
   path must refuse them). A classmethod, staticmethod or property target keeps the generic path.
 - *Closure targets are sound with the live closure tuple*, not with a constant cell: cells stay
   writable through `nonlocal` and `f.__closure__[i].cell_contents`. The environment goes after
-  the callable handoff and before `self`. Type flow drops closure sites by physical arity.
-  Specialization needs a proof for the environment. Inlining needs the callable's
-  activation lifetime.
+  the callable handoff and before `self`. User arguments can specialize independently of
+  the environment. Inlining needs the callable's activation lifetime.
 - *Removing the load needs the member cell*: shared lowering emits `molt_load_super_method`
   for a surviving proven load, so only a static cell (5.9) removes it on every backend.
 
@@ -880,8 +879,14 @@ binds an owned alias to the environment parameter. The function is released afte
 result capture and frame cleanup, preserving the timing of function weakrefs. Unproven
 sites, mismatched physical arity and non-final-TIR targets are refused before editing
 the caller. This removes call dispatch while preserving closure cells and the identity
-and lifetime of their observable owner. Closure type-flow contexts remain a separate
-step because they must carry the actual environment facts (3.3).
+and lifetime of their observable owner.
+
+**5c. User-argument specialization.** A proven guarded site's `StaticCall` carries its
+executable `FunctionId`, the original function object's SSA value and its Python arguments.
+Demand and exact argument facts map to physical parameters starting after the closure tuple.
+The tuple's context entry stays dynamic. Different instances may share specialized code
+while each call reads its own live environment. Facts about captured cell contents still
+require writer and lifetime proofs (3.3).
 
 **Step 4. Static `super()` (as built, 2026-11-21).** `_proven_super_member` decides
 `super().m(args)` in a method of class `C` at compile time when all of these hold, else the

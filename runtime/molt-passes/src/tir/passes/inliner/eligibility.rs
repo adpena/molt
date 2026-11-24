@@ -46,14 +46,8 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 ///   loop headers in separate blocks). A callee whose entry block is itself a
 ///   branch target would need its entry args preserved, which this arc's
 ///   direct-binding splice does not model, so it is refused (never miscompiled).
-/// * **closure** - the callee's first param is the implicit captured-environment
-///   param ([`is_closure`] / [`crate::MOLT_CLOSURE_PARAM_NAME`]). The
-///   direct param->operand splice would bind that env-param to the `Call`'s
-///   LEADING FUNCTION-VALUE operand (operands are `[callee_value, args...]`)
-///   instead of the captured environment, miscompiling `__molt_closure__[i]`
-///   into a subscript of a function. The arity guard cannot catch this (the
-///   closure's extra param re-balances the operand count). Threading the real
-///   env is a separate perf arc; refusing is conservative-correct.
+/// * **closure** - its environment must come from the original function object,
+///   which a final-TIR target can load at a proven guarded site.
 /// * **unowned parameter release** - the body releases a `Borrowed` parameter
 ///   other than by a Python `del` ([`releases_unowned_parameter`]). The
 ///   activation owns no reference there, so the release would end the
@@ -141,8 +135,7 @@ pub(super) fn callee_op_count(
 /// 4. **entry block has predecessors** - the direct param->argument binding splice
 ///    clones the entry as an argument-less block, valid only when no branch targets
 ///    the entry.
-/// 5. **closure** - the first param is the implicit captured-env param
-///    ([`is_closure`]); the direct param->operand splice would miscompile it.
+/// 5. **closure** - a target must lower the live captured environment.
 /// 6. **unowned parameter release** - an explicit release, other than `del`,
 ///    of a `Borrowed` parameter ([`releases_unowned_parameter`]); the
 ///    activation owns no reference to release there.
@@ -174,7 +167,7 @@ fn inline_safety_gate(
     if entry_block_has_predecessor(callee) {
         return Some(InlineWhyNot::EntryHasPredecessor);
     }
-    if is_closure(callee) && !closures_at_proven_sites {
+    if callee.has_closure_parameter() && !closures_at_proven_sites {
         return Some(InlineWhyNot::Closure);
     }
     if releases_unowned_parameter(callee, |position| {
@@ -413,23 +406,4 @@ fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
         }
         Terminator::Return { .. } | Terminator::Unreachable => false,
     })
-}
-
-/// True if `callee` is a closure - i.e. its first parameter is the implicit
-/// captured-environment param the frontend prepends to every closure
-/// (`crate::MOLT_CLOSURE_PARAM_NAME` == `"__molt_closure__"`). This is the same
-/// predicate the WASM backend uses to recognize a closure and adjust its arity
-/// (`wasm.rs`, on `FunctionIR::params`); here it gates the inliner exclusion (see
-/// `is_inlineable`). Both reference the one shared const so the marker has a
-/// single source of truth.
-///
-/// `param_names` is populated on the production lift (`lower_from_simple.rs`),
-/// aligned 1:1 with the entry block's arguments, and reliably contains the
-/// marker for closures. (The `p{idx}` default from `TirFunction::new` is
-/// test-only and never collides with the marker.)
-pub(super) fn is_closure(callee: &TirFunction) -> bool {
-    callee
-        .param_names
-        .first()
-        .is_some_and(|p| p == crate::MOLT_CLOSURE_PARAM_NAME)
 }

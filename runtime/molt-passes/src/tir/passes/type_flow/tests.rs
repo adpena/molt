@@ -406,6 +406,72 @@ fn each_argument_family_gets_its_own_context() {
 }
 
 #[test]
+fn proven_closure_specializes_user_arguments_and_keeps_the_captured_callable() {
+    let mut closure = function("captured", 2);
+    closure.param_names[0] = crate::MOLT_CLOSURE_PARAM_NAME.into();
+    let entry = closure.entry_block;
+    let argument = closure.blocks[&entry].args[1].id;
+    let square = binary(&mut closure, entry, OpCode::Mul, argument, argument);
+    closure.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![square],
+    };
+    // Both calls have the same proven code and different live function objects.
+    // No object identity or captured cell contents may enter the clone key.
+    let mut caller = function("floats", 2);
+    let entry = caller.entry_block;
+    let owners = [
+        caller.blocks[&entry].args[0].id,
+        caller.blocks[&entry].args[1].id,
+    ];
+    let scalar = const_float(&mut caller, entry, 2.5);
+    let mut results = Vec::new();
+    for owner in owners {
+        let result = caller.fresh_value();
+        let mut call = TirOp::new(OpCode::Call, vec![owner, scalar], vec![result]);
+        call.origin = Some(molt_ir::OpKind::CallGuarded);
+        call.callee = Some(FunctionId(0));
+        call.set_proven_target(true);
+        push(&mut caller, entry, call);
+        observe(&mut caller, entry);
+        results.push(result);
+    }
+    let sum = binary(&mut caller, entry, OpCode::Add, results[0], results[1]);
+    caller.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![sum] };
+
+    // Demand for the user parameter must cross the closure call in a forwarding
+    // body too, even when the hidden environment is unused.
+    let mut forward = function("forward", 1);
+    let entry = forward.entry_block;
+    let input = forward.blocks[&entry].args[0].id;
+    let result = proven_call(&mut forward, entry, FunctionId(0), &[input]);
+    forward.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let mut module = TirModule::with_own_table("m", vec![closure, caller, forward]);
+    let body_index = module.body_index();
+    let sites: Vec<_> = module
+        .functions
+        .iter()
+        .map(|func| sites::sites_of(func, &body_index, &module))
+        .collect();
+    let relevant = relevance::solve(&module, &sites, &body_index, &[true; 3]);
+    assert_eq!(relevant[2], [true]);
+
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+    assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
+    let calls = calls(body(&module, "floats"));
+    assert_eq!(calls.len(), owners.len());
+    for (call, owner) in calls.iter().zip(owners) {
+        assert_eq!(call.callee, Some(id_of(&module, "captured__tf_df")));
+        assert_eq!(call.operands, [owner, scalar]);
+        assert_eq!(call.exact_result_proof(), Some(TirType::F64));
+    }
+    let clone = body(&module, "captured__tf_df");
+    assert!(clone.has_closure_parameter());
+    assert_eq!(clone.exact_param_types, [TirType::DynBox, TirType::F64]);
+}
+
+#[test]
 fn an_irrelevant_parameter_never_splits_a_context() {
     // def pick(x, y): return y + 1 ; x is never read.
     let mut pick = function("pick", 2);

@@ -91,8 +91,10 @@ pub(super) fn solve(
                         body_index[site.callee.index()].expect("a resolved site names a body");
                     let callee = &module.functions[callee_index];
                     if let Some(entry) = callee.blocks.get(&callee.entry_block) {
-                        for (formal, actual) in entry.args.iter().zip(&site.args) {
-                            graph.forward((site.callee, formal.id), (body, *actual));
+                        for (position, actual) in site.parameter_arguments() {
+                            if let Some(formal) = entry.args.get(position) {
+                                graph.forward((site.callee, formal.id), (body, actual));
+                            }
                         }
                     }
                 } else if !matches!(op.opcode, OpCode::IncRef | OpCode::DecRef) {

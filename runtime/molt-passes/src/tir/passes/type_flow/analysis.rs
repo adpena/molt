@@ -241,14 +241,16 @@ fn site_key(inputs: &Inputs<'_>, site: &Site, facts: &HashMap<ValueId, TirType>)
         return Some(Vec::new());
     }
     let relevant = &inputs.relevant[callee];
-    site.args
-        .iter()
-        .enumerate()
-        .map(|(position, arg)| {
-            if !relevant.get(position).copied().unwrap_or(true) {
-                return Some(ArgKind::Dyn);
-            }
-            ArgKind::of(facts.get(arg).unwrap_or(&TirType::DynBox))
-        })
-        .collect()
+    // Captured cells can change even when the executable target is unique.
+    let mut key = Vec::with_capacity(relevant.len());
+    key.resize(site.first_parameter(), ArgKind::Dyn);
+    for (position, arg) in site.parameter_arguments() {
+        let kind = if relevant[position] {
+            ArgKind::of(facts.get(&arg).unwrap_or(&TirType::DynBox))?
+        } else {
+            ArgKind::Dyn
+        };
+        key.push(kind);
+    }
+    Some(key)
 }

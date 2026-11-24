@@ -11,7 +11,6 @@ use crate::tir::values::{TirValue, ValueId};
 use super::activation::{Activations, Binding};
 use super::call_sites::{CallSite, call_site_has_arg_incref};
 use super::clone_body::clone_function_body_with_fresh_ids;
-use super::eligibility::is_closure;
 use crate::tir::clone_support::exception_label_of;
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
@@ -69,13 +68,12 @@ pub(super) fn splice_call_site(
         // which the inlined activation does not read, except a closure
         // callee's environment (below): only the arguments bind.
         let call = crate::tir::call_targets::static_call(op)?;
-        let guarded = op.origin == Some(molt_ir::OpKind::CallGuarded) && op.proven_target();
         (
             call.arguments.to_vec(),
             op.results.first().copied(),
             op.results.len() > 1,
             op.source_span,
-            guarded.then(|| op.operands[0]),
+            call.callable,
         )
     };
     if multi_result {
@@ -90,7 +88,7 @@ pub(super) fn splice_call_site(
     // refused here: its operands carry no environment, and binding the
     // environment parameter to an argument would miscompile
     // `__molt_closure__[i]`.
-    let closure_callable = if is_closure(callee) {
+    let closure_callable = if callee.has_closure_parameter() {
         Some(callable?)
     } else {
         None

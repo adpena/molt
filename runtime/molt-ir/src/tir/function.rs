@@ -257,6 +257,13 @@ impl TirFunction {
         })
     }
 
+    /// Whether physical parameter zero receives the function's captured tuple.
+    pub fn has_closure_parameter(&self) -> bool {
+        self.param_names
+            .first()
+            .is_some_and(|name| name == crate::MOLT_CLOSURE_PARAM_NAME)
+    }
+
     /// True for a coroutine/generator poll activation with saved-state dispatch.
     /// Resume edges belong to the CFG. Persistence belongs to explicit frame
     /// stores/loads; terminal DropInsertion exposes suspension as ordinary
