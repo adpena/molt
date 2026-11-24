@@ -23,6 +23,7 @@ from .schema import (
     _CHECKED_INT_LOOP_RULES,
     _CLASSIFIER_SETS,
     _COUNTED_LOOP_COMPARISON_ROLES,
+    _EXACT_COPY_RESULT_TYPES,
     _EXCEPTION_REGION_NESTING_ROLES,
     _FUZZ_TIR_ATTR_PAYLOAD_RULES,
     _FUZZ_TIR_OPCODE_ATTR_PAYLOAD_RULES,
@@ -943,7 +944,7 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "callback_free_copy_kinds requires unique registered spellings"
         )
-    exact_int = data.get("exact_int_result_copy_kinds")
+    exact_copy_results = data.get("exact_scalar_result_copy_kinds")
     nothrow = data.get("nothrow_copy_kinds")
     if (
         not isinstance(nothrow, list)
@@ -959,19 +960,16 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "nothrow_copy_kinds requires unique registered Copy-carrier spellings"
         )
-    if (
-        not isinstance(exact_int, list)
-        or any(
-            not isinstance(kind, str)
-            or kind not in registered
-            or kind in mapper_opcode_by_spelling
-            and mapper_opcode_by_spelling[kind] != "Copy"
-            for kind in exact_int
-        )
-        or len(set(exact_int)) != len(exact_int)
+    if not isinstance(exact_copy_results, dict) or any(
+        kind not in registered
+        or mapper_opcode_by_spelling.get(kind, "Copy") != "Copy"
+        or kind not in data["classifier_owned_value"]
+        or not isinstance(ty, str)
+        or ty not in _EXACT_COPY_RESULT_TYPES
+        for kind, ty in exact_copy_results.items()
     ):
         raise OpKindTableError(
-            "exact_int_result_copy_kinds requires unique registered Copy-carrier spellings"
+            "exact_scalar_result_copy_kinds requires registered owned Copy results and supported boxed scalar types"
         )
     binding_release = data.get("binding_release_copy_kinds")
     if (

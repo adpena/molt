@@ -253,13 +253,6 @@ impl<'a> ExactScalarPlan<'a> {
                         vec![proven; op.results.len()]
                     } else if let Some(source) = scalar_source {
                         vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
-                    } else if op.opcode == OpCode::Copy
-                        && op.origin.is_some_and(
-                            crate::tir::op_kinds_generated::copy_kind_has_exact_int_result_table,
-                        )
-                    {
-                        // An exact int of any magnitude: the carrier stays boxed.
-                        vec![TirType::BigInt; op.results.len()]
                     } else if let Some(class) = super::result_inference::exact_allocation_class(op)
                     {
                         // An allocation's result is exactly its class statement's
@@ -287,7 +280,12 @@ impl<'a> ExactScalarPlan<'a> {
                         // read or checked arithmetic may still produce an exact
                         // Boolean status. Never broadcast slot zero into siblings.
                         let ty = if valid_shape {
-                            opcode_exact_scalar_result_tir_type(op.opcode, index)
+                            let origin = if op.operands.len() == 1 && op.results.len() == 1 {
+                                op.origin
+                            } else {
+                                None
+                            };
+                            opcode_exact_scalar_result_tir_type(op.opcode, origin, index)
                                 .unwrap_or(inferred)
                         } else {
                             inferred

@@ -670,11 +670,10 @@ callback_free_copy_kinds = [
 # This is not purity: keep the Copy effect-free/consistent floor unchanged.
 nothrow_copy_kinds = ["binding_alias", "frame_home_cell", "frame_home_clear", "frame_home_private_cell", "line", "list_reverse_slice"]
 
-# Preserved primitives whose successful result is an exact `int` of any
-# magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
-# int on every supported target (PyNumber_Index). The exact scalar solver reads
-# this.
-exact_int_result_copy_kinds = ["operator_index"]
+# Successful scalar results of preserved boxed primitives. The conversion can
+# invoke Python, raise, or return the input object with its identity intact.
+# Keep the original boxed carrier even for an exact float.
+exact_scalar_result_copy_kinds = { operator_index = "BigInt", float_from_obj = "BoxedF64" }
 
 # Preserved primitives whose only Python callback is releasing the previous
 # binding of frame home `value` (a finalizer). Frame-location placement treats

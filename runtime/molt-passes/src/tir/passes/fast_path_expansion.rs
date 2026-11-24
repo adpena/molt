@@ -620,7 +620,8 @@ fn expansion_of(
     if let Some(value) = sqrt_call_operand(op) {
         let operand = num_operand(repr, value, false)?;
         if matches!(operand, NumOperand::RawFloat)
-            || (matches!(operand, NumOperand::Boxed) && exact.get(&value) == Some(&TirType::F64))
+            || (matches!(operand, NumOperand::Boxed)
+                && exact.get(&value).map(TirType::semantic_type) == Some(&TirType::F64))
         {
             return Some(Expansion::FloatSqrt { operand });
         }
@@ -674,7 +675,7 @@ fn expansion_of(
                 payload == Payload::Int
             }
             NumOperand::RawFloat => payload == Payload::Float,
-            NumOperand::Boxed => match exact.get(&op.operands[i]) {
+            NumOperand::Boxed => match exact.get(&op.operands[i]).map(TirType::semantic_type) {
                 Some(TirType::F64) => payload == Payload::Float,
                 Some(TirType::I64 | TirType::BigInt | TirType::Bool) => payload == Payload::Int,
                 // An exact str, bytes or None word is never a number: no arm
