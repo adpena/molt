@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.input_report import BuildOutputRole
 from molt.process_environment import NameRule, ProcessEnvironmentBuilder
 
 import hashlib
@@ -1135,7 +1136,7 @@ def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
         def observe(self, entry) -> None:
             pass
 
-        def build_output(self, selection: object) -> None:
+        def build_output(self, role: BuildOutputRole, selection: object) -> None:
             raise AssertionError("resource capture must not select a build output")
 
         def build_products(self, products: object) -> None:
