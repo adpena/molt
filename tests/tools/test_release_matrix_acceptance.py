@@ -3,6 +3,7 @@
 from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
 import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from tools.release_matrix_acceptance import (
     ReleaseMatrix,
     SHARD_SCHEMA,
     required_matrix,
-    shard_projection,
+    performance_shards,
     performance_matrix_problems,
     full_release_problems,
 )
@@ -46,6 +47,19 @@ def fixture_matrix():
 def winning_cell(benchmark="fixture_0.py"):
     return dict(
         benchmark=benchmark,
+        target="wasm",
+        backend="wasm",
+        execution_host={
+            "kind": "node",
+            "executable": "C:/node/node.exe",
+            "version": "24.1.0",
+            "identity": {
+                "entrypoint": "node.exe",
+                "content_filename": "node.exe",
+                "size": 1024,
+                "sha256": "e" * 64,
+            },
+        },
         workload=synthetic_workload(benchmark),
         build_ok=True,
         molt_ok=True,
@@ -75,18 +89,20 @@ def winning_cell(benchmark="fixture_0.py"):
     )
 
 
-def fixture_receipts(matrix, count=3):
+def fixture_receipts(matrix: ReleaseMatrix) -> tuple[list[dict], dict[str, str]]:
     toolchains = {cell["id"]: "c" * 64 for cell in matrix.performance_cells}
     shards = []
-    for index in range(count):
+    matrix_sha256 = matrix.identity
+    coordinates = {(c["rust_target"], c["python"]) for c in matrix.performance_cells}
+    for target, python in sorted(coordinates):
         shards.append(
             dict(
                 schema=SHARD_SCHEMA,
-                matrix_sha256=matrix.identity,
+                matrix_sha256=matrix_sha256,
                 source_sha=matrix.source_sha,
                 authority_sha256=matrix.authority_sha256,
-                index=index,
-                count=count,
+                rust_target=target,
+                python=python,
                 cells=[
                     dict(
                         coordinate=cell,
@@ -103,7 +119,8 @@ def fixture_receipts(matrix, count=3):
                         },
                         measurement=winning_cell(cell["benchmark"]),
                     )
-                    for cell in shard_projection(matrix, index=index, count=count)
+                    for cell in matrix.performance_cells
+                    if cell["rust_target"] == target and cell["python"] == python
                 ],
             )
         )
@@ -145,20 +162,47 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
     )
 
 
-def test_parallel_projection_is_disjoint_complete_and_order_independent():
-    matrix = fixture_matrix()
+def test_parallel_projection_can_run_each_shard_on_one_installed_host_and_python() -> (
+    None
+):
+    original = fixture_matrix()
+    windows, linux = "aarch64-pc-windows-msvc", "aarch64-unknown-linux-gnu"
+    cells = tuple(
+        {
+            **cell,
+            "rust_target": linux if index % 2 else windows,
+            "platform": "linux" if index % 2 else "windows",
+            "python": "3.15" if index >= 3 else "3.14",
+            "reference_python": "3.15.2" if index >= 3 else "3.14.8",
+        }
+        for index, cell in enumerate(original.performance_cells)
+    )
+    matrix = replace(original, performance_cells=cells)
+    assert {
+        (shard.rust_target, shard.python): [c["id"] for c in rows]
+        for shard, rows in performance_shards(matrix).items()
+    } == {
+        (windows, "3.14"): [cells[i]["id"] for i in (0, 2)],
+        (linux, "3.14"): [cells[1]["id"]],
+        (windows, "3.15"): [cells[4]["id"]],
+        (linux, "3.15"): [cells[i]["id"] for i in (3, 5)],
+    }
     shards, tools = fixture_receipts(matrix)
-    ids = [
-        cell["id"]
-        for n in range(3)
-        for cell in shard_projection(matrix, index=n, count=3)
-    ]
-    assert len(ids) == len(set(ids)) == len(matrix.performance_cells)
-    assert (
-        performance_matrix_problems(
-            matrix, list(reversed(shards)), toolchain_identities=tools
+    assert not performance_matrix_problems(
+        matrix, list(reversed(shards)), toolchain_identities=tools
+    )
+    assert "missing 1 required host/Python shards" in performance_matrix_problems(
+        matrix, shards[1:], toolchain_identities=tools
+    )
+    shards[0]["cells"][0], shards[1]["cells"][0] = (
+        shards[1]["cells"][0],
+        shards[0]["cells"][0],
+    )
+    assert any(
+        "shard cells do not equal deterministic required projection" in problem
+        for problem in performance_matrix_problems(
+            matrix, shards, toolchain_identities=tools
         )
-        == []
     )
 
 
@@ -168,8 +212,9 @@ def test_parallel_projection_is_disjoint_complete_and_order_independent():
         ("source_sha", "d" * 40),
         ("authority_sha256", "d" * 64),
         ("matrix_sha256", "d" * 64),
-        ("index", True),
-        ("count", 0),
+        ("python", True),
+        ("rust_target", "aarch64-apple-darwin"),
+        ("schema", "molt.release-performance-shard.v2"),
     ],
 )
 def test_wrong_source_authority_or_shard_coordinate_fails(field, value):
@@ -193,11 +238,15 @@ def test_wrong_source_authority_or_shard_coordinate_fails(field, value):
         "slower",
         "nan",
         "parity",
+        "wrong measured backend",
+        "wrong measured target",
+        "missing measured backend and host",
+        "missing Wasm engine",
     ],
 )
 def test_each_missing_or_invalid_individual_measurement_blocks(defect):
     matrix = fixture_matrix()
-    shards, tools = fixture_receipts(matrix, count=1)
+    shards, tools = fixture_receipts(matrix)
     row = shards[0]["cells"][0]
     if defect == "missing":
         shards[0]["cells"].pop()
@@ -221,6 +270,15 @@ def test_each_missing_or_invalid_individual_measurement_blocks(defect):
         row["measurement"]["repeat_ci_lo"] = float("nan")
     elif defect == "parity":
         row["measurement"]["output_parity"]["ok"] = False
+    elif defect == "wrong measured backend":
+        row["measurement"]["backend"] = "native"
+    elif defect == "wrong measured target":
+        row["measurement"]["target"] = "native"
+    elif defect == "missing measured backend and host":
+        del row["measurement"]["backend"]
+        del row["measurement"]["execution_host"]
+    elif defect == "missing Wasm engine":
+        del row["measurement"]["execution_host"]
     assert performance_matrix_problems(matrix, shards, toolchain_identities=tools)
 
 
@@ -256,13 +314,13 @@ def test_full_join_requires_semantics_and_retains_other_acceptance_blockers(tmp_
     )
 
 
-def test_mixed_or_duplicate_partitions_cannot_be_joined_as_one_run():
+def test_duplicate_or_undeclared_partitions_cannot_be_joined_as_one_run() -> None:
     matrix = fixture_matrix()
     shards, tools = fixture_receipts(matrix)
     assert performance_matrix_problems(
         matrix, [*shards, copy.deepcopy(shards[0])], toolchain_identities=tools
     )
-    shards[-1]["count"] = 2
+    shards[-1]["python"] = "3.15"
     assert performance_matrix_problems(matrix, shards, toolchain_identities=tools)
 
 

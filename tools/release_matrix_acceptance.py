@@ -29,7 +29,7 @@ from tools import bench_suites
 
 from tools.git_identity import immutable_git_environment
 
-SHARD_SCHEMA = "molt.release-performance-shard.v2"
+SHARD_SCHEMA = "molt.release-performance-shard.v3"
 _ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -219,23 +219,21 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
     )
 
 
-def shard_projection(
-    matrix: ReleaseMatrix, *, index: int, count: int
-) -> tuple[dict[str, str], ...]:
-    """Stable disjoint sharding, independent of execution order or wall clock."""
-    if (
-        isinstance(count, bool)
-        or isinstance(index, bool)
-        or not isinstance(count, int)
-        or not isinstance(index, int)
-        or not 0 <= index < count <= max(1, len(matrix.performance_cells))
-    ):
-        raise ValueError("invalid release matrix shard coordinate")
-    return tuple(
-        cell
-        for cell in matrix.performance_cells
-        if int(hashlib.sha256(cell["id"].encode()).hexdigest(), 16) % count == index
-    )
+@dataclass(frozen=True, slots=True)
+class PerformanceShard:
+    rust_target: str
+    python: str
+
+
+def performance_shards(
+    matrix: ReleaseMatrix,
+) -> dict[PerformanceShard, list[dict[str, str]]]:
+    """Group a candidate's cells by installed host package and Python target."""
+    groups: dict[PerformanceShard, list[dict[str, str]]] = {}
+    for cell in matrix.performance_cells:
+        shard = PerformanceShard(cell["rust_target"], cell["python"])
+        groups.setdefault(shard, []).append(cell)
+    return groups
 
 
 def performance_matrix_problems(
@@ -255,9 +253,13 @@ def performance_matrix_problems(
     problems = []
     workload_by_benchmark: dict[str, object] = {}
     expected = {cell["id"]: cell for cell in matrix.performance_cells}
-    observed = set()
-    shard_coordinates = set()
-    partition_count = None
+    partitions = {
+        shard: {cell["id"] for cell in cells}
+        for shard, cells in performance_shards(matrix).items()
+    }
+    matrix_identity = matrix.identity if shards else None
+    observed: set[str] = set()
+    shard_coordinates: set[PerformanceShard] = set()
     for offset, shard in enumerate(shards):
         label = f"shard[{offset}]"
         keys = {
@@ -265,8 +267,8 @@ def performance_matrix_problems(
             "matrix_sha256",
             "source_sha",
             "authority_sha256",
-            "index",
-            "count",
+            "rust_target",
+            "python",
             "cells",
         }
         if not isinstance(shard, Mapping) or set(shard) != keys:
@@ -274,29 +276,24 @@ def performance_matrix_problems(
             continue
         if (
             shard["schema"] != SHARD_SCHEMA
-            or shard["matrix_sha256"] != matrix.identity
+            or shard["matrix_sha256"] != matrix_identity
             or shard["source_sha"] != matrix.source_sha
             or shard["authority_sha256"] != matrix.authority_sha256
         ):
             problems.append(f"{label}: wrong schema/source/authority/matrix identity")
             continue
-        try:
-            projected = {
-                c["id"]
-                for c in shard_projection(
-                    matrix, index=shard["index"], count=shard["count"]
-                )
-            }
-        except ValueError as exc:
-            problems.append(f"{label}: {exc}")
+        rust_target, python = shard["rust_target"], shard["python"]
+        if not isinstance(rust_target, str) or not isinstance(python, str):
+            problems.append(f"{label}: invalid host or Python shard coordinate")
             continue
-        if partition_count is None:
-            partition_count = shard["count"]
-        elif shard["count"] != partition_count:
-            problems.append(f"{label}: mixed partition counts are not one parallel run")
-        if shard["index"] in shard_coordinates:
-            problems.append(f"{label}: duplicate shard coordinate")
-        shard_coordinates.add(shard["index"])
+        shard_coordinate = PerformanceShard(rust_target, python)
+        projected = partitions.get(shard_coordinate)
+        if projected is None:
+            problems.append(f"{label}: undeclared host/Python shard coordinate")
+            continue
+        if shard_coordinate in shard_coordinates:
+            problems.append(f"{label}: duplicate host/Python shard coordinate")
+        shard_coordinates.add(shard_coordinate)
         rows = shard["cells"]
         if not isinstance(rows, list):
             problems.append(f"{label}: cells must be an array")
@@ -350,6 +347,13 @@ def performance_matrix_problems(
             if not isinstance(measurement, Mapping):
                 problems.append(f"{identity}: measured canonical cell required")
             else:
+                if (
+                    measurement.get("backend") != profile["backend"]
+                    or measurement.get("target") != profile["target"]
+                ):
+                    problems.append(
+                        f"{identity}: measured backend or target differs from required cell"
+                    )
                 workload = measurement.get("workload")
                 if (
                     not isinstance(workload, Mapping)
@@ -406,8 +410,9 @@ def performance_matrix_problems(
             problems.append(
                 f"{label}: shard cells do not equal deterministic required projection"
             )
-    if partition_count is not None and shard_coordinates != set(range(partition_count)):
-        problems.append("missing required parallel shard coordinates")
+    missing_shards = partitions.keys() - shard_coordinates
+    if missing_shards:
+        problems.append(f"missing {len(missing_shards)} required host/Python shards")
     missing = set(expected) - observed
     if missing:
         problems.append(f"missing {len(missing)} required performance cells")
