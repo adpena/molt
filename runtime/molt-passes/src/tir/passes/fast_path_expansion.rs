@@ -1067,11 +1067,7 @@ fn finish(
             terminator,
         },
     );
-    for cond_block in func.loop_cond_blocks.values_mut() {
-        if *cond_block == block {
-            *cond_block = join;
-        }
-    }
+    func.move_loop_terminator(block, join);
 }
 
 /// Supply the lexical environment that a raw direct call leaves implicit.
@@ -1270,11 +1266,7 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
         entered.extend(rest);
         func.blocks
             .insert(enter, new_block(enter, entered, terminator));
-        for cond in func.loop_cond_blocks.values_mut() {
-            if *cond == block {
-                *cond = enter;
-            }
-        }
+        func.move_loop_terminator(block, enter);
     }
     changed
 }

@@ -927,11 +927,7 @@ fn version(
                     terminator: rest_terminator,
                 },
             );
-            for cond_block in func.loop_cond_blocks.values_mut() {
-                if *cond_block == fast {
-                    *cond_block = fast_rest;
-                }
-            }
+            func.move_loop_terminator(fast, fast_rest);
 
             let slow_block = func.blocks.get_mut(&slow).expect("cloned block exists");
             let slow_ops = slow_block.ops.split_off(index + 1);

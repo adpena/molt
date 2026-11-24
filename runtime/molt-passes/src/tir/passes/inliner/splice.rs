@@ -410,6 +410,7 @@ pub(super) fn splice_call_site(
         },
     );
 
+    caller.move_loop_terminator(block_id, cont_block_id);
     Some(cont_block_id)
 }
 

@@ -473,11 +473,7 @@ fn apply(func: &mut TirFunction, rewrite: Rewrite) {
         },
     );
     // A loop whose break test ended the store's block finds it in the join.
-    for cond_block in func.loop_cond_blocks.values_mut() {
-        if *cond_block == tail {
-            *cond_block = join;
-        }
-    }
+    func.move_loop_terminator(tail, join);
 
     let mut constant = |value: i64| {
         let result = func.fresh_value();
@@ -536,6 +532,7 @@ fn apply(func: &mut TirFunction, rewrite: Rewrite) {
             terminator: slow_terminator,
         },
     );
+    func.move_loop_terminator(head, slow);
 }
 
 #[cfg(test)]

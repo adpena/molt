@@ -119,6 +119,7 @@ pub(super) fn prepare_poll(poll: &TirFunction, split_polls: bool) -> TirFunction
                 terminator,
             },
         );
+        poll.move_loop_terminator(bid, current);
     }
     poll
 }

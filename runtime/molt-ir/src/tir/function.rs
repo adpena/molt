@@ -228,6 +228,25 @@ impl TirFunction {
         id
     }
 
+    /// Move the structural loop boundaries that describe a block's original
+    /// terminator to the fresh block that now executes it. Loop headers and
+    /// incoming labels still name the entry side of the split.
+    pub fn move_loop_terminator(&mut self, from: BlockId, to: BlockId) {
+        for boundary in self
+            .loop_cond_blocks
+            .values_mut()
+            .chain(self.loop_pairs.values_mut())
+        {
+            if *boundary == from {
+                *boundary = to;
+            }
+        }
+        if self.loop_roles.get(&from) == Some(&LoopRole::LoopEnd) {
+            self.loop_roles.remove(&from);
+            self.loop_roles.insert(to, LoopRole::LoopEnd);
+        }
+    }
+
     /// True iff the function contains real exception **handler** regions —
     /// `TryStart`/`TryEnd` (a `try`/`except`) or `StateBlockStart`/
     /// `StateBlockEnd` (a generator/async state region).
