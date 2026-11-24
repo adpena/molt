@@ -464,3 +464,122 @@ fn return_join_treats_the_int_family_as_int() {
         TirType::Bool
     );
 }
+
+#[test]
+fn relevance_propagates_through_forwarded_values_and_reversed_call_order() {
+    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::values::TirValue;
+
+    // Every earlier row forwards its parameters, reversed, to the next row.
+    // The leaf observes only y. Refcount-only uses and unseeded recursive
+    // edges must not manufacture demand for the other argument.
+    let chain = 80;
+    let mut functions = Vec::new();
+    for row in 0..chain {
+        let mut func = function(&format!("f{row}"), 2);
+        let entry = func.entry_block;
+        let [x, y] = [
+            func.blocks[&entry].args[0].id,
+            func.blocks[&entry].args[1].id,
+        ];
+        if row + 1 == chain {
+            func.blocks.get_mut(&entry).unwrap().terminator =
+                Terminator::Return { values: vec![y] };
+        } else {
+            let next = func.fresh_block();
+            let a = func.fresh_value();
+            let b = func.fresh_value();
+            func.blocks.insert(
+                next,
+                TirBlock {
+                    id: next,
+                    args: vec![
+                        TirValue {
+                            id: a,
+                            ty: TirType::DynBox,
+                        },
+                        TirValue {
+                            id: b,
+                            ty: TirType::DynBox,
+                        },
+                    ],
+                    ops: Vec::new(),
+                    terminator: Terminator::Unreachable,
+                },
+            );
+            func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+                target: next,
+                args: vec![x, y],
+            };
+            let copy = func.fresh_value();
+            push(
+                &mut func,
+                next,
+                TirOp::new(OpCode::Copy, vec![a], vec![copy]),
+            );
+            push(&mut func, next, TirOp::new(OpCode::IncRef, vec![a], vec![]));
+            let result = proven_call(&mut func, next, FunctionId::from_index(row + 1), &[b, copy]);
+            func.blocks.get_mut(&next).unwrap().terminator = Terminator::Return {
+                values: vec![result],
+            };
+        }
+        functions.push(func);
+    }
+    for row in chain..chain + 2 {
+        let mut func = function(&format!("cycle{row}"), 1);
+        let entry = func.entry_block;
+        let x = func.blocks[&entry].args[0].id;
+        let other = if row == chain { chain + 1 } else { chain };
+        let result = proven_call(&mut func, entry, FunctionId::from_index(other), &[x]);
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+        functions.push(func);
+    }
+    let module = TirModule::with_own_table("m", functions);
+    let body_index = module.body_index();
+    let sites: Vec<_> = module
+        .functions
+        .iter()
+        .map(|func| sites::sites_of(func, &body_index, &module))
+        .collect();
+    let relevant = relevance::solve(&module, &sites, &body_index, &vec![true; chain + 2]);
+
+    for (row, actual) in relevant[..chain].iter().enumerate() {
+        let x = (chain - 1 - row) % 2 != 0;
+        assert_eq!(actual, &[x, !x], "row {row}");
+    }
+    assert_eq!(relevant[chain..], [vec![false], vec![false]]);
+}
+
+#[test]
+fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
+    let mut leaf = function("leaf", 66);
+    let entry = leaf.entry_block;
+    let used = leaf.blocks[&entry].args[64].id;
+    leaf.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![used] };
+    let mut caller = function("entry", 66);
+    let entry = caller.entry_block;
+    let args: Vec<_> = caller.blocks[&entry]
+        .args
+        .iter()
+        .map(|arg| arg.id)
+        .collect();
+    let result = proven_call(&mut caller, entry, FunctionId::from_index(1), &args);
+    caller.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let module = TirModule::with_own_table("m", vec![caller, leaf]);
+    let body_index = module.body_index();
+    let sites: Vec<_> = module
+        .functions
+        .iter()
+        .map(|func| sites::sites_of(func, &body_index, &module))
+        .collect();
+    let mut expected = vec![false; 66];
+    expected[64] = true;
+    assert_eq!(
+        relevance::solve(&module, &sites, &body_index, &[true, true]),
+        vec![expected.clone(), expected]
+    );
+}

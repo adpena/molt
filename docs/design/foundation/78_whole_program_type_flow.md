@@ -149,6 +149,14 @@ call that dispatches on it, including through a callee where the parameter is re
 backward pass over the body (and the callees' relevance) computes the set. A parameter that is
 only stored or passed along opaquely never splits a context.
 
+Parameter relevance is a backward demand walk over scoped SSA values. Ordinary
+uses seed the walk. The shared scalar-forwarding predicate, CFG block arguments,
+and exact positional call edges identify predecessor values. A forwarding cycle
+without an observing use contributes no demand. Exact parameters of any supported
+arity participate by identity. The graph shares the resolved-call endpoints with
+context analysis and visits each recorded dependency at most once. It uses one
+edge arena and no per-round walks over the module.
+
 After optimization, contexts of one function whose bodies are identical merge into one clone
 (compared by body digest). The number of clones is the number of reachable contexts that
 compile differently.

@@ -60,6 +60,7 @@ pub(super) struct Inputs<'a> {
     pub(super) body_index: &'a [Option<usize>],
     pub(super) sites: &'a [Vec<Site>],
     pub(super) relevant: &'a [Vec<bool>],
+    pub(super) participates: &'a [bool],
     /// Whether a body may have contexts beyond its generic one.
     pub(super) specializable: &'a [bool],
 }
@@ -80,21 +81,8 @@ impl Analysis {
             index: HashMap::default(),
             readers: Vec::new(),
         };
-        // A body without any resolved edge can still run through an unseen
-        // caller. Its generic code already exists, and this pass can neither
-        // change a call in it nor use its return type at another body.
-        let mut participates = vec![false; inputs.sites.len()];
-        for (caller, sites) in inputs.sites.iter().enumerate() {
-            participates[caller] |= !sites.is_empty();
-            for site in sites {
-                let callee =
-                    inputs.body_index[site.callee.index()].expect("a resolved site names a body");
-                participates[callee] = true;
-            }
-        }
-
         let mut queue = VecDeque::new();
-        for (body, participates) in participates.into_iter().enumerate() {
+        for (body, &participates) in inputs.participates.iter().enumerate() {
             if participates {
                 let id = analysis.intern(inputs, body, Vec::new());
                 queue.push_back(id);

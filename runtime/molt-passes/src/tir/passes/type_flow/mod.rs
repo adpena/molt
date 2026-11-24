@@ -106,12 +106,23 @@ pub fn run(
         .map(|index| sites::specializable(module, index, non_inlinable, final_tir))
         .collect();
     let specializable: Vec<bool> = refusals.iter().map(Result::is_ok).collect();
-    let relevant = relevance::solve(module, &sites, &body_index);
+    // An isolated body can still run through an unseen caller. Its generic
+    // code remains available without computing facts it cannot communicate.
+    let mut participates = vec![false; sites.len()];
+    for (caller, calls) in sites.iter().enumerate() {
+        participates[caller] |= !calls.is_empty();
+        for site in calls {
+            let callee = body_index[site.callee.index()].expect("a resolved site names a body");
+            participates[callee] = true;
+        }
+    }
+    let relevant = relevance::solve(module, &sites, &body_index, &participates);
     let inputs = Inputs {
         module,
         body_index: &body_index,
         sites: &sites,
         relevant: &relevant,
+        participates: &participates,
         specializable: &specializable,
     };
     let analysis = Analysis::run(&inputs);

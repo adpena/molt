@@ -1,139 +1,139 @@
-//! Relevance (design 78, section 3.4): a parameter splits a context only when
-//! its type reaches an operation whose lowering depends on it.
+//! Demand on a parameter's exact type (design 78, section 3.4).
 //!
-//! A parameter's value travels through forwarding copies and block arguments.
-//! A use by any other operation, a branch condition, a switch value or a
-//! return makes it relevant; a reference-count operation does not, and an
-//! argument of a resolved call is relevant exactly when the callee's
-//! parameter is. The module solves the callee dependence to a fixpoint from
-//! "nothing relevant", so a parameter that is only passed along a recursive
-//! cycle stays irrelevant.
+//! Ordinary uses seed demand. Value forwarding, block arguments and resolved
+//! calls carry it backward. Refcount operations alone never seed demand.
 
+use std::num::NonZeroUsize;
+
+use molt_ir::FunctionId;
 use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::TirModule;
 use crate::tir::ops::OpCode;
+use crate::tir::passes::value_identity::scalar_value_source;
 use crate::tir::values::ValueId;
 
 use super::sites::Site;
+
+type ScopedValue = (FunctionId, ValueId);
+
+/// An adjacency list stored in one arena, without a heap object per value.
+#[derive(Default)]
+struct DemandGraph {
+    heads: HashMap<ScopedValue, Option<NonZeroUsize>>,
+    edges: Vec<DemandEdge>,
+}
+
+struct DemandEdge {
+    source: ScopedValue,
+    next: Option<NonZeroUsize>,
+}
+
+impl DemandGraph {
+    fn forward(&mut self, value: ScopedValue, source: ScopedValue) {
+        let head = self.heads.entry(value).or_default();
+        self.edges.push(DemandEdge {
+            source,
+            next: *head,
+        });
+        *head = NonZeroUsize::new(self.edges.len());
+    }
+
+    fn propagate(&mut self, pending: &mut Vec<ScopedValue>) {
+        while let Some(value) = pending.pop() {
+            let mut next = self.heads.remove(&value).flatten();
+            while let Some(edge_id) = next {
+                let edge = &self.edges[edge_id.get() - 1];
+                pending.push(edge.source);
+                next = edge.next;
+            }
+        }
+    }
+}
 
 /// Per body (module index), per parameter: whether its type matters.
 pub(super) fn solve(
     module: &TirModule,
     sites: &[Vec<Site>],
     body_index: &[Option<usize>],
+    participates: &[bool],
 ) -> Vec<Vec<bool>> {
-    let origins: Vec<HashMap<ValueId, u64>> =
-        module.functions.iter().map(parameter_origins).collect();
-    let mut relevant: Vec<Vec<bool>> = module
+    let mut graph = DemandGraph::default();
+    let mut pending = Vec::new();
+    for (((&body, func), calls), &participates) in module
+        .ids
+        .iter()
+        .zip(&module.functions)
+        .zip(sites)
+        .zip(participates)
+    {
+        if !participates {
+            continue;
+        }
+        // Keep even source-free parameters in the graph so removal below
+        // records demand for them without a second value-sized table.
+        if let Some(entry) = func.blocks.get(&func.entry_block) {
+            for arg in entry.args.iter().take(func.param_names.len()) {
+                graph.heads.entry((body, arg.id)).or_default();
+            }
+        }
+        for (&block_id, block) in &func.blocks {
+            for (index, op) in block.ops.iter().enumerate() {
+                if let Some(source) = scalar_value_source(op) {
+                    for &result in &op.results {
+                        graph.forward((body, result), (body, source));
+                    }
+                } else if op.opcode == OpCode::Call
+                    && let Ok(call) = calls.binary_search_by_key(&(block_id, index), Site::position)
+                {
+                    let site = &calls[call];
+                    let callee_index =
+                        body_index[site.callee.index()].expect("a resolved site names a body");
+                    let callee = &module.functions[callee_index];
+                    if let Some(entry) = callee.blocks.get(&callee.entry_block) {
+                        for (formal, actual) in entry.args.iter().zip(&site.args) {
+                            graph.forward((site.callee, formal.id), (body, *actual));
+                        }
+                    }
+                } else if !matches!(op.opcode, OpCode::IncRef | OpCode::DecRef) {
+                    pending.extend(op.operands.iter().map(|&value| (body, value)));
+                }
+            }
+            block
+                .terminator
+                .for_each_direct_value(|value| pending.push((body, value)));
+            block.terminator.for_each_edge(|target, args| {
+                if let Some(successor) = func.blocks.get(&target) {
+                    for (actual, formal) in args.iter().zip(&successor.args) {
+                        graph.forward((body, formal.id), (body, *actual));
+                    }
+                }
+            });
+        }
+    }
+
+    // Traverse each requested value once, even when recursion or a loop
+    // forwards the value back to itself. A cycle alone creates no demand.
+    graph.propagate(&mut pending);
+
+    module
         .functions
         .iter()
-        .map(|func| vec![false; func.param_names.len()])
-        .collect();
-    loop {
-        let mut changed = false;
-        for (index, func) in module.functions.iter().enumerate() {
-            let mask = direct_uses(func, &origins[index], &sites[index], |site, position| {
-                body_index[site.callee.index()]
-                    .is_some_and(|callee| relevant[callee].get(position).copied().unwrap_or(true))
-            });
-            for (param, flag) in relevant[index].iter_mut().enumerate() {
-                // A parameter beyond the mask's width is conservatively relevant.
-                let used = param >= 64 || mask & (1 << param) != 0;
-                if used && !*flag {
-                    *flag = true;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return relevant;
-        }
-    }
-}
-
-/// The parameters (as a bit mask) each value of `func` forwards unchanged.
-fn parameter_origins(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, u64> {
-    let mut origins: HashMap<ValueId, u64> = HashMap::default();
-    if let Some(entry) = func.blocks.get(&func.entry_block) {
-        for (param, arg) in entry.args.iter().enumerate().take(64) {
-            origins.insert(arg.id, 1 << param);
-        }
-    }
-    loop {
-        let mut changed = false;
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                let Some(source) = crate::tir::passes::value_identity::scalar_value_source(op)
-                else {
-                    continue;
-                };
-                let Some(&mask) = origins.get(&source) else {
-                    continue;
-                };
-                for &result in &op.results {
-                    let slot = origins.entry(result).or_insert(0);
-                    if *slot | mask != *slot {
-                        *slot |= mask;
-                        changed = true;
-                    }
-                }
-            }
-            block.terminator.for_each_edge(|target, args| {
-                let Some(target_block) = func.blocks.get(&target) else {
-                    return;
-                };
-                for (value, param) in args.iter().zip(&target_block.args) {
-                    let Some(&mask) = origins.get(value) else {
-                        continue;
-                    };
-                    let slot = origins.entry(param.id).or_insert(0);
-                    if *slot | mask != *slot {
-                        *slot |= mask;
-                        changed = true;
-                    }
-                }
-            });
-        }
-        if !changed {
-            return origins;
-        }
-    }
-}
-
-/// The parameters of `func` some use makes relevant, given which callee
-/// parameters are (`callee_relevant(site, position)`).
-fn direct_uses(
-    func: &crate::tir::function::TirFunction,
-    origins: &HashMap<ValueId, u64>,
-    sites: &[Site],
-    callee_relevant: impl Fn(&Site, usize) -> bool,
-) -> u64 {
-    let site_at: HashMap<_, &Site> = sites.iter().map(|site| (site.position(), site)).collect();
-    let mut mask = 0u64;
-    let origin = |value: &ValueId| origins.get(value).copied().unwrap_or(0);
-    for (&block_id, block) in &func.blocks {
-        for (index, op) in block.ops.iter().enumerate() {
-            if crate::tir::passes::value_identity::scalar_value_source(op).is_some()
-                || matches!(op.opcode, OpCode::IncRef | OpCode::DecRef)
-            {
-                continue;
-            }
-            if let Some(site) = site_at.get(&(block_id, index)) {
-                for (position, arg) in site.args.iter().enumerate() {
-                    if callee_relevant(site, position) {
-                        mask |= origin(arg);
-                    }
-                }
-                continue;
-            }
-            for operand in &op.operands {
-                mask |= origin(operand);
-            }
-        }
-        block
-            .terminator
-            .for_each_direct_value(|value| mask |= origin(&value));
-    }
-    mask
+        .zip(module.ids.iter().copied())
+        .zip(participates)
+        .map(|((func, body), &participates)| {
+            let entry_args = func
+                .blocks
+                .get(&func.entry_block)
+                .map(|entry| entry.args.as_slice());
+            (0..func.param_names.len())
+                .map(|position| {
+                    participates
+                        && entry_args
+                            .and_then(|args| args.get(position))
+                            .is_some_and(|arg| !graph.heads.contains_key(&(body, arg.id)))
+                })
+                .collect()
+        })
+        .collect()
 }
