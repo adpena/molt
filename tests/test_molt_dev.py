@@ -399,6 +399,9 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
         "cancelled",
         "cancelled-partial",
         "cas-race",
+        "forward-publication",
+        "rewritten-upstream",
+        "upstream-ref-race",
         "bootstrap",
         "deferred",
         "invalid-policy",
@@ -503,6 +506,24 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             raise GateCancellation(CancelReason.PENDING_LANDING)
         if outcome == "cas-race":
             _git(repo, "update-ref", queue.LAST_GREEN_REF, head, base)
+        if outcome in {"forward-publication", "upstream-ref-race"}:
+            successor = _git(
+                repo, "commit-tree", f"{head}^{{tree}}", "-p", head, "-m", "new tip"
+            ).stdout.strip()
+            _git(repo, "update-ref", "refs/remotes/origin/main", successor, head)
+            if outcome == "upstream-ref-race":
+                is_ancestor = git.is_ancestor
+
+                def rewrite_after_ancestry(old: str, new: str) -> bool:
+                    result = is_ancestor(old, new)
+                    _git(
+                        repo, "update-ref", "refs/remotes/origin/main", base, successor
+                    )
+                    return result
+
+                monkeypatch.setattr(git, "is_ancestor", rewrite_after_ancestry)
+        if outcome == "rewritten-upstream":
+            _git(repo, "update-ref", "refs/remotes/origin/main", base, head)
         return (
             tuple(
                 json.loads(
@@ -530,15 +551,16 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         if outcome
         in {
             "cas-race",
+            "upstream-ref-race",
             "runner-fault",
             "unresolved-cancellation",
             "unclean-gate-failure",
             "memory-pressure",
         }
         else "cancelled"
-        if outcome.startswith("cancelled")
+        if outcome.startswith("cancelled") or outcome == "rewritten-upstream"
         else "green"
-        if outcome in {"bootstrap", "deferred"}
+        if outcome in {"bootstrap", "deferred", "forward-publication"}
         else outcome
     )
     assert record["status"] == state.value == expected
@@ -556,8 +578,15 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
     assert git.head_sha() == head, "postsubmit never reverts main on its own"
     assert queue.last_green(git) == (
-        head if outcome in {"green", "cas-race", "bootstrap", "deferred"} else base
+        head
+        if outcome
+        in {"green", "cas-race", "bootstrap", "deferred", "forward-publication"}
+        else base
     )
+    if outcome == "forward-publication":
+        successor = git.rev_parse("refs/remotes/origin/main")
+        assert successor != head and git.is_ancestor(head, successor)
+        assert queue.last_green(git) == head
     if outcome == "red":
         assert record["failing_tests"] == [
             "tests/test_value.py::TestValue::test_value[param]"
@@ -579,7 +608,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         )
         assert len(queue.postsubmit_results(paths)) == 2
         assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
-    elif outcome == "cas-race":
+    elif outcome in {"cas-race", "upstream-ref-race"}:
         assert "update-ref" in record["error"]
     if outcome == "deferred":
         assert record["deferred"] == [
@@ -813,6 +842,7 @@ def test_queue_repins_after_publication_and_prioritizes_landing_over_postsubmit(
         return False
 
     def postsubmit(args, git, selected):
+        nonlocal published
         assert not requests, "landing requests must drain before postsubmit"
         assert args.pinned_controller == f"main-{published}", (
             "old driver qualified new main"
@@ -821,6 +851,14 @@ def test_queue_repins_after_publication_and_prioritizes_landing_over_postsubmit(
         if published == 1:
             requests.append("next")
             return queue.PostsubmitStatus.CANCELLED
+        head = git.rev_parse("refs/remotes/origin/main")
+        _git(tmp_path, "update-ref", queue.LAST_GREEN_REF, head)
+        if published == 2:
+            published += 1
+            next_head = _commit_file(
+                tmp_path, "fast.py", "fast change\n", "fast landing"
+            )
+            _git(tmp_path, "update-ref", "refs/remotes/origin/main", next_head, head)
         return queue.PostsubmitStatus.GREEN
 
     def repin(args, argv):
@@ -847,6 +885,8 @@ def test_queue_repins_after_publication_and_prioritizes_landing_over_postsubmit(
         "push-2",
         "repin-2",
         "postsubmit-2",
+        "repin-3",
+        "postsubmit-3",
     ]
 
 

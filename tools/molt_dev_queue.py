@@ -336,9 +336,10 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
     from tools.molt_dev_gates import GateCancellation, recorded_flaky_tests
 
     drv = _driver()
+    upstream_ref = f"refs/remotes/{args.remote}/{args.branch}"
     git.fetch(args.remote, args.branch)
     head = drv.require_git_object_id(
-        git.rev_parse(f"{args.remote}/{args.branch}"), label="postsubmit main"
+        git.rev_parse(upstream_ref), label="postsubmit main"
     )
     green = last_green(git)
     if green == head:
@@ -389,12 +390,24 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             # failure of main, even when its gate's command passed.
             raise CandidateFailure("passing gates contain failing pytest reports")
         git.fetch(args.remote, args.branch)
-        if cancelled() or git.rev_parse(f"{args.remote}/{args.branch}") != head:
+        latest = drv.require_git_object_id(
+            git.rev_parse(upstream_ref), label="current postsubmit main"
+        )
+        if cancelled() or (latest != head and not git.is_ancestor(head, latest)):
             state = PostsubmitStatus.CANCELLED
         else:
-            # Only this passing-postsubmit path writes the ref. CAS prevents a
-            # concurrent or manual ref change from being silently overwritten.
-            git._run(["update-ref", LAST_GREEN_REF, head, green or "0" * len(head)])
+            # Forward publication preserves the proof of this immutable ancestor.
+            # Verify the observed tracking ref and update the proof baseline in
+            # one ref transaction. A race can neither qualify the new head nor
+            # overwrite a baseline another writer already advanced.
+            previous = green or "0" * len(head)
+            git._run(
+                ["update-ref", "--stdin", "-z"],
+                input_text=(
+                    f"verify {upstream_ref}\0{latest}\0"
+                    f"update {LAST_GREEN_REF}\0{head}\0{previous}\0"
+                ),
+            )
             state = PostsubmitStatus.GREEN
     except GateCancellation as exc:
         state, error = PostsubmitStatus.CANCELLED, str(exc)
@@ -1654,6 +1667,7 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
         os.environ.pop(key, None)
 
     retire_old_records(paths, now=time.time())
+    upstream_ref = f"refs/remotes/{args.remote}/{args.branch}"
     while True:
         handle = _take_runner_lock(paths)
         if handle is None:
@@ -1666,7 +1680,6 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
         health = PostsubmitStatus.GREEN
         try:
             if pending(paths):
-                upstream_ref = f"refs/remotes/{args.remote}/{args.branch}"
                 before = git._run(
                     ["rev-parse", "--verify", "--quiet", upstream_ref], check=False
                 ).stdout.strip()
@@ -1675,6 +1688,8 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
                 main_changed = git.rev_parse(upstream_ref) != before
             if not needs_repin and not main_changed and not pending(paths):
                 health = _postsubmit(args, git, paths)
+                if health is PostsubmitStatus.GREEN:
+                    main_changed = last_green(git) != git.rev_parse(upstream_ref)
         finally:
             drv._release_file_lock(handle)
         if needs_repin:
