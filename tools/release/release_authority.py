@@ -107,8 +107,8 @@ _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v7"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v12"
-COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v2"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v13"
+COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v3"
 
 
 def consumer_lanes(
@@ -187,44 +187,29 @@ def consumer_guest_command(
     source: str,
     capture_link_inputs: bool = False,
 ) -> list[str]:
-    """Installed native build, or the one public WASM build-and-run command."""
+    """Compile one installed artifact, with guest execution owned by sealed replay."""
     if lane.target == "native":
-        return [
-            *launcher,
-            "build",
-            "--target",
-            "native",
-            "--backend",
-            lane.codegen_backend,
-            "--profile",
-            lane.guest_profile,
-            "--python-version",
-            python_minor,
-            "--diagnostics-file",
-            diagnostics,
-            "--output",
-            output,
-            *(["--capture-link-inputs"] if capture_link_inputs else []),
-            source,
-        ]
-    if lane.target != "wasm" or lane.backend != "wasm":
+        target_args = ["--backend", lane.codegen_backend]
+    elif lane.target == "wasm" and lane.backend == "wasm":
+        target_args = ["--linked", "--require-linked"]
+    else:
         raise ValueError(f"release consumer has no guest command for {lane.id}")
-    # `molt run` forwards build args verbatim to its single linked build.
     return [
         *launcher,
-        "run",
+        "build",
         "--target",
-        "wasm",
+        lane.target,
+        *target_args,
         "--profile",
         lane.guest_profile,
         "--python-version",
         python_minor,
-        f"--build-arg=--diagnostics-file={diagnostics}",
-        f"--build-arg=--output={output}",
-        *(["--build-arg=--capture-link-inputs"] if capture_link_inputs else []),
+        "--diagnostics-file",
+        diagnostics,
+        "--output",
+        output,
+        *(["--capture-link-inputs"] if capture_link_inputs else []),
         source,
-        "--",
-        *CONSUMER_GUEST_ARGV,
     ]
 
 
@@ -238,14 +223,9 @@ def consumer_command_roles(
         if pip
         else ["environment", "cli_setup", "cli_help", "worker_help"]
     )
-    for lane in consumer_lanes(selected_lanes):
-        roles.append(
-            f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
-        )
-    for lane in consumer_lanes(selected_lanes):
-        if lane.target == "native":
-            roles.append(f"{prefix}build_{lane.id}")
-        roles.append(f"{prefix}run_{lane.id}")
+    lanes = consumer_lanes(selected_lanes)
+    roles.extend(f"{prefix}cold_build_{lane.id}" for lane in lanes)
+    roles.extend(f"{prefix}build_{lane.id}" for lane in lanes)
     if pip:
         roles.append("pip_uninstall")
     return tuple(roles)
@@ -940,10 +920,6 @@ def _validate_consumer_guest_cells(
     if not isinstance(cells, list) or len(cells) != len(lanes):
         raise ValueError("release consumer guest cells are incomplete")
     path_type = PureWindowsPath if windows else PurePosixPath
-    expected_stdout = hashlib.sha256(
-        CONSUMER_EXPECTED_STDOUT.encode("utf-8")
-    ).hexdigest()
-    guest_argv = list(CONSUMER_GUEST_ARGV)
     fingerprints: set[str] = set()
     diagnostics: set[str] = set()
     directories: set[PurePosixPath | PureWindowsPath] = set()
@@ -999,33 +975,24 @@ def _validate_consumer_guest_cells(
             source="/app/source.py",
             capture_link_inputs=True,
         )
-        cold_role = (
-            f"{role_prefix}cold_{'build' if target == 'native' else 'run'}_{lane.id}"
-        )
+        cold_role = f"{role_prefix}cold_build_{lane.id}"
         if by_role[cold_role]["argv"] != command:
             raise ValueError(
                 "release consumer cold command differs from its installed coordinate"
             )
         output = path_type(cell["output"])
-        run = by_role[f"{role_prefix}run_{lane.id}"]
-        if target == "native":
-            # The installed executable binds to the later sealed replay by bytes.
-            guest = [cell["output"], *guest_argv]
-            bound = (
-                by_role[f"{role_prefix}build_{lane.id}"]["argv"] == command
-                and run["argv"] == guest
-                and path_type(artifact["path"]) == output
-            )
-        else:
-            # One public build-and-run; its manifest-bound linked module is
-            # produced beside the requested output.
-            bound = (
-                run["argv"] == command
-                and path_type(artifact["path"]).parent == output.parent
-            )
-        if not bound or run["stdout_sha256"] != expected_stdout:
+        artifact_path = path_type(artifact["path"])
+        expected_artifact = (
+            artifact_path == output
+            if target == "native"
+            else artifact_path.parent == output.parent
+        )
+        if (
+            by_role[f"{role_prefix}build_{lane.id}"]["argv"] != command
+            or not expected_artifact
+        ):
             raise ValueError(
-                f"release consumer {name} execution is not bound to its installed build"
+                f"release consumer {name} artifact is not bound to its installed build"
             )
         fingerprints.add(cell["compiler_fingerprint"])
         diagnostics.add(cell["diagnostics"])

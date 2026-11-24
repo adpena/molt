@@ -132,7 +132,6 @@ def _run(
     env: ProcessEnvironment,
     timeout: int,
     role: str,
-    expected_stdout: str | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     result = _COMMANDS.run(
@@ -150,10 +149,6 @@ def _run(
         raise RuntimeError(
             f"consumer command failed ({result.returncode}): {argv!r}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    if expected_stdout is not None and result.stdout != expected_stdout:
-        raise RuntimeError(
-            f"consumer command returned {result.stdout!r}; expected {expected_stdout!r}"
         )
     return {
         "role": role,
@@ -635,7 +630,6 @@ def _verify_guest_cells(
             env=env.updated(lane.environment()),
             timeout=2700,
             role=f"prepare_{lane.id}",
-            expected_stdout=CONSUMER_EXPECTED_STDOUT if lane.target == "wasm" else None,
         )
         _diagnosed_compiler(diagnostics, compiler=compiler, lane=lane)
         kind, key = consumer_replay.compilation_runtime_selection(
@@ -674,13 +668,10 @@ def _verify_guest_cells(
             raise ValueError("installed bundle has no selected uv launcher")
         tools.append(uv)
     if any(lane.target == "wasm" for lane in lanes):
-        node = find_executable("node", environment=env)
         optimizer = find_wasm_opt(environment=env, source_root=compiler.source_root)
-        if node is None or optimizer is None:
-            raise ValueError(
-                "installed WASM compilation has no selected Node/optimizer"
-            )
-        tools.extend((node, Path(optimizer)))
+        if optimizer is None:
+            raise ValueError("installed WASM compilation has no selected optimizer")
+        tools.append(Path(optimizer))
     frontend = _installed_frontend_python(
         compiler=compiler,
         python=python,
@@ -744,7 +735,7 @@ def _verify_guest_cells(
                 result = row["outputs"]["command"]
                 commands.append(
                     {
-                        "role": f"{role_prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}",
+                        "role": f"{role_prefix}cold_build_{lane.id}",
                         "argv": result["argv"],
                         "returncode": result["returncode"],
                         "duration_seconds": result["duration_sec"],
@@ -761,7 +752,7 @@ def _verify_guest_cells(
         result = row["outputs"]["command"]
         commands.append(
             {
-                "role": f"{role_prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}",
+                "role": f"{role_prefix}build_{lane.id}",
                 "argv": result["argv"],
                 "returncode": result["returncode"],
                 "duration_seconds": result["duration_sec"],
@@ -773,20 +764,6 @@ def _verify_guest_cells(
             _audit_guest(
                 output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir
             )
-            commands.append(
-                _run(
-                    [str(output), *CONSUMER_GUEST_ARGV],
-                    cwd=project,
-                    env=env.without(("PYTHON",)),
-                    timeout=60,
-                    role=f"{role_prefix}run_{lane.id}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
-        elif (
-            cell_root / "command.stdout"
-        ).read_bytes() != CONSUMER_EXPECTED_STDOUT.encode():
-            raise ValueError("sealed WASM compilation returned another guest result")
         # Diagnostics contain the namespace compiler path. The journal/receiver
         # already joined that exact image to this installed compiler generation.
         compiler_sha256, fingerprint = _diagnosed_compiler(

@@ -811,7 +811,7 @@ def test_release_manifest_requires_one_platform_wheel_per_target(
 @pytest.mark.parametrize("portable_bundle", [False, True])
 @pytest.mark.parametrize(
     "defect",
-    [None, "compile-failure", "missing-cell", "compiler-substitution", "wasm-stdout"],
+    [None, "compile-failure", "missing-cell", "compiler-substitution"],
 )
 def test_installed_guest_owner_uses_only_sealed_compilation_products(
     tmp_path, monkeypatch, portable_bundle, defect
@@ -976,16 +976,7 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
                 if defect == "compiler-substitution" and not cold
                 else "c" * 64,
             )
-            stdout = (
-                release_authority.CONSUMER_EXPECTED_STDOUT.encode()
-                if lane.target == "wasm"
-                else b""
-            )
-            (folder / "command.stdout").write_bytes(
-                b"wrong"
-                if defect == "wasm-stdout" and lane.target == "wasm" and not cold
-                else stdout
-            )
+            (folder / "command.stdout").write_bytes(b"compiler output")
             (folder / "command.stderr").write_bytes(b"")
             (folder / "manifest.json").write_bytes(b"manifest")
             command = release_authority.consumer_guest_command(
@@ -1058,20 +1049,22 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
             Path(cell["artifact"]["path"]).read_bytes() == b"actual sealed product"
             for cell in cells
         )
-        assert len(commands) == 5
+        assert len(commands) == 4
         assert all(not row["role"].startswith("prepare_") for row in commands)
         assert [row["duration_seconds"] for row in commands] == [
             0.75,
             0.75,
             0.5,
-            0.1,
             0.5,
         ]
         prefix = "" if portable_bundle else "pip_"
         assert [row["role"] for row in commands[:2]] == [
             prefix + "cold_build_" + lanes[0].id,
-            prefix + "cold_run_" + lanes[1].id,
+            prefix + "cold_build_" + lanes[1].id,
         ]
+        assert all(argv[1] == "build" for argv, _ in calls)
+        assert len(calls) == len(lanes)
+        assert "/tools/node" not in tuple(map(str, capture_calls[0]["tools"]))
         assert len(frontend_calls) == len(capture_calls) == 1
         cold_evidence = evidence.with_name(evidence.name + "-cold")
         assert [(plan["evidence"], plan["reuse_compilation"]) for plan in plans] == [
@@ -1322,7 +1315,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         ],
         "commands": [
             {
-                "role": "cold_run_" + lane.id,
+                "role": "cold_build_" + lane.id,
                 "argv": cold_command["argv"],
                 "returncode": 0,
                 "duration_seconds": 0.3,
@@ -1330,7 +1323,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
                 "stderr_sha256": hashlib.sha256(b"independent cold stderr").hexdigest(),
             },
             {
-                "role": "run_" + lane.id,
+                "role": "build_" + lane.id,
                 "argv": command["argv"],
                 "returncode": 0,
                 "duration_seconds": 0.2,
