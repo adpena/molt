@@ -961,7 +961,10 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   the memory guard requires
   `MOLT_SCRATCH_BUDGET_GB` (default 4) free on the scratch volume and refuses
   the run otherwise, instead of failing mid-run with `ENOSPC`. Set a larger
-  budget for full-suite pytest runs.
+  budget for full-suite pytest runs. A bound hot scratch root also requires
+  50 GiB of raw free space. If default guard scratch falls short of its hot
+  capacity requirement, the guard can use the managed artifact scratch
+  namespace on a separate volume that passes the scratch budget check.
 - **Artifact root policy**: persist maintainer/agent storage selection with
   `python -m molt.checkout_provisioning artifact-root --checkout /checkout --bind /absolute/root`.
   The root must already exist, be writable, lie outside source checkouts and

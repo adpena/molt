@@ -517,10 +517,14 @@ had `max_bytes: null`, so nothing reacted to bytes or free space.
    (`temporary_artifacts.scratch_root`). A guarded no-op's finalization took
    a median 20.9 ms (p90 55.6, max 89.9) on the data volume and 9.4 ms (p90
    11.5, max 12.4) on the internal disk, 25 interleaved pairs under live gate
-   load. An explicit `MOLT_SCRATCH_STORAGE` root keeps its placement. Live
-   scratch is transient and retained failures stay bounded (3 generations,
-   2 GiB); `storage trim` retires terminal generations left on the former
-   root. The integrator owns the Python build environments' placement.
+   load. With default guard scratch, a measured shortfall against the hot
+   reserve selects the artifact scratch namespace on a separate volume if
+   that volume passes scratch admission. Selection precedes allocation and
+   holds for the lease's lifetime. Explicit `MOLT_SCRATCH_STORAGE` roots and
+   queue-issued state-root sibling scratch keep their placement. Each
+   namespace retains at most 3 failed generations and 2 GiB.
+   `storage trim` uses the guard's terminal sweep on both managed roots.
+   The integrator owns the Python build environments' placement.
    Reusable checkout Cargo targets move the same way
    (`dx.cargo_target_dir_for_artifact_root`), beside the kache store, so a
    restore clones instead of copying: a full molt-runtime dev-fast restore

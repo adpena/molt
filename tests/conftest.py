@@ -713,7 +713,7 @@ class GuardCustodyRoots:
     state_root: Path
     # The roots this session's own outer guard uses (the host's by default).
     host_state_root: Path
-    host_scratch_root: Path
+    host_scratch_roots: tuple[Path, ...]
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -740,7 +740,7 @@ def test_guard_custody_roots(
     roots = GuardCustodyRoots(
         state_root=tmp_path_factory.mktemp("gc", numbered=False) / "memory_guard",
         host_state_root=memory_guard_state_root(ROOT, os.environ),
-        host_scratch_root=temporary_artifacts.scratch_root(ROOT, os.environ),
+        host_scratch_roots=temporary_artifacts.scratch_roots(ROOT, os.environ),
     )
     previous = os.environ.get(STATE_ROOT_ENV)
     os.environ[STATE_ROOT_ENV] = str(roots.state_root)

@@ -233,7 +233,7 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
             ]
         ]
 
-    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{tmp_path}")
     monkeypatch.setattr(bench, "_list_backend_daemon_processes", fake_processes)
 
     def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:
@@ -257,7 +257,10 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     assert report.session_id == "alpha-session"
     assert report.killed_at is not None
     assert report.artifact is not None
-    payload = json.loads(Path(report.artifact).read_text(encoding="utf-8"))
+    journal = Path(report.artifact)
+    assert journal.is_relative_to(tmp_path)
+    assert journal.name == "daemon_custody.jsonl"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
     assert payload["event"] == "bench_individual_backend_daemon_cleanup"
     assert payload["killed"][0]["pid"] == 101
     assert payload["skipped_foreign"] == 1
@@ -300,7 +303,7 @@ def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
         return True
 
     monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET", str(socket_path))
-    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{tmp_path}")
     monkeypatch.setattr(bench, "_list_backend_daemon_processes", fake_processes)
     monkeypatch.setattr(
         bench.daemon_custody,
@@ -866,7 +869,7 @@ def test_individual_sealed_invocations_and_output_oracle(
         )
 
     monkeypatch.setattr(bench.harness_memory_guard, "guarded_completed_process", run)
-    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "scratch")
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{tmp_path}")
     with sealed_workload(tmp_path) as workload:
         if failure in {"reference", "reference_sample"}:
             with pytest.raises(ValueError, match="semantic oracle"):

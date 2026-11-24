@@ -53,8 +53,6 @@ from tools import perf_authority  # noqa: E402
 from tools.safe_run import RunOutcome, observed_run_outcome  # noqa: E402
 from tools.compat.comparison import Outputs, compare_outputs  # noqa: E402
 
-BENCH_TMP_ROOT = scratch_dir(REPO_ROOT, "bench")
-
 BENCHMARKS = bench_suites.BENCHMARKS
 MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
 molt_args_for_benchmark = bench_suites.molt_args_for_benchmark
@@ -214,8 +212,8 @@ def _list_backend_daemon_processes() -> list[daemon_custody.BackendDaemonObserva
     return list(daemon_custody.backend_daemon_process_observations())
 
 
-def _daemon_cleanup_artifact_path() -> Path:
-    return BENCH_TMP_ROOT / "daemon_custody.jsonl"
+def _bench_scratch_root(env: Mapping[str, str] | None = None) -> Path:
+    return scratch_dir(REPO_ROOT, "bench", env)
 
 
 def _record_daemon_cleanup(
@@ -225,7 +223,7 @@ def _record_daemon_cleanup(
 ) -> str | None:
     if not report.killed:
         return None
-    path = _daemon_cleanup_artifact_path()
+    path = _bench_scratch_root(env) / "daemon_custody.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "event": "bench_individual_backend_daemon_cleanup",
@@ -628,8 +626,9 @@ def bench_one(
         _ensure_clean_slate()
 
     # --- Build with Molt ---
-    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-", dir=BENCH_TMP_ROOT)
+    bench_root = _bench_scratch_root()
+    bench_root.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-", dir=bench_root)
     try:
         out_dir = Path(tmp.name)
         binary, build_s, build_err = molt_build(
@@ -910,7 +909,8 @@ def _main(workload_custody: ExitStack) -> None:
 
     results_dir = storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
     results_dir.mkdir(parents=True, exist_ok=True)
-    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    bench_root = _bench_scratch_root()
+    bench_root.mkdir(parents=True, exist_ok=True)
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     # Filter benchmarks
@@ -971,7 +971,7 @@ def _main(workload_custody: ExitStack) -> None:
 
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
-        artifact_root=BENCH_TMP_ROOT,
+        artifact_root=bench_root,
         label="bench_individual",
         limits=limits,
     ):

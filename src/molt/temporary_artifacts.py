@@ -69,7 +69,7 @@ from molt.file_publication import (
 )
 from molt.custody_layout import SCRATCH_DIRNAME
 from molt.default_paths import hot_path
-from molt.disk_capacity import require_scratch_capacity
+from molt.disk_capacity import DiskCapacityError, require_scratch_capacity
 from molt.dx import (
     PROOF_SCRATCH_ROOT_ENV,
     artifact_root,
@@ -215,14 +215,31 @@ class GuardScratchLease:
 
 
 def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
-    root, _artifact = _scratch_placement(repo_root, environ)
+    """Return the preferred guard scratch namespace without admitting a run."""
+    root, _, _ = _scratch_placement(repo_root, environ)
     return root
+
+
+def scratch_roots(repo_root: Path, environ: Mapping[str, str]) -> tuple[Path, ...]:
+    """Return the guard scratch namespaces that can hold this placement's leases."""
+    root, _, alternate = _scratch_placement(repo_root, environ)
+    return (root,) if alternate is None else (root, resolve_owned_path(alternate))
+
+
+def bound_scratch_roots(
+    repo_root: Path, environ: Mapping[str, str]
+) -> tuple[Path, ...]:
+    """Find the roots of a hot binding for retention outside queue state."""
+    preferred, artifact_scratch, _ = _artifact_scratch_roots(repo_root, environ)
+    if preferred == artifact_scratch:
+        return ()
+    return resolve_owned_path(preferred), resolve_owned_path(artifact_scratch)
 
 
 def _scratch_placement(
     repo_root: Path, environ: Mapping[str, str]
-) -> tuple[Path, Path | None]:
-    # A short root preserves Windows compiler/linker path budget. A
+) -> tuple[Path, Path | None, Path | None]:
+    # A short root preserves Windows compiler/linker path budget.
     # A queue-issued state root supplies default data placement. An explicit
     # storage root selects data independently; control state stays unchanged.
     storage = scratch_storage(environ)
@@ -230,36 +247,26 @@ def _scratch_placement(
         assert storage.root is not None
         # Refuse missing unique-mount capability before allocating a generation.
         file_identity(storage.root)
-    if environ.get(STATE_ROOT_ENV, "").strip() and storage.root is None:
+    if storage.root is None and environ.get(STATE_ROOT_ENV, "").strip():
         root = memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME
-        return resolve_owned_path(root / "v2"), None
-    _former, root, artifact = _selected_roots(repo_root, environ)
-    return resolve_owned_path(root / "v2"), artifact
+        return resolve_owned_path(root / "v2"), None, None
+    preferred, artifact_scratch, artifact = _artifact_scratch_roots(repo_root, environ)
+    return (
+        resolve_owned_path(preferred),
+        artifact,
+        artifact_scratch if preferred != artifact_scratch else None,
+    )
 
 
-def _selected_roots(
+def _artifact_scratch_roots(
     repo_root: Path, environ: Mapping[str, str]
 ) -> tuple[Path, Path, Path]:
-    """The generation namespace: on the hot volume when the artifact root binds one.
-
-    Every guarded run publishes its receipts here, and its lease target is
-    the run's TMPDIR. On a bound host the namespace sits on the home volume
-    (HF-942, ``default_paths.hot_path``): a guarded no-op's finalization took
-    a median 20.9 ms (max 89.9) on the shared data volume and 9.4 ms (max
-    12.4) on the internal disk. An explicit scratch storage root and the
-    out-of-tree fallback keep their own placement.
-    """
     artifact = artifact_root(repo_root, environ)
     selected = scratch_dir(repo_root, _ROOT_DIRNAME, environ, artifact=artifact)
+    preferred = selected
     if selected.parent == artifact / SCRATCH_DIRNAME:
-        return selected, hot_path(artifact, SCRATCH_DIRNAME, _ROOT_DIRNAME), artifact
-    return selected, selected, artifact
-
-
-def former_scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path | None:
-    """The artifact-volume namespace a hot binding replaced, for retention only."""
-    selected, current, _artifact = _selected_roots(repo_root, environ)
-    return None if current == selected else resolve_owned_path(selected / "v2")
+        preferred = hot_path(artifact, SCRATCH_DIRNAME, _ROOT_DIRNAME)
+    return preferred / "v2", selected / "v2", artifact
 
 
 def _generation(root: Path, token: str) -> Path:
@@ -538,8 +545,24 @@ def acquire_guard_scratch(
     """
     token = environ["MOLT_MEMORY_GUARD_TOKEN"]
     marker = resolve_owned_path(Path(environ["MOLT_MEMORY_GUARD_MARKER"]))
-    root, artifact = _scratch_placement(repo_root, environ)
-    require_scratch_capacity([root], env=environ, artifact_root=artifact)
+    root, artifact, alternate = _scratch_placement(repo_root, environ)
+    try:
+        require_scratch_capacity([root], env=environ, artifact_root=artifact)
+    except DiskCapacityError as error:
+        if alternate is None or not error.is_hot_capacity_shortfall():
+            raise
+        assert artifact is not None
+        measured_hot = error.rejected[0].measured_path
+        assert measured_hot is not None
+        artifact_device = artifact.stat().st_dev
+        if artifact_device == measured_hot.stat().st_dev:
+            raise
+        root = resolve_owned_path(alternate)
+        receipt = require_scratch_capacity([root], env=environ, artifact_root=artifact)
+        measured_artifact = receipt.probes[0].measured_path
+        assert measured_artifact is not None
+        if measured_artifact.stat().st_dev != artifact_device:
+            raise ValueError(f"guard scratch is outside the artifact volume: {root}")
     generation = _generation(root, token)
     generation.mkdir(parents=True)
     handle = _try_acquire_file_lock(resolve_owned_path(generation / "lock"))
