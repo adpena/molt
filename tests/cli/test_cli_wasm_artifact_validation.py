@@ -18,11 +18,20 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
+from molt.cli.build_request import BuildProfile
 from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.product_store import ProductStore
 from molt.cli.runtime_artifact_selection import RuntimeCrateType
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
+    RuntimeWasmGeneration,
+    bind_runtime_wasm_codegen,
+    publish_stored_runtime_wasm_generation,
+)
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
 from molt.cli import runtime_identity_schema as RUNTIME_SCHEMA
@@ -149,49 +158,84 @@ def _isolated_runtime_wasm_cache(
     "required_features", [frozenset(), frozenset({"molt_gpu_primitives"})]
 )
 @pytest.mark.parametrize(
-    ("build_profile", "requested"), [("dev", "dev-fast"), ("release", "release")]
+    ("profile", "requested"), [("dev", "dev-fast"), ("release", "release")]
+)
+@pytest.mark.parametrize(
+    ("kind", "expected_use", "expected_binding", "expected_members"),
+    [
+        ("shared", RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, False, {"shared"}),
+        ("both", RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, False, {"shared", "reloc"}),
+        ("reloc", RuntimeWasmCodegenUse.LINKED, True, {"reloc"}),
+    ],
 )
 def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     required_features: frozenset[str],
-    build_profile: str,
+    profile: BuildProfile,
     requested: str,
+    kind: Literal["shared", "reloc", "both"],
+    expected_use: RuntimeWasmCodegenUse,
+    expected_binding: bool,
+    expected_members: set[str],
 ) -> None:
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
-    runtime_root = tmp_path / "store-variant"
     calls: list[tuple[str, float | None, str | None, Path]] = []
-    selected_shared = runtime_root / "molt_runtime.wasm.test.runtime-wasm-member"
-    selected_reloc = runtime_root / "molt_runtime_reloc.wasm.test.runtime-wasm-member"
-    generation = runtime_root / "molt_runtime.generation.json"
+    published: dict[str, str] = {}
 
     def fake_ensure_runtime_wasm_both(
-        runtime_state,
+        runtime_state: _RuntimeArtifactState,
         *,
-        build_profile,
-        json_output,
-        cargo_profile,
-        cargo_timeout,
-        project_root,
-        simd_enabled,
-        freestanding,
-        stdlib_profile,
-        resolved_modules,
-        required_exports,
-        required_link_features,
+        build_profile: BuildProfile,
+        json_output: bool,
+        cargo_profile: str,
+        cargo_timeout: float | None,
+        project_root: Path,
+        simd_enabled: bool,
+        freestanding: bool,
+        stdlib_profile: str | None,
+        resolved_modules: set[str] | frozenset[str] | None,
+        required_exports: set[str] | frozenset[str] | None,
+        required_link_features: frozenset[str],
+        bind_for_codegen: bool,
+        codegen_use: RuntimeWasmCodegenUse,
     ) -> bool:
-        del json_output, simd_enabled, freestanding, resolved_modules, required_exports
+        assert build_profile == profile
+        assert json_output and simd_enabled and not freestanding
+        assert resolved_modules is None and required_exports is None
         assert required_link_features == required_features
+        assert bind_for_codegen is expected_binding
+        assert codegen_use is expected_use
         assert runtime_state.runtime_wasm_pair is None
-        runtime_root.mkdir(parents=True, exist_ok=True)
-        selected_shared.write_bytes(_valid_wasm_bytes(b"shared"))
-        selected_reloc.write_bytes(_valid_wasm_bytes(b"reloc"))
-        generation.write_text("{}\n", encoding="utf-8")
-        runtime_state.runtime_wasm_pair = SimpleNamespace(
-            shared=selected_shared, reloc=selected_reloc, manifest=generation
+        assert runtime_state.runtime_wasm_codegen_binding is None
+        reloc_only = kind == "reloc"
+        source_shared = None if reloc_only else tmp_path / "shared.wasm"
+        source_reloc = tmp_path / "reloc.wasm"
+        if source_shared is not None:
+            source_shared.write_bytes(_valid_wasm_bytes(b"shared"))
+        source_reloc.write_bytes(_valid_wasm_bytes(b"reloc"))
+        generation = publish_stored_runtime_wasm_generation(
+            ProductStore(tmp_path / "store" / "wasm-runtime"),
+            shared_identity=None
+            if reloc_only
+            else make_runtime_build_identity("shared"),
+            reloc_identity=make_runtime_build_identity("reloc", reloc_only=reloc_only),
+            cargo_environment=runtime_cargo_environment_inputs(),
+            source_shared=source_shared,
+            source_reloc=source_reloc,
         )
+        runtime_state.runtime_wasm_pair = generation
+        published.update(
+            generation=str(generation.manifest), reloc=str(generation.reloc)
+        )
+        if isinstance(generation, RuntimeWasmGeneration):
+            published["shared"] = str(generation.shared)
+        if bind_for_codegen:
+            runtime_state.runtime_wasm_codegen_binding = bind_runtime_wasm_codegen(
+                generation, required_exports, use=codegen_use
+            )
         calls.append((cargo_profile, cargo_timeout, stdlib_profile, project_root))
         return True
 
@@ -205,9 +249,9 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     assert (
         RUNTIME_BUILD._prebuild_runtime_wasm(
             project_root=tmp_path,
-            kind="shared",
+            kind=kind,
             json_output=True,
-            build_profile=build_profile,
+            build_profile=profile,
             cargo_timeout=1200.0,
             simd_enabled=True,
             freestanding=False,
@@ -219,8 +263,9 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
 
     assert calls == [(requested, 1200.0, "micro", tmp_path)]
     payload = json.loads(capsys.readouterr().out)
-    assert payload["artifacts"]["shared"] == str(selected_shared)
-    assert payload["artifacts"]["generation"] == str(generation)
+    assert payload["artifacts"] == {
+        member: published[member] for member in expected_members | {"generation"}
+    }
 
 
 def test_prebuild_runtime_wasm_json_failure_is_machine_readable(
@@ -247,7 +292,7 @@ def test_prebuild_runtime_wasm_json_failure_is_machine_readable(
     )
 
     assert json.loads(capsys.readouterr().out) == {
-        "error": "Runtime wasm pair prebuild failed.",
+        "error": "Runtime WASM prebuild failed.",
         "status": "error",
     }
 
