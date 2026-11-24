@@ -125,7 +125,7 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
             )
             / marker.name
         ).exists()
-        assert not (roots.host_scratch_root / token).exists()
+        assert all(not (root / token).exists() for root in roots.host_scratch_roots)
     assert _own_host_records(roots.host_state_root) == own_before
     # Their scratch generations lived and ended in the session root.
     assert roots.state_root.parent.joinpath("gs").is_dir()

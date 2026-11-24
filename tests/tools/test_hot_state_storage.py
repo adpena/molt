@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import namedtuple
 from collections.abc import Mapping
 from pathlib import Path
@@ -134,19 +135,148 @@ def test_guard_scratch_follows_the_hot_record_and_names_the_former_root(
     former = artifact.resolve() / "tmp" / "gs" / "v2"
     # No record: the generation namespace stays on the artifact volume.
     assert scratch.scratch_root(lane, env) == former
-    assert scratch.former_scratch_root(lane, env) is None
+    assert scratch.scratch_roots(lane, env) == (former,)
     hot = tmp_path / "home" / "hot"
     _bind(artifact, hot)
     default_paths._HOT_STATES.clear()
     assert scratch.scratch_root(lane, env) == hot.resolve() / "tmp" / "gs" / "v2"
-    assert scratch.former_scratch_root(lane, env) == former
+    assert scratch.scratch_roots(lane, env) == (hot / "tmp" / "gs" / "v2", former)
     # An explicit scratch storage root outranks the binding.
     ram = tmp_path / "ram"
     ram.mkdir()
     selected = {**env, "MOLT_SCRATCH_STORAGE": f"disk:{ram}"}
     root = scratch.scratch_root(lane, selected)
     assert root.is_relative_to(ram.resolve()) and root.parts[-2:] == ("gs", "v2")
-    assert scratch.former_scratch_root(lane, selected) is None
+    assert scratch.scratch_roots(lane, selected) == (root,)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["spill", "same-volume", "both-short", "hot-unreadable", "explicit", "queued"],
+)
+def test_guard_admits_the_managed_artifact_volume_only_for_hot_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    from molt import disk_capacity, temporary_artifacts as scratch
+
+    source = tmp_path / "source"
+    source.mkdir()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    _bind(artifact, hot)
+    hot_scratch = hot / "tmp" / "gs" / "v2"
+    external_scratch = artifact / "tmp" / "gs" / "v2"
+    state = artifact / "tmp" / "memory_guard"
+    token = "a" * 32
+    env = {
+        "MOLT_EXT_ROOT": str(artifact),
+        "MOLT_MEMORY_GUARD_TOKEN": token,
+        "MOLT_MEMORY_GUARD_MARKER": str(state / "active" / "guard-a.json"),
+    }
+    first_probe = hot
+    if scenario == "explicit":
+        explicit = tmp_path / "explicit"
+        explicit.mkdir()
+        env["MOLT_SCRATCH_STORAGE"] = f"disk:{explicit}"
+        first_probe = explicit
+    elif scenario == "queued":
+        env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(hot / "queued" / "guard")
+
+    real_stat = Path.stat
+    hot_free = default_paths.HOT_STATE_MIN_FREE_BYTES - 1
+    observed = []
+
+    def fixture_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        result = real_stat(path, follow_symlinks=follow_symlinks)
+        if scenario == "same-volume" or path != hot:
+            return result
+        return os.stat_result((*result[:2], result.st_dev + 1, *result[3:]))
+
+    def free(path: Path) -> int:
+        observed.append(path)
+        if path == hot:
+            if scenario == "hot-unreadable":
+                raise OSError("hot capacity probe failed")
+            return 0 if scenario == "queued" else hot_free
+        if path == artifact and scenario == "spill":
+            return disk_capacity.DEFAULT_SCRATCH_BUDGET_BYTES
+        return 0
+
+    monkeypatch.setattr(Path, "stat", fixture_stat)
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", free)
+    monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="linux"))
+    if scenario != "spill":
+        with pytest.raises(disk_capacity.DiskCapacityError) as failure:
+            scratch.acquire_guard_scratch(source, env)
+        rejected = failure.value.rejected[0]
+        assert rejected.requested_path == (
+            external_scratch
+            if scenario == "both-short"
+            else scratch.scratch_root(source, env)
+        )
+        expected = [hot, artifact] if scenario == "both-short" else [first_probe]
+        assert observed == expected
+        assert not scratch.scratch_root(source, env).exists()
+        assert not external_scratch.exists()
+        return
+
+    lease = scratch.acquire_guard_scratch(source, env)
+    try:
+        assert observed == [hot, artifact] and not hot_scratch.exists()
+        assert lease.generation == external_scratch / token
+        assert lease.target.parent == external_scratch
+        assert (
+            scratch.scratch_generation(token, {"target": str(lease.target)})
+            == lease.generation
+        )
+        child_env = {**env, scratch.SCRATCH_ENV: str(lease.target)}
+        assert scratch.guard_scratch(child_env) == lease.target
+        hot_free += 1
+        observed.clear()
+        second = scratch.acquire_guard_scratch(
+            source, {**env, "MOLT_MEMORY_GUARD_TOKEN": "b" * 32}
+        )
+        try:
+            assert observed == [hot]
+            assert second.generation == hot_scratch / ("b" * 32)
+            assert scratch.guard_scratch(child_env) == lease.target
+        finally:
+            second.release()
+    finally:
+        lease.release()
+
+
+def test_storage_trim_sees_both_managed_guard_roots_under_queue_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import molt_dev_storage as storage
+
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    hot = tmp_path / "hot"
+    _bind(artifact, hot)
+    roots = [base / "tmp" / "gs" / "v2" for base in (hot, artifact)]
+    for root in roots:
+        root.mkdir(parents=True)
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(storage, "migrate", lambda *args, **kwargs: [])
+    rows = storage.trim(
+        source,
+        {
+            "MOLT_EXT_ROOT": str(artifact),
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "queue" / "guard"),
+        },
+        apply=False,
+        policy_source=Path(__file__).resolve().parents[2],
+        legacy_temp=tmp_path / "empty",
+    )
+    scratch_rows = [row for row in rows if row["class"] == "guard-scratch"]
+    assert [(row["path"], row["action"], row["errors"]) for row in scratch_rows] == [
+        (str(root), "reclaimable", []) for root in roots
+    ]
 
 
 def test_stdlib_family_locks_stay_where_the_backend_takes_them(

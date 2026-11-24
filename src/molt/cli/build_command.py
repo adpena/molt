@@ -226,7 +226,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         runtime_paths._build_state_root(compiler_root),
         runtime_paths._cargo_target_root(compiler_root),
         memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
-        temporary_artifacts.scratch_root(compiler_root, os.environ),
+        *temporary_artifacts.scratch_roots(compiler_root, os.environ),
         *_guard_profile_roots(compiler_root),
         # The product store of Rust products (native and WASM runtimes, host
         # tools) holds immutable generations named by the identity the

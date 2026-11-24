@@ -614,23 +614,24 @@ def trim(
                 "kept": kept,
             }
         )
-    # A hot binding moved guard scratch (HF-942). Generations left on the
-    # former root keep their receipts; the guard's own terminal sweep retires
-    # them, as each finishing guard does for its current root.
+    # A hot binding can place guards on either volume. Use the same terminal
+    # sweep as a finishing guard, including for roots that are currently idle.
     from molt import temporary_artifacts
 
-    former = temporary_artifacts.former_scratch_root(repo, environment)
-    if former is not None and former.is_dir():
-        sweep = temporary_artifacts.reclaim_terminal_scratch(former, dry_run=not apply)
-        result.append(
-            {
-                "class": "guard-scratch",
-                "path": str(former),
-                "action": "reclaimed" if apply else "reclaimable",
-                "count": len(cast(list[object], sweep["reclaimed"])),
-                "errors": sweep["errors"],
-            }
-        )
+    for root in temporary_artifacts.bound_scratch_roots(repo, environment):
+        if root.is_dir():
+            sweep = temporary_artifacts.reclaim_terminal_scratch(
+                root, dry_run=not apply
+            )
+            result.append(
+                {
+                    "class": "guard-scratch",
+                    "path": str(root),
+                    "action": "reclaimed" if apply else "reclaimable",
+                    "count": len(cast(list[object], sweep["reclaimed"])),
+                    "errors": sweep["errors"],
+                }
+            )
     # Repository preimages have one Git custody owner. Historical user-cache
     # and host-temp preimages require the operator's explicit inventory scope;
     # a test/SDK checkout never takes custody of the account's global history.

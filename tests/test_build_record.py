@@ -175,10 +175,12 @@ def test_hot_cache_ownership_keeps_source_probes_bindings_and_foreign_files(
     from molt.cli.build_request import BuildRequest
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.python_import_topology import PythonImportTopology
+    from molt.memory_guard_paths import STATE_ROOT_ENV
 
     project, hot = bound_cache_volume
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(project))
     monkeypatch.setenv("MOLT_CACHE", str(project / "host-cache"))
+    monkeypatch.delenv(STATE_ROOT_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
     digest_dir = hot / "host-cache" / "file-digests"
     host_locks = hot / "host-cache" / "locks"
@@ -186,6 +188,7 @@ def test_hot_cache_ownership_keeps_source_probes_bindings_and_foreign_files(
         project / "app-cache" / "object",
         host_locks / "compile.00.lock",
         hot / "app-cache" / "locks" / "immutable-publish.00.lock",
+        *(root / "tmp" / "gs" / "v2" / "allocation" for root in (project, hot)),
         *(
             digest_dir / ("v3.sqlite" + suffix)
             for suffix in ("", "-wal", "-shm", "-journal")
