@@ -148,6 +148,119 @@ def test_demanded_release_closure_preserves_live_function_records(
     ) == len(omitted)
 
 
+def test_demanded_leaf_edit_reuses_unchanged_module_until_demand_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import frontend_worker
+
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "entry.py"
+    provider = project / "provider.py"
+    provider.write_text("def value(): return 40\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "molt-cache"))
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
+    monkeypatch.chdir(project)
+    prepared: list[backend_ir._PreparedBackendIR] = []
+    entry_hits: list[bool] = []
+    load_lowered = frontend_worker._read_persisted_module_lowering
+    materialize = backend_ir.materialize_tir_closure
+
+    def observe(
+        module_path: Path, *, module_name: str, **kwargs: object
+    ) -> dict[str, object] | None:
+        result = load_lowered(module_path, module_name=module_name, **kwargs)
+        if module_name == "entry":
+            entry_hits.append(result is not None)
+        return result
+
+    def capture(
+        *, prepared_backend_ir: backend_ir._PreparedBackendIR, **kwargs: object
+    ) -> int:
+        prepared.append(prepared_backend_ir)
+        return 0
+
+    def compile_entry(
+        expression: str, *, mode: backend_ir.BodyMaterializationMode
+    ) -> backend_ir._PreparedBackendIR:
+        def lower(
+            frontend: frontend_pipeline._PreparedFrontendPipelineBundle,
+            **kwargs: object,
+        ) -> tuple[backend_ir._PreparedBackendIR | None, CliFailure | None]:
+            return materialize(frontend, **{**kwargs, "mode": mode})
+
+        text = (
+            "from provider import value\ndef _formerly_unused(): return 2\nprint("
+            + expression
+            + ")\n"
+        )
+        if not entry.exists() or entry.read_text(encoding="utf-8") != text:
+            entry.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(backend_ir, "materialize_tir_closure", lower)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "molt",
+                "build",
+                "--python-version",
+                "3.12",
+                "--stdlib-profile",
+                "micro",
+                "--emit",
+                "obj",
+                "--output",
+                str(tmp_path / "output.o"),
+                str(entry),
+            ],
+        )
+        before = len(prepared)
+        assert cli.main() == 0
+        assert len(prepared) == before + 1
+        return prepared[-1]
+
+    monkeypatch.setattr(frontend_worker, "_read_persisted_module_lowering", observe)
+    monkeypatch.setattr(backend_pipeline, "_run_backend_pipeline", capture)
+    omitted = "py.entry._formerly_unused"
+    first = compile_entry("value() + 1", mode="demanded")
+    provider.write_text("def value(): return 41\n", encoding="utf-8")
+    edit = compile_entry("value() + 1", mode="demanded")
+    assert first.declarations is not None and edit.declarations is not None
+    assert omitted in first.declarations.declaration_only
+    assert first.declarations.declaration_only == edit.declarations.declaration_only
+    assert first.plan_seal != edit.plan_seal
+    assert entry_hits == [False, True]
+
+    eager_edit = compile_entry("value() + 1", mode="eager")
+    changed = compile_entry("value() + _formerly_unused()", mode="demanded")
+    assert changed.declarations is not None
+    assert omitted not in changed.declarations.declaration_only
+    assert entry_hits[-1] is False
+    eager_changed = compile_entry("value() + _formerly_unused()", mode="eager")
+    for actual, oracle in ((edit, eager_edit), (changed, eager_changed)):
+        assert actual.declarations is not None
+        expected = {body["name"]: body for body in oracle.ir["functions"]}
+        actual_bodies = {body["name"]: body for body in actual.ir["functions"]}
+        assert (
+            expected.keys() - actual_bodies.keys()
+            == actual.declarations.declaration_only
+        )
+        for name in (
+            actual.declarations.callables.keys() - actual.declarations.declaration_only
+        ):
+            assert encode_function_body(actual_bodies[name]) == encode_function_body(
+                expected[name]
+            ), name
+
+    monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
+    fresh = compile_entry("value() + 1", mode="demanded")
+    assert fresh.declarations == edit.declarations
+    assert [encode_function_body(body) for body in fresh.ir["functions"]] == [
+        encode_function_body(body) for body in edit.ir["functions"]
+    ]
+
+
 def _frontend_args(source_root: Path, *, target: str, split_runtime: bool):
     return dict(
         prepared_build_preamble=SimpleNamespace(),

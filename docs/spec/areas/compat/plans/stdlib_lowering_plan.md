@@ -233,8 +233,10 @@ callbacks. Apply the rule through inheritance and the reachable wrapper and desc
 The source solver uses class-subscription demand to select `__class_getitem__` through the
 receiver's class family. Instance operations use their own protocol demand.
 
-Produce the body, frame layout and existing function digest per demanded definition. Cache keys
-include the plan seal. Concurrent requests share the result or diagnostic. Publish the closure
+Produce the body, frame layout and existing function digest per demanded definition. Module
+lowering keys include the current module-local body selection, its source digest, and the scoped
+analysis inputs used by lowering. The assembled closure carries the whole-program seal.
+Concurrent requests share the result or diagnostic. Publish the closure
 after validating declarations, demanded frame layouts, referenced definitions and runtime symbols
 against the sealed plan. Release compilation and whole-program diagnostics select every body
 through the same frontend operation.
