@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 from typing import TYPE_CHECKING
 
 import pytest
@@ -363,7 +364,9 @@ def _runtime_signature_generation(project_root: Path) -> SourceRuntimeWasmGenera
     return generation
 
 
-def test_runtime_wasm_export_signatures_match_import_registry() -> None:
+def test_runtime_wasm_export_signatures_match_import_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Compare compiled exports only with this checkout's input-keyed pair.
 
     The proof plan builds the dev/full pair first. Missing or damaged candidate
@@ -375,7 +378,17 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         wasm_runtime_export_name,
         runtime_execution_abi,
     )
+    from molt.dx import SCRATCH_ENV_KEYS, RunContext
     from tools.wasm_abi_gen.manifest import load_manifest
+
+    # The test's scratch storage can differ from the producer's. Keep its
+    # toolchain and product store while reprojecting temporary probe paths.
+    scratch = RunContext(ROOT, prefer_external_artifacts=True).canonical_env(
+        os.environ, create_dirs=False, force_default_keys=SCRATCH_ENV_KEYS
+    )
+    for key in SCRATCH_ENV_KEYS:
+        monkeypatch.setenv(key, scratch[key])
+    monkeypatch.setattr(tempfile, "tempdir", None)
 
     selected_runtime = _runtime_signature_generation(ROOT).shared
     runtime_signatures = _parse_wasm_export_signatures(selected_runtime)
