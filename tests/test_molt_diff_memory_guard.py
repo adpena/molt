@@ -17,6 +17,7 @@ from tests.process_guard_common import (
     install_module_view,
     install_thread_module_view,
 )
+from tools import resource_pressure
 
 # These tests fake process data the session sentinel also reads, and resolve
 # guard limits the CI plan's exported caps would otherwise decide.
@@ -25,6 +26,14 @@ pytestmark = pytest.mark.usefixtures("session_sentinel_paused", "no_ambient_guar
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
+
+
+@pytest.fixture
+def no_ambient_diff_job_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep memory scheduler assertions independent of disk and job overrides."""
+    monkeypatch.setattr(resource_pressure, "disk_latency_s", lambda _directory: 0.001)
+    for key in ("MOLT_DIFF_MEM_PER_JOB_GB", "MOLT_DIFF_MAX_JOBS"):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _load_diff_module():
@@ -257,7 +266,9 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
     assert {trip.victim_pgid for trip in evidence.trips} == {200, 300}
 
 
-def test_memory_guard_clamps_parallel_jobs(tmp_path: Path, monkeypatch) -> None:
+def test_memory_guard_clamps_parallel_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_ambient_diff_job_caps: None
+) -> None:
     module = _load_diff_module()
     config = _configure_guard(
         module,
@@ -391,11 +402,12 @@ def test_shared_sentinel_refreshes_limits_from_active_tree_rss(
     assert limits["max_global_rss_gb"] == pytest.approx(85.6704)
 
 
-def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
+def test_diff_scheduler_uses_memory_scaled_job_budget(
+    monkeypatch: pytest.MonkeyPatch, no_ambient_diff_job_caps: None
+) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
-    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: 12)
 
     config = module._diff_memory_guard_config()
@@ -411,12 +423,11 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
 
 
 def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch, no_ambient_diff_job_caps: None
 ) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "32")
-    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: 64)
 
     config = module._diff_memory_guard_config()
@@ -429,7 +440,9 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
 
 
 def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
-    monkeypatch, generous_host_memory
+    monkeypatch: pytest.MonkeyPatch,
+    generous_host_memory: None,
+    no_ambient_diff_job_caps: None,
 ) -> None:
     # HF-105: a guard whose tree budget was 37.7 GB wrapped a differential run
     # that sized its parallelism from the global budget; the guard killed the
@@ -440,8 +453,6 @@ def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     for name in ("PROCESS", "TOTAL", "GLOBAL"):
         monkeypatch.delenv(f"MOLT_DIFF_MAX_{name}_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_MAX_JOBS", raising=False)
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "30")
     monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "37.7")
     monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "63")
