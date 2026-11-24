@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from os import stat_result
 from pathlib import Path
 import shutil
 import sysconfig
@@ -276,7 +277,9 @@ def _installed_with_package(tmp_path: Path, files: dict[str, bytes]):
     )
 
 
-@pytest.mark.parametrize("damage", [None, "changed", "extra", "cache"])
+@pytest.mark.parametrize(
+    "damage", [None, "changed", "extra", "cache", "subset", "membership-change"]
+)
 def test_pip_executing_package_is_bound_to_the_signed_source(
     tmp_path, monkeypatch, damage
 ):
@@ -300,7 +303,27 @@ def test_pip_executing_package_is_bound_to_the_signed_source(
     elif damage == "cache":
         (package / "__pycache__").mkdir()
         (package / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"cache")
-    if damage in {"changed", "extra"}:
+    elif damage == "subset":
+        (package / "cli/__init__.py").unlink()
+        (package / "empty").mkdir()
+    elif damage == "membership-change":
+        capture = distribution.stable_regular_file_identity
+
+        def add_unsealed_member(
+            path: Path,
+            *,
+            label: str,
+            expected_path_stat: stat_result | None,
+        ) -> distribution.StableRegularFileIdentity:
+            identity = capture(path, label=label, expected_path_stat=expected_path_stat)
+            if path == package / "cli/__init__.py":
+                (path.parent / "added.py").write_bytes(b"# unexpected source")
+            return identity
+
+        monkeypatch.setattr(
+            distribution, "stable_regular_file_identity", add_unsealed_member
+        )
+    if damage in {"changed", "extra", "membership-change"}:
         with pytest.raises(ValueError, match="Installed Molt package"):
             installed.verify_executing_package()
     else:
