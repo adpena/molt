@@ -146,8 +146,11 @@ pub fn run(
     let mut proofs: Vec<(usize, Vec<SiteDecision>)> = Vec::new();
     let mut report = Vec::new();
     for body in 0..module.functions.len() {
-        let id = analysis.generic(body);
-        proofs.push((body, decide(&inputs, &analysis, id, &clone_of_context)));
+        let decisions = analysis
+            .generic(body)
+            .map(|id| decide(&inputs, &analysis, id, &clone_of_context))
+            .unwrap_or_default();
+        proofs.push((body, decisions));
     }
     let clone_decisions: Vec<Vec<SiteDecision>> = clones
         .iter()
@@ -521,7 +524,13 @@ fn describe(
             func.name,
             sites.len(),
         ));
-        let facts = analysis.facts(inputs, analysis.generic(*body));
+        if sites.is_empty() {
+            continue;
+        }
+        let context = analysis
+            .generic(*body)
+            .expect("a body with resolved call sites has a generic context");
+        let facts = analysis.facts(inputs, context);
         for (site, decision) in sites.iter().zip(decisions) {
             if decision.retarget.is_some() {
                 continue;

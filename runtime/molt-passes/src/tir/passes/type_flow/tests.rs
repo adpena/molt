@@ -208,6 +208,33 @@ fn id_of(module: &TirModule, name: &str) -> FunctionId {
 }
 
 #[test]
+fn generic_contexts_include_resolved_leaf_results_and_skip_isolated_bodies() {
+    let mut callee = function("leaf", 0);
+    let entry = callee.entry_block;
+    let value = const_int(&mut callee, entry, 41);
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![value],
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            callee,
+            function("unseen_entry", 0),
+            caller("main", FunctionId(0), &[]),
+        ],
+    );
+
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+
+    assert_eq!(outcome.contexts, 2);
+    assert_eq!(
+        calls(body(&module, "main"))[0].exact_result_proof(),
+        Some(TirType::I64)
+    );
+    assert!(!outcome.changed.contains(&id_of(&module, "unseen_entry")));
+}
+
+#[test]
 fn recursive_int_context_enters_its_own_clone() {
     let mut module = TirModule::with_own_table(
         "m",
