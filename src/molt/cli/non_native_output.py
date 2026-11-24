@@ -748,6 +748,30 @@ def _external_native_artifact_fingerprint_inputs(
     )
 
 
+def _wasm_tool_source_identities(molt_root: Path, tool: Path) -> tuple[str, str]:
+    """Name the compiler-owned tool program used by the two Wasm link keys."""
+    if installed_distribution_root(molt_root) is not None:
+        from molt.cli.compiler_identity import installed_compiler_admission
+
+        admission = installed_compiler_admission(molt_root)
+        if admission is None:
+            raise ValueError("installed Wasm linker has no admitted release source")
+        # Source admission already verifies the complete immutable inventory.
+        # One release can share all of these static tool dependencies without
+        # parsing its own Python again. The build observation covers that
+        # inventory through the verifier's reads in the same operation.
+        return admission.fingerprint, admission.fingerprint
+    link_sources = local_python_import_closure(molt_root, (tool,))
+    deployment_sources = local_python_import_closure(molt_root, (Path(__file__),))
+    if input_report.active():
+        for path, digest in {
+            **link_sources.source_sha256,
+            **deployment_sources.source_sha256,
+        }.items():
+            input_report.report_file(path, digest)
+    return link_sources.content_digest, deployment_sources.content_digest
+
+
 def _prepare_non_native_build_result(
     *,
     is_wasm: bool,
@@ -896,6 +920,8 @@ def _prepare_non_native_build_result_in_generation(
         wasm_link_requirements = SourceExtensionLinkRequirements(wasm_link_target)
         app_export_contract: dict[str, object] | None = None
         if linked or _split_runtime:
+            if phase_starts is not None:
+                phase_starts["wasm_link_prepare"] = time.perf_counter()
             if wasm_facts_scanner is None:
                 return None, _fail(
                     "Linked WASM requires an admitted WASM inspection tool",
@@ -1152,7 +1178,6 @@ def _prepare_non_native_build_result_in_generation(
                 link_cmd.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             try:
-                link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 linker_identity = wasm_toolchain.resolve_wasm_linker()
                 # wasm-ld reads the tool's import allowlist directly; neither
                 # the tool's Python closure nor any argument names it. As a
@@ -1283,17 +1308,8 @@ def _prepare_non_native_build_result_in_generation(
                 selection_policy = (
                     link_selection_policy() if wasm_link_requirements.items else None
                 )
-                deployment_source = Path(__file__)
-                if installed_distribution_root(molt_root) is not None:
-                    # Wheel admission verifies that the executing package is
-                    # the copy of the admitted compiler source.
-                    deployment_source = (
-                        molt_root
-                        / "src"
-                        / Path(*__name__.split(".")).with_suffix(".py")
-                    )
-                deployment_closure = local_python_import_closure(
-                    molt_root, (deployment_source,)
+                link_source_identity, deployment_source_identity = (
+                    _wasm_tool_source_identities(molt_root, tool)
                 )
                 if input_report.active():
                     # Warm final-link reuse can skip the reads these authorities
@@ -1313,11 +1329,6 @@ def _prepare_non_native_build_result_in_generation(
                             )
                     for identity in deployment_sources.files:
                         input_report.report_data_file(identity.path)
-                    for path, digest in {
-                        **link_tool_closure.source_sha256,
-                        **deployment_closure.source_sha256,
-                    }.items():
-                        input_report.report_file(path, digest)
             except (OSError, ValueError) as exc:
                 return None, _fail(
                     f"Failed to derive WASM linker fingerprint closure: {exc}",
@@ -1348,7 +1359,7 @@ def _prepare_non_native_build_result_in_generation(
                     *((selection_policy,) if selection_policy is not None else ()),
                     {
                         "role": "wasm-link-source-closure",
-                        "content_digest": link_tool_closure.content_digest,
+                        "content_digest": link_source_identity,
                     },
                     {
                         "role": "wasm-native-link-plan",
@@ -1358,7 +1369,7 @@ def _prepare_non_native_build_result_in_generation(
                     },
                     {
                         "role": "wasm-deployment",
-                        "source_digest": deployment_closure.content_digest,
+                        "source_digest": deployment_source_identity,
                         "capability_policy": resolved_capability_policy.canonical_payload(),
                         "precompile": precompile,
                         "host_environment": {
@@ -1456,10 +1467,8 @@ def _prepare_non_native_build_result_in_generation(
                         str(deployment_plan.root / "wasm-link-evidence"),
                     ]
                 )
-                # The link is its own top-level build phase: without this
-                # marker its whole wall time (wasm-ld, post-link passes,
-                # wasm-opt, split-runtime processing) was charged to the last
-                # phase started before it, backend_cache_write.
+                # The linker and post-link optimizer are separate from input
+                # admission and cache lookup in wasm_link_prepare.
                 if phase_starts is not None and "wasm_link" not in phase_starts:
                     phase_starts["wasm_link"] = time.perf_counter()
                 try:
@@ -1513,7 +1522,7 @@ def _prepare_non_native_build_result_in_generation(
                             tool_facts=(
                                 {
                                     "role": "wasm-link-source-closure",
-                                    "content_digest": link_tool_closure.content_digest,
+                                    "content_digest": link_source_identity,
                                 },
                                 *(
                                     (optimizer_cache_fact,)
