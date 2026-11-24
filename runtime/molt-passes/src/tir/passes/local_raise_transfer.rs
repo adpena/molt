@@ -217,6 +217,7 @@ fn split_handler(func: &mut TirFunction, handler: BlockId, label: i64) -> Option
             terminator,
         },
     );
+    func.move_loop_terminator(handler, h2);
     // `H`'s arguments and its pending read are visible only beyond `H2` now.
     let rename = |value: &mut ValueId| {
         if let Some(&renamed) = substitution.get(value) {

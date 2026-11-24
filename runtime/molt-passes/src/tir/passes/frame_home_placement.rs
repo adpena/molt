@@ -1537,6 +1537,7 @@ fn split_carried_reader(func: &mut TirFunction, site: i64, flag: ValueId, writes
             terminator,
         },
     );
+    func.move_loop_terminator(bid, cont);
 }
 
 /// Turn the poll at `at` into a pending-work test whose cold block writes the
@@ -1596,6 +1597,7 @@ fn split_poll(func: &mut TirFunction, bid: BlockId, at: usize, writes: Vec<TirOp
             terminator,
         },
     );
+    func.move_loop_terminator(bid, rest);
 }
 
 #[cfg(test)]

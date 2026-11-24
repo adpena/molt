@@ -218,6 +218,7 @@ fn split_block_at(
             terminator,
         },
     );
+    caller.move_loop_terminator(bid, post_id);
     Some((bid, post_id))
 }
 

@@ -24,6 +24,77 @@ fn splice_removes_call_and_passes_verify() {
 }
 
 #[test]
+fn splice_moves_loop_condition_with_the_conditional_terminator() {
+    let callee = const_callee();
+    let mut caller = caller_calling_const("constfn");
+    let header = caller.entry_block;
+    let body = caller.fresh_block();
+    let leave = caller.fresh_block();
+    let condition = crate::fixture_support::append_parameter(&mut caller, TirType::Bool);
+    let call_result = caller.blocks[&header].ops[0].results[0];
+    caller.blocks.get_mut(&header).unwrap().terminator = Terminator::CondBranch {
+        cond: condition,
+        then_block: body,
+        then_args: vec![],
+        else_block: leave,
+        else_args: vec![],
+    };
+    caller.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![condition],
+            },
+        },
+    );
+    caller.blocks.insert(
+        leave,
+        TirBlock {
+            id: leave,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![call_result],
+            },
+        },
+    );
+    caller.loop_roles.insert(header, LoopRole::LoopHeader);
+    caller.loop_cond_blocks.insert(header, header);
+
+    let (mut caller, sites) = sites_in(caller, &["constfn"]);
+    let continuation =
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+            .expect("the conditional block's call must splice");
+    assert_eq!(caller.loop_cond_blocks[&header], continuation);
+    crate::tir::verify::verify_function(&caller).expect("valid SSA after the call split");
+    let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&caller);
+    assert!(crate::tir::lower_to_simple::validate_labels(&ops));
+    let exits: Vec<_> = ops
+        .iter()
+        .filter(|op| {
+            matches!(
+                op.kind,
+                molt_ir::OpKind::LoopBreakIfTrue | molt_ir::OpKind::LoopBreakIfFalse
+            )
+        })
+        .collect();
+    assert_eq!(
+        exits.len(),
+        1,
+        "the backend must receive the caller's structured break"
+    );
+    assert_eq!(exits[0].kind, molt_ir::OpKind::LoopBreakIfFalse);
+    assert_eq!(
+        exits[0].args.as_deref(),
+        Some(caller.param_names.as_slice())
+    );
+}
+
+#[test]
 fn splice_void_return() {
     // Callee returns nothing; caller calls it for effect.
     let mut callee = TirFunction::new(

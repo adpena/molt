@@ -5,27 +5,6 @@ use crate::tir::ops::TirOp;
 use crate::tir::types::TirType;
 use crate::tir::values::TirValue;
 
-pub(super) fn move_loop_terminator(
-    func: &mut TirFunction,
-    block: crate::tir::blocks::BlockId,
-    observe: crate::tir::blocks::BlockId,
-) {
-    use crate::tir::blocks::LoopRole;
-    for boundary in func
-        .loop_cond_blocks
-        .values_mut()
-        .chain(func.loop_pairs.values_mut())
-    {
-        if *boundary == block {
-            *boundary = observe;
-        }
-    }
-    if func.loop_roles.get(&block) == Some(&LoopRole::LoopEnd) {
-        func.loop_roles.remove(&block);
-        func.loop_roles.insert(observe, LoopRole::LoopEnd);
-    }
-}
-
 /// Each predicate's false edge executes the original operation. Both arms
 /// transfer one result to the pre-existing continuation.
 pub(super) fn select_guarded_result<const N: usize>(
@@ -120,6 +99,6 @@ pub(super) fn select_guarded_result<const N: usize>(
             terminator,
         },
     );
-    move_loop_terminator(func, block, join);
+    func.move_loop_terminator(block, join);
     yes
 }

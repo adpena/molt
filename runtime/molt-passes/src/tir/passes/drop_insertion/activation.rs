@@ -175,6 +175,7 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
                 terminator: continuation,
             },
         );
+        func.move_loop_terminator(bid, ready_block);
         changed += 1;
     }
     changed
