@@ -3793,7 +3793,8 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
     drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     # HF-937: postsubmit runs after every landing; holding the whole class made
-    # every lane's consumer gate wait for its full run.
+    # every lane's consumer gate wait for its full run. Each batch must also
+    # release its grant before a later, smaller batch runs.
     from collections.abc import Iterator
     from contextlib import contextmanager
 
@@ -3803,6 +3804,9 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
     requests: list[
         tuple[host_capacity.HostWorkClass, host_capacity.HostWorkDemand | None]
     ] = []
+
+    admissions: list[tuple[str, int | None]] = []
+    active: host_capacity.HostWorkDemand | None = None
 
     @contextmanager
     def slot(
@@ -3814,13 +3818,22 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         demand: host_capacity.HostWorkDemand | None = None,
         **_kwargs: object,
     ) -> Iterator[host_capacity.HostWorkAdmission]:
+        nonlocal active
+        assert active is None
         requests.append((work, demand))
+        active = demand
+        try_memory = None if demand is None else demand.bytes_per_worker
+        admissions.append(("admit", try_memory))
         grant = (
             None
             if demand is None
             else host_capacity.HostWorkGrant(demand.workers, demand.workers)
         )
-        yield host_capacity.HostWorkAdmission(0.0, grant)
+        try:
+            yield host_capacity.HostWorkAdmission(0.0, grant)
+        finally:
+            active = None
+            admissions.append(("release", try_memory))
 
     monkeypatch.setattr(host_capacity, "host_work_slot", slot)
 
@@ -3831,9 +3844,13 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         cancelled: Callable[[], bool],
         streams: tuple[Path, ...] | None = None,
     ) -> object:
-        if streams is not None:
-            for path in streams:
-                path.open("x").close()
+        assert streams is not None
+        path_name = next(part for part in command if part.startswith("tests/"))
+        admissions.append(
+            (path_name, None if active is None else active.bytes_per_worker)
+        )
+        for path in streams:
+            path.open("x").close()
         return _gate_outcome(0, "", "", None)
 
     class Progress:
@@ -3875,16 +3892,50 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         toolchains=("python",),
         pytest=True,
     )
-    molt_dev_gates.run_selected_gates([heavy], runtime, [], host_limit=lambda: 4)
-    ((work, demand),) = requests
+    small = SelectedGate(
+        command=(
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "--molt-worker-memory-gb=0.75",
+            "tests/test_small.py",
+        ),
+        toolchains=("python",),
+        pytest=True,
+    )
+    molt_dev_gates.run_selected_gates([heavy, small], runtime, [], host_limit=lambda: 1)
     if mode == "postsubmit":
-        assert work is host_capacity.HostWorkClass.DEVELOPMENT
-        assert demand == host_capacity.HostWorkDemand(
-            workers=1, bytes_per_worker=3 << 30, minimum_workers=1
-        )
+        assert requests == [
+            (
+                host_capacity.HostWorkClass.DEVELOPMENT,
+                host_capacity.HostWorkDemand(1, 3 << 30, 1),
+            ),
+            (
+                host_capacity.HostWorkClass.DEVELOPMENT,
+                host_capacity.HostWorkDemand(1, 1 << 30, 1),
+            ),
+        ]
+        assert admissions == [
+            ("admit", 3 << 30),
+            ("tests/test_heavy.py", 3 << 30),
+            ("release", 3 << 30),
+            ("admit", 1 << 30),
+            ("tests/test_small.py", 1 << 30),
+            ("release", 1 << 30),
+        ]
+        assert (runtime.output_dir / "gate-001.stdout.log").is_file()
+        assert (
+            runtime.output_dir / "postsubmit-rest-1" / "gate-002.stdout.log"
+        ).is_file()
     else:
-        assert work is host_capacity.HostWorkClass.INTEGRATION
-        assert demand is None
+        assert requests == [(host_capacity.HostWorkClass.INTEGRATION, None)]
+        assert admissions == [
+            ("admit", None),
+            ("tests/test_heavy.py", None),
+            ("tests/test_small.py", None),
+            ("release", None),
+        ]
 
 
 @pytest.mark.parametrize("second_rc", [0, 3])

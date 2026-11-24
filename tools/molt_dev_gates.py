@@ -22,11 +22,12 @@ from __future__ import annotations
 from tools.molt_dev_policy import Deferred, GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import datetime as dt
 import hashlib
+from itertools import groupby
 import json
 import os
 from pathlib import Path
@@ -745,6 +746,35 @@ def _shared_target_order(commands: list[_LocalGateCommand]) -> list[_LocalGateCo
     return ordered
 
 
+def _heavy_gate_batches(
+    heavy: list[tuple[int, Gate]], runtime: GateRuntime
+) -> Iterator[tuple[list[tuple[int, Gate]], HostWorkDemand | None]]:
+    if not heavy:
+        return
+    if runtime.mode is not LandingMode.POSTSUBMIT:
+        yield heavy, None
+        return
+
+    from molt.host_capacity import HostWorkDemand, cpu_count
+
+    def memory_per_worker(entry: tuple[int, Gate]) -> int:
+        return gate_work_demand(
+            (entry[1],), repo=runtime.repo, requested_workers=1
+        ).bytes_per_worker
+
+    worker_limit = max(1, cpu_count() // 2)
+    for memory, same_memory in groupby(heavy, key=memory_per_worker):
+        batch = list(same_memory)
+        yield (
+            batch,
+            HostWorkDemand(
+                workers=min(len(batch), worker_limit),
+                bytes_per_worker=memory,
+                minimum_workers=1,
+            ),
+        )
+
+
 def run_selected_gates(
     gates: Sequence[Gate],
     runtime: GateRuntime,
@@ -767,8 +797,9 @@ def run_selected_gates(
     naming each failed gate at the end: postsubmit reports main's state, and a
     first-failure stop hid every later gate (HF-937: no run since 2026-11-01
     reached a Cargo gate past its first red static check). Read-only checks
-    then run one at a time, and the heavy block reruns the gates a failure
-    cancelled, without the failed ones. Runner, custody and cancellation
+    then run one at a time. Consecutive heavy gates with equal memory demands
+    share a grant. Each batch reruns gates a failure cancelled, excluding the
+    failed ones. Runner, custody and cancellation
     faults still stop at once.
     """
     for item in runtime.deferred:
@@ -832,7 +863,9 @@ def run_selected_gates(
                 raise
             failures.append(failure)
     _check_cancellation(runtime)
-    if heavy:
+    continuation = 0
+    for batch, demand in _heavy_gate_batches(heavy, runtime):
+        _check_cancellation(runtime)
         from molt import host_capacity
 
         # Every gate run (a try run, a batch, postsubmit, a receipt rerun)
@@ -849,29 +882,22 @@ def run_selected_gates(
                 else host_capacity.HostWorkClass.DEVELOPMENT
             ),
             say=runtime.say,
-            demand=(
-                gate_work_demand(
-                    [gate for _ordinal, gate in heavy],
-                    repo=runtime.repo,
-                    requested_workers=max(1, host_capacity.cpu_count() // 2),
-                )
-                if runtime.mode is LandingMode.POSTSUBMIT
-                else None
-            ),
+            demand=demand,
         ) as admission:
             grant = admission.grant or runtime.host_grant
-            runtime = replace(runtime, host_grant=grant)
-            remaining = heavy
-            continuation = 0
+            admitted = replace(runtime, host_grant=grant)
+            _check_cancellation(runtime)
+            remaining = batch
             while remaining:
-                attempt = runtime
+                attempt = admitted
                 if continuation:
                     output = runtime.output_dir / f"postsubmit-rest-{continuation}"
                     attempt = replace(
-                        runtime,
+                        admitted,
                         output_dir=output,
                         receipt_path=output / runtime.receipt_path.name,
                     )
+                continuation += 1
                 try:
                     _run_heavy_gates(remaining, attempt, gate_seconds, host_limit)
                     break
@@ -896,7 +922,6 @@ def run_selected_gates(
                         if gate not in runtime.passed
                         and display(gate.command) not in failed
                     ]
-                    continuation += 1
     _check_cancellation(runtime)
     if failures:
         raise CandidateFailure(

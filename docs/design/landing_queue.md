@@ -151,10 +151,11 @@ health without suspect commits or restoration advice. Terminal memory pressure
 also stops postsubmit as inconclusive without replaying independent gates.
 Cancelled work can still
 repeat; independent-collection scheduling remains a separate optimization.
-Postsubmit's heavy
-block takes half the development class as a share (`postsubmit_demand`), not the
-whole class: holding the class made every lane's consumer gate wait for the whole
-run once fast landings started postsubmit. Pytest
+Postsubmit shares the development class in batches of consecutive heavy gates
+with the same declared memory demand. It releases the grant at each batch
+boundary so a waiting build can acquire capacity that later gates do not need.
+Subsequent batches use the same numbered receipt namespaces as retries and
+retain the original gate ordinals. Pytest
 writes JUnit beside each gate's logs, using its built-in `--junitxml` and xunit1
 file attributes. The aggregate `<head>.<run>.postsubmit-result.json` receipt records
 the outcome, test node IDs, prior green, suspect commits, exact restoration
