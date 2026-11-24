@@ -3,9 +3,7 @@
 //! A [`FunctionSummary`] is the compact, callee-side fact the interprocedural
 //! tier reads at each call site: is the callee a leaf, how big is it (the inline
 //! cost input), and what type does it return (the IPSCCP / return-type
-//! backpropagation seed). Summaries are computed **bottom-up over the call
-//! graph** — every callee's summary is finalized before its callers' — so a
-//! later inliner (E1) / IPSCCP (E4) consumes ready facts in a single pass.
+//! backpropagation seed).
 //!
 //! This is the minimal, sound summary set S4 needs to stand up the module phase
 //! and replace the native leaf scan. The richer slots the IPO tier will add
@@ -42,34 +40,17 @@ pub struct ModuleSummaries {
 }
 
 impl ModuleSummaries {
-    /// Compute every function's summary **bottom-up over the call graph**.
-    ///
-    /// The traversal order is [`CallGraph::bottom_up_order`] (callees before
-    /// callers); each function's summary is finalized in that order so that, as
-    /// the IPO tier grows summary fields that genuinely depend on callee
-    /// summaries (purity, escape), the computation already visits in the correct
-    /// dependency order. The fields computed today (leaf / op-count / return
-    /// type) are intraprocedural, so the order does not change their values —
-    /// but establishing the bottom-up scaffold now is the structural point of
-    /// this pass.
+    /// Collect body-local facts by function row. These facts do not depend
+    /// on a callee summary, so this query does not request SCC order.
     pub fn compute(module: &TirModule, call_graph: &CallGraph) -> ModuleSummaries {
-        let body = module.body_index();
-        let mut summaries: Vec<Option<FunctionSummary>> = vec![None; module.table.len()];
-
-        for scc in call_graph.bottom_up_order() {
-            for id in scc {
-                let Some(func) = body[id.index()].map(|index| &module.functions[index]) else {
-                    continue;
-                };
-                let op_count = func.blocks.values().map(|b| b.ops.len()).sum();
-                summaries[id.index()] = Some(FunctionSummary {
-                    is_leaf: !call_graph.makes_any_call(id),
-                    op_count,
-                    return_type: func.return_type.clone(),
-                });
-            }
+        let mut summaries = vec![None; module.table.len()];
+        for (&id, func) in module.ids.iter().zip(&module.functions) {
+            summaries[id.index()] = Some(FunctionSummary {
+                is_leaf: !call_graph.makes_any_call(id),
+                op_count: func.blocks.values().map(|block| block.ops.len()).sum(),
+                return_type: func.return_type.clone(),
+            });
         }
-
         ModuleSummaries { summaries }
     }
 

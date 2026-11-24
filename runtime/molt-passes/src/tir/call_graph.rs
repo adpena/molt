@@ -73,6 +73,7 @@
 //! and builtin-dispatch unit tests.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use molt_ir::{FunctionId, FunctionSet};
 
@@ -119,10 +120,9 @@ fn alloc_task_poll_target(op: &TirOp, has_body: &FunctionSet) -> Option<Function
 
 /// The whole-program call graph of a [`TirModule`].
 ///
-/// Built once by the module phase and shared (read-only) for the duration of
-/// module compilation. Function identity is the typed [`FunctionId`] of the
-/// module's table; every per-function fact is a vector or bitset indexed by
-/// it (HF-847 slice 1, I7).
+/// An immutable snapshot of the module's call edges. Rebuild it to query
+/// edges changed by a transform. Every per-function fact is indexed by the
+/// module table's typed [`FunctionId`] (HF-847 slice 1, I7).
 #[derive(Debug, Clone, Default)]
 pub struct CallGraph {
     /// Functions with a body in this module, in id order.
@@ -140,11 +140,17 @@ pub struct CallGraph {
     /// Functions whose body contains an opaque (unresolved) call. An opaque
     /// call can reach any function, so it is recursion-capable.
     has_opaque_call: FunctionSet,
-    /// Functions on a static call cycle: a member of a multi-node SCC or a
-    /// function with a direct self-edge. See [`Self::in_static_cycle`].
+    /// Computed only for consumers that need cycle membership or callee order.
+    components: OnceLock<CallComponents>,
+}
+
+/// Components in callee-first order, with contiguous members and offsets.
+/// Most components are singletons, so avoid one heap allocation per function.
+#[derive(Debug, Clone)]
+struct CallComponents {
+    members: Vec<FunctionId>,
+    offsets: Vec<usize>,
     static_cycle: FunctionSet,
-    /// The static-cycle set plus every function with an opaque call
-    /// (conservatively recursion-capable). See [`Self::recursive_set`].
     recursive: FunctionSet,
 }
 
@@ -152,9 +158,9 @@ impl CallGraph {
     /// Build the call graph from a lifted [`TirModule`].
     ///
     /// Computes exact scalar provenance and candidate typed-slot facts once
-    /// per function, then scans operation/terminator callback sites and runs
-    /// Tarjan SCC over the edges. Provenance and slot analysis include fixed
-    /// points; this is not merely a linear opcode spelling scan.
+    /// per function, then scans operation/terminator callback sites. Cycle queries
+    /// share the decomposition of these immutable edges. Provenance and slot
+    /// analysis include fixed points.
     pub fn build(module: &TirModule) -> CallGraph {
         let rows = module.table.len();
         let mut functions = module.ids.clone();
@@ -221,25 +227,15 @@ impl CallGraph {
             list.dedup();
         }
 
-        let mut graph = CallGraph {
+        CallGraph {
             functions,
             has_body,
             edges,
             callers,
             makes_any_call,
             has_opaque_call,
-            static_cycle: FunctionSet::default(),
-            recursive: FunctionSet::default(),
-        };
-        graph.static_cycle = graph.compute_static_cycle_set();
-        let mut recursive = graph.static_cycle.clone();
-        for &id in &graph.functions {
-            if graph.has_opaque_call(id) {
-                recursive.insert(id);
-            }
+            components: OnceLock::new(),
         }
-        graph.recursive = recursive;
-        graph
     }
 
     /// The functions with a body in this module, in id order.
@@ -300,7 +296,7 @@ impl CallGraph {
     /// closed — any function containing an opaque call (which could re-enter
     /// the program and recurse). The native recursion guard reads it.
     pub fn recursive_set(&self) -> &FunctionSet {
-        &self.recursive
+        &self.components().recursive
     }
 
     /// Whether `id` lies on a static call cycle: a member of a multi-node SCC
@@ -308,48 +304,29 @@ impl CallGraph {
     /// fusion) copies a body at compile time, so only such a cycle can make it
     /// unbounded; an opaque call cannot (design spliced_frames.md, 4.1).
     pub fn in_static_cycle(&self, id: FunctionId) -> bool {
-        self.static_cycle.contains(id)
+        self.components().static_cycle.contains(id)
     }
 
     /// Bottom-up topological order over the **SCC condensation**: each SCC
     /// appears after all SCCs it calls into, so a bottom-up interprocedural pass
     /// (inliner, IP-escape, purity) sees every callee's summary before its
-    /// callers. Within one returned `Vec`, the ids form one SCC (singleton for
-    /// non-recursive functions; multi-element for a recursion cycle), sorted.
-    /// Opaque edges are not in the static graph, so they do not constrain the
-    /// order.
-    pub fn bottom_up_order(&self) -> Vec<Vec<FunctionId>> {
-        self.tarjan_sccs()
+    /// callers. Each slice is one SCC, with its members sorted. Opaque
+    /// edges do not constrain the order.
+    pub fn bottom_up_order(&self) -> impl ExactSizeIterator<Item = &[FunctionId]> {
+        let components = self.components();
+        components
+            .offsets
+            .windows(2)
+            .map(|bounds| &components.members[bounds[0]..bounds[1]])
     }
 
-    // -- internals -----------------------------------------------------------
-
-    /// Compute the static-cycle set via Tarjan SCCs + self-edges.
-    fn compute_static_cycle_set(&self) -> FunctionSet {
-        let mut cycle = FunctionSet::with_capacity(self.edges.len());
-        for scc in self.tarjan_sccs() {
-            if scc.len() > 1 {
-                for id in scc {
-                    cycle.insert(id);
-                }
-            }
-        }
-        for &id in &self.functions {
-            // Direct self-recursion: Tarjan reports a singleton.
-            if self.callees(id).contains(&id) {
-                cycle.insert(id);
-            }
-        }
-        cycle
+    fn components(&self) -> &CallComponents {
+        self.components.get_or_init(|| self.tarjan_sccs())
     }
 
-    /// Tarjan's strongly-connected-components algorithm over the static-direct
-    /// edge set, returned in **reverse topological (bottom-up) order**: callees
-    /// before callers. Each inner `Vec` is one SCC, its members sorted.
-    ///
-    /// Iterative (explicit stack) to avoid blowing the native stack on deep call
-    /// chains. State is indexed by `FunctionId`.
-    fn tarjan_sccs(&self) -> Vec<Vec<FunctionId>> {
+    /// Iterative Tarjan over static edges. The explicit stack also handles
+    /// giant call chains without growing the native stack.
+    fn tarjan_sccs(&self) -> CallComponents {
         #[derive(Clone, Copy)]
         struct NodeState {
             index: Option<usize>,
@@ -364,23 +341,28 @@ impl CallGraph {
             };
             self.edges.len()
         ];
-        let mut stack: Vec<FunctionId> = Vec::new();
+        let mut stack = Vec::new();
         let mut next_index = 0usize;
-        let mut sccs: Vec<Vec<FunctionId>> = Vec::new();
+        let mut members = Vec::with_capacity(self.functions.len());
+        let mut offsets = Vec::with_capacity(self.functions.len() + 1);
+        offsets.push(0);
+        let mut static_cycle = FunctionSet::with_capacity(self.edges.len());
+        let mut recursive = self.has_opaque_call.clone();
 
         struct Frame {
             node: FunctionId,
             succ_cursor: usize,
         }
 
+        let mut frames = Vec::new();
         for &start in &self.functions {
             if state[start.index()].index.is_some() {
                 continue;
             }
-            let mut frames = vec![Frame {
+            frames.push(Frame {
                 node: start,
                 succ_cursor: 0,
-            }];
+            });
             state[start.index()] = NodeState {
                 index: Some(next_index),
                 lowlink: next_index,
@@ -417,17 +399,24 @@ impl CallGraph {
                     }
                 } else {
                     if Some(state[v.index()].lowlink) == state[v.index()].index {
-                        let mut component = Vec::new();
+                        let start = members.len();
                         loop {
                             let w = stack.pop().expect("tarjan stack underflow");
                             state[w.index()].on_stack = false;
-                            component.push(w);
+                            members.push(w);
                             if w == v {
                                 break;
                             }
                         }
+                        let component = &mut members[start..];
                         component.sort_unstable();
-                        sccs.push(component);
+                        if component.len() > 1 || successors.binary_search(&v).is_ok() {
+                            for &member in component.iter() {
+                                static_cycle.insert(member);
+                                recursive.insert(member);
+                            }
+                        }
+                        offsets.push(members.len());
                     }
                     frames.pop();
                     if let Some(parent) = frames.last() {
@@ -438,7 +427,12 @@ impl CallGraph {
                 }
             }
         }
-        sccs
+        CallComponents {
+            members,
+            offsets,
+            static_cycle,
+            recursive,
+        }
     }
 }
 
@@ -539,8 +533,7 @@ pub(crate) mod named {
         pub(crate) fn bottom_up_order(&self) -> Vec<Vec<String>> {
             self.cg
                 .bottom_up_order()
-                .into_iter()
-                .map(|scc| self.names(scc))
+                .map(|scc| self.names(scc.iter().copied()))
                 .collect()
         }
         pub(crate) fn reachable_from<const N: usize>(&self, roots: [&str; N]) -> BTreeSet<String> {
@@ -592,7 +585,7 @@ mod tests {
         TirModule::decode_spelled("m", funcs)
     }
 
-    use super::named::NamedCallGraph as G;
+    use super::{CallGraph, named::NamedCallGraph as G};
 
     // -- leaf detection -------------------------------------------------------
 
@@ -922,6 +915,29 @@ mod tests {
         let multi: Vec<&Vec<String>> = order.iter().filter(|s| s.len() > 1).collect();
         assert_eq!(multi.len(), 1);
         assert_eq!(multi[0], &vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn rebuilding_after_edge_removal_preserves_each_graphs_components() {
+        let a = func_calling("a", &[Some("b")]);
+        let b = func_calling("b", &[Some("a")]);
+        let mut module = module(vec![a, b]);
+        let (a, b) = (module.ids[0], module.ids[1]);
+        let cycle = CallGraph::build(&module);
+
+        // Remove b -> a. Ask for the old graph's decomposition only after
+        // building its replacement, so both queries must use their own edges.
+        let body = &mut module.functions[1];
+        body.blocks.get_mut(&body.entry_block).unwrap().ops.clear();
+        let chain = CallGraph::build(&module);
+        assert!(chain.recursive_set().is_empty());
+        assert_eq!(
+            chain.bottom_up_order().collect::<Vec<_>>(),
+            [&[b][..], &[a][..]]
+        );
+        assert!(cycle.in_static_cycle(a));
+        assert!(cycle.in_static_cycle(b));
+        assert_eq!(cycle.bottom_up_order().collect::<Vec<_>>(), [&[a, b][..]]);
     }
 
     #[test]
