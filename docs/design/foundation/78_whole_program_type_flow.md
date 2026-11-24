@@ -218,9 +218,9 @@ inlines the callee also depends on its body. An edit that leaves the first set o
 keeps the caller's analysis valid. A body edit can still invalidate an inlining caller's code.
 Use the same typed dependency identities for source and stdlib contexts.
 
-The current implementation enqueues a generic context for every body and scans the finalized
-call targets again for each candidate clone. A single traversal of those targets can establish
-which contexts need bodies. Reducing generic analysis itself also requires the existing
+The current implementation enqueues a generic context for every body. After inference, one
+traversal of its final call targets establishes which contexts need specialized bodies. Clone
+rows follow context order and carry their origin directly to deduplication. Reducing generic analysis itself also requires the existing
 reachability and callable-escape proofs. Keep generic entries wherever a supported observer
 can reach an unseen call. Reuse prepared TIR and target artifacts at their existing boundaries.
 
