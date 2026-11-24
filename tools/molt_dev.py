@@ -139,7 +139,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -180,6 +181,7 @@ from tools.molt_dev_common import (  # noqa: E402
     _step,
     _warn,
 )
+from tools import landing_receipt  # noqa: E402
 from tools import molt_dev_change_ids, molt_dev_controller, molt_dev_retire  # noqa: E402
 
 from tools.git_identity import (  # noqa: E402
@@ -205,6 +207,7 @@ from tools import venv_exec  # noqa: E402
 from tools.memory_guard_core.repro_context import argv_head  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
     CancelReason,
+    GateCancellation,
     GateOutcome,
     GateRuntime,
     admit_selected_output_capacity,
@@ -275,6 +278,7 @@ class Git:
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = immutable_git_environment(os.environ)
         env["GIT_TERMINAL_PROMPT"] = "0"
@@ -282,6 +286,7 @@ class Git:
             ["git", "-C", str(self.repo), *args],
             env=ProcessEnvironment(env),
             input_text=input_text,
+            timeout=timeout,
         )
         if check and proc.returncode != 0:
             raise DriverError(
@@ -309,6 +314,25 @@ class Git:
 
     def rev_parse(self, ref: str) -> str:
         return self._run(["rev-parse", "--verify", ref]).stdout.strip()
+
+    def remote_head(
+        self, remote: str, branch: str, *, timeout: float | None = None
+    ) -> str | None:
+        ref = f"refs/heads/{branch}"
+        listed = self._run(
+            ["ls-remote", "--exit-code", "--refs", remote, ref],
+            check=False,
+            timeout=timeout,
+        )
+        if listed.returncode != 0:
+            return None
+        tip, separator, observed = listed.stdout.rstrip("\n").partition("\t")
+        if not separator or observed != ref:
+            return None
+        try:
+            return require_git_object_id(tip, label="landing remote tip")
+        except ValueError:
+            return None
 
     def head_sha(self) -> str:
         return self.rev_parse("HEAD")
@@ -931,6 +955,36 @@ def _gate_pycache_prefix(repo: Path, env: Mapping[str, str]) -> Path:
     return prefix
 
 
+@contextmanager
+def _watch_landing_base(
+    probe: Callable[[], str | None],
+    expected: str,
+    *,
+    interval: float = 30.0,
+) -> Iterator[threading.Event]:
+    """Observe upstream without blocking the process guards that close stale gates."""
+    advanced = threading.Event()
+    stop = threading.Event()
+
+    def observe() -> None:
+        while not stop.wait(interval):
+            try:
+                tip = probe()
+            except (OSError, ValueError):
+                tip = None
+            if tip is not None and tip != expected:
+                advanced.set()
+                return
+
+    worker = threading.Thread(target=observe, name="molt-landing-upstream")
+    worker.start()
+    try:
+        yield advanced
+    finally:
+        stop.set()
+        worker.join()
+
+
 def _gate_runtime(
     git: Git,
     selected_commit: str,
@@ -1020,21 +1074,17 @@ def _carry_prior_gates(
     if prior_base == base and tree != git.rev_parse(f"{commit}^{{tree}}"):
         _say("    replay tree differs from the tested tree; every gate runs")
         return None
-    from tools import landing_receipt
     from tools.molt_dev_land_fast import _changed, _interaction_rerun, split_carried
 
     common_dir = _git_common_directory(repo)
     prior = (
         None
         if common_dir is None
-        else landing_receipt.read_receipt(common_dir, tree=tree, base=prior_base)
+        else landing_receipt.read_receipt(
+            common_dir, tree=tree, base=prior_base, allow_interrupted=True
+        )
     )
-    if (
-        prior is None
-        or prior.get("status") != "passed"
-        or prior.get("tree") != tree
-        or prior.get("base") != prior_base
-    ):
+    if prior is None or prior.get("tree") != tree or prior.get("base") != prior_base:
         _say(
             f"    no passing receipt for tree {tree[:12]} on {prior_base[:12]}; every gate runs"
         )
@@ -1106,11 +1156,9 @@ def _write_queue_receipt(
     controller: str | None,
     postsubmit_only: Sequence[str] = (),
     carried: Sequence[Mapping[str, object]] = (),
+    status: landing_receipt.ReceiptStatus = landing_receipt.ReceiptStatus.PASSED,
 ) -> str:
-    """The landing receipt of an integrate run: every selected gate passed,
-    here or (``carried``) on the earlier base its record names. ``logs`` maps
-    each shown command to the log of the run that passed."""
-    from tools import landing_receipt
+    """Record proven gates. Only a completed selection authorizes publication."""
     from tools.molt_dev_gates import display
 
     common_dir = _git_common_directory(repo)
@@ -1136,6 +1184,7 @@ def _write_queue_receipt(
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
         gates=records,
         postsubmit_only=postsubmit_only,
+        status=status,
     )
     _ok(f"landing receipt {landing_receipt.write_receipt(common_dir, receipt)}")
     return tree
@@ -1591,31 +1640,61 @@ def _integrate_exclusive(
         )
         gate_seconds.extend(remote_seconds)
     else:
-        runtime = _gate_runtime(
-            git,
-            selected_commit,
-            repo=repo,
-            policy=policy,
-            config=config,
-            environments=environments,
-            cargo_outputs=cargo_outputs,
-            capacity_requirements=capacity_requirements,
-            progress=progress,
-            toolchains=toolchains,
-            deferred=prepared.deferred,
-        )
         from molt.disk_capacity import DiskCapacityError
 
-        gate_logs = runtime.passed_logs
-        try:
-            run_selected_gates(
-                gate_cmds,
-                runtime,
-                gate_seconds,
-                host_limit=lambda: concurrent_gate_limit(),
+        watch = (
+            _watch_landing_base(
+                lambda: git.remote_head(remote, branch, timeout=5.0), upstream_before
             )
-        except DiskCapacityError as exc:
-            raise DriverError(f"gate output capacity refused: {exc}") from exc
+            if args.expected_upstream is not None and not args.no_push
+            else nullcontext(threading.Event())
+        )
+        with watch as advanced:
+            runtime = _gate_runtime(
+                git,
+                selected_commit,
+                repo=repo,
+                policy=policy,
+                config=config,
+                environments=environments,
+                cargo_outputs=cargo_outputs,
+                capacity_requirements=capacity_requirements,
+                progress=progress,
+                toolchains=toolchains,
+                cancelled=advanced.is_set,
+                cancel_reason=CancelReason.UPSTREAM_ADVANCED,
+                deferred=prepared.deferred,
+            )
+            gate_logs = runtime.passed_logs
+            try:
+                run_selected_gates(
+                    gate_cmds,
+                    runtime,
+                    gate_seconds,
+                    host_limit=lambda: concurrent_gate_limit(),
+                )
+            except DiskCapacityError as exc:
+                raise DriverError(f"gate output capacity refused: {exc}") from exc
+            except GateCancellation as exc:
+                if exc.reason is not CancelReason.UPSTREAM_ADVANCED:
+                    raise
+                _assert_integration_source(git, selected_commit)
+                tested_tree = _write_queue_receipt(
+                    repo,
+                    git,
+                    base=upstream_before,
+                    commit=selected_commit,
+                    gates=runtime.passed,
+                    seconds=gate_seconds,
+                    logs=gate_logs,
+                    controller=progress.controller,
+                    carried=carried_records,
+                    status=landing_receipt.ReceiptStatus.INTERRUPTED,
+                )
+                raise PublicationRace(
+                    f"{upstream_ref} advanced during gates for {git.short(selected_commit)}",
+                    tested_tree=tested_tree,
+                ) from exc
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
     tested_tree = None

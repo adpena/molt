@@ -305,17 +305,6 @@ def split_carried(
     return run, carried
 
 
-def _remote_main(git, remote: str) -> str | None:
-    listed = git._run(["ls-remote", remote, MAIN_REF], check=False)
-    if listed.returncode != 0:
-        return None
-    for line in listed.stdout.splitlines():
-        fields = line.split()
-        if len(fields) == 2 and fields[1] == MAIN_REF:
-            return fields[0]
-    return None
-
-
 def _publish(
     git,
     repo: Path,
@@ -389,7 +378,7 @@ def _publish(
                 f"git push exited {pushed.returncode}; reading the remote instead "
                 f"(hazard 2)\n{pushed.stdout.strip()}\n{pushed.stderr.strip()}"
             )
-        observed = _remote_main(git, remote)
+        observed = git.remote_head(remote, branch)
         if observed == landing:
             git.fetch(remote, branch)
             if not git.is_ancestor(landing, git.rev_parse(f"{remote}/{branch}")):

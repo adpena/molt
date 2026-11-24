@@ -73,6 +73,7 @@ class CancelReason(StrEnum):
 
     # A higher-priority landing request preempts a closed postsubmit run.
     PENDING_LANDING = "postsubmit cancelled for a pending landing request"
+    UPSTREAM_ADVANCED = "landing gates cancelled after upstream advanced"
     # The lane precheck's try run reached its budget (PRECHECK_BUDGET).
     PRECHECK_BUDGET = "the precheck try run reached its budget"
 
@@ -83,7 +84,7 @@ class CancelReason(StrEnum):
         A budget refusal names the gate and its unresolved closure instead:
         the precheck proves nothing for it, and the batch reruns it in its own
         sandbox."""
-        return self is CancelReason.PENDING_LANDING
+        return self is not CancelReason.PRECHECK_BUDGET
 
 
 class GateCancellation(DriverError):

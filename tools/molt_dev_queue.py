@@ -891,7 +891,7 @@ def _batch_key(batch: Sequence[LandingRequest]) -> list[list[str]]:
 def record_tested(
     paths: QueuePaths, batch: Sequence[LandingRequest], *, tree: str, base: str
 ) -> None:
-    """Keep the passing (tree, base) of a batch awaiting publication."""
+    """Keep the (tree, base) of a batch with reusable gate evidence."""
     _write_json(
         paths.tested,
         {
@@ -906,7 +906,7 @@ def record_tested(
 def tested_receipt(
     paths: QueuePaths, batch: Sequence[LandingRequest]
 ) -> tuple[str, str] | None:
-    """The (tree, base) an earlier run of exactly this batch passed on, if any."""
+    """The (tree, base) an earlier run of exactly this batch tested, if any."""
     try:
         data = json.loads(paths.tested.read_text(encoding="utf-8"))
     except (OSError, ValueError):
