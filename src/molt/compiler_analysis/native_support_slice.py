@@ -25,13 +25,15 @@ class ModuleBodySelection:
     """The source statements a module producer is authorized to lower.
 
     Complete source is distinct from a support slice, including on the wire.
-    Neither variant certifies target lowerability or a closed object provider.
+    For complete source, the closed-program planner supplies module-local
+    declaration identities whose bodies it has proven unread. The resulting
+    selection is a lowering input and may remain equal across different
+    program seals. Neither variant certifies target lowerability.
     """
 
     kind: Literal["complete_source", "native_support"]
     roots: tuple[str, ...] = ()
     declaration_only: tuple[PythonSourceKey, ...] = ()
-    plan_seal: str | None = None
 
     def __post_init__(self) -> None:
         roots = canonical_native_support_roots(self.roots)
@@ -43,16 +45,11 @@ class ModuleBodySelection:
                 raise ValueError("native support selection requires binding roots")
         else:
             raise ValueError("invalid module body selection kind")
-        if self.plan_seal is None:
-            if self.declaration_only:
-                raise ValueError("declaration-only entries require a sealed plan")
-        elif (
+        if self.declaration_only and (
             self.kind != "complete_source"
-            or len(self.plan_seal) != 64
-            or any(char not in "0123456789abcdef" for char in self.plan_seal)
             or tuple(sorted(set(self.declaration_only))) != self.declaration_only
         ):
-            raise ValueError("invalid sealed module body selection")
+            raise ValueError("invalid declaration-only module body selection")
         object.__setattr__(self, "roots", roots)
 
     @classmethod
@@ -63,8 +60,7 @@ class ModuleBodySelection:
 
     def payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"kind": self.kind, "roots": list(self.roots)}
-        if self.plan_seal is not None:
-            payload["plan_seal"] = self.plan_seal
+        if self.declaration_only:
             payload["declaration_only"] = [list(key) for key in self.declaration_only]
         return payload
 
@@ -72,15 +68,14 @@ class ModuleBodySelection:
     def from_payload(cls, payload: object) -> ModuleBodySelection:
         if not isinstance(payload, dict) or set(payload) not in (
             {"kind", "roots"},
-            {"kind", "roots", "plan_seal", "declaration_only"},
+            {"kind", "roots", "declaration_only"},
         ):
             raise ValueError("missing or invalid module body selection")
         roots = payload["roots"]
         if not isinstance(roots, list):
             raise ValueError("invalid module body selection roots")
-        seal = payload.get("plan_seal")
         keys = payload.get("declaration_only", [])
-        if (seal is not None and type(seal) is not str) or not isinstance(keys, list):
+        if not isinstance(keys, list):
             raise ValueError("invalid declaration-only selection identity")
         declaration_only: list[PythonSourceKey] = []
         for key in keys:
@@ -92,7 +87,7 @@ class ModuleBodySelection:
             ):
                 raise ValueError("invalid declaration-only source identity")
             declaration_only.append((key[0], key[1], key[2], key[3], key[4]))
-        selection = cls(payload["kind"], tuple(roots), tuple(declaration_only), seal)
+        selection = cls(payload["kind"], tuple(roots), tuple(declaration_only))
         if selection.payload() != payload:
             raise ValueError("noncanonical module body selection")
         return selection

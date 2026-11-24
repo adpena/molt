@@ -2406,14 +2406,14 @@ def _seal_frontend_body_plan(
     if context.scoped_lowering_inputs is not None:
         context.scoped_lowering_inputs.body_selections.update(
             {
-                module: ModuleBodySelection(
-                    "complete_source", declaration_only=keys, plan_seal=seal
-                )
+                module: ModuleBodySelection("complete_source", declaration_only=keys)
                 for module, keys in selections.items()
             },
         )
     elif selections:
-        raise ValueError("sealed body selection requires scoped lowering inputs")
+        raise ValueError(
+            "declaration-only body selection requires scoped lowering inputs"
+        )
     return seal
 
 
