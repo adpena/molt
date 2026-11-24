@@ -3051,7 +3051,7 @@ def test_falcon_execution_contract_changes_select_existing_wasm_proof() -> None:
 def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     rows = {row.id: row for row in PLAN.commands}
     startup = rows["wasm.test.startup-lifecycle"]
-    assert set(startup.argv[6:]) == {
+    assert set(startup.pytest_targets) == {
         "tests/test_wasm_startup_failures.py",
         "tests/test_wasm_optimization_imported_memory.py",
         "tests/test_generate_worker.py",
@@ -3082,28 +3082,25 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     assert runner.dependencies == ("wasm.build.backend", "wasm.build.host")
     # The import-collection cases that validate WASM with the pinned
     # wasm-tools run here, where the job provisions it (HF-160).
-    assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
-        *(
-            "tests/cli/test_cli_import_collection.py::"
-            f"test_backend_compile_stages_one_shot_output_into_cache[{case}-0]"
-            for case in ("False-False", "False-True", "True-False", "True-True")
-        ),
+    assert set(runner.pytest_targets) == {
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache",
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard",
     }
-    assert not set(startup.argv[6:]) & {
-        arg for arg in runner.argv if arg.startswith("tests/")
-    }
-    for path in startup.argv[6:]:
+    assert "wasm-tools" in PLAN.required_toolchains(runner)
+    assert set(startup.pytest_targets).isdisjoint(runner.pytest_targets)
+    for path in startup.pytest_targets:
         assert "wasm" in {
             family.name for family in PLAN.select([path.split("::", 1)[0]]).selected
         }
     split = rows["wasm.integration.split-runtime"]
-    assert set(split.argv[6:]) == {
+    assert set(split.pytest_targets) == {
         "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts",
         "tests/test_wasm_split_runtime.py::TestWorkerJsContent",
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
+        "tests/test_wasm_size_tracking.py",
+        "tests/test_wasm_vfs_e2e.py",
         # HF-699's synchronous-run DB parity, a strict expected failure.
         "tests/findings/test_wasm_browser_db_host_sync_run.py",
         # HF-867's attention backend gate, a strict expected failure.
@@ -3113,7 +3110,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)
     assert any(
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"
-        in command.argv
+        in command.pytest_targets
         for command in PLAN.commands
         if command.id == "wasm.test.startup-lifecycle"
     )
