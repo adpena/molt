@@ -6757,6 +6757,7 @@ def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
     from tools import molt_dev_queue as queue
 
     artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     primary = tmp_path / "molt-src"
     _init_repo(primary)
@@ -6825,6 +6826,7 @@ def test_main_worktree_preserves_opaque_git_path(
     from tools import molt_dev_queue as queue
 
     artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     primary = tmp_path / name
     _init_repo(primary)
