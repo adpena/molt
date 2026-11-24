@@ -4,6 +4,7 @@ import importlib
 import json
 from pathlib import Path
 import subprocess
+import sysconfig
 
 import pytest
 
@@ -329,9 +330,11 @@ def test_installed_source_admission_checks_the_selected_payload(
         calls.append(("binary captured", self.product, self.path))
         return capture(self)
 
-    def installed(root):
+    def installed(
+        root: Path, *, sources: compiler_distribution.InstalledSourceAdmission
+    ) -> compiler_distribution.InstalledCompiler | None:
         calls.append(root)
-        return original_installed(root)
+        return original_installed(root, sources=sources)
 
     monkeypatch.setattr(compiler_distribution, "installed_compiler", installed)
     monkeypatch.setattr(
@@ -563,11 +566,9 @@ def test_wheel_layout_classification_uses_own_install_scheme_without_attestation
     try:
         with monkeypatch.context() as patch:
             patch.setattr(source_root, "__file__", str(package / "source_root.py"))
+            patch.setattr(sysconfig, "get_scheme_names", lambda: ("selected",))
             patch.setattr(
-                source_root.sysconfig, "get_scheme_names", lambda: ("selected",)
-            )
-            patch.setattr(
-                source_root.sysconfig,
+                sysconfig,
                 "get_paths",
                 lambda _scheme: {
                     "purelib": str(package.parent),

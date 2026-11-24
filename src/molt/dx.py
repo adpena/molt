@@ -677,6 +677,10 @@ def selected_uv_project_environment(
     if explicit:
         path = Path(explicit).expanduser()
         return (path if path.is_absolute() else source_root / path).absolute()
+    from molt.source_root import installed_distribution_root
+
+    if installed_distribution_root(source_root, environ=env) is not None:
+        return None
     from molt.checkout_provisioning import (
         ProvisioningError,
         selected_development_environment,

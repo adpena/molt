@@ -17,9 +17,8 @@ if __name__ != "tools.import_file":
     )
 
 
-def _load_package_import_custody(path: Path) -> ModuleType:
+def _load_package_authority(name: str, path: Path) -> ModuleType:
     """Load one neutral authority; never import it through a foreign parent."""
-    name = "_molt_package_import_custody"
     selected = path.resolve(strict=True)
     if name in sys.modules:
         loaded = sys.modules[name]
@@ -55,8 +54,9 @@ def _load_package_import_custody(path: Path) -> ModuleType:
     return loaded
 
 
-_package_import_custody = _load_package_import_custody(
-    Path(__file__).resolve().parents[1] / "src/molt/package_import_custody.py"
+_package_import_custody = _load_package_authority(
+    "_molt_package_import_custody",
+    Path(__file__).resolve().parents[1] / "src/molt/package_import_custody.py",
 )
 
 
@@ -201,16 +201,48 @@ def _publish_namespace(package: str, prototype: ModuleType) -> None:
             setattr(prototype, child, loaded)
 
 
+def _selected_molt_package(root: Path) -> Path:
+    """Bind a wheel's executing package to this exact distribution source."""
+    repository_package = root / "src/molt"
+    loaded = sys.modules.get("molt")
+    origin = getattr(loaded, "__file__", None)
+    if not isinstance(origin, str):
+        return repository_package
+    executing = Path(origin).resolve().parent
+    if executing == repository_package:
+        return repository_package
+    layout = _load_package_authority(
+        "_molt_package_install_layout", repository_package / "package_install_layout.py"
+    )
+    distribution = layout.distribution_for_package(executing)
+    if distribution is None or (distribution / "source").resolve() != root:
+        return repository_package
+    _package_import_custody.admit_loaded_package("molt", executing)
+    # The release manifest transaction shares source admission with the compiler.
+    # Guard loading needs those sources, independent of executable selection.
+    from molt.compiler_distribution import (
+        InstalledSourceAdmission,
+        installed_compiler,
+    )
+
+    admission = installed_compiler(root, sources=InstalledSourceAdmission.REUSE)
+    if admission is None:
+        raise ImportError("the executing Molt wheel has no admitted distribution")
+    return executing
+
+
 def bind_repository_imports(source_file: str | Path) -> Path:
     """Admit the package family and repair only an unbound search path."""
 
     root = _repository_root(source_file)
-    source_root = root / "src"
+    tools_updates = _package_import_custody.repository_namespace_updates(
+        "tools", root / "tools"
+    )
+    package_root = _selected_molt_package(root)
+    source_root = package_root.parent
     namespace_updates = (
-        *_package_import_custody.repository_namespace_updates("tools", root / "tools"),
-        *_package_import_custody.repository_namespace_updates(
-            "molt", source_root / "molt"
-        ),
+        *tools_updates,
+        *_package_import_custody.repository_namespace_updates("molt", package_root),
     )
     # NamespaceLoader observes its parent package when constructed. Validate
     # the whole family first, then restore parents before nested namespaces.
@@ -242,7 +274,7 @@ def bind_repository_imports(source_file: str | Path) -> Path:
                 elif prefix_open:
                     admitted_prefix.add(resolved)
                 continue
-            if resolved.is_relative_to(tools_root):
+            if resolved.is_relative_to(tools_root) or resolved == root / "src":
                 needs_repair = True
                 prefix_open = False
                 continue
