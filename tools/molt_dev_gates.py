@@ -552,28 +552,24 @@ def gate_failure(
     return failure
 
 
-def _gate_memory_per_worker(gate: Gate, repo: Path) -> int:
-    """Return the memory envelope charged to one gate worker."""
+def _gate_work_demand(gate: Gate, repo: Path, worker_limit: int) -> HostWorkDemand:
+    """Use the command's own worker request inside its memory envelope."""
     import shlex
 
+    from molt.host_capacity import HostWorkDemand
     from tools.proof_command_argv import pytest_allocation_request
 
-    memory = (
-        CONCURRENT_GATE_BYTES
-        if gate.cargo_target_access is CargoTargetAccess.NONE
-        else LOCAL_CARGO_GATE_BYTES
+    uses_cargo = gate.cargo_target_access is not CargoTargetAccess.NONE
+    memory = LOCAL_CARGO_GATE_BYTES if uses_cargo else CONCURRENT_GATE_BYTES
+    if not gate_runs_pytest(gate, repo=repo):
+        return HostWorkDemand(1, memory)
+    argv = shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+    _arguments, worker_memory, requested = pytest_allocation_request(argv, root=repo)
+    workers = (
+        worker_limit if requested is None else max(1, min(requested, worker_limit))
     )
-    if gate_runs_pytest(gate, repo=repo):
-        argv = (
-            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
-        )
-        # Cargo-backed pytest retains its Cargo envelope. The executor bounds
-        # the number of pytest workers by the eventual grant.
-        _arguments, worker_memory, _requested = pytest_allocation_request(
-            argv, root=repo
-        )
-        memory = max(memory, worker_memory)
-    return memory
+    # The Cargo envelope covers the entire build process tree.
+    return HostWorkDemand(1 if uses_cargo else workers, max(memory, worker_memory))
 
 
 def concurrent_gate_limit() -> int:
@@ -771,16 +767,21 @@ def _heavy_gate_batches(
 
     from molt.host_capacity import HostWorkDemand, cpu_count
 
-    def memory_per_worker(entry: tuple[int, Gate]) -> int:
-        return _gate_memory_per_worker(entry[1], runtime.repo)
-
     worker_limit = host_limit() if runtime.try_run else max(1, cpu_count() // 2)
-    for memory, same_memory in groupby(heavy, key=memory_per_worker):
-        batch = list(same_memory)
+    demands = (
+        (ordinal, gate, _gate_work_demand(gate, runtime.repo, worker_limit))
+        for ordinal, gate in heavy
+    )
+    for memory, same_memory in groupby(
+        demands, key=lambda entry: entry[2].bytes_per_worker
+    ):
+        group = list(same_memory)
         yield (
-            batch,
+            [(ordinal, gate) for ordinal, gate, _demand in group],
             HostWorkDemand(
-                workers=min(len(batch), worker_limit),
+                workers=min(
+                    worker_limit, sum(demand.workers for _, _, demand in group)
+                ),
                 bytes_per_worker=memory,
                 minimum_workers=1,
             ),

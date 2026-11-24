@@ -3844,6 +3844,7 @@ def test_development_gate_groups_release_their_host_share(
             admissions.append(("release", try_memory))
 
     monkeypatch.setattr(host_capacity, "host_work_slot", slot)
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 8)
 
     def run_captured_gate(
         command: Sequence[str],
@@ -3900,6 +3901,8 @@ def test_development_gate_groups_release_their_host_share(
             "pytest",
             "-q",
             "--molt-worker-memory-gb=3",
+            "-n",
+            "0",
             "tests/test_heavy.py",
         ),
         toolchains=("python",),
@@ -3912,12 +3915,14 @@ def test_development_gate_groups_release_their_host_share(
             "pytest",
             "-q",
             "--molt-worker-memory-gb=0.75",
+            "-n",
+            "3",
             "tests/test_small.py",
         ),
         toolchains=("python",),
         pytest=True,
     )
-    molt_dev_gates.run_selected_gates([heavy, small], runtime, [], host_limit=lambda: 1)
+    molt_dev_gates.run_selected_gates([heavy, small], runtime, [], host_limit=lambda: 4)
     if mode != "presubmit":
         assert requests == [
             (
@@ -3926,7 +3931,7 @@ def test_development_gate_groups_release_their_host_share(
             ),
             (
                 host_capacity.HostWorkClass.DEVELOPMENT,
-                host_capacity.HostWorkDemand(1, 1 << 30, 1),
+                host_capacity.HostWorkDemand(3, 1 << 30, 1),
             ),
         ]
         assert admissions == [
@@ -3956,11 +3961,11 @@ def test_development_gate_groups_release_their_host_share(
             }
     else:
         assert requests == [(host_capacity.HostWorkClass.INTEGRATION, None)]
-        assert admissions == [
-            ("admit", None),
+        assert admissions[0] == ("admit", None)
+        assert admissions[-1] == ("release", None)
+        assert sorted(admissions[1:-1]) == [
             ("tests/test_heavy.py", None),
             ("tests/test_small.py", None),
-            ("release", None),
         ]
 
 
@@ -5454,10 +5459,10 @@ def test_landing_gate_memory_uses_its_own_envelope(tmp_path: Path) -> None:
         pytest=True,
     )
     cargo = SelectedGate(("cargo", "check"), ("cargo",))
-    assert molt_dev_gates._gate_memory_per_worker(tests, tmp_path) == int(
-        6.25 * 1024**3
-    )
-    assert molt_dev_gates._gate_memory_per_worker(cargo, tmp_path) == 8 << 30
+    testing = molt_dev_gates._gate_work_demand(tests, tmp_path, 6)
+    building = molt_dev_gates._gate_work_demand(cargo, tmp_path, 6)
+    assert (testing.workers, testing.bytes_per_worker) == (6, int(6.25 * 1024**3))
+    assert (building.workers, building.bytes_per_worker) == (1, 8 << 30)
 
 
 def test_landing_gate_executor_projects_the_live_host_grant(tmp_path: Path) -> None:

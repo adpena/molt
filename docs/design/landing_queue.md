@@ -1380,6 +1380,9 @@ Failure history prioritizes readers without admitting unrelated failures.
 Consecutive try-run gates with the same declared memory demand share one
 development grant. The grant ends with that group. A Cargo gate's envelope
 therefore stops reserving memory when a later Python-only group starts.
+Each pytest command can reserve its requested workers even in a group of
+one. The host caps those workers by CPU and memory. Cargo reserves one
+process-tree envelope per build command.
 Admission wait for each group is outside the execution budget. The passing
 attempt's log retains its original gate ordinal in that group's evidence.
 The enclosing cancellation still wins over a child deadline or retry. Diagnostic
