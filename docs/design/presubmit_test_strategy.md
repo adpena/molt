@@ -81,6 +81,10 @@ C. **Apparatus tests narrow.** A suite whose subject is apparatus (proof queue, 
    repository: a change to `src/molt/checkout_state.py` selected 988 importer test files and
    now selects 48 (a 1 h 42 min presubmit on 2026-11-13); a compiler change no longer runs
    `tests/test_molt_dev.py` (676-911 s in nearly every landing).
+   A past failure moves a postsubmit data reader into presubmit only when
+   the exact reported pytest case has an observed read of a changed input.
+   Coarse file-level data edges retain their postsubmit coverage. Tests
+   selected by their own changes or import edges keep those obligations.
 D. **Scanners consolidate.** About 40 separate static scanners each re-read the tree. One
    shared pass parses each file once and feeds every check; checks that a type can enforce
    (op kinds, identities, attribute keys) become types and their scanners are deleted

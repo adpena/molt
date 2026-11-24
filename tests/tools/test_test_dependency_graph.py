@@ -226,6 +226,28 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
     assert envelope.targets == ("tests/test_assets.py::test_left",)
     assert envelope.cells == ("fixture-cell",)
     assert envelope.toolchains == ("python",)
+    coarse = graph_selection(
+        graph,
+        ["config/data.toml"],
+        [command],
+        recent_failures=[
+            "tests/test_assets.py::test_left[specific]",
+            "tests/test_unrelated.py::test_left[specific]",
+        ],
+    )
+    assert not coarse.run
+    assert "tests/test_assets.py" in coarse.postsubmit_only
+
+    unaffected = graph_selection(
+        graph,
+        ["config/data.toml"],
+        [command],
+        observations=observed,
+        recent_failures=["tests/test_assets.py::test_right"],
+    )
+    assert not unaffected.run
+    assert "tests/test_assets.py::test_left" in unaffected.postsubmit_only
+
     postsubmit = graph_selection(
         graph,
         ["config/data.toml"],

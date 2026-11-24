@@ -583,20 +583,15 @@ def _simple_type_repr(value):
     return repr(value)
 
 
+# CPython Lib/_collections_abc.py: this public protocol observes type metadata.
 def _is_param_expr(obj):
-    """Shared Callable/ParamSpec expression authority, with actual class identity.
-
-    Builtin argument shapes keep their import-free path. A real parameter
-    instance already has a typing producer; lazy import avoids a bootstrap
-    cycle without registering another classification table.
-    """
-    if obj is Ellipsis or isinstance(obj, (list, tuple)):
+    if obj is Ellipsis:
         return True
-    if isinstance(obj, type):
-        return False
-    from typing import _ParamSpec, _ConcatenateAlias
-
-    return isinstance(obj, (_ParamSpec, _ConcatenateAlias))
+    if isinstance(obj, list):
+        return True
+    obj = type(obj)
+    names = ("ParamSpec", "_ConcatenateGenericAlias")
+    return obj.__module__ == "typing" and any(obj.__name__ == name for name in names)
 
 
 class Callable(metaclass=ABCMeta):
