@@ -40,7 +40,7 @@ mod sites;
 mod tests;
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use molt_ir::FunctionId;
 
