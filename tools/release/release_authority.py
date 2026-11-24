@@ -1353,8 +1353,7 @@ def _validate_consumer_pip_proof(
             "release consumer pip preparation source differs from its environment"
         )
     first_lane = lanes[0]
-    first_role = "build" if first_lane.target == "native" else "run"
-    launcher = by_role[f"pip_{first_role}_{first_lane.id}"]["argv"][:1]
+    launcher = by_role[f"pip_build_{first_lane.id}"]["argv"][:1]
     if (
         path_type(environment[0]).name.lower() not in {"uv", "uv.exe"}
         or environment[1:5]
