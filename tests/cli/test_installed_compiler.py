@@ -304,7 +304,8 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
         "if sys.platform == 'wasi':\n"
         "    import wasm_leaf\n"
         "else:\n"
-        "    import native_leaf\n",
+        "    import native_leaf\n"
+        "__all__ = ['\\ud83d\\ude00', '\\U0001f600']\n",
         "utf-8",
     )
     contents = encode_stdlib_source_summaries(stdlib)
@@ -366,6 +367,10 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
         )
         assert loaded.cache_hit
         assert loaded.scan.source_requests.imports == ("sys", expected)
+        assert loaded.scan.source_requests.all_exports.names == (
+            "\ud83d\ude00",
+            "\U0001f600",
+        )
 
     module.write_text("print('edited')\n", "utf-8")
     edited = PythonSourceSnapshot.capture(module)

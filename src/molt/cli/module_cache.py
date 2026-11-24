@@ -58,6 +58,7 @@ from molt.cli.models import (
 from molt.cli.module_dependencies import _module_dependency_closure
 from molt.cli.module_graph_discovery import _load_module_import_scan
 from molt.cli.frontend_record_files import frontend_record_files
+from molt.exact_json import decode_frontend_payload, encode_frontend_payload
 from molt.cli.source_record_store import shared_source_records
 from molt.cli.function_records import (
     FunctionDigestSeed,
@@ -730,10 +731,10 @@ def _frontend_lowering_cache_disabled() -> bool:
 # escape it, so do not decode those records under the extended codec.
 # 15: module function defaults carry their definer's symbol base.
 # 16: portable source/request identity; no host-path timestamps in the record.
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 16
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 17
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 13
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 14
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -766,9 +767,7 @@ def _module_analysis_record_identity(
 
 
 def _module_analysis_record_key(identity: Mapping[str, object]) -> str:
-    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = encode_frontend_payload(identity, sort_keys=True)
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
@@ -856,7 +855,7 @@ def _read_persisted_module_analysis(
     if record is None:
         return None
     try:
-        payload = json.loads(record.payload)
+        payload = decode_frontend_payload(record.payload)
     except (ValueError, RecursionError):
         return None
     if not isinstance(payload, dict):
@@ -906,12 +905,7 @@ def _write_persisted_module_analysis(
     frontend_record_files().put(
         "module-analysis",
         key,
-        json.dumps(
-            _cache_json_value(payload),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=_json_ir_default,
-        ).encode(),
+        _canonical_json_bytes(payload),
     )
 
 
@@ -1377,12 +1371,9 @@ _CLASS_DIGEST_LIMIT = 65536
 
 
 def _canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        _cache_json_value(value),
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_ir_default,
-    ).encode("utf-8")
+    return encode_frontend_payload(
+        _cache_json_value(value), sort_keys=True, default=_json_ir_default
+    )
 
 
 def _bounded_put(memo: dict[Any, Any], key: Any, value: Any) -> None:
@@ -1458,12 +1449,7 @@ def _trace_lowering_context_digest(payload: dict[str, Any], digest: str) -> None
         field_digests: dict[str, str] = {}
         for key, value in payload.items():
             try:
-                blob = json.dumps(
-                    _cache_json_value(value),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=_json_ir_default,
-                ).encode("utf-8")
+                blob = _canonical_json_bytes(value)
             except (TypeError, ValueError):
                 blob = repr(_cache_json_value(value)).encode("utf-8", "replace")
             field_digests[key] = hashlib.sha256(blob).hexdigest()[:16]
@@ -1681,7 +1667,7 @@ def _read_persisted_module_lowering(
         return None
     try:
         view = decode_lowering_record(record.payload)
-        payload = json.loads(view.metadata)
+        payload = decode_frontend_payload(view.metadata)
     except (ValueError, TypeError, RecursionError):
         return None
     # Source custody failures are hard errors, outside optional codec rejection.
@@ -1750,9 +1736,7 @@ def _write_persisted_module_lowering(
         },
     }
     encoded, seeds = encode_lowering_record(
-        json.dumps(
-            _cache_json_value(metadata), separators=(",", ":"), default=_json_ir_default
-        ).encode(),
+        encode_frontend_payload(_cache_json_value(metadata), default=_json_ir_default),
         functions,
     )
     shared_source_records().put(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from functools import cached_property
 import io
-import json
 from pathlib import Path
 import re
 import sys
@@ -33,7 +32,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 from molt.compiler_distribution import InstalledCompiler, installed_compiler
-from molt.exact_json import canonical_json_bytes, loads_exact
+from molt.exact_json import canonical_json_bytes, encode_frontend_payload, loads_exact
 from molt.source_root import compiler_source_root, installed_distribution_root
 from molt.target_python import (
     TargetPythonVersion,
@@ -88,16 +87,15 @@ def _write_initializers(
         except UnresolvedStaticImportError:
             # A refusal is evaluated in the importing program's actual context.
             continue
-        payload = json.dumps(
+        payload = encode_frontend_payload(
             _import_scan_payload(
                 **context,
                 scan=requests,
                 source_sha256=captured.sha256,
                 source_size=len(captured.content),
                 target_sys_platform=platform,
-            ),
-            separators=(",", ":"),
-        ).encode()
+            )
+        )
         if len(payload) > SOURCE_ANALYSIS_CACHE_MAX_BYTES:
             continue
         key = _import_scan_cache_key(

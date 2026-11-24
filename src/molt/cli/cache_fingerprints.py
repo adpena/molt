@@ -298,6 +298,7 @@ _IMPORT_SCAN_PRODUCER_ROOTS = (
     "target_python.py",
     "target_python_policy.py",
     "typed_cache.py",
+    "exact_json.py",
     "cli/module_graph_cache.py",
     "cli/module_source.py",
 )

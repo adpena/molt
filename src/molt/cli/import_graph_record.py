@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -16,6 +15,7 @@ from molt.cli.cache_fingerprints import (
     _cache_tooling_fingerprint,
 )
 from molt.cli.frontend_record_files import frontend_record_files
+from molt.exact_json import decode_frontend_payload, encode_frontend_payload
 from molt.cli.models import (
     ImportScanEvidence,
     PersistedImportScanObservation,
@@ -48,7 +48,7 @@ from molt.compiler_analysis.python_import_redirects import (
 from molt.target_python import TargetPythonVersion
 
 _MAX_BYTES = 16 * 1024 * 1024
-_SCHEMA = 3
+_SCHEMA = 4
 _T = TypeVar("_T")
 
 
@@ -94,9 +94,7 @@ def _table_row(rows: Sequence[_T], index: object) -> _T:
 
 
 def _bytes(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode()
+    return encode_frontend_payload(value, sort_keys=True, allow_nan=False)
 
 
 def _custody(value: _RuntimeImportScanCustody | None) -> object:
@@ -462,7 +460,7 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
     record = frontend_record_files().get_blob(digest, max_bytes=_MAX_BYTES)
     if record is None:
         return None
-    value = _map(json.loads(record.payload))
+    value = _map(decode_frontend_payload(record.payload))
     if set(value) != {
         "schema",
         "producer",

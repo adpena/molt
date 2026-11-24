@@ -18,7 +18,6 @@ from molt.compiler_analysis.python_binding_facts import (
 
 import functools
 import hashlib
-import json
 import os
 import sys
 from dataclasses import asdict
@@ -37,6 +36,7 @@ from itertools import pairwise
 from typing import Any, NamedTuple, cast, get_args
 
 from molt.cli.frontend_record_files import FrontendRecord, frontend_record_files
+from molt.exact_json import decode_frontend_payload, encode_frontend_payload
 from molt.cli.source_record_store import SourceRecord, shared_source_records
 from molt.cli.json_cache import SOURCE_ANALYSIS_CACHE_MAX_BYTES
 from molt.cli.cache_fingerprints import (
@@ -658,7 +658,7 @@ def _intrinsic_source_identity(
     namespace_premise: PythonNamespacePremise | None,
 ) -> dict[str, Any]:
     return {
-        "schema": "molt.stdlib-intrinsic-source.v9",
+        "schema": "molt.stdlib-intrinsic-source.v10",
         "source_sha256": snapshot.sha256,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
@@ -675,7 +675,7 @@ def _intrinsic_facts_record_key(identity: Mapping[str, object]) -> str:
     inputs = {
         key: value for key, value in identity.items() if key != "namespace_premise"
     }
-    encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = encode_frontend_payload(inputs, sort_keys=True)
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
@@ -826,10 +826,9 @@ def _stdlib_intrinsic_source_facts(
         stored = store.put(
             "intrinsic-facts",
             record_key,
-            json.dumps(
-                {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
-                separators=(",", ":"),
-            ).encode(),
+            encode_frontend_payload(
+                {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)}
+            ),
             generation=_frontend_semantic_tooling_fingerprint(),
         )
         failure = None if stored else f"{store.path} is unavailable"
@@ -922,8 +921,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-# 53: source-only requests address their source bytes independently of location.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 53
+# 54: keys and source requests preserve every Python string code point.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 54
 
 
 def _import_scan_cache_key(
@@ -969,7 +968,7 @@ def _import_scan_cache_key(
         target_sys_platform,
         _import_scan_tooling_fingerprint(),
     )
-    encoded = json.dumps(identity, separators=(",", ":")).encode("utf-8")
+    encoded = encode_frontend_payload(identity)
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
@@ -978,7 +977,7 @@ def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | Non
     if payload is None:
         return None
     try:
-        decoded = json.loads(payload)
+        decoded = decode_frontend_payload(payload)
     except (ValueError, RecursionError):
         return None
     return decoded if isinstance(decoded, Mapping) else None
@@ -1918,7 +1917,7 @@ def _write_persisted_import_scan(
         runtime_catalog_owner=runtime_catalog_owner,
         purpose=purpose,
     )
-    payload = json.dumps(payload_value, separators=(",", ":")).encode()
+    payload = encode_frontend_payload(payload_value)
     record_key = _import_scan_cache_key(
         path,
         module_name=module_name,

@@ -763,7 +763,7 @@ def test_intrinsic_source_cache_roundtrips_owner_plans(
     assert opaque.request is None and opaque.unresolved
     assert opaque.line == 4
     [payload] = source_records("intrinsic-facts").values()
-    assert payload["identity"]["schema"] == "molt.stdlib-intrinsic-source.v9"
+    assert payload["identity"]["schema"] == "molt.stdlib-intrinsic-source.v10"
     assert "modules" not in payload["facts"] and "unresolved" not in payload["facts"]
     assert "blockers" not in payload["facts"]
 
