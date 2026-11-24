@@ -76,9 +76,11 @@ def test_build_and_measure_uses_wasm_test_guard(
 
 
 @pytest.mark.slow
-def test_hello_world_size_budget(tmp_path: Path) -> None:
-    """The linked hello-world wasm binary must stay under the size budget."""
-    sizes = _build_and_measure(FIXTURE, tmp_path, target="wasm")
+def test_hello_world_size_budget_and_freestanding_size(tmp_path: Path) -> None:
+    """Check the WASI size budget and compare the freestanding build."""
+    wasi_dir = tmp_path / "wasi"
+    wasi_dir.mkdir()
+    sizes = _build_and_measure(FIXTURE, wasi_dir, target="wasm")
     assert sizes["ok"], f"Build failed: {sizes.get('error', '(unknown)')}"
     assert "linked_bytes" in sizes, "No linked binary produced"
 
@@ -97,34 +99,23 @@ def test_hello_world_size_budget(tmp_path: Path) -> None:
         f"({SIZE_BUDGET_BYTES / 1024:.1f} KB)"
     )
 
-
-@pytest.mark.slow
-def test_freestanding_smaller_than_wasi(tmp_path: Path) -> None:
-    """A freestanding build should be smaller than a full WASI build."""
-    wasi_dir = tmp_path / "wasi"
-    wasi_dir.mkdir()
     free_dir = tmp_path / "freestanding"
     free_dir.mkdir()
-
-    wasi_sizes = _build_and_measure(FIXTURE, wasi_dir, target="wasm")
     free_sizes = _build_and_measure(FIXTURE, free_dir, target="wasm-freestanding")
 
-    assert wasi_sizes["ok"], f"WASI build failed: {wasi_sizes.get('error', '')}"
     assert free_sizes["ok"], f"Freestanding build failed: {free_sizes.get('error', '')}"
-    assert "linked_bytes" in wasi_sizes, "No linked WASI binary produced"
     assert "linked_bytes" in free_sizes, "No linked freestanding binary produced"
 
-    wasi_bytes = wasi_sizes["linked_bytes"]
     free_bytes = free_sizes["linked_bytes"]
-    delta = wasi_bytes - free_bytes
+    delta = linked_bytes - free_bytes
 
     print(
-        f"\n[size-compare] WASI: {wasi_bytes} bytes, "
+        f"\n[size-compare] WASI: {linked_bytes} bytes, "
         f"freestanding: {free_bytes} bytes, "
         f"delta: {delta} bytes",
         file=sys.stderr,
     )
-    assert free_bytes < wasi_bytes, (
+    assert free_bytes < linked_bytes, (
         f"Freestanding binary ({free_bytes} bytes) is not smaller than "
-        f"WASI binary ({wasi_bytes} bytes)"
+        f"WASI binary ({linked_bytes} bytes)"
     )
