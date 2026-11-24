@@ -297,6 +297,50 @@ fn is_link_op(op: &TirOp) -> bool {
     ) || op.opcode == OpCode::ConstInt
 }
 
+/// A pre-existing async-work poll in its published Python frame at a CFG
+/// boundary. Splicing and checked-loop versioning can put the back edge on
+/// either side of this bracket; the check still runs at its original source
+/// and exceptional successor.
+fn poll_and_unlink(ops: &[TirOp]) -> bool {
+    matches!(ops, [poll, unlink, ..] if poll.opcode == OpCode::CheckException
+        && poll.is_async_work_poll()
+        && matches!(poll.attrs.get("value"), Some(AttrValue::Int(_)))
+        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+}
+
+pub(super) fn ends_with_poll_bracket(ops: &[TirOp]) -> bool {
+    let Some(check) = ops.len().checked_sub(2) else {
+        return false;
+    };
+    poll_and_unlink(&ops[check..])
+        && ops[..check]
+            .iter()
+            .rev()
+            .take_while(|op| is_link_op(op))
+            .any(|op| op.runtime == Some(RuntimeFn::SplicedFrameLink))
+}
+
+pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
+    // A joined continuation may close the preceding operation's frame and
+    // bind its result into SSA before publishing the poll's frame.
+    let ops = match ops {
+        [close, rest @ ..] if close.runtime == Some(RuntimeFn::SplicedFrameUnlink) => rest,
+        _ => ops,
+    };
+    let aliases = ops
+        .iter()
+        .take_while(|op| {
+            op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::BindingAlias)
+        })
+        .count();
+    let ops = &ops[aliases..];
+    let links = ops.iter().take_while(|op| is_link_op(op)).count();
+    ops[..links]
+        .iter()
+        .any(|op| op.runtime == Some(RuntimeFn::SplicedFrameLink))
+        && poll_and_unlink(&ops[links..])
+}
+
 /// Delete each bracket whose operations can no longer run an observer, and
 /// the state it linked; return how many. A bracket is a run of link and bind
 /// calls (with their constants), the operations it covers, and the unlink

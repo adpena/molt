@@ -665,6 +665,14 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     {
         return Err(format!("op `{}` cannot carry proven_target", op.kind));
     }
+    if let Some(slot) = op.task_vararg_slot
+        && (op.kind != crate::OpKind::FuncNew
+            || op.task_kind.as_deref() != Some("generator")
+            || op.direct_shape
+            || op.value != Some(i64::from(slot) + 1))
+    {
+        return Err(format!("invalid generator vararg slot on op `{}`", op.kind));
+    }
     if op.direct_shape && op.kind != crate::OpKind::FuncNew {
         return Err(format!("op `{}` cannot carry direct_shape", op.kind));
     }

@@ -760,6 +760,8 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     )
                 entry["task_kind"] = task_kind
                 entry["task_closure_size"] = task_closure_size
+                if "task_vararg_slot" in metadata:
+                    entry["task_vararg_slot"] = metadata["task_vararg_slot"]
             ctx.json_ops.append(entry)
         elif op.kind == FrontendKinds.CODE_NEW:
             ctx.json_ops.append(

@@ -774,7 +774,9 @@ def _task_constructor(
     call: Mapping[str, Any],
     producer: Mapping[str, Any] | None,
     has_record: Callable[[str], bool],
-) -> dict[str, Any] | str | None:
+    following: Mapping[str, Any],
+    tuple_name: Callable[[], str],
+) -> list[dict[str, Any]] | str | None:
     """The ``alloc_task`` that a generic call of a generator function is.
 
     The callee is a dominated read of an ``InitOnce(function)`` cell whose one
@@ -787,7 +789,12 @@ def _task_constructor(
     globals, builtins and code become the frame context) and retains each
     argument into its slot, so the call's argument custody goes.
 
-    Returns the replacement op; the reason a generator call stays generic; or
+    A generator with only fixed positional parameters and a final vararg slot
+    needs one tuple of the surplus arguments. Pack it at the original call
+    after argument evaluation and branch on allocation failure before making
+    the frame. Omitted fixed arguments still need the ordinary defaults binder.
+
+    Returns the replacement ops; the reason a generator call stays generic; or
     None when the cell's function is not a generator function."""
     if (
         producer is None
@@ -798,11 +805,45 @@ def _task_constructor(
     poll = producer.get("s_value")
     if not isinstance(poll, str) or not has_record(poll):
         return f"{poll} has no function record"
-    if producer.get(DIRECT_SHAPE_FIELD) is not True:
-        return f"{poll} has a parameter shape that needs binding"
     args = list(call.get("args") or ())
     supplied = len(args) - 1
-    if producer.get("value") != supplied:
+    packing: list[dict[str, object]] = []
+    slot = producer.get("task_vararg_slot")
+    if slot is not None:
+        if (
+            type(slot) is not int
+            or slot < 0
+            or producer.get("value") != slot + 1
+            or producer.get(DIRECT_SHAPE_FIELD)
+        ):
+            return f"{poll} has an invalid vararg slot"
+        if supplied < slot:
+            return f"the call omits fixed parameters of {poll}"
+        if (
+            following.get("kind") != "check_exception"
+            or following.get("exception_edge") != "origin"
+        ):
+            return f"{poll} has no checked edge for vararg packing"
+        name = tuple_name()
+        location = {
+            key: call[key]
+            for key in ("source_line", "col_offset", "end_col_offset")
+            if key in call
+        }
+        packing = [
+            {
+                "kind": "tuple_new",
+                "args": args[1 + slot :],
+                "out": name,
+                "type_hint": "tuple",
+                **location,
+            },
+            dict(following),
+        ]
+        args = [*args[: 1 + slot], name]
+    elif producer.get(DIRECT_SHAPE_FIELD) is not True:
+        return f"{poll} has a parameter shape that needs binding"
+    elif producer.get("value") != supplied:
         return f"the call passes {supplied} of {producer.get('value')} parameters"
     frame_bytes = producer.get("task_closure_size")
     if not isinstance(frame_bytes, int) or isinstance(frame_bytes, bool):
@@ -816,7 +857,7 @@ def _task_constructor(
         # alloc_task_operands: the function, then the payload words.
         args=args,
     )
-    return task
+    return [*packing, task]
 
 
 def _intrinsic_call(
@@ -870,7 +911,24 @@ def prove_init_once_calls(
         for name, func in current.items():
             ops = func.get("ops", ())
             reads = _init_once_reads(ops)
-            changed: dict[int, dict[str, Any]] = {}
+            changed: dict[int, list[dict[str, object]]] = {}
+            names: set[str] | None = None
+
+            def tuple_name() -> str:
+                nonlocal names
+                if names is None:
+                    names = set(func.get("params", ()))
+                    for instr in ops:
+                        names.update(instr.get("args") or ())
+                        names.update(
+                            instr[key] for key in ("out", "var") if key in instr
+                        )
+                candidate = f"__molt_varargs_{index}"
+                while candidate in names:
+                    candidate += "_"
+                names.add(candidate)
+                return candidate
+
             for index, op in enumerate(ops):
                 kind = op.get("kind")
                 if kind not in {"call_guarded", "call_func"}:
@@ -893,7 +951,7 @@ def prove_init_once_calls(
                             f"generic intrinsic call: {direct}"
                         )
                     else:
-                        changed[index] = direct
+                        changed[index] = [direct]
                     continue
                 if fact is None or fact.value_kind != "function":
                     continue
@@ -905,7 +963,10 @@ def prove_init_once_calls(
                     )
                     continue
                 if kind == "call_func":
-                    task = _task_constructor(op, producer, position.__contains__)
+                    following = ops[index + 1] if index + 1 < len(ops) else {}
+                    task = _task_constructor(
+                        op, producer, position.__contains__, following, tuple_name
+                    )
                     if isinstance(task, str):
                         diagnostics.append(
                             f"{module}:{op.get('source_line')} {global_name}(): "
@@ -923,11 +984,15 @@ def prove_init_once_calls(
                         f"guarded call: {reason}"
                     )
                     continue
-                changed[index] = {**op, "proven_target": True}
+                changed[index] = [{**op, "proven_target": True}]
             if changed:
                 rewritten[name] = {
                     **func,
-                    "ops": [changed.get(index, op) for index, op in enumerate(ops)],
+                    "ops": [
+                        item
+                        for index, op in enumerate(ops)
+                        for item in changed.get(index, (op,))
+                    ],
                 }
     _write_back(functions, module_functions, position, rewritten)
     return diagnostics

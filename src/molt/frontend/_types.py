@@ -113,6 +113,7 @@ class SimpleIROp(TypedDict):
     arena_eligible: NotRequired[Any]
     state_targets: NotRequired[Any]
     task_closure_size: NotRequired[Any]
+    task_vararg_slot: NotRequired[int]
     task_kind: NotRequired[Any]
     type_hint: NotRequired[Any]
     value: NotRequired[Any]
