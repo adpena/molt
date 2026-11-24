@@ -123,6 +123,9 @@ pub fn run(
         sites: &sites,
         relevant: &relevant,
         participates: &participates,
+        exact_plans: (0..sites.len())
+            .map(|_| std::cell::OnceCell::new())
+            .collect(),
         specializable: &specializable,
     };
     let analysis = Analysis::run(&inputs);

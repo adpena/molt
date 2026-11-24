@@ -18,6 +18,7 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
+pub(crate) use self::exact::ExactScalarPlan;
 pub use self::exact::{
     ExactScalarWitness, ExactSeeds, exact_scalar_witnesses, extract_exact_class_map,
     extract_exact_scalar_map, solve_exact_scalars,

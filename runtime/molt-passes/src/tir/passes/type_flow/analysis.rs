@@ -16,11 +16,12 @@
 //! when a return type it read rises.
 
 use molt_ir::deterministic_hash::HashMap;
+use std::cell::OnceCell;
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirModule;
-use crate::tir::type_refine::{ExactSeeds, solve_exact_scalars};
+use crate::tir::type_refine::{ExactScalarPlan, ExactSeeds};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -61,8 +62,15 @@ pub(super) struct Inputs<'a> {
     pub(super) sites: &'a [Vec<Site>],
     pub(super) relevant: &'a [Vec<bool>],
     pub(super) participates: &'a [bool],
+    pub(super) exact_plans: Vec<OnceCell<ExactScalarPlan<'a>>>,
     /// Whether a body may have contexts beyond its generic one.
     pub(super) specializable: &'a [bool],
+}
+
+impl Inputs<'_> {
+    fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {
+        self.exact_plans[body].get_or_init(|| ExactScalarPlan::new(&self.module.functions[body]))
+    }
 }
 
 impl Analysis {
@@ -135,13 +143,10 @@ impl Analysis {
             .zip(&context.results)
             .map(|(site, ty)| (site.position(), ty.clone()))
             .collect();
-        solve_exact_scalars(
-            func,
-            ExactSeeds {
-                params: &params,
-                call_results: Some(&results),
-            },
-        )
+        inputs.exact_plan(context.body).solve(ExactSeeds {
+            params: &params,
+            call_results: Some(&results),
+        })
     }
 
     /// Evaluate one context; return the contexts to evaluate next.
@@ -178,7 +183,13 @@ impl Analysis {
         };
         let func = &inputs.module.functions[body];
         let ret = if returns_value(func) {
-            return_type(func, &facts)
+            inputs
+                .exact_plan(body)
+                .return_values()
+                .iter()
+                .fold(TirType::Never, |ret, value| {
+                    join_return(&ret, facts.get(value).unwrap_or(&TirType::DynBox))
+                })
         } else {
             TirType::DynBox
         };
@@ -217,25 +228,4 @@ fn site_key(inputs: &Inputs<'_>, site: &Site, facts: &HashMap<ValueId, TirType>)
             ArgKind::of(facts.get(arg).unwrap_or(&TirType::DynBox))
         })
         .collect()
-}
-
-/// The join of the exact facts of every value a reachable `Return` returns.
-fn return_type(
-    func: &crate::tir::function::TirFunction,
-    facts: &HashMap<ValueId, TirType>,
-) -> TirType {
-    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
-    let mut ret = TirType::Never;
-    for block in func.blocks.values() {
-        if !reachable.contains(&block.id) {
-            continue;
-        }
-        if let Terminator::Return { values } = &block.terminator {
-            for value in values {
-                let fact = facts.get(value).cloned().unwrap_or(TirType::DynBox);
-                ret = join_return(&ret, &fact);
-            }
-        }
-    }
-    ret
 }

@@ -141,6 +141,13 @@ arguments at compile time and takes default types from the def-time default obje
 facts); `*args` and `**kwargs` keep the generic path. A class whose layout facts are proven
 (design 68) turns a field read into a fixed-offset load of a known type.
 
+Exact SSA inference uses executable reverse postorder. Numeric block IDs have
+no effect on propagation along an acyclic path. Backedges converge through the
+same lattice joins. A solve plan holds only body structure and initial bottom
+facts. Type-flow contexts reuse that plan, including reachable return operands.
+Each solve supplies its own argument and call-result facts.
+[Clang's forward data-flow order](https://clang.llvm.org/doxygen/structclang_1_1ForwardDataflowWorklist.html)
+
 ### 3.4 Specialization key: only what changes the code
 
 A parameter is relevant to a function when its type reaches an operation whose lowering
