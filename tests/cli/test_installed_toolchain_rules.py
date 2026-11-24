@@ -181,6 +181,22 @@ def test_installed_native_symbol_consumers_never_discover_rust(bundle, monkeypat
     native_symbol_inspection._nm_candidate_binaries()
 
 
+def test_installed_guard_skips_development_environment_selection(
+    tmp_path: Path,
+) -> None:
+    from molt import dx
+
+    root = tmp_path / "distribution"
+    source = root / "source"
+    source.mkdir(parents=True)
+    # A known installed root has no checkout-only interpreter pin. The
+    # launcher may explicitly supply its own environment; it is not inferred.
+    env = {"MOLT_BUNDLE_ROOT": str(root)}
+    assert dx.selected_uv_project_environment(env, source) is None
+    explicit = env | {"UV_PROJECT_ENVIRONMENT": str(tmp_path / "frontend")}
+    assert dx.selected_uv_project_environment(explicit, source) == tmp_path / "frontend"
+
+
 def test_packaged_distribution_is_found_only_in_the_owning_install_scheme(
     tmp_path, monkeypatch
 ):

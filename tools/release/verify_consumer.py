@@ -55,7 +55,7 @@ from tools.release.release_authority import (  # noqa: E402
 )
 from molt.compiler_distribution import InstalledCompiler, installed_compiler  # noqa: E402
 from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
-from molt.source_root import PACKAGED_DISTRIBUTION_PATH  # noqa: E402
+from molt.package_install_layout import PACKAGED_DISTRIBUTION_PATH  # noqa: E402
 from molt.exact_json import canonical_json_sha256, loads_exact  # noqa: E402
 from molt.file_publication import durable_remove_path  # noqa: E402
 from molt.python_interpreter import probe_python_command  # noqa: E402

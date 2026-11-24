@@ -17,7 +17,7 @@ use molt_ir::deterministic_hash::HashMap;
 use molt_ir::{ClassId, OpKind};
 
 use crate::tir::function::{TirFunction, TirModule};
-use crate::tir::ops::AttrValue;
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::types::TirType;
 
 /// Each class statement's exact field slots, from its definition stamps.
@@ -50,10 +50,27 @@ pub fn class_field_slots(module: &TirModule) -> ClassFieldSlots {
     table
 }
 
+/// The fixed-offset operation and whether it discards the layout operand.
+fn field_rewrite(op: &TirOp) -> Option<(OpKind, bool)> {
+    match (op.origin?, op.operands.len()) {
+        (OpKind::GetAttrGenericObj | OpKind::GetAttrGenericPtr, 1) => Some((OpKind::Load, false)),
+        (OpKind::GuardedFieldGet, 2) => Some((OpKind::Load, true)),
+        (OpKind::SetAttrGenericObj | OpKind::SetAttrGenericPtr, 2) => Some((OpKind::Store, false)),
+        (OpKind::GuardedFieldSet, 3) => Some((OpKind::Store, true)),
+        _ => None,
+    }
+}
+
 /// Rewrite `func`'s attribute accesses on proven exact receivers; return how
 /// many it rewrote.
 pub fn run(func: &mut TirFunction, table: &ClassFieldSlots) -> usize {
-    if table.is_empty() {
+    if table.is_empty()
+        || !func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| field_rewrite(op).is_some())
+    {
         return 0;
     }
     let exact = crate::tir::type_refine::extract_exact_class_map(func);
@@ -63,21 +80,8 @@ pub fn run(func: &mut TirFunction, table: &ClassFieldSlots) -> usize {
     let mut rewritten = 0;
     for block in func.blocks.values_mut() {
         for op in &mut block.ops {
-            // The operands kept: the receiver, and a store's value.
-            let (field_op, keep): (OpKind, &[usize]) = match op.origin {
-                Some(OpKind::GetAttrGenericObj | OpKind::GetAttrGenericPtr)
-                    if op.operands.len() == 1 =>
-                {
-                    (OpKind::Load, &[0])
-                }
-                Some(OpKind::GuardedFieldGet) if op.operands.len() == 2 => (OpKind::Load, &[0]),
-                Some(OpKind::SetAttrGenericObj | OpKind::SetAttrGenericPtr)
-                    if op.operands.len() == 2 =>
-                {
-                    (OpKind::Store, &[0, 1])
-                }
-                Some(OpKind::GuardedFieldSet) if op.operands.len() == 3 => (OpKind::Store, &[0, 2]),
-                _ => continue,
+            let Some((field_op, discard_layout)) = field_rewrite(op) else {
+                continue;
             };
             let Some(TirType::Class(class)) = exact.get(&op.operands[0]) else {
                 continue;
@@ -88,7 +92,9 @@ pub fn run(func: &mut TirFunction, table: &ClassFieldSlots) -> usize {
             let Some(&offset) = table.get(class).and_then(|slots| slots.get(name)) else {
                 continue;
             };
-            op.operands = keep.iter().map(|&index| op.operands[index]).collect();
+            if discard_layout {
+                op.operands.remove(1);
+            }
             op.origin = Some(field_op);
             op.attrs.insert("value".into(), AttrValue::Int(offset));
             op.attrs.remove("class_definition");

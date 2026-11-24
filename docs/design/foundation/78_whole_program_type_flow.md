@@ -499,8 +499,8 @@ every later analysis sees a clone as an ordinary row.
   `call_internal` whose argument count equals the callee's parameters. Every other call is
   an unknown callee; the report counts them per function.
 - **Contexts (3.3).** A key is one `ArgKind` per parameter: `Int`, `Bool`, `Float`, `Str`,
-  `None`, or `Dyn`. Every body has its generic context (all `Dyn`), which every unseen caller
-  enters. Evaluating a context solves the body's exact scalar facts
+  `None`, `Class(ClassId)`, or `Dyn`. Every body has its generic context (all `Dyn`), which
+  every unseen caller enters. Evaluating a context solves the body's exact scalar and class facts
   (`type_refine::solve_exact_scalars`) seeded with the key and with the return types of the
   contexts its resolved sites enter. Return types start at `Never` and rise; the int family
   joins to the semantic `int` (`I64`), any other disagreement to `DynBox`. A site's result
@@ -519,11 +519,14 @@ every later analysis sees a clone as an ordinary row.
   else produces it, and an annotation never does. It is serialized (`MOLT:TIRFUNC:v7`).
 - **Dispatch (3.7).** On the bodies the analysis evaluated, each site that selects a clone
   context gets the clone as its typed callee, and each site gets its target context's exact
-  return type as `exact_result_proof` (I64, BigInt, Bool or F64). A proven guarded call
+  return type as `exact_result_proof`. A proven guarded call
   keeps its callee word, which the late stage stores as the invocation handoff, so the
   clone's frame record holds the original function and code object: `f.__code__`,
   `__qualname__`, line numbers and tracebacks are the original's (section 4). Clones and
   every caller whose sites changed re-run `refine -> pipeline -> refine`.
+- **Fixed fields (5.8).** Use the class definition's admitted slot table with exact receiver
+  facts from allocations, call results and specialized parameters. Lower those accesses before
+  clone comparison so a clone whose only advantage is fixed offsets survives deduplication.
 - **Merge (3.4).** A clone's digest is its canonical serialization under a fixed name with
   seeds, counters and parameter types normalized, plus the exact family of every
   non-parameter value. Clones of one origin with equal digests merge, and the survivor's

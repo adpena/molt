@@ -298,6 +298,7 @@
     "src/molt/cli/source_extension_compiler_inputs.py",
     "src/molt/cli/source_extension_link_inputs.py",
     "src/molt/package_import_custody.py",
+    "src/molt/package_install_layout.py",
     "src/molt/python_environment_identity.py",
     "src/molt/python_environment_location.py",
     "src/molt/uv_environment.py",

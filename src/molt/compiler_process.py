@@ -40,6 +40,13 @@ def configure() -> None:
     if sys.implementation.name == "cpython":
         gc.set_threshold(*GC_THRESHOLDS)
 
+    from molt.source_root import packaged_distribution_root
+
+    if packaged_distribution_root() is not None:
+        # The wheel may import tools from its immutable distribution source.
+        # Archive bootstrap already selects the same no-write lifecycle.
+        sys.dont_write_bytecode = True
+
 
 def worker_context() -> BaseContext:
     """Use fresh heaps/locks and the current parent's environment per pool.

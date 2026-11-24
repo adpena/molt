@@ -587,10 +587,9 @@ pub const I64_EXACT_PROOF_ATTR: &str = "i64_exact_proof";
 /// placement records it on a home store that boxes nothing. Every raise
 /// classifier reads it (HF-866).
 pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
-/// Proof carried into final TIR: the exact scalar type of this op's result,
-/// as a closed tag (`exact_result_proof`). The late lowering stage records it
-/// on the runtime call that replaces an op whose result type was exact; the
-/// call's own contract says only "an object".
+/// Proof carried through TIR: the exact scalar family or class of this op's
+/// result. Records the result of closed-world call analysis, or preserves a
+/// proof when a rewrite replaces the original producer.
 pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
 /// The linker symbol of a `NativeSymbolAddr` or `CallNative`: a source
 /// extension's exported name, taken verbatim from its manifest.
@@ -1122,29 +1121,36 @@ impl TirOp {
             .insert(NOTHROW_PROOF_ATTR.into(), AttrValue::Bool(true));
     }
 
-    /// The exact scalar type the late stage proved for this op's result.
+    /// The exact type proved for this op's result.
     pub fn exact_result_proof(&self) -> Option<TirType> {
-        match self.attrs.get(EXACT_RESULT_PROOF_ATTR) {
-            Some(AttrValue::Int(0)) => Some(TirType::I64),
-            Some(AttrValue::Int(1)) => Some(TirType::BigInt),
-            Some(AttrValue::Int(2)) => Some(TirType::Bool),
-            Some(AttrValue::Int(3)) => Some(TirType::F64),
+        match self.attrs.get(EXACT_RESULT_PROOF_ATTR)? {
+            AttrValue::Int(0) => Some(TirType::I64),
+            AttrValue::Int(1) => Some(TirType::BigInt),
+            AttrValue::Int(2) => Some(TirType::Bool),
+            AttrValue::Int(3) => Some(TirType::F64),
+            AttrValue::Int(4) => Some(TirType::Str),
+            AttrValue::Int(5) => Some(TirType::None),
+            AttrValue::Bytes(id) => Some(TirType::Class(crate::ClassId(u64::from_le_bytes(
+                id.as_slice().try_into().ok()?,
+            )))),
             _ => None,
         }
     }
 
-    /// Record the exact scalar type of this op's result. Returns false, and
-    /// records nothing, for a type that is not an exact scalar.
+    /// Record an exact result proof. Returns false for types outside the exact
+    /// solver's domain.
     pub fn mark_exact_result_proof(&mut self, ty: &TirType) -> bool {
-        let tag = match ty {
-            TirType::I64 => 0,
-            TirType::BigInt => 1,
-            TirType::Bool => 2,
-            TirType::F64 => 3,
+        let encoded = match ty {
+            TirType::I64 => AttrValue::Int(0),
+            TirType::BigInt => AttrValue::Int(1),
+            TirType::Bool => AttrValue::Int(2),
+            TirType::F64 => AttrValue::Int(3),
+            TirType::Str => AttrValue::Int(4),
+            TirType::None => AttrValue::Int(5),
+            TirType::Class(id) => AttrValue::Bytes(id.0.to_le_bytes().to_vec()),
             _ => return false,
         };
-        self.attrs
-            .insert(EXACT_RESULT_PROOF_ATTR.into(), AttrValue::Int(tag));
+        self.attrs.insert(EXACT_RESULT_PROOF_ATTR.into(), encoded);
         true
     }
 

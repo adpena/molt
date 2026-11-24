@@ -208,6 +208,87 @@ fn id_of(module: &TirModule, name: &str) -> FunctionId {
 }
 
 #[test]
+fn factory_result_specializes_a_field_only_clone() {
+    use molt_ir::OpKind;
+    use molt_ir::class_identity::{EXACT_FIELD_SLOTS_ATTR, encode_field_slots};
+    use molt_ir::tir::op_kinds_generated::kind_to_opcode_table;
+
+    let symbol = "class:m:Point";
+    let class = TirType::Class(molt_ir::ClassId::of_definition(symbol));
+    let field_op = |kind, operands, results| {
+        let opcode = kind_to_opcode_table(kind).unwrap_or(OpCode::Copy);
+        let mut op = TirOp::new(opcode, operands, results);
+        op.origin = Some(kind);
+        op
+    };
+
+    let mut factory = function("factory", 1);
+    let entry = factory.entry_block;
+    let class_object = factory.blocks[&entry].args[0].id;
+    let mut stamp = field_op(OpKind::ClassSetDefinition, vec![class_object], vec![]);
+    stamp
+        .attrs
+        .insert("class_definition".into(), AttrValue::Str(symbol.into()));
+    stamp.attrs.insert(
+        EXACT_FIELD_SLOTS_ATTR.into(),
+        AttrValue::Bytes(encode_field_slots(&[("x".into(), 8)])),
+    );
+    push(&mut factory, entry, stamp);
+    let allocated = factory.fresh_value();
+    let mut new = field_op(OpKind::ObjectNewBound, vec![class_object], vec![allocated]);
+    new.attrs
+        .insert("class_definition".into(), AttrValue::Str(symbol.into()));
+    push(&mut factory, entry, new);
+    observe(&mut factory, entry);
+    factory.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![allocated],
+    };
+
+    let mut read = function("read", 1);
+    let entry = read.entry_block;
+    let point = read.blocks[&entry].args[0].id;
+    let result = read.fresh_value();
+    let mut get = field_op(OpKind::GetAttrGenericObj, vec![point], vec![result]);
+    get.attrs.insert("name".into(), AttrValue::Str("x".into()));
+    push(&mut read, entry, get);
+    observe(&mut read, entry);
+    read.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut main = function("main", 1);
+    let entry = main.entry_block;
+    let class_object = main.blocks[&entry].args[0].id;
+    let point = proven_call(&mut main, entry, FunctionId(0), &[class_object]);
+    let result = proven_call(&mut main, entry, FunctionId(1), &[point]);
+    main.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut module = TirModule::with_own_table("m", vec![factory, read, main]);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+
+    let calls = calls(body(&module, "main"));
+    assert_eq!(calls[0].exact_result_proof(), Some(class));
+    assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
+    let clone = outcome.clones[0];
+    assert_eq!(clone.origin, FunctionId(1));
+    assert_eq!(calls[1].callee, Some(clone.id));
+    let has_get = |name: &str, kind: OpKind| {
+        body(&module, name)
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| {
+                op.origin == Some(kind)
+                    && (kind != OpKind::Load || op.attrs.get("value") == Some(&AttrValue::Int(8)))
+            })
+    };
+    assert!(has_get("read", OpKind::GetAttrGenericObj));
+    assert!(has_get(module.table.symbol(clone.id), OpKind::Load));
+}
+
+#[test]
 fn generic_contexts_include_resolved_leaf_results_and_skip_isolated_bodies() {
     let mut callee = function("leaf", 0);
     let entry = callee.entry_block;

@@ -728,8 +728,21 @@ class InstalledCompiler:
         )
 
 
-_INSTALLED_MANIFESTS: ContextVar[dict[Path, tuple[bytes, InstalledCompiler]] | None] = (
-    ContextVar("_INSTALLED_MANIFESTS", default=None)
+class InstalledSourceAdmission(Enum):
+    INVENTORY = "inventory"
+    REUSE = "reuse"
+    FRESH = "fresh"
+
+
+@dataclass(slots=True)
+class _InstalledManifest:
+    raw: bytes
+    compiler: InstalledCompiler
+    sources_verified: bool = False
+
+
+_INSTALLED_MANIFESTS: ContextVar[dict[Path, _InstalledManifest] | None] = ContextVar(
+    "_INSTALLED_MANIFESTS", default=None
 )
 
 
@@ -743,7 +756,11 @@ def installed_manifest_transaction() -> Generator[None]:
         _INSTALLED_MANIFESTS.reset(token)
 
 
-def installed_compiler(source_root: Path) -> InstalledCompiler | None:
+def installed_compiler(
+    source_root: Path,
+    *,
+    sources: InstalledSourceAdmission = InstalledSourceAdmission.INVENTORY,
+) -> InstalledCompiler | None:
     from molt import input_report
 
     manifest_path = source_root / MANIFEST_NAME
@@ -761,16 +778,25 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
         manifest_path, max_bytes=16 * 1024 * 1024, label="installed compiler manifest"
     )
     manifests = _INSTALLED_MANIFESTS.get()
-    prior = None if manifests is None else manifests.get(source_root)
-    if prior is not None and prior[0] == raw:
-        return deepcopy(prior[1])
-    compiler = _validate_installed_manifest(source_root, raw)
+    manifest = None if manifests is None else manifests.get(source_root)
+    if manifest is None or manifest.raw != raw:
+        if manifests is not None:
+            manifests.pop(source_root, None)
+        manifest = _InstalledManifest(
+            raw, _validate_installed_manifest(source_root, raw)
+        )
+    if sources is InstalledSourceAdmission.FRESH or (
+        sources is InstalledSourceAdmission.REUSE and not manifest.sources_verified
+    ):
+        manifest.sources_verified = False
+        manifest.compiler.verify_sources()
+        manifest.compiler.verify_executing_package()
+        manifest.sources_verified = True
     if manifests is None:
-        return compiler
-    manifests[source_root] = (raw, compiler)
-    # InstalledCompiler contains public mutable dictionaries. Keep the owned
-    # projection private even on its first use, including nested records.
-    return deepcopy(compiler)
+        return manifest.compiler
+    manifests[source_root] = manifest
+    # InstalledCompiler exposes mutable records. Every caller receives a copy.
+    return deepcopy(manifest.compiler)
 
 
 def _validate_installed_manifest(source_root: Path, raw: bytes) -> InstalledCompiler:

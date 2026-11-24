@@ -223,10 +223,17 @@ class CallNamedBuiltinDispatchMixin(
                 opcode = _BYTES_FROM_STR_OPS[name]
             else:
                 opcode = _BYTES_FROM_OBJ_OPS[name]
-            if name == "bytearray":
-                self._remember_bytearray_len_hint(
-                    result, self.const_ints.get(args[0].name)
+            if name == "bytearray" and len(node.args) == 1:
+                source = node.args[0]
+                # A name read lowers through its binding and can lose the
+                # literal's SSA identity. Use the reaching constant proved for
+                # that read, including the analysis's callback invalidation.
+                length = (
+                    self._const_int_from_expr(source)
+                    if isinstance(source, ast.Name)
+                    else self.const_ints.get(args[0].name)
                 )
+                self._remember_bytearray_len_hint(result, length)
         else:
             raise AssertionError(f"No builtin shape emitter for {name}")
         self.emit(MoltOp(opcode, args, result))

@@ -395,7 +395,6 @@ class _SourceTreeFingerprintTransaction:
     compiler_plans: dict[tuple[str, str, str, str, str, ProcessEnvironment], object] = (
         field(default_factory=dict)
     )
-    installed_sources: set[tuple[str, str]] = field(default_factory=set)
     installed_executables: dict[
         tuple[str, str, HostToolProduct], StableRegularFileObservation
     ] = field(default_factory=dict)
