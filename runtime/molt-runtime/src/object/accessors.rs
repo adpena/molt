@@ -242,6 +242,56 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
         if field_storage::insert_out_of_order(_py, obj_ptr, offset, slot, val_bits)? {
             return Ok(());
         }
+        initialize_empty_field(_py, obj_ptr, offset, slot, val_bits);
+        Ok(())
+    }
+}
+
+/// Initialize one absent inferred attribute at its source assignment. The
+/// caller admits a plain inline receiver and a class-versioned consecutive
+/// suffix. Any live later field requires the ordinary insertion transaction.
+pub(crate) unsafe fn try_initialize_inferred_field(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    offset: usize,
+    following: usize,
+    value: u64,
+) -> bool {
+    unsafe {
+        // Even another instance of the same class has its own allocation.
+        // The sticky dictionary check at the call site excludes retired rows.
+        let extent =
+            super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
+        if offset > extent || (extent - offset) / size_of::<u64>() <= following {
+            return false;
+        }
+        let slot = super::native_instance::field_base(object)
+            .add(offset)
+            .cast::<u64>();
+        let missing = crate::missing_bits(py);
+        if *slot != missing
+            || std::slice::from_raw_parts(slot.add(1), following)
+                .iter()
+                .any(|&bits| bits != missing)
+        {
+            return false;
+        }
+        profile_hit(py, &STRUCT_FIELD_STORE_COUNT);
+        initialize_empty_field(py, object, offset, slot, value);
+        true
+    }
+}
+
+/// Install one field credit after its empty storage and insertion order have
+/// been admitted. The slot belongs to this receiver and owns no mortal value.
+unsafe fn initialize_empty_field(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    offset: usize,
+    slot: *mut u64,
+    val_bits: u64,
+) {
+    unsafe {
         let old_bits = *slot;
         debug_assert!(
             obj_from_bits(old_bits).as_ptr().is_none() || is_missing_bits(_py, old_bits),
@@ -258,7 +308,6 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
                 obj_ptr as usize, slot as usize
             );
         }
-        Ok(())
     }
 }
 

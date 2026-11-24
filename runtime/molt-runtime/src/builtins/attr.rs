@@ -35,7 +35,7 @@ use crate::{
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
 
-enum AttrNameCacheKey {
+pub(super) enum AttrNameCacheKey {
     Inline {
         len: u8,
         bytes: [u8; ATTR_NAME_INLINE_CAP],
@@ -44,7 +44,7 @@ enum AttrNameCacheKey {
 }
 
 impl AttrNameCacheKey {
-    fn new(bytes: &[u8]) -> Self {
+    pub(super) fn new(bytes: &[u8]) -> Self {
         if bytes.len() <= ATTR_NAME_INLINE_CAP {
             let mut inline = [0u8; ATTR_NAME_INLINE_CAP];
             inline[..bytes.len()].copy_from_slice(bytes);
@@ -57,7 +57,7 @@ impl AttrNameCacheKey {
         }
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(super) fn as_slice(&self) -> &[u8] {
         match self {
             Self::Inline { len, bytes } => &bytes[..usize::from(*len)],
             Self::Heap(bytes) => bytes.as_slice(),

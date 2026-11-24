@@ -74,7 +74,7 @@ pub use {
 };
 pub(crate) use {
     mutation::molt_del_attr_name_attached_body, mutation::molt_set_attr_name_attached_body,
-    mutation::molt_set_attr_object_attached_body,
+    mutation::molt_set_attr_object_attached_body, mutation::set_attr_name_at_site,
 };
 
 fn native_descriptor_metadata_field(
@@ -1359,7 +1359,7 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
     unsafe {
         let site_id = ic_site_from_bits(site_bits);
         if let Some(site_id) = site_id
-            && let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits)
+            && let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits, name)
         {
             if exception_pending(py) {
                 dec_ref_bits(py, bits);
@@ -1391,7 +1391,9 @@ pub(crate) unsafe fn get_attr_object_site_with_mode(
     mode: AttributeLookupMode<'_>,
 ) -> Result<u64, ()> {
     unsafe {
-        if let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits) {
+        if let Some(name) = crate::object::ops::exact_string_bytes(py, name_bits)
+            && let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits, name)
+        {
             if exception_pending(py) {
                 dec_ref_bits(py, bits);
                 return Err(());
