@@ -6,10 +6,12 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
+use super::super::value_identity::ScalarFacts;
+
 pub(super) type LoopContext = LoopForestResult;
 
 /// Index of where every value is defined and the op (if any) that defines it.
-pub(super) struct DefIndex {
+pub(super) struct DefIndex<'a> {
     /// value → defining block.
     pub(super) def_block: HashMap<ValueId, BlockId>,
     /// value → (opcode, operands, no_signed_wrap) for op-defined values.
@@ -20,7 +22,7 @@ pub(super) struct DefIndex {
     pub(super) header_args: HashMap<BlockId, Vec<ValueId>>,
     /// Mathematical scalar resolution, including exact borrowed binding views.
     /// It describes values, never permission to erase publication or callbacks.
-    pub(super) copy_src: HashMap<ValueId, ValueId>,
+    pub(super) copy_src: &'a HashMap<ValueId, ValueId>,
     /// Blocks some execution reaches. An edge from any other block delivers
     /// nothing: the SSA lift keeps a vestigial `loop_end -> header` edge whose
     /// arguments are fabricated `None`s, and counting it as an entry would make
@@ -28,7 +30,7 @@ pub(super) struct DefIndex {
     pub(super) reachable: HashSet<BlockId>,
 }
 
-impl DefIndex {
+impl DefIndex<'_> {
     /// Follow plain-copy edges to the canonical source of `v`.
     pub(super) fn resolve(&self, mut v: ValueId) -> ValueId {
         // The copy graph is a DAG (SSA), but guard against pathological cycles
@@ -43,12 +45,16 @@ impl DefIndex {
     }
 }
 
-pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId>) -> DefIndex {
+pub(super) fn build_def_index<'a>(
+    facts: &'a ScalarFacts<'_>,
+    loop_headers: &HashSet<BlockId>,
+) -> DefIndex<'a> {
+    let func = facts.body();
     let mut def_block = HashMap::default();
     let mut def_op = HashMap::default();
     let mut const_int = HashMap::default();
     let mut header_args: HashMap<BlockId, Vec<ValueId>> = HashMap::default();
-    let copy_src = super::super::value_identity::build_scalar_value_map(func);
+    let copy_src = facts.forwarding();
 
     for (&bid, block) in &func.blocks {
         for arg in &block.args {

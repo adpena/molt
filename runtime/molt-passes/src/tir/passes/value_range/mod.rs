@@ -46,7 +46,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{IntRange, ScevExpr};
 
 use super::scev::{ScevResult, compute_scev_with_loop_forest};
-use super::value_identity::build_scalar_value_map;
+use super::value_identity::ScalarFacts;
 
 pub use crate::tir::value_range::ValueRangeResult;
 use lengths::collect_constants_and_lengths;
@@ -69,9 +69,7 @@ impl Analysis for ValueRange {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        let loop_forest = <LoopForest as Analysis>::compute(func);
-        let scev = compute_scev_with_loop_forest(func, &loop_forest);
-        compute_value_range_with_loop_forest(func, &scev, &loop_forest)
+        compute_with_scalar_facts(&ScalarFacts::new(func))
     }
 }
 
@@ -79,47 +77,45 @@ impl Analysis for ValueRange {
 // Computation
 // ---------------------------------------------------------------------------
 
+pub(crate) fn compute_with_scalar_facts(facts: &ScalarFacts<'_>) -> ValueRangeResult {
+    let loop_forest = <LoopForest as Analysis>::compute(facts.body());
+    let scev = compute_scev_with_loop_forest(facts, &loop_forest);
+    compute_seeded(facts, &scev, &loop_forest, None)
+}
+
 /// Compute value-range facts from the function + its scalar-evolution facts.
 pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeResult {
     let loop_forest = <LoopForest as Analysis>::compute(func);
-    compute_value_range_with_loop_forest(func, scev, &loop_forest)
-}
-
-/// Compute value-range facts using the caller-provided canonical LoopForest.
-pub(crate) fn compute_value_range_with_loop_forest(
-    func: &TirFunction,
-    scev: &ScevResult,
-    loop_forest: &LoopForestResult,
-) -> ValueRangeResult {
-    compute_seeded(func, scev, loop_forest, None)
+    compute_seeded(&ScalarFacts::new(func), scev, &loop_forest, None)
 }
 
 /// Preview only the arm of a loop version whose entry established a fixed
 /// upper bound for these explicit lengths of its immutable string. The
 /// symbolic relation between the original length and its owner survives.
 pub(super) fn under_length_guard(
-    func: &TirFunction,
+    facts: &ScalarFacts<'_>,
     lengths: &[crate::tir::values::ValueId],
     upper: i64,
 ) -> ValueRangeResult {
-    let forest = <LoopForest as Analysis>::compute(func);
-    let scev = compute_scev_with_loop_forest(func, &forest);
-    compute_seeded(func, &scev, &forest, Some((lengths, upper)))
+    let forest = <LoopForest as Analysis>::compute(facts.body());
+    let scev = compute_scev_with_loop_forest(facts, &forest);
+    compute_seeded(facts, &scev, &forest, Some((lengths, upper)))
 }
 
 fn compute_seeded(
-    func: &TirFunction,
+    facts: &ScalarFacts<'_>,
     scev: &ScevResult,
     loop_forest: &LoopForestResult,
     guarded_lengths: Option<(&[crate::tir::values::ValueId], i64)>,
 ) -> ValueRangeResult {
+    let func = facts.body();
     let mut result = ValueRangeResult::default();
 
     // This resolves pure transports and proven exact scalar views across
     // effectful publication. It grants no permission to move or remove a store.
     // New effectful edges require exact scalar provenance: this resolver also
     // carries container lengths, which a displaced finalizer may have changed.
-    for (value, source) in build_scalar_value_map(func) {
+    for (&value, &source) in facts.forwarding() {
         result.record_copy_source(value, source);
     }
 
@@ -202,7 +198,7 @@ fn compute_seeded(
     // last value). We seed the IV's range from that descriptor for any header SCEV
     // left un-ranged. This is the producer that unblocks SROA's hot-loop field
     // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
-    seed_counted_loop_iv_ranges(func, loop_forest, &mut result);
+    seed_counted_loop_iv_ranges(facts, loop_forest, &mut result);
 
     // ---- bounded-step recurrences -------------------------------------------
     // A header phi stepped by a bounded value each iteration (`i += 1`,

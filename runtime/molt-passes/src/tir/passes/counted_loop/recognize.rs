@@ -11,7 +11,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::OpCode;
 
-use super::super::value_identity::{build_scalar_value_map, resolve_copy};
+use super::super::value_identity::{ScalarFacts, resolve_copy};
 use super::descriptor::CountedLoop;
 use super::facts::{branch_args_to, build_const_int_map, find_def, loop_forest_contains_header};
 use super::gate::{CmpPolarity, LoopGate, loop_gate};
@@ -23,15 +23,16 @@ use super::paths::{loop_body_path, loop_guard_path};
 /// iterating headers in a deterministic order.
 pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<CountedLoop> {
     let loop_forest = <LoopForest as Analysis>::compute(func);
-    recognize_counted_loop_with_loop_forest(func, header, &loop_forest)
+    recognize_counted_loop_with_loop_forest(&ScalarFacts::new(func), header, &loop_forest)
 }
 
 /// Recognize a counted loop using the caller-provided canonical LoopForest.
 pub(crate) fn recognize_counted_loop_with_loop_forest(
-    func: &TirFunction,
+    facts: &ScalarFacts<'_>,
     header: BlockId,
     loop_forest: &LoopForestResult,
 ) -> Option<CountedLoop> {
+    let func = facts.body();
     macro_rules! trace {
         ($($a:tt)*) => {
             if backend_env::var(BackendEnv::MOLT_DEBUG_COUNTED_LOOP).is_ok() {
@@ -180,7 +181,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     }
 
     let const_map = build_const_int_map(func);
-    let copy_of = build_scalar_value_map(func);
+    let copy_of = facts.forwarding();
 
     // The comparison defines `cmp_cond`. It must be Lt/Le/Gt/Ge(iv_view, stop).
     let Some((cmp_block, cmp_op)) = find_def(func, cmp_cond) else {
@@ -204,7 +205,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         return None;
     }
 
-    let cmp_lhs_root = resolve_copy(&copy_of, cmp_op.operands[0]);
+    let cmp_lhs_root = resolve_copy(copy_of, cmp_op.operands[0]);
     let Some(iv_arg_index) = header_block.args.iter().position(|a| a.id == cmp_lhs_root) else {
         trace!(
             "cmp lhs {:?} (root {:?}) is not a header arg",
@@ -213,7 +214,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         return None;
     };
     let induction_var = header_block.args[iv_arg_index].id;
-    let Some(&stop) = const_map.get(&resolve_copy(&copy_of, cmp_op.operands[1])) else {
+    let Some(&stop) = const_map.get(&resolve_copy(copy_of, cmp_op.operands[1])) else {
         trace!(
             "cmp rhs {:?} is not a ConstInt (runtime bound)",
             cmp_op.operands[1]
@@ -238,7 +239,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
 
     // The back-edge value for the IV slot must be `Add(iv_view, step_const)`,
     // resolving copies on the back-edge value and on the Add's IV operand.
-    let iv_next_root = resolve_copy(&copy_of, back_args[iv_arg_index]);
+    let iv_next_root = resolve_copy(copy_of, back_args[iv_arg_index]);
     let Some((def_block, inc_op)) = find_def(func, iv_next_root) else {
         trace!("no def for IV-next {:?}", iv_next_root);
         return None;
@@ -265,11 +266,11 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         trace!("IV-next def is {:?}, not a binary Add", inc_op.opcode);
         return None;
     }
-    if resolve_copy(&copy_of, inc_op.operands[0]) != induction_var {
+    if resolve_copy(copy_of, inc_op.operands[0]) != induction_var {
         trace!("IV-next Add lhs does not resolve to the IV");
         return None;
     }
-    let Some(&step) = const_map.get(&resolve_copy(&copy_of, inc_op.operands[1])) else {
+    let Some(&step) = const_map.get(&resolve_copy(copy_of, inc_op.operands[1])) else {
         trace!("IV step is not a ConstInt");
         return None;
     };
@@ -326,7 +327,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         preheader = Some(pred_id);
         if pred_args.len() == header_block.args.len() {
             start = const_map
-                .get(&resolve_copy(&copy_of, pred_args[iv_arg_index]))
+                .get(&resolve_copy(copy_of, pred_args[iv_arg_index]))
                 .copied();
         }
     }

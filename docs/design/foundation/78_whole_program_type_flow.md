@@ -97,6 +97,14 @@ A value gets an exact type only from a producer the program proves: a literal, a
 site (`C(...)` produces `Class(C)` when `C` is a proven binding), or an operation whose result
 type CPython defines (`int + int` is `int`; `int / int` is `float`; `bool + int` is `int`).
 
+For one immutable function body, the exact scalar solver supplies both the type map and the
+scalar-forwarding view. Range analysis, scalar evolution and counted-loop recognition borrow
+the same forwarding view. Carrier selection and late lowering consume the exact type proof
+from that same solve. When lowering splits the body it takes an owned snapshot for the
+original operations. A subsequent consumer of the rewritten body computes facts against its
+new SSA definitions. Interprocedural solves with different parameter or call-result seeds
+still evaluate their own context.
+
 ### 3.3 The analysis
 
 A context is `(FunctionId, key)`, where `key` holds one monomorphic abstract value per
