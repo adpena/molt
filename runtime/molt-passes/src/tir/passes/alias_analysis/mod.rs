@@ -196,6 +196,10 @@ pub struct AliasAnalysisResult {
 }
 
 impl AliasAnalysisResult {
+    pub(crate) fn exact_scalar_types(&self) -> &HashMap<ValueId, crate::tir::types::TirType> {
+        &self.exact_scalar_types
+    }
+
     /// Compute the result for `func`. Builds the alias union-find by a single
     /// forward scan, then folds the (now alias-aware) escape analysis on top.
     /// `pub(crate)` so module-phase transforms (which have no per-function

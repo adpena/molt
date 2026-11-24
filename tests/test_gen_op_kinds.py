@@ -980,8 +980,8 @@ def test_call_sites_share_effect_authority() -> None:
     for consumer in (call_graph, call_facts):
         assert "FunctionCallSites::for_function(func)" in consumer
         assert "opcode_call_role_table" not in consumer
-    assert "op_effects_with_types(op, &exact)" in call_sites
-    assert "extract_exact_scalar_map(func)" in call_sites
+    assert "op_effects_with_types(op, exact)" in call_sites
+    assert "let exact = facts.types()" in call_sites
     assert "load_purity_at(position, op)" in call_sites
     assert "slots.stores.contains_key(&position)" in call_sites
     for row in data["opcode"]:

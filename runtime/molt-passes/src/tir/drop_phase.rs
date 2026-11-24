@@ -827,7 +827,7 @@ pub fn finalize_document_drops<'a>(
                     func.attrs.get(DROP_INSERTED_ATTR),
                     Some(AttrValue::Bool(true))
                 )
-                && !super::call_sites::FunctionCallSites::for_function(func).may_call_python()
+                && !super::call_sites::FunctionCallSites::may_call_python_in(func)
             {
                 leaves.insert(*id);
             }

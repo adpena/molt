@@ -5,10 +5,8 @@ use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
-use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
 use crate::tir::passes::escape_analysis::{EscapeState, finalizer_alloc_roots};
-use crate::tir::passes::typed_slot_access::boxed_allocation_layout;
-use crate::tir::passes::value_range::{ValueRange, ValueRangeResult};
+use crate::tir::passes::typed_slot_access::{boxed_allocation_layout, fixed_layout_inputs};
 use crate::tir::values::ValueId;
 
 use super::super::PassStats;
@@ -27,11 +25,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
 
-    let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
-    let ranges: ValueRangeResult = am.get::<ValueRange>(func).clone();
-    let facts = super::super::value_identity::ScalarFacts::new(func);
-    let non_heap_values = crate::representation_facts::non_heap_boxed_values_from(&facts, &ranges);
-    let exact_types = facts.into_types();
+    let (alias, ranges) = fixed_layout_inputs(func, am);
+    let exact_types = alias.exact_scalar_types();
+    let facts = super::super::value_identity::ScalarFacts::with_types(func, exact_types);
+    let non_heap_values = crate::representation_facts::non_heap_boxed_values_from(&facts, ranges);
     let finalizer_roots: HashSet<ValueId> = finalizer_alloc_roots(func)
         .into_iter()
         .map(|value| alias.root(value))
@@ -46,7 +43,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if let Some(allocation) = boxed_allocation_layout(op) {
                 fixed_layout_allocations += 1;
                 let root = alias.root(allocation.result);
-                let effects = super::super::effects::op_effects_with_types(op, &exact_types);
+                let effects = super::super::effects::op_effects_with_types(op, exact_types);
                 if effects.nothrow
                     && !effects.may_access_arbitrary_heap
                     && !finalizer_roots.contains(&root)

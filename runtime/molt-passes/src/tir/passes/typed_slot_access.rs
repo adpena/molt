@@ -19,7 +19,8 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult, MemRegion};
-use crate::tir::passes::value_range::ValueRange;
+use crate::tir::passes::value_identity::ScalarFacts;
+use crate::tir::passes::value_range::{ValueRange, ValueRangeResult, compute_with_scalar_facts};
 use crate::tir::values::ValueId;
 
 /// A position in the exact TIR stream supplied to `analyze`, not source origin.
@@ -162,10 +163,32 @@ pub fn for_function(func: &TirFunction, am: &mut AnalysisManager) -> TypedSlotAc
     if !has_candidates(func) {
         return TypedSlotAccessPlan::default();
     }
-    let alias = am.get::<AliasAnalysis>(func).clone();
-    let ranges = am.get::<ValueRange>(func).clone();
-    let boxed_neutral = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
-    analyze(func, &alias, &boxed_neutral)
+    let (alias, ranges) = fixed_layout_inputs(func, am);
+    let facts = ScalarFacts::with_types(func, alias.exact_scalar_types());
+    let boxed_neutral = crate::representation_facts::non_heap_boxed_values_from(&facts, ranges);
+    analyze(func, alias, &boxed_neutral)
+}
+
+/// Borrow the current body's shared proofs for fixed-slot transforms.
+pub(crate) fn fixed_layout_inputs<'a>(
+    func: &TirFunction,
+    am: &'a mut AnalysisManager,
+) -> (&'a AliasAnalysisResult, &'a ValueRangeResult) {
+    am.get::<AliasAnalysis>(func);
+    if am.cached::<ValueRange>().is_none() {
+        let alias = am
+            .cached::<AliasAnalysis>()
+            .expect("alias analysis is initialized");
+        let facts = ScalarFacts::with_types(func, alias.exact_scalar_types());
+        am.prepopulate::<ValueRange>(compute_with_scalar_facts(&facts));
+    }
+    let alias = am
+        .cached::<AliasAnalysis>()
+        .expect("alias analysis is initialized");
+    let ranges = am
+        .cached::<ValueRange>()
+        .expect("value ranges are initialized");
+    (alias, ranges)
 }
 
 /// Standalone consumers share fact preparation. Do not compute value ranges
@@ -174,7 +197,9 @@ pub fn for_alias(func: &TirFunction, alias: &AliasAnalysisResult) -> TypedSlotAc
     if !has_candidates(func) {
         return TypedSlotAccessPlan::default();
     }
-    let boxed_neutral = crate::representation_facts::analyze_non_heap_boxed(func);
+    let facts = ScalarFacts::with_types(func, alias.exact_scalar_types());
+    let ranges = compute_with_scalar_facts(&facts);
+    let boxed_neutral = crate::representation_facts::non_heap_boxed_values_from(&facts, &ranges);
     analyze(func, alias, &boxed_neutral)
 }
 

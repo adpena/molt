@@ -316,7 +316,7 @@ impl Analysis for DefMap {
 #[derive(Default)]
 pub struct AnalysisManager {
     /// Cached results, type-erased behind `Any`. The concrete type stored under
-    /// `AnalysisId::X` is always `X::Result`, guaranteed by `get::<X>`.
+    /// `AnalysisId::X` is always `X::Result`, as stored by `get` or `prepopulate`.
     cache: HashMap<AnalysisId, Box<dyn Any + Send + Sync>>,
 }
 
@@ -336,13 +336,15 @@ impl AnalysisManager {
         self.cache
             .entry(id)
             .or_insert_with(|| Box::new(A::compute(func)) as Box<dyn Any + Send + Sync>);
-        // SAFETY of the downcast: the only writer of slot `id` is this method,
-        // which always stores `A::Result`. The cache key `A::ID` is unique per
-        // `A`. Therefore the stored `Any` is always `A::Result`.
-        self.cache
-            .get(&id)
-            .and_then(|boxed| boxed.downcast_ref::<A::Result>())
+        self.cached::<A>()
             .expect("analysis cache type invariant violated")
+    }
+
+    /// Read an analysis already computed for the current function.
+    pub fn cached<A: Analysis>(&self) -> Option<&A::Result> {
+        self.cache
+            .get(&A::ID)
+            .and_then(|boxed| boxed.downcast_ref::<A::Result>())
     }
 
     /// Prepopulate the cache with an already-computed result for analysis `A`.
