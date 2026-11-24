@@ -746,6 +746,7 @@ dependencies = [
  "molt-ir",
  "molt-tir",
  "rayon",
+ "rmp-serde",
  "serde",
  "serde_json",
  "target-lexicon",
