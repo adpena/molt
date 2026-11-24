@@ -348,6 +348,27 @@ def _is_protected(path: Path, protected: Sequence[Path]) -> bool:
     return any(_deletion_contains(path, protected_path) for protected_path in protected)
 
 
+def _pressure_skip_reason(
+    candidate: Candidate,
+    *,
+    now: float,
+    min_idle_s: float,
+    protected: Sequence[Path],
+) -> str | None:
+    if _is_protected(candidate.path, protected):
+        return "protected"
+    if candidate.lock_held:
+        return "lock-held"
+    if candidate.guard_active:
+        return "active-guard"
+    age = candidate.age_s(now)
+    if age < min_idle_s:
+        return f"modified <{min_idle_s / 60:.0f}min ago"
+    if candidate.kind in _LAST_USE_KINDS and age < CHECKOUT_STATE_WINDOW_S:
+        return "used within the protection window"
+    return None
+
+
 def plan_reclaim(
     candidates: Iterable[Candidate],
     *,
@@ -381,20 +402,11 @@ def plan_reclaim(
     selected_paths: set[Path] = set()
     selected_bytes_below: dict[Path, int] = {}
     for c in sorted(candidates, key=_order_key):
-        if _is_protected(c.path, protected_paths):
-            plan.skipped.append((c, "protected"))
-            continue
-        if c.lock_held:
-            plan.skipped.append((c, "lock-held"))
-            continue
-        if c.guard_active:
-            plan.skipped.append((c, "active-guard"))
-            continue
-        if c.age_s(now) < min_idle_s:
-            plan.skipped.append((c, f"modified <{min_idle_s / 60:.0f}min ago"))
-            continue
-        if c.kind in _LAST_USE_KINDS and c.age_s(now) < CHECKOUT_STATE_WINDOW_S:
-            plan.skipped.append((c, "used within the protection window"))
+        reason = _pressure_skip_reason(
+            c, now=now, min_idle_s=min_idle_s, protected=protected_paths
+        )
+        if reason is not None:
+            plan.skipped.append((c, reason))
             continue
         key = Path(_norm(c.path))
         if any(parent in selected_paths for parent in key.parents):
@@ -1049,6 +1061,8 @@ def discover_candidates(
     root: Path,
     config: GuardConfig,
     *,
+    now: float,
+    protected: Sequence[Path],
     roots: Sequence[Path] | None = None,
     measure_sizes: bool = True,
     size_budget_s: float = 30.0,
@@ -1075,18 +1089,23 @@ def discover_candidates(
         size = -1
         if measure_sizes:
             size = _dir_size(path, min(time.monotonic() + 20.0, size_deadline))
-        candidates.append(
-            Candidate(
-                path=path,
-                kind=kind,
-                # A last-use root's stamp is one of these children.
-                mtime=_newest_activity_mtime(path),
-                size=size,
-                lock_held=_root_lock_held(path, scan_roots),
-                owner_root=owner_root,
-                guard_active=guards.protects(path, owner_root),
-            )
+        candidate = Candidate(
+            path=path,
+            kind=kind,
+            # A last-use root's stamp is one of these children.
+            mtime=_newest_activity_mtime(path),
+            size=size,
+            owner_root=owner_root,
+            guard_active=guards.protects(path, owner_root),
         )
+        # Protected, active or recent candidates cannot reach selection. Probe
+        # raw locks on the remaining candidates before parent/child collapse.
+        reason = _pressure_skip_reason(
+            candidate, now=now, min_idle_s=config.min_idle_s, protected=protected
+        )
+        if reason is None:
+            candidate.lock_held = _root_lock_held(path, scan_roots)
+        candidates.append(candidate)
 
     for owner_root in scan_roots:
         if pressure_device is not None and _device_of(owner_root) != pressure_device:
@@ -1378,9 +1397,12 @@ def ensure_free(
             _write_log(resolved_root, result)
         return result
     phase_started = time.monotonic()
+    protected = _protected_paths(scope_roots, env)
     candidates = discover_candidates(
         resolved_root,
         cfg,
+        now=now,
+        protected=protected,
         roots=scope_roots,
         guards=guards,
         measure_sizes=False,
@@ -1395,7 +1417,7 @@ def ensure_free(
         target_bytes=target,
         now=now,
         min_idle_s=cfg.min_idle_s,
-        protected=_protected_paths(scope_roots, env),
+        protected=protected,
     )
     for cand, why in plan.skipped:
         result.skipped.append(
