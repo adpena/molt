@@ -4170,8 +4170,9 @@ def test_native_inspect_getmembers_lists_and_filters_functions(
         "inspect_getmembers_lists_and_filters",
     )
     assert run.returncode == 0, run.stdout + run.stderr
+    # CPython excludes names supplied only by the metaclass from dir(C).
     assert run.stdout.strip().splitlines() == [
-        "True True",
+        "True False",
         "True False",
     ]
 
