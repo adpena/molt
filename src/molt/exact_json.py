@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -102,6 +102,34 @@ def capture_exact(
     """Capture one bounded JSON generation and its physical content identity."""
     identity, raw = capture_stable_regular_file(path, label=label, max_bytes=max_bytes)
     return identity, loads_exact(raw.decode("utf-8", errors="strict"))
+
+
+def encode_frontend_payload(
+    value: object,
+    *,
+    sort_keys: bool = False,
+    allow_nan: bool = True,
+    default: Callable[[Any], Any] | None = None,
+) -> bytes:
+    """Encode private frontend data over Python's full code-point range.
+
+    ASCII JSON escapes collapse an adjacent high and low surrogate into one
+    astral character on decode. Keep code points literal and use the same
+    UTF-8/surrogatepass representation as the compiler's string literals.
+    """
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=sort_keys,
+        allow_nan=allow_nan,
+        default=default,
+    ).encode("utf-8", "surrogatepass")
+
+
+def decode_frontend_payload(payload: bytes) -> object:
+    """Decode the private record format without changing Python string identity."""
+    return json.loads(payload.decode("utf-8", "surrogatepass"))
 
 
 def canonical_json_bytes(value: object, *, default: Any | None = None) -> bytes:

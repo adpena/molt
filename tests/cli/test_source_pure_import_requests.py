@@ -60,6 +60,45 @@ def load(path: Path, **kwargs):
     return discovery._load_module_import_scan(path, **options)
 
 
+def test_import_query_records_preserve_python_string_identity(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "entry.py",
+        "def resolve(name): return __import__(name)\n"
+        "resolve('\\ud83d\\ude00')\n"
+        "resolve('\\U0001f600')\n",
+    )
+    pair, scalar = "\ud83d\ude00", "\U0001f600"
+    resolver = _ModuleResolutionCache()
+    cold = load(path, resolution_cache=resolver)
+    warm = load(path, resolution_cache=resolver)
+    assert not cold.cache_hit and warm.cache_hit
+    assert cold.scan == warm.scan
+    found = {
+        item.argument_strings[0]
+        for item in warm.scan.source_requests.source_values.calls
+        if item.argument_strings
+    }
+    assert {pair, scalar} <= found
+    assert len(pair) == 2 and len(scalar) == 1
+
+    options = dict(module_name="entry", is_package=False, import_scan_mode="full")
+    assert records._import_scan_cache_key(
+        path, **options, source_arguments=(pair,)
+    ) != records._import_scan_cache_key(path, **options, source_arguments=(scalar,))
+
+    from molt.cli.import_graph_record import semantic_import_result_digest
+
+    assert cold.query is not None
+    requests = cold.scan.source_requests
+    pair_scan = cold.scan._replace(source_requests=requests._replace(imports=(pair,)))
+    scalar_scan = cold.scan._replace(
+        source_requests=requests._replace(imports=(scalar,))
+    )
+    assert semantic_import_result_digest(
+        cold.query, pair_scan
+    ) != semantic_import_result_digest(cold.query, scalar_scan)
+
+
 def test_import_query_capture_unifies_source_persisted_and_precomputed(
     tmp_path: Path,
 ) -> None:

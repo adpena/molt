@@ -104,7 +104,7 @@ def test_source_record_json_admission_belongs_to_graph_cache(
     assert missing is None
 
 
-def test_json_record_producers_preserve_compact_ascii_blob_encoding(
+def test_json_record_producers_preserve_compact_python_text(
     tmp_path, monkeypatch
 ) -> None:
     from molt.cli.frontend_record_files import FrontendRecordFiles
@@ -136,8 +136,7 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
     (scan_digest,) = FrontendRecordFiles(tmp_path).addresses().values()
     scan = files.blob_path(scan_digest).read_bytes()
     for kind, payload in [("import-scan", scan), *((r[0], r[2]) for r in rows)]:
-        assert b"caf\\u00e9" in payload
-        assert b"\xc3\xa9" not in payload
+        assert "café".encode("utf-8") in payload
         assert b'": ' not in payload
         decoded = json.loads(payload)
         assert isinstance(decoded, dict)

@@ -24,6 +24,7 @@ from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
 from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
+from molt.exact_json import encode_frontend_payload
 
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -137,11 +138,9 @@ def _decode_class_identity(value: dict[str, Any]) -> _ClassIdentity | None:
     return None
 
 
-def _cache_json_sort_key(value: Any) -> str:
+def _cache_json_sort_key(value: object) -> bytes:
     """Order already-encoded heterogeneous keys or set members losslessly."""
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), default=_json_ir_default
-    )
+    return encode_frontend_payload(value, sort_keys=True, default=_json_ir_default)
 
 
 def _cache_json_value(value: Any) -> Any:
@@ -282,12 +281,9 @@ def _cache_backend_payload_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
 
 def _cache_json_payload_bytes(value: object) -> bytes:
     """The canonical JSON of any IR value: a payload, a header or a function."""
-    encoder = json.JSONEncoder(
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_ir_default,
+    return encode_frontend_payload(
+        _cache_json_value(value), sort_keys=True, default=_json_ir_default
     )
-    return encoder.encode(_cache_json_value(value)).encode("utf-8")
 
 
 # Domain tag of the Merkle payload digest; framing is fixed so no two payloads
@@ -488,12 +484,7 @@ def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
     extras = {
         key: value for key, value in ir.items() if key not in {"functions", "profile"}
     }
-    encoded = json.dumps(
-        _cache_json_value(extras),
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_ir_default,
-    ).encode("utf-8")
+    encoded = _cache_json_payload_bytes(extras)
     return hashlib.sha256(encoded).hexdigest()
 
 

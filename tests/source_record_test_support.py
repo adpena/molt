@@ -6,7 +6,6 @@ the shared SQLite store."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from contextlib import closing
 from typing import Any, cast
@@ -27,6 +26,8 @@ from molt.cli.source_record_store import (
     SourceRecordStore,
     shared_source_records,
 )
+
+from molt.exact_json import decode_frontend_payload, encode_frontend_payload
 
 _FILE_KINDS: frozenset[str] = frozenset(("import-scan", "module-analysis"))
 
@@ -71,7 +72,10 @@ def source_records(
         file_kind = cast(FrontendRecordKind, kind)
         files = _saved_files()
         return {
-            key: json.loads(_file_record(files, file_kind, key).payload)
+            key: cast(
+                dict[str, Any],
+                decode_frontend_payload(_file_record(files, file_kind, key).payload),
+            )
             for key in _file_digests(file_kind)
         }
     path = _saved_store().path
@@ -85,11 +89,11 @@ def source_records(
     for key, payload in rows:
         if kind == "module-lowering":
             frame = decode_lowering_record(payload)
-            value = json.loads(frame.metadata)
+            value = cast(dict[str, Any], decode_frontend_payload(frame.metadata))
             functions, _seeds = decode_function_records(frame)
             value["result"]["functions"] = functions
         else:
-            value = json.loads(payload)
+            value = cast(dict[str, Any], decode_frontend_payload(payload))
         result[key] = value
     return result
 
@@ -102,7 +106,7 @@ def replace_source_record(
         assert key in _file_digests(kind), f"no stored {kind} record {key}"
         files = _saved_files()
         file_kind = cast(FrontendRecordKind, kind)
-        assert files.put(file_kind, key, json.dumps(payload).encode())
+        assert files.put(file_kind, key, encode_frontend_payload(payload))
         assert files.save()
         return
     store = _saved_store()
@@ -120,10 +124,10 @@ def replace_source_record(
             },
         }
         encoded, _seeds = encode_lowering_record(
-            json.dumps(metadata).encode(), result["functions"]
+            encode_frontend_payload(metadata), result["functions"]
         )
     else:
-        encoded = json.dumps(payload).encode()
+        encoded = encode_frontend_payload(payload)
     assert store.put(kind, key, encoded, generation=row[0])
 
 

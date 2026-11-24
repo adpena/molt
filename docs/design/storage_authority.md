@@ -391,6 +391,13 @@ state transition. Reclamation still refuses identity drift and crash residue.
 
 ## Compile cache: keys on recorded reads, immutable records (2026-11-20)
 
+Private frontend keys and payloads, including installed stdlib initializer
+records, share one JSON byte codec over Python's UTF-8/surrogatepass strings.
+An adjacent pair of surrogate code points stays distinct from one astral
+code point in cache keys, decoded facts and whole-graph result digests.
+The store still addresses opaque byte extents. Public manifests keep their
+strict UTF-8 interchange contract.
+
 Measured problem (2026-11-19, macOS arm64, data volume): the shared source-record
 store held 139.7 GiB of live rows plus a 59.9 GB WAL against the 30 GiB
 compile-cache budget: 4,582,015 import-scan, 85,551 module-lowering, 19,516
