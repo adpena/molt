@@ -152,6 +152,8 @@ only stored or passed along opaquely never splits a context.
 After optimization, contexts of one function whose bodies are identical merge into one clone
 (compared by body digest). The number of clones is the number of reachable contexts that
 compile differently.
+The comparison serializes each origin once and uses the existing function table until
+compaction. Report a merge by the representative's symbol in that same table.
 
 ### 3.5 Termination, with no constant
 

@@ -401,6 +401,40 @@ fn clones_that_compile_alike_fold_into_their_origin() {
 }
 
 #[test]
+fn clone_merge_reports_the_representative_after_compaction() {
+    let constant_body = |name, value| {
+        let mut func = function(name, 0);
+        let entry = func.entry_block;
+        let result = const_int(&mut func, entry, value);
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            constant_body("f", 1),
+            constant_body("f__tf_i", 1),
+            constant_body("f__tf_f", 2),
+            constant_body("f__tf_b", 2),
+        ],
+    );
+    let mut outcome = TypeFlowOutcome::default();
+    let mut report = Vec::new();
+    merge_identical(&mut module, 1, &[0, 0, 0], 1, &mut outcome, &mut report);
+
+    assert_eq!(module.table.symbol(FunctionId(1)), "f__tf_f");
+    assert_eq!(
+        report,
+        [
+            "[type-flow] merged f__tf_b into f__tf_f",
+            "[type-flow] merged f__tf_i into f",
+        ]
+    );
+}
+
+#[test]
 fn merged_seeds_keep_only_what_both_prove() {
     assert_eq!(
         merged_seeds(

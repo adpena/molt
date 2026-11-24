@@ -301,26 +301,27 @@ fn merge_identical(
     outcome: &mut TypeFlowOutcome,
     report: &mut Vec<String>,
 ) {
-    let table = module.table.clone();
-    let digest = |func: &TirFunction| body_digest(func, &table);
+    let table = &module.table;
+    let digest = |func: &TirFunction| body_digest(func, table);
     // Representative row of each clone: itself, an earlier identical clone of
     // the same origin, or the origin.
     let mut representative: Vec<FunctionId> = Vec::with_capacity(clone_origin.len());
     let mut seen: HashMap<(usize, Vec<u8>), usize> = HashMap::default();
-    let origin_digests: HashMap<usize, Vec<u8>> = clone_origin
-        .iter()
-        .map(|&origin| (origin, digest(&module.functions[origin])))
-        .collect();
+    let mut origin_digests = HashMap::default();
     for (offset, &origin) in clone_origin.iter().enumerate() {
         let index = first_clone + offset;
         let own = digest(&module.functions[index]);
         let id = module.ids[index];
-        if origin_digests[&origin] == own {
+        let original = origin_digests
+            .entry(origin)
+            .or_insert_with(|| digest(&module.functions[origin]));
+        if *original == own {
             representative.push(module.ids[origin]);
             continue;
         }
-        match seen.get(&(origin, own.clone())) {
-            Some(&earlier) => {
+        match seen.entry((origin, own)) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let earlier = *entry.get();
                 let exact = merged_seeds(
                     &module.functions[earlier].exact_param_types,
                     &module.functions[index].exact_param_types,
@@ -328,8 +329,8 @@ fn merge_identical(
                 module.functions[earlier].exact_param_types = exact;
                 representative.push(module.ids[earlier]);
             }
-            None => {
-                seen.insert((origin, own), index);
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(index);
                 representative.push(id);
             }
         }
@@ -390,9 +391,7 @@ fn merge_identical(
             report.push(format!(
                 "[type-flow] merged {} into {}",
                 removed.name,
-                module
-                    .table
-                    .symbol(remap(FunctionId::from_index(base_rows + offset)))
+                table.symbol(representative[offset])
             ));
         }
     }
@@ -404,11 +403,8 @@ fn merge_identical(
                 .filter(|(_, keep)| **keep)
                 .map(|(offset, _)| FunctionId::from_index(base_rows + offset)),
         )
-        .map(|id| (table.symbol(id).to_string(), table.kind(id)))
-        .collect::<Vec<_>>();
-    module.table = molt_ir::FunctionTable::from_rows(
-        rows.iter().map(|(symbol, kind)| (symbol.as_str(), *kind)),
-    );
+        .map(|id| (table.symbol(id), table.kind(id)));
+    module.table = molt_ir::FunctionTable::from_rows(rows);
     for (position, id) in module.ids.iter_mut().enumerate().skip(first_clone) {
         *id = FunctionId::from_index(base_rows + position - first_clone);
     }
