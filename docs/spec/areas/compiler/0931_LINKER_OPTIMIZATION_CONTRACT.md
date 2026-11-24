@@ -94,11 +94,14 @@ admission, with no source build or PATH discovery.
 
 Only linked and split WASM output admits this executable. Raw WASM, native and
 source-emitter output do not pay its admission cost. The tool reads the module
-from stdin: `--scan-wasm-link-facts` takes no path. The Python provider already holds every module it asks about, so a
-pipe replaces the scratch file each query used to write and the tool to read
-back: a 91-line asyncio program makes 13 queries over 46-83 MB modules, 865 MB
-each way per link. The tool
-holds one module on its heap per short-lived request instead of a mapping.
+from stdin. `--scan-wasm-link-facts` takes a comma-separated list of byte
+lengths and never opens a module pathname. The provider batches captured archive
+members under byte and member-count limits. The scanner validates each declared
+module independently in input order and emits one JSON record per module until
+the first rejection. Truncated or trailing bytes refuse the request. A scan of
+one large module passes its existing immutable buffer to the pipe. The provider
+publishes cached facts only after closing the complete batch and validating the
+scanner generation.
 The relocatable runtime preflight relinks to the null device, since nothing
 reads its output (0.3 s against 8.0-8.5 s with an 83 MB scratch file on the
 USB build volume). Interleaved dev builds of the 91-line asyncio program as a

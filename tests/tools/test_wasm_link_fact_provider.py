@@ -16,8 +16,9 @@ from tools import wasm_link_fact_provider as provider
 
 
 def _rejected_run(argv, *, input, **_kwargs):
-    # The scanner reads the module from stdin.
-    assert argv[1:] == ["--scan-wasm-link-facts"] and input
+    # This fixture scans one eight-byte empty module.
+    assert argv[1:] == ["--scan-wasm-link-facts", "8"]
+    assert input == b"\0asm\x01\0\0\0"
     payload = {
         "schema_version": provider.WASM_LINK_FACTS_SCHEMA_VERSION,
         "ok": False,

@@ -1097,8 +1097,10 @@ def _ensure_backend_binary(
             # its module from stdin, and the JIT runner writes nothing.
             probe_path: Path | None = None
             if product is HostToolProduct.WASM_FACTS:
-                probe_ir = b"\0asm\x01\0\0\0"
-                probe_cmd = [str(binary), "--scan-wasm-link-facts"]
+                from molt.wasm_artifact import encode_wasm_facts_request
+
+                lengths, probe_ir = encode_wasm_facts_request((b"\0asm\x01\0\0\0",))
+                probe_cmd = [str(binary), "--scan-wasm-link-facts", lengths]
             elif product is HostToolProduct.JIT:
                 # Compile and run one function in executable memory: the
                 # host's W^X policy must admit the runner before any program.
