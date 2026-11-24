@@ -14,6 +14,8 @@ import tools.bench_wasm as bench_wasm
 from molt.node_runtime import NodeRuntime
 from molt.cli.wasm_host import molt_wasm_host_exe_name
 from tests.cargo_output_fixture import write_cargo_output
+from tests.process_guard_common import run_guarded_test_process
+from tests.wasm_linked_runner import require_node_binary
 
 
 @pytest.mark.parametrize(
@@ -440,13 +442,13 @@ def test_run_wasm_resolves_linked_module_only_from_manifest(
         encoding="utf-8",
     )
 
-    run = __import__("subprocess").run(
-        ["node", str(script)],
+    run = run_guarded_test_process(
+        [require_node_binary(), str(script)],
+        prefix="MOLT_WASM_TEST",
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
-        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
@@ -489,13 +491,13 @@ def test_run_wasm_rejects_module_path_as_discovery_authority(
         encoding="utf-8",
     )
 
-    run = __import__("subprocess").run(
-        ["node", str(script)],
+    run = run_guarded_test_process(
+        [require_node_binary(), str(script)],
+        prefix="MOLT_WASM_TEST",
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
-        encoding="utf-8",
     )
     assert run.returncode != 0, run.stdout
     assert "accepts a runtime manifest path, not a module path" in run.stderr
@@ -549,13 +551,13 @@ def test_run_wasm_resolves_split_modules_relative_to_manifest(
         encoding="utf-8",
     )
 
-    run = __import__("subprocess").run(
-        ["node", str(script)],
+    run = run_guarded_test_process(
+        [require_node_binary(), str(script)],
+        prefix="MOLT_WASM_TEST",
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
-        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
@@ -614,13 +616,13 @@ def test_run_wasm_rejects_manifest_module_digest_drift(
         encoding="utf-8",
     )
 
-    run = __import__("subprocess").run(
-        ["node", str(script)],
+    run = run_guarded_test_process(
+        [require_node_binary(), str(script)],
+        prefix="MOLT_WASM_TEST",
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
-        encoding="utf-8",
     )
     assert run.returncode != 0
     assert "runtime wasm SHA-256 mismatch" in run.stderr
@@ -656,13 +658,13 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         ),
         encoding="utf-8",
     )
-    run = __import__("subprocess").run(
-        ["node", str(script)],
+    run = run_guarded_test_process(
+        [require_node_binary(), str(script)],
+        prefix="MOLT_WASM_TEST",
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
-        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == [

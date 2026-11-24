@@ -52,6 +52,10 @@ then compiles one body per distinct argument-type tuple.
   instances through the same type checker. Its machine-sized integers and by-value tuples
   inform representation choices subject to Molt's overflow, identity and lifetime proofs.
   [Codon, sections 2–3 and Appendix A](https://doi.org/10.1145/3578360.3580275).
+  Appendix A revisits unresolved expressions to a local fixed point, and calls
+  demand a realization only once their operands are concrete. For Molt, retain
+  the demand and memoization boundary, and propagate changes through the typed
+  readers in §3.3. A call with unknown operands remains a valid generic Python call.
 - **Julia** (Bezanson et al., SIAM Review 2017): inference per method instance (function plus
   concrete signature), cached; union splitting at call sites.
 - **GraalVM Native Image** (Wimmer et al., OOPSLA 2019; saturation, PLDI 2024): closed-world
@@ -72,14 +76,14 @@ Two common shortcuts conflict with the rules in AGENTS.md and are rejected:
 
 ### 3.1 Where it runs
 
-One pass, `type_flow`, in the TIR module phase (`module_phase.rs`), after the call graph and
-before the inliner, over the whole user program. HF-773 forbids a second optimizer, so it is not
+One pass, `type_flow`, in the TIR module phase (`module_phase.rs`), before the
+module call graph and the inliner, over the whole user program. HF-773 forbids a second optimizer, so it is not
 built in the Python mid-end. Its results are facts on typed SSA values (parameter types, call
 targets, return types) that flow one way to codegen.
 
 The module phase runs after per-function optimization, so the analysis reads optimized bodies.
-A function whose entry facts change re-runs the per-function pipeline, as the module phase
-already does for bodies the inliner changes. Today a call result is `DynBox`: `type_refine`
+A body whose entry or result facts change runs the re-entry pipeline, also used
+for bodies the inliner changes. Today a call result is `DynBox`: `type_refine`
 has no `Call` case, and `infer_return_type` stays inside one function. The flow supplies both
 joins: a parameter type is the meet over its contexts' call sites, and a call result is the
 callee context's return type.
@@ -148,6 +152,8 @@ only stored or passed along opaquely never splits a context.
 After optimization, contexts of one function whose bodies are identical merge into one clone
 (compared by body digest). The number of clones is the number of reachable contexts that
 compile differently.
+The comparison serializes each origin once and uses the existing function table until
+compaction. Report a merge by the representative's symbol in that same table.
 
 ### 3.5 Termination, with no constant
 
@@ -212,21 +218,34 @@ changed (early cutoff, as Salsa's red-green and Zig's analysis units do). The no
 bar (Cargo, Go, uv) holds; the pass's cold cost is measured on the largest corpus program and
 on the stdlib.
 
+The module phase currently reads bodies that have already passed per-function
+optimization (§3.1). The re-entry pipeline skips first-entry passes and
+repeats other work on changed bodies. Use the existing pass timings to identify
+expensive overlap and check which normalized operations the solver reads. This
+shows which passes can move after fact propagation to run once on cold builds.
+Per-context reuse addresses unchanged work on edits.
+
 Record the dependencies of the type summary separately from those of the optimized body. A
 caller that only uses a callee's return type or effects depends on those facts. A caller that
 inlines the callee also depends on its body. An edit that leaves the first set of facts equal
 keeps the caller's analysis valid. A body edit can still invalidate an inlining caller's code.
 Use the same typed dependency identities for source and stdlib contexts.
 
-The current implementation enqueues a generic context for every body. After inference, one
-traversal of its final call targets establishes which contexts need specialized bodies. Clone
-rows follow context order and carry their origin directly to deduplication. Reducing generic analysis itself also requires the existing
-reachability and callable-escape proofs. Keep generic entries wherever a supported observer
-can reach an unseen call. Reuse prepared TIR and target artifacts at their existing boundaries.
+The solver seeds generic contexts only for bodies that can change a resolved
+call or supply its return fact. It marks both ends of each resolved edge and
+preserves their document order. Generic code for other bodies is still emitted
+under the same reachability rules and can run through unseen callers.
+Demanding specialized bodies from externally observable roots still requires
+the callable escape and reachability proofs. Reuse prepared TIR and target
+artifacts at their existing boundaries.
 
 Measure cold, single-function edit and unchanged latency separately from generated-code speed.
 Codon's realization cache demonstrates reuse within one compilation and its benchmark appendix
 reports program execution. Its roadmap lists incremental module caching separately.
+In Appendix B, the reported `nbody` times on Apple M1 Max are 0.15 s for Codon and
+C++ and 4.29 s for CPython. The `sum` computation disappeared during optimization
+in Codon and C++. For a per-iteration comparison, use an input that keeps the
+measured loop live and check observable outputs and edge cases against the oracle.
 [Codon, Appendix B](https://doi.org/10.1145/3578360.3580275).
 [Codon roadmap](https://docs.exaloop.io/developers/roadmap/).
 
@@ -875,6 +894,11 @@ slice's claim is its interleaved A/B in instructions retired against the C refer
 - E2 (scalar replacement) and the `bench_struct` teardown share need exact allocation-site
   types and non-escape; slice 4 provides the types.
 - Stage 6 (unboxed loop carriers) and stage 7 (TIR inlining) consume these facts.
+  Codon's structured CIR exposes counted loops before they become branches (§3.1,
+  §4.2). Its LLVM coroutine elision also depends on a proof that the coroutine
+  handle does not escape (§3.5). Carry the loop, capture and lifetime facts through
+  shared TIR so Cranelift and LLVM can consume the same decision. Preserve Python
+  close, throw, finally and finalizer effects at their original boundaries.
 - The thread-record words (stage 2) and frame records (stage 1) are the per-call costs that
   remain after this program; they are already in flight.
 
@@ -885,6 +909,13 @@ slice's claim is its interleaved A/B in instructions retired against the C refer
 - k-CFA call-string sensitivity: `k` is arbitrary, and CPA is more precise for argument types.
 - Annotation-driven types: unsound for subclasses and wrong annotations.
 - A runtime tracing JIT: Molt emits standalone AOT programs with no interpreter.
+- Re-entering source inference from backend passes, as Codon's CIR can do for
+  generated templates (§3.3): resolve a demanded helper from a typed context in
+  the shared mid-end. Its return and effect summary can remain valid after an
+  implementation edit that invalidates an inlining consumer (§3.10). Coalesce
+  equivalent bodies before emission where ABI, effects and relocations agree,
+  retaining each context's invalidation dependencies. Codon's later LLVM
+  merging shrinks output after realization has already incurred its cost.
 
 ## 9. Suite technique table
 
@@ -915,6 +946,14 @@ reference (section 6).
 | Hash-table probing (`dict_probe_key_with_hash`, `set_insert_absent_with_hash`, `set_probe_with_hash`) | set_ops 55%; dict_comprehension 37%; counter_words 19% | No owner yet: runtime data structures |
 | Allocation, reference counting, cycle collection (`alloc_object_zeroed_with_aux_policy`, `dec_ref_ptr_terminal_body`, `clear_cycle_edges_with_sink`) | suite mean 13.5% (buckets); gc_pressure, matrix_math, struct, object_class_lifecycle, exception_heavy lead | E2 scalar replacement; slice 4 supplies allocation-site types |
 | Byte algorithms (`replace_bytes_impl`, `bytes_count_impl`, `_platform_memmove`) | bytearray_replace 91%; str_count_unicode_warm 61%; bytes_find 15% | Runtime algorithm work (not this program) |
+
+Codon's Figure 4 removes a second dictionary lookup and reports a 12% word-count
+improvement. In Molt this belongs at the typed TIR operation, where both lookups
+and their intervening value update are still visible. A reusable probe requires
+an exact dictionary and key protocol, and proof that no intervening effect can
+invalidate the slot or observe the fused lookup. Preserve evaluation order and
+the exception and lifetime boundaries. LLVM receives the proven operation.
+[Codon, §4.1](https://doi.org/10.1145/3578360.3580275).
 
 **Reading.** By each benchmark's leading symbol: slices 2–4 and 6 own 22 of 53; the
 list-storage lane owns 9; allocation, reference counting and cycle collection lead 7; byte
