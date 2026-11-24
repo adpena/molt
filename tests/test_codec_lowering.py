@@ -849,16 +849,16 @@ print(order.qty)
     kinds = _op_kinds(ir)
     assert "dataclass_new_values" not in kinds
     assert "dataclass_get" not in kinds
-    # The decorator callback invalidates the binding proof. The constructor
-    # must call the published class, preserving its current construction policy:
-    # one positional call of the live global with the five arguments.
-    calls = [
+    # The initializer candidate must still dispatch on the live class after
+    # its decorator runs, with the five original positional arguments.
+    (constructor,) = [
         op
         for op in _all_ops(ir)
-        if op["kind"] in {"call_func", "call_guarded"} and op.get("source_line") == 12
+        if op["kind"] in {"call_func", "call_guarded", "call_class_candidate"}
+        and op.get("source_line") == 12
     ]
-    assert len(calls) == 1
-    constructor = calls[0]
+    assert constructor["kind"] == "call_class_candidate"
+    assert constructor["class_definition"] == "class:__main__:Order"
     assert len(constructor["args"]) == 6
     definitions = {op["out"]: op for op in _all_ops(ir) if "out" in op}
     callee = definitions[constructor["args"][0]]
