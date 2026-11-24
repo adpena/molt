@@ -60,7 +60,7 @@ vm_type = "vz"
 arch = "aarch64"
 cpus = 6
 memory = "12GiB"
-disk = "225GiB"
+disk = "300GiB"
 rosetta = false
 containerd_user = true
 # Ubuntu 26.04 renames its NIC on first boot (LP: #2136392); without this
