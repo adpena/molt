@@ -11421,6 +11421,73 @@ def test_integrate_remote_race_after_gates_is_not_rebased_or_force_pushed(
     )
 
 
+def test_queued_integrate_closes_stale_gate_and_retains_completed_evidence(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    borrowed_gate_python: None,
+) -> None:
+    from tools import landing_receipt
+
+    origin, work = origin_and_clone
+    base = _git(work, "rev-parse", "origin/main").stdout.strip()
+    other = work.parent / "competing"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "other@example.test")
+    _git(other, "config", "user.name", "Other")
+    winner = _commit_file(other, "upstream.txt", "new\n", "move main")
+    marker = hung_child_marker()
+    watched = drv._watch_landing_base
+    monkeypatch.setattr(
+        drv,
+        "_watch_landing_base",
+        lambda probe, expected: watched(probe, expected, interval=0.05),
+    )
+    selected = _commit_integration_policy(
+        work,
+        [
+            _integration_python("print('completed on original base')"),
+            shlex.join(
+                [
+                    sys.executable,
+                    "-c",
+                    "import subprocess, time\n"
+                    f"subprocess.run(['git', '-C', {str(other)!r}, 'push', 'origin', 'main'], check=True)\n"
+                    "time.sleep(10)\n"
+                    "raise SystemExit(9)",
+                    marker,
+                ]
+            ),
+        ],
+    )
+    monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 1)
+    try:
+        with pytest.raises(drv.PublicationRace, match="advanced during gates") as race:
+            drv.cmd_integrate(
+                _integrate_ns(drv, repo=str(work), expected_upstream=base)
+            )
+        assert processes_carrying(marker) == []
+    finally:
+        stop_test_processes_carrying(marker)
+    tree = _git(work, "rev-parse", f"{selected}^{{tree}}").stdout.strip()
+    assert race.value.tested_tree == tree
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == selected
+    assert _remote_main(work) == winner
+    assert landing_receipt.read_receipt(work / ".git", tree=tree, base=base) is None
+    partial = landing_receipt.read_receipt(
+        work / ".git", tree=tree, base=base, allow_interrupted=True
+    )
+    assert partial is not None
+    assert partial["status"] == "interrupted"
+    assert len(partial["gates"]) == 1
+    assert "completed on original base" in Path(partial["gates"][0]["log"]).read_text(
+        encoding="utf-8"
+    )
+    assert landing_receipt.push_refusals(
+        [f"HEAD {selected} refs/heads/main {base}"], cwd=work
+    )
+
+
 def test_integrate_clean_rebase_runs_committed_policy(
     drv, origin_and_clone, monkeypatch, capsys
 ):

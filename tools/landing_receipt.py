@@ -31,6 +31,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 SCHEMA = "molt.landing-receipt.v1"
@@ -49,6 +50,11 @@ _PYTEST = re.compile(
     r"|deselected|rerun)(?:, )?)+) in \d"
 )
 _PYTEST_PART = re.compile(r"(\d+) (\w+)")
+
+
+class ReceiptStatus(StrEnum):
+    PASSED = "passed"
+    INTERRUPTED = "interrupted"
 
 
 def store_dir(common_dir: Path) -> Path:
@@ -117,11 +123,14 @@ def build_receipt(
     unverified: Sequence[str] = (),
     narrowed: Sequence[str] = (),
     postsubmit_only: Sequence[str] = (),
+    status: ReceiptStatus = ReceiptStatus.PASSED,
 ) -> dict[str, object]:
     """``postsubmit_only`` names the data readers presubmit did not run; they
     passed nothing here, and postsubmit runs them."""
     if mode not in {"fast", "queue"}:
         raise ValueError(f"unknown landing mode {mode!r}")
+    if status is ReceiptStatus.INTERRUPTED and mode != "queue":
+        raise ValueError("only a queue landing can retain an interrupted receipt")
     selection = json.dumps(
         {
             "gates": [gate["command"] for gate in gates],
@@ -132,7 +141,7 @@ def build_receipt(
     )
     return {
         "schema": SCHEMA,
-        "status": "passed",
+        "status": status.value,
         "mode": mode,
         "base": base,
         "tree": tree,
@@ -181,23 +190,49 @@ def retire_old(common_dir: Path, *, now: float | None = None) -> None:
 
 
 def write_receipt(common_dir: Path, receipt: Mapping[str, object]) -> Path:
-    if receipt.get("schema") != SCHEMA or receipt.get("status") != "passed":
-        raise ValueError("only a passing landing receipt is written")
+    status = receipt.get("status")
+    if receipt.get("schema") != SCHEMA or status not in tuple(ReceiptStatus):
+        raise ValueError("invalid landing receipt")
+    if status == ReceiptStatus.INTERRUPTED and receipt.get("mode") != "queue":
+        raise ValueError("only a queue landing can retain an interrupted receipt")
     path = receipt_path(
         common_dir, tree=str(receipt["tree"]), base=str(receipt["base"])
     )
+    interrupted = path.with_suffix(".interrupted.json")
     retire_old(common_dir)
-    _atomic_write(path, receipt)
+    if status == ReceiptStatus.PASSED:
+        _atomic_write(path, receipt)
+        interrupted.unlink(missing_ok=True)
+    elif not path.exists():
+        _atomic_write(interrupted, receipt)
+        if not path.exists():
+            return interrupted
+        interrupted.unlink(missing_ok=True)
     return path
 
 
-def read_receipt(common_dir: Path, *, tree: str, base: str) -> dict | None:
+def read_receipt(
+    common_dir: Path, *, tree: str, base: str, allow_interrupted: bool = False
+) -> dict | None:
     path = receipt_path(common_dir, tree=tree, base=base)
+    payload = _read_receipt(path, ReceiptStatus.PASSED)
+    if payload is None and allow_interrupted:
+        return _read_receipt(
+            path.with_suffix(".interrupted.json"), ReceiptStatus.INTERRUPTED
+        )
+    return payload
+
+
+def _read_receipt(path: Path, status: ReceiptStatus) -> dict | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != SCHEMA
+        or payload.get("status") != status
+    ):
         return None
     return payload
 
@@ -335,7 +370,7 @@ def push_refusals(lines: Iterable[str], *, cwd: Path) -> list[str]:
         if common_dir is None:
             common_dir = _common_dir(cwd)
         receipt = read_receipt(common_dir, tree=tree_id, base=remote)
-        if receipt is None or receipt.get("status") != "passed":
+        if receipt is None:
             refusals.append(
                 f"refused main update to {local}: no landing receipt for tree "
                 f"{tree_id} on base {remote}"
