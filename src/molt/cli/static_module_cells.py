@@ -58,16 +58,19 @@ the checked read, and the build diagnostics name the failed fact.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, Literal
 
+from molt.typed_cache import typed_cache
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
 from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.cli.closed_world_bindings import (
     FUNCTION_MAKERS,
+    CallablePublication,
     ModuleInitializerFacts,
     ModuleNamespaceFacts,
     _module_body_functions,
@@ -268,7 +271,7 @@ def _init_once_facts(
     return found
 
 
-def plan_static_module_cells(
+def plan_module_cells(
     module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
     facts: Mapping[str, ModuleNamespaceFacts],
     global_layouts: Mapping[str, tuple[str, ...]],
@@ -277,13 +280,15 @@ def plan_static_module_cells(
     extension_modules: Collection[str] = (),
     entry_module: str | None = None,
     dep_closures: Mapping[str, Collection[str]] | None = None,
-    program_functions: Sequence[Mapping[str, Any]] = (),
     *,
+    program_functions: Sequence[Mapping[str, Any]],
     initializers: Mapping[str, ModuleInitializerFacts],
-) -> StaticCellPlan:
-    """Decide C1-C6 for every module with a registry row and a layout, and
-    which reads of each eligible module's InitOnce cells are dominated by
-    their store. ``program_functions`` is every function of the program:
+) -> tuple[StaticCellPlan, FunctionCells]:
+    """Plan global and function cells from the same post-binding IR.
+
+    Decide C1-C6 for each module with a registry row and a layout, then
+    reuse one initialization proof for global reads and method loads.
+    ``program_functions`` is every function of the program:
     a function runs only through a reference some op makes to its symbol."""
     candidates = sorted(
         module
@@ -292,14 +297,24 @@ def plan_static_module_cells(
     )
     blocker = _program_blocker(facts, extension_modules)
     if blocker is not None:
-        return StaticCellPlan(ineligible=dict.fromkeys(candidates, blocker))
+        return StaticCellPlan(
+            ineligible=dict.fromkeys(candidates, blocker)
+        ), FunctionCells()
     eligible: set[str] = set()
     guard_masks: dict[str, int] = {}
     init_once: dict[str, dict[str, InitOnce]] = {}
     init_dominated: dict[str, frozenset[tuple[str, int]]] = {}
     checked: list[str] = []
     escape_written: list[str] = []
-    references = _symbol_references(program_functions)
+    cell_indices: dict[str, dict[str, int]] = {}
+    cell_stores: dict[str, dict[str, tuple[str, str]]] = {}
+    cell_reads: dict[str, dict[str, tuple[str, str]]] = {}
+    method_diagnostics: list[str] = []
+
+    @typed_cache(maxsize=None)
+    def references() -> dict[str, list[_Reference]]:
+        return _symbol_references(program_functions)
+
     ineligible: dict[str, str] = {}
     # module -> the modules whose import runs its body first.
     importers: dict[str, set[str]] = {}
@@ -346,12 +361,24 @@ def plan_static_module_cells(
             initializers[module],
             escape_written,
         )
+        execution = _ModuleExecution(module, funcs, references)
         if rows:
             init_once[module] = rows
-            dominance = init_dominance(module, funcs, rows, references)
+            dominance = init_dominance(execution, rows)
             if dominance.reads:
                 init_dominated[module] = dominance.reads
             checked.extend(dominance.diagnostics)
+        for name, callable_var, symbol, maker in _proven_method_loads(
+            execution, initializers[module], method_diagnostics
+        ):
+            cells = cell_indices.setdefault(module, {})
+            if symbol not in cells:
+                cells[symbol] = len(global_layouts[module]) + len(cells)
+                cell_stores.setdefault(maker.point[0], {})[maker.value] = (
+                    module,
+                    symbol,
+                )
+            cell_reads.setdefault(name, {})[callable_var] = (module, symbol)
     return StaticCellPlan(
         frozenset(eligible),
         init_once,
@@ -360,7 +387,7 @@ def plan_static_module_cells(
         init_dominated,
         tuple(checked),
         tuple(escape_written),
-    )
+    ), FunctionCells(cell_indices, cell_stores, cell_reads, tuple(method_diagnostics))
 
 
 def _written_guard_mask(
@@ -458,6 +485,7 @@ def _function_entries(
     module: str,
     funcs: Sequence[Mapping[str, Any]],
     chain: InitChain,
+    body: frozenset[str],
     references: Mapping[str, Sequence[_Reference]],
 ) -> dict[str, tuple[frozenset[_Entry] | None, str]]:
     """For each of ``module``'s functions, the init-chain points at which it
@@ -476,7 +504,6 @@ def _function_entries(
     ``call_internal``) holds no object and may run first, as in an import
     cycle. The least fixed point admits recursion: a function that only names
     itself adds no entry."""
-    body = {func.get("name", "") for func in _module_body_functions(module, funcs)}
     candidates = sorted(
         func.get("name", "") for func in funcs if func.get("name", "") not in body
     )
@@ -539,6 +566,30 @@ def _function_entries(
 
 
 @dataclass(frozen=True)
+class _ModuleExecution:
+    module: str
+    functions: Sequence[Mapping[str, Any]]
+    references: Callable[[], Mapping[str, Sequence[_Reference]]]
+
+    @cached_property
+    def chain(self) -> InitChain:
+        return InitChain(self.module, self.functions)
+
+    @cached_property
+    def body(self) -> frozenset[str]:
+        return frozenset(
+            func.get("name", "")
+            for func in _module_body_functions(self.module, self.functions)
+        )
+
+    @cached_property
+    def entries(self) -> dict[str, tuple[frozenset[_Entry] | None, str]]:
+        return _function_entries(
+            self.module, self.functions, self.chain, self.body, self.references()
+        )
+
+
+@dataclass(frozen=True)
 class InitDominance:
     """Which reads of a module's InitOnce cells run only after their store."""
 
@@ -549,10 +600,8 @@ class InitDominance:
 
 
 def init_dominance(
-    module: str,
-    funcs: Sequence[Mapping[str, Any]],
+    execution: _ModuleExecution,
     init_once: Mapping[str, InitOnce],
-    references: Mapping[str, Sequence[_Reference]],
 ) -> InitDominance:
     """Decide, for each read of an InitOnce cell of ``module`` in its own
     code, whether it runs only after the cell's one store: in the init chain,
@@ -562,14 +611,11 @@ def init_dominance(
     cannot run a read early."""
     from molt.cli.frontend_integration import _global_name_sites
 
-    if not init_once:
-        return InitDominance()
-    chain = InitChain(module, funcs)
-    entries = _function_entries(module, funcs, chain, references)
-    body = {func.get("name", "") for func in _module_body_functions(module, funcs)}
+    module = execution.module
+    chain, entries, body = execution.chain, execution.entries, execution.body
     dominated: set[tuple[str, int]] = set()
     diagnostics: list[str] = []
-    for func in funcs:
+    for func in execution.functions:
         name = func.get("name", "")
         index_of = {id(op): index for index, op in enumerate(func.get("ops", ()))}
         for op, global_name in _global_name_sites([func]):
@@ -995,99 +1041,65 @@ def _consuming_proven_call(
     return None
 
 
-def plan_function_cells(
-    plan: StaticCellPlan,
-    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
-    global_layouts: Mapping[str, tuple[str, ...]],
-    program_functions: Sequence[Mapping[str, Any]],
-    initializers: Mapping[str, ModuleInitializerFacts],
-) -> FunctionCells:
-    """Give each callee a function cell when its object is one per process
-    and a proven method load in its module's own code runs only after the
-    object is made.
-
-    A symbol whose one ``func_new`` runs once in a cell-eligible module's
-    init chain (``InitChain.runs_once``) has one function object per process;
-    ``proven_target`` already proved the method resolves to it. A proven
-    ``load_method`` of it in that module, which the ``func_new`` dominates
-    (``init_dominance``'s rule for a cell's store), becomes one cell load."""
-    references = _symbol_references(program_functions)
-    cells: dict[str, dict[str, int]] = {}
-    stores: dict[str, dict[str, tuple[str, str]]] = {}
-    reads: dict[str, dict[str, tuple[str, str]]] = {}
-    diagnostics: list[str] = []
-    for module in sorted(plan.modules):
-        funcs = module_functions.get(module, ())
-        chain: InitChain | None = None
-        entries: dict[str, tuple[frozenset[_Entry] | None, str]] = {}
-        body: set[str] = set()
-        publications = initializers[module].callable_publications
-        for func in funcs:
-            name = func.get("name", "")
-            ops = func.get("ops", ())
-            for index, op in enumerate(ops):
-                if op.get("kind") not in _METHOD_LOADS or not op.get("proven_target"):
-                    continue
-                callable_var = op.get("var")
-                call = (
-                    _consuming_proven_call(ops, index, callable_var)
-                    if isinstance(callable_var, str)
-                    else None
+def _proven_method_loads(
+    execution: _ModuleExecution,
+    initializer: ModuleInitializerFacts,
+    diagnostics: list[str],
+) -> Iterator[tuple[str, str, str, CallablePublication]]:
+    """Yield proven loads dominated by their callee's sole run-once maker."""
+    publications = initializer.callable_publications
+    module = execution.module
+    for func in execution.functions:
+        name = func.get("name", "")
+        ops = func.get("ops", ())
+        for index, op in enumerate(ops):
+            if op.get("kind") not in _METHOD_LOADS or not op.get("proven_target"):
+                continue
+            callable_var = op.get("var")
+            call = (
+                _consuming_proven_call(ops, index, callable_var)
+                if isinstance(callable_var, str)
+                else None
+            )
+            symbol = call.get("s_value") if call is not None else None
+            if not isinstance(callable_var, str) or not isinstance(symbol, str):
+                continue
+            pair = op.get("out")
+            if any(pair in (other.get("args") or ()) for other in ops):
+                diagnostics.append(
+                    f"{module}:{op.get('source_line')} {symbol}: method load kept: "
+                    "its bound pair is read"
                 )
-                symbol = call.get("s_value") if call is not None else None
-                if not isinstance(callable_var, str) or not isinstance(symbol, str):
-                    continue
-                pair = op.get("out")
-                if any(pair in (other.get("args") or ()) for other in ops):
-                    diagnostics.append(
-                        f"{module}:{op.get('source_line')} {symbol}: method load kept: "
-                        "its bound pair is read"
-                    )
-                    continue
-                if chain is None:
-                    chain = InitChain(module, funcs)
-                    entries = _function_entries(module, funcs, chain, references)
-                    body = {
-                        f.get("name", "") for f in _module_body_functions(module, funcs)
-                    }
-                makers = publications.get(symbol, ())
-                reason = None
-                maker = None
-                if len(makers) != 1:
-                    reason = f"{len(makers)} function makers make {symbol}"
+                continue
+            makers = publications.get(symbol, ())
+            reason = None
+            maker = None
+            if len(makers) != 1:
+                reason = f"{len(makers)} function makers make {symbol}"
+            else:
+                (maker,) = makers
+                if not maker.runs_once:
+                    reason = f"{symbol}'s func_new does not run once in {module}'s init"
+            if reason is None and maker is not None:
+                store = maker.point
+                point = (name, index)
+                chain = execution.chain
+                if name in execution.body:
+                    dominated = chain.dominates(store, point)
                 else:
-                    (maker,) = makers
-                    if not maker.runs_once:
-                        reason = (
-                            f"{symbol}'s func_new does not run once in {module}'s init"
-                        )
-                if reason is None and maker is not None:
-                    store = maker.point
-                    point = (name, index)
-                    if name in body:
-                        dominated = chain.dominates(store, point)
-                    else:
-                        starts, _witness = entries.get(name, (None, ""))
-                        dominated = starts is not None and all(
-                            chain.dominates(store, start) and (after or start != store)
-                            for start, after in starts
-                        )
-                    if not dominated:
-                        reason = f"{name} may run before {symbol}'s func_new"
-                if reason is not None or maker is None:
-                    diagnostics.append(
-                        f"{module}:{op.get('source_line')} {symbol}: method load kept: {reason}"
+                    starts, _witness = execution.entries.get(name, (None, ""))
+                    dominated = starts is not None and all(
+                        chain.dominates(store, start) and (after or start != store)
+                        for start, after in starts
                     )
-                    continue
-                rows = cells.setdefault(module, {})
-                if symbol not in rows:
-                    rows[symbol] = len(global_layouts[module]) + len(rows)
-                    stores.setdefault(maker.point[0], {})[maker.value] = (
-                        module,
-                        symbol,
-                    )
-                reads.setdefault(name, {})[callable_var] = (module, symbol)
-    return FunctionCells(cells, stores, reads, tuple(diagnostics))
+                if not dominated:
+                    reason = f"{name} may run before {symbol}'s func_new"
+            if reason is not None or maker is None:
+                diagnostics.append(
+                    f"{module}:{op.get('source_line')} {symbol}: method load kept: {reason}"
+                )
+                continue
+            yield name, callable_var, symbol, maker
 
 
 def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -> None:
