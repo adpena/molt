@@ -20,7 +20,7 @@ fn epoch_delta_separates_monotonic_counters_from_signed_gauges() {
                 "gc_tracked_high_water": 6,
             },
             "hot_paths": {"call_bind_ic_hit": 1},
-            "deopt_reasons": {"guard_tag_type_mismatch": 0},
+            "deopt_reasons": {"guard_dict_shape_layout_mismatch": 0},
             "memory": {
                 "source": "proc-self-status",
                 "available": true,
@@ -44,7 +44,7 @@ fn epoch_delta_separates_monotonic_counters_from_signed_gauges() {
             "gc_tracked_high_water": 8,
         },
         "hot_paths": {"call_bind_ic_hit": 6},
-        "deopt_reasons": {"guard_tag_type_mismatch": 1},
+        "deopt_reasons": {"guard_dict_shape_layout_mismatch": 1},
         "memory": {
             "source": "proc-self-status",
             "available": true,

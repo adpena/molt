@@ -89,8 +89,7 @@ pub(crate) fn classify_copy_kind(kind: Option<molt_ir::OpKind>) -> CopyLowering 
         return CopyLowering::TransparentAlias;
     }
     // ── Everything else (incl. the explicit pure moves `copy`/`copy_var`/
-    //    `store_var`/`load_var`/`identity_alias`, the pass-through guards
-    //    `guard_tag`/`guard_type`, AND any UNKNOWN kind) → transparent alias.
+    //    `store_var`/`load_var`/`identity_alias`, and unknown kinds) → transparent alias.
     //    FAIL-CLOSED: an unrecognized owned value mislabelled here leaks (its
     //    +1 is never released) but can never be double-freed, because the drop
     //    pass emits NO independent `DecRef` for a non-`OwnedValue` `Copy`. ──
@@ -158,8 +157,7 @@ pub(crate) fn copy_kind_raw_carrier_type(
 }
 
 /// Returns whether an `OpCode::Copy` op is an EXPLICIT no-heap-footprint pure
-/// move: a bare `Copy`, one of the named SSA/var moves, or a validate-and-pass-
-/// through guard (`guard_tag`/`guard_type`). These provably touch NO heap memory
+/// move: a bare `Copy` or one of the named SSA/var moves. These touch no heap memory
 /// (the result is operand 0; no allocation, no store), so they are
 /// [`MemRegion::ScalarRegister`] for MemGVN/SROA, and their result aliases operand
 /// 0 for the union-find. An UNKNOWN kind is NOT a pure move — its memory effects

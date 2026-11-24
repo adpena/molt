@@ -315,6 +315,8 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     (2026-11-19): a late-TIR pass (`guard_profile_marking`) marks each profile-only guard with
     `GUARD_PROFILE_ONLY_ATTR`, so no backend re-derives the fact; the walker calls the runtime
     behind `CodegenBuilder::profile_enabled` when marked.
+    The annotation-only guard family was later removed with its frontend producer and runtime ABI.
+    Source annotations remain visible to Python code. Proven type information still flows through TIR.
   - Moved, slices 26-28 (2026-11-19, lane codegen-walker): the preserved container and callable
     families, and the rest of `CheckException`. `container_preserved_op` (iterator out-words,
     `len` with its typed entry, list/tuple/dict literals, set and frozenset aggregates,

@@ -1002,8 +1002,6 @@ roundtrip, before native, LLVM and WASM admission and emission.
 
 | kind             | Fields used   | Description                     |
 |------------------|---------------|---------------------------------|
-| `guard_type`     | `args`        | Read value and expected tag; profile mismatch and return the original value |
-| `guard_tag`      | `args`        | Same runtime contract as `guard_type`; rejected expected tags raise |
 | `type_guard`     | --            | Generic type guard              |
 
 ### Call Arguments Protocol

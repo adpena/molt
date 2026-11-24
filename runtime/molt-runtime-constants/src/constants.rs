@@ -83,7 +83,6 @@ pub static DICT_STR_INT_PREHASH_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DICT_STR_INT_PREHASH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT: AtomicU64 = AtomicU64::new(0);

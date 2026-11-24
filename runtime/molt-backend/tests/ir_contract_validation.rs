@@ -127,23 +127,19 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
 }
 
 #[test]
-fn runtime_guard_transport_preserves_two_reads_without_weakening_unary_aliases() {
+fn alias_transport_requires_one_operand() {
     // The independent operation contract must survive JSON and streamed input.
-    // Ownership transparency says which object is returned, not how many
-    // operands the validation effect reads.
-    for (kind, expected) in [
-        (molt_ir::OpKind::GuardTag, 2),
-        (molt_ir::OpKind::GuardType, 2),
-        (molt_ir::OpKind::Copy, 1),
-        (molt_ir::OpKind::IdentityAlias, 1),
-        (molt_ir::OpKind::BindingAlias, 1),
+    for kind in [
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::IdentityAlias,
+        molt_ir::OpKind::BindingAlias,
     ] {
         for count in 0..=3 {
-            for var in [None, Some("source"), Some("tag")] {
-                for out in [None, Some("none"), Some("checked")] {
-                    let inputs = ["source", "tag", "extra"];
+            for var in [None, Some("source"), Some("other")] {
+                for out in [None, Some("none"), Some("result")] {
+                    let inputs = ["source", "other", "extra"];
                     let mut function = test_func(
-                        "guard_operand_transport",
+                        "alias_operand_transport",
                         vec![
                             OpIR {
                                 args: Some(
@@ -161,21 +157,7 @@ fn runtime_guard_transport_preserves_two_reads_without_weakening_unary_aliases()
                         functions: vec![function],
                         profile: None,
                     };
-                    // Runtime guards require two args. Copy/owned aliases can
-                    // use their existing sole semantic `var` read instead.
-                    let valid = if expected == 2 {
-                        count == 2 && var.is_none()
-                    } else {
-                        count + usize::from(var.is_some()) == 1
-                    };
-                    if expected == 2 {
-                        assert_eq!(
-                            molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0])
-                                .is_ok(),
-                            valid,
-                            "isolated {kind} count={count} var={var:?}",
-                        );
-                    }
+                    let valid = count + usize::from(var.is_some()) == 1;
                     let encoded = serde_json::to_string(&ir).unwrap();
                     let mut streamed = serde_json::to_value(&ir.functions[0]).unwrap();
                     streamed["kind"] = "function".into();
@@ -196,25 +178,6 @@ fn runtime_guard_transport_preserves_two_reads_without_weakening_unary_aliases()
                     }
                 }
             }
-        }
-        if expected == 2 {
-            let mut function = test_func(
-                "undefined_guard_tag",
-                vec![
-                    OpIR {
-                        args: Some(vec!["source".into(), "tag".into()]),
-                        ..OpIR::new(kind)
-                    },
-                    op(molt_ir::OpKind::RetVoid),
-                ],
-            );
-            function.params = vec!["source".into()];
-            let error = validate_simple_ir(&SimpleIR {
-                functions: vec![function],
-                profile: None,
-            })
-            .unwrap_err();
-            assert!(error.contains("uses undefined value `tag`"), "{error}");
         }
     }
 }

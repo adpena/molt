@@ -1,12 +1,12 @@
 schema_version = 1
 
 [process]
-schema_version = 3
+schema_version = 4
 kind = "runtime_feedback"
 memory_fields = ["source", "available", "current_rss_bytes", "peak_rss_bytes"]
 
 [epoch]
-schema_version = 2
+schema_version = 3
 kind = "runtime_profile_epoch"
 memory_fields = ["start", "end", "current_rss_delta_bytes"]
 
@@ -118,7 +118,6 @@ name = "deopt_reasons"
 metrics = [
   { name = "call_indirect_noncallable", semantic = "counter" },
   { name = "invoke_ffi_bridge_capability_denied", semantic = "counter" },
-  { name = "guard_tag_type_mismatch", semantic = "counter" },
   { name = "guard_dict_shape_layout_mismatch", semantic = "counter" },
   { name = "guard_dict_shape_layout_fail_null_obj", semantic = "counter" },
   { name = "guard_dict_shape_layout_fail_non_object", semantic = "counter" },

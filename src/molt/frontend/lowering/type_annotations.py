@@ -45,11 +45,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         hint = self.explicit_type_hints.get(name)
         if hint is None:
             return
-        if self.type_hint_policy == "check":
-            self._emit_guard_type(value, hint)
-            self._apply_hint_to_value(name, value, hint)
-            return
-        if self.type_hint_policy == "trust" or self.stdlib_hint_trust:
+        if self.type_hint_policy in {"check", "trust"} or self.stdlib_hint_trust:
             self._apply_hint_to_value(name, value, hint)
 
     def _module_has_future_annotations(self, node: ast.Module) -> bool:
@@ -1149,41 +1145,3 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 )
             )
         self._emit_attach_type_params(func_val, type_param_vals)
-
-    def _guard_tag_for_hint(self, hint: str) -> int | None:
-        mapping = {
-            "Any": 0,
-            "Unknown": 0,
-            "int": 1,
-            "float": 2,
-            "bool": 3,
-            "None": 4,
-            "str": 5,
-            "bytes": 6,
-            "bytearray": 7,
-            "complex": 19,
-            "list": 8,
-            "tuple": 9,
-            "dict": 10,
-            "range": 11,
-            "slice": 12,
-            "buffer2d": 14,
-            "memoryview": 15,
-            "set": 17,
-            "frozenset": 18,
-        }
-        return mapping.get(hint)
-
-    def _emit_guard_type(self, value: MoltValue, hint: TypeHint) -> None:
-        if not isinstance(hint, str):
-            # A declared class has no builtin tag; its layout guards own it.
-            return
-        base = hint.split("[", 1)[0] if "[" in hint else hint
-        tag = self._guard_tag_for_hint(base)
-        if tag is None or tag == 0:
-            return
-        tag_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[tag], result=tag_val))
-        self.emit(
-            MoltOp(kind="GUARD_TAG", args=[value, tag_val], result=MoltValue("none"))
-        )

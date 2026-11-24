@@ -65,7 +65,7 @@ acceptance.
 - **Decorator whitelist:** only approved decorators are allowed in Tier 0 (e.g., `@dataclass`, `@lru_cache`); other decorators must be pure and deterministic or are rejected.
 - **Compile-time lowering:** known decorators are lowered into explicit IR (no dynamic `exec`/metaclass evaluation).
 - **Typing:** annotations are preserved in `__annotations__` and used at compile time; runtime typing helpers are scoped and deterministic.
-- **Type-hints policy:** `--type-hints=trust` applies annotations to lowering; `--type-hints=check` inserts runtime guards.
+- With `--type-hints=trust`, annotations guide lowering. The default `--type-hints=check` treats source annotations as hints and preserves Python behavior when runtime values disagree.
 - **Safety bound:** decorators or typing helpers that mutate globals/types at runtime require explicit opt-in and Tier 1 guards.
 
 ## 3. Compatibility Matrix

@@ -11,12 +11,13 @@ def op(kind: str, *args: object, result: str = "none") -> MoltOp:
     return MoltOp(kind=kind, args=list(args), result=MoltValue(result))
 
 
-def guard(value: str = "value") -> MoltOp:
-    return op("GUARD_TAG", MoltValue(value), MoltValue("expected"))
-
-
 def test_exception_edge_coalesced_with_fallthrough_records_both_modes() -> None:
-    ops = [guard(), op("CHECK_EXCEPTION", "handler"), op("LABEL", "handler"), guard()]
+    ops = [
+        op("CONST", 1, result="before"),
+        op("CHECK_EXCEPTION", "handler"),
+        op("LABEL", "handler"),
+        op("ret_void"),
+    ]
     cfg = build_cfg(ops)
     edge = (cfg.op_blocks[1], cfg.op_blocks[2])
     assert cfg.edge_kinds[edge] == CFGEdgeKind.NORMAL | CFGEdgeKind.EXCEPTION

@@ -985,7 +985,6 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     assert contracts["runtime_execution_enter"] == "execution_token"
     assert contracts["int_from_i64"] == "owned_object"
     assert contracts["int_as_i64"] == "raw_bits"
-    assert contracts["guard_type"] == "borrowed_object"
     assert contracts["dict_set"] == "borrowed_object"
     assert contracts["store_index"] == "borrowed_object"
     for name in ("dict_setitem", "list_int_setitem", "del_index"):

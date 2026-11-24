@@ -26,7 +26,6 @@ pub mod frame_home_placement;
 pub mod frame_location_placement;
 pub mod generator_fusion;
 pub mod global_slot_sites;
-pub mod guard_profile;
 mod guarded_value;
 pub mod gvn;
 pub mod inliner;

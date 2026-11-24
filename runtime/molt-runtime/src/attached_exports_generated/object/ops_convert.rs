@@ -298,14 +298,6 @@ pub unsafe extern "C" fn molt_string_split_field_to_int(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_split_field_to_int_attached_body(_py, hay_bits, needle_bits, index_bits)
 }
-#[unsafe(export_name = "molt_guard_type__molt_context_d1086a27578cda22")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_guard_type(__context: u64, val_bits: u64, expected_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_guard_type);
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_guard_type_attached_body(_py, val_bits, expected_bits)
-}
 #[unsafe(export_name = "molt_is_truthy__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_is_truthy(__context: u64, val: u64) -> i64 {

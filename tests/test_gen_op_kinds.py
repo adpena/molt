@@ -336,8 +336,6 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
         "callargs_push_method_receiver": 2,
         "pos": 1,
-        "guard_tag": 2,
-        "guard_type": 2,
         "warn_stderr": 1,
         "frame_context_set": 3,
         "frame_set_location": 0,
@@ -502,8 +500,6 @@ def test_representation_var_roles_reject_conflicting_alias_roles(spelling) -> No
         "unbox",
         "pos",
         "warn_stderr",
-        "guard_tag",
-        "guard_type",
         "module_slot",
     ]
     data["simpleir_var_result_kinds"].append(spelling)
@@ -1033,8 +1029,6 @@ def test_call_sites_share_effect_authority() -> None:
         "guard_layout",
         "guard_none",
         "guard_str",
-        "guard_tag",
-        "guard_type",
         "line",
         "list_reverse_slice",
         "missing",
@@ -4107,8 +4101,6 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "copy_kind_is_explicit_no_heap_move_table" in identity_body
     assert "simpleir_op_shape" in identity_body
     assert "match op.opcode" not in identity_body
-    assert '"guard_tag"' not in identity_body
-    assert '"guard_type"' not in identity_body
 
     typed_body = _rust_fn_body(alias_regions, "fn typed_slot_obj_offset(")
     assert "plain_typed_slot_load" in typed_body

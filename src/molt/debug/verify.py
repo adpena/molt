@@ -61,7 +61,6 @@ class VerificationFinding:
 FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
     {
         "CALL_INDIRECT": "call_indirect",
-        "GUARD_TAG": "guard_tag",
         "DEC_REF": "dec_ref",
         # Conversions keep their dedicated lanes.
     }

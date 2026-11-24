@@ -294,8 +294,6 @@ FrontendOpKind = Literal[
     'GUARD_LAYOUT',
     'GUARD_NONE',
     'GUARD_STR',
-    'GUARD_TAG',
-    'GUARD_TYPE',
     'HASATTR_NAME',
     'HAS_ATTR_NAME',
     'ID',
@@ -816,8 +814,6 @@ WireOpKind = Literal[
     'guard_layout',
     'guard_none',
     'guard_str',
-    'guard_tag',
-    'guard_type',
     'guarded_field_get',
     'guarded_field_set',
     'guarded_load',
@@ -1335,8 +1331,6 @@ class FrontendKinds:
     GUARD_LAYOUT: Final = 'GUARD_LAYOUT'
     GUARD_NONE: Final = 'GUARD_NONE'
     GUARD_STR: Final = 'GUARD_STR'
-    GUARD_TAG: Final = 'GUARD_TAG'
-    GUARD_TYPE: Final = 'GUARD_TYPE'
     HASATTR_NAME: Final = 'HASATTR_NAME'
     HAS_ATTR_NAME: Final = 'HAS_ATTR_NAME'
     ID: Final = 'ID'
@@ -1857,8 +1851,6 @@ class WireKinds:
     GUARD_LAYOUT: Final = 'guard_layout'
     GUARD_NONE: Final = 'guard_none'
     GUARD_STR: Final = 'guard_str'
-    GUARD_TAG: Final = 'guard_tag'
-    GUARD_TYPE: Final = 'guard_type'
     GUARDED_FIELD_GET: Final = 'guarded_field_get'
     GUARDED_FIELD_SET: Final = 'guarded_field_set'
     GUARDED_LOAD: Final = 'guarded_load'
@@ -2367,8 +2359,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'GUARD_LAYOUT': 'guard_layout',
     'GUARD_NONE': 'guard_none',
     'GUARD_STR': 'guard_str',
-    'GUARD_TAG': 'guard_tag',
-    'GUARD_TYPE': 'guard_type',
     'HAS_ATTR_NAME': 'has_attr_name',
     'ID': 'id',
     'IDENTITY_ALIAS': 'identity_alias',
@@ -2892,8 +2882,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "guard_layout",
         "guard_none",
         "guard_str",
-        "guard_tag",
-        "guard_type",
         "guarded_field_get",
         "guarded_field_set",
         "guarded_load",
@@ -3412,8 +3400,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "GUARD_LAYOUT",
         "GUARD_NONE",
         "GUARD_STR",
-        "GUARD_TAG",
-        "GUARD_TYPE",
         "HASATTR_NAME",
         "HAS_ATTR_NAME",
         "ID",
@@ -4314,8 +4300,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "GUARDED_LOAD": True,
     "GUARDED_SETATTR": True,
     "GUARD_LAYOUT": False,
-    "GUARD_TAG": False,
-    "GUARD_TYPE": False,
     "HASATTR_NAME": True,
     "IF": True,
     "IMPORT_FROM": True,
@@ -5171,8 +5155,6 @@ FRONTEND_EFFECT_CONTROL_KINDS: frozenset[FrontendOpKind] = frozenset(
         "EXCEPTION_STACK_SET_DEPTH",
         "GOTO",
         "GUARD_LAYOUT",
-        "GUARD_TAG",
-        "GUARD_TYPE",
         "IF",
         "JUMP",
         "LABEL",
@@ -5524,8 +5506,6 @@ BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS: frozenset[WireOpKind] = frozenset(
         "exception_pending",
         "free",
         "function_defaults_version",
-        "guard_tag",
-        "guard_type",
         "identity_alias",
         "inc_ref",
         "is",

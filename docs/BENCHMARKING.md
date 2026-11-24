@@ -844,7 +844,7 @@ uv run python3 -m molt.cli run --profile dev --trusted \
 Notes:
 - One versioned `molt_profile_json {...}` schema is emitted on the runtime
   diagnostics channel — stderr by default, so the profiler can scrape it from a
-  captured log. Schema v3 has exact counter maps for allocation/deallocation/live
+  captured log. Schema v4 has exact counter maps for allocation/deallocation/live
   gauges, exception bytes, typed-aux sidecars, and GC registry pressure. Runtime
   RSS is an explicit source-tagged snapshot: Linux uses `/proc/self/status`, macOS
   uses `mach_task_basic_info`, Windows uses `GetProcessMemoryInfo`, and targets
@@ -856,7 +856,7 @@ Notes:
 - Steady-state microbenchmarks must use the canonical profiling epoch intrinsics,
   `molt_profile_epoch_reset(label)` and `molt_profile_epoch_dump()`. Reset captures
   a baseline without zeroing the process-lifetime leak counters; dump consumes the
-  epoch and emits `molt_profile_epoch_json` schema v2. Its exact `delta` sections
+  epoch and emits `molt_profile_epoch_json` schema v3. Its exact `delta` sections
   contain every monotonic runtime counter, while `gauges` retain signed
   start/end/delta triples and `memory` retains source-tagged RSS snapshots. Any
   impossible monotonic decrease sets `claimable=false`, records start/end under

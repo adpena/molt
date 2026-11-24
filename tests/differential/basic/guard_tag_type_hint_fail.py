@@ -1,4 +1,4 @@
-"""Purpose: differential coverage for guard_tag type-hint checks."""
+"""Purpose: differential coverage for values that disagree with annotations."""
 
 
 def add_one(x: int) -> int:
@@ -36,3 +36,18 @@ def annotated_loop(limit):
 
 print("annotated-branch", annotated_branch(False), annotated_branch(True))
 print("annotated-loop", annotated_loop(4))
+
+
+class AnnotatedMethod:
+    def original(self, value: int):
+        return value
+
+
+def annotated_generator(value: int):
+    yield value
+
+
+payload = [4]
+print("method-identity", AnnotatedMethod().original(payload) is payload)
+print("generator-identity", next(annotated_generator(payload)) is payload)
+print("annotations", add_one.__annotations__ == {"x": int, "return": int})

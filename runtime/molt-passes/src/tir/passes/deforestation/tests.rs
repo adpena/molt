@@ -678,7 +678,6 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
         molt_ir::FunctionReturnAbi::Value,
     );
     let constant = function.fresh_value();
-    let tag = function.fresh_value();
     let field = function.fresh_value();
     let length = function.fresh_value();
     let ordinal = function.fresh_value();
@@ -717,8 +716,6 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
     literal
         .attrs
         .insert("s_value".into(), AttrValue::Str("needle".into()));
-    let mut type_tag = make_op(OpCode::ConstInt, vec![], vec![tag]);
-    type_tag.attrs.insert("value".into(), AttrValue::Int(5));
     let mut check = make_op(OpCode::CheckException, vec![], vec![]);
     check.attrs.insert("value".into(), AttrValue::Int(9));
     let mut len = preserved(molt_ir::OpKind::Len, vec![field], vec![length]);
@@ -726,7 +723,6 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
     let entry = function.blocks.get_mut(&function.entry_block).unwrap();
     entry.ops = vec![
         literal,
-        type_tag,
         split,
         check,
         len,
@@ -736,7 +732,6 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
             vec![ordinal],
         ),
         preserved(molt_ir::OpKind::Eq, vec![constant, field], vec![equal]),
-        preserved(molt_ir::OpKind::GuardType, vec![field, tag], vec![]),
     ];
     entry.terminator = Terminator::Return {
         values: vec![length],
@@ -784,7 +779,7 @@ fn split_properties_rewrite_exact_ssa_uses_and_keep_observation_and_metadata() {
             molt_ir::OpKind::StringSplitFieldEq
         ]
     );
-    let properties = &entry.ops[2..5];
+    let properties = &entry.ops[1..4];
     for property in properties {
         assert_eq!(property.source_span, Some((31, 44)));
         assert_eq!(property.source_op_index(), Some(71));
@@ -806,11 +801,11 @@ fn split_properties_rewrite_exact_ssa_uses_and_keep_observation_and_metadata() {
             "fresh identities must not reuse eliminated SSA results"
         );
     }
-    assert_eq!(entry.ops[5].opcode, OpCode::CheckException);
-    assert_eq!(entry.ops[5].attrs.get("value"), Some(&AttrValue::Int(9)));
-    assert_eq!(entry.ops[6].source_op_index(), Some(72));
+    assert_eq!(entry.ops[4].opcode, OpCode::CheckException);
+    assert_eq!(entry.ops[4].attrs.get("value"), Some(&AttrValue::Int(9)));
+    assert_eq!(entry.ops[5].source_op_index(), Some(72));
     assert_eq!(
-        entry.ops[6].operands,
+        entry.ops[5].operands,
         vec![
             ValueId(0),
             properties[0].results[0],
@@ -832,13 +827,11 @@ fn split_properties_rewrite_exact_ssa_uses_and_keep_observation_and_metadata() {
 }
 
 #[test]
-fn split_properties_refuse_escape_payload_release_guard_and_custody_changes() {
+fn split_properties_refuse_escape_payload_release_and_custody_changes() {
     for case in [
         "return",
         "payload",
         "release",
-        "guard_tag",
-        "guard_result",
         "poll",
         "producer_custody",
         "consumer_custody",
@@ -855,31 +848,27 @@ fn split_properties_refuse_escape_payload_release_guard_and_custody_changes() {
                     values: vec![field],
                 }
             }
-            "payload" => entry.ops[3].operands.push(field),
+            "payload" => entry.ops[2].operands.push(field),
             "release" => entry.ops.push(make_op(OpCode::DecRef, vec![field], vec![])),
-            "guard_tag" => {
-                entry.ops[1].attrs.insert("value".into(), AttrValue::Int(1));
-            }
-            "guard_result" => entry.ops[7].results.push(observed),
             "poll" => {
-                entry.ops[3].mark_async_work_poll();
+                entry.ops[2].mark_async_work_poll();
             }
-            "producer_custody" => entry.ops[2].set_argument_custody(&[
+            "producer_custody" => entry.ops[1].set_argument_custody(&[
                 crate::ir::ParameterCustody::Transferred,
                 crate::ir::ParameterCustody::Borrowed,
                 crate::ir::ParameterCustody::Borrowed,
             ]),
             "consumer_custody" => {
-                entry.ops[4].set_argument_custody(&[crate::ir::ParameterCustody::Transferred])
+                entry.ops[3].set_argument_custody(&[crate::ir::ParameterCustody::Transferred])
             }
-            "unknown_eq" => entry.ops[6].operands[0] = ValueId(1),
+            "unknown_eq" => entry.ops[5].operands[0] = ValueId(1),
             "structured_use" => {
                 let mut user = make_op(OpCode::ScfWhile, vec![field], vec![]);
                 user.dialect = Dialect::Scf;
                 entry.ops.push(user);
             }
             "runtime_override" => {
-                entry.ops[4]
+                entry.ops[3]
                     .attrs
                     .insert("runtime_symbol".into(), AttrValue::Str("custom_len".into()));
             }

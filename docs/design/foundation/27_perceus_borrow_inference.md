@@ -159,8 +159,7 @@ is the minimal carrier that keeps the seven classes un-expressible.
 An operation admitted by `value_identity::no_heap_alias_source` produces a
 *bit-identical alias* of its source (operand zero) with **no incref**. The shared
 fact validates the generated alias role, no-heap-move contract, and declared
-shape. Runtime `guard_tag` and `guard_type` also read the expected tag; preserving
-the object's root does not permit erasing their checks or exceptions.
+shape. Alias identity alone leaves an operation's other reads and effects intact.
 `CopyLowering::TransparentAlias` alone proves non-owning custody, not identity.
 The loop-carried accumulator is reloaded via
 `load_var → Copy` every iteration, so one heap object has many SSA ids. Rung 1

@@ -2,26 +2,12 @@
 **Status:** Draft
 **Goal:** Define explicit guard primitives and deopt wiring so Molt can use profile-driven speculation safely.
 
-## Current runtime type-guard contract
+## Source annotations and runtime guards
 
-The existing SimpleIR `guard_tag(value, expected)` and `guard_type(value, expected)`
-both call `molt_guard_type` and optionally return an identity alias of `value`.
-The runtime converts `expected` through `to_i64`; rejected values raise
-`TypeError("guard type tag must be int")`. Accepted carriers include bool,
-integral direct floats in the supported range and bounded integers. A tag mismatch
-only records `guard_tag_type_mismatch` when profiling is enabled, then returns
-the original value. It neither raises nor establishes a type refinement. `ANY`
-returns the source directly.
-
-The compiler can bypass the call for a dominating literal-i64 tag when the runtime
-profile flag is off. With profiling enabled it preserves every executed mismatch
-event. The flag is captured once per function activation from the runtime epoch.
-Full-width integer boxing remains fallible on the profiling path and stays inside
-the backend operand transaction. Complete guard removal requires a separate
-counter-free proof that the source already matches the tag.
-
-The structured speculative transfer below describes the draft deopt interface;
-it must not be inferred from today's runtime type-guard operation.
+Source annotations in the default hint policy remain visible to Python code and
+can guide lowering. Compilation requires an independent proof before specializing
+an operation. The annotation-only profiling guard was retired with its IR and
+runtime ABI. The guard primitives below describe a draft speculative transfer.
 
 ## Concepts
 - Guard: side-effect-free predicate; on failure transfer to fallback.

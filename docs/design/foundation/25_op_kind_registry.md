@@ -941,45 +941,12 @@ backend consumers. Unknown wire names remain the target admission obligation; th
 boundary creates no target support list and uses no case-conversion heuristic.
 
 Value transport keeps operand shape separate from ownership transparency.
-`guard_tag` and `guard_type` read both the guarded value and a dynamic expected
-tag; their declared two-operand shapes survive serialization, source validation,
-SSA and preserved-Copy verification. Their result aliases operand zero without
-retaining it, but that ownership fact does not erase the tag read. Ordinary copy
-and owned-alias transports still require one semantic read through their declared
-field roles. The distinct `type_guard` TIR refinement remains unary. Missing,
-extra, conflicting and undefined inputs remain invalid before backend lowering.
+Copy and owned-alias transports require one semantic read in their declared
+field roles. The distinct unary `TypeGuard` TIR operation refines type facts.
+Missing, extra, conflicting and undefined inputs remain invalid before backend
+lowering.
 
-Runtime guard identity and execution effects remain separate. The shared TIR
-`value_identity::no_heap_alias_source` validates the declared semantic read
-count, then projects only operand zero into alias union, ownership, and container
-provenance. Pure-copy emission uses `copy_value_source`; a no-heap ownership fact
-never authorizes erasing a check. Both runtime guard spellings retain both reads
-and bind an optional result to the original value and its existing scalar carrier.
-`molt_guard_type` converts the expected tag with runtime `to_i64`; a rejected tag
-raises, while a type mismatch counts profiling feedback and returns the source
-unchanged. It proves no source type. The unary TIR `TypeGuard` remains a distinct
-refinement operation. Native borrowed operands use the shared transaction, which
-skips dependent calls on failed wide-integer boxing and releases temporary owners;
-result aliases obey the same carrier and retain rules as other aliases.
-
-SimpleIR guard elimination compares an exact constant expected tag with a proven
-runtime type from unique dominating definitions. Dynamic tags, annotations,
-carrier classes, generic arithmetic and container indexing do not satisfy a
-check. A discharged guard with an output becomes an identity alias. Split-field
-deforestation consumes the same proof and keeps guards whose outputs still need
-the materialized object. Positive tag admission is a separate shared fact: a
-unique dominating i64 literal tag lets native, LLVM and WASM
-execute the guard call only when a per-activation runtime profile flag is set.
-The flag is stable within a runtime epoch and is never inferred from the compiler's
-environment. Every executed mismatch remains counted when profiling is enabled;
-frontend CFG deduplication must not collapse repeated runtime guards. Nonthrowing
-analysis additionally proves that physical operand boxing cannot allocate or
-retains its exception observation. Dynamic tags keep runtime admission, including
-bool, integral direct-float and bounded integer carriers accepted by `to_i64`.
-Frontend SCCP continues past mismatch and never overwrites source-type facts with
-the requested tag.
-
-Frontend serialization preserves a named runtime-guard result for either
-spelling. Its canonicalization only erases a proven check when no result is
-bound. JSON string-split scalarization treats an undischarged guard as an
-observable use instead of maintaining a second tag-blind guard deletion path.
+Shared TIR `value_identity::no_heap_alias_source` validates the declared semantic
+read count and projects the source into alias union, ownership and container
+provenance. Pure-copy emission uses `copy_value_source`. An alias fact alone
+never authorizes removing an operation's effects.

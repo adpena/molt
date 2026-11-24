@@ -62,21 +62,6 @@ def test_call_bind_lowers_finalizer_fact() -> None:
     }
 
 
-@pytest.mark.parametrize("result", ["none", "checked"])
-def test_runtime_guard_preserves_value_and_expected_tag_operands(result: str) -> None:
-    kind = "GUARD_TAG"
-    op = MoltOp(
-        kind=kind,
-        args=[MoltValue("value"), MoltValue("tag")],
-        result=MoltValue(result),
-    )
-    lowered = _map_single(op)
-    expected = {"kind": kind.lower(), "args": ["value", "tag"]}
-    if result != "none":
-        expected["out"] = result
-    assert lowered == expected
-
-
 def test_binding_alias_lowers_to_owned_alias_lane() -> None:
     op = MoltOp(
         kind="BINDING_ALIAS", args=[MoltValue("value")], result=MoltValue("owned")
@@ -381,11 +366,6 @@ def test_dead_static_module_branch_preserves_names_without_executing_import() ->
         )
 
 
-def test_raw_guard_tag_emitted_for_type_hints() -> None:
-    kinds = _raw_kinds("x: int = 1\n", type_hint_policy="check")
-    assert "GUARD_TAG" in kinds
-
-
 def test_raw_dict_increment_uses_runtime_admission_for_bound_operands() -> None:
     ops = _raw_function_ops(
         "def f(d, key, step):\n    d[key] = d.get(key, 0) + step\n",
@@ -516,12 +496,12 @@ def test_lowered_dynamic_noncallable_attr_uses_runtime_callable_check() -> None:
     assert ops.index(load) < ops.index(call)
 
 
-def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
-    kinds = _lowered_kinds(
-        "def f(x: int):\n    return x\n",
-        type_hint_policy="check",
+def test_annotation_hints_leave_the_function_body_unchecked() -> None:
+    annotated = _raw_function_ops(
+        "def f(x: int):\n    return x\n", type_hint_policy="check"
     )
-    assert "guard_tag" in kinds
+    plain = _raw_function_ops("def f(x):\n    return x\n", type_hint_policy="check")
+    assert [op.kind for op in annotated] == [op.kind for op in plain]
 
 
 def test_raw_module_call_uses_the_captured_callable_object() -> None:
@@ -1249,22 +1229,6 @@ def test_frontend_semantic_token_cannot_escape_after_serializer_rewrites(monkeyp
     )
     with pytest.raises(ValueError, match="escaped serialization"):
         generator.map_ops_to_json([])
-
-
-@pytest.mark.parametrize("kind", ["guard_tag", "guard_type"])
-@pytest.mark.parametrize("tag", [1, 8])
-def test_split_scalarization_never_discards_an_undischarged_runtime_guard(
-    kind: str, tag: int
-) -> None:
-    ops = [
-        {"kind": "const_str", "out": "sep", "s_value": ","},
-        {"kind": "const", "out": "index", "value": 0},
-        {"kind": "const", "out": "tag", "value": tag},
-        {"kind": "string_split", "args": ["text", "sep"], "out": "fields"},
-        {"kind": kind, "args": ["fields", "tag"]},
-        {"kind": "index", "args": ["fields", "index"], "out": "field"},
-    ]
-    assert SimpleTIRGenerator._scalarize_string_split_fields_json(ops) == ops
 
 
 @pytest.mark.parametrize(

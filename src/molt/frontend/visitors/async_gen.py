@@ -166,13 +166,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 self._prebox_scope_cell_vars(
                     cell_plan.captured, private_cells=cell_plan.private
                 )
-                if self.type_hint_policy == "check":
-                    for arg in arg_nodes:
-                        hint = self.explicit_type_hints.get(arg.arg)
-                        if hint is not None:
-                            self._emit_guard_type(
-                                MoltValue(arg.arg, type_hint=hint), hint
-                            )
                 self._publish_python_frame_context()
                 self._push_qualname(
                     python_definition_name(node), True, qualname=qualname
@@ -332,11 +325,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             self._publish_python_frame_context()
             self._push_qualname(python_definition_name(node), True, qualname=qualname)
             try:

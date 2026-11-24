@@ -9002,10 +9002,6 @@
       "context": "Attached",
       "physical_symbol": "molt_guard_layout__molt_context_d1086a27578cda22"
     },
-    "molt_guard_type": {
-      "context": "Attached",
-      "physical_symbol": "molt_guard_type__molt_context_d1086a27578cda22"
-    },
     "molt_guarded_call": {
       "context": "Attached",
       "physical_symbol": "molt_guarded_call__molt_context_d1086a27578cda22"
@@ -19611,7 +19607,6 @@
     "gt": "molt_gt__molt_context_d1086a27578cda22",
     "guard_builtin_bindings": "molt_guard_builtin_bindings__molt_context_d1086a27578cda22",
     "guard_layout": "molt_guard_layout__molt_context_d1086a27578cda22",
-    "guard_type": "molt_guard_type__molt_context_d1086a27578cda22",
     "guarded_class_def": "molt_guarded_class_def__molt_context_d1086a27578cda22",
     "guarded_field_get": "molt_guarded_field_get__molt_context_d1086a27578cda22",
     "guarded_field_set": "molt_guarded_field_set__molt_context_d1086a27578cda22",
@@ -22498,7 +22493,6 @@
     "molt_gt__molt_context_d1086a27578cda22": "molt_gt__molt_context_d1086a27578cda22",
     "molt_guard_builtin_bindings__molt_context_d1086a27578cda22": "molt_guard_builtin_bindings__molt_context_d1086a27578cda22",
     "molt_guard_layout__molt_context_d1086a27578cda22": "molt_guard_layout__molt_context_d1086a27578cda22",
-    "molt_guard_type__molt_context_d1086a27578cda22": "molt_guard_type__molt_context_d1086a27578cda22",
     "molt_guarded_call__molt_context_d1086a27578cda22": "molt_guarded_call__molt_context_d1086a27578cda22",
     "molt_guarded_call_obj__molt_context_d1086a27578cda22": "molt_guarded_call_obj__molt_context_d1086a27578cda22",
     "molt_guarded_class_def__molt_context_d1086a27578cda22": "molt_guarded_class_def__molt_context_d1086a27578cda22",

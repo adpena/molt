@@ -57,9 +57,6 @@ struct ParameterBranch {
     parameter: ParamIndex,
     block: BlockId,
     annotation: AnnotationEffect,
-    /// Annotation metadata alone is not an entry admission proof. In
-    /// particular, declared classes and mixed unions may have no tag guard.
-    entry_tag_guard: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,13 +175,6 @@ fn capture<'a>(solver: &Solver<'a>) -> CallCensus<'a> {
         if branches.is_empty() {
             continue;
         }
-        let entry_tag_guard = func.blocks[&func.entry_block].ops.iter().any(|op| {
-            op.origin == Some(molt_ir::OpKind::GuardTag)
-                && op
-                    .operands
-                    .first()
-                    .is_some_and(|&value| solver.none_tests.copy_root(value) == parameter.id)
-        });
         let annotated = func
             .param_types
             .get(index)
@@ -210,7 +200,6 @@ fn capture<'a>(solver: &Solver<'a>) -> CallCensus<'a> {
                 parameter: ParamIndex(index),
                 block,
                 annotation,
-                entry_tag_guard,
             });
         }
     }
