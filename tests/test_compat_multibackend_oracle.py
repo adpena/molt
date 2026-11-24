@@ -798,6 +798,7 @@ def test_only_compiler_children_run_inside_the_frontend_image(
 
     image = tmp_path / "image"
     harness = {
+        "MOLT_EXT_ROOT": str(tmp_path),
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "harness"),
         "PYTHONPYCACHEPREFIX": str(tmp_path / "harness" / "bytecode"),
         "MOLT_CAPABILITY_TIER": "none",
