@@ -2874,7 +2874,7 @@ timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", "auto"]
-pytest = ["tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
+pytest = ["tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 pytest_worker_memory_gb = 0.75
 toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo", "hosted-clang"]
 
@@ -3413,7 +3413,7 @@ toolchains = ["python", "uv"]
 
 # The whole CLI import-collection file (804 tests, about 580 s on hosted Linux
 # at -n 2). Its build-pipeline tests read rustc and cargo identity from PATH;
-# the five that validate WASM with the pinned wasm-tools run in
+# fixtures that validate WASM with the pinned wasm-tools run in
 # wasm.host.runner-fixtures, which provisions that tool (HF-160). It runs in
 # its own Linux job: its process tree peaks at 4.97 GB at -n 2, above the
 # 3.3 GB the 7 GB macOS runner had free, so the guard stopped it there even
@@ -3434,7 +3434,7 @@ resource_class = "python-tests"
 timeout_seconds = 1320
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 pytest = ["tests/cli/test_cli_import_collection.py"]
 pytest_worker_memory_gb = 6.25
 pytest_observed_inputs = true

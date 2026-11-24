@@ -333,6 +333,26 @@ def gate_failure_report(outcome: GateOutcome, record: Mapping[str, str]) -> str:
     return "".join(parts)
 
 
+@dataclass
+class TryRunClock:
+    """Tracks the execution budget across separately admitted gate groups."""
+
+    label: str
+    seconds: float
+    clock: Callable[[], float] = time.monotonic
+    started: float = field(init=False)
+    waited: float = field(init=False, default=0.0)
+
+    def __post_init__(self) -> None:
+        self.started = self.clock()
+
+    def elapsed(self) -> float:
+        return self.clock() - self.started - self.waited
+
+    def expired(self) -> bool:
+        return self.elapsed() >= self.seconds
+
+
 @dataclass(frozen=True)
 class GateRuntime:
     """What one landing's gates run against; integrate builds it once."""
@@ -362,6 +382,7 @@ class GateRuntime:
     cancel_reason: CancelReason = CancelReason.PENDING_LANDING
     deferred: tuple[Deferred, ...] = ()
     host_grant: HostWorkGrant | None = None
+    try_run: TryRunClock | None = None
     # Every gate that passed, in completion order: the typed outcome a caller
     # reads instead of matching rendered commands.
     passed: list[Gate] = field(default_factory=list)
@@ -423,7 +444,12 @@ def junit_path(log_dir: Path, ordinal: int) -> Path:
 def _numbered_attempt_directories(
     directory: Path,
     prefix: Literal[
-        "postsubmit-rest-", "heavy-rest-", "isolate-", "continue-", "attempt-"
+        "postsubmit-rest-",
+        "try-run-rest-",
+        "heavy-rest-",
+        "isolate-",
+        "continue-",
+        "attempt-",
     ],
 ) -> tuple[Path, ...]:
     """Existing directories with the exact numeric suffix of an owned phase."""
@@ -526,40 +552,24 @@ def gate_failure(
     return failure
 
 
-def gate_work_demand(
-    gates: Sequence[Gate], *, repo: Path, requested_workers: int
-) -> HostWorkDemand:
-    """One gate slot must accommodate any selected gate's workspace.
-
-    A Cargo-backed gate may build while running pytest, so it retains its
-    charged Cargo envelope even when the child also has a pytest worker unit.
-    """
+def _gate_work_demand(gate: Gate, repo: Path, worker_limit: int) -> HostWorkDemand:
+    """Use the command's own worker request inside its memory envelope."""
     import shlex
 
     from molt.host_capacity import HostWorkDemand
     from tools.proof_command_argv import pytest_allocation_request
 
-    bytes_per_worker = CONCURRENT_GATE_BYTES
-    for gate in gates:
-        if gate.cargo_target_access is not CargoTargetAccess.NONE:
-            bytes_per_worker = max(bytes_per_worker, LOCAL_CARGO_GATE_BYTES)
-        if gate_runs_pytest(gate, repo=repo):
-            argv = (
-                shlex.split(gate.command)
-                if isinstance(gate.command, str)
-                else gate.command
-            )
-            _arguments, bytes_per_pytest_worker, _requested = pytest_allocation_request(
-                argv, root=repo
-            )
-            # The executor may allocate several pytest workers to a single gate.
-            # Its actual worker count is bounded by the grant's memory slice.
-            bytes_per_worker = max(bytes_per_worker, bytes_per_pytest_worker)
-    return HostWorkDemand(
-        workers=max(1, min(len(gates), requested_workers)),
-        bytes_per_worker=bytes_per_worker,
-        minimum_workers=1,
+    uses_cargo = gate.cargo_target_access is not CargoTargetAccess.NONE
+    memory = LOCAL_CARGO_GATE_BYTES if uses_cargo else CONCURRENT_GATE_BYTES
+    if not gate_runs_pytest(gate, repo=repo):
+        return HostWorkDemand(1, memory)
+    argv = shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+    _arguments, worker_memory, requested = pytest_allocation_request(argv, root=repo)
+    workers = (
+        worker_limit if requested is None else max(1, min(requested, worker_limit))
     )
+    # The Cargo envelope covers the entire build process tree.
+    return HostWorkDemand(1 if uses_cargo else workers, max(memory, worker_memory))
 
 
 def concurrent_gate_limit() -> int:
@@ -747,28 +757,31 @@ def _shared_target_order(commands: list[_LocalGateCommand]) -> list[_LocalGateCo
 
 
 def _heavy_gate_batches(
-    heavy: list[tuple[int, Gate]], runtime: GateRuntime
+    heavy: list[tuple[int, Gate]], runtime: GateRuntime, host_limit: Callable[[], int]
 ) -> Iterator[tuple[list[tuple[int, Gate]], HostWorkDemand | None]]:
     if not heavy:
         return
-    if runtime.mode is not LandingMode.POSTSUBMIT:
+    if runtime.mode is LandingMode.PRESUBMIT and runtime.try_run is None:
         yield heavy, None
         return
 
     from molt.host_capacity import HostWorkDemand, cpu_count
 
-    def memory_per_worker(entry: tuple[int, Gate]) -> int:
-        return gate_work_demand(
-            (entry[1],), repo=runtime.repo, requested_workers=1
-        ).bytes_per_worker
-
-    worker_limit = max(1, cpu_count() // 2)
-    for memory, same_memory in groupby(heavy, key=memory_per_worker):
-        batch = list(same_memory)
+    worker_limit = host_limit() if runtime.try_run else max(1, cpu_count() // 2)
+    demands = (
+        (ordinal, gate, _gate_work_demand(gate, runtime.repo, worker_limit))
+        for ordinal, gate in heavy
+    )
+    for memory, same_memory in groupby(
+        demands, key=lambda entry: entry[2].bytes_per_worker
+    ):
+        group = list(same_memory)
         yield (
-            batch,
+            [(ordinal, gate) for ordinal, gate, _demand in group],
             HostWorkDemand(
-                workers=min(len(batch), worker_limit),
+                workers=min(
+                    worker_limit, sum(demand.workers for _, _, demand in group)
+                ),
                 bytes_per_worker=memory,
                 minimum_workers=1,
             ),
@@ -783,24 +796,24 @@ def run_selected_gates(
     host_limit: Callable[[], int] = concurrent_gate_limit,
     keep_going: bool = False,
 ) -> None:
-    """Read-only checks first; then the heavy gates overlap in one block.
+    """Run read-only checks first, then admit and execute heavy gates.
 
     The read-only checks run as before: the leading always gates as one
     executor block, then each rule check in declared order. A failing check
     therefore stops every build before it starts. The heavy gates (Cargo and
-    pytest) then share one executor block: shared-target writers run one at a
-    time while independent pytest sessions run beside them, each sized
-    within the exported memory slice. The first observed failure within a
-    phase halts the landing and cancels its remaining gates through their guards.
+    pytest) use one integration block or, for development (try run and
+    postsubmit), share a grant per consecutive group with equal memory demand.
+    Shared-target writers run one at a time within each block. Independent
+    pytest sessions can run beside them within their memory slices.
+    The first observed failure within a phase halts the landing and cancels
+    its remaining gates through their guards.
 
     ``keep_going`` (postsubmit) runs every gate and raises one CandidateFailure
     naming each failed gate at the end: postsubmit reports main's state, and a
     first-failure stop hid every later gate (HF-937: no run since 2026-11-01
     reached a Cargo gate past its first red static check). Read-only checks
-    then run one at a time. Consecutive heavy gates with equal memory demands
-    share a grant. Each batch reruns gates a failure cancelled, excluding the
-    failed ones. Runner, custody and cancellation
-    faults still stop at once.
+    then run one at a time. Each batch reruns gates that a failure cancelled.
+    Runner, custody and cancellation faults still stop at once.
     """
     for item in runtime.deferred:
         runtime.say(item.diagnostic())
@@ -864,26 +877,32 @@ def run_selected_gates(
             failures.append(failure)
     _check_cancellation(runtime)
     continuation = 0
-    for batch, demand in _heavy_gate_batches(heavy, runtime):
+    try_run = runtime.try_run
+    for batch, demand in _heavy_gate_batches(heavy, runtime, host_limit):
         _check_cancellation(runtime)
         from molt import host_capacity
 
-        # Every gate run (a try run, a batch, postsubmit, a receipt rerun)
-        # takes its class's heavy-work slot for its heavy block (HF-623): a
-        # batch the integration slot, the rest the development slot. A caller
-        # that already holds a slot (the try run, whose budget starts at
-        # admission) is admitted at once through the inherited mark.
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(runtime.repo),
-            label=f"{runtime.mode.value} gates ({runtime.repo.name})",
+            label=try_run.label
+            if try_run
+            else f"{runtime.mode.value} gates ({runtime.repo.name})",
             work=(
                 host_capacity.HostWorkClass.INTEGRATION
-                if runtime.mode is LandingMode.PRESUBMIT
+                if demand is None
                 else host_capacity.HostWorkClass.DEVELOPMENT
             ),
             say=runtime.say,
+            clock=try_run.clock if try_run else time.monotonic,
             demand=demand,
         ) as admission:
+            if try_run is not None:
+                try_run.waited += admission.waited_seconds
+                if admission.waited_seconds >= 1:
+                    runtime.say(
+                        "    host-work: try-run gate group admitted after "
+                        f"{admission.waited_seconds:.0f} s"
+                    )
             grant = admission.grant or runtime.host_grant
             admitted = replace(runtime, host_grant=grant)
             _check_cancellation(runtime)
@@ -891,11 +910,18 @@ def run_selected_gates(
             while remaining:
                 attempt = admitted
                 if continuation:
-                    output = runtime.output_dir / f"postsubmit-rest-{continuation}"
+                    phase = "try-run" if try_run else "postsubmit"
+                    output = runtime.output_dir / f"{phase}-rest-{continuation}"
+                    receipt = runtime.receipt_path
                     attempt = replace(
                         admitted,
                         output_dir=output,
-                        receipt_path=output / runtime.receipt_path.name,
+                        # The try-run receipt inventory scans the evidence root.
+                        receipt_path=receipt.with_stem(
+                            f"{receipt.stem}.group-{continuation}"
+                        )
+                        if try_run
+                        else output / receipt.name,
                     )
                 continuation += 1
                 try:
@@ -1373,11 +1399,15 @@ def flakes_path(output_dir: Path) -> Path:
 def gate_evidence_directories(output_dir: Path) -> tuple[Path, ...]:
     """The known attempt namespaces of one run, never arbitrary descendants.
 
-    Outer postsubmit continuations retain their own heavy rounds and test
+    Development gate groups retain their own heavy rounds and test
     isolation. Every reader uses this inventory so a later failed test and a
     passed retry's flake record retain the same evidence scope.
     """
-    roots = (output_dir, *_numbered_attempt_directories(output_dir, "postsubmit-rest-"))
+    roots = (
+        output_dir,
+        *_numbered_attempt_directories(output_dir, "postsubmit-rest-"),
+        *_numbered_attempt_directories(output_dir, "try-run-rest-"),
+    )
     directories: list[Path] = []
     for root in roots:
         directories.extend((root, root / "heavy-retry", root / "heavy-rest"))

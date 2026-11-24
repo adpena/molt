@@ -32,7 +32,7 @@ import json
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
@@ -51,11 +51,11 @@ from tools.molt_dev_policy import (
 from tools.molt_dev_gates import (
     CancelReason,
     GateCancellation,
+    TryRunClock,
     admit_selected_output_capacity,
     concurrent_gate_limit,
     display,
     gate_time_summary,
-    gate_work_demand,
     run_selected_gates,
 )
 
@@ -271,14 +271,16 @@ class TryRunRefusal:
 
 @dataclass(frozen=True)
 class GateRun:
-    """One executed gate block: ``gates[i]`` wrote ``gate-{i+1:03d}.stdout.log``
-    under ``output_dir`` (run_selected_gates numbers gates from 1)."""
+    """One executed phase with the passing attempts' stdout locations."""
 
     phase: str  # "static" or "try-run"
     output_dir: Path
     gates: tuple[SelectedGate, ...]
+    passed_logs: dict[str, Path] = field(default_factory=dict)
 
     def log(self, gate: SelectedGate) -> Path:
+        if path := self.passed_logs.get(display(gate.command)):
+            return path
         return self.output_dir / f"gate-{self.gates.index(gate) + 1:03d}.stdout.log"
 
 
@@ -545,62 +547,49 @@ def precheck_landing(
         )
         _warn(result.report())
         return result
-    from molt import host_capacity
-
-    # Reserve an actual development share before the try-run budget starts.
-    # Waiting for a fitting share never spends the lane's test budget (HF-623).
-    with host_capacity.host_work_slot(
-        host_capacity.host_work_dir(repo),
-        label=f"landing try run ({git.short(head)})",
-        work=host_capacity.HostWorkClass.DEVELOPMENT,
-        say=_say,
-        demand=gate_work_demand(
-            trial, repo=repo, requested_workers=concurrent_gate_limit()
-        ),
-    ) as admission:
-        if admission.waited_seconds >= 1:
-            _say(
-                f"    host-work: try run admitted after {admission.waited_seconds:.0f} s"
-            )
-        started = time.monotonic()
-        deadline = started + budget.seconds
-        tried_runtime = runtime(
+    clock = TryRunClock(f"landing try run ({git.short(head)})", budget.seconds)
+    tried_runtime = replace(
+        runtime(
             "try-run",
             cargo_outputs=cargo_outputs,
             capacity_requirements=capacity,
-            cancelled=lambda: time.monotonic() >= deadline,
+            cancelled=clock.expired,
             cancel_reason=CancelReason.PRECHECK_BUDGET,
+        ),
+        try_run=clock,
+    )
+    refusal = None
+    try:
+        run_selected_gates(
+            trial,
+            tried_runtime,
+            gate_seconds,
+            host_limit=lambda: concurrent_gate_limit(),
         )
-        tried_runtime = replace(tried_runtime, host_grant=admission.grant)
-        refusal = None
-        try:
-            run_selected_gates(
-                trial,
-                tried_runtime,
-                gate_seconds,
-                host_limit=lambda: concurrent_gate_limit(),
+    except GateCancellation as cancellation:
+        if cancellation.reason is not CancelReason.PRECHECK_BUDGET:
+            raise
+        refused = tuple(gate for gate in trial if gate not in tried_runtime.passed)
+        # The deadline can pass after the last gate finished: nothing refused.
+        if refused:
+            refusal = TryRunRefusal(
+                RefusalReason.BUDGET,
+                refused,
+                f"{budget.seconds:.0f} s ran out after {clock.elapsed():.0f} s of try run"
+                + "".join(
+                    f"; guard closure unresolved for {item}"
+                    for item in cancellation.unresolved
+                ),
+                record=_write_refused_record(
+                    git, repo, head, refused, tried_runtime.output_dir
+                ),
             )
-        except GateCancellation as cancellation:
-            if cancellation.reason is not CancelReason.PRECHECK_BUDGET:
-                raise
-            refused = tuple(gate for gate in trial if gate not in tried_runtime.passed)
-            # The deadline can pass after the last gate finished: nothing refused.
-            if refused:
-                refusal = TryRunRefusal(
-                    RefusalReason.BUDGET,
-                    refused,
-                    f"{budget.seconds:.0f} s ran out after "
-                    f"{time.monotonic() - started:.0f} s of try run"
-                    + "".join(
-                        f"; guard closure unresolved for {item}"
-                        for item in cancellation.unresolved
-                    ),
-                    record=_write_refused_record(
-                        git, repo, head, refused, tried_runtime.output_dir
-                    ),
-                )
     _say(gate_time_summary(gate_seconds))
-    runs.append(GateRun("try-run", tried_runtime.output_dir, tuple(trial)))
+    runs.append(
+        GateRun(
+            "try-run", tried_runtime.output_dir, tuple(trial), tried_runtime.passed_logs
+        )
+    )
     result = PrecheckResult(
         (*passed, *tried_runtime.passed),
         refusal,

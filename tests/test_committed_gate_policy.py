@@ -304,15 +304,11 @@ def test_portability_cells_of_another_os_defer_to_their_own_cell(
     assert "windows-x86_64-py312-queue-portability" in foreign
     # Host-agnostic cells are never foreign, whatever OS they name.
     assert "linux-x86_64-py312-unit-collection" not in foreign
-    # The completion node's file reads the audit as data: postsubmit runs the
-    # whole file; presubmit runs it only as a recent postsubmit failure, which
-    # keeps this foreign-cell deferral in presubmit.
-    assert COMPLETION_NODE.partition("::")[0] in _postsubmit_only(
-        cfg, ["tools/check_memory_guard_wiring.py"]
-    )
-    gates, _ = cfg.select(
-        ["tools/check_memory_guard_wiring.py"], recent_failures=[COMPLETION_NODE]
-    )
+    # The audit's data reader belongs to postsubmit. Editing the reader itself
+    # selects its committed portability cell without consulting failure history.
+    reader = COMPLETION_NODE.partition("::")[0]
+    assert reader in _postsubmit_only(cfg, ["tools/check_memory_guard_wiring.py"])
+    gates, _ = cfg.select([reader])
     completion = next(gate for gate in gates if COMPLETION_NODE in gate.command)
     assert completion.cells == ("linux-x86_64-py312-queue-portability",)
     if not local:
