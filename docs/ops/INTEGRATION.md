@@ -348,6 +348,9 @@ Each family has one typed stratum (`engine`, `semantics`, `delivery`, or
 while another apparatus lane is active, and refuses a non-engine lane when no
 engine lane is active. Only `landing_repair` and `integrator_ledger` bypass these
 capacity rules; other departure reasons cannot. Refusals name the active lanes.
+The coordination record holds its dispatch claim until retirement closes it.
+Advancing a checkout to main preserves its existing claim, including while
+tracked or untracked work is still in progress.
 Start and re-admission serialize their claim check and record update under the
 existing slot/claim lock; the slug lock also excludes concurrent retirement.
 Engine ready rows show the instruction axes owned by their family table
