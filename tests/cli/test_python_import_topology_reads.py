@@ -12,7 +12,6 @@ from molt.cli import python_import_topology
 from molt.cli.python_import_topology import (
     PythonImportTopology,
     PythonImportTopologyChangedError,
-    PythonImportPath,
 )
 
 
@@ -24,8 +23,8 @@ def _churn_during(
     counter = itertools.count()
 
     def changed_during(
-        path: Path, **kwargs: bool
-    ) -> tuple[os.DirEntry[str], ...] | PythonImportPath | None:
+        path: Path, **kwargs: bool | python_import_topology._DirectoryState | None
+    ) -> tuple[os.DirEntry[str], ...] | python_import_topology._ProbeObservation:
         index = next(counter)
         if times is None or index < times:
             (directory / f"unrelated-{index}.txt").write_text("", encoding="utf-8")
@@ -96,10 +95,12 @@ def test_recorded_sibling_probes_distinguish_relevant_churn_during_replay(
     probe = python_import_topology._probe
     added = tmp_path / created_name
 
-    def add_sibling(path: Path) -> PythonImportPath | None:
+    def add_sibling(
+        path: Path, *, parent: python_import_topology._DirectoryState | None
+    ) -> python_import_topology._ProbeObservation:
         if path == second and not added.exists():
             added.write_text("pass\n", encoding="utf-8")
-        return probe(path)
+        return probe(path, parent=parent)
 
     monkeypatch.setattr(python_import_topology, "_probe", add_sibling)
     if added == first:
@@ -107,3 +108,51 @@ def test_recorded_sibling_probes_distinguish_relevant_churn_during_replay(
             PythonImportTopology.from_record(record)
     else:
         assert PythonImportTopology.from_record(record).record() == record
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses full path resolution")
+def test_replay_resolves_a_direct_child_through_its_fenced_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("pass\n", encoding="utf-8")
+    owner = PythonImportTopology()
+    positive = owner.probe(source)
+    assert positive is not None
+    assert positive.path == source.resolve(strict=True)
+    assert owner.probe(tmp_path / "missing.py") is None
+    record = owner.record()
+
+    resolve = Path.resolve
+
+    def guard_leaf(path: Path, strict: bool = False) -> Path:
+        assert path != source, "direct child repeated its parent's resolution"
+        return resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", guard_leaf)
+    assert PythonImportTopology.from_record(record).record() == record
+
+
+def test_dangling_leaf_link_revalidates_when_its_target_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    target = tmp_path / "target.py"
+    link = imports / "alias.py"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(python_import_topology, "DIGEST_RACY_WINDOW_NS", 0)
+    owner = PythonImportTopology()
+    assert owner.probe(link) is None
+    record = owner.record()
+    before = imports.stat()
+    target.write_text("pass\n", encoding="utf-8")
+    assert imports.stat().st_mtime_ns == before.st_mtime_ns
+    assert link.resolve(strict=True) == target.resolve(strict=True)
+    with pytest.raises(PythonImportTopologyChangedError, match=r"alias\.py"):
+        owner.validate()
+    with pytest.raises(PythonImportTopologyChangedError, match=r"alias\.py"):
+        PythonImportTopology.from_record(record)

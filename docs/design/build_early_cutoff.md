@@ -28,6 +28,11 @@ negative import observations. The canonical solver handles a refused candidate.
 The graph pointer publishes with the successful full build record. The resolver
 records the paths, types, exact spellings and filtered name sets it used.
 Publication and lookup validate those facts through the same topology authority.
+On POSIX, a replayed child lookup uses the parent's resolved path from the same
+directory fence and reads the leaf kind once. The lexical lookup still uses the
+filesystem's case and spelling rules. Links and special selectors resolve through
+the full path. A dangling link remains an observed dependency even when the
+recorded child is absent. Windows uses full path resolution.
 An atomic editor save can therefore publish immediately when the selected
 sources and import facts check out, even if the parent directory is recent.
 The recorder scopes only the resolver's own scandir call to this evidence.

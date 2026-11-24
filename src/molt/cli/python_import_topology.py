@@ -60,14 +60,37 @@ def _lexical_path(path: Path) -> Path:
     return path if path.is_absolute() else Path.cwd() / path
 
 
-def _probe(path: Path) -> PythonImportPath | None:
+class _ProbeObservation(NamedTuple):
+    value: PythonImportPath | None
+    has_link: bool
+
+
+def _probe(path: Path, *, parent: _DirectoryState | None) -> _ProbeObservation:
+    if os.name != "nt" and parent is not None and path.name not in ("", ".."):
+        # The enclosing read fences the resolved parent. A direct entry
+        # needs only its own mode; resolving every ancestor again adds no
+        # observation. Do the lookup on the lexical path so the filesystem
+        # still decides case and Unicode spelling.
+        try:
+            kind = stat.S_IFMT(path.lstat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return _ProbeObservation(None, False)
+        if kind != stat.S_IFLNK:
+            resolved = parent.path / path.name
+            return _ProbeObservation(PythonImportPath(resolved, kind), resolved != path)
+
+    # A link's target may become valid without changing its containing
+    # directory. Windows junctions and drive/UNC roots use full resolution.
+    link = path.is_symlink()
     try:
         metadata = path.stat()
-        return PythonImportPath(
-            path.resolve(strict=True), stat.S_IFMT(metadata.st_mode)
+        resolved = path.resolve(strict=True)
+        return _ProbeObservation(
+            PythonImportPath(resolved, stat.S_IFMT(metadata.st_mode)),
+            link or resolved != path,
         )
     except (FileNotFoundError, NotADirectoryError):
-        return None
+        return _ProbeObservation(None, link)
 
 
 def _directory_state(path: Path) -> _DirectoryState | None:
@@ -262,7 +285,7 @@ class PythonImportTopology:
         raise PythonImportTopologyChangedError(self._failure)
 
     def _stable_read(
-        self, directory: Path, read: Callable[[], _Read]
+        self, directory: Path, read: Callable[[_DirectoryState | None], _Read]
     ) -> tuple[_DirectoryState | None, _Read]:
         """Read while ``directory`` holds still; return its state with the value.
 
@@ -272,7 +295,7 @@ class PythonImportTopology:
         """
         for _ in range(_STABLE_READ_ATTEMPTS):
             before = _directory_state(directory)
-            value = read()
+            value = read(before)
             if before == _directory_state(directory):
                 return before, value
         self._failure = (
@@ -319,7 +342,7 @@ class PythonImportTopology:
             else:
                 _input_report.report_directory(path)
             before, entries = self._stable_read(
-                path, lambda: _read_entries(path, recorded=recorded)
+                path, lambda _: _read_entries(path, recorded=recorded)
             )
             observation.entries = entries
             observation.entries_by_name = {entry.name: entry for entry in entries}
@@ -331,23 +354,21 @@ class PythonImportTopology:
         return observation.entries
 
     def _remember_probe(
-        self, path: Path, value: PythonImportPath | None, parent: _DirectoryObservation
+        self, path: Path, probe: _ProbeObservation, parent: _DirectoryObservation
     ) -> None:
-        self._probes[path] = value
+        self._probes[path] = probe.value
         if _input_report.report_import_topology(self):
             _input_report.report_use(path, kind=_input_report.WorkerFactKind.PROBE)
         else:
             _input_report.report_probe(path)
-            if value is None and parent.state is not None:
+            if probe.value is None and parent.state is not None:
                 # A worker records its nearest existing boundary through
                 # the recursive probes of missing parents.
                 _input_report.report_directory(path.parent)
         parent.probes.add(path)
         # A symlink target may change without changing the selector's
         # parent. Verify that binding at every fence, even on POSIX.
-        parent.has_links |= (
-            path.is_symlink() or value is not None and value.path != path
-        )
+        parent.has_links |= probe.has_link
 
     def _reobserve_probes(self, paths: Iterable[Path]) -> None:
         # Persisted queries are already known. Bracket siblings with one
@@ -360,18 +381,21 @@ class PythonImportTopology:
             pending = tuple(path for path in children if path not in self._probes)
             if pending:
                 _, values = self._stable_read(
-                    directory, lambda: tuple(_probe(path) for path in pending)
+                    directory,
+                    lambda state: tuple(_probe(path, parent=state) for path in pending),
                 )
-                for path, value in zip(pending, values, strict=True):
-                    self._remember_probe(path, value, parent)
+                for path, probe in zip(pending, values, strict=True):
+                    self._remember_probe(path, probe, parent)
 
     def probe(self, path: Path) -> PythonImportPath | None:
         self._check()
         path = _lexical_path(path)
         if path not in self._probes:
             parent = self._directory(path.parent)
-            _state, value = self._stable_read(path.parent, lambda: _probe(path))
-            self._remember_probe(path, value, parent)
+            _state, probe = self._stable_read(
+                path.parent, lambda state: _probe(path, parent=state)
+            )
+            self._remember_probe(path, probe, parent)
         return self._probes[path]
 
     def is_dir(self, path: Path) -> bool:
@@ -443,10 +467,10 @@ class PythonImportTopology:
                 recorded = listed and _input_report.report_import_topology(self)
                 state, (entries, probes) = self._stable_read(
                     path,
-                    lambda: (
+                    lambda state: (
                         _read_entries(path, recorded=recorded) if listed else (),
                         {
-                            candidate: _probe(candidate)
+                            candidate: _probe(candidate, parent=state).value
                             for candidate in observation.probes
                         },
                     ),
