@@ -25,7 +25,7 @@ import zipfile
 from packaging.utils import parse_wheel_filename
 
 from molt.portable_paths import portable_relative_path
-from molt.source_root import PACKAGED_DISTRIBUTION_PATH
+from molt.package_install_layout import PACKAGED_DISTRIBUTION_PATH
 from molt.toolchain_identity import stable_regular_file_content_identity
 from molt.wheel_record import wheel_record_bytes
 

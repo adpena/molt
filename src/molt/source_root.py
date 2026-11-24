@@ -7,9 +7,9 @@ from molt.typed_cache import typed_cache
 from collections.abc import Mapping
 import os
 from pathlib import Path
-import sysconfig
 
 from molt.default_paths import executable_environment_value, expand_user_path
+from molt.package_install_layout import distribution_for_package
 
 
 MOLT_SOURCE_ROOT_ENV = "MOLT_SOURCE_ROOT"
@@ -37,36 +37,10 @@ def compiler_source_root_override() -> Path | None:
     return resolve_path_override(MOLT_SOURCE_ROOT_ENV)
 
 
-# Install-scheme data location of a platform wheel's release bundle.
-PACKAGED_DISTRIBUTION_PATH = ("share", "molt", "distribution")
-
-
 @typed_cache(maxsize=None)
 def packaged_distribution_root() -> Path | None:
-    """Return the release bundle a platform wheel installed beside this package.
-
-    Only the install scheme that owns this executing package is consulted, so a
-    nearby checkout or another environment is never adopted. The bundle is
-    admitted by content in ``compiler_distribution``, never trusted by path.
-    The executing package and the interpreter's install schemes are fixed for
-    the process, so the scheme walk runs once; ``MOLT_SOURCE_ROOT`` stays live.
-    """
-    package_parent = os.path.normcase(str(Path(__file__).resolve().parent.parent))
-    for scheme in sysconfig.get_scheme_names():
-        try:
-            paths = sysconfig.get_paths(scheme)
-        except KeyError:
-            continue
-        libraries = {
-            os.path.normcase(os.path.realpath(paths[key]))
-            for key in ("purelib", "platlib")
-            if key in paths
-        }
-        if package_parent not in libraries or "data" not in paths:
-            continue
-        root = Path(paths["data"]).joinpath(*PACKAGED_DISTRIBUTION_PATH)
-        return root
-    return None
+    """Select the distribution installed beside this executing Molt package."""
+    return distribution_for_package(Path(__file__).resolve().parent)
 
 
 def installed_distribution_root(

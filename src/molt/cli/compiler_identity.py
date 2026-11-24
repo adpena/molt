@@ -123,11 +123,20 @@ def installed_compiler_admission(
     *,
     fresh: bool = False,
 ) -> InstalledCompilerAdmission | None:
-    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
-    from molt.compiler_distribution import installed_compiler
+    from molt.compiler_distribution import (
+        InstalledSourceAdmission,
+        installed_compiler,
+    )
 
     try:
-        compiler = installed_compiler(root)
+        compiler = installed_compiler(
+            root,
+            sources=(
+                InstalledSourceAdmission.FRESH
+                if fresh
+                else InstalledSourceAdmission.REUSE
+            ),
+        )
         if compiler is None:
             return None
         release = canonical_json_sha256(
@@ -142,13 +151,6 @@ def installed_compiler_admission(
                 "stdlib_source_summaries": compiler.stdlib_source_summaries,
             }
         )
-        key = (os.fspath(root.resolve()), release)
-        transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-        if fresh or transaction is None or key not in transaction.installed_sources:
-            compiler.verify_sources()
-            compiler.verify_executing_package()
-            if transaction is not None:
-                transaction.installed_sources.add(key)
         # Source admission is reusable within the immutable operation. Executable
         # selection and bytes remain live, including an alias replaced mid-build.
         observed = _installed_executable_observation(
