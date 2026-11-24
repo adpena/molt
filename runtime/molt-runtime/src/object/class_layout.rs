@@ -762,6 +762,35 @@ pub(crate) unsafe fn with_fields<R>(
     }
 }
 
+/// The physical words after this inferred row can be tested for insertion
+/// order without consulting the layout again if every one is a consecutive
+/// inferred field. The caller guards the sealed class and its version.
+pub(crate) unsafe fn consecutive_inferred_suffix(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    offset: usize,
+) -> Option<usize> {
+    unsafe {
+        with_fields(py, class, |mut rows| {
+            let field = rows.find(|field| field.offset == offset)?;
+            if !field.kind.is_inferred() {
+                return None;
+            }
+            let count = rows.len();
+            let mut previous = offset;
+            for field in rows {
+                if !field.kind.is_inferred()
+                    || previous.checked_add(size_of::<u64>()) != Some(field.offset)
+                {
+                    return None;
+                }
+                previous = field.offset;
+            }
+            Some(count)
+        })
+    }
+}
+
 /// Two rows describe the same physical storage owner.
 ///
 /// # Safety

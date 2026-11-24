@@ -621,6 +621,9 @@ unsafe fn execute_initializer(
         .as_ptr()
         .unwrap();
     let names = unsafe { crate::object::seq_access::pin_tuple(py, names_ptr) }.ok_or(())?;
+    // A site only selects a cache row. Code clones share the immutable plan,
+    // while the current code name, exact receiver class and epoch guard it.
+    let plan_site = std::ptr::from_ref(plan).addr() as u64;
     for store in &plan.stores {
         // Frozen assignment is an ordinary object.__setattr__ call: its callee
         // and receiver are evaluated BEFORE the factory expression. A normal
@@ -667,7 +670,13 @@ unsafe fn execute_initializer(
             let receiver = argument(0)?;
             dc_result(
                 py,
-                molt_set_attr_name_attached_body(py, receiver.bits, names[store.name], value.bits),
+                crate::builtins::attributes::set_attr_name_at_site(
+                    py,
+                    receiver.bits,
+                    names[store.name],
+                    value.bits,
+                    plan_site.wrapping_add(store.name as u64),
+                ),
             )?;
         }
     }
