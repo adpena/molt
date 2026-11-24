@@ -121,7 +121,7 @@ pub(crate) unsafe fn with_instance_fields<R>(
             let extent =
                 super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
             let base = super::native_instance::field_base(object);
-            let skip_inferred = super::instance_dict_bits(object) != 0;
+            let skip_inferred = dictionary_backed(object);
             read(InstanceFields::new(fields, base, extent, skip_inferred))
         })
     }
@@ -170,7 +170,7 @@ pub(crate) unsafe fn field_at_offset(
             return None;
         }
         let field = super::class_layout::field_at_offset(class, offset)?;
-        if field.kind.is_inferred() && super::instance_dict_bits(object) != 0 {
+        if field.kind.is_inferred() && dictionary_backed(object) {
             // A dictionary-backed instance resolves this row by name only.
             return Some(field);
         }
@@ -190,7 +190,21 @@ pub(crate) unsafe fn field_at_offset(
 
 pub(crate) enum FieldStorage {
     Inline(*mut u64),
-    Dictionary { dictionary: u64, name: u64 },
+    Dictionary { dictionary: Option<u64>, name: u64 },
+}
+
+/// The runtime uses the same sticky backing state as compiled field accesses.
+/// The dictionary owner itself can be absent after deletion; inferred words
+/// remain retired, including when a different class now describes the payload.
+#[inline]
+pub(crate) unsafe fn dictionary_backed(object: *mut u8) -> bool {
+    unsafe {
+        if object_type_id(object) == TYPE_ID_OBJECT {
+            (*header_from_obj_ptr(object)).has_flag(super::HEADER_FLAG_HAS_INSTANCE_DICT)
+        } else {
+            instance_dict_bits(object) != 0
+        }
+    }
 }
 
 /// Validate backing without allocating or changing ownership. Corrupt backing
@@ -372,35 +386,79 @@ pub(crate) unsafe fn resolve(
     py: &PyToken<'_>,
     object: *mut u8,
     offset: usize,
-    slot: *mut u64,
 ) -> Option<FieldStorage> {
     unsafe {
-        // The immutable task shape owns capture words even when the adapter
-        // has a logical class. Raw/classless storage is equally direct.
-        if object_class_bits(object) == 0
-            || super::object_shape_is_task(super::object_shape_id(object))
-        {
-            return Some(FieldStorage::Inline(slot));
-        }
-        let Some(dictionary) = current_dictionary(py, object).ok()? else {
-            return Some(FieldStorage::Inline(slot));
-        };
-        let Some(field) = field_at_offset(py, object, offset) else {
-            raise_exception::<()>(
-                py,
-                BuiltinExc::SystemError,
-                "field offset is absent from instance layout",
-            );
+        if object.is_null() {
             return None;
-        };
-        if !field.kind.is_inferred() {
-            Some(FieldStorage::Inline(slot))
-        } else {
-            Some(FieldStorage::Dictionary {
-                dictionary,
-                name: field.name,
-            })
         }
+        if object_class_bits(object) != 0
+            && !super::object_shape_is_task(super::object_shape_id(object))
+            && dictionary_backed(object)
+        {
+            let dictionary = current_dictionary(py, object).ok()?;
+            let Some(field) = field_at_offset(py, object, offset) else {
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "field offset is absent from instance layout",
+                );
+                return None;
+            };
+            if field.kind.is_inferred() {
+                return Some(FieldStorage::Dictionary {
+                    dictionary,
+                    name: field.name,
+                });
+            }
+        }
+        // The row owns a physical word. A dictionary-only row can have an
+        // offset beyond this allocation, so form the address only after admission.
+        super::accessors::object_field_slot_ptr(py, object, offset).map(FieldStorage::Inline)
+    }
+}
+
+/// Inline inferred owners are enumerated in increasing offset order during
+/// materialization and teardown. Appending an absent name before a live higher
+/// row would invert Python's insertion order. Publish those owners and the
+/// new pair in a single dictionary transaction before performing such a store.
+pub(super) unsafe fn insert_out_of_order(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    offset: usize,
+    slot: *mut u64,
+    value: u64,
+) -> Result<bool, ()> {
+    unsafe {
+        if obj_from_bits(*slot).as_ptr().is_none()
+            || !super::object_has_class_shape(object)
+            || super::object_shape_is_task(super::object_shape_id(object))
+            || !is_missing_bits(py, *slot)
+        {
+            return Ok(false);
+        }
+        let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr() else {
+            return Ok(false);
+        };
+        let prior_name = with_instance_fields(py, object, class, |fields| {
+            let mut name = None;
+            for (field, word) in fields {
+                if field.offset == offset {
+                    if !field.kind.is_inferred() {
+                        return None;
+                    }
+                    name = Some(field.name);
+                } else if name.is_some() && field.kind.is_inferred() && !is_missing_bits(py, *word)
+                {
+                    return name;
+                }
+            }
+            None
+        });
+        let Some(name) = prior_name else {
+            return Ok(false);
+        };
+        materialize_with_pairs(py, object, &[name, value]).ok_or(())?;
+        Ok(true)
     }
 }
 

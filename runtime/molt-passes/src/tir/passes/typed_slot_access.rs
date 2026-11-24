@@ -149,6 +149,9 @@ enum SlotContents {
 struct PristineObject {
     allocation: FixedLayoutAllocation,
     slots: HashMap<i64, SlotContents>,
+    /// An absent inferred attribute below this offset must insert into the
+    /// dictionary. Its first store also establishes observable key order.
+    highest_insertion: Option<i64>,
     /// Reads preserve backing/presence knowledge, but cannot reestablish
     /// pristine write history or make previously observed stores removable.
     observed: bool,
@@ -255,6 +258,9 @@ pub fn analyze(
                     return None;
                 }
                 let old_value = match object.slots.get(&offset) {
+                    None if object.highest_insertion.is_some_and(|last| offset < last) => {
+                        return None;
+                    }
                     None => object.allocation.initial_value,
                     Some(SlotContents::Neutral(_)) => OldSlotValue::BoxedNeutral,
                     Some(SlotContents::HeapOrUnknown { .. }) => return None,
@@ -286,6 +292,9 @@ pub fn analyze(
                     && let Some(object) = pristine.get_mut(&root)
                 {
                     plan.stores.insert(site, facts);
+                    if facts.old_value == OldSlotValue::FreshEmpty {
+                        object.highest_insertion = Some(offset);
+                    }
                     let previous = object.slots.insert(
                         offset,
                         if facts.incoming_boxed_neutral {
@@ -300,6 +309,7 @@ pub fn analyze(
                     // erase a heap retain or use a releasing store to establish
                     // a new fact: its finalizer could rewrite the field.
                     if facts.incoming_boxed_neutral
+                        && !object.highest_insertion.is_some_and(|last| offset < last)
                         && let Some(SlotContents::Neutral(previous)) = previous
                     {
                         plan.dead_stores.insert(previous);
@@ -317,6 +327,7 @@ pub fn analyze(
                     PristineObject {
                         allocation,
                         slots: HashMap::default(),
+                        highest_insertion: None,
                         observed: false,
                     },
                 );

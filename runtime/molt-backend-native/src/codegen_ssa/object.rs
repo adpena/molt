@@ -161,6 +161,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                     Some(&AttrValue::Int(words)) => {
                         let words = u16::try_from(words)
                             .expect("a release plan's field words come from a u16");
+                        if let [result] = op.results.as_slice() {
+                            self.values.set_plain_field_words(*result, words);
+                        }
                         molt_codegen_abi::object_lifecycle::PlanSource::Proven(
                             molt_codegen_abi::object_lifecycle::plain_instance_plan(
                                 usize::from(words),
@@ -377,9 +380,12 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return;
         }
         if origin == Some(OpKind::Store) && op.operands.len() >= 2 {
-            let callee = CallTarget::Site(SiteBody::FieldSet {
-                offset: field_offset(op),
-            });
+            let offset = field_offset(op);
+            let suffix = molt_codegen_abi::field_slot::FieldStoreSuffix::from_allocation(
+                self.values.plain_field_words(op.operands[0]),
+                offset,
+            );
+            let callee = CallTarget::Site(SiteBody::FieldSet { offset, suffix });
             let admission = b.refcount_admission();
             let args = [
                 RuntimeArg::Operand(op.operands[0]),

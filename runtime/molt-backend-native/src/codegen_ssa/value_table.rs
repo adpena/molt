@@ -66,6 +66,7 @@ impl HeldCarrier {
 struct Slot<V> {
     value: Option<V>,
     repr: Option<HeldCarrier>,
+    plain_field_words: Option<u16>,
 }
 
 impl<V> Default for Slot<V> {
@@ -73,6 +74,7 @@ impl<V> Default for Slot<V> {
         Self {
             value: None,
             repr: None,
+            plain_field_words: None,
         }
     }
 }
@@ -110,6 +112,16 @@ impl<V: Copy> ValueTable<V> {
     /// Record how the lowered value of `id` is held.
     pub(crate) fn set_repr(&mut self, id: ValueId, repr: HeldCarrier) {
         self.slot_mut(id).repr = Some(repr);
+    }
+
+    /// Only the exact SSA result of an allocation with a constant lifecycle
+    /// plan has a known plain extent. Copies and joined values stay unknown.
+    pub(crate) fn set_plain_field_words(&mut self, id: ValueId, words: u16) {
+        self.slot_mut(id).plain_field_words = Some(words);
+    }
+
+    pub(crate) fn plain_field_words(&self, id: ValueId) -> Option<u16> {
+        self.slots.get(id.0 as usize)?.plain_field_words
     }
 
     /// The lowered value of `id`, if the walk has produced it.

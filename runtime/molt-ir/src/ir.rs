@@ -3262,6 +3262,25 @@ mod json_parse_tests {
         );
     }
 
+    fn candidate_initializer_declaration() -> serde_json::Value {
+        serde_json::json!({
+            "name": "py.m.C.__init__", "return_abi": "value", "params": ["self"],
+            "ops": [{"kind": "const_none", "out": "result"}, {"kind": "ret", "args": ["result"]}]
+        })
+    }
+
+    fn runtime_requirement_op(kind: crate::OpKind, bits: u32) -> serde_json::Value {
+        let mut op = serde_json::json!({
+            "kind": kind, "runtime_requirement_bits": bits, "out": "callable"
+        });
+        if kind == crate::OpKind::CallClassCandidate {
+            op["args"] = serde_json::json!(["callee"]);
+            op["s_value"] = "py.m.C.__init__".into();
+            op["class_definition"] = "class:m:C".into();
+        }
+        op
+    }
+
     #[test]
     fn acquired_frame_requirements_do_not_execute_the_acquired_callable() {
         use crate::tir::op_kinds_generated::{
@@ -3272,10 +3291,10 @@ mod json_parse_tests {
             SimpleIR::from_json_value(&serde_json::json!({
                 "functions": [{"return_abi": "void",
                     "name": "acquire",
-                    "params": ["name"],
+                    "params": ["name", "callee"],
                     "execution_context": "none",
                     "ops": [op, {"kind": "ret_void"}]
-                }]
+                }, candidate_initializer_declaration()]
             }))
             .expect("callable acquisition must not require an active execution frame")
         };
@@ -3305,11 +3324,10 @@ mod json_parse_tests {
             })));
         }
         for kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
-            assert_acquisition(parse(serde_json::json!({
-                "kind": kind,
-                "runtime_requirement_bits": SimpleIrRuntimeRequirements::EXECUTION_FRAME.bits(),
-                "out": "callable"
-            })));
+            assert_acquisition(parse(runtime_requirement_op(
+                *kind,
+                SimpleIrRuntimeRequirements::EXECUTION_FRAME.bits(),
+            )));
         }
         {
             let op = OpIR {
@@ -3456,10 +3474,12 @@ mod json_parse_tests {
 
         let all_bits = SimpleIrRuntimeRequirements::ALL.bits();
         for kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
-            let source = format!(
-                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{all_bits},"out":"value"}}]}}]}}"#,
-            );
-            let accepted = SimpleIR::from_json_str(&source)
+            let source = serde_json::json!({
+                "functions": [{"return_abi": "void", "name": "f", "params": ["callee"],
+                    "ops": [runtime_requirement_op(*kind, all_bits)]
+                }, candidate_initializer_declaration()]
+            });
+            let accepted = SimpleIR::from_json_value(&source)
                 .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
             assert_eq!(
                 accepted.functions[0].ops[0].runtime_requirement_bits,

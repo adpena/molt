@@ -421,6 +421,7 @@ pub enum RuntimeFn {
     CallBindIc,
     CallBindIcOwned,
     CallBuiltin,
+    CallClassCandidateOwned,
     CallFuncDispatch,
     CallFuncFast0,
     CallFuncFast1,
@@ -3278,6 +3279,7 @@ impl RuntimeFn {
         Self::CallBindIc,
         Self::CallBindIcOwned,
         Self::CallBuiltin,
+        Self::CallClassCandidateOwned,
         Self::CallFuncDispatch,
         Self::CallFuncFast0,
         Self::CallFuncFast1,
@@ -5831,7 +5833,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2853;
+    pub const COUNT: usize = 2854;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -10323,6 +10325,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         context: RuntimeExecutionContext::Attached,
         params: 2,
         param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_call_class_candidate_owned",
+        linker_symbol: "molt_call_class_candidate_owned__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 5,
+        param_types: PARAMS_WWWWW,
         result_type: Some(RuntimeMachineType::Word),
         callable: None,
         result: RuntimeReturnContract::OwnedObject,

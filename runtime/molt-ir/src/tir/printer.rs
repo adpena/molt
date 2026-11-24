@@ -292,6 +292,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::DelIndex => "del_index",
         OpCode::DeleteVar => "delete_var",
         OpCode::Call => "call",
+        OpCode::CallClassCandidate => "call_class_candidate",
         OpCode::CallMethod => "call_method",
         OpCode::CallLoadedMethod => "call_loaded_method",
         OpCode::CallargsPushMethodReceiver => "callargs_push_method_receiver",

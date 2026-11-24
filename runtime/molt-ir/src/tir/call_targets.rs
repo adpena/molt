@@ -353,6 +353,18 @@ mod tests {
     }
 
     #[test]
+    fn candidate_initializer_is_not_the_class_call_target() {
+        let mut op = call("ignored", Some(crate::OpKind::CallClassCandidate));
+        op.attrs.remove("s_value");
+        op.opcode = OpCode::CallClassCandidate;
+        op.callee = Some(crate::FunctionId(3));
+        op.operands = vec![ValueId(8), ValueId(9)];
+        assert_eq!(direct_callee(&op), None);
+        assert_eq!(static_call(&op), None);
+        assert!(final_call_arguments(&op).is_none());
+    }
+
+    #[test]
     fn a_proven_guarded_call_binds_the_operands_after_its_callee_word() {
         let mut op = call("ignored", Some(crate::OpKind::CallInternal));
         op.attrs.remove("s_value");

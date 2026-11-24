@@ -174,6 +174,35 @@ fn plan(func: &TirFunction) -> TypedSlotAccessPlan {
 }
 
 #[test]
+fn inferred_attribute_insertion_order_constrains_backing_and_dead_stores() {
+    for class in [false, true] {
+        for (first_offset, second_offset) in [(0, 8), (8, 0)] {
+            let (mut func, object) = fixture(class);
+            let value = func.fresh_value();
+            append(&mut func, op(OpCode::ConstNone, vec![], vec![value]));
+            let first = append(
+                &mut func,
+                field(OpCode::StoreAttr, object, value, first_offset),
+            );
+            let second = append(
+                &mut func,
+                field(OpCode::StoreAttr, object, value, second_offset),
+            );
+            append(
+                &mut func,
+                field(OpCode::StoreAttr, object, value, first_offset),
+            );
+            let later_read = read(&mut func, object, first_offset);
+            let facts = plan(&func);
+            let promoted = class && first_offset > second_offset;
+            assert_eq!(facts.stores.contains_key(&second), !promoted);
+            assert_eq!(facts.loads.contains(&later_read), !promoted);
+            assert_eq!(facts.dead_stores.contains(&first), !class);
+        }
+    }
+}
+
+#[test]
 fn load_admission_distinguishes_zero_missing_presence_and_extent() {
     for class in [false, true] {
         for value_kind in ["initial", "none", "heap", "unknown", "missing"] {

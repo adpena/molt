@@ -94,7 +94,7 @@ fn typed_load(func: &mut TirFunction, object: ValueId) -> TirOp {
 }
 
 #[test]
-fn scalar_constructor_chains_preserve_owned_final_stores() {
+fn scalar_constructor_chains_preserve_insertion_order_and_final_values() {
     let mut func = fixture();
     let zero = integer(&mut func, 0);
     let one = integer(&mut func, 1);
@@ -104,11 +104,17 @@ fn scalar_constructor_chains_preserve_owned_final_stores() {
     store(&mut func, object, zero, 8, molt_ir::OpKind::Store);
     store(&mut func, object, one, 0, molt_ir::OpKind::Store);
     store(&mut func, object, two, 8, molt_ir::OpKind::Store);
-    let stats = run_fresh(&mut func);
-    assert_eq!(stats.ops_removed, 2);
-    assert_eq!(stores(&func).len(), 2);
-    assert_eq!(stores(&func)[0].operands, vec![object, one]);
-    assert_eq!(stores(&func)[1].operands, vec![object, two]);
+    // Removing the first offset-zero store would put offset eight first
+    // and make the later absent-field write fall back to dictionary insertion.
+    assert_eq!(run_fresh(&mut func).ops_removed, 1);
+    let stores = stores(&func);
+    assert_eq!(stores.len(), 3);
+    assert_eq!(stores[0].operands, vec![object, zero]);
+    assert_eq!(stores[1].operands, vec![object, one]);
+    assert_eq!(stores[2].operands, vec![object, two]);
+    for (store, offset) in stores.into_iter().zip([0, 0, 8]) {
+        assert_eq!(store.plain_typed_slot_store(), Some((object, offset)));
+    }
 }
 
 #[test]

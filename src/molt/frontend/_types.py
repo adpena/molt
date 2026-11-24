@@ -128,6 +128,20 @@ class CallableId:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratedCallableId:
+    """A generated definition within its emitted enclosing function."""
+
+    owner_symbol: str
+    definition: PythonSourceKey
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedCallableReservation:
+    definition: PythonSourceKey
+    symbol: str
+
+
+@dataclass(frozen=True, slots=True)
 class ClassId:
     """One class statement, program-wide (HF-203).
 

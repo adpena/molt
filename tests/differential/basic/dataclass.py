@@ -205,3 +205,76 @@ SubclassEnvironment = dataclass(SubclassEnvironment)
 print("subclass environment", SubclassEnvironment.__init__.__globals__ is environment_globals,
       sorted(environment_globals), SubclassEnvironment(29).value)
 del sys.modules[environment_name]
+
+
+
+@dataclass
+class OrderedFields:
+    first: int
+    second: int
+    third: int
+
+
+normal = OrderedFields(1, 2, 3)
+print("declared order", list(vars(normal).items()))
+raw = object.__new__(OrderedFields)
+raw.third = 3
+raw.first = 1
+raw.second = 2
+print("sparse order", list(vars(raw).items()))
+again = OrderedFields(1, 2, 3)
+del again.first
+again.first = 4
+print("reinsert order", list(vars(again).items()))
+
+
+def reversed_init(self, first, second, third):
+    self.third = third
+    self.second = second
+    self.first = first
+
+
+@dataclass
+class ReboundFields:
+    first: int
+    second: int
+    third: int
+
+
+saved_type = ReboundFields
+ReboundFields.__init__ = reversed_init
+print("replacement order", list(vars(ReboundFields(1, 2, 3)).items()))
+
+
+class Stored:
+    def __set__(self, obj, value):
+        obj.__dict__["actual"] = value
+
+
+saved_type.second = Stored()
+print("descriptor order", list(vars(saved_type(1, 2, 3)).items()))
+
+
+
+class SlottedFields(OrderedFields):
+    __slots__ = ("slot",)
+
+
+retired = []
+
+
+class Payload:
+    def __init__(self, name):
+        self.name = name
+
+    def __del__(self):
+        retired.append(self.name)
+
+
+def retire_mixed():
+    row = SlottedFields(Payload("first"), Payload("second"), Payload("third"))
+    row.slot = Payload("slot")
+
+
+retire_mixed()
+print("mixed retirement", retired)

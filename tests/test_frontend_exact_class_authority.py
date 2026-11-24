@@ -500,7 +500,7 @@ def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.classes[RECORD] = _class_model(
         RECORD,
-        fields={},
+        fields={"value": 0},
         dataclass=True,
         binding_name="Record",
     )
@@ -516,6 +516,22 @@ def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
     generator._emit_attribute_load(node, record, None, RECORD)
 
     assert any(op.kind == "GETATTR_GENERIC_OBJ" for op in generator.current_ops)
+
+
+@pytest.mark.parametrize("options, offsets", [("", (0, 8)), ("(slots=True)", ())])
+def test_required_dataclass_layout(options: str, offsets: tuple[int, ...]) -> None:
+    generator = SimpleTIRGenerator(module_name="exact_class_authority")
+    generator.visit(
+        ast.parse(
+            "from dataclasses import dataclass\n"
+            f"@dataclass{options}\nclass Record:\n    x: int\n    y: int\n"
+        )
+    )
+    record = generator.classes[RECORD]
+    assert record.dataclass is not None
+    assert tuple(field.offset for field in record.layout.fields) == offsets
+    assert all(field.hint is None for field in record.layout.fields)
+    assert isinstance(record.constructor, ConstructorRefusal)
 
 
 def test_dataclass_type_hint_does_not_authorize_direct_field_storage() -> None:
@@ -856,3 +872,145 @@ def test_metaclass_return_does_not_authorize_layout_mutation(
         op.kind not in {"GUARDED_GETATTR", "GETATTR"}
         for op in _attribute_ops(ops, "marker")
     )
+
+
+def test_generated_initializer_candidates_use_their_nested_declarations() -> None:
+    from molt.frontend.class_model import guarded_initializer_candidate
+
+    generator = SimpleTIRGenerator(module_name="generated")
+    source = """from dataclasses import dataclass
+def __init__(unrelated): return unrelated
+@dataclass
+class Pair:
+    left: int
+    right: int
+@dataclass
+class Single:
+    item: int
+@dataclass(init=False)
+class NoInit:
+    item: int
+"""
+    generator.visit(ast.parse(source))
+    functions = {f["name"]: f for f in generator.to_json()["functions"]}
+    entry = functions["molt_main"]["ops"]
+    stamps = {
+        op["class_definition"] for op in entry if op["kind"] == "class_set_definition"
+    }
+    pairs = {}
+    for owner, fields in (("Pair", ["left", "right"]), ("Single", ["item"])):
+        model = generator.classes[ClassId("generated", owner)]
+        assert isinstance(model, ClassModel)
+        candidate = guarded_initializer_candidate(model)
+        assert candidate is not None
+        assert candidate.class_definition == model.class_id.definition_symbol
+        assert candidate.class_definition in stamps
+        assert isinstance(model.constructor, ConstructorRefusal)
+        assert model.member("__init__") is None
+        declaration = generator.callable_declarations[candidate.initializer_code]
+        assert declaration["execution_kind"] == "sync"
+        assert declaration["positional_or_keyword"] == ["self", *fields]
+        assert declaration["freevars"] == []
+        stores = [
+            op["s_value"]
+            for op in functions[candidate.initializer_code]["ops"]
+            if op["kind"].startswith("set_attr")
+        ]
+        assert stores == fields
+        make = [
+            func
+            for func in functions.values()
+            if any(
+                op["kind"] == "func_new"
+                and op.get("s_value") == candidate.initializer_code
+                for op in func["ops"]
+            )
+        ]
+        assert len(make) == 1
+        assert make[0]["params"] == ["captures"]
+        assert (
+            guarded_initializer_candidate(
+                ClassModel.from_cache_record(model.cache_record())
+            )
+            == candidate
+        )
+        legacy = model.cache_record()
+        del legacy["initializer_code_candidate"]
+        assert (
+            guarded_initializer_candidate(ClassModel.from_cache_record(legacy)) is None
+        )
+        pairs[owner] = candidate
+    assert pairs["Pair"].initializer_code != pairs["Single"].initializer_code
+    assert (
+        guarded_initializer_candidate(generator.classes[ClassId("generated", "NoInit")])
+        is None
+    )
+
+
+def test_generated_initializer_is_a_candidate_on_the_captured_class_call() -> None:
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        ALL_INVALID_MEMBERS,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    tree = ast.parse("""from dataclasses import dataclass
+@dataclass
+class Record:
+    value: int
+def make(argument):
+    return Record(argument())
+""")
+    premise = PythonNamespacePremise(
+        None,
+        ALL_INVALID_MEMBERS,
+        ALL_INVALID_MEMBERS,
+        (),
+        tuple(
+            python_node_source_key(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+        ),
+    )
+    generator = SimpleTIRGenerator(module_name="generated", namespace_premise=premise)
+    generator.visit(tree)
+    functions = {f["name"]: f for f in generator.to_json()["functions"]}
+    ops = functions["py.generated.make"]["ops"]
+    (call,) = [op for op in ops if op["kind"] == "call_class_candidate"]
+    (argument,) = [op for op in ops if op["kind"] == "call_func"]
+    assert call["args"][1] == argument["out"]
+    assert ops.index(argument) < ops.index(call)
+    assert call["class_definition"] == "class:generated:Record"
+    assert functions[call["s_value"]]["params"] == ["self", "value"]
+    from molt.cli.function_references import function_references
+
+    assert call["s_value"] in function_references({"ops": [call]}, frozenset(functions))
+    assert call["argument_custody"] == ["transferred", "transferred"]
+    assert not call.get("proven_target")
+
+
+def test_generated_initializer_with_captures_retains_its_closure_declaration() -> None:
+    from molt.frontend.class_model import guarded_initializer_candidate
+
+    generator = SimpleTIRGenerator(module_name="generated")
+    generator.visit(
+        ast.parse("""from dataclasses import dataclass, field
+@dataclass
+class Captured:
+    items: list = field(default_factory=list)
+""")
+    )
+    model = generator.classes[ClassId("generated", "Captured")]
+    code = model.initializer_code_candidate
+    assert code is not None
+    declaration = generator.callable_declarations[code]
+    assert declaration["freevars"]
+    functions = {f["name"]: f for f in generator.to_json()["functions"]}
+    assert functions[code]["params"][0] == "__molt_closure__"
+    assert any(
+        op["kind"] == "func_new_closure" and op.get("s_value") == code
+        for f in functions.values()
+        for op in f["ops"]
+    )
+    assert not model.layout.static
+    assert guarded_initializer_candidate(model) is None

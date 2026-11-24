@@ -1179,6 +1179,45 @@ pub(super) unsafe fn takes_positional_arguments_over(
 /// Largest positional arity a direct call passes from a stack vector.
 const DIRECT_ARGV_MAX: usize = 16;
 
+/// A resolved bound Python call can pass the receiver and its borrowed
+/// positionals on the stack. The promoted vector would own one reference per
+/// occurrence until return; the adopting trampoline takes its own frame
+/// references after recursion admission. Both lifetimes remain observable.
+pub(crate) unsafe fn try_call_borrowed_receiver(
+    py: &PyToken<'_>,
+    function: u64,
+    function_ptr: *mut u8,
+    receiver: u64,
+    args: &CallArguments<'_, '_>,
+) -> Option<u64> {
+    let positional = args.borrowed_positional_without_mapping()?;
+    if positional.len() >= DIRECT_ARGV_MAX {
+        return None;
+    }
+    let supplied = positional.len() + 1;
+    unsafe {
+        use crate::builtins::attr::MethodLoadKind;
+        if !takes_positional_arguments_over(py, function, supplied)
+            || !matches!(
+                MethodLoadKind::from_value(py, function),
+                Some(MethodLoadKind::PythonFunction)
+            )
+            || crate::cpython_abi_hooks::is_cext_callable(function_ptr)
+        {
+            return None;
+        }
+        let mut words = [0; DIRECT_ARGV_MAX];
+        words[0] = receiver;
+        words[1..supplied].copy_from_slice(positional);
+        let words = &words[..supplied];
+        for &word in words {
+            inc_ref_bits(py, word);
+        }
+        let _promoted = crate::call::function::PendingMove::new(py, words);
+        Some(call_function_obj_bound_vec(py, function, words))
+    }
+}
+
 /// Fill the trailing parameters `argv[supplied..]` of a plain adopting
 /// function from its live positional defaults, each with a reference of its
 /// own for the frame, and return the function's positional arity. `None`

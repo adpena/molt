@@ -276,7 +276,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // forms may additionally carry their diagnostic call-site ID in value.
         // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
         // if it was preserved during the SSA lift.
-        OpCode::Call => {
+        OpCode::Call | OpCode::CallClassCandidate => {
             let kind = op.origin.unwrap_or(molt_ir::OpKind::Call);
             Some(OpIR {
                 kind,

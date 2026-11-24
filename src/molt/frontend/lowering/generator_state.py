@@ -25,6 +25,7 @@ from molt.frontend._types import (
     ClassId,
     MethodValues,
     CallableId,
+    GeneratedCallableId,
     CodeSlotDeclaration,
     CompatibilityReporter,
     ComprehensionBinding,
@@ -535,7 +536,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self._deferred_runtime_warnings: list[str] = []
         self._reset_control_flow_state(reset_function_exception_label=True)
         self.func_aliases: dict[str, str] = {}
-        self.reserved_func_symbols: dict[CallableId, str] = {}
+        self.reserved_func_symbols: dict[CallableId | GeneratedCallableId, str] = {}
         self._reset_function_cache_state()
         self.lambda_counter = 0
         self.genexpr_counter = 0

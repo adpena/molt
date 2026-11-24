@@ -121,6 +121,7 @@ FrontendOpKind = Literal[
     'CALL_ASYNC',
     'CALL_BIND',
     'CALL_BUILTIN',
+    'CALL_CLASS_CANDIDATE',
     'CALL_FUNC',
     'CALL_FUNCTION',
     'CALL_GUARDED',
@@ -644,6 +645,7 @@ WireOpKind = Literal[
     'call_async',
     'call_bind',
     'call_builtin',
+    'call_class_candidate',
     'call_func',
     'call_function',
     'call_guarded',
@@ -1160,6 +1162,7 @@ class FrontendKinds:
     CALL_ASYNC: Final = 'CALL_ASYNC'
     CALL_BIND: Final = 'CALL_BIND'
     CALL_BUILTIN: Final = 'CALL_BUILTIN'
+    CALL_CLASS_CANDIDATE: Final = 'CALL_CLASS_CANDIDATE'
     CALL_FUNC: Final = 'CALL_FUNC'
     CALL_FUNCTION: Final = 'CALL_FUNCTION'
     CALL_GUARDED: Final = 'CALL_GUARDED'
@@ -1683,6 +1686,7 @@ class WireKinds:
     CALL_ASYNC: Final = 'call_async'
     CALL_BIND: Final = 'call_bind'
     CALL_BUILTIN: Final = 'call_builtin'
+    CALL_CLASS_CANDIDATE: Final = 'call_class_candidate'
     CALL_FUNC: Final = 'call_func'
     CALL_FUNCTION: Final = 'call_function'
     CALL_GUARDED: Final = 'call_guarded'
@@ -2200,6 +2204,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'CALL_ASYNC': 'call_async',
     'CALL_BIND': 'call_bind',
     'CALL_BUILTIN': 'call_builtin',
+    'CALL_CLASS_CANDIDATE': 'call_class_candidate',
     'CALL_FUNC': 'call_func',
     'CALL_FUNCTION': 'call_function',
     'CALL_GUARDED': 'call_guarded',
@@ -2716,6 +2721,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "call_async",
         "call_bind",
         "call_builtin",
+        "call_class_candidate",
         "call_func",
         "call_function",
         "call_guarded",
@@ -3233,6 +3239,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CALL_ASYNC",
         "CALL_BIND",
         "CALL_BUILTIN",
+        "CALL_CLASS_CANDIDATE",
         "CALL_FUNC",
         "CALL_FUNCTION",
         "CALL_GUARDED",
@@ -3801,6 +3808,7 @@ CANONICAL_KIND: dict[str, str] = {
     "call_function": "call",
     "call_guarded": "call",
     "invoke_ffi": "call",
+    "call_class_candidate": "call_class_candidate",
     "gpu_thread_id": "gpu_thread_id",
     "gpu_block_id": "gpu_thread_id",
     "gpu_block_dim": "gpu_thread_id",
@@ -3940,6 +3948,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "del_index",
         "delete_var",
         "call",
+        "call_class_candidate",
         "gpu_thread_id",
         "call_method",
         "load_method",
@@ -4195,6 +4204,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "CALLARGS_PUSH_METHOD_RECEIVER": True,
     "CALL_BIND": True,
     "CALL_BUILTIN": True,
+    "CALL_CLASS_CANDIDATE": True,
     "CALL_FUNC": True,
     "CALL_FUNCTION": True,
     "CALL_GUARDED": True,
@@ -4452,6 +4462,7 @@ SIMPLEIR_FUNCTION_REFERENCE_KINDS: frozenset[WireOpKind] = frozenset(
         "alloc_task",
         "call",
         "call_async",
+        "call_class_candidate",
         "call_guarded",
         "call_internal",
         "func_new",
@@ -4477,6 +4488,7 @@ SimpleIrCallTargetRole = Literal[
 SIMPLEIR_CALL_TARGET_ROLES: dict[str, SimpleIrCallTargetRole] = {
     "call": "external_or_runtime",
     "call_bind": "opaque",
+    "call_class_candidate": "opaque",
     "call_func": "opaque",
     "call_function": "opaque",
     "call_guarded": "opaque",
@@ -4498,6 +4510,7 @@ SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(
 SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: frozenset[str] = frozenset(
     {
         "builtin_func",
+        "call_class_candidate",
         "call_func",
         "get_attr_generic_obj",
         "get_attr_name",
@@ -4519,6 +4532,7 @@ SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: frozenset[str] = frozenset(
 # Wire operations that name a class statement in `class_definition` (HF-220).
 SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: frozenset[str] = frozenset(
     {
+        "call_class_candidate",
         "class_set_definition",
         "guard_layout",
         "guarded_field_get",
@@ -4614,6 +4628,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "call_async": 1024,
     "call_bind": 512,
     "call_builtin": 512,
+    "call_class_candidate": 512,
     "call_func": 512,
     "call_function": 512,
     "call_guarded": 512,

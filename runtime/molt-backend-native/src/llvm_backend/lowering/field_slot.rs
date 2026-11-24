@@ -39,9 +39,19 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// The field store body at `offset`: `(context, object, value,
     /// admission) -> None`; its miss calls `molt_object_field_set_ptr(pointer,
     /// offset, value)`.
-    pub(super) fn field_slot_set_helper(&self, offset: i32) -> FunctionValue<'ctx> {
+    pub(super) fn field_slot_set_helper(
+        &self,
+        offset: i32,
+        suffix: molt_codegen_abi::field_slot::FieldStoreSuffix,
+    ) -> FunctionValue<'ctx> {
         let cold_fn = self.runtime_import(RuntimeFn::ObjectFieldSetPtr);
-        self.site_helper(&format!("__molt_field_slot_set_{offset}"), 3, |b, words| {
+        let name = match suffix {
+            molt_codegen_abi::field_slot::FieldStoreSuffix::Unknown => {
+                format!("__molt_field_slot_set_{offset}")
+            }
+            _ => format!("__molt_field_slot_set_{offset}_{suffix:?}"),
+        };
+        self.site_helper(&name, 3, |b, words| {
             let &[object, value] = words else {
                 unreachable!("the field store helper's parameters")
             };
@@ -50,6 +60,7 @@ impl<'ctx> LlvmBackend<'ctx> {
                 object,
                 offset,
                 value,
+                suffix,
                 ListLocking::BUILD,
                 |b, pointer| {
                     let offset = b.constant(offset as i64 as u64);

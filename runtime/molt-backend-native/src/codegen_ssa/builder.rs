@@ -109,7 +109,10 @@ pub(crate) enum SiteBody {
     /// `object.<field at offset> = value`, answering None
     /// (`generate_field_slot_set`); words `[object, value]`; the miss is
     /// `molt_object_field_set_ptr`.
-    FieldSet { offset: i32 },
+    FieldSet {
+        offset: i32,
+        suffix: molt_codegen_abi::field_slot::FieldStoreSuffix,
+    },
     /// A proven builtin exception member, owned
     /// (`molt_codegen_abi::builtin_field::generate_builtin_field_get`); words
     /// `[object]`; the miss is `molt_exception_field_get(object, tag)`.

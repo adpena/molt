@@ -432,7 +432,7 @@ pub(crate) unsafe fn call_bind_with_receiver(
                 // The exact, immutable metaclass type owns the native type.__call__
                 // slot. Custom metaclasses still bind their descriptor below.
                 if object_class_bits(call_ptr) == builtin_classes(_py).type_obj {
-                    return call_type_with_arguments(_py, call_ptr, args);
+                    return call_type_with_arguments(_py, call_ptr, args, None);
                 }
                 match lookup_call_attr(_py, call_ptr) {
                     AttributeLookup::Found(call_attr_bits) => {
@@ -446,7 +446,7 @@ pub(crate) unsafe fn call_bind_with_receiver(
                     AttributeLookup::Error => return MoltObject::none().bits(),
                     AttributeLookup::Missing => {}
                 }
-                return call_type_with_arguments(_py, call_ptr, args);
+                return call_type_with_arguments(_py, call_ptr, args, None);
             }
             TYPE_ID_GENERIC_ALIAS => {
                 let origin_bits = generic_alias_origin_bits(call_ptr);
@@ -537,7 +537,7 @@ pub(crate) unsafe fn call_bind_with_receiver(
                     Ok(child) => child,
                     Err(error) => return error,
                 };
-                return call_type_with_arguments(_py, receiver_ptr, child);
+                return call_type_with_arguments(_py, receiver_ptr, child, None);
             };
             let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
                 return raise_exception::<_>(
@@ -553,9 +553,14 @@ pub(crate) unsafe fn call_bind_with_receiver(
                     "type.__call__ expects type",
                 );
             }
-            return call_type_with_arguments(_py, self_ptr, args);
+            return call_type_with_arguments(_py, self_ptr, args, None);
         }
         if let Some(self_bits) = self_bits {
+            if let Some(result) = frame_binding::try_call_borrowed_receiver(
+                _py, func_bits, func_ptr, self_bits, &args,
+            ) {
+                return result;
+            }
             // The argument vector owns the receiver like any other positional.
             if let Err(err) = args.prepend_positional(self_bits) {
                 return err;
@@ -602,6 +607,47 @@ unsafe fn call_with_adopted_callable<'a, 'py>(
         result
     }
 }
+
+/// An exact metaclass and a matching class statement admit the ordinary
+/// type call. A mismatch resumes CALL before construction has started.
+pub(crate) unsafe fn call_owned_class_candidate(
+    py: &PyToken<'_>,
+    callable: u64,
+    positional: &[u64],
+    definition_slot: u64,
+    initializer_code: u64,
+) -> u64 {
+    use crate::object::layout::{ClassDefinition, class_definition};
+    unsafe {
+        if exception_pending(py) {
+            return call_owned_arguments(py, callable, positional);
+        }
+        let class = obj_from_bits(callable).as_ptr().filter(|&ptr| {
+            object_type_id(ptr) == TYPE_ID_TYPE
+                && object_class_bits(ptr) == builtin_classes(py).type_obj
+                && class_definition(ptr).is_some_and(|definition| {
+                    Some(definition) == ClassDefinition::from_program_slot(definition_slot)
+                })
+        });
+        let Some(class) = class else {
+            return call_owned_arguments(py, callable, positional);
+        };
+        match CallArguments::moved(py, None, positional) {
+            Ok(mut arguments) => {
+                arguments.admit_custody(ArgumentCustody::Instruction);
+                call_with_adopted_callable(py, callable, arguments, |_, arguments| {
+                    call_type_with_arguments(py, class, arguments, Some(initializer_code))
+                })
+            }
+            Err(error) => {
+                dec_ref_bits(py, callable);
+                error
+            }
+        }
+    }
+}
+
+pub(crate) use frame_binding::try_call_borrowed_receiver;
 
 /// An ordinary source call instruction (CPython's CALL) whose callable and
 /// positional arguments this call now owns: `call_func`, `call_method` and the
