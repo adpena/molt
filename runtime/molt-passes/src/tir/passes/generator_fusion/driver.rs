@@ -1,11 +1,9 @@
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::super::call_graph::CallGraph;
 use super::super::super::function::{TirFunction, TirModule};
 use super::super::super::target_info::TargetInfo;
-use super::{
-    FusionStats, PollRefusal, apply_fusion, collect_fusion_candidates, poll_fusion_refusal,
-};
+use super::{FusionStats, PollRefusal, apply_fusion, next_fusion_candidate, poll_fusion_refusal};
 
 /// Run generator fusion over `module`. Returns the elided-frame statistics.
 ///
@@ -71,12 +69,11 @@ pub fn run_generator_fusion(
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
+        let mut declined = HashSet::default();
         loop {
             let candidate = {
                 let caller = &module.functions[caller_idx];
-                collect_fusion_candidates(caller, &poll_bodies, call_graph)
-                    .into_iter()
-                    .next()
+                next_fusion_candidate(caller, &poll_bodies, &declined)
             };
             let Some(candidate) = candidate else { break };
             if tti.supports_pending_call_eval_breaker_poll() {
@@ -126,16 +123,16 @@ pub fn run_generator_fusion(
                     stats
                         .refused_polls
                         .push((poll_owned.name.clone(), PollRefusal::FrameLocalsWriter));
-                    break;
+                    declined.insert(candidate.alloc_val);
+                    continue;
                 }
                 if !stats.changed_functions.contains(&caller_id) {
                     stats.changed_functions.push(caller_id);
                 }
             } else {
-                // The candidate could not be spliced (a conservative
-                // mid-analysis bail). Stop processing this caller to avoid an
-                // infinite re-collect loop on the same un-spliceable site.
-                break;
+                // A failed transaction leaves this allocation and every other
+                // site's coordinates intact. Other sites may still splice.
+                declined.insert(candidate.alloc_val);
             }
         }
     }

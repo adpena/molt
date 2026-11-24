@@ -1,4 +1,4 @@
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::super::blocks::{BlockId, Terminator};
 use super::super::super::call_graph::CallGraph;
@@ -215,15 +215,13 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
     counts
 }
 
-/// Collect fusion candidates in `caller`. Phase 1 recognizes at most one
-/// candidate per call (re-collected after each splice). Deterministic order:
+/// Find the first eligible allocation that has not already declined its splice.
+/// Recompute after each splice, in deterministic order:
 /// blocks sorted by id, ops in index order.
 ///
 /// Bail table (each leaves the IR unchanged):
 /// * `AllocTask` is not a `generator` (future/coroutine) — out of scope.
 /// * the poll body is not in `poll_bodies` (not fusable, or external).
-/// * `> 1` `AllocTask` with the same poll name in the caller — multi-instance,
-///   Phase 1 handles single-instance only.
 /// * the frame value has any use other than the single `GetIter` (a `.send`/
 ///   `.throw`/`.close` method call, an escape into a container, a store).
 /// * the `GetIter` result has any use other than the single `IterNextUnboxed`
@@ -231,25 +229,22 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 /// * the `IterNextUnboxed` is not followed by its iteration's Origin check, or
 ///   its done result does not drive the loop's `CondBranch` (through empty
 ///   blocks only).
-pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
+pub(in crate::tir::passes::generator_fusion) fn next_fusion_candidate(
     caller: &TirFunction,
     poll_bodies: &HashMap<molt_ir::FunctionId, TirFunction>,
-    _call_graph: &CallGraph,
-) -> Vec<FusionCandidate> {
+    declined: &HashSet<ValueId>,
+) -> Option<FusionCandidate> {
     let use_counts = build_use_counts(caller);
 
-    // Count AllocTask instances per poll name (multi-instance → bail).
-    let mut alloc_count: HashMap<molt_ir::FunctionId, usize> = HashMap::default();
-    for block in caller.blocks.values() {
-        for op in &block.ops {
-            if op.opcode == OpCode::AllocTask
-                && attr_task_kind(op) == Some("generator")
-                && let Some(poll) = poll_callee(op)
-            {
-                *alloc_count.entry(poll).or_insert(0) += 1;
-            }
-        }
-    }
+    // An Is use is an identity observation unless its other value is None.
+    // The splice replaces each non-escaping iterator with the same sentinel.
+    let none_values: HashSet<_> = caller
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::ConstNone)
+        .flat_map(|op| op.results.iter().copied())
+        .collect();
 
     let mut block_ids: Vec<BlockId> = caller.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
@@ -266,12 +261,12 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
             if !poll_bodies.contains_key(&poll) {
                 continue;
             }
-            if alloc_count.get(&poll).copied().unwrap_or(0) != 1 {
-                continue; // multi-instance — Phase 1 bail.
-            }
             let Some(&alloc_val) = op.results.first() else {
                 continue;
             };
+            if declined.contains(&alloc_val) {
+                continue;
+            }
             let (&function, _) = crate::tir::ops::alloc_task_operands(&op.operands);
 
             // The frame value must have exactly one use: the GetIter.
@@ -289,7 +284,7 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
             // around `for x in <expr>`; that `Is` use is benign — fusion
             // replaces the iterator with a non-None sentinel so the guard
             // folds False).
-            if !iter_uses_are_next_and_optional_none_guard(caller, iter_val) {
+            if !iter_uses_are_next_and_optional_none_guard(caller, iter_val, &none_values) {
                 continue;
             }
             let Some(next) = recognize_iteration(caller, iter_val) else {
@@ -317,7 +312,7 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
                     .is_some_and(|cond| *cond == next.block || next.chain.contains(cond))
             });
 
-            return vec![FusionCandidate {
+            return Some(FusionCandidate {
                 alloc_block,
                 alloc_idx,
                 alloc_val,
@@ -334,11 +329,11 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
                 exit_block: next.exit_block,
                 body_block: next.body_block,
                 loop_header,
-            }];
+            });
         }
     }
 
-    Vec::new()
+    None
 }
 
 /// Find the single `GetIter`/`iter` use of `frame_val`, returning
@@ -364,7 +359,11 @@ fn find_single_get_iter_use(
 /// `IterNextUnboxed`, an `Is(iter, None)` not-iterable guard, or a
 /// `GetIter`/`iter` op that produced it. Any other use (an escape, a
 /// `.send`/`.throw`/`.close` method dispatch, a store) disqualifies fusion.
-fn iter_uses_are_next_and_optional_none_guard(caller: &TirFunction, iter_val: ValueId) -> bool {
+fn iter_uses_are_next_and_optional_none_guard(
+    caller: &TirFunction,
+    iter_val: ValueId,
+    none_values: &HashSet<ValueId>,
+) -> bool {
     let mut saw_next = false;
     for block in caller.blocks.values() {
         for op in &block.ops {
@@ -382,9 +381,10 @@ fn iter_uses_are_next_and_optional_none_guard(caller: &TirFunction, iter_val: Va
                 {
                     saw_next = true
                 }
-                GeneratorFusionIterUseRole::NoneGuard => {
-                    /* the `is(iter, None)` not-iterable guard — benign */
-                }
+                GeneratorFusionIterUseRole::NoneGuard
+                    if matches!(op.operands.as_slice(), [a, b]
+                        if (*a == iter_val && none_values.contains(b))
+                            || (*b == iter_val && none_values.contains(a))) => {}
                 _ => return false,
             }
         }

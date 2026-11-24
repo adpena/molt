@@ -3504,6 +3504,29 @@ def _assert_stateful_callable_call(ops: list[dict], supplied_args: int) -> dict:
     return call
 
 
+@pytest.mark.parametrize(
+    "signature,slot",
+    [
+        ("*items", 0),
+        ("first, /, second=None, *items", 2),
+        ("*items, option=None", None),
+        ("*items, **options", None),
+    ],
+)
+def test_generator_definition_exposes_packable_vararg_slot(
+    signature: str, slot: int | None
+) -> None:
+    ir = compile_to_tir(f"def stream({signature}):\n    yield items\n")
+    (maker,) = (
+        op
+        for func in ir["functions"]
+        for op in func["ops"]
+        if op.get("task_kind") == "generator" and op["kind"] == "func_new"
+    )
+    assert maker.get("task_vararg_slot") == slot
+    assert "direct_shape" not in maker
+
+
 def test_imported_plain_generator_calls_actual_function() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"tinygrad.engine.realize"},

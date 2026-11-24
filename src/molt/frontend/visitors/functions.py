@@ -163,6 +163,13 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 self.next_var(),
                 type_hint=frame_plan.function_type_hint(closure_size),
             )
+            positional_shape = None
+            if not has_closure and varkw is None and not kwonly:
+                positional_shape = (
+                    {"direct_shape": True}
+                    if vararg is None
+                    else {"task_vararg_slot": len(posonly) + len(pos_or_kw)}
+                )
             function_def = MoltOp(
                 kind=(
                     "FUNC_NEW_CLOSURE"
@@ -175,17 +182,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     else [poll_func_name, len(params)]
                 ),
                 result=func_val,
-                # Positional parameters only and no closure: an exact positional
-                # call binds nothing, so a proven call is the frame's allocation
-                # (``static_module_cells.prove_init_once_calls``).
-                metadata=(
-                    {"direct_shape": True}
-                    if not has_closure
-                    and vararg is None
-                    and varkw is None
-                    and not kwonly
-                    else None
-                ),
+                metadata=positional_shape,
             )
             self.emit(function_def)
             name_layout = self._collect_callable_name_layout(
