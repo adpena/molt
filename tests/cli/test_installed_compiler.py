@@ -41,6 +41,7 @@ def installation(tmp_path: Path, monkeypatch) -> Path:
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__init__.py",
         "src/molt/compiler_distribution.py",
+        "tools/wasm_link.py",
         "uv.lock",
     ):
         path = source / name
@@ -126,6 +127,27 @@ def test_host_profile_does_not_inherit_guest_overrides(monkeypatch, guest):
     assert (host, error) == ("release", None)
     assert cargo_profiles._resolve_backend_cargo_profile_name(host) == ("release", None)
     assert cargo_profiles._resolve_cargo_profile_name(guest) == ("guest-size", None)
+
+
+def test_installed_wasm_link_keys_reuse_the_verified_inventory(
+    installation: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import non_native_output
+
+    def refuse_graph(*args: object, **kwargs: object) -> None:
+        pytest.fail("an installed Wasm build reconstructed the compiler's import graph")
+
+    monkeypatch.setattr(non_native_output, "local_python_import_closure", refuse_graph)
+    tool = installation / "tools/wasm_link.py"
+    first = non_native_output._wasm_tool_source_identities(installation, tool)
+    assert first[0]
+    assert non_native_output._wasm_tool_source_identities(installation, tool) == first
+    before = tool.stat()
+    tool.write_bytes(b"edited")
+    os.utime(tool, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ValueError, match="Compiler source content changed"):
+        non_native_output._wasm_tool_source_identities(installation, tool)
 
 
 def test_all_installed_backends_share_one_admitted_compiler(installation, monkeypatch):
