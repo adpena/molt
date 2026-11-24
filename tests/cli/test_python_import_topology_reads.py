@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from molt.cli import python_import_topology
 from molt.cli.python_import_topology import (
     PythonImportTopology,
     PythonImportTopologyChangedError,
+    PythonImportPath,
 )
 
 
@@ -21,11 +23,13 @@ def _churn_during(
     original = getattr(python_import_topology, name)
     counter = itertools.count()
 
-    def changed_during(path: Path):
+    def changed_during(
+        path: Path, **kwargs: bool
+    ) -> tuple[os.DirEntry[str], ...] | PythonImportPath | None:
         index = next(counter)
         if times is None or index < times:
             (directory / f"unrelated-{index}.txt").write_text("", encoding="utf-8")
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(python_import_topology, name, changed_during)
 

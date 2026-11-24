@@ -36,6 +36,7 @@ from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import (
     FileEvidence,
+    ImportTopologyEvidence,
     ProbeOutcome,
     ReadReceiptId,
     resolved_probe,
@@ -43,7 +44,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v14"
+_SCHEMA = "molt-build-record-v15"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -570,6 +571,7 @@ class InputLedger:
     claims: list[RecordedBuildClaim] = field(default_factory=list)
     import_graph: str | None = None
     previous_import_graph: str | None = None
+    import_topologies: dict[int, ImportTopologyEvidence] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reads: dict[ReadReceiptId, str | None] = field(default_factory=dict, repr=False)
 
@@ -674,6 +676,10 @@ class InputLedger:
             self.observed.add(entry)
             if entry[0] == "file" and entry[1] in self.files:
                 self.files[entry[1]].evidence |= FileEvidence.UNBOUND
+
+    def import_topology(self, topology: ImportTopologyEvidence) -> None:
+        with self._lock:
+            self.import_topologies[id(topology)] = topology
 
     def build_output(self, selection: object) -> None:
         try:
@@ -1159,6 +1165,9 @@ def write_record(
     if changed is not None:
         return f"input changed during the build: {changed}"
     try:
+        import_topologies = [
+            owner.record() for owner in ledger.import_topologies.values()
+        ]
         output.verify()
         if ledger.result is not None:
             ledger.result.verify()
@@ -1198,6 +1207,7 @@ def write_record(
         "files": files,
         "directories": directories,
         "probes": probes,
+        "import_topologies": import_topologies,
         "import_graph": ledger.import_graph,
         "result": None if ledger.result is None else ledger.result.payload(),
         "claims": [claim.payload() for claim in ledger.claims]
@@ -1291,6 +1301,14 @@ def check(
         )
         if changed is not None:
             return changed
+        topologies = payload["import_topologies"]
+        if not isinstance(topologies, list):
+            return "unreadable record: invalid import topologies"
+        if topologies:
+            from molt.cli.python_import_topology import PythonImportTopology
+
+            for topology in topologies:
+                PythonImportTopology.from_record(topology)
         if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
             os.utime(path)
         if result is not None:

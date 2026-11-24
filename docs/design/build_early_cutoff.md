@@ -25,10 +25,15 @@ Replay currently refuses changes to a source's recorded name universe, missing
 body owners, incomplete source observers, native artifact plans, stale runtime
 custody, changed query outputs, malformed/oversized blobs and changed positive or
 negative import observations. The canonical solver handles a refused candidate.
-The graph pointer publishes with the successful full build record. If an atomic
-editor save makes that record refuse a recent directory epoch, its graph pointer
-does not refresh independently; subsequent edits can still qualify the previous
-graph, while no-change recording waits for publishable input epochs.
+The graph pointer publishes with the successful full build record. The resolver
+records the paths, types, exact spellings and filtered name sets it used.
+Publication and lookup validate those facts through the same topology authority.
+An atomic editor save can therefore publish immediately when the selected
+sources and import facts check out, even if the parent directory is recent.
+The recorder scopes only the resolver's own scandir call to this evidence.
+An independent open or listing, including one of the same directory, still
+carries its own audit observation and generation boundary. Worker logs retain
+their conservative metadata boundary when no in-process topology is available.
 
 ## Problem
 
