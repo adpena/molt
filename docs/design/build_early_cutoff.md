@@ -418,6 +418,14 @@ are products, but an explicitly consumed source inside their namespace still
 invalidates the build. `dx.backend_ir_lease_dir` is the single namespace used by
 the producer and projection; transport, scratch selection and cleanup are unchanged.
 
+Installed stdlib summary admission binds the release manifest digest to one
+stable read. A compiler operation retains that same immutable archive for
+frontend consumers and refuses a different live file generation during the
+operation. Release verification outside the operation streams the digest
+without retaining the archive. The build record uses its existing consumed
+read receipt and validates the checksum on reuse. A separate raw read still
+retains its independent obligation.
+
 **Racy rule.** Except for files proven exclusively consumed as above,
 `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over
 `content_change_time_ns` (ctime on POSIX, NTFS ChangeTime converted to
