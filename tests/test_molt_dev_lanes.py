@@ -2636,6 +2636,47 @@ def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
     assert _record(family, "second")["dispatch"]["waits"] == {"HF-2": ["HF-1"]}
 
 
+def test_forwarded_live_lane_keeps_its_dispatch_claim(family: Path) -> None:
+    main = family / "molt-src"
+    assert (
+        lanes.cmd_lane_start(
+            _args(
+                family,
+                slug="first",
+                rows="HF-1",
+                dispatch_reason="dag_ready",
+                reason=None,
+            )
+        )
+        == EXIT_OK
+    )
+    worktree = Path(_record(family, "first")["repo_root"])
+    tip = _commit_file(main, "unrelated.txt", "main advanced\n", "advance main")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    _git(worktree, "merge", "--ff-only", tip)
+    pending = worktree / "candidate.py"
+    pending.write_text("VALUE = 1\n", encoding="utf-8")
+
+    second = _args(
+        family,
+        slug="second",
+        rows="HF-1",
+        dispatch_reason="dag_ready",
+        reason=None,
+    )
+    with pytest.raises(
+        DriverError, match=r"family A already has a lane \(lane-first\)"
+    ):
+        lanes.cmd_lane_start(second)
+
+    assert pending.read_text(encoding="utf-8") == "VALUE = 1\n"
+    _commit_file(worktree, "candidate.py", "VALUE = 1\n", "finish first lane")
+    _git(worktree, "push", "-q", "origin", "HEAD:main")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == EXIT_OK
+    assert _record(family, "first")["status"] == "landed"
+    assert lanes.cmd_lane_start(second) == EXIT_OK
+
+
 def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) -> None:
     """A lane started without rows claims its family once it is re-admitted."""
     _start(family, "older")  # the fixture default: a lane with no rows
