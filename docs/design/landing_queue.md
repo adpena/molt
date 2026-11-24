@@ -167,9 +167,12 @@ A pending request sets a sticky cancellation predicate. Active gates pass it to
 their existing guards, and unscheduled work stops. A cancelled outcome is admitted
 only after the guard reports descendant closure; unresolved custody remains an
 error. The runner then services the request, and postsubmit selects the newest
-head. A passing run re-fetches main before `git update-ref refs/molt/last-green
-<head> <old>`; an absent old ref uses Git's zero object ID. A changed head cancels
-the result, and a failed compare-and-swap cannot overwrite another writer.
+head. A passing run re-fetches main and checks that its tested revision is on
+the fetched history. One Git ref transaction verifies the observed remote-tracking
+tip and advances `refs/molt/last-green` to the tested revision. An absent baseline
+uses Git's zero object ID. If main advanced, the runner repins and qualifies the
+successor from that last green. A rewritten history rejects the result, and a
+failed ref transaction preserves the existing baseline.
 
 `PostsubmitStatus` is the verdict authority. RED requires a
 `CandidateFailure`: a gate failed for its own reason, this run's own JUnit lists
