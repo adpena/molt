@@ -342,7 +342,11 @@ including split deployment, records through the same output selector. The
 deployment plan supplies every published role, including loader assets, target
 features, optional bundle and optimizer evidence, and the final-link receipt.
 The result owner reports this family as one typed `BuildProducts` fact with
-its execution output. Publication and verified link reuse capture the installed
+its execution output. An explicit WASM linked-output name has a separate typed
+layout role alongside the primary module. The record replays its directory/file
+decision and resolved destination and requires the selected file among the
+published products. An older plain record needs no named selector. Publication
+and verified link reuse capture the installed
 tokens under the existing output locks. A record is refused if any of those
 files changes before the record is written. Record schema v10 keeps each
 product's token and requires every member unchanged on reuse. Each product's publication custody is a
@@ -350,8 +354,7 @@ product, resolved transitively by the staging-name authority: a stage issued
 for one of its own stages (the LLVM wasm32 object is staged beside the module
 and a copy is staged for that stage) and every path inside a staged directory
 (the deployment generation is staged in one directory beside the manifest).
-JSON WASM requests, precompiled images and named linked outputs still run the
-pipeline. Deployment source files, tooling closure and admitted link inputs
+JSON WASM requests and precompiled images still run the pipeline. Deployment source files, tooling closure and admitted link inputs
 are reported on final-link reuse as well as fresh links. The WASM path also
 reports three other inputs:
 wasm-opt's PATH search goes through `toolchain_identity.executable_candidates`;
@@ -363,7 +366,7 @@ runtime inputs derive, and its retention ledger is rewritten on every use.
 Measurements: [user_compile_latency.md](user_compile_latency.md).
 
 **Refusals.** No record for targets other than native and the default `wasm`
-target, for WASM JSON, split-runtime, precompile or named-linked-output requests,
+target, for WASM JSON or precompile requests,
 or for requests that request unrecorded additional products or measurements
 (diagnostics, IR, native linked output, snapshots, audit logs), BOLT,
 file-naming inputs whose loaders do not report (type facts, PGO profiles,

@@ -32,6 +32,7 @@ import re
 from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
 from molt import input_report
 from molt.build_output_selection import BuildOutputSelection, select_output_path
+from molt.input_report import BuildOutputRole
 from molt.default_paths import (
     BUILD_ARTIFACTS_CACHE_DIRECTORY,
     _default_molt_bin,
@@ -399,19 +400,18 @@ def _resolve_output_path(
     *,
     out_dir: Path | None,
     project_root: Path,
-    record_output: bool = False,
+    record_output: BuildOutputRole | None = None,
 ) -> Path:
     """Select one output; ``record_output`` reports the request's selected output.
 
-    Exactly one output of a build is selected for its record: the native
-    binary, or the WASM module whose published family `build_results`
-    reports beside it.
+    Assign a role to the primary output and to an explicitly named WASM
+    link output. Other members are derived by the publication plan.
     """
-    if record_output and input_report.active():
+    if record_output is not None and input_report.active():
         selection = BuildOutputSelection.capture(
             output, default, out_dir=out_dir, project_root=project_root
         )
-        input_report.report_build_output(selection.to_dict())
+        input_report.report_build_output(record_output, selection.to_dict())
         path = selection.path
     else:
         path = select_output_path(
@@ -553,7 +553,7 @@ def _resolve_build_output_layout(
             output_root / f"output{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
-            record_output=True,
+            record_output=BuildOutputRole.PRIMARY,
         )
         output_artifact = output_wasm
         if linked:
@@ -569,6 +569,7 @@ def _resolve_build_output_layout(
                     linked_output_path,
                     out_dir=out_dir_path,
                     project_root=project_root,
+                    record_output=BuildOutputRole.LINKED_WASM,
                 )
     elif emit_mode == "jit":
         from molt.cli.run_tier import JIT_IMAGE_SUFFIX
@@ -595,7 +596,7 @@ def _resolve_build_output_layout(
                 bin_root / f"{output_base}_molt",
                 out_dir=out_dir_path,
                 project_root=project_root,
-                record_output=True,
+                record_output=BuildOutputRole.PRIMARY,
             )
     for path in (output_artifact, output_binary):
         if path is not None and path.parent != Path("."):

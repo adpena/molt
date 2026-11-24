@@ -24,6 +24,7 @@ from typing import Callable
 from molt.backend_environment import CodegenSelection
 from molt import build_record as _build_record
 from molt import input_report as _input_report
+from molt.input_report import BuildOutputRole
 from molt.cli.build_request import BuildRequest, build_request_values
 from molt.cli.output import fail as _fail
 from molt.cli.output import success as _success
@@ -83,14 +84,13 @@ def _wasm_cutoff_request(request: BuildRequest) -> bool:
     """Whether a WASM request publishes only the family its record verifies.
 
     The default ``wasm`` target qualifies, including split deployments whose
-    full publication plan is recorded. JSON replay, precompiled images and
-    named linked outputs remain outside the verified request family.
+    full publication plan is recorded. JSON replay and precompiled images
+    remain outside the verified request family.
     """
     return (
         request.target is TargetKind.WASM
         and not request.json_output
         and not request.precompile
-        and request.linked_output is None
     )
 
 
@@ -110,8 +110,7 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         or not request.cache
         or request.emit not in ((None, "bin") if native else (None,))
         or request.emit_ir is not None
-        or (native and request.linked)
-        or request.linked_output is not None
+        or (native and (request.linked or request.linked_output is not None))
         or request.snapshot
         or request.bolt
         or request.fact_graph_request is not None
@@ -258,7 +257,7 @@ def _record_build(
     """Write the record of a successful build; returns why none was written.
     A record never fails the build it describes."""
     try:
-        output = ledger.output_selection
+        output = ledger.output_selections.get(BuildOutputRole.PRIMARY)
         if output is None:
             return "output selection was not reported"
         if request.target is not TargetKind.NATIVE and ledger.products is None:
@@ -271,6 +270,11 @@ def _record_build(
             )
         if output.output != request.output:
             return "output selection differs from the build request"
+        linked_selection = ledger.output_selections.get(BuildOutputRole.LINKED_WASM)
+        if (
+            None if linked_selection is None else linked_selection.output
+        ) != request.linked_output:
+            return "named WASM link output differs from the build request"
         _report_executed_code(ledger)
         capabilities = request.capabilities
         if isinstance(capabilities, str):
@@ -328,6 +332,7 @@ def _with_early_cutoff(
             key,
             claim=_replay_build_claim,
             require_result=request.json_output,
+            linked_output=request.linked_output,
             graph_candidate=graph_candidate,
         )
         if isinstance(change, _build_record.BuildRecordHit):
