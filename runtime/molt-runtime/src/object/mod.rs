@@ -3727,7 +3727,7 @@ unsafe fn trace_inc_ref_after(header_ptr: *mut MoltHeader, ptr: *mut u8, previou
 ///
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
-pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) {
+pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: usize) {
     unsafe {
         crate::gil_assert();
         if ptr.is_null() || count == 0 {
@@ -3755,11 +3755,11 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
         }
         let previous = (*header_ptr).retain_owned_mirrored(
             MoltObject::from_ptr(ptr).bits(),
-            count as usize,
+            count,
             "inc_ref_n_ptr",
             header_flags,
         );
-        let new_count = previous + count;
+        let new_count = previous as usize + count;
         if trace_rc_type_filter() == Some(type_id) {
             eprintln!(
                 "MOLT_RC_INC_N type={} ptr=0x{:x} {}→{} by={}",

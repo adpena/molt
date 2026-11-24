@@ -934,8 +934,15 @@ pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject
             return std::ptr::null_mut();
         };
         (*vec_ptr).resize(len, value.bits());
-        for _ in 0..len {
-            inc_ref_bits(_py, value.bits());
+        if let Some(fill_ptr) = value.as_ptr() {
+            if len <= 1 || super::rc_transition_trace_enabled() {
+                // Preserve individual transitions when tracing slot ownership.
+                for _ in 0..len {
+                    super::inc_ref_ptr(_py, fill_ptr);
+                }
+            } else {
+                super::inc_ref_n_ptr(_py, fill_ptr, len);
+            }
         }
         crate::object::backing::tracked_vec_set_heap_edge_count(
             vec_ptr,
