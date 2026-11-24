@@ -39,7 +39,9 @@ from molt.source_root import MANIFEST_NAME, installed_distribution_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
+    open_stable_regular_file,
     stable_regular_file_content_identity,
+    stable_regular_file_handle_identity,
     stable_regular_file_identity,
     StableRegularFileObservation,
     verify_stable_regular_file_identity,
@@ -49,6 +51,7 @@ from molt.verified_subset import current_host_coordinate
 MANIFEST_SCHEMA = "molt.release-compiler-source.v8"
 STDLIB_SOURCE_SUMMARIES_PATH = "share/molt/stdlib-source-summaries.zip"
 MAX_STDLIB_SOURCE_SUMMARIES_BYTES = 64 * 1024 * 1024
+_STDLIB_SUMMARIES_LABEL = "installed stdlib source summaries"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
@@ -661,28 +664,82 @@ class InstalledCompiler:
         verify_source_inventory(
             self.source_root, self.files, manifest_name=MANIFEST_NAME
         )
-        identity = stable_regular_file_identity(
-            self._stdlib_source_summaries_path(),
-            label="installed stdlib source summaries",
-        )
-        self._verify_stdlib_source_summaries_identity(identity)
+        if self._stdlib_summary_owner() is None:
+            self._read_stdlib_source_summaries(retain=False)
+        else:
+            self.capture_stdlib_source_summaries()
 
     def _stdlib_source_summaries_path(self) -> Path:
         return resolve_owned_path(
             self.source_root.parent / STDLIB_SOURCE_SUMMARIES_PATH
         )
 
+    def _stdlib_summary_owner(self) -> _InstalledManifest | None:
+        manifests = _INSTALLED_MANIFESTS.get()
+        owner = None if manifests is None else manifests.get(self.source_root)
+        if (
+            owner is not None
+            and owner.compiler.stdlib_source_summaries == self.stdlib_source_summaries
+        ):
+            return owner
+        return None
+
+    def _read_stdlib_source_summaries(
+        self, *, retain: bool
+    ) -> _StdlibSummarySnapshot | None:
+        from molt import input_report
+
+        path = self._stdlib_source_summaries_path()
+        input_report.report_probe(path)
+        with input_report.capture_read(path) as receipt:
+            if retain:
+                identity, contents = capture_stable_regular_file(
+                    path,
+                    max_bytes=MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
+                    label=_STDLIB_SUMMARIES_LABEL,
+                )
+            else:
+                with open_stable_regular_file(
+                    path, label=_STDLIB_SUMMARIES_LABEL
+                ) as opened:
+                    identity = stable_regular_file_handle_identity(
+                        opened,
+                        max_bytes=MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
+                        label=_STDLIB_SUMMARIES_LABEL,
+                    )
+                contents = None
+            self._verify_stdlib_source_summaries_identity(identity)
+            receipt.opened()
+            receipt.complete(identity.stat_token(), identity.sha256)
+        if contents is None:
+            return None
+        return _StdlibSummarySnapshot(identity, contents, receipt.session)
+
     def capture_stdlib_source_summaries(self) -> bytes:
         from molt import input_report
 
-        identity, value = capture_stable_regular_file(
-            self._stdlib_source_summaries_path(),
-            max_bytes=MAX_STDLIB_SOURCE_SUMMARIES_BYTES,
-            label="installed stdlib source summaries",
-        )
-        self._verify_stdlib_source_summaries_identity(identity)
-        input_report.report_consumed_buffer(identity.path, value)
-        return value
+        owner = self._stdlib_summary_owner()
+        snapshot = None if owner is None else owner.stdlib_summary
+        if snapshot is None:
+            snapshot = self._read_stdlib_source_summaries(retain=True)
+            assert snapshot is not None
+            if owner is not None:
+                owner.stdlib_summary = snapshot
+        else:
+            # The immutable bytes belong to this operation. A changed live
+            # generation cannot silently become a second archive in it.
+            path = self._stdlib_source_summaries_path()
+            if (
+                path != snapshot.identity.path
+                or input_report.stat_token(path) != snapshot.identity.stat_token()
+            ):
+                raise ValueError(
+                    "Installed stdlib source summaries changed during admission"
+                )
+            input_report.report_consumed_buffer(
+                path, snapshot.contents, previous_session=snapshot.recording_session
+            )
+        return snapshot.contents
 
     def _verify_stdlib_source_summaries_identity(
         self, identity: StableRegularFileIdentity
@@ -734,11 +791,19 @@ class InstalledSourceAdmission(Enum):
     FRESH = "fresh"
 
 
+@dataclass(frozen=True, slots=True)
+class _StdlibSummarySnapshot:
+    identity: StableRegularFileIdentity
+    contents: bytes
+    recording_session: object | None
+
+
 @dataclass(slots=True)
 class _InstalledManifest:
     raw: bytes
     compiler: InstalledCompiler
     sources_verified: bool = False
+    stdlib_summary: _StdlibSummarySnapshot | None = None
 
 
 _INSTALLED_MANIFESTS: ContextVar[dict[Path, _InstalledManifest] | None] = ContextVar(
@@ -785,16 +850,23 @@ def installed_compiler(
         manifest = _InstalledManifest(
             raw, _validate_installed_manifest(source_root, raw)
         )
+    if manifests is not None:
+        manifests[source_root] = manifest
+    if sources is InstalledSourceAdmission.FRESH:
+        manifest.stdlib_summary = None
     if sources is InstalledSourceAdmission.FRESH or (
         sources is InstalledSourceAdmission.REUSE and not manifest.sources_verified
     ):
         manifest.sources_verified = False
-        manifest.compiler.verify_sources()
-        manifest.compiler.verify_executing_package()
+        try:
+            manifest.compiler.verify_sources()
+            manifest.compiler.verify_executing_package()
+        except BaseException:
+            manifest.stdlib_summary = None
+            raise
         manifest.sources_verified = True
     if manifests is None:
         return manifest.compiler
-    manifests[source_root] = manifest
     # InstalledCompiler exposes mutable records. Every caller receives a copy.
     return deepcopy(manifest.compiler)
 

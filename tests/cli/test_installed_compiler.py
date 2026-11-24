@@ -293,6 +293,55 @@ def test_installed_source_reports_first_manifest_error(
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
+def test_fresh_stdlib_summary_reuses_its_consumed_admission(
+    installation: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import build_record, input_report
+
+    archive = installation.parent / distribution.STDLIB_SOURCE_SUMMARIES_PATH
+    expected = archive.read_bytes()
+    captures: list[Path] = []
+    capture = distribution.capture_stable_regular_file
+
+    def counted(
+        path: Path, *, label: str, max_bytes: int | None = None
+    ) -> tuple[StableRegularFileIdentity, bytes]:
+        if path == archive:
+            captures.append(path)
+        return capture(path, label=label, max_bytes=max_bytes)
+
+    monkeypatch.setattr(distribution, "capture_stable_regular_file", counted)
+    with (
+        distribution.installed_manifest_transaction(),
+        build_record.recording(tmp_path / "recording") as ledger,
+    ):
+        compiler = distribution.installed_compiler(
+            installation, sources=distribution.InstalledSourceAdmission.REUSE
+        )
+        assert compiler is not None
+        assert captures == [archive]
+        assert compiler.capture_stdlib_source_summaries() == expected
+        assert captures == [archive]
+        evidence = ledger.files[str(archive)]
+        assert evidence.evidence == input_report.FileEvidence.CONSUMED
+        assert evidence.sha256 == hashlib.sha256(expected).hexdigest()
+        assert str(archive) not in ledger.racy_inputs()
+
+        replacement = archive.with_suffix(".replacement")
+        replacement.write_bytes(bytes([expected[0] ^ 1]) + expected[1:])
+        replacement.replace(archive)
+        with pytest.raises(ValueError, match="changed during admission"):
+            compiler.capture_stdlib_source_summaries()
+
+    # A new operation reopens the current archive and rejects its actual bytes.
+    with distribution.installed_manifest_transaction():
+        with pytest.raises(ValueError, match="differ from their manifest"):
+            distribution.installed_compiler(
+                installation, sources=distribution.InstalledSourceAdmission.REUSE
+            )
+    assert captures == [archive, archive]
+
+
 def test_installed_stdlib_summary_binds_source_package_and_target(
     installation: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -312,6 +361,8 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
         _parse_source_for_target,
     )
 
+    # General scan-cache hits must not stand in for the shipped summary.
+    monkeypatch.setenv("MOLT_CACHE", str(installation.parent / "scan-cache"))
     stdlib = installation / "src/molt/stdlib"
     module = stdlib / "parent" / "writer.py"
     module.parent.mkdir(parents=True)
