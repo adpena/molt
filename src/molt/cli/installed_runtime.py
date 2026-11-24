@@ -4,7 +4,7 @@ An installed Molt (release bundle, package-manager projection or platform
 wheel) is a compiler distribution, not a runtime build environment. Its signed
 ``release-compiler-source.json`` declares every shipped native staticlib and
 WASM runtime pair as a typed cell. User compilation selects exactly one declared
-cell from typed build parameters and admits the bundle bytes through the
+cell from typed build parameters and admits its product bytes through the
 canonical product receipts: the native-link product and the immutable WASM
 product manifest. Their ``RuntimeBuildIdentity`` must agree with the cell
 key (target, profile, tier/features, SIMD/freestanding, C-API surface). Native
@@ -26,9 +26,9 @@ Cargo workflow.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence, cast
 import uuid
 
 from molt.native_target import resolve_native_target_spec
@@ -90,13 +90,20 @@ from molt.file_publication import (
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from molt.release_lanes import ReleaseLane, capture_release_lanes
 from molt.toolchain_identity import (
+    StableRegularFileHandle,
     StableRegularFileIdentity,
     capture_stable_regular_file,
+    open_stable_regular_file,
+    stable_regular_file_handle_identity,
     stable_regular_file_identity,
     stable_regular_file_version,
     verify_stable_regular_file_identity,
 )
 from molt.verified_subset import current_host_coordinate
+
+if TYPE_CHECKING:
+    from molt.cli.runtime_callable_symbols import RuntimeCallableProjection
+
 
 WASM_RUNTIME_TARGET = "wasm32-wasip1"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
@@ -197,8 +204,8 @@ class InstalledRuntimeCell:
             f"installed runtime cell {self.id} has no {role}"
         )
 
-    def bundle_file(self, role: str) -> StableRegularFileIdentity:
-        """Return one shipped member after content admission against the manifest."""
+    def member_file(self, role: str) -> StableRegularFileIdentity:
+        """Admit one member of this cell's selected generation against the manifest."""
         try:
             return verify_runtime_member(self.members_root, self.record, role)
         except (OSError, ValueError) as exc:
@@ -207,7 +214,7 @@ class InstalledRuntimeCell:
                 f"reinstall Molt: {exc}"
             ) from exc
 
-    def bundle_json(self, role: str) -> tuple[StableRegularFileIdentity, object]:
+    def member_json(self, role: str) -> tuple[StableRegularFileIdentity, object]:
         try:
             path = resolve_owned_path(
                 self.members_root / self.file_record(role)["name"]
@@ -230,7 +237,7 @@ class InstalledRuntimeCell:
                 f"reinstall Molt: {exc}"
             ) from exc
 
-    def bundle_projection(self) -> tuple[StableRegularFileIdentity, bytes]:
+    def member_projection(self) -> tuple[StableRegularFileIdentity, bytes]:
         role = NATIVE_CALLABLE_PROJECTION_ROLE
         try:
             path = resolve_owned_path(
@@ -535,13 +542,11 @@ def _require_features(
 # --- native ------------------------------------------------------------------
 
 
-def _shipped_native_identity(
+def _native_link_facts(
     cell: InstalledRuntimeCell, archive: StableRegularFileIdentity
-) -> tuple[
-    NativeLinkProductFacts, StableRegularFileIdentity, StableRegularFileIdentity | None
-]:
-    """Observe the canonical receipt once against the already-admitted archive."""
-    receipt, payload = cell.bundle_json("native_link_manifest")
+) -> tuple[NativeLinkProductFacts, StableRegularFileIdentity]:
+    """Observe the canonical receipt against the already-admitted archive."""
+    receipt, payload = cell.member_json("native_link_manifest")
     if receipt.path != native_link_dependency_manifest_path(archive.path):
         raise _runtime_contract.InstalledRuntimeError(
             "installed native-link manifest is not adjacent to its archive"
@@ -567,14 +572,46 @@ def _shipped_native_identity(
         raise _runtime_contract.InstalledRuntimeError(
             "installed custody archive differs from its native-link manifest"
         )
-    verify_stable_regular_file_identity(archive, label="shipped native archive")
-    verify_stable_regular_file_identity(receipt, label="shipped native receipt")
-    custody_identity = (
-        cell.bundle_file("native_link_custody_archive")
-        if declared is not None
-        else None
-    )
-    return facts, receipt, custody_identity
+    verify_stable_regular_file_identity(archive, label="installed native archive")
+    verify_stable_regular_file_identity(receipt, label="installed native receipt")
+    return facts, receipt
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeRuntimeProduct:
+    """The three signed members and their shared native product semantics."""
+
+    archive: StableRegularFileIdentity
+    manifest: StableRegularFileIdentity
+    callable_projection: StableRegularFileIdentity
+    facts: NativeLinkProductFacts
+    callable_semantic_digest: str
+
+
+def _read_native_runtime_product(cell: InstalledRuntimeCell) -> _NativeRuntimeProduct:
+    role = "runtime_archive"
+    try:
+        path = resolve_owned_path(cell.members_root / cell.file_record(role)["name"])
+        with open_stable_regular_file(path, label="installed native runtime") as opened:
+            archive = cell.require_signed_member(
+                role,
+                stable_regular_file_handle_identity(
+                    opened, label="installed native runtime"
+                ),
+            )
+            facts, manifest = _native_link_facts(cell, archive)
+            projection = _admit_native_callable_projection(cell, archive, opened)
+            return _NativeRuntimeProduct(
+                archive,
+                manifest,
+                projection.identity,
+                facts,
+                projection.semantic_digest,
+            )
+    except (OSError, ValueError) as exc:
+        raise _runtime_contract.InstalledRuntimeError(
+            f"installed runtime cell {cell.id} native product is missing or damaged: {exc}"
+        ) from exc
 
 
 def _retained_callable_projection(
@@ -586,48 +623,30 @@ def _retained_callable_projection(
     )
 
 
-def _admit_retained_native(
+def _bind_retained_native(
     cell: InstalledRuntimeCell,
-    runtime_lib: Path,
-    source_archive: StableRegularFileIdentity,
-    source_receipt: StableRegularFileIdentity,
-    source_projection: StableRegularFileIdentity,
-    facts: NativeLinkProductFacts,
-    callable_semantic_digest: str,
+    product: _NativeRuntimeProduct,
     custody_admission: NativeLinkCustodyAdmission | None = None,
 ) -> _runtime_contract.InstalledNativeAdmission:
-    archive = cell.verify_retained_file("runtime_archive", runtime_lib)
-    receipt = cell.verify_retained_file(
-        "native_link_manifest", native_link_dependency_manifest_path(runtime_lib)
-    )
-    projection = cell.verify_retained_file(
-        NATIVE_CALLABLE_PROJECTION_ROLE,
-        _retained_callable_projection(cell, runtime_lib),
-    )
-    for actual, source in (
-        (archive, source_archive),
-        (receipt, source_receipt),
-        (projection, source_projection),
-    ):
-        if (actual.sha256, actual.size) != (source.sha256, source.size):
-            raise _runtime_contract.InstalledRuntimeError(
-                "retained native generation differs from observed shipped semantics"
-            )
+    runtime_lib = product.archive.path
+    facts = product.facts
     custody = (
         observe_native_link_custody(runtime_lib, facts.custody)
         if custody_admission is None
         else custody_admission.borrow(runtime_lib, facts.custody)
     )
+    if custody.archive is not None:
+        cell.require_signed_member("native_link_custody_archive", custody.archive)
     admission = _runtime_contract.InstalledNativeAdmission(
         cell.id,
         runtime_lib,
         facts.build_identity,
-        archive,
-        receipt,
-        projection,
+        product.archive,
+        product.manifest,
+        product.callable_projection,
         facts,
         custody,
-        callable_semantic_digest,
+        product.callable_semantic_digest,
     )
     admission.verify()
     return admission
@@ -635,88 +654,94 @@ def _admit_retained_native(
 
 def _retain_native(
     cell: InstalledRuntimeCell,
-    archive: StableRegularFileIdentity,
-    manifest: StableRegularFileIdentity,
-    projection: StableRegularFileIdentity,
-    facts: NativeLinkProductFacts,
-    callable_semantic_digest: str,
+    source: _NativeRuntimeProduct,
     custody_identity: StableRegularFileIdentity | None,
 ) -> _runtime_contract.InstalledNativeAdmission:
     root = cell.retained_root
-    runtime_lib = root / archive.path.name
+    archive = source.archive
 
     def admit(
         path: Path, custody_admission: NativeLinkCustodyAdmission | None = None
     ) -> _runtime_contract.InstalledNativeAdmission:
-        return _admit_retained_native(
-            cell,
-            path,
-            archive,
-            manifest,
-            projection,
-            facts,
-            callable_semantic_digest,
-            custody_admission,
+        # These hashes bind the copy to the same manifest as the parsed source
+        # members. Their canonical semantics were already validated.
+        product = replace(
+            source,
+            archive=cell.verify_retained_file("runtime_archive", path),
+            manifest=cell.verify_retained_file(
+                "native_link_manifest", native_link_dependency_manifest_path(path)
+            ),
+            callable_projection=cell.verify_retained_file(
+                NATIVE_CALLABLE_PROJECTION_ROLE,
+                _retained_callable_projection(cell, path),
+            ),
         )
+        return _bind_retained_native(cell, product, custody_admission)
 
-    if not root.exists() and not is_link_like(root):
-        root.parent.mkdir(parents=True, exist_ok=True)
-        stage = root.parent / f".{cell.id}.{uuid.uuid4().hex}.stage"
-        stage.mkdir()
-        try:
-            staged_lib = stage / archive.path.name
-            _atomic_copy_file(
-                archive.path,
-                staged_lib,
-                observed=archive,
+    root.parent.mkdir(parents=True, exist_ok=True)
+    stage = root.parent / f".{cell.id}.{uuid.uuid4().hex}.stage"
+    stage.mkdir()
+    try:
+        staged_lib = stage / archive.path.name
+        _atomic_copy_file(archive.path, staged_lib, observed=archive)
+        _atomic_copy_file(
+            source.manifest.path,
+            native_link_dependency_manifest_path(staged_lib),
+            observed=source.manifest,
+        )
+        _atomic_copy_file(
+            source.callable_projection.path,
+            _retained_callable_projection(cell, staged_lib),
+            observed=source.callable_projection,
+        )
+        with copy_native_link_custody_archive(
+            archive.path,
+            staged_lib,
+            source.facts.custody,
+            source_identity=custody_identity,
+        ) as custody_admission:
+            staged = admit(staged_lib, custody_admission)
+        return publish_native_runtime_directory(
+            stage,
+            root,
+            verify_staged=staged.verify,
+            admit=lambda directory: admit(directory / archive.path.name),
+        )
+    finally:
+        if stage.exists():
+            with contextlib.suppress(OSError):
+                _remove_file_or_tree(stage)
+
+
+def _probe_shipped_native_members(cell: InstalledRuntimeCell) -> None:
+    """Check the projected installation paths without reading unused copies."""
+    for member in cell.record["files"]:
+        path = resolve_owned_path(cell.members_root / member["name"])
+        observed = stable_regular_file_version(path, label="shipped native runtime")
+        if observed.size != member["size"]:
+            raise _runtime_contract.InstalledRuntimeError(
+                f"installed runtime cell {cell.id} {member['role']} is missing or "
+                f"damaged; reinstall Molt: {path}"
             )
-            _atomic_copy_file(
-                manifest.path,
-                native_link_dependency_manifest_path(staged_lib),
-                observed=manifest,
-            )
-            _atomic_copy_file(
-                projection.path,
-                _retained_callable_projection(cell, staged_lib),
-                observed=projection,
-            )
-            with copy_native_link_custody_archive(
-                archive.path,
-                staged_lib,
-                facts.custody,
-                source_identity=custody_identity,
-            ) as custody_admission:
-                staged = admit(staged_lib, custody_admission)
-            return publish_native_runtime_directory(
-                stage,
-                root,
-                verify_staged=staged.verify,
-                admit=lambda directory: admit(directory / archive.path.name),
-            )
-        finally:
-            if stage.exists():
-                with contextlib.suppress(OSError):
-                    _remove_file_or_tree(stage)
-    return admit(runtime_lib)
 
 
 def admit_installed_native_runtime(
     cell: InstalledRuntimeCell,
 ) -> _runtime_contract.InstalledNativeAdmission:
-    """Admit shipped bytes, retain one generation, and fence its exact members."""
+    """Admit exactly the retained native generation used by the build."""
     try:
-        archive = cell.bundle_file("runtime_archive")
-        facts, manifest, custody_identity = _shipped_native_identity(cell, archive)
-        projection = _admit_shipped_callable_projection(cell, archive)
-        return _retain_native(
-            cell,
-            archive,
-            manifest,
-            projection.identity,
-            facts,
-            projection.semantic_digest,
-            custody_identity,
+        root = cell.retained_root
+        if root.exists() or is_link_like(root):
+            _probe_shipped_native_members(cell)
+            product = _read_native_runtime_product(replace(cell, members_root=root))
+            return _bind_retained_native(cell, product)
+        source = _read_native_runtime_product(cell)
+        custody_identity = (
+            cell.member_file("native_link_custody_archive")
+            if cell.file_name("native_link_custody_archive") is not None
+            else None
         )
+        return _retain_native(cell, source, custody_identity)
     except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
@@ -731,7 +756,7 @@ def installed_native_runtime_identity(
     """Cold re-admission for consumers that hold no operation admission.
 
     A build operation reuses its ``InstalledNativeAdmission`` instead. This
-    path re-hashes the shipped and retained members and never reselects.
+    path re-hashes the retained members against the signed cell and never reselects.
     """
     try:
         if runtime_lib != cell.runtime_lib:
@@ -884,7 +909,7 @@ def admit_installed_wasm_runtime(
 ) -> RuntimeWasmGeneration:
     """Admit the shipped pair and hydrate one retained immutable generation."""
     try:
-        manifest, payload = cell.bundle_json("wasm_generation_manifest")
+        manifest, payload = cell.member_json("wasm_generation_manifest")
         payload = _freeze_json(payload)
         shared_identity, reloc_identity = _shipped_wasm_identities(cell, payload)
         _require_link_features(cell, required_link_features)
@@ -1003,20 +1028,23 @@ def reuse_installed_wasm_generation(
         ) from exc
 
 
-def _admit_shipped_callable_projection(
-    cell: InstalledRuntimeCell, archive: StableRegularFileIdentity
-):
-    """Admit a staged or shipped projection with the codegen projection authority."""
+def _admit_native_callable_projection(
+    cell: InstalledRuntimeCell,
+    archive: StableRegularFileIdentity,
+    opened: StableRegularFileHandle,
+) -> RuntimeCallableProjection:
+    """Admit a cell projection with the codegen projection authority."""
     # runtime_callable_symbols imports runtime_native_build, which imports this
     # module, so the one projection authority is bound when a receipt is admitted.
     from molt.cli.runtime_callable_symbols import _admit_runtime_callable_projection
 
-    captured = cell.bundle_projection()
+    captured = cell.member_projection()
     return _admit_runtime_callable_projection(
         captured[0].path,
         runtime_lib=archive.path,
         archive_identity=archive,
         captured=captured,
+        _archive_opened=opened,
         expected_sha256=cast(
             str, cell.file_record(NATIVE_CALLABLE_PROJECTION_ROLE)["sha256"]
         ),
@@ -1035,12 +1063,12 @@ def admit_runtime_cell_receipts(
     cell = InstalledRuntimeCell(None, record, members_root, None)
     try:
         if cell.kind == NATIVE_RUNTIME_CELL:
-            archive = cell.bundle_file("runtime_archive")
-            facts, _receipt, _custody = _shipped_native_identity(cell, archive)
-            _admit_shipped_callable_projection(cell, archive)
-            return (facts.build_identity,)
+            product = _read_native_runtime_product(cell)
+            if cell.file_name("native_link_custody_archive") is not None:
+                cell.member_file("native_link_custody_archive")
+            return (product.facts.build_identity,)
         return _shipped_wasm_identities(
-            cell, _freeze_json(cell.bundle_json("wasm_generation_manifest")[1])
+            cell, _freeze_json(cell.member_json("wasm_generation_manifest")[1])
         )
     except _runtime_contract.InstalledRuntimeError:
         raise

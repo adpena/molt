@@ -199,9 +199,9 @@ def _admit_runtime_callable_projection(
     The filename is a claim, never an authority: the captured bytes must have
     the expected digest and canonical encoding, and the name must address both
     those bytes and the exact archive generation beside which they are stored.
-    ``_archive_opened`` is an internal borrow from the active canonical native
-    symbol admission; that transaction already checked this digest and owns
-    the descriptor through this projection and its closing fences.
+    ``_archive_opened`` is a borrow from native symbol or installed product
+    admission, which has already hashed the archive and owns the descriptor
+    through the projection and its closing fences.
     """
     identity, content = (
         captured

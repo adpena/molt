@@ -49,6 +49,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_stored_runtime_wasm_generation,
     publish_runtime_wasm_product,
 )
+from molt.toolchain_identity import StableRegularFileHandle, StableRegularFileIdentity
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
@@ -311,6 +312,73 @@ def test_installed_native_cell_is_admitted_and_retained_outside_bundle(
         identity
     )
     cell.installed.verify_runtime()
+
+
+def test_warm_native_admits_only_the_consumed_member_bytes(
+    custody_bundle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.cli import native_link_custody
+
+    _forbid_cargo(monkeypatch)
+    cell = _cell(custody_bundle)
+    first = installed_runtime.admit_installed_native_runtime(cell)
+    reads = []
+    hash_handle = toolchain_identity.stable_regular_file_handle_identity
+    capture_object = installed_runtime.capture_stable_regular_file
+
+    def hash_member(
+        opened: StableRegularFileHandle, *, label: str, max_bytes: int | None = None
+    ) -> StableRegularFileIdentity:
+        reads.append(opened.path)
+        return hash_handle(opened, label=label, max_bytes=max_bytes)
+
+    def capture_member(
+        path: Path, *, label: str, max_bytes: int | None = None
+    ) -> tuple[StableRegularFileIdentity, bytes]:
+        reads.append(path)
+        return capture_object(path, label=label, max_bytes=max_bytes)
+
+    monkeypatch.setattr(
+        toolchain_identity, "stable_regular_file_handle_identity", hash_member
+    )
+    monkeypatch.setattr(
+        native_link_custody, "stable_regular_file_handle_identity", hash_member
+    )
+    monkeypatch.setattr(
+        installed_runtime, "capture_stable_regular_file", capture_member
+    )
+    monkeypatch.setattr(
+        installed_runtime, "stable_regular_file_handle_identity", hash_member
+    )
+    second = installed_runtime.admit_installed_native_runtime(cell)
+    assert second == first
+    assert not any(path.is_relative_to(cell.members_root) for path in reads)
+    for member in cell.record["files"]:
+        assert reads.count(cell.retained_root / member["name"]) == 1
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "runtime_archive",
+        "native_link_manifest",
+        distribution.NATIVE_CALLABLE_PROJECTION_ROLE,
+        "native_link_custody_archive",
+    ],
+)
+def test_warm_native_rejects_same_size_retained_mutation(
+    custody_bundle: Path, role: str
+) -> None:
+    cell = _cell(custody_bundle)
+    installed_runtime.admit_installed_native_runtime(cell)
+    member = cell.retained_root / cell.file_record(role)["name"]
+    before = member.stat()
+    original = member.read_bytes()
+    member.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+    os.utime(member, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(InstalledRuntimeError):
+        installed_runtime.admit_installed_native_runtime(cell)
 
 
 def test_receipt_identity_must_agree_with_the_cell_key(bundle):
@@ -1390,7 +1458,7 @@ def test_installed_custody_is_retained_and_admitted_by_content_at_link(
     assert binding is not None
     # Retention copied the signed custody archive beside the retained archive.
     retained = cell.runtime_lib.with_name(name)
-    shipped = cell.bundle_file("native_link_custody_archive").path
+    shipped = cell.member_file("native_link_custody_archive").path
     assert retained.read_bytes() == shipped.read_bytes()
     assert (
         _digest(retained.read_bytes())
@@ -1725,7 +1793,7 @@ def test_installed_wasm_first_admission_hydrates_then_reuses_the_retained_pair(
         )
         assert member.path.read_bytes() == _WASM_FIXTURE_BYTES[kind]
         assert inspect_wasm_binary(member.path) == "valid"
-        assert not os.path.samefile(member.path, cell.bundle_file(role).path)
+        assert not os.path.samefile(member.path, cell.member_file(role).path)
     receipt = stable_regular_file_identity(first.manifest, label="retained receipt")
     # Warm admission reuses the retained generation and hydrates nothing again.
     second = installed_runtime.admit_installed_wasm_runtime(cell)
@@ -1883,7 +1951,7 @@ def test_signed_receipt_damage_is_rejected_before_json_parsing(
 
     monkeypatch.setattr(installed_runtime, "loads_exact", parser)
     with pytest.raises(InstalledRuntimeError, match="missing or damaged"):
-        cell.bundle_json(role)
+        cell.member_json(role)
     assert parsed == []
 
 
