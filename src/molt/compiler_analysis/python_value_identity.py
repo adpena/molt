@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from molt.compiler_analysis import python_identity_catalog_generated as _catalog
-from molt.compiler_analysis.python_import_redirects import PythonImportKeyBound
+from molt.compiler_analysis.python_string_facts import PythonStringBound
 
 
 SOURCE_CALLABLE_IDENTITIES = (
@@ -107,7 +107,7 @@ def identity_fact_names(mask: _catalog.IdentityMask) -> tuple[str, ...]:
 
 
 def canonical_import_binding_write_mask(
-    key: str | PythonImportKeyBound | None,
+    key: str | PythonStringBound | None,
 ) -> _catalog.MemberMask:
     """A cache entry can redirect only acquisitions of that provider.
 

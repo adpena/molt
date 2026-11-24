@@ -580,6 +580,7 @@ def _emit_backend_pipeline_outputs(
         output_obj=prepared_native_link.output_obj,
         stub_path=prepared_native_link.stub_path,
         runtime_lib=prepared_native_link.runtime_lib,
+        runtime_features=runtime_codegen_binding.build_identity.runtime_features,
         external_native_artifacts=prepared_native_link.external_native_artifacts,
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
         build_diagnostics_payload=snapshot_build_diagnostics,

@@ -15,9 +15,9 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_source_bindings,
     python_canonical_member_writes,
 )
-from molt.compiler_analysis.python_import_redirects import (
-    PythonImportKeyBound,
-    python_import_key,
+from molt.compiler_analysis.python_string_facts import (
+    PythonStringBound,
+    python_string_spelling,
 )
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_write_mask,
@@ -45,32 +45,39 @@ def test_import_cache_entry_mutation_preserves_the_cache_object(
         ('"os.path"', "os.path"),
         ('f"os.path"', "os.path"),
         ('f""', ""),
-        ('f"{name}.path"', PythonImportKeyBound("", ".path", 5)),
-        ('f"typ{name}ing"', PythonImportKeyBound("typ", "ing", 6)),
-        ('"encodings." + name', PythonImportKeyBound("encodings.", "", 10)),
-        ('name + ".io"', PythonImportKeyBound("", ".io", 3)),
+        ('f"{name}.path"', PythonStringBound("", ".path", 5)),
+        ('f"typ{name}ing"', PythonStringBound("typ", "ing", 6)),
+        ('"encodings." + name', None),
+        ('name + ".io"', None),
+        ('"encodings." + "ascii"', "encodings.ascii"),
         ("left + right", None),
         ("format_key()", None),
         ("1", None),
     ],
 )
 def test_import_key_bounds_keep_unknown_expressions_conservative(
-    expression: str, expected: str | PythonImportKeyBound | None
+    expression: str, expected: str | PythonStringBound | None
 ) -> None:
     node = ast.parse(expression, mode="eval").body
-    assert python_import_key(node) == expected
+    assert python_string_spelling(node) == expected
+
+
+def test_long_literal_addition_keeps_a_single_spelling_proof() -> None:
+    parts = 1_500
+    node = ast.parse("+".join(['"x"'] * parts), mode="eval").body
+    assert python_string_spelling(node) == "x" * parts
 
 
 @pytest.mark.parametrize(
     ("bound", "invalidates_imports"),
     [
-        (PythonImportKeyBound("", ".path", 5), False),
-        (PythonImportKeyBound("typ", "ing", 6), True),
-        (PythonImportKeyBound("sys", "sys", 6), False),
+        (PythonStringBound("", ".path", 5), False),
+        (PythonStringBound("typ", "ing", 6), True),
+        (PythonStringBound("sys", "sys", 6), False),
     ],
 )
 def test_bounded_cache_key_invalidates_only_admitted_providers(
-    bound: PythonImportKeyBound, invalidates_imports: bool
+    bound: PythonStringBound, invalidates_imports: bool
 ) -> None:
     mask = canonical_import_binding_write_mask(bound)
     assert bool(mask & int(catalog.PythonMember.IMPORT_HOOKS)) is invalidates_imports
@@ -87,8 +94,8 @@ def test_formatted_key_bound_admits_every_value_it_can_format() -> None:
     expression = 'f"{key:provider}.path"'
     assert eval(expression, {"key": Key()}) == "typing.path"
     assert effects == ["provider"]
-    bound = python_import_key(ast.parse(expression, mode="eval").body)
-    assert isinstance(bound, PythonImportKeyBound)
+    bound = python_string_spelling(ast.parse(expression, mode="eval").body)
+    assert isinstance(bound, PythonStringBound)
     assert bound.admits("typing.path")
     assert not bound.admits("typing")
 

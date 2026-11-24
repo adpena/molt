@@ -66,6 +66,7 @@ def _observed_build_toolchain(
     *,
     backend_bin: Path | None,
     runtime_lib: Path | None,
+    runtime_features: tuple[str, ...] | None = None,
     output: Path,
     selected_profiles: Mapping[str, str] | None = None,
     emission_origin: BackendEmissionOrigin | None = None,
@@ -100,7 +101,10 @@ def _observed_build_toolchain(
                 if executable
                 else stable_file_content_identity(path, label=f"build {name}")
             )
-            facts[name] = {"path": str(path), "identity": identity}
+            observed: dict[str, object] = {"path": str(path), "identity": identity}
+            if name == "runtime" and runtime_features is not None:
+                observed["runtime_features"] = list(runtime_features)
+            facts[name] = observed
         except (OSError, ValueError) as exc:
             facts[name] = {"error": str(exc)}
     if runtime_lib is None and link_input_observation is not None:
@@ -324,7 +328,10 @@ def _build_native_link_success_data(
 
 
 def _recorded_toolchain_artifact(
-    artifact: RecordedArtifact, *, executable: bool
+    artifact: RecordedArtifact,
+    *,
+    executable: bool,
+    runtime_features: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     def filename(path: Path) -> str:
         return path.name.casefold() if os.name == "nt" else path.name
@@ -342,7 +349,10 @@ def _recorded_toolchain_artifact(
         )
     else:
         identity["filename"] = filename(artifact.path)
-    return {"path": str(artifact.path), "identity": identity}
+    facts: dict[str, object] = {"path": str(artifact.path), "identity": identity}
+    if runtime_features is not None:
+        facts["runtime_features"] = list(runtime_features)
+    return facts
 
 
 def _record_native_build_result(
@@ -360,6 +370,7 @@ def _record_native_build_result(
     from dataclasses import fields
     from molt.build_record import NativeBuildFacts, NativeBuildResult, RecordedArtifact
     from molt.backend_protocol import BackendEmissionOrigin
+    from molt.cli.runtime_identity_schema import validate_runtime_features
 
     if (
         warnings
@@ -422,13 +433,18 @@ def _record_native_build_result(
             raise ValueError("unsupported native toolchain observation")
         compiler = RecordedArtifact.capture(Path(observed["compiler"]["path"]))
         binary = RecordedArtifact.capture(Path(data["output"]))
+        runtime_features = validate_runtime_features(
+            observed["runtime"]["runtime_features"]
+        )
         for name, artifact in (
             ("compiler", compiler),
             ("runtime", runtime),
             ("artifact", binary),
         ):
             if observed[name] != _recorded_toolchain_artifact(
-                artifact, executable=name == "compiler"
+                artifact,
+                executable=name == "compiler",
+                runtime_features=runtime_features if name == "runtime" else None,
             ):
                 raise ValueError(f"native {name} observation changed before recording")
         if (
@@ -469,6 +485,7 @@ def _record_native_build_result(
             compiler,
             tuple(sorted(profiles.items())),
             None if origin is None else BackendEmissionOrigin.from_payload(origin),
+            runtime_features,
         )
         result.verify()
         input_report.report_build_result(result.payload())
@@ -507,7 +524,9 @@ def _emit_reused_native_build_result(result: NativeBuildResult) -> int:
         ("artifact", result.binary),
     ):
         observed[name] = _recorded_toolchain_artifact(
-            artifact, executable=name == "compiler"
+            artifact,
+            executable=name == "compiler",
+            runtime_features=result.runtime_features if name == "runtime" else None,
         )
     if result.emission_origin is not None:
         observed["emission_origin"] = result.emission_origin.payload()
@@ -790,6 +809,7 @@ def _emit_native_link_result(
     output_obj: Path,
     stub_path: Path,
     runtime_lib: Path,
+    runtime_features: tuple[str, ...],
     external_native_artifacts: Sequence[_StagedExternalPackageNativeArtifact],
     diagnostics_enabled: bool,
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
@@ -940,6 +960,7 @@ def _emit_native_link_result(
             data["observed_toolchain"] = _observed_build_toolchain(
                 backend_bin=backend_bin,
                 runtime_lib=runtime_lib,
+                runtime_features=runtime_features,
                 output=output_binary,
                 selected_profiles=selected_profiles,
                 emission_origin=emission_origin,

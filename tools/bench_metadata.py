@@ -11,6 +11,12 @@ class BenchmarkReferenceContract:
     reference_runtime: str
     external_baselines: bool
     reason: str
+    expected_stdout: str | None = None
+
+    def molt_output_matches(self, stdout: str | None, stderr: str | None) -> bool:
+        return self.expected_stdout is None or (
+            stdout == self.expected_stdout and stderr == ""
+        )
 
 
 CPYTHON_REFERENCE = BenchmarkReferenceContract(
@@ -19,18 +25,10 @@ CPYTHON_REFERENCE = BenchmarkReferenceContract(
     reason="cpython_reference",
 )
 
-MOLT_INTRINSIC_REFERENCE = BenchmarkReferenceContract(
-    reference_runtime="molt",
-    external_baselines=False,
-    reason="molt_runtime_intrinsics_without_external_reference",
-)
-
-MOLT_ONLY_BENCHMARKS = frozenset(
-    {
-        "tests/benchmarks/bench_channel_throughput.py",
-        "tests/benchmarks/bench_ptr_registry.py",
-    }
-)
+_MOLT_INTRINSIC_OUTPUTS = {
+    "tests/benchmarks/bench_channel_throughput.py": "1249975000\n",
+    "tests/benchmarks/bench_ptr_registry.py": "100000\n",
+}
 
 
 def _benchmark_keys(script: str) -> set[str]:
@@ -45,6 +43,12 @@ def _benchmark_keys(script: str) -> set[str]:
 
 
 def benchmark_reference_contract(script: str) -> BenchmarkReferenceContract:
-    if _benchmark_keys(script) & MOLT_ONLY_BENCHMARKS:
-        return MOLT_INTRINSIC_REFERENCE
+    for key in _benchmark_keys(script):
+        if key in _MOLT_INTRINSIC_OUTPUTS:
+            return BenchmarkReferenceContract(
+                reference_runtime="molt",
+                external_baselines=False,
+                reason="molt_runtime_intrinsics_without_external_reference",
+                expected_stdout=_MOLT_INTRINSIC_OUTPUTS[key],
+            )
     return CPYTHON_REFERENCE

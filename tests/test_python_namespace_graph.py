@@ -384,7 +384,10 @@ def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
     batch = graph_python_namespace_writes(
         [computed, later], sources.get, writer=("second", second)
     )
-    assert batch.computed_member_store == "second:4"
+    assert dict(batch.computed_member_writes) == {
+        "__class__": "second:4",
+        "cell_contents": "second:4",
+    }
     # A new writer changes every premise: a global change.
     assert index.merge(batch) is None
     assert index.premise(first, frozenset()).instance_class_writer == "second:4"
@@ -398,6 +401,48 @@ def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
         is None
     )
     assert index.premise(second, frozenset()).instance_class_writer == "first:12"
+
+
+def test_computed_spelling_limits_which_identity_facts_are_invalidated() -> None:
+    import ast
+
+    from molt.compiler_analysis.python_namespace_writes import (
+        decode_python_namespace_write,
+        python_namespace_summary,
+        python_namespace_write_payload,
+    )
+
+    source = Path("writer.py")
+    index = PythonGraphNamespaceIndex()
+
+    def apply(statement: str) -> frozenset[Path] | None:
+        rows = python_namespace_summary(
+            ast.parse(statement), package=None
+        ).foreign_writes
+        writes = [
+            decode_python_namespace_write(python_namespace_write_payload(row))
+            for row in rows
+        ]
+        return index.merge(
+            graph_python_namespace_writes(
+                writes, lambda _name: None, writer=("writer", source)
+            )
+        )
+
+    assert apply('setattr(obj, f"field_{key}", value)') == frozenset()
+    premise = index.premise(source, frozenset())
+    assert premise.instance_class_writer is None
+    assert premise.cell_writer is None
+
+    assert apply('\nobject.__setattr__(obj, f"__{key}__", value)') is None
+    premise = index.premise(source, frozenset())
+    assert premise.instance_class_writer == "writer:2"
+    assert premise.cell_writer is None
+
+    assert apply('\n\ndelattr(obj, f"cell_{key}")') is None
+    premise = index.premise(source, frozenset())
+    assert premise.instance_class_writer == "writer:2"
+    assert premise.cell_writer == "writer:3"
 
 
 def test_cell_writers_reach_every_premise(tmp_path: Path) -> None:

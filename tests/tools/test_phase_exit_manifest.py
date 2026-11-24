@@ -52,6 +52,7 @@ from tests.tools.receipt_engine_fixtures import install_observed_runtime
 from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tools import legacy_inventory as li
+from tools.bench_metadata import benchmark_reference_contract
 from tools import pact_witness_acceptance as acceptance
 from tools import phase_exit_manifest as pem
 from tools.compat import comparison, test_policy
@@ -545,6 +546,7 @@ def _board(
     )
     cells = []
     for benchmark in pa.CANONICAL_PERF_BENCHMARKS:
+        contract = benchmark_reference_contract(benchmark)
         for backend in sorted(pa.CANONICAL_PERF_BACKENDS):
             cell = ps.Cell(
                 benchmark=benchmark,
@@ -561,19 +563,28 @@ def _board(
                 backend=cell.backend,
                 profile=cell.profile,
             )
-            cell.build_ok = cell.molt_ok = cell.cpython_ok = cell.stable = True
+            cell.build_ok = cell.molt_ok = cell.stable = True
             cell.binary_size_kib, cell.compile_time_s = 512.0, 0.4
-            cell.molt_peak_rss_mib, cell.cpython_peak_rss_mib = 18.0, 15.0
-            cell.warm_molt_s, cell.warm_cpython_s = 0.010, 0.020
-            cell.cold_molt_s, cell.cold_cpython_s = (
-                (0.060, 0.040) if (benchmark, backend) == cold_loss else (0.011, 0.025)
-            )
-            cell.output_parity = dict(parity)
+            cell.molt_peak_rss_mib = 18.0
+            cell.warm_molt_s, cell.cold_molt_s = 0.010, 0.011
             cell.log_artifact = f"bench/scoreboard/logs/{Path(benchmark).stem}.log"
             cell.repeat_passes = int(pa.CANONICAL_PERF_REPEAT)
-            cell.repeat_warm_speedups = [2.0] * cell.repeat_passes
-            cell.repeat_ci_lo, cell.repeat_ci_hi = 1.9, 2.1
-            cell.repeat_stability = "STABLE_ABOVE"
+            if contract.external_baselines:
+                cell.cpython_ok = True
+                cell.cpython_peak_rss_mib = 15.0
+                cell.warm_cpython_s, cell.cold_cpython_s = 0.020, 0.025
+                if (benchmark, backend) == cold_loss:
+                    cell.cold_molt_s, cell.cold_cpython_s = 0.060, 0.040
+                cell.output_parity = dict(parity)
+                cell.repeat_warm_speedups = [2.0] * cell.repeat_passes
+                cell.repeat_ci_lo, cell.repeat_ci_hi = 1.9, 2.1
+                cell.repeat_stability = "STABLE_ABOVE"
+            else:
+                assert contract.expected_stdout is not None
+                cell.output_parity = pa.perf_schema.molt_contract_parity_evidence(
+                    contract.expected_stdout,
+                    [("molt:cold", contract.expected_stdout, "", 0)],
+                )
             cell.finalize(budget_ms=100.0, authoritative=True)
             cells.append(cell)
     ps.apply_classification(cells, quiescent=True)

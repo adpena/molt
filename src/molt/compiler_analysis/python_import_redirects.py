@@ -31,7 +31,6 @@ import runs first lose the facts that assume one execution (static cells, C4).
 
 from __future__ import annotations
 
-import ast
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
@@ -39,102 +38,9 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_IMPORT_IDENTITIES,
 )
 
+from molt.compiler_analysis.python_string_facts import PythonStringBound
+
 _CANONICAL_IMPORT_NAMES = tuple(sorted(CANONICAL_IMPORT_IDENTITIES))
-
-
-@dataclass(frozen=True, slots=True, order=True)
-class PythonImportKeyBound:
-    """What a computed module name may spell: it starts with ``prefix``, ends
-    with ``suffix`` and has at least ``minimum`` characters. A key with no
-    literal part has no bound; its row is a global writer instead."""
-
-    prefix: str
-    suffix: str
-    minimum: int
-
-    def admits(self, name: str) -> bool:
-        return (
-            len(name) >= self.minimum
-            and name.startswith(self.prefix)
-            and name.endswith(self.suffix)
-        )
-
-    def payload(self) -> list[object]:
-        return [self.prefix, self.suffix, self.minimum]
-
-
-def decode_python_import_key_bound(raw: object) -> PythonImportKeyBound:
-    if (
-        not isinstance(raw, list)
-        or len(raw) != 3
-        or type(raw[0]) is not str
-        or type(raw[1]) is not str
-        or type(raw[2]) is not int
-        or raw[2] < max(len(raw[0]), len(raw[1]))
-        or not (raw[0] or raw[1])
-    ):
-        raise ValueError("invalid import key bound")
-    return PythonImportKeyBound(raw[0], raw[1], raw[2])
-
-
-def _string_parts(node: ast.expr) -> list[str | None] | None:
-    """The literal and computed parts of a string expression, in order, or
-    None when it is not a concatenation of string parts."""
-    if isinstance(node, ast.Constant):
-        return [node.value] if type(node.value) is str else None
-    if isinstance(node, ast.JoinedStr):
-        parts: list[str | None] = []
-        for part in node.values:
-            if isinstance(part, ast.Constant) and type(part.value) is str:
-                parts.append(part.value)
-            elif isinstance(part, ast.FormattedValue):
-                parts.append(None)
-            else:
-                return None
-        return parts
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _string_parts(node.left)
-        right = _string_parts(node.right)
-        if left is None and right is None:
-            return None
-        # A non-literal operand is a computed part: ``"encodings." + name``.
-        return (left if left is not None else [None]) + (
-            right if right is not None else [None]
-        )
-    return None
-
-
-def python_import_key(node: ast.expr | str | None) -> str | PythonImportKeyBound | None:
-    """The module name an expression spells without running it: the exact
-    name, a bound on it, or None when nothing bounds it.
-
-    Requires: nothing; any expression is accepted.
-    Ensures: an exact result equals every value the expression can have; a
-    bound admits every value; None makes no claim.
-    """
-    if isinstance(node, str):
-        return node
-    if node is None:
-        return None
-    parts = _string_parts(node)
-    if parts is None:
-        return None
-    if all(part is not None for part in parts):
-        return "".join(part for part in parts if part is not None)
-    prefix = ""
-    for part in parts:
-        if part is None:
-            break
-        prefix += part
-    suffix = ""
-    for part in reversed(parts):
-        if part is None:
-            break
-        suffix = part + suffix
-    if not (prefix or suffix):
-        return None
-    minimum = sum(len(part) for part in parts if part is not None)
-    return PythonImportKeyBound(prefix, suffix, minimum)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -167,7 +73,7 @@ def _first(writers: Iterable[ImportWriter]) -> tuple[ImportWriter, ...]:
 
 # A guarded import: its module name (or bound, or None), its handler site and
 # the modules completed before it runs.
-GuardedImport = tuple[str | PythonImportKeyBound | None, ImportWriter, tuple[str, ...]]
+GuardedImport = tuple[str | PythonStringBound | None, ImportWriter, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +91,7 @@ class ImportRedirects:
 
     global_writers: tuple[ImportWriter, ...] = ()
     key_writers: tuple[tuple[str, ImportWriter], ...] = ()
-    bound_writers: tuple[tuple[PythonImportKeyBound, ImportWriter], ...] = ()
+    bound_writers: tuple[tuple[PythonStringBound, ImportWriter], ...] = ()
     guarded: tuple[GuardedImport, ...] = ()
     # D2b: a spec writer of one module (its name), or of every module (None).
     spec_writers: tuple[tuple[str | None, ImportWriter], ...] = ()
@@ -254,7 +160,7 @@ class ImportRedirects:
                 continue
             if key is None:
                 found.append(writer)
-            elif isinstance(key, PythonImportKeyBound):
+            elif isinstance(key, PythonStringBound):
                 if any(key.admits(name) for name in targets) or any(
                     key.prefix.startswith(name + ".") for name in targets
                 ):
@@ -294,7 +200,7 @@ class ImportRedirects:
         return self.join(import_redirects((writer,)))
 
 
-def _guard_order(key: str | PythonImportKeyBound | None) -> tuple[int, str, str, int]:
+def _guard_order(key: str | PythonStringBound | None) -> tuple[int, str, str, int]:
     if key is None:
         return (0, "", "", 0)
     if isinstance(key, str):
@@ -305,7 +211,7 @@ def _guard_order(key: str | PythonImportKeyBound | None) -> tuple[int, str, str,
 def import_redirects(
     global_writers: Iterable[ImportWriter] = (),
     key_writers: Iterable[tuple[str, ImportWriter]] = (),
-    bound_writers: Iterable[tuple[PythonImportKeyBound, ImportWriter]] = (),
+    bound_writers: Iterable[tuple[PythonStringBound, ImportWriter]] = (),
     guarded: Iterable[GuardedImport] = (),
     spec_writers: Iterable[tuple[str | None, ImportWriter]] = (),
     spec_member_stores: Iterable[ImportWriter] = (),

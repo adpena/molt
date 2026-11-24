@@ -266,7 +266,7 @@ def test_profile_binding_requires_actual_selected_coordinates(spec, profile):
 
     selection = profile_selection(spec, profile)
     facts = {
-        "backend": spec.backend,
+        "backend": "llvm" if spec.build_target == "wasm" else spec.backend,
         "guest_profile": selection.guest_profile,
         "compiler_profile": selection.compiler_profile,
         "runtime_profile": selection.runtime_profile,
@@ -279,6 +279,8 @@ def test_profile_binding_requires_actual_selected_coordinates(spec, profile):
         )
 
     assert check({"selected_profiles": facts, "compiled_with_verified": False}) == []
+    if spec.build_target == "wasm":
+        assert check({"selected_profiles": {**facts, "backend": "wasm"}})
     assert check(None)
     assert check({"compiler": {"path": f"target/{profile}/molt-backend"}})
     for key in facts:
@@ -308,6 +310,62 @@ def test_publication_observes_selected_profiles_without_claiming_loaded_compiler
     assert receipt["artifact"]["identity"]
     selection["runtime_profile"] = "changed caller"
     assert receipt["selected_profiles"]["runtime_profile"] == "release-output"
+
+
+def test_runtime_identity_distinguishes_variants_but_rejects_changed_bytes(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.build_results import _observed_build_toolchain
+    from tools.perf_scoreboard_build_profiles import (
+        measured_runtime_coordinate,
+        record_measured_build_identity,
+    )
+
+    output, compiler, runtime = (
+        tmp_path / name for name in ("app", "backend", "runtime")
+    )
+    output.write_bytes(b"app")
+    compiler.write_bytes(b"compiler")
+    selection = profile_selection(NATIVE_CRANELIFT, "release-fast").as_record()
+    provenance: dict[str, dict[str, str | None]] = {}
+
+    def observe(features: tuple[str, ...] | None, contents: bytes) -> dict[str, object]:
+        runtime.write_bytes(contents)
+        return _observed_build_toolchain(
+            backend_bin=compiler,
+            runtime_lib=runtime,
+            runtime_features=features,
+            output=output,
+            selected_profiles=selection,
+        )
+
+    def record(observation: dict[str, object]) -> None:
+        record_measured_build_identity(
+            provenance,
+            observation=observation,
+            backend="native",
+            profile="release-fast",
+        )
+
+    micro = ("no-default-features", "stdlib_micro")
+    edge = ("no-default-features", "stdlib_edge")
+    observations = (observe(micro, b"micro"), observe(edge, b"edge"))
+    for observation in observations:
+        record(observation)
+    assert provenance["runtime_identity"] == dict(
+        measured_runtime_coordinate(item, backend="native", profile="release-fast")
+        for item in observations
+    )
+    assert len(provenance["runtime_identity"]) == 2
+    assert len(provenance["measured_backend_binary_identity"]) == 1
+    with pytest.raises(
+        ValueError, match="runtime library changed within measured variant"
+    ):
+        record(observe(micro, b"replacement"))
+    with pytest.raises(ValueError, match="runtime features must"):
+        record(observe(None, b"no feature evidence"))
+    with pytest.raises(ValueError, match="runtime features must be sorted and unique"):
+        record(observe(tuple(reversed(micro)), b"unordered feature evidence"))
 
 
 def test_batch_restart_preserves_owned_profile_and_isolates_next_cell(monkeypatch):
@@ -401,14 +459,23 @@ def test_profile_change_invalidates_real_build_cache_variant(minor):
 
 
 def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path):
-    from molt.toolchain_identity import executable_content_identity
+    from molt.toolchain_identity import (
+        executable_content_identity,
+        stable_file_content_identity,
+    )
     from molt.backend_binary_identity import identify_backend_binary
     from tools.perf_scoreboard_build_profiles import record_measured_build_identity
 
     compiler = tmp_path / "molt-backend.exe"
     compiler.write_bytes(b"actual selected compiler bytes")
     identity = executable_content_identity(compiler, label="test selected compiler")
-    observation = {"compiler": {"identity": identity}, "runtime": None}
+    runtime = tmp_path / "libmolt_runtime.a"
+    runtime.write_bytes(b"actual runtime bytes")
+    observed_runtime = {
+        "identity": stable_file_content_identity(runtime, label="runtime"),
+        "runtime_features": ["stdlib_micro"],
+    }
+    observation = {"compiler": {"identity": identity}, "runtime": observed_runtime}
     provenance = {"backend_binary_identity": {"native/release-output": None}}
     record_measured_build_identity(
         provenance, observation=observation, backend="native", profile="release-output"
@@ -430,7 +497,7 @@ def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path
                 compiler, label="replacement compiler"
             )
         },
-        "runtime": None,
+        "runtime": observed_runtime,
     }
     with pytest.raises(ValueError, match="changed within measured lane"):
         record_measured_build_identity(
@@ -464,7 +531,10 @@ def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
         executable_content_identity,
         stable_file_content_identity,
     )
-    from tools.perf_scoreboard_build_profiles import record_measured_build_identity
+    from tools.perf_scoreboard_build_profiles import (
+        measured_runtime_coordinate,
+        record_measured_build_identity,
+    )
 
     compiler = tmp_path / "molt-backend"
     compiler.write_bytes(b"compiler bytes")
@@ -479,6 +549,7 @@ def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
             "runtime": {
                 "path": str(runtime),
                 "identity": stable_file_content_identity(runtime, label="runtime"),
+                "runtime_features": ["stdlib_micro"],
             },
         }
 
@@ -486,15 +557,18 @@ def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
     record_measured_build_identity(
         provenance, observation=observation(), backend="native", profile="release-fast"
     )
-    first = provenance["runtime_identity"]["native/release-fast"]
+    key, _ = measured_runtime_coordinate(
+        observation(), backend="native", profile="release-fast"
+    )
+    first = provenance["runtime_identity"][key]
     assert isinstance(first, str) and len(first) == 64
     record_measured_build_identity(
         provenance, observation=observation(), backend="native", profile="release-fast"
     )
-    assert provenance["runtime_identity"]["native/release-fast"] == first
+    assert provenance["runtime_identity"][key] == first
     runtime.write_bytes(b"rebuilt runtime archive")
     with pytest.raises(
-        ValueError, match="runtime library changed within measured lane"
+        ValueError, match="runtime library changed within measured variant"
     ):
         record_measured_build_identity(
             provenance,
@@ -507,9 +581,9 @@ def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
         provenance,
         observation={**observation(), "runtime": None},
         backend="wasm",
-        profile="release-fast",
+        profile="release-output",
     )
-    assert provenance["runtime_identity"]["wasm/release-fast"] is None
+    assert provenance["runtime_identity"]["wasm/release-output"] is None
 
 
 @pytest.mark.parametrize(
@@ -1423,7 +1497,7 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
                 "runtime_profile",
                 "compiler_profile",
             ),
-            facts,
+            ("llvm", *facts[1:]),
         )
     )
     script = source / "bench_probe.py"

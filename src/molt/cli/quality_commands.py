@@ -39,6 +39,8 @@ def _internal_batch_build_server(
     verbose: bool = False,
     build_fn: Callable[[BuildRequest], int] | None = None,
 ) -> int:
+    from molt.backend_daemon_suite_custody import LEASE_ENV
+
     del json_output
     del verbose
 
@@ -102,7 +104,9 @@ def _internal_batch_build_server(
                 }
             )
             continue
-        env_overrides: dict[str, str] = dict(env_overrides_raw)
+        # The server inherits its guard's lease at launch. A request can carry
+        # a stale environment snapshot across a server restart.
+        env_overrides = ProcessEnvironment(env_overrides_raw).without((LEASE_ENV,))
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         try:

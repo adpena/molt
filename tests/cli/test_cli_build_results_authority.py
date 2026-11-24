@@ -175,6 +175,7 @@ def _emit_link_result(
         output_obj=tmp_path / "app.lib",
         stub_path=tmp_path / "main_stub.c",
         runtime_lib=tmp_path / "runtime.lib",
+        runtime_features=("no-default-features", "stdlib_micro"),
         external_native_artifacts=(),
         diagnostics_enabled=False,
         build_diagnostics_payload=lambda: (None, None),
@@ -376,6 +377,7 @@ def _native_record_fixture(tmp_path: Path):
         *(RecordedArtifact.capture(path) for path in paths.values()),
         (),
         None,
+        ("no-default-features", "stdlib_micro"),
     )
     origin = BackendEmissionOrigin(
         BackendEmissionProducer("daemon", 12345, None),
@@ -400,6 +402,7 @@ def _native_record_fixture(tmp_path: Path):
             "observed_toolchain": build_results._observed_build_toolchain(
                 backend_bin=paths["compiler"],
                 runtime_lib=paths["runtime"],
+                runtime_features=result.runtime_features,
                 output=paths["binary"],
                 emission_origin=origin,
             ),
@@ -414,7 +417,7 @@ def test_native_reuse_projects_current_facts_through_actual_consumers(
     from molt.cli.wrapper_build import _parse_wrapper_build_contract_payload
     from tools.dx_build_timer import _molt_build_artifact, MoltMeasurement
 
-    result, _data = _native_record_fixture(tmp_path)
+    result, original = _native_record_fixture(tmp_path)
     assert build_results._emit_reused_native_build_result(result) == 0
     stdout = capsys.readouterr().out
     payload = json.loads(stdout)
@@ -434,6 +437,14 @@ def test_native_reuse_projects_current_facts_through_actual_consumers(
     assert payload["warnings"] == []
     assert not {"stdout", "stderr", "compile_diagnostics"} & data.keys()
     assert data["observed_toolchain"]["compiled_with_verified"] is False
+    assert (
+        data["observed_toolchain"]["runtime"]
+        == original["observed_toolchain"]["runtime"]
+    )
+    assert data["observed_toolchain"]["runtime"]["runtime_features"] == [
+        "no-default-features",
+        "stdlib_micro",
+    ]
     assert result.emission_origin is not None
     assert (
         data["observed_toolchain"]["emission_origin"]

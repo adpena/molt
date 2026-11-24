@@ -47,9 +47,12 @@ def profile_binding_problems(
     )
     if not isinstance(facts, Mapping):
         return ["missing selected-profile observation; historical/unbound result"]
+    selected = expected.as_record()
+    if expected.target == "wasm":
+        selected["backend"] = expected.codegen_backend
     return [
         f"selected {key}: expected {value!r}, observed {facts.get(key)!r}"
-        for key, value in expected.as_record().items()
+        for key, value in selected.items()
         if facts.get(key) != value
     ]
 
@@ -72,15 +75,20 @@ def canonical_content_identity(identity: object, fields: frozenset[str]) -> bool
     )
 
 
-def _measured_runtime_digest(observation: Mapping[str, object]) -> str | None:
-    """The runtime library a native link bound, or None for a lane without one."""
+def measured_runtime_coordinate(
+    observation: object, *, backend: str, profile: str
+) -> tuple[str, str | None]:
+    """The linked runtime byte identity at its build-selected variant coordinate."""
+    from molt.cli.runtime_identity_schema import validate_runtime_features
     from molt.exact_json import canonical_json_sha256
 
-    if "runtime" not in observation:
+    lane = profile_selection_for_backend(backend, profile)
+    key = f"{backend}/{profile}"
+    if not isinstance(observation, Mapping) or "runtime" not in observation:
         raise ValueError("measured build observation lacks its runtime fact")
     runtime = observation["runtime"]
-    if runtime is None:
-        return None
+    if runtime is None and lane.target != "native":
+        return key, None
     identity = runtime.get("identity") if isinstance(runtime, Mapping) else None
     if not canonical_content_identity(
         identity, frozenset({"filename", "size", "sha256"})
@@ -90,8 +98,14 @@ def _measured_runtime_digest(observation: Mapping[str, object]) -> str | None:
             "measured build lacks a canonical runtime identity"
             + (f": {error}" if isinstance(error, str) and error else "")
         )
-    assert isinstance(identity, Mapping)
-    return canonical_json_sha256({"schema": 1, "runtime": dict(identity)})
+    assert isinstance(identity, Mapping) and isinstance(runtime, Mapping)
+    if lane.target == "native":
+        features = validate_runtime_features(runtime.get("runtime_features"))
+        if not features:
+            raise ValueError("measured native runtime lacks its features")
+        feature_digest = canonical_json_sha256(list(features))
+        key = f"{key}/{feature_digest}"
+    return key, canonical_json_sha256({"schema": 1, "runtime": dict(identity)})
 
 
 def record_measured_build_identity(
@@ -117,14 +131,18 @@ def record_measured_build_identity(
     previous = measured.get(key)
     if previous is not None and previous != digest:
         raise ValueError(f"selected compiler changed within measured lane {key}")
-    runtime_digest = _measured_runtime_digest(observation)
+    runtime_key, runtime_digest = measured_runtime_coordinate(
+        observation, backend=backend, profile=profile
+    )
     runtimes = provenance.setdefault("runtime_identity", {})
-    if key in runtimes and runtimes[key] != runtime_digest:
-        raise ValueError(f"runtime library changed within measured lane {key}")
+    if runtime_key in runtimes and runtimes[runtime_key] != runtime_digest:
+        raise ValueError(
+            f"runtime library changed within measured variant {runtime_key}"
+        )
     provenance.setdefault(
         "backend_binary_identity_before_build",
         dict(provenance.get("backend_binary_identity", {})),
     )
     measured[key] = digest
-    runtimes[key] = runtime_digest
+    runtimes[runtime_key] = runtime_digest
     provenance.setdefault("backend_binary_identity", {})[key] = digest

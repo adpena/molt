@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from contextlib import ExitStack, contextmanager
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal, TypedDict, TYPE_CHECKING
+from typing import Literal, NotRequired, TypedDict, TYPE_CHECKING
 from enum import Enum
 
 from molt.compilation_target import TargetKind, admit_target, is_wasm_target
@@ -302,6 +302,16 @@ class BenchmarkWorkloadRecord(TypedDict):
     run_args: list[str]
     molt_args: list[str]
     sealed_inputs: SealedBenchmarkInputs | None
+    reference_wheel: NotRequired[ReferenceWheelInputs]
+
+
+class ReferenceWheelInputs(TypedDict):
+    filename: str
+    version: str
+    size: int
+    sha256: str
+    seal_sha256: str
+    runtime_closure_sha256: str
 
 
 class SealedBenchmarkInputs(TypedDict):
@@ -314,7 +324,7 @@ def workload_identity_problems(
     value: object, *, expected_entry: str | None = None
 ) -> list[str]:
     """One durable workload contract for every benchmark projection."""
-    if not isinstance(value, Mapping) or set(value) != {
+    fields = {
         "schema",
         "entry",
         "entry_source",
@@ -324,7 +334,11 @@ def workload_identity_problems(
         "run_args",
         "molt_args",
         "sealed_inputs",
-    }:
+    }
+    if not isinstance(value, Mapping) or set(value) not in (
+        fields,
+        fields | {"reference_wheel"},
+    ):
         return ["workload identity is missing or has invalid fields"]
     if value["schema"] != "molt.benchmark-workload/2":
         return ["workload schema is unsupported"]
@@ -345,6 +359,28 @@ def workload_identity_problems(
 
     if not digest(value["topology_sha256"], empty=True):
         return ["workload topology digest is invalid"]
+    if "reference_wheel" in value:
+        wheel = value["reference_wheel"]
+        if (
+            value["entry_source"] != "tests/benchmarks/bench_parse_msgpack.py"
+            or value["scope"] != "local-python-source-closure"
+            or not isinstance(wheel, Mapping)
+            or set(wheel) != set(ReferenceWheelInputs.__required_keys__)
+            or type(wheel["version"]) is not str
+            or not wheel["version"]
+            or type(wheel["filename"]) is not str
+            or not wheel["filename"].startswith(f"msgpack-{wheel['version']}-")
+            or not wheel["filename"].endswith(".whl")
+            or PurePosixPath(wheel["filename"]).name != wheel["filename"]
+            or PureWindowsPath(wheel["filename"]).name != wheel["filename"]
+            or type(wheel["size"]) is not int
+            or wheel["size"] <= 0
+            or not all(
+                digest(wheel[field])
+                for field in ("sha256", "seal_sha256", "runtime_closure_sha256")
+            )
+        ):
+            return ["workload CPython reference wheel identity is invalid"]
     sealed = value["sealed_inputs"]
     if value["scope"] == "sealed-project":
         from molt.portable_paths import portable_relative_path
@@ -443,6 +479,9 @@ class AdmittedBenchmarkWorkload:
     execution_script: Path
     execution_root: Path
     _seal: SourcePackageSeal | None = None
+    _local_reference_roots: tuple[Path, ...] = ()
+    _reference_site: Path | None = None
+    _reference_command: tuple[str, ...] = ()
 
     @property
     def record(self) -> BenchmarkWorkloadRecord:
@@ -500,6 +539,40 @@ class AdmittedBenchmarkWorkload:
                 }
             )
             flags = ("-P", "-S", "-B")
+        elif self._local_reference_roots or self._reference_site is not None:
+            # Match the admitted source lookup without running sitecustomize
+            # or relying on PYTHONPATH, which an isolated interpreter ignores.
+            roots = (self.execution_script.parent, *self._local_reference_roots)
+            prefix = ""
+            flags = ("-P", "-S", "-B")
+            if self._reference_site is not None:
+                if tuple(command) != self._reference_command:
+                    raise ValueError(
+                        "reference wheel belongs to a different CPython command"
+                    )
+                env = env.without(("MSGPACK_PUREPYTHON",))
+                flags = ("-I", "-S", "-B")
+                prefix = (
+                    f"sys.path.insert(0, {str(self._reference_site)!r})\n"
+                    "from msgpack import _cmsgpack, unpackb\n"
+                    "if unpackb is not _cmsgpack.unpackb:\n"
+                    "    raise RuntimeError('sealed MessagePack native decoder is inactive')\n"
+                )
+            arguments = (
+                *command,
+                *flags,
+                "-c",
+                "import runpy, sys\n" + prefix + "path, count, *args = sys.argv[1:]\n"
+                "count = int(count)\n"
+                "sys.path[:0] = args[:count]\n"
+                "sys.argv[:] = [path, *args[count:]]\n"
+                "runpy.run_path(path, run_name='__main__')\n",
+                str(self.execution_script),
+                str(len(roots)),
+                *map(str, roots),
+                *self.record["run_args"],
+            )
+            return BenchmarkInvocation(arguments, env, self.source_cwd)
         return BenchmarkInvocation(
             (*command, *flags, str(self.execution_script), *self.record["run_args"]),
             env,
@@ -546,6 +619,8 @@ def admit_benchmark_workload(
     sealed_project: SourcePackageSeal | None = None,
     python_roots: Sequence[str] = (),
     oracle: str | None = None,
+    cpython_command: Sequence[str] | None = None,
+    reference_store: Path | None = None,
 ) -> Iterator[AdmittedBenchmarkWorkload]:
     """Hold source generations through both runtimes without relocating code.
 
@@ -684,6 +759,16 @@ def admit_benchmark_workload(
             )
 
     closure = discover()
+    from molt.cli.source_package_seal import verify_source_package_seal
+    from tools.benchmark_applications import prepare_reference_dependency
+
+    reference = (
+        prepare_reference_dependency(
+            script, cpython_command=cpython_command, store=reference_store
+        )
+        if cpython_command is not None
+        else None
+    )
     with ExitStack() as custody:
         identities = []
         for path in closure.paths:
@@ -717,11 +802,24 @@ def admit_benchmark_workload(
             "molt_args": list(molt_args),
             "sealed_inputs": None,
         }
+        if reference is not None:
+            record["reference_wheel"] = {
+                "filename": reference.wheel.filename,
+                "version": reference.wheel.version,
+                "size": reference.wheel.size,
+                "sha256": reference.wheel.sha256,
+                "seal_sha256": reference.seal.seal_sha256,
+                "runtime_closure_sha256": reference.runtime_closure_sha256,
+            }
         problems = workload_identity_problems(record)
         if problems:
             raise ValueError("; ".join(problems))
 
         def verify() -> None:
+            if reference is not None:
+                verify_source_package_seal(
+                    reference.seal.root, expected_sha256=reference.seal.seal_sha256
+                )
             for identity in identities:
                 verify_stable_regular_file_identity(
                     identity, label="benchmark source", hash_content=True
@@ -734,7 +832,23 @@ def admit_benchmark_workload(
             ):
                 raise ValueError(f"benchmark source closure changed: {script}")
 
-        workload = AdmittedBenchmarkWorkload(script, record, verify, script, root)
+        reference_roots = (
+            search_roots[1:]
+            if any(not path.is_relative_to(script.parent) for path in closure.paths)
+            else ()
+        )
+        workload = AdmittedBenchmarkWorkload(
+            script,
+            record,
+            verify,
+            script,
+            root,
+            _local_reference_roots=reference_roots,
+            _reference_site=None
+            if reference is None
+            else reference.seal.payload_root / reference.python_root,
+            _reference_command=tuple(cpython_command or ()),
+        )
         workload.verify()
         try:
             yield workload

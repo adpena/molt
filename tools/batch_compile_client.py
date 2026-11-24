@@ -15,6 +15,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from tools import harness_memory_guard
+from molt.backend_daemon_suite_custody import LEASE_ENV
 from molt.process_spawn import ProcessGroupKwargs
 from molt.source_root import compiler_source_root
 
@@ -157,6 +158,12 @@ class BatchCompileServerClient:
                     drain_until_clean_sec=0.1,
                     drain_max_runtime_sec=2.0,
                 )
+                if self._guard_sentinel is not None:
+                    # Starting the sentinel can acquire a new suite lease.
+                    # Bind the child to the lease this sentinel just selected.
+                    lease = os.environ.get(LEASE_ENV)
+                    if lease is not None:
+                        launch_env[LEASE_ENV] = lease
             process = subprocess.Popen(
                 list(cmd),
                 cwd=str(cwd),

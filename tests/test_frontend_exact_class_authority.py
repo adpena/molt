@@ -315,6 +315,42 @@ def test_rebinding_an_exact_alias_clears_layout_authority() -> None:
     assert all(op.kind != "SETATTR" for op in stores)
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [('f"field_{key}"', "GETATTR"), ('f"__{key}__"', "GUARDED_GETATTR")],
+)
+def test_computed_member_name_that_excludes_class_preserves_direct_field_access(
+    name: str, expected: str
+) -> None:
+    from molt.compiler_analysis.python_namespace_graph import (
+        graph_python_namespace_writes,
+    )
+    from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+
+    writes = python_namespace_summary(
+        ast.parse(f"setattr(obj, {name}, value)"), package=None
+    ).foreign_writes
+    premise = graph_python_namespace_writes(
+        writes, lambda _name: None, writer=("patch", Path("patch.py"))
+    ).premise(Path("point.py"), frozenset(), opaque_activation_sources=())
+    generator = SimpleTIRGenerator(
+        module_name="exact_class_authority", namespace_premise=premise
+    )
+    generator.visit(
+        ast.parse(
+            "class Point:\n"
+            "    x: int\n"
+            "    def __init__(self, x):\n"
+            "        assert x >= 0\n"
+            "        self.x = x\n"
+            "print(Point(1).x)\n"
+        )
+    )
+    entry = generator.funcs_map["molt_main"]["ops"]
+    assert any(op.kind == "OBJECT_NEW_BOUND" for op in entry)
+    assert [op.kind for op in _attribute_ops(entry, "x")] == [expected]
+
+
 def test_arbitrary_callback_expires_reachable_exact_instance_fact() -> None:
     ops = _ops(
         "class Point:\n"

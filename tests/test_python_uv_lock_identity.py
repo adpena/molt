@@ -17,6 +17,7 @@ from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_uv_lock_identity import (
     _locked_artifact,
     environment_matches_lock_closure,
+    select_locked_reference_wheel,
     selected_uv_lock_group_closure,
     validate_uv_lock_group_closure,
 )
@@ -28,6 +29,42 @@ def _wheel(filename: str, digest: str = "a") -> dict[str, object]:
         "hash": f"sha256:{digest * 64}",
         "size": 123,
     }
+
+
+def test_reference_wheel_requires_the_locked_target_and_unconditional_row() -> None:
+    root = Path(__file__).resolve().parents[1]
+    lock = (root / "uv.lock").read_bytes()
+    tags = ["cp312-cp312-macosx_11_0_arm64"]
+    target = {**wheel_target_manifest(), "tags": tags}
+    wheel = select_locked_reference_wheel(
+        lock, "msgpack", wheel_target=target, python_version="3.12.16"
+    )
+    assert wheel.filename == "msgpack-1.2.3-cp312-cp312-macosx_11_0_arm64.whl"
+    assert wheel.size == 90027
+    assert (
+        wheel.sha256
+        == "905a189853d6bdb204c7ae5f4ab77fb857448abfff574d3d93c62e2815b24b4f"
+    )
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="no compatible reference wheel"
+    ):
+        select_locked_reference_wheel(
+            lock,
+            "msgpack",
+            wheel_target={**target, "tags": ["py3-none-any"]},
+            python_version="3.12.16",
+        )
+    conditional = lock.replace(
+        b'[[package]]\nname = "msgpack"\n',
+        b'[[package]]\nname = "msgpack"\nresolution-markers = ["sys_platform == \'darwin\'"]\n',
+    )
+    assert conditional != lock
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="unconditional and self-contained"
+    ):
+        select_locked_reference_wheel(
+            conditional, "msgpack", wheel_target=target, python_version="3.12.16"
+        )
 
 
 @pytest.mark.parametrize("reader_minor", ["312", "313"])

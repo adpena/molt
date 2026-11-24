@@ -20,7 +20,11 @@ import os
 import re
 import sys
 from pathlib import Path
-from tests.process_guard_common import install_module_os_view, install_module_view
+from tests.process_guard_common import (
+    guard_custody_env,
+    install_module_os_view,
+    install_module_view,
+)
 from types import SimpleNamespace
 
 import pytest
@@ -603,7 +607,7 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
         ],
     ],
 )
-def test_measure_cell_includes_existing_warmups_in_output_parity(
+def test_measure_cell_pairs_samples_and_includes_warmups_in_output_parity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     failed_label: str | None,
@@ -730,10 +734,82 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
         "cpython:warmup:p1:s0",
         "cpython:warm:p1:s0",
     ]
-    assert any(
-        "molt-warmup:tests/benchmarks/bench_fib.py:p0:s0" in label
-        for label in run_labels
+    assert [
+        label.replace(":tests/benchmarks/bench_fib.py", "") for label in run_labels
+    ] == [
+        "molt-cold",
+        "cpython-cold",
+        "molt-warmup:p0:s0",
+        "cpython-warmup:p0:s0",
+        "molt-warm:p0:s0",
+        "cpython-warm:p0:s0",
+        "cpython-warmup:p1:s0",
+        "molt-warmup:p1:s0",
+        "cpython-warm:p1:s0",
+        "molt-warm:p1:s0",
+    ]
+
+
+@pytest.mark.parametrize("stdout", ["100000\n", "99999\n"])
+def test_intrinsic_row_checks_molt_without_a_python_timing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    script = tmp_path / "tests" / "benchmarks" / "bench_ptr_registry.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("pass\n", encoding="utf-8")
+    owner = OwnedTemporaryDirectory(dir=tmp_path)
+    binary = Path(owner.name) / "bench_ptr_registry.exe"
+    binary.write_bytes(b"binary")
+    key = "tests/benchmarks/bench_ptr_registry.py"
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure.bench_suites, "canonical_benchmark_key", lambda _: key)
+    monkeypatch.setattr(
+        measure.bench,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: measure.bench.MoltBinary(
+            binary,
+            owner,
+            0.1,
+            1.0,
+            {
+                "selected_profiles": {
+                    "backend": "llvm",
+                    "guest_profile": "release",
+                    "compiler_profile": "release",
+                    "runtime_profile": "release-fast",
+                    "target": "native",
+                }
+            },
+        ),
     )
+
+    def run(*args: object, label: str, **kwargs: object) -> measure.RunOutcome:
+        assert label.startswith("molt-")
+        output = stdout if label.startswith("molt-warm:") else "100000\n"
+        return measure.RunOutcome(True, 0.1, 1.0, "ok", 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(measure, "_run_measured_command", run)
+    cell = measure_admitted_cell(
+        measure,
+        project_root=tmp_path,
+        script_path=script,
+        spec=measure.BackendSpec("native", "llvm", "native"),
+        profile="release-fast",
+        samples=1,
+        warmup=1,
+        rss_mb=64,
+        timeout_s=1.0,
+        batch_server=None,
+        cpython_cmd=(sys.executable,),
+        target_python_version="3.12",
+        log_dir=tmp_path / "logs",
+    )
+    good = stdout == "100000\n"
+    assert cell.verdict == (ps.VERDICT_CPY_INCOMPAT if good else ps.VERDICT_RUN_ERROR)
+    assert cell.molt_ok == good
+    assert cell.cpython_stats is None and cell.warm_speedup is None
+    assert schema.molt_contract_parity_passes(cell.output_parity, "100000\n") == good
+    assert schema.validate_cell(asdict(cell)) == []
 
 
 @pytest.mark.parametrize(
@@ -2497,20 +2573,33 @@ def test_merge_of_shard_boards_requires_every_shard(
 
 
 @pytest.mark.parametrize(
-    "backend,available,failure",
+    "backend,available,failure,budget_policy,no_gate",
     [
-        ("wasm", True, None),
-        ("wasm", False, None),
-        ("native", True, None),
-        ("native", True, "cleanup"),
-        ("native", True, "measure"),
-        ("native", True, "measure_cleanup"),
-        ("native", True, "interrupt_cleanup"),
+        ("wasm", True, None, "configured", True),
+        ("wasm", False, None, "configured", True),
+        ("native", True, None, "configured", True),
+        ("native", True, "cleanup", "configured", True),
+        ("native", True, "measure", "configured", True),
+        ("native", True, "measure_cleanup", "configured", True),
+        ("native", True, "interrupt_cleanup", "configured", True),
+        ("wasm", True, None, "absent", True),
+        ("wasm", True, None, "absent", False),
+        ("wasm", True, None, "null", True),
+        ("wasm", True, None, "missing_value", True),
+        ("wasm", True, None, "negative", True),
+        ("wasm", True, None, "boolean", True),
+        ("wasm", True, None, "malformed_policy", True),
     ],
 )
 def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
-    monkeypatch, tmp_path, backend, available, failure
-):
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    backend: str,
+    available: bool,
+    failure: str | None,
+    budget_policy: str,
+    no_gate: bool,
+) -> None:
     from molt import node_runtime
     from tools import perf_scoreboard_cli as cli
     from tools import perf_scoreboard_report as report
@@ -2519,6 +2608,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     image.write_bytes(b"independent board engine")
     monkeypatch.setenv("MOLT_NODE_BIN", str(image))
     probes, measured, checkpoints = [], [], []
+    budget_calls = 0
     batch_closes, codon_closes, publications = [], [], []
     cleanup_error = RuntimeError("independent client closure refusal")
     primary_error = (
@@ -2591,13 +2681,41 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
                 "backend_binary_identity": {},
                 "runtime_identity": {},
             },
-            "_load_cold_start_budgets": lambda: {},
-            "_budget_ms_for": lambda *a: 1000,
             "SCOREBOARD_DIR": tmp_path / "boards",
             "_attach_regressions": lambda doc: None,
             "print_summary": lambda doc: None,
         }
     )
+
+    coordinate = f"{backend}/dev-fast"
+    entries = {
+        "configured": {coordinate: {"budget_ms": 1000}},
+        "absent": {},
+        "null": {coordinate: {"budget_ms": None}},
+        "missing_value": {coordinate: {}},
+        "negative": {coordinate: {"budget_ms": -1}},
+        "boolean": {coordinate: {"budget_ms": True}},
+        "malformed_policy": None,
+    }[budget_policy]
+    api["_load_cold_start_budgets"] = lambda: {"budgets": entries}
+    provenance = api["gather_provenance"]()
+    provenance["authoritative_reason"] = "independent clean source"
+    api["gather_provenance"] = lambda *a, **kw: provenance
+
+    def resolve_budget(
+        budgets: dict[str, object],
+        backend_name: str,
+        profile: str,
+        *,
+        allow_missing: bool = False,
+    ) -> float | None:
+        nonlocal budget_calls
+        budget_calls += 1
+        return ps._budget_ms_for(
+            budgets, backend_name, profile, allow_missing=allow_missing
+        )
+
+    api["_budget_ms_for"] = resolve_budget
 
     class Batch:
         def __init__(self, *args):
@@ -2621,6 +2739,17 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
 
     def measure_fixture(**kwargs):
         assert available, "unavailable Node must refuse before any cell/build"
+        assert budget_calls == 1, "resolve the coordinate once, before timing"
+        missing_budget = budget_policy == "absent"
+        assert kwargs["budget_ms"] == (None if missing_budget else 1000)
+        assert kwargs["authoritative"] is True
+        if missing_budget:
+            assert provenance["authoritative"] is False
+            assert "independent clean source" in provenance["authoritative_reason"]
+            assert coordinate in provenance["authoritative_reason"]
+            assert "--no-gate" in provenance["authoritative_reason"]
+        elif not measured:
+            assert provenance["authoritative"] is True
         if measure_fails and measured:
             raise primary_error
         plan = kwargs["execution_host"]
@@ -2643,7 +2772,12 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         cell.workload = kwargs["workload"].record
         cell.target = kwargs["spec"].target
         cell.execution_host = plan.as_record() if plan is not None else None
-        cell.finalize(budget_ms=1000)
+        cell.finalize(
+            budget_ms=kwargs["budget_ms"], authoritative=kwargs["authoritative"]
+        )
+        if missing_budget:
+            assert cell.warm_speedup == 2.0
+            assert cell.cold_budget_ms is None
         return cell
 
     api["measure_cell"] = measure_fixture
@@ -2670,9 +2804,10 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         "dev-fast",
         "--out",
         str(output),
-        "--no-gate",
         "--codon",
     ]
+    if no_gate:
+        argv.append("--no-gate")
     if failure is not None:
         qualified = _cell(
             warm_molt_s=0.1,
@@ -2709,7 +2844,22 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     if not available:
         assert rc == 2 and not measured and not probes and not output.exists()
         return
+    if budget_policy not in {"configured", "absent"} or (
+        budget_policy == "absent" and not no_gate
+    ):
+        assert rc == 2 and not measured and not output.exists()
+        assert not checkpoints and not publications
+        return
     assert rc == 0 and len(measured) == 2 and len(checkpoints) == 2
+    if budget_policy == "absent":
+        doc = json.loads(output.read_text(encoding="utf-8"))
+        assert doc["provenance"]["authoritative"] is False
+        assert coordinate in doc["provenance"]["authoritative_reason"]
+        assert all(
+            checkpoint["provenance"]["authoritative"] is False
+            for checkpoint in checkpoints
+        )
+        assert ps._gate_exit_code(doc, no_gate=False) != 0
     assert len(batch_closes) == (1 if backend == "native" else 0)
     assert codon_closes == [None]
     assert publications == [output]
@@ -2872,6 +3022,43 @@ def test_workload_owns_bytes_arguments_and_original_path(tmp_path):
         admitted.verify()
 
 
+def test_local_reference_runs_captured_src_import_without_site(tmp_path: Path) -> None:
+    from tools.bench_evidence import admit_benchmark_workload
+
+    source = tmp_path / "benchmarks" / "matrix.py"
+    source.parent.mkdir()
+    source.write_text(
+        "from buffer_example import RESULT\nprint(RESULT)\n", encoding="utf-8"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "buffer_example.py").write_text("RESULT = 380000\n", encoding="utf-8")
+    (src / "sitecustomize.py").write_text(
+        "print('checkout startup leaked')\n", encoding="utf-8"
+    )
+    with admit_benchmark_workload(
+        source, project_root=tmp_path, run_args=[], molt_args=[]
+    ) as admitted:
+        assert any(
+            row["path"] == "src/buffer_example.py" for row in admitted.record["sources"]
+        )
+        invocation = admitted.reference_invocation(
+            (sys.executable, "-I"),
+            {"PYTHONPATH": "/unrelated/harness", **guard_custody_env()},
+        )
+        result = measure._run_measured_command(
+            list(invocation.command),
+            env=invocation.environment,
+            cwd=tmp_path,
+            rss_mb=64,
+            timeout_s=10,
+            label="admitted-reference",
+            capture_output=True,
+        )
+        assert result.ok
+        assert (result.stdout, result.stderr) == ("380000\n", "")
+
+
 def test_external_source_cannot_impersonate_suite_path_or_collide(tmp_path):
     from tools.bench_suites import canonical_benchmark_key, molt_args_for_benchmark
 
@@ -2887,6 +3074,90 @@ def test_external_source_cannot_impersonate_suite_path_or_collide(tmp_path):
         ps.bench_suites.validate_benchmark_selection([foreign, another])
     with pytest.raises(SystemExit, match="not found"):
         ps._resolve_script("missing/directory/bench_sum.py")
+
+
+def test_stock_reference_wheel_is_bound_to_only_its_cpython_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.source_package_seal import (
+        SourcePackageInput,
+        stage_source_package_seal,
+    )
+    from molt.python_uv_lock_identity import LockedReferenceWheel
+    from tools import benchmark_applications
+    from tools.bench_evidence import admit_benchmark_workload, workloads_comparable
+
+    root = Path(__file__).resolve().parents[2]
+    source = root / "tests/benchmarks/bench_parse_msgpack.py"
+    assert benchmark_applications.reference_dependency_for_script(source) == "msgpack"
+    assert (
+        benchmark_applications.reference_dependency_for_script(tmp_path / source.name)
+        is None
+    )
+    init = tmp_path / "__init__.py"
+    init.write_text("from ._cmsgpack import unpackb\n", encoding="utf-8")
+    decoder = tmp_path / "_cmsgpack.py"
+    decoder.write_text(
+        "def unpackb(data, *, raw): return [{'v': 1}]\n", encoding="utf-8"
+    )
+    seal = stage_source_package_seal(
+        tmp_path / "store",
+        [
+            SourcePackageInput(init, "src/msgpack/__init__.py", "source"),
+            SourcePackageInput(decoder, "src/msgpack/_cmsgpack.py", "source"),
+        ],
+    )
+    oracle = (sys.executable,)
+    wheel = LockedReferenceWheel(
+        "msgpack",
+        "1.2.3",
+        "https://example.test/wheel",
+        "msgpack-1.2.3-cp312-cp312-macosx_11_0_arm64.whl",
+        1,
+        "a" * 64,
+    )
+
+    def prepare(
+        script: Path, *, cpython_command: tuple[str, ...], store: Path | None
+    ) -> benchmark_applications.PreparedReferenceDependency:
+        assert (script, cpython_command, store) == (source, oracle, None)
+        return benchmark_applications.PreparedReferenceDependency(
+            seal, "src", wheel, "b" * 64
+        )
+
+    monkeypatch.setattr(benchmark_applications, "prepare_reference_dependency", prepare)
+    with admit_benchmark_workload(
+        source, project_root=root, run_args=[], molt_args=[], cpython_command=oracle
+    ) as admitted:
+        record = admitted.record
+        assert record["reference_wheel"]["sha256"] == wheel.sha256
+        assert record["reference_wheel"]["seal_sha256"] == seal.seal_sha256
+        assert record["reference_wheel"]["runtime_closure_sha256"] == "b" * 64
+        assert not any("site-packages" in row["path"] for row in record["sources"])
+        old_record = admitted.record
+        old_record.pop("reference_wheel")
+        assert not workloads_comparable(old_record, record)
+        assert str(seal.payload_root) not in repr(admitted.compiler_environment({}))
+        assert str(seal.payload_root) not in repr(
+            admitted.guest_invocation(("exe",), {})
+        )
+        with pytest.raises(ValueError, match="different CPython command"):
+            admitted.reference_invocation(("pypy",), {})
+        invocation = admitted.reference_invocation(
+            oracle, {"MSGPACK_PUREPYTHON": "1", **guard_custody_env()}
+        )
+        assert "MSGPACK_PUREPYTHON" not in invocation.environment
+        result = measure._run_measured_command(
+            list(invocation.command),
+            env=invocation.environment,
+            cwd=tmp_path,
+            rss_mb=64,
+            timeout_s=10,
+            label="admitted-reference-wheel",
+            capture_output=True,
+        )
+        assert result.ok
+        assert (result.stdout, result.stderr) == ("800\n", "")
 
 
 def test_workload_verification_preserves_primary_failure(tmp_path):

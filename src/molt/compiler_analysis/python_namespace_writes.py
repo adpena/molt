@@ -46,9 +46,11 @@ from molt.compiler_analysis.python_source_keys import (
 )
 from molt.compiler_analysis.python_import_redirects import (
     IMPORT_SPEC_ATTRIBUTES,
-    PythonImportKeyBound,
-    decode_python_import_key_bound,
-    python_import_key,
+)
+from molt.compiler_analysis.python_string_facts import (
+    PythonStringBound,
+    decode_python_string_bound,
+    python_string_spelling,
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
@@ -103,10 +105,8 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     "local_definition_store",
     # The same with a computed name (``setattr(x, name, value)``,
     # ``x.__setattr__(name, value)``) on a receiver that is not a module
-    # reference. ``module`` and ``name`` are None. It may write any
-    # attribute, ``__class__`` included, so no instance's class is a
-    # program constant while one is activated (call_anatomy.md 4.5,
-    # "Implementation (field slots)").
+    # reference. ``module`` and ``name`` are None. Its spelling bound, if
+    # present, says which attribute names may be written.
     "computed_member_store",
     # A use of a frame's ``f_locals`` (``frame.f_locals``, or the literal
     # name ``"f_locals"`` passed to a call such as ``getattr``) that may write
@@ -217,9 +217,8 @@ class PythonNamespaceWrite:
     line: int
     source_owner: PythonSourceKey | None = None
     source_site: PythonSourceKey | None = None
-    # The bound on a computed ``import_binding`` key or ``guarded_import``
-    # name; never dropped (bedrock §13, B2a).
-    key_bound: PythonImportKeyBound | None = None
+    # Spelling bound for a computed import key or member name.
+    key_bound: PythonStringBound | None = None
     # A ``guarded_import``'s modules whose bodies have completed whenever it
     # runs: the unconditional top-level imports of its module that precede the
     # top-level statement holding it. Its handler cannot swallow their failure.
@@ -260,7 +259,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     ):
         raise ValueError("invalid foreign namespace write")
     source_owner = None if owner is None else decode_python_source_key(owner)
-    key_bound = None if bound is None else decode_python_import_key_bound(bound)
+    key_bound = None if bound is None else decode_python_string_bound(bound)
     if construct == "import_binding" and (
         module != "sys.modules" or key_bound is not None and name is not None
     ):
@@ -269,8 +268,12 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         name is not None or key_bound is not None and module is not None
     ):
         raise ValueError("invalid guarded import")
-    if key_bound is not None and construct not in {"import_binding", "guarded_import"}:
-        raise ValueError("invalid import key bound")
+    if key_bound is not None and construct not in {
+        "import_binding",
+        "guarded_import",
+        "computed_member_store",
+    }:
+        raise ValueError("invalid namespace write name bound")
     if source_owner is not None and source_owner[-1] not in {
         "FunctionDef",
         "AsyncFunctionDef",
@@ -444,8 +447,8 @@ def _absolute_module(name: str, level: int, package: str | None) -> str | None:
     return f"{base}.{name}" if name else base
 
 
-def _dunder_setattr_name(method: str, call: ast.Call) -> str | None:
-    """The literal attribute name of a ``__setattr__``/``__delattr__`` call.
+def _dunder_setattr_name(method: str, call: ast.Call) -> ast.expr | None:
+    """The name argument of a ``__setattr__``/``__delattr__`` call.
 
     A bound call (``x.__setattr__(name, value)``) names it first; an unbound
     one (``object.__setattr__(x, name, value)``) second. A setter call that
@@ -454,7 +457,11 @@ def _dunder_setattr_name(method: str, call: ast.Call) -> str | None:
 
     unbound = len(call.args) >= (3 if method == "__setattr__" else 2)
     index = 1 if unbound else 0
-    return _literal_string(call.args[index]) if len(call.args) > index else None
+    if len(call.args) <= index or any(
+        isinstance(arg, ast.Starred) for arg in call.args
+    ):
+        return None
+    return call.args[index]
 
 
 def _literal_string(node: ast.expr | None) -> str | None:
@@ -1048,7 +1055,7 @@ class _NamespaceWriteCollector:
                 PythonNamespaceWriteConstruct,
                 PythonSourceKey | None,
                 PythonSourceKey | None,
-                PythonImportKeyBound | None,
+                PythonStringBound | None,
                 tuple[str, ...],
             ],
             PythonNamespaceWrite,
@@ -1338,7 +1345,7 @@ class _NamespaceWriteCollector:
         *,
         node: ast.AST | None = None,
         source_site: PythonSourceKey | None = None,
-        key_bound: PythonImportKeyBound | None = None,
+        key_bound: PythonStringBound | None = None,
         initialized: tuple[str, ...] = (),
     ) -> None:
         if not site.executing:
@@ -1368,11 +1375,14 @@ class _NamespaceWriteCollector:
             )
 
     def _member_store(
-        self, name: str | None, site: _Site, receiver: ast.AST | None = None
+        self,
+        name: str | PythonStringBound | None,
+        site: _Site,
+        receiver: ast.AST | None = None,
     ) -> None:
         """An attribute write on a receiver that is not a module reference."""
-        if name is None:
-            self._record(None, None, "computed_member_store", site)
+        if not isinstance(name, str):
+            self._record(None, None, "computed_member_store", site, key_bound=name)
         elif (
             receiver is not None
             and name not in _CONSERVATIVE_MEMBER_NAMES
@@ -1920,7 +1930,10 @@ class _NamespaceWriteCollector:
                     name = _literal_string(parent.args[0]) if parent.args else None
                     self._record(module, name, "setattr", site, node=parent)
                 else:
-                    self._member_store(_dunder_setattr_name(node.attr, parent), site)
+                    name = python_string_spelling(
+                        _dunder_setattr_name(node.attr, parent)
+                    )
+                    self._member_store(name, site)
         elif node.attr in _HOOK_ATTRIBUTES:
             spelling = self._reference(node)
             if spelling in _IMPORT_HOOK_OBJECTS:
@@ -1949,9 +1962,15 @@ class _NamespaceWriteCollector:
                     self._record(None, None, "reflection", site)
         elif func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
-            name = _literal_string(node.args[1]) if len(node.args) > 1 else None
+            name = (
+                python_string_spelling(node.args[1])
+                if len(node.args) > 1 and not isinstance(node.args[0], ast.Starred)
+                else None
+            )
             if is_module:
-                self._record(module, name, "setattr", site)
+                self._record(
+                    module, name if isinstance(name, str) else None, "setattr", site
+                )
             else:
                 self._member_store(name, site, node.args[0])
         elif func == "vars" and node.args:
@@ -2177,14 +2196,14 @@ class _NamespaceWriteCollector:
             else site.node
         )
         source_site = python_node_source_key(operation)
-        spelled = python_import_key(key)
+        spelled = python_string_spelling(key)
         self._record(
             "sys.modules",
             spelled if isinstance(spelled, str) else None,
             "import_binding",
             site,
             source_site=source_site,
-            key_bound=spelled if isinstance(spelled, PythonImportKeyBound) else None,
+            key_bound=spelled if isinstance(spelled, PythonStringBound) else None,
         )
 
     def _guarded(self, node: ast.AST) -> bool:
@@ -2216,14 +2235,14 @@ class _NamespaceWriteCollector:
         at = site.node if node is None else node
         if not site.executing or not self._guarded(at):
             return
-        spelled = python_import_key(key)
+        spelled = python_string_spelling(key)
         self._record(
             spelled if isinstance(spelled, str) else None,
             None,
             "guarded_import",
             site,
             node=node,
-            key_bound=spelled if isinstance(spelled, PythonImportKeyBound) else None,
+            key_bound=spelled if isinstance(spelled, PythonStringBound) else None,
             initialized=self._initialized_before(at),
         )
 

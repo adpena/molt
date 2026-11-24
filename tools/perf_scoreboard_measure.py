@@ -5,10 +5,10 @@ from tools.bench_evidence import AdmittedBenchmarkWorkload
 
 import os
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
@@ -16,8 +16,13 @@ _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from molt.node_runtime import NodeRuntimeError  # noqa: E402
-from tools.perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
+from tools.perf_schema import (  # noqa: E402
+    RED_THRESHOLD,
+    molt_contract_parity_evidence,
+    output_parity_evidence,
+)
 from tools.perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
     REPO_ROOT,
@@ -200,27 +205,50 @@ def measure_cell(
             binary, build_env, execution_host=execution_host
         )
         guest = workload.guest_invocation(invocation.command, invocation.environment)
-        reference = workload.reference_invocation(cpython_cmd, _cpython_run_env())
+        contract = benchmark_reference_contract(benchmark)
+        reference = (
+            workload.reference_invocation(cpython_cmd, _cpython_run_env())
+            if contract.external_baselines
+            else None
+        )
 
-        def run_reference(*args: Any, **kwargs: Any) -> RunOutcome:
+        def run_reference(label: str) -> RunOutcome:
+            assert reference is not None
             workload.verify()
-            result = _run_measured_command(*args, **kwargs)
+            result = _run_measured_command(
+                list(reference.command),
+                env=reference.environment,
+                cwd=reference.cwd or REPO_ROOT,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=label,
+                capture_output=True,
+            )
             workload.verify()
             if result.ok:
                 workload.verify_reference_output(result.stdout, result.stderr)
             return result
 
-        def run_molt(*args: Any, **kwargs: Any) -> RunOutcome:
+        def run_molt(label: str) -> RunOutcome:
             workload.verify()
             if execution_host is not None:
                 execution_host.verify()
-            outcome = _run_measured_command(*args, **kwargs)
+            outcome = _run_measured_command(
+                list(guest.command),
+                env=guest.environment,
+                cwd=guest.cwd or REPO_ROOT,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=label,
+                capture_output=True,
+                guest_stderr_path=invocation.guest_stderr_path,
+            )
             if execution_host is not None:
                 try:
                     execution_host.verify()
                 except NodeRuntimeError:
                     log_lines.append(
-                        f"INVALIDATED HOST SAMPLE {kwargs.get('label')}: "
+                        f"INVALIDATED HOST SAMPLE {label}: "
                         f"status={outcome.status} exit={outcome.exit_code} "
                         f"elapsed_s={outcome.elapsed_s}"
                     )
@@ -230,38 +258,75 @@ def measure_cell(
                         )
                     raise
             workload.verify()
+            if outcome.ok and not contract.molt_output_matches(
+                outcome.stdout, outcome.stderr
+            ):
+                log_lines.append(
+                    f"MOLT ORACLE MISMATCH {label}: stdout={outcome.stdout_tail!r} "
+                    f"stderr={outcome.stderr_tail!r} expected={contract.expected_stdout!r}"
+                )
+                return replace(outcome, ok=False, status="runtime_failed")
             return outcome
 
         # --- COLD samples (first process; retain exact streams for parity) ------
-        cold_molt = run_molt(
-            list(guest.command),
-            env=guest.environment,
-            cwd=guest.cwd or REPO_ROOT,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"molt-cold:{benchmark}",
-            capture_output=True,
-            guest_stderr_path=invocation.guest_stderr_path,
-        )
-        cold_cpy = run_reference(
-            list(reference.command),
-            env=reference.environment,
-            cwd=reference.cwd or REPO_ROOT,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"cpython-cold:{benchmark}",
-            capture_output=True,
-        )
+        cold_molt = run_molt(f"molt-cold:{benchmark}")
+        cold_cpy = run_reference(f"cpython-cold:{benchmark}") if reference else None
         failed_molt = None if cold_molt.ok else cold_molt
-        failed_cpy = None if cold_cpy.ok else cold_cpy
+        failed_cpy = cold_cpy if cold_cpy is not None and not cold_cpy.ok else None
         if cold_molt.host_stderr:
             log_lines.append(f"HOST STDERR molt:cold:\n{cold_molt.host_stderr}")
         molt_output_observations = [
             ("molt:cold", cold_molt.stdout, cold_molt.stderr, cold_molt.exit_code)
         ]
-        cpy_output_observations = [
-            ("cpython:cold", cold_cpy.stdout, cold_cpy.stderr, cold_cpy.exit_code)
-        ]
+        cpy_output_observations = (
+            [("cpython:cold", cold_cpy.stdout, cold_cpy.stderr, cold_cpy.exit_code)]
+            if cold_cpy is not None
+            else []
+        )
+
+        def collect_pairs(
+            phase: Literal["warmup", "warm"], pass_idx: int, count: int
+        ) -> tuple[list[RunOutcome], list[RunOutcome]]:
+            molt_runs: list[RunOutcome] = []
+            cpy_runs: list[RunOutcome] = []
+            for sample_idx in range(count):
+                coordinate = f"p{pass_idx}:s{sample_idx}"
+                molt_label = f"molt-{phase}:{benchmark}:{coordinate}"
+                cpy_label = f"cpython-{phase}:{benchmark}:{coordinate}"
+                # Keep the comparison close in time and balance who runs first.
+                if reference is None:
+                    molt = run_molt(molt_label)
+                    cpy = None
+                elif (pass_idx * count + sample_idx) % 2:
+                    cpy = run_reference(cpy_label)
+                    molt = run_molt(molt_label)
+                else:
+                    molt = run_molt(molt_label)
+                    cpy = run_reference(cpy_label)
+                if molt.host_stderr:
+                    log_lines.append(
+                        f"HOST STDERR molt:{phase}:{coordinate}:\n{molt.host_stderr}"
+                    )
+                molt_output_observations.append(
+                    (
+                        f"molt:{phase}:{coordinate}",
+                        molt.stdout,
+                        molt.stderr,
+                        molt.exit_code,
+                    )
+                )
+                molt_runs.append(molt)
+                if cpy is not None:
+                    cpy_output_observations.append(
+                        (
+                            f"cpython:{phase}:{coordinate}",
+                            cpy.stdout,
+                            cpy.stderr,
+                            cpy.exit_code,
+                        )
+                    )
+                    cpy_runs.append(cpy)
+            return molt_runs, cpy_runs
 
         # --- WARM samples — N independent PASSES (council --repeat N) -----------
         # Each pass is a full warmup+samples block for molt AND CPython, yielding one
@@ -275,102 +340,8 @@ def measure_cell(
         per_pass_speedups: list[float] = []
         pass_results: list[tuple[PhaseStats, PhaseStats]] = []
         for pass_idx in range(n_passes):
-            molt_warmups = [
-                run_molt(
-                    list(guest.command),
-                    env=guest.environment,
-                    cwd=guest.cwd or REPO_ROOT,
-                    rss_mb=rss_mb,
-                    timeout_s=timeout_s,
-                    label=f"molt-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
-                    capture_output=True,
-                    guest_stderr_path=invocation.guest_stderr_path,
-                )
-                for sample_idx in range(warmup)
-            ]
-            log_lines.extend(
-                f"HOST STDERR molt:warmup:p{pass_idx}:s{sample_idx}:\n{run.host_stderr}"
-                for sample_idx, run in enumerate(molt_warmups)
-                if run.host_stderr
-            )
-            molt_output_observations.extend(
-                (
-                    f"molt:warmup:p{pass_idx}:s{sample_idx}",
-                    run.stdout,
-                    run.stderr,
-                    run.exit_code,
-                )
-                for sample_idx, run in enumerate(molt_warmups)
-            )
-            molt_runs = [
-                run_molt(
-                    list(guest.command),
-                    env=guest.environment,
-                    cwd=guest.cwd or REPO_ROOT,
-                    rss_mb=rss_mb,
-                    timeout_s=timeout_s,
-                    label=f"molt-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
-                    capture_output=True,
-                    guest_stderr_path=invocation.guest_stderr_path,
-                )
-                for sample_idx in range(samples)
-            ]
-            log_lines.extend(
-                f"HOST STDERR molt:warm:p{pass_idx}:s{sample_idx}:\n{run.host_stderr}"
-                for sample_idx, run in enumerate(molt_runs)
-                if run.host_stderr
-            )
-            molt_output_observations.extend(
-                (
-                    f"molt:warm:p{pass_idx}:s{sample_idx}",
-                    run.stdout,
-                    run.stderr,
-                    run.exit_code,
-                )
-                for sample_idx, run in enumerate(molt_runs)
-            )
-            cpy_warmups = [
-                run_reference(
-                    list(reference.command),
-                    env=reference.environment,
-                    cwd=reference.cwd or REPO_ROOT,
-                    rss_mb=rss_mb,
-                    timeout_s=timeout_s,
-                    label=f"cpython-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
-                    capture_output=True,
-                )
-                for sample_idx in range(warmup)
-            ]
-            cpy_output_observations.extend(
-                (
-                    f"cpython:warmup:p{pass_idx}:s{sample_idx}",
-                    run.stdout,
-                    run.stderr,
-                    run.exit_code,
-                )
-                for sample_idx, run in enumerate(cpy_warmups)
-            )
-            cpy_runs = [
-                run_reference(
-                    list(reference.command),
-                    env=reference.environment,
-                    cwd=reference.cwd or REPO_ROOT,
-                    rss_mb=rss_mb,
-                    timeout_s=timeout_s,
-                    label=f"cpython-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
-                    capture_output=True,
-                )
-                for sample_idx in range(samples)
-            ]
-            cpy_output_observations.extend(
-                (
-                    f"cpython:warm:p{pass_idx}:s{sample_idx}",
-                    run.stdout,
-                    run.stderr,
-                    run.exit_code,
-                )
-                for sample_idx, run in enumerate(cpy_runs)
-            )
+            molt_warmups, cpy_warmups = collect_pairs("warmup", pass_idx, warmup)
+            molt_runs, cpy_runs = collect_pairs("warm", pass_idx, samples)
             if failed_molt is None:
                 failed_molt = next(
                     (
@@ -442,7 +413,7 @@ def measure_cell(
             )
 
         cell.molt_stats = asdict(molt_stats)
-        cell.cpython_stats = asdict(cpy_stats)
+        cell.cpython_stats = asdict(cpy_stats) if reference else None
         cell.molt_ok = molt_stats.n > 0 and failed_molt is None
         cell.cpython_ok = cpy_stats.n > 0 and failed_cpy is None
 
@@ -461,7 +432,7 @@ def measure_cell(
             round(cold_molt.elapsed_s, 6) if cold_molt.elapsed_s else None
         )
         cell.cold_cpython_s = (
-            round(cold_cpy.elapsed_s, 6) if cold_cpy.elapsed_s else None
+            round(cold_cpy.elapsed_s, 6) if cold_cpy and cold_cpy.elapsed_s else None
         )
         cell.warm_molt_s = molt_stats.median_s
         cell.warm_cpython_s = cpy_stats.median_s
@@ -469,9 +440,10 @@ def measure_cell(
         cell.molt_peak_rss_mib = _max_opt(
             molt_stats.peak_rss_mib, cold_molt.peak_rss_mib
         )
-        cell.cpython_peak_rss_mib = _max_opt(
-            cpy_stats.peak_rss_mib, cold_cpy.peak_rss_mib
-        )
+        if cold_cpy is not None:
+            cell.cpython_peak_rss_mib = _max_opt(
+                cpy_stats.peak_rss_mib, cold_cpy.peak_rss_mib
+            )
 
         # Stability: molt is the ARTIFACT UNDER TEST and MUST be stable. CPython is
         # the reference floor; a single CPython GC/scheduler outlier (common on
@@ -483,25 +455,38 @@ def measure_cell(
         # warm_speedup stays on the same side of the 1.00 floor using BOTH CPython's
         # fastest and slowest sample). This is median-based + outlier-robust per
         # pyperf discipline, never a per-test special case.
-        cell.stable = _robust_cell_stable(molt_stats, cpy_stats)
+        cell.stable = (
+            _robust_cell_stable(molt_stats, cpy_stats)
+            if reference
+            else molt_stats.stable
+        )
 
         # Exact comparison plus per-runtime stability across the cold observation,
         # every existing warmup, and every timed warm sample. No extra benchmark
         # process is added.
-        cell.output_parity = output_parity_evidence(
-            reference_observations=cpy_output_observations,
-            molt_observations=molt_output_observations,
-        )
+        if reference is not None:
+            cell.output_parity = output_parity_evidence(
+                reference_observations=cpy_output_observations,
+                molt_observations=molt_output_observations,
+            )
+        elif contract.expected_stdout is not None:
+            cell.output_parity = molt_contract_parity_evidence(
+                contract.expected_stdout, molt_output_observations
+            )
 
         if not cell.molt_ok:
             failure = failed_molt or cold_molt
             _record_molt_run_failure(cell, failure, fallback_status="runtime_failed")
             log_lines.append("MOLT RUN FAILURE: " + json.dumps(cell.molt_failure))
             cell.note = f"molt run unmeasurable (status={failure.status})"
-        elif not cell.cpython_ok:
+        elif cold_cpy is not None and not cell.cpython_ok:
             failure = failed_cpy or cold_cpy
             cell.note = f"cpython run unmeasurable (status={failure.status})"
-        elif cell.output_parity.get("ok") is not True:
+            if failure.stderr:
+                log_lines.append(f"CPYTHON STDERR:\n{failure.stderr}")
+        elif (
+            cell.output_parity is not None and cell.output_parity.get("ok") is not True
+        ):
             reason = str(cell.output_parity.get("reason") or "comparison_unavailable")
             detail = str(cell.output_parity.get("detail") or reason)
             _record_molt_failure(
@@ -517,7 +502,12 @@ def measure_cell(
                 ),
             )
             log_lines.append(f"OUTPUT PARITY FAILED: {reason}: {detail}")
-        elif cell.stable and not cpy_stats.stable and molt_stats.stable:
+        elif (
+            reference is not None
+            and cell.stable
+            and not cpy_stats.stable
+            and molt_stats.stable
+        ):
             # Transparency: the cell is trusted despite CPython-side jitter because
             # molt is stable AND the verdict is robust to CPython's spread.
             cell.note = (
@@ -536,7 +526,7 @@ def measure_cell(
                 "PYPY REFUSED: sealed application Python isolation flags and import "
                 "roots are not qualified for this comparator"
             )
-        if pypy_bin is not None and cell.warm_molt_s and not sealed:
+        if pypy_bin is not None and cell.warm_molt_s and not sealed and reference:
             workload.verify()
             pypy_warm = _measure_interpreter_warm(
                 pypy_bin,
@@ -564,7 +554,7 @@ def measure_cell(
                 "supported by this comparator"
             )
             log_lines.append(f"CODON REFUSED: {cell.codon_note}")
-        if codon_runner is not None and cell.warm_molt_s and not sealed:
+        if codon_runner is not None and cell.warm_molt_s and not sealed and reference:
             workload.verify()
             codon_runner.measure_into(
                 cell,

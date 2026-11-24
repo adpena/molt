@@ -28,6 +28,7 @@ authority_inputs = [
   "src/molt/compiler_analysis/python_function_kind.py",
   "src/molt/compiler_analysis/python_identity_catalog_generated.py",
   "src/molt/compiler_analysis/python_import_redirects.py",
+  "src/molt/compiler_analysis/python_string_facts.py",
   "src/molt/compiler_analysis/python_imports.py",
   "src/molt/compiler_analysis/python_lexical_scope.py",
   "src/molt/compiler_analysis/python_namespace_graph.py",
