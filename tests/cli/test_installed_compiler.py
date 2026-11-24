@@ -255,14 +255,14 @@ def test_installed_source_binds_inventory_to_stable_read(
     assert injected
 
 
-def test_installed_source_reports_first_manifest_error_across_batches(
+def test_installed_source_reports_first_manifest_error(
     tmp_path: Path,
 ) -> None:
     expected = hashlib.sha256(b"ok\n").hexdigest()
     records = []
-    for index in range(65):
+    for index in range(2):
         name = f"file-{index:03}.py"
-        (tmp_path / name).write_bytes(b"bad" if index in (0, 40) else b"ok\n")
+        (tmp_path / name).write_bytes(b"bad")
         records.append({"path": name, "mode": 0o100644, "size": 3, "sha256": expected})
     with pytest.raises(
         ValueError, match="Compiler source content changed: file-000.py"

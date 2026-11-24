@@ -12,8 +12,6 @@ installed by release archives, package managers and platform wheels.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
-from itertools import batched
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -162,36 +160,24 @@ def verify_source_inventory(
         raise ValueError("Compiler source file/directory closure is not exact")
     check_modes = os.name != "nt"
 
-    def verify_batch(names: tuple[str, ...]) -> None:
-        for name in names:
-            entry = expected[name]
-            metadata = observed[name]
-            identity = stable_regular_file_identity(
-                root / name, label="compiler source", expected_path_stat=metadata
+    # Check entries in manifest order. Most are small enough that scheduling
+    # and contended metadata calls cost more than hashing their bytes.
+    for name, entry in expected.items():
+        metadata = observed[name]
+        identity = stable_regular_file_identity(
+            root / name, label="compiler source", expected_path_stat=metadata
+        )
+        if (identity.size, identity.sha256) != (entry["size"], entry["sha256"]):
+            raise ValueError(f"Compiler source content changed: {name}")
+        # The supplied mode participated in the opened path/handle fence.
+        # A later independent stat could instead inspect another generation.
+        if check_modes and not _source_mode_matches_git(
+            metadata.st_mode, entry["mode"]
+        ):
+            raise ValueError(
+                f"Compiler source mode changed: {name} (found "
+                f"{metadata.st_mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
             )
-            if (identity.size, identity.sha256) != (entry["size"], entry["sha256"]):
-                raise ValueError(f"Compiler source content changed: {name}")
-            # The supplied mode participated in the opened path/handle fence.
-            # A later independent stat could instead inspect another generation.
-            if check_modes and not _source_mode_matches_git(
-                metadata.st_mode, entry["mode"]
-            ):
-                raise ValueError(
-                    f"Compiler source mode changed: {name} (found "
-                    f"{metadata.st_mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
-                )
-
-    # ThreadPoolExecutor.map's chunksize does not batch thread jobs on 3.12.
-    # The existing source policy bounds eager submission to at most 782 jobs.
-    batch_size = 32
-    workers = min(16, max(1, (len(expected) + batch_size - 1) // batch_size))
-    with ThreadPoolExecutor(
-        max_workers=workers, thread_name_prefix="compiler-source-verify"
-    ) as executor:
-        # map consumes results in manifest order and cancels pending futures
-        # when a result raises. Each job closes its own stable-file handles.
-        for _ in executor.map(verify_batch, batched(expected, batch_size)):
-            pass
     if resolve_owned_path(root) != root:
         raise ValueError("Compiler source root changed during verification")
     check_directory(root, root_metadata)
