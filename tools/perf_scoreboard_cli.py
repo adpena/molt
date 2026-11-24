@@ -376,29 +376,6 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
             ns.shard,
             set_name="explicit" if ns.benchmark else ns.set,
         )
-    from tools.bench_evidence import admit_benchmark_workload
-
-    workloads = {
-        script: workload_custody.enter_context(
-            admit_benchmark_workload(
-                script,
-                project_root=Path(__file__).resolve().parents[1],
-                run_args=api["bench"].resolve_benchmark_run_args(str(script)),
-                molt_args=api["bench_suites"].molt_args_for_benchmark(script),
-            )
-        )
-        for script in scripts
-    }
-
-    def verify_workloads() -> None:
-        for workload in workloads.values():
-            workload.verify()
-
-    def finish_workload_custody() -> None:
-        # Mandatory source-close fences are part of admission, before rename.
-        verify_workloads()
-        workload_custody.close()
-
     try:
         cpython_oracle = api["_resolve_system_cpython"](ns.cpython)
     except RuntimeError as exc:
@@ -417,6 +394,34 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     cpython_version = cpython_oracle.version
     cpython_identity = cpython_oracle.host_metadata()
     cpython_identity["molt_target_python"] = target_python.short
+    from tools.bench_evidence import admit_benchmark_workload
+
+    try:
+        workloads = {
+            script: workload_custody.enter_context(
+                admit_benchmark_workload(
+                    script,
+                    project_root=Path(__file__).resolve().parents[1],
+                    run_args=api["bench"].resolve_benchmark_run_args(str(script)),
+                    molt_args=api["bench_suites"].molt_args_for_benchmark(script),
+                    cpython_command=None if ns.sample_hot_only else cpython_oracle.cmd,
+                )
+            )
+            for script in scripts
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[scoreboard] workload admission failed: {exc}", file=sys.stderr)
+        return 2
+
+    def verify_workloads() -> None:
+        for workload in workloads.values():
+            workload.verify()
+
+    def finish_workload_custody() -> None:
+        # Mandatory source-close fences are part of admission, before rename.
+        verify_workloads()
+        workload_custody.close()
+
     print(
         "[scoreboard] CPython oracle: "
         f"{cpython_oracle.display} "
@@ -631,12 +636,32 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     try:
         try:
             budgets = api["_load_cold_start_budgets"]()
-            for backend_name in backends:
-                for profile in profiles:
-                    api["_budget_ms_for"](budgets, backend_name, profile)
+            coordinate_budgets = {
+                (backend_name, profile): api["_budget_ms_for"](
+                    budgets, backend_name, profile, allow_missing=ns.no_gate
+                )
+                for backend_name in backends
+                for profile in profiles
+            }
         except ValueError as exc:
             print(f"[scoreboard] {exc}", file=sys.stderr)
             return 2
+
+        missing_budgets = [
+            f"{backend_name}/{profile}"
+            for (backend_name, profile), budget in coordinate_budgets.items()
+            if budget is None
+        ]
+        if missing_budgets:
+            reason = "diagnostic --no-gate: no cold-start budget for " + ", ".join(
+                missing_budgets
+            )
+            previous_reason = provenance.get("authoritative_reason")
+            provenance["authoritative_reason"] = (
+                f"{previous_reason}; {reason}" if previous_reason else reason
+            )
+            provenance["authoritative"] = False
+            print(f"[scoreboard] NON-AUTHORITATIVE: {reason}", file=sys.stderr)
 
         git_rev = api["_git_rev"]()
         api["SCOREBOARD_DIR"].mkdir(parents=True, exist_ok=True)
@@ -657,7 +682,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         for backend_name in backends:
             spec = api["BACKENDS_BY_NAME"][backend_name]
             for profile in profiles:
-                cell_budget_ms = api["_budget_ms_for"](budgets, backend_name, profile)
+                cell_budget_ms = coordinate_budgets[backend_name, profile]
                 batch_server = None
                 if spec.build_target == "native":
                     try:
@@ -728,7 +753,12 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                                     budget_ms=cell_budget_ms, authoritative=False
                                 )
                                 provenance["authoritative"] = False
-                                provenance["authoritative_reason"] = str(exc)
+                                previous_reason = provenance.get("authoritative_reason")
+                                provenance["authoritative_reason"] = (
+                                    f"{previous_reason}; {exc}"
+                                    if missing_budgets and previous_reason
+                                    else str(exc)
+                                )
                         cells.append(cell)
                         if key not in benchmarks_run:
                             benchmarks_run.append(key)

@@ -278,13 +278,14 @@ def output_parity_evidence(
     *,
     reference_observations: Sequence[OutputObservation],
     molt_observations: Sequence[OutputObservation],
+    reference_runtime: str = "cpython",
 ) -> dict[str, object]:
     """Build a stable, hash-only receipt via the shared parity law."""
 
     base: dict[str, object] = {
         "checked": False,
         "ok": None,
-        "reference_runtime": "cpython",
+        "reference_runtime": reference_runtime,
         "comparison_law_version": COMPARISON_LAW_VERSION,
         "mode": ComparisonMode.EXACT.value,
         "stderr_mode": "exact",
@@ -643,8 +644,10 @@ def output_parity_evidence_problems(
         problems.append(f"checked must be bool, got {checked!r}")
     if ok is not None and not isinstance(ok, bool):
         problems.append(f"ok must be bool or null, got {ok!r}")
-    if value.get("reference_runtime") != "cpython":
-        problems.append("reference_runtime must be 'cpython'")
+    if value.get("reference_runtime") not in ("cpython", "molt"):
+        problems.append(
+            "reference_runtime must name Python or the Molt output contract"
+        )
     if value.get("comparison_law_version") != OUTPUT_PARITY_COMPARISON_LAW_VERSION:
         problems.append("comparison_law_version must name the canonical comparison law")
     for field, expected in (
@@ -777,6 +780,30 @@ def output_parity_passes(value: object) -> bool:
         value,
         require_checked=True,
         require_pass=True,
+    )
+
+
+def molt_contract_parity_evidence(
+    expected_stdout: str, observations: Sequence[OutputObservation]
+) -> dict[str, object]:
+    """Each compiled sample must match the benchmark's fixed output contract."""
+    return output_parity_evidence(
+        reference_observations=[("molt-contract", expected_stdout, "", 0)]
+        * len(observations),
+        molt_observations=observations,
+        reference_runtime="molt",
+    )
+
+
+def molt_contract_parity_passes(value: object, expected_stdout: str | None) -> bool:
+    return (
+        expected_stdout is not None
+        and isinstance(value, Mapping)
+        and value.get("reference_runtime") == "molt"
+        and value.get("reference_stdout_sha256") == _sha256_text(expected_stdout)
+        and value.get("reference_stderr_sha256") == _sha256_text("")
+        and value.get("reference_returncode") == 0
+        and output_parity_passes(value)
     )
 
 
@@ -956,9 +983,36 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
             f"cell {cell.get('benchmark')} has fact_class without suspected_missing_fact"
         )
     verdict = str(cell.get("verdict"))
+    if verdict == VERDICT_CPY_INCOMPAT:
+        from tools.bench_metadata import benchmark_reference_contract
+
+        benchmark = str(cell.get("benchmark"))
+        contract = benchmark_reference_contract(benchmark)
+        if (
+            contract.external_baselines
+            or cell.get("molt_ok") is not True
+            or cell.get("cpython_ok") is not False
+            or cell.get("warm_speedup") is not None
+            or cell.get("cold_speedup") is not None
+            or not molt_contract_parity_passes(
+                cell.get("output_parity"), contract.expected_stdout
+            )
+        ):
+            problems.append(
+                f"cell {benchmark} no-reference verdict lacks an admitted Molt-only run"
+            )
     parity_required = verdict in _MEASURED_RUN_VERDICTS
+    parity = cell.get("output_parity")
+    if (
+        parity_required
+        and isinstance(parity, Mapping)
+        and parity.get("reference_runtime") != "cpython"
+    ):
+        problems.append(
+            f"cell {cell.get('benchmark')} relative verdict requires CPython parity"
+        )
     parity_problems = output_parity_evidence_problems(
-        cell.get("output_parity"),
+        parity,
         require_checked=parity_required,
         require_pass=parity_required,
     )
@@ -1011,7 +1065,8 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
 
     from tools.bench_evidence import workload_collection_problems
 
-    problems: list[str] = workload_collection_problems(flatten_cells(doc))
+    cells = flatten_cells(doc)
+    problems: list[str] = workload_collection_problems(cells)
     missing = REQUIRED_TOP_LEVEL_KEYS - set(doc)
     if missing:
         problems.append(f"missing top-level keys: {sorted(missing)}")
@@ -1031,15 +1086,52 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
         json.loads(json.dumps(doc))
     except (TypeError, ValueError) as exc:
         problems.append(f"doc is not JSON-serializable: {exc}")
-    cells = flatten_cells(doc)
     problems.extend(board_execution_host_problems(_mapping(doc.get("host")), cells))
     if not cells:
         problems.append("no cells emitted")
+    if _mapping(doc.get("provenance")).get("authoritative") is True:
+        problems.extend(runtime_board_binding_problems(doc, cells))
     for cell in cells:
         cell_problems = validate_cell(cell)
         if cell_problems:
             problems.extend(cell_problems)
             break
+    return problems
+
+
+def runtime_board_binding_problems(
+    doc: Mapping[str, Any],
+    cells: Sequence[Mapping[str, Any]],
+    *,
+    require_native_variants: bool = False,
+) -> list[str]:
+    """Check observed native runtime bytes against their declared feature coordinate."""
+    from tools.perf_scoreboard_build_profiles import measured_runtime_coordinate
+
+    identities = _mapping(_mapping(doc.get("provenance")).get("runtime_identity"))
+    problems: list[str] = []
+    for cell in cells:
+        if (
+            cell.get("backend") not in ("native", "llvm")
+            or cell.get("build_ok") is not True
+        ):
+            continue
+        observation = _mapping(cell.get("build_observation"))
+        runtime = _mapping(observation.get("runtime"))
+        if not require_native_variants and "runtime_features" not in runtime:
+            continue
+        prefix = f"cell {cell.get('benchmark')} runtime"
+        try:
+            key, digest = measured_runtime_coordinate(
+                observation,
+                backend=str(cell.get("backend")),
+                profile=str(cell.get("profile")),
+            )
+        except ValueError as exc:
+            problems.append(f"{prefix} cannot bind its observed variant: {exc}")
+        else:
+            if digest is None or identities.get(key) != digest:
+                problems.append(f"{prefix} differs from board runtime identity {key}")
     return problems
 
 

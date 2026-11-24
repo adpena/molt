@@ -957,6 +957,7 @@ def _main(workload_custody: ExitStack) -> None:
                 project_root=REPO_ROOT,
                 run_args=bench_suites.application_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
+                cpython_command=(sys.executable,),
             )
         )
         for script in benchmarks

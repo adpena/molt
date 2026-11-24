@@ -49,7 +49,9 @@ from molt.compiler_analysis.python_source_keys import (
 from molt.compiler_analysis.python_import_redirects import (
     ImportRedirects,
     ImportWriter,
-    PythonImportKeyBound,
+)
+from molt.compiler_analysis.python_string_facts import (
+    PythonStringBound,
 )
 from molt.target_python import TargetPythonVersion
 
@@ -182,13 +184,13 @@ def _redirects(raw: object) -> ImportRedirects:
         row = _map(item)
         return ImportWriter(_text(row["site"]), _text(row["construct"]))
 
-    def bound(item: object) -> PythonImportKeyBound:
+    def bound(item: object) -> PythonStringBound:
         row = _map(item)
-        return PythonImportKeyBound(
+        return PythonStringBound(
             _text(row["prefix"]), _text(row["suffix"]), _int(row["minimum"])
         )
 
-    def key(item: object) -> str | PythonImportKeyBound | None:
+    def key(item: object) -> str | PythonStringBound | None:
         return None if item is None else item if isinstance(item, str) else bound(item)
 
     return ImportRedirects(

@@ -753,6 +753,7 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
             *(build_record.RecordedArtifact.capture(path) for path in paths),
             (),
             None,
+            ("no-default-features", "stdlib_micro"),
         )
         input_report.report_build_result(result.payload())
         return build_results._emit_reused_native_build_result(result)
@@ -772,6 +773,10 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "ok"
         assert payload["data"]["output"] == str(output)
+        assert payload["data"]["observed_toolchain"]["runtime"]["runtime_features"] == [
+            "no-default-features",
+            "stdlib_micro",
+        ]
     assert len(calls) == 1, "unchanged JSON must not enter the compiler"
     assert payload["data"]["cache"]["hit_tier"] == "build-record"
     (artifacts / "stub").unlink()

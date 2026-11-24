@@ -30,8 +30,14 @@ now emits one **verdict** per cell:
 | `BUILD_FAILED` / `RUN_ERROR` | molt build failed / CPython ran but molt did not | gated. |
 | `RUN_BLOCKED` / `CPY_INCOMPATIBLE` | wasm build/link-only / no CPython floor | not gated. |
 
+Molt-only intrinsic workloads have fixed semantic outputs. The runner checks
+each guest observation and records `CPY_INCOMPATIBLE` only after successful
+execution. CPython failures on comparable workloads remain `RUN_ERROR`.
+
 Where:
 - `warm_speedup = cpython_warm / molt_warm` (steady-state — the engine axis).
+  Warmup and measured runs execute in Molt/CPython pairs and alternate which
+  runtime starts each pair, reducing sensitivity to drift during a cell.
 - `cold_speedup = cpython_cold / molt_cold` (end-to-end cold path).
 - `startup_tax_ms = (molt_cold_total − molt_warm_total) × 1000` — the **fixed
   startup cost** molt pays cold that the warm steady state does not. This (NOT

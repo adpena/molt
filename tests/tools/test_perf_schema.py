@@ -76,6 +76,32 @@ def _minimal_host() -> dict[str, object]:
     }
 
 
+def test_native_runtime_variant_binds_per_cell_without_promoting_legacy_data() -> None:
+    from tools.perf_scoreboard_build_profiles import measured_runtime_coordinate
+
+    backend, profile = "native", "release-fast"
+    runtime = {
+        "identity": {"filename": "libmolt_runtime.a", "size": 123, "sha256": "a" * 64},
+        "runtime_features": ["stdlib_micro"],
+    }
+    observation = {"runtime": runtime}
+    cell = _cell(build_observation=observation)
+    key, digest = measured_runtime_coordinate(
+        observation, backend=backend, profile=profile
+    )
+    doc = {"provenance": {"runtime_identity": {key: digest}}}
+    assert not schema.runtime_board_binding_problems(
+        doc, [cell], require_native_variants=True
+    )
+    runtime["runtime_features"] = ["stdlib_edge"]
+    assert schema.runtime_board_binding_problems(doc, [cell])
+    del runtime["runtime_features"]
+    assert not schema.runtime_board_binding_problems(doc, [cell])
+    assert schema.runtime_board_binding_problems(
+        doc, [cell], require_native_variants=True
+    )
+
+
 def _modern_host(**overrides: object) -> dict[str, object]:
     host: dict[str, object] = {
         "platform": "win32",

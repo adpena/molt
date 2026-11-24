@@ -14,6 +14,12 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+`--no-gate` permits diagnostic measurement of a coordinate absent from the
+cold-start budget policy. Before timing, the board records that missing
+coordinate and becomes non-authoritative; its cells have no cold-budget ceiling.
+A present malformed budget or unreadable policy still refuses measurement.
+Ordinary gate runs require an approved budget for every selected coordinate.
+
 ## Instruction signal on main
 
 `tools/perf_instructions.py` measures main's head in instructions retired
@@ -122,6 +128,17 @@ semantic stderr and every existing warmup/sample. Failed sealed references and
 unresolved cleanup cannot produce affirmative performance evidence. Schema-v7
 boards require this contract; earlier boards retain their original comparison
 class and cannot be upgraded by relabelling or regenerating summaries.
+
+Stock `bench_parse_msgpack` admits a compatible MessagePack wheel from
+`uv.lock` for its selected CPython interpreter. Workload evidence carries the
+wheel filename, size, digest, package seal and observed runtime closure.
+Only the isolated CPython child receives that package root and requires its
+native decoder. The compiler and guest retain their original source inputs.
+
+Core workloads that exercise Molt-only intrinsics use their declared output
+contract on every launch. Release admission requires stable, quiescent repeated
+measurements and a matching output receipt. CPython speedups apply to workloads
+with an admitted CPython reference.
 
 `--set applications` is an explicit diagnostic selection, currently HTML5lib
 and a modern SQLGlot/TPC-H variant. Catalog membership and successful CPython

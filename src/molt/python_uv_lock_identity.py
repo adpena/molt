@@ -7,6 +7,7 @@ import urllib.parse
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast, get_args
 
@@ -302,6 +303,80 @@ def _locked_artifact(
 # keep revision 3's table and key shape; resolution markers stay required from
 # revision 3 on.
 SUPPORTED_UV_LOCK_REVISIONS = frozenset({1, 2, 3, 4, 5})
+
+
+@dataclass(frozen=True, slots=True)
+class LockedReferenceWheel:
+    name: str
+    version: str
+    url: str
+    filename: str
+    size: int
+    sha256: str
+
+
+@identity_validator("uv.lock reference wheel")
+def select_locked_reference_wheel(
+    lock: bytes,
+    name: str,
+    *,
+    wheel_target: Mapping[str, object],
+    python_version: str,
+) -> LockedReferenceWheel:
+    """Select a self-contained reference wheel from an unconditional lock row."""
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    target = validate_python_wheel_target(dict(wheel_target))
+    document = tomllib.loads(lock.decode("utf-8"))
+    if (
+        document.get("version") != 1
+        or document.get("revision") not in SUPPORTED_UV_LOCK_REVISIONS
+        or not SpecifierSet(document["requires-python"]).contains(
+            Version(python_version), prereleases=True
+        )
+    ):
+        raise PythonEnvironmentIdentityError(
+            "uv.lock is incompatible with the reference oracle"
+        )
+    rows = [
+        row
+        for row in document["package"]
+        if _canonicalize_name(str(row.get("name", ""))) == name
+    ]
+    if len(rows) != 1 or set(rows[0].get("source", {})) != {"registry"}:
+        raise PythonEnvironmentIdentityError(
+            f"uv.lock must select one registry row for {name}"
+        )
+    row = rows[0]
+    if "resolution-markers" in row or row.get("dependencies"):
+        raise PythonEnvironmentIdentityError(
+            f"reference dependency {name} must be unconditional and self-contained"
+        )
+    selected = _locked_artifact(row, cast(list[str], target["tags"]))
+    if selected["kind"] != "wheel":
+        raise PythonEnvironmentIdentityError(
+            f"uv.lock has no compatible reference wheel for {name}"
+        )
+    urls = {
+        wheel["url"]
+        for wheel in row["wheels"]
+        if _url_filename(wheel["url"]) == selected["filename"]
+        and wheel.get("hash") == f"sha256:{selected['sha256']}"
+        and wheel.get("size") == selected["size"]
+    }
+    if len(urls) != 1:
+        raise PythonEnvironmentIdentityError(
+            f"uv.lock has no unique URL for {name}'s selected wheel"
+        )
+    return LockedReferenceWheel(
+        name,
+        row["version"],
+        urls.pop(),
+        cast(str, selected["filename"]),
+        cast(int, selected["size"]),
+        cast(str, selected["sha256"]),
+    )
 
 
 @identity_validator("uv.lock group selection")

@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from functools import cache
 from email import policy
 from email.parser import BytesParser
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import stat
 import sys
 import tomllib
 import zipfile
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 from urllib.parse import urlsplit
 
@@ -40,6 +42,7 @@ from molt.portable_paths import (  # noqa: E402
 
 if TYPE_CHECKING:
     from molt.cli.source_package_seal import SourcePackageInput, SourcePackageSeal
+    from molt.python_uv_lock_identity import LockedReferenceWheel
 
 
 CATALOG = ROOT / "bench/corpus/registry.toml"
@@ -74,6 +77,119 @@ class PreparedApplication:
     python_roots: tuple[str, ...]
     oracle: str
     run_args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparedReferenceDependency:
+    seal: SourcePackageSeal
+    python_root: str
+    wheel: LockedReferenceWheel
+    runtime_closure_sha256: str
+
+
+def reference_dependency_for_script(script: Path) -> Literal["msgpack"] | None:
+    if (
+        script.expanduser().absolute()
+        == ROOT / "tests/benchmarks/bench_parse_msgpack.py"
+    ):
+        return "msgpack"
+    return None
+
+
+def prepare_reference_dependency(
+    script: Path,
+    *,
+    cpython_command: Sequence[str],
+    store: Path | None = None,
+) -> PreparedReferenceDependency | None:
+    """Seal only the host wheel used by this stock benchmark's CPython reference."""
+    name = reference_dependency_for_script(script)
+    if name is None:
+        return None
+
+    from molt.cli.source_package_seal import (
+        SourcePackageInput,
+        stage_source_package_seal,
+    )
+    from molt.dx import artifact_root
+    from molt.exact_json import canonical_json_bytes, loads_exact
+    from molt.process_environment import ProcessEnvironment
+    from molt.python_environment_identity import (
+        PYTHON_IDENTITY_PROBE_TIMEOUT_S,
+        PythonIdentityVerifier,
+        python_identity_probe_arguments,
+    )
+    from molt.python_runtime_identity import validate_python_runtime_identity
+    from molt.python_uv_lock_identity import (
+        packaging_tag_source,
+        select_locked_reference_wheel,
+        validate_python_wheel_target,
+    )
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    with PythonIdentityVerifier() as verifier:
+        command = [
+            *cpython_command,
+            *python_identity_probe_arguments(
+                [
+                    "--capture-runtime",
+                    "--wheel-tag-source",
+                    str(packaging_tag_source()),
+                ],
+                verifier_bytecode_prefix=verifier.prefix,
+                no_site=True,
+                source_root=ROOT,
+            ),
+        ]
+        probe = verifier.run(
+            command,
+            memory_guard_prefix="MOLT_BENCH",
+            env=ProcessEnvironment(os.environ),
+            capture_output=True,
+            timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
+        )
+    if probe.returncode != 0:
+        raise ValueError(
+            f"CPython reference wheel target probe failed: {probe.stderr[-2000:]}"
+        )
+    payload = loads_exact(probe.stdout)
+    if not isinstance(payload, dict) or set(payload) != {"runtime", "wheel_target"}:
+        raise ValueError(
+            "CPython reference wheel target probe returned an invalid payload"
+        )
+    runtime = validate_python_runtime_identity(payload["runtime"])
+    wheel_target = validate_python_wheel_target(payload["wheel_target"])
+    runtime_sha = str(runtime["runtime_closure_sha256"])
+    if wheel_target["runtime_closure_sha256"] != runtime_sha:
+        raise ValueError(
+            "CPython reference wheel target differs from the observed runtime"
+        )
+    lock = (ROOT / "uv.lock").read_bytes()
+    wheel = select_locked_reference_wheel(
+        lock, name, wheel_target=wheel_target, python_version=str(runtime["version"])
+    )
+    if store is None:
+        store = artifact_root(ROOT, os.environ) / "bench" / "reference"
+    pin = ArchivePin(wheel.name, wheel.version, wheel.url, wheel.size, wheel.sha256)
+    archive = _archive(pin, store / "downloads" / pin.sha256)
+    with OwnedTemporaryDirectory(prefix="reference-wheel-", dir=store) as temporary:
+        work = Path(temporary)
+        inputs = _package_inputs(archive, pin, work / name)
+        provenance = work / "reference.json"
+        provenance.write_bytes(
+            canonical_json_bytes(
+                {
+                    "lock_sha256": sha256(lock).hexdigest(),
+                    "wheel_target": dict(wheel_target),
+                    "wheel": asdict(wheel),
+                }
+            )
+        )
+        inputs.append(
+            SourcePackageInput(provenance, "provenance/reference.json", "provenance")
+        )
+        seal = stage_source_package_seal(store / "source-packages", inputs)
+    return PreparedReferenceDependency(seal, "src", wheel, runtime_sha)
 
 
 def _table(value: object, where: str) -> dict[str, object]:

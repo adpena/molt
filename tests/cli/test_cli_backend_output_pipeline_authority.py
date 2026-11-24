@@ -148,7 +148,7 @@ def terminal_build(
     )
     binary = tmp_path / "app.exe"
     candidate = tmp_path / "candidate.exe"
-    identity = object()
+    identity = SimpleNamespace(runtime_features=("stdlib_micro",))
     binding = SimpleNamespace(
         runtime_lib=tmp_path / "runtime.lib",
         build_identity=identity,

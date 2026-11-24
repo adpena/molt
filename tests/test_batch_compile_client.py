@@ -4,6 +4,7 @@ import contextlib
 import os
 import sys
 import json
+from pathlib import Path
 import queue
 import threading
 import time
@@ -502,6 +503,94 @@ def test_batch_request_deadline_includes_unread_stdin(tmp_path):
         assert client._poisoned
         with pytest.raises(RuntimeError, match="restart required"):
             client.request("ping", timeout=1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="suite daemon leases are POSIX-only")
+def test_batch_restart_inherits_new_lease_despite_stale_request_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt import backend_daemon_suite_custody as custody
+    from tools import harness_memory_guard
+
+    checkout, environment, _, script = _managed_batch_environment(tmp_path)
+    repo = Path(__file__).resolve().parents[1]
+    script.write_text(
+        "import os, sys, time\n"
+        "from molt.backend_daemon_suite_custody import persistent_daemon_env\n"
+        "from molt.cli.quality_commands import _internal_batch_build_server\n"
+        "def build(request):\n"
+        "    env = persistent_daemon_env(os.environ)\n"
+        "    if request.file_path == 'timeout.py':\n"
+        "        time.sleep(60)\n"
+        "    print(env['TMPDIR'])\n"
+        "    return 0\n"
+        "raise SystemExit(_internal_batch_build_server(build_fn=build))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(custody.LEASE_ENV, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    environment = environment.without((custody.LEASE_ENV,)).updated(
+        {"PYTHONPATH": os.pathsep.join((str(repo / "src"), str(repo)))}
+    )
+    guard_type = harness_memory_guard.HarnessExecutionContext
+    context = guard_type.from_env("MOLT_BENCH", environment, repo_root=checkout)
+
+    def start_suite(
+        _context: harness_memory_guard.HarnessExecutionContext, **_kwargs: object
+    ) -> contextlib.ExitStack:
+        scope = contextlib.ExitStack()
+        scope.enter_context(
+            custody.daemon_suite_scope(project_root=checkout, environ=os.environ)
+        )
+        return scope
+
+    monkeypatch.setattr(guard_type, "start_repo_sentinel", start_suite)
+
+    def launch() -> BatchCompileServerClient:
+        return BatchCompileServerClient(
+            [sys.executable, "-B", str(script)],
+            cwd=checkout,
+            env=environment,
+            guard_context=context,
+        )
+
+    first = launch()
+    try:
+        stale = os.environ[custody.LEASE_ENV]
+        overrides = {custody.LEASE_ENV: stale}
+        assert first.request("ping", timeout=5)["ok"] is True
+        with pytest.raises(TimeoutError, match="response timed out"):
+            first.request(
+                "build",
+                params={"file_path": "timeout.py"},
+                env_overrides=overrides,
+                timeout=0.1,
+            )
+    finally:
+        first.close(force=True, timeout=5)
+    assert first._require_process().poll() is not None
+    with pytest.raises(ValueError, match="requires an active lease"):
+        custody.persistent_daemon_env(overrides)
+
+    second = launch()
+    try:
+        active = os.environ[custody.LEASE_ENV]
+        assert active != stale
+        response = second.request(
+            "build",
+            params={"file_path": "success.py"},
+            env_overrides=overrides,
+            timeout=5,
+        )
+        assert response["ok"] is True, response
+        assert (
+            response["stdout"]
+            == custody.persistent_daemon_env(os.environ)["TMPDIR"] + "\n"
+        )
+    finally:
+        second.close(force=True, timeout=5)
+    assert second._require_process().poll() is not None
+    assert custody.LEASE_ENV not in os.environ
 
 
 def test_batch_stdout_eof_never_waits_for_stderr_eof(tmp_path):

@@ -618,7 +618,7 @@ def _print_provenance(provenance: dict) -> None:
             print(f"    {lane:<24} = {ident}")
     else:
         print("    (none recorded)")
-    print("  [runtime_identity (measured runtime library per lane)]")
+    print("  [runtime_identity (measured runtime library per lane and native variant)]")
     runtimes = p.get("runtime_identity") or {}
     if runtimes:
         for lane, ident in sorted(runtimes.items()):

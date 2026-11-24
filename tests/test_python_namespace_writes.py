@@ -1030,7 +1030,7 @@ def test_import_cache_keyed_mutators_preserve_their_actual_binding(operation) ->
 def test_computed_cache_write_keeps_its_bound_and_redirects_only_admitted_rows() -> (
     None
 ):
-    from molt.compiler_analysis.python_import_redirects import PythonImportKeyBound
+    from molt.compiler_analysis.python_string_facts import PythonStringBound
     from molt.compiler_analysis.python_namespace_graph import (
         graph_python_namespace_writes,
     )
@@ -1043,7 +1043,7 @@ def test_computed_cache_write_keeps_its_bound_and_redirects_only_admitted_rows()
         None,
         "import_binding",
     )
-    assert writes[0].key_bound == PythonImportKeyBound("", ".path", 5)
+    assert writes[0].key_bound == PythonStringBound("", ".path", 5)
     assert (
         decode_python_namespace_write(python_namespace_write_payload(writes[0]))
         == writes[0]
@@ -1054,6 +1054,26 @@ def test_computed_cache_write_keeps_its_bound_and_redirects_only_admitted_rows()
     assert result.import_redirects.redirect("os.path")
     assert result.import_redirects.redirect("os.path.extra")
     assert not result.import_redirects.redirect("os")
+
+
+def test_unknown_string_addition_can_redirect_outside_its_literal_prefix() -> None:
+    from molt.compiler_analysis.python_namespace_graph import (
+        graph_python_namespace_writes,
+    )
+
+    class Key(str):
+        def __radd__(self, left: str) -> str:
+            assert left == "encodings."
+            return "typing"
+
+    assert "encodings." + Key("ascii") == "typing"
+    writes = _summary(
+        'import sys\nsys.modules["encodings." + key] = value\n'
+    ).foreign_writes
+    assert len(writes) == 1
+    assert writes[0].name is None and writes[0].key_bound is None
+    result = graph_python_namespace_writes(writes, lambda _name: None)
+    assert result.import_redirects.redirect("typing")
 
 
 def test_literal_cache_write_redirects_its_row_and_descendants_only() -> None:
@@ -1080,7 +1100,7 @@ def test_literal_cache_write_redirects_its_row_and_descendants_only() -> None:
             ["fast"],
         ),
         (
-            "import importlib\ntry:\n    importlib.import_module('enc.' + n)\n"
+            "import importlib\ntry:\n    importlib.import_module(f'enc.{n}')\n"
             "except LookupError:\n    pass\n",
             ["enc."],
         ),
