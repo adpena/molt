@@ -164,6 +164,11 @@ arity participate by identity. The graph shares the resolved-call endpoints with
 context analysis and visits each recorded dependency at most once. It uses one
 edge arena and no per-round walks over the module.
 
+Once the lattice settles, traverse final call targets from each generic context.
+Generic entries remain roots for dynamic callers. Only reached specialized bodies
+are copied and re-optimized. Transient contexts can contribute return information
+during the solve, including in a recursive component, without producing code.
+
 After optimization, contexts of one function whose bodies are identical merge into one clone
 (compared by body digest). The number of clones is the number of reachable contexts that
 compile differently.

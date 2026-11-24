@@ -131,14 +131,7 @@ pub fn run(
     let analysis = Analysis::run(&inputs);
     outcome.contexts = analysis.contexts.len();
 
-    // Mark the final call targets once. A site may have entered other
-    // contexts while solving, so historical return readers are insufficient.
-    let mut reached = vec![false; outcome.contexts];
-    for context in &analysis.contexts {
-        for target in context.targets.iter().flatten() {
-            reached[target.0] = true;
-        }
-    }
+    let reached = analysis.reachable();
 
     // One clone per reached specialized context, in context order.
     let mut clone_of_context = vec![None; outcome.contexts];

@@ -108,6 +108,29 @@ impl Analysis {
         analysis
     }
 
+    /// Start at generic bodies, which can be entered by unseen callers.
+    /// Final edges from unreachable contexts, including recursive cycles,
+    /// contribute to the solved facts but cannot keep a clone executable.
+    pub(super) fn reachable(&self) -> Vec<bool> {
+        let mut reached = vec![false; self.contexts.len()];
+        let mut pending = Vec::new();
+        for (index, context) in self.contexts.iter().enumerate() {
+            if context.key.is_empty() {
+                reached[index] = true;
+                pending.push(ContextId(index));
+            }
+        }
+        while let Some(id) = pending.pop() {
+            for target in self.context(id).targets.iter().flatten() {
+                if !reached[target.0] {
+                    reached[target.0] = true;
+                    pending.push(*target);
+                }
+            }
+        }
+        reached
+    }
+
     /// The context of `body` under `key`; a generic key is stored empty.
     fn intern(&mut self, inputs: &Inputs<'_>, body: usize, key: Key) -> ContextId {
         let key = if key.iter().all(|kind| *kind == ArgKind::Dyn) {

@@ -279,6 +279,103 @@ fn recursive_int_context_enters_its_own_clone() {
 }
 
 #[test]
+fn widened_call_does_not_emit_the_unreachable_specialization_tree() {
+    // choose(flag, value) may return an int or the value from opaque().
+    // Its generic result initially looks exact while opaque() is unsolved.
+    let mut choose = function("choose", 2);
+    let entry = choose.entry_block;
+    let flag = choose.blocks[&entry].args[0].id;
+    let value = choose.blocks[&entry].args[1].id;
+    let int_arm = choose.fresh_block();
+    let other_arm = choose.fresh_block();
+    for id in [int_arm, other_arm] {
+        choose.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unreachable,
+            },
+        );
+    }
+    choose.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: flag,
+        then_block: int_arm,
+        then_args: vec![],
+        else_block: other_arm,
+        else_args: vec![],
+    };
+    let int = const_int(&mut choose, int_arm, 2);
+    choose.blocks.get_mut(&int_arm).unwrap().terminator = Terminator::Return { values: vec![int] };
+    let other = proven_call(&mut choose, other_arm, FunctionId(3), &[value]);
+    choose.blocks.get_mut(&other_arm).unwrap().terminator = Terminator::Return {
+        values: vec![other],
+    };
+
+    // main(flag, value) calls fib through a forwarding body. The initially
+    // exact context can discover recursive fib(int), but once choose widens,
+    // only a separate live entry may keep that recursive clone.
+    let mut main = function("main", 2);
+    let entry = main.entry_block;
+    let args: Vec<_> = main.blocks[&entry].args.iter().map(|arg| arg.id).collect();
+    let selected = proven_call(&mut main, entry, FunctionId(0), &args);
+    let result = proven_call(&mut main, entry, FunctionId(2), &[selected]);
+    main.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut forward = function("forward", 1);
+    let entry = forward.entry_block;
+    let value = forward.blocks[&entry].args[0].id;
+    let result = proven_call(&mut forward, entry, FunctionId(4), &[value]);
+    forward.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut opaque = function("opaque", 1);
+    let entry = opaque.entry_block;
+    let value = opaque.blocks[&entry].args[0].id;
+    opaque.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![value],
+    };
+
+    let mut recursive = fib();
+    for block in recursive.blocks.values_mut() {
+        for op in &mut block.ops {
+            if op.callee == Some(FunctionId(0)) {
+                op.callee = Some(FunctionId(4));
+            }
+        }
+    }
+    let bodies = vec![choose, main, forward, opaque, recursive];
+    let mut module = TirModule::with_own_table("m", bodies.clone());
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+
+    assert!(
+        outcome.contexts > bodies.len(),
+        "must discover a transient key"
+    );
+    assert_eq!(
+        calls(body(&module, "main"))[1].callee,
+        Some(id_of(&module, "forward"))
+    );
+    assert!(outcome.clones.is_empty(), "{:?}", outcome.clones);
+
+    let mut bodies = bodies;
+    bodies.push(caller("known_int", FunctionId(2), &[Literal::Int(8)]));
+    let mut module = TirModule::with_own_table("m", bodies);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+    let fib = id_of(&module, "fib__tf_i");
+    assert!(outcome.clones.iter().any(|clone| clone.id == fib));
+    assert!(
+        calls(body(&module, "fib__tf_i"))
+            .iter()
+            .all(|call| call.callee == Some(fib))
+    );
+}
+
+#[test]
 fn each_argument_family_gets_its_own_context() {
     // def area(w): return w * w ; main calls it with an int and a float.
     let mut area = function("area", 1);
