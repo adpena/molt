@@ -155,6 +155,14 @@ compile differently.
 The comparison serializes each origin once and uses the existing function table until
 compaction. Report a merge by the representative's symbol in that same table.
 
+Codon's generic function values can produce redundant realizations that an LLVM pass
+later merges. Molt's TIR merge runs before backend lowering so it can save Cranelift,
+LLVM and Wasm work as well as code bytes. The merge shares compiled code; each
+observable Python function keeps its own identity, defaults, and closure. Track
+analyzed contexts, distinct emitted bodies and linked bytes independently. Final
+binary size alone cannot show whether specialization repeated unnecessary work.
+[Codon, Appendix A](https://doi.org/10.1145/3578360.3580275).
+
 ### 3.5 Termination, with no constant
 
 - The class set, the function set and the scalar families are finite in a closed world.
@@ -798,8 +806,9 @@ gives a method the implicit `__class__` cell, and 5.7 refused every closure targ
   path must refuse them). A classmethod, staticmethod or property target keeps the generic path.
 - *Closure targets are sound with the live closure tuple*, not with a constant cell: cells stay
   writable through `nonlocal` and `f.__closure__[i].cell_contents`. The environment goes after
-  the callable handoff and before `self`. Type flow drops closure sites by physical arity and
-  the inliner refuses closures; both must admit them before they inline or clone.
+  the callable handoff and before `self`. Type flow drops closure sites by physical arity.
+  Specialization needs a proof for the environment. Inlining needs the callable's
+  activation lifetime.
 - *Removing the load needs the member cell*: shared lowering emits `molt_load_super_method`
   for a surviving proven load, so only a static cell (5.9) removes it on every backend.
 
@@ -812,7 +821,8 @@ gives a method the implicit `__class__` cell, and 5.7 refused every closure targ
    below `Leaf`), so it follows 4 and 5.
 4. Static `super()` with the premises above, in a method whose receiver is its own class or an
    earlier one (`Leaf.compute`), reading the selected callee from its function cell.
-5. Closure targets: (a) direct calls, below; (b) type flow clones and inlining.
+5. Closure targets: (a) direct calls, below; (b) inlining proven calls with
+   activation-owned callable lifetime; (c) specialization that carries environment facts.
 
 **5a. Direct calls of closure targets (as built, 2026-11-21).** A compiled closure takes its
 environment as its first physical parameter (`_MOLT_CLOSURE_PARAM`). The runtime writes a
@@ -842,6 +852,16 @@ outer `obj.compute(i)` is now a direct call; both `super()` calls below it still
 receiver whose `compute` names `__class__` (2M iterations): LLVM 2.32 G -> 1.145 G (-50.7%).
 Cranelift: `bench_class_hierarchy` 18.15 G -> 15.02 G (-17.2%), the probe 2.82 G -> 1.565 G
 (-44.6%).
+
+**5b. Inlined closure lifetime.** At a proven guarded call on a final-TIR target, the
+splice takes the exact function object at the original call site and holds it through
+normal and exceptional exits. It loads the live closure tuple from that object and
+binds an owned alias to the environment parameter. The function is released after
+result capture and frame cleanup, preserving the timing of function weakrefs. Unproven
+sites, mismatched physical arity and non-final-TIR targets are refused before editing
+the caller. This removes call dispatch while preserving closure cells and the identity
+and lifetime of their observable owner. Closure type-flow contexts remain a separate
+step because they must carry the actual environment facts (3.3).
 
 **Step 4. Static `super()` (as built, 2026-11-21).** `_proven_super_member` decides
 `super().m(args)` in a method of class `C` at compile time when all of these hold, else the

@@ -3490,7 +3490,10 @@ result_absorbs_operands = false
 # 5.10): one load of the function object's closure slot. The runtime writes the
 # slot only when it creates the function, so the read is pure; the result is a
 # view, valid while its function object lives, with no reference of its own.
-# Produced only by the final lowering stage, for the direct call that follows.
+# Two producers, both only for final-TIR targets (it never crosses the
+# SimpleIR wire): the final lowering stage, for the direct call that follows,
+# and the inliner, which holds the function until every activation exit and
+# binds the environment to an owned alias before releasing that function.
 [[opcode]]
 name = "FunctionClosure"
 may_call_python = false

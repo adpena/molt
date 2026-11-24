@@ -575,7 +575,9 @@ impl OwnershipRootFacts {
     /// - a function's closure tuple (`FunctionClosure`, design 78 5.10), which
     ///   the function object owns. The final lowering stage passes it only to
     ///   the direct call that also borrows that function, so the function
-    ///   outlives every use of the view.
+    ///   outlives every use of the view. An inlined closure instead retains
+    ///   its function until every activation exit and captures an owned alias
+    ///   of the environment before that function can be released.
     pub(crate) fn is_held_view_root(&self, root: ValueId) -> bool {
         self.held_view_roots.contains(&root)
     }

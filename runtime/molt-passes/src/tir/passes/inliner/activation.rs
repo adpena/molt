@@ -84,13 +84,15 @@ impl Activations {
         self.caller = None;
     }
 
-    /// How each argument of the call at `site` binds its parameter of `callee`.
+    /// How each argument of the call at `site` binds its parameter of `callee`,
+    /// starting after any environment parameter supplied by the splice.
     pub(super) fn bindings(
         &mut self,
         caller: &TirFunction,
         callee: &TirFunction,
         site: &CallSite,
         arguments: &[ValueId],
+        first_parameter: usize,
     ) -> Vec<Binding> {
         let facts = self
             .caller
@@ -99,6 +101,7 @@ impl Activations {
             .iter()
             .enumerate()
             .map(|(position, &argument)| {
+                let position = first_parameter + position;
                 if facts.raw.contains(&argument) {
                     return Binding::Direct;
                 }
