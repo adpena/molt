@@ -40,7 +40,7 @@ mod sites;
 mod tests;
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use molt_ir::FunctionId;
 
@@ -117,18 +117,27 @@ pub fn run(
     let analysis = Analysis::run(&inputs);
     outcome.contexts = analysis.contexts.len();
 
-    // One clone per specialized context, in context order.
-    let mut clone_of_context: HashMap<ContextId, usize> = HashMap::default();
+    // Mark the final call targets once. A site may have entered other
+    // contexts while solving, so historical return readers are insufficient.
+    let mut reached = vec![false; outcome.contexts];
+    for context in &analysis.contexts {
+        for target in context.targets.iter().flatten() {
+            reached[target.0] = true;
+        }
+    }
+
+    // One clone per reached specialized context, in context order.
+    let mut clone_of_context = vec![None; outcome.contexts];
     let mut clones: Vec<(ContextId, TirFunction)> = Vec::new();
     for (index, context) in analysis.contexts.iter().enumerate() {
-        if context.key.is_empty() || !reached(&analysis, ContextId(index)) {
+        if context.key.is_empty() || !reached[index] {
             continue;
         }
         let origin = &module.functions[context.body];
         let mut clone = origin.clone();
         clone.name = clone_symbol(&origin.name, &context.key);
         clone.exact_param_types = seeds_of(&context.key, origin.param_names.len());
-        clone_of_context.insert(ContextId(index), clones.len());
+        clone_of_context[index] = Some(FunctionId::from_index(base_rows + clones.len()));
         clones.push((ContextId(index), clone));
     }
 
@@ -138,14 +147,11 @@ pub fn run(
     let mut report = Vec::new();
     for body in 0..module.functions.len() {
         let id = analysis.generic(body);
-        proofs.push((
-            body,
-            decide(&inputs, &analysis, id, &clone_of_context, base_rows),
-        ));
+        proofs.push((body, decide(&inputs, &analysis, id, &clone_of_context)));
     }
     let clone_decisions: Vec<Vec<SiteDecision>> = clones
         .iter()
-        .map(|(context, _)| decide(&inputs, &analysis, *context, &clone_of_context, base_rows))
+        .map(|(context, _)| decide(&inputs, &analysis, *context, &clone_of_context))
         .collect();
     if report_sites {
         describe(
@@ -163,21 +169,11 @@ pub fn run(
             outcome.changed.insert(module.ids[*body]);
         }
     }
-    let mut clone_bodies: Vec<TirFunction> = Vec::with_capacity(clones.len());
-    for ((_, mut clone), decisions) in clones.into_iter().zip(&clone_decisions) {
+    let first_clone = module.functions.len();
+    let mut clone_origin = Vec::with_capacity(clones.len());
+    for ((context, mut clone), decisions) in clones.into_iter().zip(&clone_decisions) {
         apply(&mut clone, decisions, &mut outcome);
-        clone_bodies.push(clone);
-    }
-    // The origin body of each clone, in clone order.
-    let clone_origin: Vec<usize> = clone_of_context
-        .iter()
-        .map(|(context, index)| (*index, analysis.context(*context).body))
-        .collect::<BTreeMap<usize, usize>>()
-        .into_values()
-        .collect();
-
-    // Append the clones as rows of the document.
-    for clone in clone_bodies {
+        clone_origin.push(analysis.context(context).body);
         let id = module.table.push(&molt_ir::FunctionIR {
             name: clone.name.clone(),
             ..molt_ir::FunctionIR::default()
@@ -199,7 +195,6 @@ pub fn run(
         let _ = super::reoptimize(&mut module.functions[index], tti);
     }
 
-    let first_clone = module.functions.len() - clone_origin.len();
     merge_identical(
         module,
         first_clone,
@@ -210,14 +205,6 @@ pub fn run(
     );
     outcome.report = report;
     outcome
-}
-
-/// Whether some resolved site enters `context`.
-fn reached(analysis: &Analysis, context: ContextId) -> bool {
-    analysis
-        .contexts
-        .iter()
-        .any(|caller| caller.targets.contains(&Some(context)))
 }
 
 /// The linker symbol of a clone: its origin's symbol and its key, one letter
@@ -242,8 +229,7 @@ fn decide(
     inputs: &Inputs<'_>,
     analysis: &Analysis,
     context: ContextId,
-    clone_of_context: &HashMap<ContextId, usize>,
-    base_rows: usize,
+    clone_of_context: &[Option<FunctionId>],
 ) -> Vec<SiteDecision> {
     let caller = analysis.context(context);
     inputs.sites[caller.body]
@@ -251,9 +237,7 @@ fn decide(
         .enumerate()
         .map(|(position, site)| {
             let target = caller.targets[position];
-            let retarget = target
-                .and_then(|target| clone_of_context.get(&target))
-                .map(|clone| FunctionId::from_index(base_rows + clone));
+            let retarget = target.and_then(|target| clone_of_context[target.0]);
             // The site enters exactly its target: that context's return
             // type is its result's.
             let result = target
@@ -500,13 +484,15 @@ fn describe(
     analysis: &Analysis,
     refusals: &[Result<(), Unspecializable>],
     proofs: &[(usize, Vec<SiteDecision>)],
-    clone_of_context: &HashMap<ContextId, usize>,
+    clone_of_context: &[Option<FunctionId>],
     report: &mut Vec<String>,
 ) {
     let module = inputs.module;
-    let mut contexts_of: BTreeMap<usize, usize> = BTreeMap::new();
-    for context in &analysis.contexts {
-        *contexts_of.entry(context.body).or_default() += 1;
+    let mut body_counts = vec![(0usize, 0usize); module.functions.len()];
+    for (context, clone) in analysis.contexts.iter().zip(clone_of_context) {
+        let (contexts, clones) = &mut body_counts[context.body];
+        *contexts += 1;
+        *clones += usize::from(clone.is_some());
     }
     for (body, decisions) in proofs {
         let func = &module.functions[*body];
@@ -520,7 +506,8 @@ fn describe(
                 .join(", ");
             report.push(format!("[type-flow-unknown] {}: {kinds}", func.name));
         }
-        if sites.is_empty() && contexts_of.get(body).copied().unwrap_or(0) <= 1 {
+        let (contexts, clones) = body_counts[*body];
+        if sites.is_empty() && contexts <= 1 {
             if unresolved > 0 {
                 report.push(format!(
                     "[type-flow] {}: {unresolved} call(s) with an unknown callee",
@@ -529,14 +516,9 @@ fn describe(
             }
             continue;
         }
-        let clones = clone_of_context
-            .keys()
-            .filter(|context| analysis.context(**context).body == *body)
-            .count();
         report.push(format!(
-            "[type-flow] {}: {} context(s), {clones} clone(s), {} resolved call(s), {unresolved} with an unknown callee",
+            "[type-flow] {}: {contexts} context(s), {clones} clone(s), {} resolved call(s), {unresolved} with an unknown callee",
             func.name,
-            contexts_of.get(body).copied().unwrap_or(0),
             sites.len(),
         ));
         let facts = analysis.facts(inputs, analysis.generic(*body));

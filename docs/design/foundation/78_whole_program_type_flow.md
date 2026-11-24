@@ -47,8 +47,11 @@ then compiles one body per distinct argument-type tuple.
   analysis applied to Python; per-class abstract objects with field types.
 - **RPython annotator** (PyPy; Ancona et al., DLS 2007): whole-program annotation from the
   entry point to a fixpoint over a finite lattice; one specialization per `argtype` tuple.
-- **Codon** (Shajii et al., CC 2023): bidirectional inference; every function is realized per
-  argument-type tuple; integers are machine integers (Molt keeps Python `int` semantics instead).
+- **Codon** localizes type inference to a function body, delays instantiation until its argument
+  types are known, and memoizes the realized instance. CIR transformations can request more
+  instances through the same type checker. Its machine-sized integers and by-value tuples
+  inform representation choices subject to Molt's overflow, identity and lifetime proofs.
+  [Codon, sections 2–3 and Appendix A](https://doi.org/10.1145/3578360.3580275).
 - **Julia** (Bezanson et al., SIAM Review 2017): inference per method instance (function plus
   concrete signature), cached; union splitting at call sites.
 - **GraalVM Native Image** (Wimmer et al., OOPSLA 2019; saturation, PLDI 2024): closed-world
@@ -208,6 +211,24 @@ invalidates the edited function's contexts. A dependent re-runs only when a type
 changed (early cutoff, as Salsa's red-green and Zig's analysis units do). The no-change rebuild
 bar (Cargo, Go, uv) holds; the pass's cold cost is measured on the largest corpus program and
 on the stdlib.
+
+Record the dependencies of the type summary separately from those of the optimized body. A
+caller that only uses a callee's return type or effects depends on those facts. A caller that
+inlines the callee also depends on its body. An edit that leaves the first set of facts equal
+keeps the caller's analysis valid. A body edit can still invalidate an inlining caller's code.
+Use the same typed dependency identities for source and stdlib contexts.
+
+The current implementation enqueues a generic context for every body. After inference, one
+traversal of its final call targets establishes which contexts need specialized bodies. Clone
+rows follow context order and carry their origin directly to deduplication. Reducing generic analysis itself also requires the existing
+reachability and callable-escape proofs. Keep generic entries wherever a supported observer
+can reach an unseen call. Reuse prepared TIR and target artifacts at their existing boundaries.
+
+Measure cold, single-function edit and unchanged latency separately from generated-code speed.
+Codon's realization cache demonstrates reuse within one compilation and its benchmark appendix
+reports program execution. Its roadmap lists incremental module caching separately.
+[Codon, Appendix B](https://doi.org/10.1145/3578360.3580275).
+[Codon roadmap](https://docs.exaloop.io/developers/roadmap/).
 
 ### 3.11 Diagnostics
 
