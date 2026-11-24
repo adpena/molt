@@ -907,7 +907,6 @@ def _prepare_non_native_build_result_in_generation(
         staged_runtime_wasm: Path | None = None
         runtime_wasm: Path | None = None
         runtime_reloc_wasm: Path | None = None
-        runtime_wasm_pair: RuntimeWasmGeneration | None = None
         # The split-runtime lane reads the staged artifact set too, so the
         # empty defaults must exist on every path, not just `linked`.
         staged_external_native_artifacts: tuple[
@@ -1052,8 +1051,7 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
-            # Codegen still selects a paired runtime product. The final link
-            # consumes the shared member only when it publishes a split bundle.
+            # Re-admit the selected runtime against the emitted import obligations.
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
                 required_runtime_exports
             ):
@@ -1068,27 +1066,39 @@ def _prepare_non_native_build_result_in_generation(
                     if failure is None
                     else {"runtime_wasm_failure": failure.json_payload()},
                 )
-            runtime_wasm_pair = runtime_state.runtime_wasm_pair
-            if runtime_wasm_pair is None:
+            runtime_generation = runtime_state.runtime_wasm_pair
+            if runtime_generation is None:
                 return None, _fail(
-                    "Runtime WASM pair has no admitted generation",
+                    "Runtime WASM has no admitted generation",
                     json_output,
                     command="build",
                 )
-            runtime_receipt = runtime_wasm_pair.receipt_identity
+            runtime_receipt = runtime_generation.receipt_identity
             if runtime_receipt is None:
                 return None, _fail(
                     "Runtime WASM link requires its admitted receipt",
                     json_output,
                     command="build",
                 )
-            runtime_wasm = runtime_wasm_pair.shared if _split_runtime else None
-            runtime_reloc_wasm = runtime_wasm_pair.reloc
+            pair = (
+                runtime_generation
+                if isinstance(runtime_generation, RuntimeWasmGeneration)
+                else None
+            )
+            if _split_runtime and pair is None:
+                return None, _fail(
+                    "Split WASM deployment requires an admitted runtime pair",
+                    json_output,
+                    command="build",
+                )
+            runtime_wasm = pair.shared if pair is not None and _split_runtime else None
+            reserved_shared = () if pair is None else (pair.shared,)
+            runtime_reloc_wasm = runtime_generation.reloc
             runtime_link_members = (
-                runtime_wasm_pair.reloc_member_identity,
+                runtime_generation.reloc_member_identity,
                 *(
-                    (runtime_wasm_pair.shared_member_identity,)
-                    if _split_runtime
+                    (pair.shared_member_identity,)
+                    if pair is not None and _split_runtime
                     else ()
                 ),
             )
@@ -1114,7 +1124,7 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm,
                         *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
-                        runtime_wasm_pair.shared,
+                        *reserved_shared,
                         runtime_receipt.path,
                         *side_sdk_paths,
                         *external_native_fingerprint_inputs,
@@ -1137,8 +1147,8 @@ def _prepare_non_native_build_result_in_generation(
             # Provenance authorizes these exact runtime members at execution;
             # it does not change the link when their admitted bytes are equal.
             # Keep it separate from the command's code-generating arguments.
-            runtime_admission_args = RuntimeWasmTrust.of(runtime_wasm_pair).arguments(
-                runtime_wasm_pair.manifest
+            runtime_admission_args = RuntimeWasmTrust.of(runtime_generation).arguments(
+                runtime_generation.manifest
             )
             link_cmd = [
                 sys.executable,
@@ -1292,7 +1302,7 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm,
                         *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
-                        runtime_wasm_pair.shared,
+                        *reserved_shared,
                         runtime_receipt.path,
                         app_export_contract_path,
                         *external_native_fingerprint_inputs,
@@ -1602,8 +1612,9 @@ def _prepare_non_native_build_result_in_generation(
                     if link_result_reused:
                         admit_link_result()
                         if _split_runtime:
+                            assert pair is not None
                             copy_reconstructible_artifact(
-                                runtime_wasm_pair.shared_member_identity,
+                                pair.shared_member_identity,
                                 deployment.outputs["runtime"],
                             )
                     if (
@@ -1664,7 +1675,9 @@ def _prepare_non_native_build_result_in_generation(
                     command="build",
                 )
             pair = runtime_state.runtime_wasm_pair
-            runtime_wasm = None if pair is None else pair.shared
+            runtime_wasm = (
+                pair.shared if isinstance(pair, RuntimeWasmGeneration) else None
+            )
             if runtime_wasm is None or not runtime_wasm.is_file():
                 return None, _fail(
                     "Runtime WASM generation has no selected shared member",

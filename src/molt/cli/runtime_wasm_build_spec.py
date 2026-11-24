@@ -133,6 +133,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
 
 def _runtime_wasm_combined_cargo_command(
     spec: _RuntimeWasmBuildSpec,
+    artifacts: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
 ) -> list[str]:
     """Construct the combined producer command before resolving one Cargo plan."""
 
@@ -151,7 +152,7 @@ def _runtime_wasm_combined_cargo_command(
         command.append("--no-default-features")
     if spec.wasm_cargo_features:
         command.extend(["--features", ",".join(spec.wasm_cargo_features)])
-    RUNTIME_WASM_COMBINED_ARTIFACTS.select_in(command)
+    artifacts.select_in(command)
     command.append("--")
     return command
 
@@ -170,14 +171,14 @@ def _runtime_wasm_app_import_link_argument(root: Path) -> str:
 
 def _resolve_runtime_wasm_cargo_specs(
     root: Path,
-    shared: _RuntimeWasmBuildSpec,
+    shared: _RuntimeWasmBuildSpec | None,
     reloc: _RuntimeWasmBuildSpec,
     *,
     simd_enabled: bool,
     freestanding: bool,
-) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
+) -> tuple[_RuntimeWasmBuildSpec | None, _RuntimeWasmBuildSpec]:
     """Resolve the one command/environment consumed by capture and execution."""
-    if (
+    if shared is not None and (
         shared.build_policy != reloc.build_policy
         or shared.target_root != reloc.target_root
     ):
@@ -186,18 +187,30 @@ def _resolve_runtime_wasm_cargo_specs(
         )
     # A resolved spec can re-enter after a profile override. Derive our link
     # policy again rather than carrying compression into a debug-preserving link.
-    link_args = wasm_link_args_from_rust_flag_tokens(shared.link_flags)
+    link_args = (
+        ()
+        if shared is None
+        else wasm_link_args_from_rust_flag_tokens(shared.link_flags)
+    )
     if "--compress-relocations" in link_args:
         link_args = tuple(arg for arg in link_args if arg != "--compress-relocations")
+        assert shared is not None
         shared = shared._replace(
             link_flags=tuple(
                 token for arg in link_args for token in ("-C", f"link-arg={arg}")
             )
         )
-    env = shared.env.updated({"CARGO_TARGET_DIR": str(shared.target_root)})
-    command = _runtime_wasm_combined_cargo_command(shared)
+    primary = shared or reloc
+    artifacts = (
+        RUNTIME_WASM_COMBINED_ARTIFACTS
+        if shared is not None
+        else RUNTIME_STATICLIB_ARTIFACTS
+    )
+    env = primary.env.updated({"CARGO_TARGET_DIR": str(primary.target_root)})
+    command = _runtime_wasm_combined_cargo_command(primary, artifacts)
     command[0] = env.get("CARGO", command[0])
     if link_args:
+        assert shared is not None
         response = write_wasm_link_args_response_file(
             _build_state_root(root) / "wasm_link_args",
             label=f"runtime.{shared.cargo_profile}.combined",
@@ -207,7 +220,10 @@ def _resolve_runtime_wasm_cargo_specs(
     # Shared-runtime app callbacks stay unresolved until the application or
     # host supplies them. Capture their exact generated symbol set as a direct
     # final-link resource; export responses contain no nested file selectors.
-    command.extend(["-C", "link-arg=" + _runtime_wasm_app_import_link_argument(root)])
+    if shared is not None:
+        command.extend(
+            ["-C", "link-arg=" + _runtime_wasm_app_import_link_argument(root)]
+        )
     plan = resolve_runtime_cargo_plan(
         root,
         env=env,
@@ -219,6 +235,8 @@ def _resolve_runtime_wasm_cargo_specs(
             freestanding=freestanding,
         ),
     )
+    if shared is None:
+        return None, reloc.with_cargo_plan(plan)
     if plan.strips_debug_for_profile(
         shared.cargo_profile,
         package_name="molt-runtime",
@@ -246,31 +264,25 @@ def _resolve_runtime_wasm_cargo_specs(
 
 def _resolved_runtime_wasm_family_identities(
     root: Path,
-    shared_spec: _RuntimeWasmBuildSpec,
+    shared_spec: _RuntimeWasmBuildSpec | None,
     reloc_spec: _RuntimeWasmBuildSpec,
     *,
     input_observation: RuntimeBuildInputCapture | None = None,
-) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
-    if (
+) -> tuple[RuntimeBuildIdentity | None, RuntimeBuildIdentity]:
+    if shared_spec is not None and (
         shared_spec.cargo_profile != reloc_spec.cargo_profile
         or shared_spec.fingerprint_features != reloc_spec.fingerprint_features
         or shared_spec.cargo_rustflags != reloc_spec.cargo_rustflags
     ):
         raise ValueError("runtime shared/reloc specs do not form one resolved family")
-    if shared_spec.cargo_plan is None:
+    plan = reloc_spec.cargo_plan
+    if plan is None:
         raise ValueError("runtime WASM family requires its resolved Cargo plan")
-    preserve_debug = shared_spec.cargo_plan.preserve_debug_for_profile(
-        shared_spec.cargo_profile
-    )
-    identities = resolve_wasm_runtime_build_family_identities(
-        root,
-        env=shared_spec.env,
-        cargo_profile=shared_spec.cargo_profile,
-        target_triple="wasm32-wasip1",
-        runtime_features=shared_spec.fingerprint_features,
-        cargo_command=shared_spec.cargo_plan.command,
-        producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
-        members=(
+    preserve_debug = plan.preserve_debug_for_profile(reloc_spec.cargo_profile)
+    shared_members = (
+        ()
+        if shared_spec is None
+        else (
             RuntimeBuildMemberPlan(
                 kind="shared",
                 resolved_rustflags=shared_spec.fingerprint_rustflags,
@@ -288,6 +300,22 @@ def _resolved_runtime_wasm_family_identities(
                     ),
                 ),
             ),
+        )
+    )
+    identities = resolve_wasm_runtime_build_family_identities(
+        root,
+        env=plan.environment,
+        cargo_profile=reloc_spec.cargo_profile,
+        target_triple="wasm32-wasip1",
+        runtime_features=reloc_spec.fingerprint_features,
+        cargo_command=plan.command,
+        producer_artifact_selection=(
+            RUNTIME_STATICLIB_ARTIFACTS
+            if shared_spec is None
+            else RUNTIME_WASM_COMBINED_ARTIFACTS
+        ),
+        members=(
+            *shared_members,
             RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags=reloc_spec.fingerprint_rustflags,
@@ -303,12 +331,14 @@ def _resolved_runtime_wasm_family_identities(
                 ),
             ),
         ),
-        cargo_plan=shared_spec.cargo_plan,
+        cargo_plan=plan,
         input_observation=input_observation,
     )
-    if len(identities) != 2:
-        raise ValueError("runtime WASM build family must contain shared and reloc")
-    return identities[0], identities[1]
+    if shared_spec is None:
+        (reloc,) = identities
+        return None, reloc
+    shared, reloc = identities
+    return shared, reloc
 
 
 def _runtime_identity_tree_phase_detail(
@@ -327,9 +357,9 @@ def _runtime_identity_tree_phase_detail(
 
 
 def _runtime_source_identity_tree(
-    identities: tuple[RuntimeBuildIdentity, RuntimeBuildIdentity],
+    identities: tuple[RuntimeBuildIdentity | None, RuntimeBuildIdentity],
 ) -> Mapping[str, object] | None:
-    identity = identities[0]
+    identity = identities[1]
     family = identity.payload.get("family")
     if not isinstance(family, Mapping):
         return None

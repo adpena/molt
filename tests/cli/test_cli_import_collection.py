@@ -23265,17 +23265,22 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
 def _prepared_runtime_pair_state(
     shared: Path, reloc: Path
 ) -> cli_models._RuntimeArtifactState:
-    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
+    from molt.cli.runtime_wasm_generation import SourceRuntimeWasmGeneration
     from molt.toolchain_identity import stable_regular_file_identity
+    from tests.runtime_build_identity_helper import (
+        runtime_build_identity,
+        runtime_cargo_environment_inputs,
+    )
 
     manifest = shared.with_name("molt_runtime.generation.json")
     manifest.write_text("{}\n", encoding="utf-8")
     return cli_models._RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
+        runtime_wasm_pair=SourceRuntimeWasmGeneration(
             shared=shared,
             reloc=reloc,
             manifest=manifest,
-            reloc_identity=SimpleNamespace(family_digest="f" * 64),
+            shared_identity=runtime_build_identity("shared", "prepared"),
+            reloc_identity=runtime_build_identity("reloc", "prepared"),
             receipt_identity=stable_regular_file_identity(
                 manifest, label="fixture runtime receipt"
             ),
@@ -23285,7 +23290,8 @@ def _prepared_runtime_pair_state(
             reloc_member_identity=stable_regular_file_identity(
                 reloc, label="fixture reloc runtime"
             ),
-            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
+            cargo_environment=runtime_cargo_environment_inputs(),
+            payload={},
         ),
     )
 
@@ -23446,7 +23452,9 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert first_cmd[first_cmd.index("--runtime-generation") + 1] == str(
         runtime_state.runtime_wasm_pair.manifest
     )
-    assert first_cmd[first_cmd.index("--runtime-family-digest") + 1] == "f" * 64
+    assert first_cmd[first_cmd.index("--runtime-family-digest") + 1] == (
+        runtime_state.runtime_wasm_pair.reloc_identity.family_digest
+    )
     assert first_cmd[first_cmd.index("--runtime-receipt-role") + 1] == "source-build"
     assert first_cmd[first_cmd.index("--runtime-receipt-sha256") + 1] == (
         runtime_state.runtime_wasm_pair.receipt_identity.sha256
@@ -23480,9 +23488,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     previous = runtime_state.runtime_wasm_pair.manifest
     current = previous.with_name("republished-" + previous.name)
     current.write_bytes(previous.read_bytes() + b"\n")
-    runtime_state.runtime_wasm_pair.manifest = current
-    runtime_state.runtime_wasm_pair.receipt_identity = stable_regular_file_identity(
-        current, label="new fixture runtime receipt"
+    runtime_state.runtime_wasm_pair = replace(
+        runtime_state.runtime_wasm_pair,
+        manifest=current,
+        receipt_identity=stable_regular_file_identity(
+            current, label="new fixture runtime receipt"
+        ),
     )
     republished, republished_err = (
         cli_non_native_output._prepare_non_native_build_result(
@@ -23593,10 +23604,11 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     )
     assert changed is None and changed_err is not None
     assert len(link_calls) == 2
-    runtime_state.runtime_wasm_pair.reloc_member_identity = (
-        stable_regular_file_identity(
+    runtime_state.runtime_wasm_pair = replace(
+        runtime_state.runtime_wasm_pair,
+        reloc_member_identity=stable_regular_file_identity(
             runtime_reloc_wasm, label="new fixture reloc runtime"
-        )
+        ),
     )
     relinked, relinked_err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None, **common_kwargs

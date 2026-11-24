@@ -15,6 +15,7 @@ from typing import cast, overload
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.runtime_artifact_selection import (
+    RUNTIME_STATICLIB_ARTIFACTS,
     RuntimeArtifactSelection,
     RuntimeCrateType,
 )
@@ -532,13 +533,18 @@ def _validated_runtime_build_payload(
         target=target,
     )
     expected_members = (
-        ({"shared", "reloc"}, {"staticlib"})
+        ({"shared", "reloc"}, {"reloc"}, {"staticlib"})
         if target.startswith("wasm32-")
         else ({"staticlib"},)
     )
     if set(members) not in expected_members:
         raise ValueError("runtime family member kinds do not match the target")
-    if set(members) == {"shared", "reloc"}:
+    if set(members) == {"reloc"} and (
+        config["producer_artifact_selection"]
+        != RUNTIME_STATICLIB_ARTIFACTS.source_identity
+    ):
+        raise ValueError("linked runtime WASM must select only the Cargo staticlib")
+    if "reloc" in members:
         tools = cast(Mapping[str, object], compile_payload["toolchain"])["tools"]
         if not {"cc", "cxx", "ar", "ranlib", "wasm_linker"}.issubset(
             cast(Mapping[str, object], tools)

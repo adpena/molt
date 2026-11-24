@@ -31,6 +31,10 @@ from molt.cli.runtime_wasm_build_timings import (
     _runtime_wasm_build_timings_snapshot,
 )
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
+    RuntimeWasmGeneration,
+)
 from molt.cli.installed_runtime import (
     installed_runtime_active,
     select_installed_native_runtime,
@@ -162,9 +166,7 @@ def _prebuild_runtime_wasm(
         rust_cpu=RustCpuPolicy.BASELINE,
     )
     if verbose and not json_output:
-        print(
-            "Prebuilding atomic runtime wasm shared+reloc generation", file=sys.stderr
-        )
+        print(f"Prebuilding WASM runtime generation for {kind}", file=sys.stderr)
     if not _ensure_runtime_wasm_both(
         runtime_state,
         json_output=json_output,
@@ -178,16 +180,25 @@ def _prebuild_runtime_wasm(
         required_link_features=required_link_features,
         resolved_modules=None,
         required_exports=None,
+        bind_for_codegen=kind == "reloc",
+        codegen_use=(
+            RuntimeWasmCodegenUse.LINKED
+            if kind == "reloc"
+            else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+        ),
     ):
-        return fail("Runtime wasm pair prebuild failed.", runtime_state=runtime_state)
-    pair = runtime_state.runtime_wasm_pair
-    if pair is None:
-        return fail("Runtime wasm pair publication selected no immutable generation.")
+        return fail("Runtime WASM prebuild failed.", runtime_state=runtime_state)
+    generation = runtime_state.runtime_wasm_pair
+    if generation is None:
+        return fail("Runtime WASM publication selected no immutable generation.")
     all_artifacts = {
-        "shared": os.fspath(pair.shared),
-        "reloc": os.fspath(pair.reloc),
-        "generation": os.fspath(pair.manifest),
+        "reloc": os.fspath(generation.reloc),
+        "generation": os.fspath(generation.manifest),
     }
+    if kind != "reloc":
+        if not isinstance(generation, RuntimeWasmGeneration):
+            return fail("Runtime WASM publication selected no shared member.")
+        all_artifacts["shared"] = os.fspath(generation.shared)
     artifacts = (
         all_artifacts
         if kind == "both"

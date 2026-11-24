@@ -138,7 +138,11 @@ def _link_admitted_standard_object(
             split_output_dir=split_output_dir,
             inputs=(
                 app_object,
-                runtime_admission.shared_path,
+                *(
+                    (runtime_admission.shared_path,)
+                    if runtime_admission.shared_path is not None
+                    else ()
+                ),
                 *(identity.path for identity in input_versions),
             ),
             external_selection=bool(

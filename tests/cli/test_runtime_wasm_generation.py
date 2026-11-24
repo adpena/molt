@@ -17,6 +17,7 @@ from molt.cli.runtime_wasm_generation import (
     RuntimeWasmReceiptRole,
     RuntimeWasmGeneration,
     RuntimeWasmTrust,
+    SourceLinkedRuntimeWasmGeneration,
     SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
     _generation_receipts,
@@ -781,6 +782,70 @@ def test_codegen_binding_pins_the_immutable_receipt_in_place(tmp_path: Path) -> 
         binding.verify()
     with pytest.raises(ValueError):
         bind_runtime_wasm_codegen(generation, None)
+
+
+def test_source_store_keeps_reloc_only_receipt_out_of_deployment_admission(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "reloc.wasm"
+    source.write_bytes(b"selected reloc bytes")
+    store = _store(tmp_path)
+    identity = runtime_build_identity("reloc", "linked", reloc_only=True)
+    environment, observed = _environment("linked")
+    generation = publish_stored_runtime_wasm_generation(
+        store,
+        shared_identity=None,
+        reloc_identity=identity,
+        cargo_environment=observed,
+        source_shared=None,
+        source_reloc=source,
+    )
+    assert isinstance(generation, SourceLinkedRuntimeWasmGeneration)
+    assert set(generation.manifest.parent.iterdir()) == {
+        generation.manifest,
+        generation.reloc,
+    }
+    assert generation.reloc.read_bytes() == source.read_bytes()
+    assert (
+        stored_runtime_wasm_generation(
+            store,
+            shared_identity=None,
+            reloc_identity=identity,
+            environment=environment,
+        )
+        == generation
+    )
+    assert runtime_wasm_generation_identities(
+        json.loads(generation.manifest.read_bytes())
+    ) == (None, identity)
+    trust = RuntimeWasmTrust.of(generation)
+    admitted = read_trusted_runtime_wasm_reloc(generation.manifest, trust)
+    assert admitted is not None
+    assert admitted.reloc_member_identity == generation.reloc_member_identity
+    assert admitted.shared_path is None
+    assert read_trusted_runtime_wasm_generation(generation.manifest, trust) is None
+    assert (
+        read_trusted_runtime_wasm_reloc(
+            generation.manifest,
+            replace(trust, receipt_role=RuntimeWasmReceiptRole.INSTALLED_PRODUCT),
+        )
+        is None
+    )
+    linked = bind_runtime_wasm_codegen(
+        generation, None, use=RuntimeWasmCodegenUse.LINKED
+    )
+    linked.verify()
+    with pytest.raises(ValueError, match="requires a paired runtime"):
+        bind_runtime_wasm_codegen(generation, None)
+    generation.reloc.write_bytes(b"corrupt")
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    with pytest.raises(ProductStoreError, match="its receipt or members do not admit"):
+        stored_runtime_wasm_generation(
+            store,
+            shared_identity=None,
+            reloc_identity=identity,
+            environment=environment,
+        )
 
 
 def _ensure_process(root: str, seed: str, builds: str) -> None:

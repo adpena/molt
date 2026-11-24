@@ -63,6 +63,7 @@ from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
 from molt.cli.runtime_wasm_build_support import wasm_runtime_simd_enabled
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
+    RuntimeWasmRelocGeneration,
     hydrate_runtime_wasm_product,
     read_runtime_wasm_product,
     runtime_wasm_product_identities,
@@ -442,7 +443,7 @@ def installed_runtime_selection(
     project_root: Path,
     *,
     native: _runtime_contract.InstalledNativeAdmission | None,
-    wasm: RuntimeWasmGeneration | None,
+    wasm: RuntimeWasmRelocGeneration | None,
 ) -> dict[str, Any] | None:
     """Describe the already admitted cell for admission preparation diagnostics.
 
@@ -466,7 +467,10 @@ def installed_runtime_selection(
             native.runtime_lib.parent,
         )
     else:
-        assert wasm is not None
+        if not isinstance(wasm, RuntimeWasmGeneration):
+            raise _runtime_contract.InstalledRuntimeError(
+                "installed WASM runtime selection requires its signed pair"
+            )
         kind, cell_id, retained = (
             WASM_RUNTIME_CELL,
             wasm.shared.parent.name,
@@ -487,7 +491,7 @@ def installed_runtime_selection(
     if native is not None:
         reuse_installed_native_admission(cell, native)
     else:
-        assert wasm is not None
+        assert isinstance(wasm, RuntimeWasmGeneration)
         reuse_installed_wasm_generation(cell, wasm)
     return dict(cell.record)
 

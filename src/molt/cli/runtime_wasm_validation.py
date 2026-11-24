@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from molt.cli.models import _RuntimeArtifactState
-    from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration
+    from molt.cli.runtime_wasm_generation import RuntimeWasmRelocGeneration
 from pathlib import Path
 
 from molt._wasm_runtime_exports import (
@@ -24,7 +24,10 @@ from molt.tool_releases import (
     run_pinned_tool,
 )
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
-from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenUse
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
+    RuntimeWasmGeneration,
+)
 from molt.wasm_artifact import (
     WasmRuntimeFacts,
     _wasm_import_minima,
@@ -311,7 +314,7 @@ class RuntimeWasmAdmissionReport:
 
 
 def runtime_wasm_generation_admission(
-    generation: RuntimeWasmGeneration,
+    generation: RuntimeWasmRelocGeneration,
     required_exports: set[str] | frozenset[str] | None,
     *,
     use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
@@ -328,9 +331,10 @@ def runtime_wasm_generation_admission(
     reloc_missing: tuple[str, ...] = ()
     try:
         generation.verify_members(use=use)
+        pair = generation if isinstance(generation, RuntimeWasmGeneration) else None
         shared = (
-            generation.facts()
-            if use is RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+            pair.facts()
+            if use is RuntimeWasmCodegenUse.DEPLOYED_RUNTIME and pair is not None
             else None
         )
         reloc = generation.facts(relocatable=True)
@@ -358,11 +362,12 @@ def runtime_wasm_generation_admission(
     except (OSError, ValueError) as exc:
         issues.append(RuntimeWasmAdmissionIssue("generation", "structure", str(exc)))
     if shared is not None:
+        assert pair is not None
         shared_missing = tuple(
             sorted(
                 wasm_split_runtime_missing_required_exports(
                     _runtime_wasm_typed_export_names(
-                        generation.shared,
+                        pair.shared,
                         wasm_split_runtime_required_export_symbol_kinds(
                             required_exports
                         ),

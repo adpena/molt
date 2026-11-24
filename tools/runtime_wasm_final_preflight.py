@@ -607,7 +607,8 @@ def _planned_pair(
             required_exports=None,
         )
         if (
-            shared_spec.target_root != target_root
+            shared_spec is None
+            or shared_spec.target_root != target_root
             or reloc_spec.target_root != target_root
         ):
             raise ValueError("resolved runtime target root differs from preflight root")
@@ -618,7 +619,10 @@ def _planned_pair(
         )
         store = ProductStore(store_root / LAYOUT_VERSION / "wasm-runtime")
     shared_identity, reloc_identity = identity.shared, identity.reloc
-    if shared_identity.family_digest != reloc_identity.family_digest:
+    if (
+        shared_identity is None
+        or shared_identity.family_digest != reloc_identity.family_digest
+    ):
         raise ValueError("planned runtime identities do not form one pair")
     return {
         "required_env": required_env,

@@ -1265,7 +1265,7 @@ def _test_pair_context(
     )
 
 
-@pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
+@pytest.mark.parametrize("producer", ["pair", "linked", "cpython-abi"])
 def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     producer, tmp_path, monkeypatch, _synthetic_cargo_plan
 ):
@@ -1295,8 +1295,16 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     }
     for owner in (runtime_wasm_build_spec, runtime_wasm_build_support):
         monkeypatch.setattr(owner, "_cargo_build_env", lambda: generator_environment)
-    if producer == "pair":
+    if producer != "cpython-abi":
         captured = _test_pair_identity()
+        if producer == "linked":
+            captured = replace(
+                captured,
+                shared=None,
+                reloc=make_runtime_build_identity(
+                    "reloc", "test-family", reloc_only=True
+                ),
+            )
         monkeypatch.setattr(
             runtime_wasm_pair_build,
             "resolve_runtime_wasm_pair_identity",
@@ -1308,17 +1316,33 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
             project_root=root,
             json_output=True,
             cargo_timeout=5,
+            codegen_use=(
+                RuntimeWasmCodegenUse.LINKED
+                if producer == "linked"
+                else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+            ),
             **_COMMON,
         )
         assert ctx is not None
-        assert ctx.shared_spec.cargo_plan is ctx.reloc_spec.cargo_plan
-        plan = ctx.shared_spec.cargo_plan
+        plan = ctx.reloc_spec.cargo_plan
+        assert plan is not None
+        if producer == "linked":
+            assert ctx.shared_spec is None
+            assert plan.command[plan.command.index("--crate-type") + 1] == "staticlib"
+            assert plan.partition_command()[1] == ()
+        else:
+            assert ctx.shared_spec is not None
+            assert ctx.shared_spec.cargo_plan is plan
         with pytest.raises(AtExecutor):
-            runtime_wasm_build_support._run_runtime_wasm_cargo_build(
-                cargo_plan=plan,
-                cargo_timeout=5,
-                profile_dir=ctx.shared_spec.profile_dir,
-                json_output=True,
+            runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+                runtime_state=ctx.runtime_state,
+                shared_spec=ctx.shared_spec,
+                reloc_spec=ctx.reloc_spec,
+                project_root=ctx.project_root,
+                json_output=ctx.json_output,
+                cargo_timeout=ctx.cargo_timeout,
+                simd_enabled=ctx.simd_enabled,
+                freestanding=ctx.freestanding,
             )
         assert observed[0] is plan
     else:
@@ -1547,17 +1571,34 @@ def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
     assert "--export-if-defined" not in env.get("RUSTFLAGS", "")
 
 
-@pytest.mark.parametrize("report_staticlib", [True, False])
-def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
+@pytest.mark.parametrize(
+    "use, report_staticlib, report_cdylib, accepted",
+    [
+        (RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, True, True, True),
+        (RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, False, True, False),
+        (RuntimeWasmCodegenUse.LINKED, True, False, True),
+        (RuntimeWasmCodegenUse.LINKED, False, False, False),
+        (RuntimeWasmCodegenUse.LINKED, True, True, False),
+    ],
+)
+def test_runtime_build_fingerprints_only_selected_reported_crate_types(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    use: RuntimeWasmCodegenUse,
     report_staticlib: bool,
+    report_cdylib: bool,
+    accepted: bool,
 ) -> None:
     root = _compiler_root()
     shared, reloc = _specs(root)
     target_root = tmp_path / "target"
     shared = shared._replace(target_root=target_root)
     reloc = reloc._replace(target_root=target_root)
+    linked = use is RuntimeWasmCodegenUse.LINKED
+    if linked:
+        _, reloc = runtime_wasm_build_spec._resolve_runtime_wasm_cargo_specs(
+            root, None, reloc, simd_enabled=True, freestanding=False
+        )
     profile_root = target_root / "wasm32-wasip1" / shared.profile_dir
     deps = profile_root / "build" / "molt-runtime" / "feedfacefeedface" / "out"
     stale_cdylib = profile_root / "molt_runtime.wasm"
@@ -1573,20 +1614,27 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
 
-    reported_filenames = [str(reported_cdylib)]
+    reported_filenames = [str(reported_cdylib)] if report_cdylib else []
     if report_staticlib:
         reported_filenames.append(str(reported_staticlib))
-    cargo_stdout = runtime_cargo_stdout(
-        root,
-        tuple(Path(path) for path in reported_filenames),
-        shared.cargo_plan.environment,
+    cargo_stdout = (
+        runtime_cargo_stdout(
+            root,
+            tuple(Path(path) for path in reported_filenames),
+            reloc.cargo_plan.environment,
+        )
+        if reported_filenames
+        else json.dumps({"reason": "build-finished", "success": True}) + "\n"
     )
 
     def _fake_build(**kwargs):  # noqa: ANN003
         cmd = kwargs["cargo_plan"].command
+        assert cmd[cmd.index("--crate-type") + 1] == (
+            "staticlib" if linked else "staticlib,cdylib"
+        )
         return (
             subprocess.CompletedProcess(cmd, 0, cargo_stdout, ""),
-            reported_cdylib,
+            reported_staticlib if linked else reported_cdylib,
         )
 
     state_root = tmp_path / ".molt_state"
@@ -1615,7 +1663,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     assert (
         runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
             runtime_state=_RuntimeArtifactState(),
-            shared_spec=shared,
+            shared_spec=None if linked else shared,
             reloc_spec=reloc,
             json_output=True,
             cargo_timeout=None,
@@ -1624,7 +1672,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
             freestanding=False,
         )
         is not None
-    ) is report_staticlib
+    ) is accepted
 
     def _target_fingerprint(path: Path) -> Path:
         return runtime_artifact_state._runtime_target_fingerprint_path(
@@ -1634,8 +1682,8 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
             target_label="wasm32-wasip1",
         )
 
-    assert _target_fingerprint(reported_cdylib).exists() is report_staticlib
-    assert _target_fingerprint(reported_staticlib).exists() is report_staticlib
+    assert _target_fingerprint(reported_cdylib).exists() is (accepted and not linked)
+    assert _target_fingerprint(reported_staticlib).exists() is accepted
     assert not _target_fingerprint(stale_cdylib).exists()
     assert not _target_fingerprint(stale_staticlib).exists()
 

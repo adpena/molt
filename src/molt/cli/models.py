@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import (
         RuntimeWasmCodegenBinding,
-        RuntimeWasmGeneration,
+        RuntimeWasmRelocGeneration,
     )
     from molt.cli.runtime_native_codegen import (
         NativeRuntimeCodegenBinding,
@@ -835,9 +835,8 @@ class _FrontendIntegrationState:
 @dataclass
 class _RuntimeArtifactState:
     runtime_lib: Path | None = None
-    # The admitted runtime WASM pair: its receipt and the immutable members it
-    # selects (a product store variant or an installed cell's retained pair).
-    runtime_wasm_pair: RuntimeWasmGeneration | None = None
+    # The admitted runtime receipt and its immutable selected members.
+    runtime_wasm_pair: RuntimeWasmRelocGeneration | None = None
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
     runtime_wasm_build_inputs: _RuntimeWasmPairIdentity | None = None
     # One build operation's prerequisite discovery. Structural validation still
