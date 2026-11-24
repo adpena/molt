@@ -991,7 +991,7 @@
         "tests/cli/test_link_selection_admission.py/**",
         "tests/cli/test_c_api_headers.py/**",
         "tests/cli/test_cli_native_main_stub_authority.py/**",
-        "tests/test_bench_tool.py/**",
+        "tests/test_bench_native_cli.py/**",
         "tests/test_manifest_pipeline_e2e.py/**",
         "tests/test_native_importlib_public_api_regressions.py/**",
         "tests/tools/test_proof_queue_native_receipts.py/**",
@@ -7271,7 +7271,7 @@
       "family": "native_integration",
       "id": "native.integration.bench-cli",
       "pytest": [
-        "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"
+        "tests/test_bench_native_cli.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [

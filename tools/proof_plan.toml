@@ -3624,7 +3624,7 @@ timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q"]
-pytest = ["tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
+pytest = ["tests/test_bench_native_cli.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 # On the PR tier this is the first compiler build (bench-cli runs on main only),
