@@ -38,6 +38,40 @@ execution order. Release acceptance follows the
 [packaging authority](packaging/PACKAGING.md) and the
 [performance acceptance scope](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
 
+### Engineering sequence for Version 1.0
+
+Advance the closed-world compiler and the installed release proof together.
+The [findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md#active-integration)
+owns the current work and evidence.
+
+- **Build one usable program model.** Track callable identity, argument binding,
+  possible writers, object layout, lifetime and observable effects through typed
+  SSA. Start demand at executable and escaping roots. Reuse each proven context
+  for reachability, specialization, inlining and shared lowering. Apply the same
+  model to application and stdlib code, so a proven call, field access or
+  allocation can execute directly and unreachable code can leave the image.
+  Use independent CPython controls for mutation, exceptions, identity, lifetime
+  and extension boundaries. Measure emitted code against the C reference.
+  See [whole-program type flow](docs/design/foundation/78_whole_program_type_flow.md)
+  and [call anatomy](docs/design/foundation/call_anatomy.md).
+- **Reuse the work that survives an edit.** Keep the dependencies of a semantic
+  summary, optimized body, target object and linked product explicit. Changing a
+  callee's body invalidates callers that inline it. A caller that reads only an
+  unchanged return or effect summary keeps that analysis. Carry these identities
+  through installed builds, worktrees and CI. Measure cold builds, representative
+  leaf edits and the immediate unchanged rebuild independently of the runtime
+  performance of the resulting programs.
+  See [build early cutoff](docs/design/build_early_cutoff.md) and
+  [performance measurement](tools/PERF_AUTHORITY.md#finding-the-limiter).
+- **Exercise the real release path early.** Drive one representative standalone
+  native workload and one Wasm workload through the installed compiler, runtime
+  selection, link/publication, execution and authenticated evidence receiver.
+  Prove that the receiver rejects omitted or substituted evidence. Extend that
+  same path across the declared matrix, with source-bound measures of runtime,
+  build latency, resource use and artifact size. This is the route to the
+  [phase exit](docs/design/CENTURY_SYSTEMS_PLAN.md#5-horizons-and-machine-checkable-phase-exits), alongside
+  closure of the compatibility and security obligations.
+
 ### Typed identity comes first
 
 String-literal identity is absolute poison. Op kinds, exceptions, classes,
