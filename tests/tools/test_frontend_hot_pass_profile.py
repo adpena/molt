@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import install_module_view
 from tools import frontend_hot_pass_profile
 
 
@@ -81,7 +82,7 @@ def test_version_excluded_source_never_reaches_parser_or_generator(
     def forbidden(*args, **kwargs):
         raise AssertionError("version-excluded source reached compilation")
 
-    monkeypatch.setattr(tool.ast, "parse", forbidden)
+    install_module_view(monkeypatch, "ast", tool.ast, tool, parse=forbidden)
     monkeypatch.setattr(tool, "SimpleTIRGenerator", forbidden)
     report = tool.profile_sources([source], top=3, target_python=(3, 12))
     assert report["status_counts"] == {"skip": 1}
