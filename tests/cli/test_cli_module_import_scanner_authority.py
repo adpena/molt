@@ -219,6 +219,43 @@ def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
     )
 
 
+def test_only_a_lexical_source_read_requests_the_discovery_projection() -> None:
+    from unittest.mock import patch
+
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    tree = ast.parse(
+        "def absolute():\n    import itertools\n"
+        "def relative():\n    from .peer import one\n    from .peer import two\n"
+    )
+    with patch.object(
+        _source_import_scan,
+        "analyze_python_bindings",
+        wraps=_source_import_scan.analyze_python_bindings,
+    ) as analyses:
+        absolute = _source_import_scan._collect_imports_for_graph(
+            tree, "pkg.consumer", source_owner=python_node_source_key(tree.body[0])
+        )
+        assert "itertools" in absolute.imports
+        assert not any(
+            call.kwargs["policy"].include_import_discovery
+            for call in analyses.call_args_list
+        )
+        relative = _source_import_scan._collect_imports_for_graph(
+            tree, "pkg.consumer", source_owner=python_node_source_key(tree.body[1])
+        )
+        assert {"pkg.peer.one", "pkg.peer.two"} <= set(
+            relative.dynamic_relative_import_candidates
+        )
+        assert (
+            sum(
+                call.kwargs["policy"].include_import_discovery
+                for call in analyses.call_args_list
+            )
+            == 1
+        )
+
+
 def test_static_and_context_scans_share_one_binding_fixpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

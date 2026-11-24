@@ -80,6 +80,7 @@ from molt.compiler_analysis.python_binding_flow import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     PythonBindingFacts,
+    PythonBindingIndex,
     PythonClassPreparation,
 )
 from molt.compiler_analysis.python_imports import (
@@ -890,9 +891,11 @@ def _collect_imports(
         execution_kind="script" if module_name is None else "imported",
     )
     admission = ast_digest_admission
-    include_import_discovery = _dynamic_relative_import_discovery is not None
-    binding_index = _premise_analysis(
-        lambda premise: analyze_python_bindings(
+
+    def binding_index_for(
+        premise: PythonNamespacePremise | None, *, source_discovery: bool = False
+    ) -> PythonBindingIndex:
+        return analyze_python_bindings(
             cast(ast.Module, tree),
             source_digest=admission.digest,
             ast_digest_admission=admission,
@@ -902,14 +905,15 @@ def _collect_imports(
                 module_name=module_name,
                 is_package=is_package,
                 namespace_premise=premise,
-                include_import_discovery=include_import_discovery,
+                include_import_discovery=source_discovery,
                 activation_argument_values=_source_argument_values(
                     admission, source_owner, source_arguments
                 ),
             ),
-        ),
-        namespace_premise,
-    )
+        )
+
+    binding_index = _premise_analysis(binding_index_for, namespace_premise)
+    source_import_flow: ModuleImportFlow | None = None
     import_flow = binding_index.module_import_flow
     uses_runtime_import_protocol = False
     if _source_values is not None and source_owner is None:
@@ -1101,14 +1105,21 @@ def _collect_imports(
     def _import_contexts(
         node: ast.AST, *, source_discovery: bool = False
     ) -> tuple[ModuleImportContext, ...]:
-        return tuple(
-            base_import_context.with_state(state)
-            for state in (
-                import_flow.source_states_for(node)
-                if source_discovery
-                else import_flow.states_for(node)
-            )
+        nonlocal source_import_flow
+        flow = import_flow
+        if source_discovery and _dynamic_relative_import_discovery is not None:
+            # A lexical source-state read needs the second whole-module transfer.
+            # Register that projection with the scan's premise log on its first use.
+            if source_import_flow is None:
+                source_import_flow = _premise_analysis(
+                    lambda premise: binding_index_for(premise, source_discovery=True),
+                    namespace_premise,
+                ).module_import_flow
+            flow = source_import_flow
+        states = (
+            flow.source_states_for(node) if source_discovery else flow.states_for(node)
         )
+        return tuple(base_import_context.with_state(state) for state in states)
 
     source_bindings: dict[str, object] = {}
 
