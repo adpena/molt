@@ -1676,7 +1676,7 @@ def _integrate_exclusive(
             except DiskCapacityError as exc:
                 raise DriverError(f"gate output capacity refused: {exc}") from exc
             except GateCancellation as exc:
-                if exc.reason is not CancelReason.UPSTREAM_ADVANCED:
+                if exc.reason is not CancelReason.UPSTREAM_ADVANCED or exc.unresolved:
                     raise
                 _assert_integration_source(git, selected_commit)
                 tested_tree = _write_queue_receipt(

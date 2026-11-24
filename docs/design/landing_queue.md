@@ -474,9 +474,14 @@ One runner owns main. Agents enqueue and continue.
   confirms. A failed batch splits into halves: a passing first half lands,
   and the rest retest on the new tip. A single failing lane leaves the queue
   with its log. The local queue observes main during gates and cancels the
-  candidate through its process guards when main advances. After guard closure,
-  it records completed gates in an interrupted receipt and rebuilds
-  automatically. The pre-push hook requires a passing receipt. Rebuilds rerun
+  candidate through its process guards when main advances. Once the guards
+  prove closure and complete any required Cargo recovery, the runner records
+  completed gates in an interrupted receipt and rebuilds automatically. If
+  Cargo recovery has an incomplete process-birth inventory, the runner stops
+  with the upstream interruption and guard refusal recorded. It keeps the
+  requests queued and withholds the interrupted receipt. Moving an observed
+  incremental profile can preserve evidence while other profiles' custody
+  remains unresolved. The pre-push hook requires a passing receipt. Rebuilds rerun
   static gates, incomplete gates and gates the move can affect, using the same
   compatibility rule as `land --fast`. The push and fetched ancestry check
   cover moves after the last observation. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)

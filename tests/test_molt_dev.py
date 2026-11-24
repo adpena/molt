@@ -4580,18 +4580,44 @@ def test_postsubmit_pending_landing_cancels_through_guard_and_preserves_custody(
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("defect", ["closure", "infrastructure"])
-def test_budget_cancellation_names_an_unresolved_closure_as_its_refusal(
-    tmp_path, parallel, defect
-):
+@pytest.mark.parametrize("defect", ["closure", "infrastructure", "cargo"])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        molt_dev_gates.CancelReason.PRECHECK_BUDGET,
+        molt_dev_gates.CancelReason.UPSTREAM_ADVANCED,
+    ],
+)
+def test_owner_cancellation_preserves_the_reason_and_unresolved_guard(
+    tmp_path: Path,
+    parallel: bool,
+    defect: str,
+    reason: molt_dev_gates.CancelReason,
+) -> None:
     from dataclasses import replace
+
+    from tools.memory_guard_core.cargo_quarantine import CargoIncrementalQuarantineMove
+    from tools.proof_plan import CargoTargetAccess
 
     requested = False
     launched = []
+    # A successfully moved profile does not make the interruption inventory
+    # complete. Both serial and executor paths must retain this refusal.
+    quarantine = replace(
+        _DEFERRED_CARGO_RECOVERY,
+        ownership_status="quarantined",
+        errors=(),
+        moved_paths=(
+            CargoIncrementalQuarantineMove(
+                original_path=str(tmp_path / "incremental"),
+                quarantined_path=str(tmp_path / "quarantined" / "incremental"),
+            ),
+        ),
+    )
 
     def run(command, repo, environment, cancelled, streams=None):
         nonlocal requested
-        requested = True  # The budget runs out after this gate launched.
+        requested = True  # The owner cancels after the gate launched.
         launched.append(command)
         return _gate_outcome(
             137,
@@ -4602,6 +4628,7 @@ def test_budget_cancellation_names_an_unresolved_closure_as_its_refusal(
             infrastructure_failure=_INDETERMINATE_CUSTODY
             if defect == "infrastructure"
             else None,
+            cargo_incremental_quarantine=quarantine if defect == "cargo" else None,
         )
 
     runtime = replace(
@@ -4609,24 +4636,39 @@ def test_budget_cancellation_names_an_unresolved_closure_as_its_refusal(
             molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
         ),
         cancelled=lambda: requested,
-        cancel_reason=molt_dev_gates.CancelReason.PRECHECK_BUDGET,
+        cancel_reason=reason,
         run_captured_gate=run,
+    )
+    toolchains = ("python", "cargo") if defect == "cargo" else ("python",)
+    runtime = replace(
+        runtime, environments={toolchains: runtime.environments[("python",)]}
     )
     gates = [
         SelectedGate(
-            ("python", "-m", "pytest", f"test_{n}.py"), ("python",), pytest=True
+            ("python", "-m", "pytest", f"test_{n}.py"),
+            toolchains,
+            pytest=True,
+            cargo_target_access=(
+                CargoTargetAccess.SHARED
+                if defect == "cargo"
+                else CargoTargetAccess.NONE
+            ),
         )
         for n in range(2 if parallel else 1)
     ]
-    # A process tree whose guard closure stays indeterminate after the budget
-    # cancels it is the refusal, named, never a runner stop.
     with pytest.raises(molt_dev_gates.GateCancellation) as caught:
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
-    assert caught.value.reason is molt_dev_gates.CancelReason.PRECHECK_BUDGET
+    assert caught.value.reason is reason
+    assert reason.value in str(caught.value)
     assert caught.value.unresolved
     for item in caught.value.unresolved:
         declared = tuple(shlex.split(item.partition(":")[0]))
         assert any(tuple(command[: len(declared)]) == declared for command in launched)
+        assert item in str(caught.value)
+    if defect == "cargo":
+        assert "Cargo quarantine ownership or recovery is unresolved" in str(
+            caught.value
+        )
     assert runtime.passed == []
 
 
@@ -11498,6 +11540,40 @@ def test_queued_integrate_closes_stale_gate_and_retains_completed_evidence(
     )
     assert landing_receipt.push_refusals(
         [f"HEAD {selected} refs/heads/main {base}"], cwd=work
+    )
+
+
+def test_queued_integrate_withholds_interrupted_receipt_when_custody_is_unresolved(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    borrowed_gate_python: None,
+) -> None:
+    from tools import landing_receipt
+
+    _, work = origin_and_clone
+    base = _remote_main(work)
+    selected = _commit_integration_policy(
+        work, [_integration_python("print('selected gate')")]
+    )
+    tree = _git(work, "rev-parse", f"{selected}^{{tree}}").stdout.strip()
+    reason = molt_dev_gates.CancelReason.UPSTREAM_ADVANCED
+    unresolved = ("changed-crate tests: incomplete Cargo interruption inventory",)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise molt_dev_gates.GateCancellation(reason, unresolved=unresolved)
+
+    monkeypatch.setattr(drv, "run_selected_gates", refuse)
+    with pytest.raises(molt_dev_gates.GateCancellation) as caught:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), expected_upstream=base))
+    assert caught.value.reason is reason
+    assert caught.value.unresolved == unresolved
+    assert _remote_main(work) == base
+    assert (
+        landing_receipt.read_receipt(
+            work / ".git", tree=tree, base=base, allow_interrupted=True
+        )
+        is None
     )
 
 
