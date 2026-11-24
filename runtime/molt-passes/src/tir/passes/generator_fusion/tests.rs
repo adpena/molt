@@ -842,10 +842,33 @@ fn branch_exclusive_instances_of_one_poll_fuse_independently() {
                 12,
             ));
         }
-        let mut module = TirModule::decode_spelled("m", vec![counter_poll(), caller]);
+        // A real Python call followed by its marked observation in the first
+        // instance must retain that boundary when the second site is fused.
+        let mut poll = counter_poll();
+        let result = poll.fresh_value();
+        let body = poll
+            .blocks
+            .values_mut()
+            .find(|block| block.ops.iter().any(|op| op.opcode == OpCode::StateYield))
+            .unwrap();
+        let yield_index = body
+            .ops
+            .iter()
+            .position(|op| op.opcode == OpCode::StateYield)
+            .unwrap();
+        let callee = body.ops[yield_index].operands[0];
+        let mut call = op(OpCode::Call, vec![callee], vec![result]);
+        call.origin = Some(molt_ir::OpKind::CallFunc);
+        let mut check = origin_check(91);
+        check.mark_async_work_poll();
+        body.ops.splice(yield_index..yield_index, [call, check]);
+        let mut module = TirModule::decode_spelled("m", vec![poll, caller]);
         let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
         let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
         assert_eq!(stats.frames_elided, if first_refuses { 1 } else { 2 });
+        assert!(super::super::async_work_poll::is_materialized(
+            &module.functions[1]
+        ));
         let caller = &module.functions[1];
         assert_eq!(
             caller

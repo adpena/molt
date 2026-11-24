@@ -96,6 +96,7 @@ fn runtime_call(
     op.runtime = Some(runtime);
     // The call never raises: it keeps the selected exception and abandons
     // its own failures. It is no exception event of its own.
+    op.mark_nothrow_proof();
     op.attrs.insert(
         "exception_source".into(),
         AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind as i64),
