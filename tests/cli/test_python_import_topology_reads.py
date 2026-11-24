@@ -80,3 +80,30 @@ def test_a_directory_that_never_holds_still_fails_with_its_own_reason(
     # The failure ends the operation for every later query.
     with pytest.raises(PythonImportTopologyChangedError, match="never held still"):
         topology.validate()
+
+
+@pytest.mark.parametrize("created_name", ["a.py", "unrelated.txt"])
+def test_recorded_sibling_probes_distinguish_relevant_churn_during_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, created_name: str
+) -> None:
+    first = tmp_path / "a.py"
+    second = tmp_path / "b.py"
+    second.write_text("pass\n", encoding="utf-8")
+    topology = PythonImportTopology()
+    assert not topology.is_file(first)
+    assert topology.is_file(second)
+    record = topology.record()
+    probe = python_import_topology._probe
+    added = tmp_path / created_name
+
+    def add_sibling(path: Path) -> PythonImportPath | None:
+        if path == second and not added.exists():
+            added.write_text("pass\n", encoding="utf-8")
+        return probe(path)
+
+    monkeypatch.setattr(python_import_topology, "_probe", add_sibling)
+    if added == first:
+        with pytest.raises(PythonImportTopologyChangedError, match=r"a\.py"):
+            PythonImportTopology.from_record(record)
+    else:
+        assert PythonImportTopology.from_record(record).record() == record
