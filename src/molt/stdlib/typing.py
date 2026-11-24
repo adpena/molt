@@ -612,7 +612,7 @@ class _AnnotatedAlias(_TypingBase):
         return hash((self.__origin__, self.__metadata__))
 
 
-class _ConcatenateAlias(_TypingBase):
+class _ConcatenateGenericAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, args: tuple[object, ...]) -> None:
@@ -624,9 +624,15 @@ class _ConcatenateAlias(_TypingBase):
         return f"typing.Concatenate[{_format_args(self.__args__)}]"
 
 
+def _is_param_expr(arg: object) -> bool:
+    # CPython Lib/typing.py: substitution checks the actual parameter types.
+    return arg is Ellipsis or isinstance(
+        arg, (tuple, list, _ParamSpec, _ConcatenateGenericAlias)
+    )
+
+
 def _callable_args_are_param_expr(args: tuple[object, ...]) -> bool:
-    """CPython's ``_is_param_expr`` test on ``Callable`` arguments."""
-    return len(args) == 2 and _collections_abc_module._is_param_expr(args[0])
+    return len(args) == 2 and _is_param_expr(args[0])
 
 
 class _CallableAlias(_TypingBase):
@@ -700,11 +706,11 @@ def _make_annotated(params: object) -> _AnnotatedAlias:
     return _AnnotatedAlias(args[0], args[1:])
 
 
-def _make_concatenate(params: object) -> _ConcatenateAlias:
+def _make_concatenate(params: object) -> _ConcatenateGenericAlias:
     args = _as_tuple(params)
     if not args:
         raise TypeError("Concatenate requires at least one argument")
-    return _ConcatenateAlias(args)
+    return _ConcatenateGenericAlias(args)
 
 
 def _make_callable(params: object) -> _CallableAlias:
@@ -1112,7 +1118,7 @@ class _ParamSpec(_TypeVarLike):
     def __typing_subst__(self, arg: object, /) -> object:
         if isinstance(arg, (list, tuple)):
             return tuple([_type_check(item, "Expected a type.") for item in arg])
-        if not _collections_abc_module._is_param_expr(arg):
+        if not _is_param_expr(arg):
             raise TypeError(
                 "Expected a list of types, an ellipsis, "
                 f"ParamSpec, or Concatenate. Got {arg}"
@@ -1597,7 +1603,7 @@ def get_origin(tp: object) -> object | None:
         return Literal
     if isinstance(tp, _UnionAlias):
         return Union
-    if isinstance(tp, _ConcatenateAlias):
+    if isinstance(tp, _ConcatenateGenericAlias):
         return Concatenate
     if isinstance(tp, _CallableAlias):
         return getattr(_load_collections_abc(), "Callable")
@@ -1613,7 +1619,7 @@ def get_args(tp: object) -> tuple[object, ...]:
         return tp.__args__
     if isinstance(tp, _UnionAlias):
         return tp.__args__
-    if isinstance(tp, _ConcatenateAlias):
+    if isinstance(tp, _ConcatenateGenericAlias):
         return tp.__args__
     if isinstance(tp, _CallableAlias):
         args = tp.__args__

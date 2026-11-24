@@ -5,17 +5,14 @@ from __future__ import annotations
 import sys as _sys
 from _compatibility_errors import counter_fromkeys_error as _counter_fromkeys_error
 
-from typing import TYPE_CHECKING
+TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from typing import Any, Iterable, Iterator, cast
+    from typing import Any, Iterable, Iterator
 else:
     Any = object()
     Iterable = object()
     Iterator = object()
-
-    def cast(_tp, value):
-        return value
 
 
 import collections.abc as abc

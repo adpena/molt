@@ -169,8 +169,6 @@ def test_type_parameter_producer_supplies_real_generic_alias_protocol(
         alias = types.GenericAlias(tuple, (parameter, parameter))
         assert len(alias.__parameters__) == 1
         assert alias.__parameters__[0] is parameter
-        if factory_name == "ParamSpec":
-            assert molt_typing._collections_abc_module._is_param_expr(parameter)
     finally:
         # Special type attributes need restoration through their descriptors;
         # they need not be present in the class dictionary on every CPython.
@@ -205,7 +203,9 @@ def test_typevartuple_substitution_protocol_preserves_bare_rejection(molt_typing
     assert str(actual.value) == str(expected.value)
 
 
-def test_callable_and_paramspec_share_actual_selected_type_identity(molt_typing):
+def test_callable_and_paramspec_preserve_their_cpython_boundaries(
+    molt_typing: types.ModuleType,
+) -> None:
     import _collections_abc as host_collections
     import typing as host_typing
 
@@ -229,9 +229,16 @@ def test_callable_and_paramspec_share_actual_selected_type_identity(molt_typing)
         assert actual.__args__[0] is actual_arg
         assert expected.__args__[0] is expected_arg
         assert len(actual.__parameters__) == len(expected.__parameters__)
-    renamed = type("ParamSpec", (), {"__module__": "typing"})()
-    assert not selected_collections._is_param_expr(renamed)
-    assert not selected_collections._is_param_expr(host_typing.ParamSpec("Foreign"))
+    for name in ("ParamSpec", "_ConcatenateGenericAlias"):
+        shaped = type(name, (), {"__module__": "typing"})()
+        expected = host_collections.Callable[shaped, str]
+        actual = selected_collections.Callable[shaped, str]
+        assert actual.__args__ == expected.__args__
+        with pytest.raises(TypeError) as expected_error:
+            expected_p.__typing_subst__(shaped)
+        with pytest.raises(TypeError) as actual_error:
+            actual_p.__typing_subst__(shaped)
+        assert str(actual_error.value) == str(expected_error.value)
 
 
 def test_typing_collection_uses_python_equality_and_iterable_metadata(molt_typing):
