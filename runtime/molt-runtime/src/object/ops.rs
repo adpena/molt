@@ -1471,7 +1471,7 @@ pub(crate) fn molt_inc_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, 
         return bits;
     }
     crate::with_attached_entry_nopanic!(_py, _py, {
-        unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
+        unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count as usize) };
     });
     bits
 }
