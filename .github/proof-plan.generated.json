@@ -4008,10 +4008,7 @@
       "family": "wasm",
       "id": "wasm.host.runner-fixtures",
       "pytest": [
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache",
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "pytest_worker_memory_gb": 0.75,
@@ -6010,13 +6007,7 @@
         "-m",
         "not slow",
         "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache",
         "--deselect",
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],

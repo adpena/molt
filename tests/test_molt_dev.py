@@ -3788,23 +3788,30 @@ def test_postsubmit_terminal_memory_pressure_preserves_identity_and_stops(
     )
 
 
-@pytest.mark.parametrize("mode", ["presubmit", "postsubmit"])
-def test_postsubmit_takes_a_share_of_the_development_slot(
+@pytest.mark.parametrize("mode", ["presubmit", "postsubmit", "try-run"])
+def test_development_gate_groups_release_their_host_share(
     drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    # HF-937: postsubmit runs after every landing; holding the whole class made
-    # every lane's consumer gate wait for its full run. Each batch must also
-    # release its grant before a later, smaller batch runs.
+    # Development releases the larger grant before the smaller group runs.
+    # The integration block is exclusive and admits once.
     from collections.abc import Iterator
     from contextlib import contextmanager
 
     from molt import host_capacity
     from tools.molt_dev_policy import LandingMode
+    from tools.molt_dev_precheck import GateRun
 
     requests: list[
         tuple[host_capacity.HostWorkClass, host_capacity.HostWorkDemand | None]
     ] = []
 
+    now = 0.0
+    waited = 90.0 if mode == "try-run" else 0.0
+    budget = (
+        molt_dev_gates.TryRunClock("try run", 4.0, lambda: now)
+        if mode == "try-run"
+        else None
+    )
     admissions: list[tuple[str, int | None]] = []
     active: host_capacity.HostWorkDemand | None = None
 
@@ -3818,7 +3825,7 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         demand: host_capacity.HostWorkDemand | None = None,
         **_kwargs: object,
     ) -> Iterator[host_capacity.HostWorkAdmission]:
-        nonlocal active
+        nonlocal active, now
         assert active is None
         requests.append((work, demand))
         active = demand
@@ -3829,8 +3836,9 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
             if demand is None
             else host_capacity.HostWorkGrant(demand.workers, demand.workers)
         )
+        now += waited
         try:
-            yield host_capacity.HostWorkAdmission(0.0, grant)
+            yield host_capacity.HostWorkAdmission(waited, grant)
         finally:
             active = None
             admissions.append(("release", try_memory))
@@ -3844,6 +3852,9 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         cancelled: Callable[[], bool],
         streams: tuple[Path, ...] | None = None,
     ) -> object:
+        nonlocal now
+        assert not cancelled()
+        now += 1.0
         assert streams is not None
         path_name = next(part for part in command if part.startswith("tests/"))
         admissions.append(
@@ -3878,7 +3889,9 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         observe_capacity=lambda *args, **kwargs: (),
         say=lambda message: None,
         ok=lambda message: None,
-        mode=LandingMode(mode),
+        mode=LandingMode.POSTSUBMIT if mode == "postsubmit" else LandingMode.PRESUBMIT,
+        try_run=budget,
+        cancelled=budget.expired if budget is not None else lambda: False,
     )
     heavy = SelectedGate(
         command=(
@@ -3905,7 +3918,7 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
         pytest=True,
     )
     molt_dev_gates.run_selected_gates([heavy, small], runtime, [], host_limit=lambda: 1)
-    if mode == "postsubmit":
+    if mode != "presubmit":
         assert requests == [
             (
                 host_capacity.HostWorkClass.DEVELOPMENT,
@@ -3924,10 +3937,23 @@ def test_postsubmit_takes_a_share_of_the_development_slot(
             ("tests/test_small.py", 1 << 30),
             ("release", 1 << 30),
         ]
-        assert (runtime.output_dir / "gate-001.stdout.log").is_file()
-        assert (
-            runtime.output_dir / "postsubmit-rest-1" / "gate-002.stdout.log"
-        ).is_file()
+        first = runtime.output_dir / "gate-001.stdout.log"
+        second = runtime.output_dir / f"{mode}-rest-1" / "gate-002.stdout.log"
+        assert first.is_file() and second.is_file()
+        assert second.parent in molt_dev_gates.gate_evidence_directories(
+            runtime.output_dir
+        )
+        if budget is not None:
+            assert now == 182.0
+            assert budget.elapsed() == 2.0
+            run = GateRun(mode, runtime.output_dir, (heavy, small), runtime.passed_logs)
+            assert [run.log(gate) for gate in run.gates] == [first, second]
+            from tools.gate_yield import load_receipts
+
+            assert {receipt.name for receipt, _ in load_receipts(tmp_path)} == {
+                "receipt.heavy.json",
+                "receipt.group-1.heavy.json",
+            }
     else:
         assert requests == [(host_capacity.HostWorkClass.INTEGRATION, None)]
         assert admissions == [
@@ -5411,7 +5437,7 @@ def test_gates_overlap_across_classes_and_rules_cargo_gates_overlap(
     assert len(set(slices[:2])) == 1 and len(set(slices[2:])) == 1
 
 
-def test_landing_demand_can_run_any_selected_gate(tmp_path: Path) -> None:
+def test_landing_gate_memory_uses_its_own_envelope(tmp_path: Path) -> None:
     from tools import molt_dev_gates
 
     tests = SelectedGate(
@@ -5428,13 +5454,10 @@ def test_landing_demand_can_run_any_selected_gate(tmp_path: Path) -> None:
         pytest=True,
     )
     cargo = SelectedGate(("cargo", "check"), ("cargo",))
-    light = molt_dev_gates.gate_work_demand([tests], repo=tmp_path, requested_workers=6)
-    mixed = molt_dev_gates.gate_work_demand(
-        [tests, cargo], repo=tmp_path, requested_workers=6
+    assert molt_dev_gates._gate_memory_per_worker(tests, tmp_path) == int(
+        6.25 * 1024**3
     )
-    assert (light.workers, light.bytes_per_worker) == (1, int(6.25 * 1024**3))
-    assert (mixed.workers, mixed.bytes_per_worker) == (2, 8 << 30)
-    assert mixed.minimum_workers == 1
+    assert molt_dev_gates._gate_memory_per_worker(cargo, tmp_path) == 8 << 30
 
 
 def test_landing_gate_executor_projects_the_live_host_grant(tmp_path: Path) -> None:

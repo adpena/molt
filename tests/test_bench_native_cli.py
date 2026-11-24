@@ -103,6 +103,8 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
         "stderr_match": None,
         "reference_stdout_sha256": None,
         "reference_stderr_sha256": None,
+        "molt_stdout_sha256": None,
+        "molt_stderr_sha256": None,
     }
 
     slow_entry = payload["benchmarks"][str(slow_script)]

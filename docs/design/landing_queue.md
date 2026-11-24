@@ -1377,6 +1377,11 @@ with the measured scan/host-wait cause beside each definition. The try-run
 budget follows the owner's 2026-11-05 19:50Z correction: a 600-second presubmit
 p90 target, met by selecting actual readers rather than allowing longer runs.
 Failure history prioritizes readers without admitting unrelated failures.
+Consecutive try-run gates with the same declared memory demand share one
+development grant. The grant ends with that group. A Cargo gate's envelope
+therefore stops reserving memory when a later Python-only group starts.
+Admission wait for each group is outside the execution budget. The passing
+attempt's log retains its original gate ordinal in that group's evidence.
 The enclosing cancellation still wins over a child deadline or retry. Diagnostic
 and cleanup grace remain bounded. A reader that the change reaches only
 through its pytest harness or its data runs its fast cases and leaves its
