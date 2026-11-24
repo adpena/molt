@@ -217,7 +217,7 @@ pub fn run_inliner(
 
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
-        for caller_id in scc {
+        for &caller_id in scc {
             let Some(caller_idx) = index_of.get(caller_id.index()).copied().flatten() else {
                 continue;
             };

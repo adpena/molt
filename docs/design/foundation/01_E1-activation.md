@@ -15,8 +15,10 @@ that backend consumers actually lower. The current IR contract is
 The cached per-function runner owns the optimized TIR bodies. The module wrapper
 consumes that custody, excludes extern declarations from transformations, and
 runs inlining, generator fusion, slot promotion, changed-body optimization, and
-terminal drop insertion. The initial call graph and bottom-up summaries remain
-inputs to the inliner and fusion passes.
+terminal drop insertion. The inliner and generator fusion share the initial call
+graph. Callee-first traversal and recursive membership use one decomposition of
+its static edges. The inliner’s size and return-type summaries read each body
+directly, and its leaf summary comes from that same graph.
 
 `run_module_pipeline` returns a `BTreeSet<String>` containing every function
 whose body or ownership markers changed. Each pass contributes to that one set.
