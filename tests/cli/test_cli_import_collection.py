@@ -23293,7 +23293,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     wasm_link = molt_root / "tools" / "wasm_link.py"
     wasm_link.parent.mkdir(parents=True, exist_ok=True)
     wasm_link.write_text("# linker\n", encoding="utf-8")
-    # Wheel code runs outside the separately admitted compiler source tree.
+    # Materialize a tooling module within the admitted checkout source.
     deployment_source = molt_root / "src" / "molt" / "cli" / "non_native_output.py"
     deployment_source.parent.mkdir(parents=True)
     deployment_source.write_text("# deployment\n", encoding="utf-8")
@@ -23388,7 +23388,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "stdlib_archive": None,
     }
 
-    # Only an installed layout has a separately verified executing package.
+    # A checkout cannot borrow deployment source from another tree.
     monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
     unrelated_source, source_error = (
         cli_non_native_output._prepare_non_native_build_result(
@@ -23398,7 +23398,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert unrelated_source is None and source_error is not None
     assert "Python tooling source is outside project root" in capsys.readouterr().out
     assert link_calls == []
-    monkeypatch.setenv("MOLT_BUNDLE_ROOT", str(molt_root.parent))
+    monkeypatch.setattr(cli_non_native_output, "__file__", str(deployment_source))
 
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
@@ -23410,7 +23410,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     # The link is its own diagnostics phase, started after the cache write and
     # closed by the publish marker, so its wall time is never charged to
     # backend_cache_write.
-    assert 0.0 < first_phase_starts["wasm_link"] <= first_phase_starts["wasm_publish"]
+    assert (
+        0.0
+        < first_phase_starts["wasm_link_prepare"]
+        <= first_phase_starts["wasm_link"]
+        <= first_phase_starts["wasm_publish"]
+    )
     first_cmd = link_calls[0]
     assert first_cmd[:4] == [
         sys.executable,
