@@ -508,7 +508,9 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
     for (index, kind) in carrier_kinds.iter().enumerate() {
         let args = match *kind {
             molt_ir::OpKind::BuiltinFunc => vec!["name".into()],
-            molt_ir::OpKind::CallFunc => vec!["callee".into(), "object".into()],
+            molt_ir::OpKind::CallFunc | molt_ir::OpKind::CallClassCandidate => {
+                vec!["callee".into(), "object".into()]
+            }
             molt_ir::OpKind::GetAttrGenericObj => vec!["object".into()],
             molt_ir::OpKind::GetAttrNameDefault => {
                 vec!["object".into(), "name".into(), "default".into()]
@@ -519,7 +521,13 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
             kind: (*kind),
             args: Some(args),
             out: Some(format!("result_{index}")),
-            s_value: (*kind == molt_ir::OpKind::GetAttrGenericObj).then(|| "_getframe".into()),
+            s_value: match *kind {
+                molt_ir::OpKind::GetAttrGenericObj => Some("_getframe".into()),
+                molt_ir::OpKind::CallClassCandidate => Some("py.m.C.__init__".into()),
+                _ => None,
+            },
+            class_definition: (*kind == molt_ir::OpKind::CallClassCandidate)
+                .then(|| "class:m:C".into()),
             value: (*kind == molt_ir::OpKind::BuiltinFunc).then_some(1),
             runtime_requirement_bits: all_requirements,
             ..OpIR::new(*kind)

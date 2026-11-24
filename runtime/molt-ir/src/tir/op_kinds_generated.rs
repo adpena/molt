@@ -203,6 +203,8 @@ pub enum OpKind {
     CallBind,
     #[serde(rename = "call_builtin")]
     CallBuiltin,
+    #[serde(rename = "call_class_candidate")]
+    CallClassCandidate,
     #[serde(rename = "call_func")]
     CallFunc,
     #[serde(rename = "call_function")]
@@ -1130,6 +1132,7 @@ impl OpKind {
         Self::CallAsync,
         Self::CallBind,
         Self::CallBuiltin,
+        Self::CallClassCandidate,
         Self::CallFunc,
         Self::CallFunction,
         Self::CallGuarded,
@@ -1642,6 +1645,7 @@ impl OpKind {
             Self::CallAsync => "call_async",
             Self::CallBind => "call_bind",
             Self::CallBuiltin => "call_builtin",
+            Self::CallClassCandidate => "call_class_candidate",
             Self::CallFunc => "call_func",
             Self::CallFunction => "call_function",
             Self::CallGuarded => "call_guarded",
@@ -2165,6 +2169,7 @@ impl std::str::FromStr for OpKind {
             "call_async" => Ok(Self::CallAsync),
             "call_bind" => Ok(Self::CallBind),
             "call_builtin" => Ok(Self::CallBuiltin),
+            "call_class_candidate" => Ok(Self::CallClassCandidate),
             "call_func" => Ok(Self::CallFunc),
             "call_function" => Ok(Self::CallFunction),
             "call_guarded" => Ok(Self::CallGuarded),
@@ -2700,6 +2705,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -3308,6 +3314,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -3826,6 +3833,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -4343,6 +4351,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -4859,6 +4868,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -5376,6 +5386,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -5893,6 +5904,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -6409,6 +6421,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -6927,6 +6940,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -7443,6 +7457,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -7960,6 +7975,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -8474,6 +8490,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -8993,6 +9010,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -9510,6 +9528,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -10024,6 +10043,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -10542,6 +10562,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -11063,6 +11084,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -11585,6 +11607,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -12099,6 +12122,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -13030,6 +13054,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Zip => None,
         OpKind::Call => Some(SimpleIrCallTargetRole::ExternalOrRuntime),
         OpKind::CallBind
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -13141,6 +13166,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -13656,6 +13682,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -14170,6 +14197,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -14861,6 +14889,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -15402,6 +15431,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -16411,6 +16441,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Call
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -16612,6 +16643,7 @@ pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'s
 }
 pub const SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: &[OpKind] = &[
     OpKind::BuiltinFunc,
+    OpKind::CallClassCandidate,
     OpKind::CallFunc,
     OpKind::GetAttrGenericObj,
     OpKind::GetAttrName,
@@ -17125,6 +17157,7 @@ impl OpKind {
             | OpKind::YieldFrom
             | OpKind::Zip => false,
             OpKind::BuiltinFunc
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::GetAttrGenericObj
             | OpKind::GetAttrName
@@ -17238,6 +17271,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -17656,6 +17690,7 @@ impl OpKind {
 }
 
 pub const SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: &[OpKind] = &[
+    OpKind::CallClassCandidate,
     OpKind::ClassSetDefinition,
     OpKind::GuardLayout,
     OpKind::GuardedFieldGet,
@@ -18169,7 +18204,8 @@ impl OpKind {
             | OpKind::Yield
             | OpKind::YieldFrom
             | OpKind::Zip => false,
-            OpKind::ClassSetDefinition
+            OpKind::CallClassCandidate
+            | OpKind::ClassSetDefinition
             | OpKind::GuardLayout
             | OpKind::GuardedFieldGet
             | OpKind::GuardedFieldSet
@@ -18275,6 +18311,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -19210,7 +19247,8 @@ impl OpKind {
             | OpKind::Call
             | OpKind::CallAsync
             | OpKind::StatefulLocalsRegister => FunctionReferenceRole::Optional,
-            OpKind::CallGuarded
+            OpKind::CallClassCandidate
+            | OpKind::CallGuarded
             | OpKind::CallInternal
             | OpKind::FuncNew
             | OpKind::FuncNewClosure => FunctionReferenceRole::Required,
@@ -19604,6 +19642,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::GpuGridDim
         | OpKind::GpuThreadId
         | OpKind::InvokeFfi => Some(OpCode::Call),
+        OpKind::CallClassCandidate => Some(OpCode::CallClassCandidate),
         OpKind::CallLoadedMethod => Some(OpCode::CallLoadedMethod),
         OpKind::CallMethod => Some(OpCode::CallMethod),
         OpKind::CallargsPushMethodReceiver => Some(OpCode::CallargsPushMethodReceiver),
@@ -19775,6 +19814,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::DelIndex => Some(OpKind::DelIndex),
         OpCode::DeleteVar => Some(OpKind::DeleteVar),
         OpCode::Call => Some(OpKind::Call),
+        OpCode::CallClassCandidate => Some(OpKind::CallClassCandidate),
         OpCode::CallMethod => Some(OpKind::CallMethod),
         OpCode::LoadMethod => Some(OpKind::LoadMethod),
         OpCode::LoadSuperMethod => Some(OpKind::LoadSuperMethod),
@@ -19924,6 +19964,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => Some("method"),
         OpCode::LoadMethod => Some("name"),
         OpCode::LoadSuperMethod => Some("name"),
@@ -20500,6 +20541,7 @@ impl OpKind {
             | OpKind::Zip => false,
             OpKind::BuiltinPrint
             | OpKind::CallBind
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -20596,6 +20638,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Call
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -21145,6 +21188,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -21660,6 +21704,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -22174,6 +22219,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -22687,6 +22733,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -23202,6 +23249,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -23716,6 +23764,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -24229,6 +24278,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -24698,6 +24748,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::DelIndex,
     OpCode::DeleteVar,
     OpCode::Call,
+    OpCode::CallClassCandidate,
     OpCode::CallMethod,
     OpCode::LoadMethod,
     OpCode::LoadSuperMethod,
@@ -24846,6 +24897,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => true,
         OpCode::DeleteVar => false,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => true,
         OpCode::LoadSuperMethod => true,
@@ -24994,6 +25046,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => true,
         OpCode::DeleteVar => true,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => true,
         OpCode::LoadSuperMethod => true,
@@ -25142,6 +25195,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => true,
         OpCode::DeleteVar => true,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => true,
         OpCode::LoadSuperMethod => true,
@@ -25331,6 +25385,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::DelIndex => OPCODE_EFFECTS_IMPURE,
         OpCode::DeleteVar => OPCODE_EFFECTS_IMPURE,
         OpCode::Call => OPCODE_EFFECTS_IMPURE,
+        OpCode::CallClassCandidate => OPCODE_EFFECTS_IMPURE,
         OpCode::CallMethod => OPCODE_EFFECTS_IMPURE,
         OpCode::LoadMethod => OPCODE_EFFECTS_IMPURE,
         OpCode::LoadSuperMethod => OPCODE_EFFECTS_IMPURE,
@@ -25526,6 +25581,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Call
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -26041,6 +26097,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -26556,6 +26613,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -27069,6 +27127,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -27992,6 +28051,7 @@ impl OpKind {
             OpKind::BuiltinFunc
             | OpKind::Call
             | OpKind::CallBind
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -28099,6 +28159,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -28615,6 +28676,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -29131,6 +29193,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -29646,6 +29709,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -30163,6 +30227,7 @@ impl OpKind {
             | OpKind::CallAsync
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallClassCandidate
             | OpKind::CallFunc
             | OpKind::CallFunction
             | OpKind::CallGuarded
@@ -30636,6 +30701,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -30786,6 +30852,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::DelIndex => Some(0),
         OpCode::DeleteVar => Some(1),
         OpCode::Call => None,
+        OpCode::CallClassCandidate => Some(1),
         OpCode::CallMethod => None,
         OpCode::LoadMethod => Some(2),
         OpCode::LoadSuperMethod => Some(2),
@@ -31046,6 +31113,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -31194,6 +31262,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::DelIndex => FuzzTirAttrPayloadRule::None,
         OpCode::DeleteVar => FuzzTirAttrPayloadRule::None,
         OpCode::Call => FuzzTirAttrPayloadRule::None,
+        OpCode::CallClassCandidate => FuzzTirAttrPayloadRule::None,
         OpCode::CallMethod => FuzzTirAttrPayloadRule::None,
         OpCode::LoadMethod => FuzzTirAttrPayloadRule::None,
         OpCode::LoadSuperMethod => FuzzTirAttrPayloadRule::None,
@@ -31349,6 +31418,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -31711,6 +31781,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::DelIndex => true,
         OpCode::DeleteVar => true,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => count == 1,
         OpCode::LoadSuperMethod => count == 2,
@@ -31916,6 +31987,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::DelIndex => &[],
         OpCode::DeleteVar => &[],
         OpCode::Call => &[],
+        OpCode::CallClassCandidate => &[],
         OpCode::CallMethod => &[],
         OpCode::LoadMethod => &[
             Some(OperandIndependentResultType::DynBox),
@@ -32093,6 +32165,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::DelIndex => TypeRefineAttrResultTypeRule::None,
         OpCode::DeleteVar => TypeRefineAttrResultTypeRule::None,
         OpCode::Call => TypeRefineAttrResultTypeRule::CallReturnType,
+        OpCode::CallClassCandidate => TypeRefineAttrResultTypeRule::None,
         OpCode::CallMethod => TypeRefineAttrResultTypeRule::CallReturnType,
         OpCode::LoadMethod => TypeRefineAttrResultTypeRule::None,
         OpCode::LoadSuperMethod => TypeRefineAttrResultTypeRule::None,
@@ -32266,6 +32339,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::DelIndex => TypeRefineOperandTypeRule::None,
         OpCode::DeleteVar => TypeRefineOperandTypeRule::None,
         OpCode::Call => TypeRefineOperandTypeRule::None,
+        OpCode::CallClassCandidate => TypeRefineOperandTypeRule::None,
         OpCode::CallMethod => TypeRefineOperandTypeRule::None,
         OpCode::LoadMethod => TypeRefineOperandTypeRule::None,
         OpCode::LoadSuperMethod => TypeRefineOperandTypeRule::None,
@@ -32427,6 +32501,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::DelIndex => SccpConstantSeedRule::None,
         OpCode::DeleteVar => SccpConstantSeedRule::None,
         OpCode::Call => SccpConstantSeedRule::None,
+        OpCode::CallClassCandidate => SccpConstantSeedRule::None,
         OpCode::CallMethod => SccpConstantSeedRule::None,
         OpCode::LoadMethod => SccpConstantSeedRule::None,
         OpCode::LoadSuperMethod => SccpConstantSeedRule::None,
@@ -32602,6 +32677,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::DelIndex => SccpConstantEvalRule::None,
         OpCode::DeleteVar => SccpConstantEvalRule::None,
         OpCode::Call => SccpConstantEvalRule::None,
+        OpCode::CallClassCandidate => SccpConstantEvalRule::None,
         OpCode::CallMethod => SccpConstantEvalRule::None,
         OpCode::LoadMethod => SccpConstantEvalRule::None,
         OpCode::LoadSuperMethod => SccpConstantEvalRule::None,
@@ -32751,6 +32827,7 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -32920,6 +32997,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::DelIndex => ValueRangeTransferRule::None,
         OpCode::DeleteVar => ValueRangeTransferRule::None,
         OpCode::Call => ValueRangeTransferRule::None,
+        OpCode::CallClassCandidate => ValueRangeTransferRule::None,
         OpCode::CallMethod => ValueRangeTransferRule::None,
         OpCode::LoadMethod => ValueRangeTransferRule::None,
         OpCode::LoadSuperMethod => ValueRangeTransferRule::None,
@@ -33084,6 +33162,7 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::DelIndex => FastPathExpansionRule::None,
         OpCode::DeleteVar => FastPathExpansionRule::None,
         OpCode::Call => FastPathExpansionRule::GuardedCall,
+        OpCode::CallClassCandidate => FastPathExpansionRule::None,
         OpCode::CallMethod => FastPathExpansionRule::None,
         OpCode::LoadMethod => FastPathExpansionRule::None,
         OpCode::LoadSuperMethod => FastPathExpansionRule::None,
@@ -33248,6 +33327,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::DelIndex => ValueRangeConstFoldRule::None,
         OpCode::DeleteVar => ValueRangeConstFoldRule::None,
         OpCode::Call => ValueRangeConstFoldRule::None,
+        OpCode::CallClassCandidate => ValueRangeConstFoldRule::None,
         OpCode::CallMethod => ValueRangeConstFoldRule::None,
         OpCode::LoadMethod => ValueRangeConstFoldRule::None,
         OpCode::LoadSuperMethod => ValueRangeConstFoldRule::None,
@@ -33406,6 +33486,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::DelIndex => ValueRangeCondNarrowRule::None,
         OpCode::DeleteVar => ValueRangeCondNarrowRule::None,
         OpCode::Call => ValueRangeCondNarrowRule::None,
+        OpCode::CallClassCandidate => ValueRangeCondNarrowRule::None,
         OpCode::CallMethod => ValueRangeCondNarrowRule::None,
         OpCode::LoadMethod => ValueRangeCondNarrowRule::None,
         OpCode::LoadSuperMethod => ValueRangeCondNarrowRule::None,
@@ -33568,6 +33649,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::DelIndex => ValueRangeContainerLengthRule::None,
         OpCode::DeleteVar => ValueRangeContainerLengthRule::None,
         OpCode::Call => ValueRangeContainerLengthRule::None,
+        OpCode::CallClassCandidate => ValueRangeContainerLengthRule::None,
         OpCode::CallMethod => ValueRangeContainerLengthRule::None,
         OpCode::LoadMethod => ValueRangeContainerLengthRule::None,
         OpCode::LoadSuperMethod => ValueRangeContainerLengthRule::None,
@@ -33727,6 +33809,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::DelIndex => RangeDevirtRole::None,
         OpCode::DeleteVar => RangeDevirtRole::None,
         OpCode::Call => RangeDevirtRole::None,
+        OpCode::CallClassCandidate => RangeDevirtRole::None,
         OpCode::CallMethod => RangeDevirtRole::None,
         OpCode::LoadMethod => RangeDevirtRole::None,
         OpCode::LoadSuperMethod => RangeDevirtRole::None,
@@ -34093,6 +34176,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             annotation_target: false,
         },
         OpCode::Call => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::CallClassCandidate => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -34632,6 +34720,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::DelIndex => ReprRawI64FullDeoptSeedRule::None,
         OpCode::DeleteVar => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Call => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::CallClassCandidate => ReprRawI64FullDeoptSeedRule::None,
         OpCode::CallMethod => ReprRawI64FullDeoptSeedRule::None,
         OpCode::LoadMethod => ReprRawI64FullDeoptSeedRule::None,
         OpCode::LoadSuperMethod => ReprRawI64FullDeoptSeedRule::None,
@@ -34818,6 +34907,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::DelIndex => CountedLoopComparisonRole::None,
         OpCode::DeleteVar => CountedLoopComparisonRole::None,
         OpCode::Call => CountedLoopComparisonRole::None,
+        OpCode::CallClassCandidate => CountedLoopComparisonRole::None,
         OpCode::CallMethod => CountedLoopComparisonRole::None,
         OpCode::LoadMethod => CountedLoopComparisonRole::None,
         OpCode::LoadSuperMethod => CountedLoopComparisonRole::None,
@@ -34966,6 +35056,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -35134,6 +35225,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::DelIndex => GvnNumberingRole::Never,
         OpCode::DeleteVar => GvnNumberingRole::Never,
         OpCode::Call => GvnNumberingRole::Never,
+        OpCode::CallClassCandidate => GvnNumberingRole::Never,
         OpCode::CallMethod => GvnNumberingRole::Never,
         OpCode::LoadMethod => GvnNumberingRole::Never,
         OpCode::LoadSuperMethod => GvnNumberingRole::Never,
@@ -35313,6 +35405,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -35490,6 +35583,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -35640,6 +35734,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => true,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -35788,6 +35883,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => true,
+        OpCode::CallClassCandidate => true,
         OpCode::CallMethod => true,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -35937,6 +36033,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -36086,6 +36183,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -36235,6 +36333,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -36418,6 +36517,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::DelIndex => RefcountBalanceRole::NotRefcountBalance,
         OpCode::DeleteVar => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Call => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CallClassCandidate => RefcountBalanceRole::NotRefcountBalance,
         OpCode::CallMethod => RefcountBalanceRole::NotRefcountBalance,
         OpCode::LoadMethod => RefcountBalanceRole::NotRefcountBalance,
         OpCode::LoadSuperMethod => RefcountBalanceRole::NotRefcountBalance,
@@ -36568,6 +36668,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -36717,6 +36818,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -36888,6 +36990,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::DelIndex => GeneratorFusionPollRole::Neutral,
         OpCode::DeleteVar => GeneratorFusionPollRole::Neutral,
         OpCode::Call => GeneratorFusionPollRole::Neutral,
+        OpCode::CallClassCandidate => GeneratorFusionPollRole::Neutral,
         OpCode::CallMethod => GeneratorFusionPollRole::Neutral,
         OpCode::LoadMethod => GeneratorFusionPollRole::Neutral,
         OpCode::LoadSuperMethod => GeneratorFusionPollRole::Neutral,
@@ -37047,6 +37150,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::DelIndex => GeneratorFusionIterUseRole::None,
         OpCode::DeleteVar => GeneratorFusionIterUseRole::None,
         OpCode::Call => GeneratorFusionIterUseRole::None,
+        OpCode::CallClassCandidate => GeneratorFusionIterUseRole::None,
         OpCode::CallMethod => GeneratorFusionIterUseRole::None,
         OpCode::LoadMethod => GeneratorFusionIterUseRole::None,
         OpCode::LoadSuperMethod => GeneratorFusionIterUseRole::None,
@@ -37198,6 +37302,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -37347,6 +37452,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -37527,6 +37633,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
             role: ModuleConcurrencyMarkerSourceRole::ThreadIntrinsicCallee,
             attrs: MODULE_CONCURRENCY_MARKER_ATTRS_CALL,
         },
+        OpCode::CallClassCandidate => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::CallMethod => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::LoadMethod => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::LoadSuperMethod => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -37695,6 +37802,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::DelIndex => ModuleSlotAccessRole::None,
         OpCode::DeleteVar => ModuleSlotAccessRole::None,
         OpCode::Call => ModuleSlotAccessRole::None,
+        OpCode::CallClassCandidate => ModuleSlotAccessRole::None,
         OpCode::CallMethod => ModuleSlotAccessRole::None,
         OpCode::LoadMethod => ModuleSlotAccessRole::None,
         OpCode::LoadSuperMethod => ModuleSlotAccessRole::None,
@@ -37854,6 +37962,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::DelIndex => BoxedAllocationLayoutRule::None,
         OpCode::DeleteVar => BoxedAllocationLayoutRule::None,
         OpCode::Call => BoxedAllocationLayoutRule::None,
+        OpCode::CallClassCandidate => BoxedAllocationLayoutRule::None,
         OpCode::CallMethod => BoxedAllocationLayoutRule::None,
         OpCode::LoadMethod => BoxedAllocationLayoutRule::None,
         OpCode::LoadSuperMethod => BoxedAllocationLayoutRule::None,
@@ -38015,6 +38124,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::DelIndex => TirVerifyAttrRule::None,
         OpCode::DeleteVar => TirVerifyAttrRule::None,
         OpCode::Call => TirVerifyAttrRule::CallCallee,
+        OpCode::CallClassCandidate => TirVerifyAttrRule::None,
         OpCode::CallMethod => TirVerifyAttrRule::CallMethod,
         OpCode::LoadMethod => TirVerifyAttrRule::MethodLoad,
         OpCode::LoadSuperMethod => TirVerifyAttrRule::MethodLoad,
@@ -38176,6 +38286,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::DelIndex => StrengthReductionRule::None,
         OpCode::DeleteVar => StrengthReductionRule::None,
         OpCode::Call => StrengthReductionRule::None,
+        OpCode::CallClassCandidate => StrengthReductionRule::None,
         OpCode::CallMethod => StrengthReductionRule::None,
         OpCode::LoadMethod => StrengthReductionRule::None,
         OpCode::LoadSuperMethod => StrengthReductionRule::None,
@@ -38336,6 +38447,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::DelIndex => ScevExprRule::None,
         OpCode::DeleteVar => ScevExprRule::None,
         OpCode::Call => ScevExprRule::None,
+        OpCode::CallClassCandidate => ScevExprRule::None,
         OpCode::CallMethod => ScevExprRule::None,
         OpCode::LoadMethod => ScevExprRule::None,
         OpCode::LoadSuperMethod => ScevExprRule::None,
@@ -38496,6 +38608,7 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
         OpCode::DelIndex => CheckedIntLoopRule::None,
         OpCode::DeleteVar => CheckedIntLoopRule::None,
         OpCode::Call => CheckedIntLoopRule::None,
+        OpCode::CallClassCandidate => CheckedIntLoopRule::None,
         OpCode::CallMethod => CheckedIntLoopRule::None,
         OpCode::LoadMethod => CheckedIntLoopRule::None,
         OpCode::LoadSuperMethod => CheckedIntLoopRule::None,
@@ -38648,6 +38761,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -38798,6 +38912,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -38947,6 +39062,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39096,6 +39212,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39248,6 +39365,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39397,6 +39515,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39546,6 +39665,7 @@ pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39695,6 +39815,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -39844,6 +39965,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -40000,6 +40122,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::DelIndex => ExceptionRegionNestingRole::None,
         OpCode::DeleteVar => ExceptionRegionNestingRole::None,
         OpCode::Call => ExceptionRegionNestingRole::None,
+        OpCode::CallClassCandidate => ExceptionRegionNestingRole::None,
         OpCode::CallMethod => ExceptionRegionNestingRole::None,
         OpCode::LoadMethod => ExceptionRegionNestingRole::None,
         OpCode::LoadSuperMethod => ExceptionRegionNestingRole::None,
@@ -40155,6 +40278,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::DelIndex => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::DeleteVar => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Call => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::CallClassCandidate => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::CallMethod => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::LoadMethod => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::LoadSuperMethod => AliasTransparentAliasRole::NotTransparentAlias,
@@ -40316,6 +40440,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::DelIndex => AliasMemoryRegionClass::ContainerElement,
         OpCode::DeleteVar => AliasMemoryRegionClass::GenericHeap,
         OpCode::Call => AliasMemoryRegionClass::GenericHeap,
+        OpCode::CallClassCandidate => AliasMemoryRegionClass::GenericHeap,
         OpCode::CallMethod => AliasMemoryRegionClass::GenericHeap,
         OpCode::LoadMethod => AliasMemoryRegionClass::GenericHeap,
         OpCode::LoadSuperMethod => AliasMemoryRegionClass::GenericHeap,
@@ -40476,6 +40601,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::DelIndex => AliasSlotObservation::ConservativeObserver,
         OpCode::DeleteVar => AliasSlotObservation::ConservativeObserver,
         OpCode::Call => AliasSlotObservation::DirectObserver,
+        OpCode::CallClassCandidate => AliasSlotObservation::DirectObserver,
         OpCode::CallMethod => AliasSlotObservation::DirectObserver,
         OpCode::LoadMethod => AliasSlotObservation::DirectObserver,
         OpCode::LoadSuperMethod => AliasSlotObservation::DirectObserver,
@@ -40666,6 +40792,10 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::Call => PassDeltaOpcodeFacts {
             generic_call: true,
             direct_call: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::CallClassCandidate => PassDeltaOpcodeFacts {
+            generic_call: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
         OpCode::CallMethod => PassDeltaOpcodeFacts {
@@ -40884,6 +41014,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -41059,6 +41190,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -41207,6 +41339,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::DelIndex => None,
         OpCode::DeleteVar => None,
         OpCode::Call => None,
+        OpCode::CallClassCandidate => None,
         OpCode::CallMethod => None,
         OpCode::LoadMethod => None,
         OpCode::LoadSuperMethod => None,
@@ -41647,6 +41780,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::DelIndex => &[],
         OpCode::DeleteVar => &[],
         OpCode::Call => &[],
+        OpCode::CallClassCandidate => &[],
         OpCode::CallMethod => &[],
         OpCode::LoadMethod => &[],
         OpCode::LoadSuperMethod => &[],
@@ -41886,6 +42020,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::DelIndex => OperandOwnership::Borrowed,
         OpCode::DeleteVar => OperandOwnership::Borrowed,
         OpCode::Call => OperandOwnership::Borrowed,
+        OpCode::CallClassCandidate => OperandOwnership::Borrowed,
         OpCode::CallMethod => OperandOwnership::Borrowed,
         OpCode::LoadMethod => OperandOwnership::Borrowed,
         OpCode::LoadSuperMethod => OperandOwnership::Borrowed,
@@ -42098,6 +42233,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Call
         | OpKind::CallAsync
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -43019,6 +43155,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Zip => false,
         OpKind::Call
         | OpKind::CallBind
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallGuarded
         | OpKind::CallIndirect
@@ -43534,6 +43671,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::YieldFrom
         | OpKind::Zip => None,
         OpKind::CallBind
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallGuarded
         | OpKind::CallIndirect
@@ -43638,6 +43776,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -44110,6 +44249,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::DelIndex => false,
         OpCode::DeleteVar => false,
         OpCode::Call => false,
+        OpCode::CallClassCandidate => false,
         OpCode::CallMethod => false,
         OpCode::LoadMethod => false,
         OpCode::LoadSuperMethod => false,
@@ -44312,6 +44452,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -44829,6 +44970,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -45346,6 +45488,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::CallAsync
         | OpKind::CallBind
         | OpKind::CallBuiltin
+        | OpKind::CallClassCandidate
         | OpKind::CallFunc
         | OpKind::CallFunction
         | OpKind::CallGuarded
@@ -45826,6 +45969,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::DelIndex => ResultValidity::AlwaysValid,
         OpCode::DeleteVar => ResultValidity::AlwaysValid,
         OpCode::Call => ResultValidity::AlwaysValid,
+        OpCode::CallClassCandidate => ResultValidity::AlwaysValid,
         OpCode::CallMethod => ResultValidity::AlwaysValid,
         OpCode::LoadMethod => ResultValidity::AlwaysValid,
         OpCode::LoadSuperMethod => ResultValidity::AlwaysValid,
@@ -46006,6 +46150,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::DelIndex => ExplicitReleaseOperands::None,
         OpCode::DeleteVar => ExplicitReleaseOperands::One(1),
         OpCode::Call => ExplicitReleaseOperands::None,
+        OpCode::CallClassCandidate => ExplicitReleaseOperands::None,
         OpCode::CallMethod => ExplicitReleaseOperands::None,
         OpCode::LoadMethod => ExplicitReleaseOperands::None,
         OpCode::LoadSuperMethod => ExplicitReleaseOperands::None,

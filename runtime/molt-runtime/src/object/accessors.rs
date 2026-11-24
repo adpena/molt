@@ -14,9 +14,9 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DICT, TYPE_ID_TYPE, class_layout_version_bits, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, inc_ref_bits, instance_dict_bits, is_missing_bits,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit,
-    raise_exception, to_i64, usize_from_bits,
+    dict_get_in_place, dict_set_in_place, inc_ref_bits, is_missing_bits, obj_from_bits,
+    object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit, raise_exception, to_i64,
+    usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -35,7 +35,7 @@ pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
 }
 
 #[inline]
-unsafe fn object_field_slot_ptr(
+pub(super) unsafe fn object_field_slot_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     offset: usize,
@@ -76,12 +76,19 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
     offset: usize,
 ) -> Result<u64, ()> {
     unsafe {
-        let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
-            return Err(());
-        };
-        let bits = match field_storage::resolve(_py, obj_ptr, offset, slot) {
-            Some(FieldStorage::Inline(slot)) => *slot,
-            Some(FieldStorage::Dictionary { dictionary, name }) => {
+        let slot = match field_storage::resolve(_py, obj_ptr, offset) {
+            Some(FieldStorage::Inline(slot)) => slot,
+            Some(FieldStorage::Dictionary {
+                dictionary: None, ..
+            }) => {
+                let missing = crate::missing_bits(_py);
+                inc_ref_bits(_py, missing);
+                return Ok(missing);
+            }
+            Some(FieldStorage::Dictionary {
+                dictionary: Some(dictionary),
+                name,
+            }) => {
                 // Dictionary equality may call Python. Keep its backing owner
                 // alive even when a callback replaces the instance dictionary.
                 inc_ref_bits(_py, dictionary);
@@ -107,6 +114,7 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
             }
             None => return Err(()),
         };
+        let bits = *slot;
         if field_storage::debug::field_enabled(_py, obj_ptr, offset) {
             eprintln!(
                 "[field_get_raw] ptr=0x{:x} offset={} slot=0x{:x} bits=0x{:x}",
@@ -127,13 +135,24 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
     val_bits: u64,
 ) -> Result<(), ()> {
     unsafe {
-        let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
-            return Err(());
-        };
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
-        match field_storage::resolve(_py, obj_ptr, offset, slot) {
-            Some(FieldStorage::Inline(_)) => {}
-            Some(FieldStorage::Dictionary { dictionary, name }) => {
+        let slot = match field_storage::resolve(_py, obj_ptr, offset) {
+            Some(FieldStorage::Inline(slot)) => {
+                if field_storage::insert_out_of_order(_py, obj_ptr, offset, slot, val_bits)? {
+                    return Ok(());
+                }
+                slot
+            }
+            Some(FieldStorage::Dictionary {
+                dictionary: None,
+                name,
+            }) => {
+                return field_storage::set_item(_py, obj_ptr, name, val_bits);
+            }
+            Some(FieldStorage::Dictionary {
+                dictionary: Some(dictionary),
+                name,
+            }) => {
                 inc_ref_bits(_py, dictionary);
                 inc_ref_bits(_py, name);
                 field_storage::debug::dictionary(
@@ -168,7 +187,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
                 return Ok(());
             }
             None => return Err(()),
-        }
+        };
         let old_bits = *slot;
         if field_storage::debug::field_enabled(_py, obj_ptr, offset) {
             eprintln!(
@@ -211,13 +230,18 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
     val_bits: u64,
 ) -> Result<(), ()> {
     unsafe {
-        if !obj_ptr.is_null() && object_class_bits(obj_ptr) != 0 && instance_dict_bits(obj_ptr) != 0
+        if !obj_ptr.is_null()
+            && object_class_bits(obj_ptr) != 0
+            && field_storage::dictionary_backed(obj_ptr)
         {
             return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
         }
         let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
             return Err(());
         };
+        if field_storage::insert_out_of_order(_py, obj_ptr, offset, slot, val_bits)? {
+            return Ok(());
+        }
         let old_bits = *slot;
         debug_assert!(
             obj_from_bits(old_bits).as_ptr().is_none() || is_missing_bits(_py, old_bits),
@@ -367,7 +391,7 @@ unsafe fn object_field_load_ptr_raw(py: &PyToken<'_>, object: *mut u8, offset: u
         // directly instead of probing and repeating that observable lookup.
         if !object.is_null()
             && object_class_bits(object) != 0
-            && instance_dict_bits(object) != 0
+            && field_storage::dictionary_backed(object)
             && let Some(field) = field_storage::field_at_offset(py, object, offset)
         {
             inc_ref_bits(py, field.name);
@@ -413,10 +437,7 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
     offset: usize,
 ) -> Result<bool, ()> {
     unsafe {
-        let Some(slot) = object_field_slot_ptr(py, object, offset) else {
-            return Err(());
-        };
-        match field_storage::resolve(py, object, offset, slot) {
+        match field_storage::resolve(py, object, offset) {
             Some(FieldStorage::Inline(slot)) => {
                 let old = *slot;
                 if field_storage::debug::field_enabled(py, object, offset) {
@@ -435,7 +456,13 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
                 dec_ref_bits(py, old);
                 Ok(true)
             }
-            Some(FieldStorage::Dictionary { dictionary, name }) => {
+            Some(FieldStorage::Dictionary {
+                dictionary: None, ..
+            }) => Ok(false),
+            Some(FieldStorage::Dictionary {
+                dictionary: Some(dictionary),
+                name,
+            }) => {
                 inc_ref_bits(py, dictionary);
                 inc_ref_bits(py, name);
                 field_storage::debug::dictionary(
@@ -637,7 +664,7 @@ pub(crate) unsafe fn molt_guarded_field_get_attached_body(
             if let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
                 && guard_layout_match(_py, obj_ptr, definition_slot, expected_version)
             {
-                if instance_dict_bits(obj_ptr) != 0 {
+                if field_storage::dictionary_backed(obj_ptr) {
                     return crate::molt_get_attr_ptr_attached_body(
                         _py,
                         obj_ptr,

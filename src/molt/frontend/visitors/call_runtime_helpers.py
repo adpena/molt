@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt.frontend.class_model import guarded_initializer_candidate
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
 )
@@ -346,6 +347,40 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         )
         return res
 
+    def _emit_positional_call(
+        self,
+        node: ast.Call,
+        callee: MoltValue,
+        args: list[MoltValue],
+        result: MoltValue,
+    ) -> None:
+        candidate = None
+        if (
+            isinstance(node.func, ast.Name)
+            and self._class_index is not None
+            and self.python_binding_index is not None
+            and (fact := self.python_binding_index.expression_fact(node.func))
+            is not None
+            and len(fact.result.source_origins) == 1
+        ):
+            # An exposed read can still name the originating statement while
+            # evaluating to a replacement. Only the runtime guard may identify
+            # the actual captured callable or its installed initializer.
+            (origin,) = fact.result.source_origins
+            owner = self._class_index.definitions.get(origin)
+            if owner is not None and (view := self.classes.get(owner)) is not None:
+                candidate = guarded_initializer_candidate(view)
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[callee, *args],
+                result=result,
+                metadata={"initializer_candidate": candidate}
+                if candidate is not None
+                else None,
+            )
+        )
+
     def _emit_dynamic_call(self, node: ast.Call, callee: MoltValue) -> MoltValue:
         # The result authority already proves exactness at this source point.
         # It is independent of whether the callee is a constructor, method or
@@ -377,5 +412,5 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         # and live defaults, including bound-method self. Syntax and the
         # canonical stack-use threshold alone choose builder transport.
         res = MoltValue(self.next_var(), type_hint=res_hint)
-        self.emit(MoltOp(kind="CALL_FUNC", args=[callee, *args], result=res))
+        self._emit_positional_call(node, callee, args, res)
         return res

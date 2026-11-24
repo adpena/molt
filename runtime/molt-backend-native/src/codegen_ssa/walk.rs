@@ -240,7 +240,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             OpCode::Call if op.origin == Some(molt_ir::OpKind::InvokeFfi) => {
                 self.invoke_ffi_op(b, op)
             }
-            OpCode::Call => self.call_op(b, op),
+            OpCode::Call | OpCode::CallClassCandidate => self.call_op(b, op),
             OpCode::StateYield => {
                 self.fatal("terminal drop insertion must expose it as explicit activation exits")
             }

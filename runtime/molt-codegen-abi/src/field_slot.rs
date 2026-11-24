@@ -65,6 +65,32 @@ use crate::{
 const AUX_KIND_SHIFT: i32 = 8 * (HEADER_AUX_KIND_OFFSET - HEADER_FLAGS_OFFSET);
 const _: () = assert!(AUX_KIND_SHIFT == 48);
 
+/// How many later words a first insertion must precede. The exact allocation
+/// fixes the field extent while the receiver remains inline. An incompatible
+/// Python class assignment materializes the dictionary before changing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FieldStoreSuffix {
+    Unknown,
+    Last,
+    Penultimate,
+}
+
+impl FieldStoreSuffix {
+    pub fn from_allocation(field_words: Option<u16>, offset: i32) -> Self {
+        let Some(words) = field_words else {
+            return Self::Unknown;
+        };
+        if offset < 0 || offset % 8 != 0 {
+            return Self::Unknown;
+        }
+        match i32::from(words) - offset / 8 {
+            1 => Self::Last,
+            2 => Self::Penultimate,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// The one primitive a field store adds to the frame builder.
 pub trait FieldSlotBuilder: FrameBuilder {
     /// OR `flag` into the 32-bit header flags of the object at `pointer`, as
@@ -183,6 +209,7 @@ pub fn generate_field_slot_set<B: FieldSlotBuilder>(
     object: B::Word,
     offset: i32,
     value: B::Word,
+    suffix: FieldStoreSuffix,
     locking: ListLocking,
     cold: impl FnOnce(&mut B, B::Word),
 ) {
@@ -196,6 +223,20 @@ pub fn generate_field_slot_set<B: FieldSlotBuilder>(
         b.attempt(
             |b| {
                 let flags = admit_receiver(b, pointer);
+                let old = b.load_word(pointer, offset);
+                // A first insertion may have to follow already live inferred
+                // attributes in dictionary order. The runtime owns that decision.
+                match suffix {
+                    FieldStoreSuffix::Last => {}
+                    FieldStoreSuffix::Penultimate => {
+                        // If old is missing, an identical last word is missing
+                        // too. Otherwise this overwrites an existing binding.
+                        let last = b.load_word(pointer, offset + 8);
+                        let differs = b.compare(WordComparison::NotEqual, old, last);
+                        b.if_then(differs, |b| require_not_missing(b, old));
+                    }
+                    FieldStoreSuffix::Unknown => require_not_missing(b, old),
+                }
                 let value_is_ptr = generate_has_tag(b, value, BoxTag::Ptr);
                 b.if_then(value_is_ptr, |b| {
                     let unmarked = is_clear(b, flags, u64::from(HEADER_FLAG_HAS_PTRS));
@@ -203,7 +244,6 @@ pub fn generate_field_slot_set<B: FieldSlotBuilder>(
                         b.or_header_flag(pointer, HEADER_FLAG_HAS_PTRS)
                     });
                 });
-                let old = b.load_word(pointer, offset);
                 b.retain(value);
                 b.store_word(pointer, offset, value);
                 // Without HAS_PTRS the old word owns nothing (invariant 4).

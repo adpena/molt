@@ -298,6 +298,7 @@ pass_delta_box_opcodes = ["BoxVal"]
 pass_delta_unbox_opcodes = ["UnboxVal"]
 pass_delta_generic_call_opcodes = [
     "Call",
+    "CallClassCandidate",
     "CallMethod",
     "CallLoadedMethod",
     "CallBuiltin",
@@ -477,6 +478,7 @@ simpleir_function_reference_roles = [
     { kind = "call", role = "optional" },
     { kind = "call_internal", role = "required" },
     { kind = "call_guarded", role = "required" },
+    { kind = "call_class_candidate", role = "required" },
     { kind = "func_new", role = "required" },
     { kind = "func_new_closure", role = "required" },
     { kind = "alloc_task", role = "optional" },
@@ -515,7 +517,7 @@ simpleir_runtime_protected_gateway_callables = [
 # The frontend may stamp only these producer operations; the Rust parser and
 # target admission consume the generated predicate rather than mirrored lists.
 simpleir_runtime_requirement_carrier_kinds = [
-    "builtin_func", "call_func",
+    "builtin_func", "call_func", "call_class_candidate",
     "get_attr_generic_obj", "get_attr_name", "get_attr_name_default",
     "module_get_attr", "module_get_global", "module_import_from",
 ]
@@ -527,6 +529,7 @@ simpleir_runtime_symbol_carrier_kinds = [
 # that trusts that statement's field offsets. The program's code-slot bindings
 # resolve the symbol; no other operation may carry it.
 simpleir_class_definition_carrier_kinds = [
+    "call_class_candidate",
     "class_set_definition", "guard_layout", "guarded_field_get", "guarded_field_set",
     "object_new_bound",
 ]
@@ -610,7 +613,7 @@ simpleir_comparison_semantics_kinds = [
     "gt", "cmp_gt", "ge", "cmp_ge", "in", "not_in", "contains",
 ]
 simpleir_fallible_protocol_semantics_kinds = [
-    "call", "call_func", "call_internal", "call_method", "call_bind", "call_indirect",
+    "call", "call_func", "call_class_candidate", "call_internal", "call_method", "call_bind", "call_indirect",
     "call_function", "call_guarded", "builtin_func",
     "callargs_push_kw", "callargs_push_method_receiver", "callargs_expand_star", "callargs_expand_kwstar",
     "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
@@ -682,7 +685,7 @@ binding_release_copy_kinds = ["frame_home_clear", "frame_home_store"]
 async_work_poll_after_kinds = [
     "builtin_func",
     "call",
-    "call_func",
+    "call_func", "call_class_candidate",
     "call_internal",
     "call_indirect",
     "call_bind",
@@ -716,7 +719,7 @@ ssa_s_value_attr_keys = [
 
 ssa_original_kind_preserving_kinds = [
     "store_var",
-    "call_func",
+    "call_func", "call_class_candidate",
     "call_internal",
     "call_indirect",
     "call_bind",
@@ -1076,6 +1079,7 @@ classifier_owned_value = [
 # structural policy in the same pass.
 async_work_poll_after_opcodes = [
     "Call",
+    "CallClassCandidate",
     "CallMethod",
     "CallLoadedMethod",
     "CallBuiltin",
@@ -1187,6 +1191,7 @@ opcode_has_local_only_operands_opcodes = [
 alias_rc_barrier_opcodes = [
     "CallargsPushMethodReceiver",
     "Call",
+    "CallClassCandidate",
     "DirectCall",
     "CallNative",
     "CallBuiltin",
@@ -1911,6 +1916,7 @@ alias_slot_direct_observer_opcodes = [
     "BuildSlice",
     "BuildTuple",
     "Call",
+    "CallClassCandidate",
     "DirectCall",
     "CallNative",
     "CallBuiltin",
@@ -3198,6 +3204,16 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallClassCandidate"
+may_call_python = true
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -4589,6 +4605,13 @@ simpleir_call_target_roles = [
     { spelling = "invoke_ffi", role = "opaque" },
 ]
 
+# Its referenced function is a possible initializer, not the class call's body.
+[[kind]]
+canonical = "call_class_candidate"
+aliases = []
+mapper_opcode = "CallClassCandidate"
+simpleir_call_target_roles = [{ spelling = "call_class_candidate", role = "opaque" }]
+
 [[kind]]
 canonical = "gpu_thread_id"
 aliases = ["gpu_block_id", "gpu_block_dim", "gpu_grid_dim", "gpu_barrier"]
@@ -5092,6 +5115,10 @@ callable_operand = 0
 
 [[source_call_kind]]
 kind = "call_func"
+callable_operand = 0
+
+[[source_call_kind]]
+kind = "call_class_candidate"
 callable_operand = 0
 
 [[source_call_kind]]

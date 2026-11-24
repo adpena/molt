@@ -675,7 +675,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
-            (SiteBody::FieldSet { offset }, &[object, value, _]) => {
+            (SiteBody::FieldSet { offset, suffix }, &[object, value, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::ObjectFieldSetPtr);
                 emit_field_slot_set(
                     self.words.builder,
@@ -683,6 +683,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     object,
                     offset,
                     value,
+                    suffix,
                     |builder, pointer| {
                         let offset = builder.ins().iconst(types::I64, i64::from(offset));
                         builder.ins().call(cold, &[pointer, offset, value]);

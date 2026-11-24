@@ -156,6 +156,8 @@ pub enum OpCode {
     DeleteVar,
     // Call
     Call,
+    /// Ordinary class call carrying a candidate for the initializer selected after allocation.
+    CallClassCandidate,
     CallMethod,
     /// CPython's `CALL` after a method load.
     ///

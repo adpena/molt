@@ -29,6 +29,8 @@ from molt.compiler_analysis.python_inlining import (
 )
 from molt.frontend._types import (
     FunctionDefaults,
+    GeneratedCallableId,
+    GeneratedCallableReservation,
     IMPLICIT_CLASSMETHOD_NAMES,
     IMPLICIT_STATICMETHOD_NAMES,
     MethodValues,
@@ -478,6 +480,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         defaults: FunctionDefaults,
         *,
         bind_receiver: bool = True,
+        nested_callable: GeneratedCallableReservation | None = None,
     ) -> MethodInfo:
         method_name = item.name
         method_qualname = self._definition_qualname(item)
@@ -640,11 +643,19 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._push_qualname(
                 python_definition_name(item), True, qualname=method_qualname
             )
+            nested_id = None
+            if nested_callable is not None:
+                nested_id = GeneratedCallableId(
+                    method_symbol, nested_callable.definition
+                )
+                self.reserved_func_symbols[nested_id] = nested_callable.symbol
             try:
                 for stmt in item.body:
                     self.visit(stmt)
             finally:
                 self._pop_qualname()
+                if nested_id is not None:
+                    del self.reserved_func_symbols[nested_id]
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")

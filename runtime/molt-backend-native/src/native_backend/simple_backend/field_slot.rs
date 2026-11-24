@@ -42,6 +42,7 @@ pub(crate) fn emit_field_slot_set(
     object: Value,
     offset: i32,
     value: Value,
+    suffix: molt_codegen_abi::field_slot::FieldStoreSuffix,
     cold: impl FnOnce(&mut FunctionBuilder<'_>, Value),
 ) {
     let mut b = field_slot_builder(builder, sites);
@@ -50,6 +51,7 @@ pub(crate) fn emit_field_slot_set(
         object,
         offset,
         value,
+        suffix,
         ListLocking::BUILD,
         |b, pointer| cold(&mut *b.words.builder, pointer),
     );

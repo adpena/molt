@@ -745,6 +745,7 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::DelIndex
         | OpCode::DeleteVar
         | OpCode::Call
+        | OpCode::CallClassCandidate
         | OpCode::CallMethod
         | OpCode::CallLoadedMethod
         | OpCode::CallargsPushMethodReceiver

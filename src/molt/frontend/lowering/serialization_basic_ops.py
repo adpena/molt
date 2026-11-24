@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt.frontend.class_model import GuardedInitializerCandidate
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
     FrontendOpKind,
@@ -618,6 +619,13 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if custody is not None:
                 entry["argument_custody"] = custody
             if op.metadata is not None:
+                candidate = op.metadata.get("initializer_candidate")
+                if isinstance(candidate, GuardedInitializerCandidate):
+                    # Operand zero stays the captured class. The function table
+                    # resolves this separately named initializer declaration.
+                    entry["kind"] = "call_class_candidate"
+                    entry["s_value"] = candidate.initializer_code
+                    entry["class_definition"] = candidate.class_definition
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
                 if (
                     isinstance(runtime_requirement_bits, int)

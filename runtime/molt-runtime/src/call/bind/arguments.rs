@@ -479,6 +479,20 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
     }
 
+    /// Positional values lent by a synchronous caller, before any receiver
+    /// promotion. An actual keyword mapping keeps its C-API identity.
+    pub(super) fn borrowed_positional_without_mapping(&self) -> Option<&[u64]> {
+        match (&self.positional, &self.keywords) {
+            (PositionalArguments::Borrowed(values), CallKeywords::Mapping(mapping))
+                if obj_from_bits(*mapping).is_none() =>
+            {
+                debug_assert_eq!(self.custody(), ArgumentCustody::Capi);
+                Some(values)
+            }
+            _ => None,
+        }
+    }
+
     /// A non-vector type call requires one mapping. Vector ingress constructs
     /// it here once; dictionary ingress retains its exact original carrier.
     pub(crate) fn prepare_constructor_mapping(&mut self) -> Result<(), u64> {

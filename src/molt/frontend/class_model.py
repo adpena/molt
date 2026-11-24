@@ -32,6 +32,7 @@ from molt.frontend._types import (
     ClassRef,
     DeclaredClass,
     TypeHint,
+    layout_definition_symbol,
 )
 from molt.frontend.dataclass_init import DataclassInitField
 
@@ -256,6 +257,8 @@ class ClassView(Protocol):
     @property
     def dataclass(self) -> DataclassSpec | None: ...
     @property
+    def initializer_code_candidate(self) -> str | None: ...
+    @property
     def constructor(self) -> Constructor: ...
 
     def member(self, name: str) -> Member | None: ...
@@ -292,6 +295,7 @@ class ClassModel:
     possible_data_descriptors: frozenset[str]
     dataclass: DataclassSpec | None
     constructor: Constructor
+    initializer_code_candidate: str | None = None
 
     def member(self, name: str) -> Member | None:
         for member_name, member in self.members:
@@ -306,7 +310,7 @@ class ClassModel:
         """The model as a cache record: primitives, tuples, class references
         and type hints (which the cache codec owns), and expressions as their
         source text, so ``from_cache_record`` rebuilds an equal model."""
-        return {
+        record: dict[str, object] = {
             "class_id": self.class_id,
             "binding_name": self.binding_name,
             "bases": self.bases,
@@ -338,6 +342,9 @@ class ClassModel:
             if isinstance(self.constructor, ConstructorPlan)
             else self.constructor.reason,
         }
+        if self.initializer_code_candidate is not None:
+            record["initializer_code_candidate"] = self.initializer_code_candidate
+        return record
 
     @classmethod
     def from_cache_record(cls, record: dict[str, object]) -> ClassModel:
@@ -371,6 +378,9 @@ class ClassModel:
             dataclass=None
             if dataclass_record is None
             else _dataclass_from_record(dataclass_record),
+            initializer_code_candidate=None
+            if record.get("initializer_code_candidate") is None
+            else _of(record["initializer_code_candidate"], str),
             constructor=ConstructorPlan()
             if constructor is None
             else ConstructorRefusal(_of(constructor, str)),
@@ -531,6 +541,7 @@ class ClassDraft:
     members: dict[str, Member] = field(default_factory=dict)
     # Names the body binds whose binding has not run yet.
     pending_members: set[str] = field(default_factory=set)
+    initializer_code_candidate: str | None = None
 
     def member(self, name: str) -> Member | None:
         return self.members.get(name)
@@ -571,7 +582,26 @@ class ClassDraft:
             possible_data_descriptors=self.possible_data_descriptors,
             dataclass=self.dataclass,
             constructor=self.constructor,
+            initializer_code_candidate=self.initializer_code_candidate,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class GuardedInitializerCandidate:
+    """The two declarations to compare after allocation and ordinary initializer lookup."""
+
+    class_definition: str
+    initializer_code: str
+
+
+def guarded_initializer_candidate(
+    view: ClassView,
+) -> GuardedInitializerCandidate | None:
+    code = view.initializer_code_candidate
+    definition = layout_definition_symbol(view.class_id, view)
+    if code is None or definition is None:
+        return None
+    return GuardedInitializerCandidate(definition, code)
 
 
 def namespace_closed(view: ClassView) -> bool:

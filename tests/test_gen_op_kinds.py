@@ -1052,6 +1052,7 @@ def test_call_sites_share_effect_authority() -> None:
         "builtin_func",
         "call",
         "call_func",
+        "call_class_candidate",
         "call_internal",
         "call_indirect",
         "call_bind",
@@ -1132,6 +1133,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     expected_original_kind = {
         "store_var",
         "call_func",
+        "call_class_candidate",
         "call_internal",
         "call_indirect",
         "call_bind",
@@ -2971,6 +2973,7 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     expected_rc = {
         "CallargsPushMethodReceiver",
         "Call",
+        "CallClassCandidate",
         "CallNative",
         "DirectCall",
         "CallBuiltin",
@@ -3906,6 +3909,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
         "BuildSlice",
         "BuildTuple",
         "Call",
+        "CallClassCandidate",
         "DirectCall",
         "CallBuiltin",
         "CallLoadedMethod",
@@ -5622,6 +5626,7 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
         "call": "Optional",
         "call_internal": "Required",
         "call_guarded": "Required",
+        "call_class_candidate": "Required",
         "func_new": "Required",
         "func_new_closure": "Required",
         "alloc_task": "Optional",
@@ -5671,6 +5676,7 @@ def test_call_target_roles_are_closed_and_shared_by_python_and_rust() -> None:
         "call": "external_or_runtime",
         "call_internal": "internal_required",
         "call_func": "opaque",
+        "call_class_candidate": "opaque",
         "call_function": "opaque",
         "call_guarded": "opaque",
         "call_indirect": "opaque",
@@ -5963,6 +5969,7 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     for kind in [
         "builtin_func",
         "call_func",
+        "call_class_candidate",
         "get_attr_generic_obj",
         "get_attr_name_default",
         "module_get_attr",
@@ -6078,7 +6085,7 @@ def test_runtime_protected_gateway_callables_reject_invalid_authority(
 def test_runtime_requirement_carriers_reject_invalid_authority(tmp_path: Path) -> None:
     generator = _gen()
     source = TABLE.read_text(encoding="utf-8")
-    canonical = '    "builtin_func", "call_func",'
+    canonical = '    "builtin_func", "call_func", "call_class_candidate",'
     for label, replacement in {
         "empty": "",
         "duplicate": '    "builtin_func", "builtin_func",',
@@ -6129,6 +6136,7 @@ def test_class_definition_carriers_reject_invalid_authority(tmp_path: Path) -> N
     generator = _gen()
     data = generator.load_table()
     assert data["simpleir_class_definition_carrier_kinds"] == [
+        "call_class_candidate",
         "class_set_definition",
         "guard_layout",
         "guarded_field_get",
@@ -6137,7 +6145,7 @@ def test_class_definition_carriers_reject_invalid_authority(tmp_path: Path) -> N
     ]
     source = TABLE.read_text(encoding="utf-8")
     canonical = (
-        "simpleir_class_definition_carrier_kinds = [\n"
+        'simpleir_class_definition_carrier_kinds = [\n    "call_class_candidate",\n'
         '    "class_set_definition", "guard_layout", "guarded_field_get", '
         '"guarded_field_set",\n    "object_new_bound",\n]'
     )

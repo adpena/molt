@@ -285,6 +285,70 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
     });
 }
 
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn borrowed_receiver_keeps_each_promoted_credit_through_the_adopting_entry() {
+    extern "C" fn observe(_context: u64, _receiver: u64, _value: u64) -> i64 {
+        unreachable!("the published function enters its trampoline")
+    }
+    extern "C" fn trampoline(context: u64, _closure: u64, address: u64, count: u64) -> i64 {
+        assert_eq!(count, 2);
+        let py = unsafe { PyToken::from_attached_context(context) };
+        let address = crate::provenance::abi::const_ptr::<u64>(address).unwrap();
+        let [receiver, value] = unsafe { address.cast::<[u64; 2]>().read() };
+        assert_eq!(receiver, value);
+        let ptr = obj_from_bits(receiver).as_ptr().unwrap();
+        let refs = unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+        dec_ref_bits(py, receiver);
+        dec_ref_bits(py, value);
+        MoltObject::from_int(i64::from(refs)).bits() as i64
+    }
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let function = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                test_fn_ref!(observe),
+                2,
+            );
+            let func = MoltObject::from_ptr(function).bits();
+            crate::object::layout::function_set_trampoline_ptr(
+                py,
+                function,
+                trampoline as *const () as usize as u64,
+            );
+            crate::object::layout::function_publish_entry_custody(
+                function,
+                crate::object::layout::EntryCustody::Adopting,
+            )
+            .unwrap();
+            let item = alloc_list(py, &[]);
+            let value = MoltObject::from_ptr(item).bits();
+            let baseline = (*header_from_obj_ptr(item)).ref_count_snapshot();
+            let none = MoltObject::none().bits();
+            let positional = [value];
+            let args = CallArguments::capi(py, None, &positional, none).unwrap();
+            let observed = try_call_borrowed_receiver(py, func, function, value, &args).unwrap();
+            assert_eq!(
+                obj_from_bits(observed).as_int(),
+                Some(i64::from(baseline + 4))
+            );
+            assert_eq!((*header_from_obj_ptr(item)).ref_count_snapshot(), baseline);
+            let wrong_arity = CallArguments::capi(py, None, &[], none).unwrap();
+            assert!(try_call_borrowed_receiver(py, func, function, value, &wrong_arity).is_none());
+            let mapping = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let mapped = CallArguments::capi(py, None, &positional, mapping).unwrap();
+            assert!(try_call_borrowed_receiver(py, func, function, value, &mapped).is_none());
+            assert!(!exception_pending(py));
+            drop(mapped);
+            dec_ref_bits(py, mapping);
+            drop(args);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, func);
+        }
+    });
+}
+
 mod failed_binding_fixture {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};

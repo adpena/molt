@@ -79,6 +79,7 @@ pub(super) unsafe fn call_type_with_arguments(
     _py: &PyToken<'_>,
     call_ptr: *mut u8,
     mut arguments: CallArguments<'_, '_>,
+    initializer_code: Option<u64>,
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(call_ptr).bits();
@@ -104,7 +105,12 @@ pub(super) unsafe fn call_type_with_arguments(
                     &mut arguments,
                 )
             } else {
-                crate::call::class_init::construct_regular_class(_py, call_ptr, &arguments)
+                crate::call::class_init::construct_regular_class(
+                    _py,
+                    call_ptr,
+                    &arguments,
+                    initializer_code,
+                )
             };
         }
         let pos_args = arguments.positional();
@@ -417,7 +423,12 @@ pub(super) unsafe fn call_type_with_arguments(
                 &mut arguments,
             );
         }
-        crate::call::class_init::construct_regular_class(_py, call_ptr, &arguments)
+        crate::call::class_init::construct_regular_class(
+            _py,
+            call_ptr,
+            &arguments,
+            initializer_code,
+        )
     }
 }
 

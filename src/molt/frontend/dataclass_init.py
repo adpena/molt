@@ -43,6 +43,12 @@ class DataclassInitField:
         return cls(schema[0], schema[1], schema[2], schema[3], schema[4])
 
 
+@dataclass(frozen=True, slots=True)
+class DataclassInitTemplate:
+    factory: ast.FunctionDef
+    initializer: ast.FunctionDef
+
+
 def initializer_template(
     fields: tuple[DataclassInitField, ...],
     *,
@@ -50,7 +56,7 @@ def initializer_template(
     slots: bool,
     post_init: bool,
     location: ast.ClassDef,
-) -> ast.FunctionDef:
+) -> DataclassInitTemplate:
     """Build an ordinary factory and initializer through the Python AST pipeline."""
 
     def name(value: str, ctx: ast.expr_context | None = None) -> ast.Name:
@@ -173,7 +179,8 @@ def initializer_template(
         returns=None,
         type_params=[],
     )
-    return ast.fix_missing_locations(ast.copy_location(factory, location))
+    ast.fix_missing_locations(ast.copy_location(factory, location))
+    return DataclassInitTemplate(factory, initializer)
 
 
 def literal_dataclass_options(decorator: ast.expr) -> dict[str, bool] | None:

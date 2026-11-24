@@ -277,6 +277,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::StoreIndex => "store_index",
         OpCode::DelIndex => "del_index",
         OpCode::Call => "call",
+        OpCode::CallClassCandidate => "call_class_candidate",
         OpCode::CallMethod => "call_method",
         OpCode::CallLoadedMethod => "call_loaded_method",
         OpCode::CallargsPushMethodReceiver => "callargs_push_method_receiver",
