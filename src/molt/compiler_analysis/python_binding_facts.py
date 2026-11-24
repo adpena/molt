@@ -13,7 +13,7 @@ import ast
 from dataclasses import dataclass, field, fields
 from enum import IntFlag, StrEnum
 from types import MappingProxyType
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, NamedTuple, TypeAlias
 
 from molt.compiler_analysis.literal_identity import literal_identity_key
@@ -1160,6 +1160,17 @@ class PythonBindingIndex(PythonBindingFacts):
         )
 
 
+def reachable_statement_prefix(
+    statements: Sequence[ast.stmt], facts: PythonBindingFacts | None
+) -> Iterator[ast.stmt]:
+    """Emit through the first statement proved to have no normal successor."""
+    for statement in statements:
+        yield statement
+        completions = None if facts is None else facts.statement_completions(statement)
+        if completions is not None and not completions & PythonCompletion.NORMAL:
+            return
+
+
 __all__ = [
     "PythonBindingFacts",
     "PythonBindingIndex",
@@ -1183,5 +1194,6 @@ __all__ = [
     "current_globals_dict_is_exact",
     "globals_mutation_call_identity",
     "python_static_value_key",
+    "reachable_statement_prefix",
     "same_python_static_value",
 ]

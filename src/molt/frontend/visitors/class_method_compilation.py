@@ -19,6 +19,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 
 import ast
+from molt.compiler_analysis.python_binding_facts import reachable_statement_prefix
 from molt.python_private_names import python_definition_name
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from typing import Literal, cast
@@ -650,7 +651,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 )
                 self.reserved_func_symbols[nested_id] = nested_callable.symbol
             try:
-                for stmt in item.body:
+                for stmt in reachable_statement_prefix(
+                    item.body, self.python_binding_index
+                ):
                     self.visit(stmt)
             finally:
                 self._pop_qualname()

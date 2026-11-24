@@ -3480,3 +3480,145 @@ def test_early_cutoff_alias_serves_the_equal_scan_for_its_source_only(
     path.write_text(source.replace("VALUE = 1", "VALUE = 2"), encoding="utf-8")
     changed = module_source.PythonSourceSnapshot.capture(path)
     assert read(widened, changed) is None
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    ("profile", "replace_provider", "possible"),
+    [
+        ("micro", False, False),
+        ("full", False, True),
+        ("auto", False, True),
+        ("micro", True, True),
+    ],
+)
+def test_archive_normal_result_controls_only_exact_calls(
+    tmp_path: Path, profile: str, replace_provider: bool, possible: bool
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.cli.runtime_features import runtime_normal_none_intrinsics
+    from molt.compilation_target import TargetKind
+    from molt.compiler_analysis.python_binding_flow import (
+        PythonBindingPolicy,
+        analyze_python_bindings,
+    )
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_namespace_binding_policy,
+    )
+    from molt.compiler_analysis.python_source_keys import python_ast_digest
+    from molt.compiler_analysis.python_effects_generated import RAISES
+
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "from _intrinsics import require_intrinsic\n"
+        "probe = require_intrinsic('molt_importlib_zip_archive_path')\n"
+        + ("if input():\n    probe = lambda path: path\n" if replace_provider else "")
+        + "result = probe('example.zip')\n"
+        "if result is not None:\n    import archive_branch\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "archive_branch.py").write_text("VALUE = 1\n", encoding="utf-8")
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(
+            normal_none_intrinsics=runtime_normal_none_intrinsics(
+                TargetKind.NATIVE, profile
+            )
+        ),
+        full_scan_roots=True,
+    )
+    assert ("archive_branch" in result.graph) is possible
+    premise = result.scan_authority.by_module["entry"].namespace_premise
+    assert premise is not None
+    assert (
+        module_graph_cache._decode_namespace_premise_cache_identity(
+            module_graph_cache._namespace_premise_cache_identity(premise)
+        )
+        == premise
+    )
+    tree = ast.parse(entry.read_text(encoding="utf-8"))
+    index = analyze_python_bindings(
+        tree,
+        source_digest=python_ast_digest(tree),
+        policy=python_namespace_binding_policy(
+            PythonBindingPolicy(), premise, lowering=True
+        ),
+    )
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "probe"
+    )
+    fact = index.expression_fact(call)
+    assert fact is not None and fact.effects & RAISES
+    if not possible:
+        assert fact.result.value_known and fact.result.value is None
+        assert fact.result.evaluation_required
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_archive_feature_switch_separates_persisted_scan_results(
+    tmp_path: Path,
+) -> None:
+    from molt.cli import module_resolution, module_source
+    from molt.cli.runtime_features import runtime_normal_none_intrinsics
+    from molt.compilation_target import TargetKind
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        NO_INVALID_MEMBERS,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "from _intrinsics import require_intrinsic\n"
+        "probe = require_intrinsic('molt_importlib_zip_archive_path')\n"
+        "if probe('x.zip') is not None:\n    import archive_branch\n",
+        encoding="utf-8",
+    )
+    snapshot = module_source.PythonSourceSnapshot.capture(path)
+    base = PythonNamespacePremise(
+        (), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS, (), opaque_activation_sources=()
+    )
+
+    def profile_premise(profile: str) -> PythonNamespacePremise:
+        return replace(
+            base,
+            normal_none_intrinsics=runtime_normal_none_intrinsics(
+                TargetKind.NATIVE, profile
+            ),
+        )
+
+    def scan(
+        premise: PythonNamespacePremise,
+    ) -> module_graph_discovery._LoadedModuleImportScan:
+        return module_graph_discovery._load_module_import_scan(
+            path,
+            module_name="entry",
+            is_package=False,
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.EXECUTION,
+            source_snapshot=snapshot,
+            namespace_premise=premise,
+            project_root=tmp_path,
+            resolution_cache=module_resolution._ModuleResolutionCache(),
+            record_premise_reads=True,
+        )
+
+    micro, full = profile_premise("micro"), profile_premise("full")
+    restricted, general = scan(micro), scan(full)
+    assert not restricted.cache_hit and not general.cache_hit
+    assert restricted.premise_reads is not None and general.premise_reads is not None
+    assert not restricted.premise_reads.unchanged_under(full)
+    assert not general.premise_reads.unchanged_under(micro)
+    assert restricted.scan.source_requests != general.scan.source_requests
+    for premise, expected in ((micro, restricted), (full, general)):
+        cached = scan(premise)
+        assert cached.cache_hit
+        assert cached.scan.source_requests == expected.scan.source_requests

@@ -205,7 +205,9 @@ class _ModuleGraphDiscovery:
         self.queue: list[_SourceEntryJob | _SourceScanJob] = []
         self.queued_scans: set[_SourceScanJob] = set()
         self.scan_revisions: set[_SourceScanJob] = set()
-        self.namespace_index = PythonGraphNamespaceIndex()
+        self.namespace_index = PythonGraphNamespaceIndex(
+            normal_none_intrinsics=resolver_cache.normal_none_intrinsics
+        )
         self.namespace_writes: dict[str, set[PythonNamespaceWrite]] = {}
         self.writer_targets: dict[str, set[PythonNamespaceWrite]] = {}
         self.pending_namespace_writes: dict[

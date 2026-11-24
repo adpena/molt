@@ -53,6 +53,7 @@ _SCAN_FRAME_LOCALS_WRITER: Final = "a frame-locals writer in the graph"
 # view keeps exactly these fields: its cache key holds nothing a scan does not
 # read, and a field the policy does not read never re-keys a scan.
 _BINDING_POLICY_FIELDS: Final = (
+    ("normal_none_intrinsics", "normal_none_intrinsics"),
     ("foreign_writes", "foreign_namespace_writes"),
     ("foreign_universe", "foreign_namespace_universe"),
     ("member_writes", "callback_member_writes"),
@@ -123,6 +124,7 @@ class PythonNamespacePremise:
     # so a method's ``__class__`` cell holds its class once the class statement
     # creates it (design 78, 5.10 step 4: static ``super()``).
     cell_writer: str | None = None
+    normal_none_intrinsics: int = 0
 
     def scan_view(
         self, universe: frozenset[str] | None = None
@@ -506,6 +508,7 @@ def _namespace_premise(
     instance_class_writer: str | None = None,
     frame_locals_writer: str | None = None,
     cell_writer: str | None = None,
+    normal_none_intrinsics: int = 0,
 ) -> PythonNamespacePremise:
     return PythonNamespacePremise(
         None
@@ -523,6 +526,7 @@ def _namespace_premise(
         instance_class_writer,
         frame_locals_writer,
         cell_writer=cell_writer,
+        normal_none_intrinsics=normal_none_intrinsics,
     )
 
 
@@ -567,6 +571,8 @@ def join_python_namespace_premises(
         left.frame_locals_writer or right.frame_locals_writer,
         tuple(sorted(set(left.exact_receivers) & set(right.exact_receivers))),
         cell_writer=left.cell_writer or right.cell_writer,
+        normal_none_intrinsics=left.normal_none_intrinsics
+        & right.normal_none_intrinsics,
     )
 
 
@@ -578,7 +584,8 @@ class PythonGraphNamespaceIndex:
     or visiting every previously indexed target on each module admission.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, normal_none_intrinsics: int = 0) -> None:
+        self.normal_none_intrinsics = normal_none_intrinsics
         self.by_source: dict[Path, set[str] | None] = {}
         self.any_module: set[str] | None = set()
         self.members = NO_INVALID_MEMBERS
@@ -734,6 +741,7 @@ class PythonGraphNamespaceIndex:
                 self.frame_locals_writer,
                 native_code,
             ),
+            normal_none_intrinsics=self.normal_none_intrinsics,
         )
 
 

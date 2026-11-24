@@ -17,6 +17,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 
 import ast
+from molt.compiler_analysis.python_binding_facts import reachable_statement_prefix
 from molt.python_private_names import python_definition_name
 
 from molt.frontend._types import (
@@ -487,7 +488,9 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._publish_python_frame_context()
             self._push_qualname(python_definition_name(node), True, qualname=qualname)
             try:
-                for item in node.body:
+                for item in reachable_statement_prefix(
+                    node.body, self.python_binding_index
+                ):
                     self.visit(item)
             finally:
                 self._pop_qualname()

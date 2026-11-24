@@ -193,6 +193,7 @@ BUILTIN_WARNING = 186
 BUILTIN_ZERODIVISIONERROR = 187
 BUILTIN_BUILD_CLASS = 188
 INTRINSIC_NAMESPACE_ENTRY_GET = 189
+INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH = 191
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -247,6 +248,11 @@ minimum_arguments = 1
 name = "molt_sys_platform"
 identity = "INTRINSIC_SYS_PLATFORM"
 target_property = "SYS_PLATFORM"
+
+[[intrinsic_callable]]
+name = "molt_importlib_zip_archive_path"
+identity = "INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH"
+none_without_feature = "stdlib_archive"
 
 [[intrinsic_callable]]
 name = "molt_dataclasses_init_globals"

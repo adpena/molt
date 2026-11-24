@@ -19,6 +19,7 @@ from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.runtime_features import runtime_normal_none_intrinsics
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     ModuleReason,
@@ -1915,6 +1916,7 @@ def _prepare_entry_module_graph(
         target_sys_platform=target_sys_platform,
         import_topology=import_topology or _module_resolution.PythonImportTopology(),
         module_root_aliases=module_root_aliases,
+        normal_none_intrinsics=runtime_normal_none_intrinsics(target, stdlib_profile),
     )
     try:
         module_resolution_cache.import_topology.validate()

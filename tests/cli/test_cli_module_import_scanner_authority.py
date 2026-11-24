@@ -219,6 +219,45 @@ def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
     )
 
 
+def test_body_reachability_rechecks_only_the_consumed_import_state() -> None:
+    from dataclasses import replace
+
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    tree = ast.parse(
+        "from typing import TYPE_CHECKING as enabled\n"
+        "if flag:\n    __package__ = 'other'\n"
+        "def subject():\n    if enabled:\n        import widened\n"
+    )
+    owner = python_source_keys.python_node_source_key(tree.body[-1])
+    closed = PythonNamespacePremise((), 0, 0, (), opaque_activation_sources=())
+
+    def scan(
+        premise: PythonNamespacePremise,
+    ) -> _source_import_scan._ImportDiscoveryProjection:
+        return _source_import_scan._collect_imports_for_graph(
+            tree, "pkg.consumer", source_owner=owner, namespace_premise=premise
+        )
+
+    reads = _source_import_scan.ScanPremiseReads()
+    token = _source_import_scan.SCAN_PREMISE_READS.set(reads)
+    try:
+        original = scan(closed)
+    finally:
+        _source_import_scan.SCAN_PREMISE_READS.reset(token)
+
+    # Possible package names differ, but the body's execution-state test has
+    # the same answer and the guarded import remains unreachable.
+    metadata = replace(closed, foreign_writes=("__name__", "__package__", "__spec__"))
+    assert original.imports == ()
+    assert reads.unchanged_under(metadata)
+    assert scan(metadata) == original
+
+    rebound = replace(closed, foreign_writes=("enabled",))
+    assert not reads.unchanged_under(rebound)
+    assert scan(rebound).imports == ("widened",)
+
+
 def test_only_a_lexical_source_read_requests_the_discovery_projection() -> None:
     from unittest.mock import patch
 

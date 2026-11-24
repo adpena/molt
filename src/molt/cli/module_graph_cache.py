@@ -55,6 +55,7 @@ from molt.compiler_analysis.python_source_keys import (
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_identity_catalog_generated import (
     ALL_INVALID_MEMBERS,
+    INTRINSIC_NONE_WITHOUT_FEATURE,
     IMPORT_CALLABLES,
     PythonImportBehavior,
     OTHER_IDENTITY,
@@ -538,6 +539,7 @@ def _namespace_premise_cache_identity(
         "instance_class_writer": premise.instance_class_writer,
         "frame_locals_writer": premise.frame_locals_writer,
         "cell_writer": premise.cell_writer,
+        "normal_none_intrinsics": premise.normal_none_intrinsics,
         "exact_receivers": [list(row) for row in premise.exact_receivers],
         "foreign_universe": (
             None
@@ -566,6 +568,7 @@ def _decode_namespace_premise_cache_identity(
             "instance_class_writer",
             "frame_locals_writer",
             "cell_writer",
+            "normal_none_intrinsics",
             "exact_receivers",
             "foreign_universe",
         },
@@ -581,6 +584,13 @@ def _decode_namespace_premise_cache_identity(
     )
     if universe is not None and (foreign is None or not universe.issuperset(foreign)):
         raise ValueError("invalid namespace premise name universe")
+    normal_none = item["normal_none_intrinsics"]
+    if (
+        type(normal_none) is not int
+        or normal_none < 0
+        or normal_none & ~sum(INTRINSIC_NONE_WITHOUT_FEATURE)
+    ):
+        raise ValueError("invalid runtime normal result identity mask")
     members, entry_members = item["member_writes"], item["entry_member_writes"]
     for mask in (members, entry_members):
         if type(mask) is not int or mask < 0 or mask & ~ALL_INVALID_MEMBERS:
@@ -648,6 +658,7 @@ def _decode_namespace_premise_cache_identity(
         exact_receivers,
         universe,
         cell_writer=cell_writer,
+        normal_none_intrinsics=normal_none,
     )
 
 

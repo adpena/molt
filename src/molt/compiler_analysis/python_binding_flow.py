@@ -456,6 +456,8 @@ class PythonBindingFlowPolicy:
     # analysis, with no graph, keeps the conservative premise.
     frame_locals_writer: str | None = NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
     declaration_only: tuple[PythonSourceKey, ...] = ()
+    # Exact intrinsics whose only normal result on the linked runtime is None.
+    normal_none_intrinsics: IdentityMask = 0
 
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
@@ -496,6 +498,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             class_preparation=self.class_preparation,
             frame_locals_writer=self.frame_locals_writer,
             declaration_only=self.declaration_only,
+            normal_none_intrinsics=self.normal_none_intrinsics,
         )
 
 
@@ -4965,6 +4968,13 @@ class _Analyzer:
             # Preserve the acquisition's existing effects and all operand
             # lifetime rules. Only its successful result identity is known.
             effects |= UNKNOWN_EFFECTS
+        elif exact and callee & self.policy.normal_none_intrinsics:
+            # Knowing a normal result says nothing about evaluation: the
+            # provider may audit, raise, call Python, and retire its operands.
+            result_fact = StaticExpressionResult.scalar(None, evaluation_required=True)
+            result = result_fact.identities
+            effects |= UNKNOWN_EFFECTS
+            source_result_projected = True
         elif (
             (target_property := INTRINSIC_TARGET_PROPERTIES.get(callee)) is not None
             and not node.args

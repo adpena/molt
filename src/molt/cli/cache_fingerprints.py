@@ -265,6 +265,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/external_native.py": _BUILD,
         "cli/installed_runtime.py": _BUILD,
         "cli/project_roots.py": _BUILD,
+        # Discovery keys the normal-result mask in its namespace premise.
+        "cli/runtime_features.py": _BUILD,
         "cli/rust_cpu_policy.py": _BUILD,
         "cli/typecheck.py": _BUILD,
         "cli/wasm_toolchain.py": _BUILD,

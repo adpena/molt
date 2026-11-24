@@ -42,7 +42,10 @@ from molt.compiler_analysis.python_imports import (
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    PythonIdentity,
+    PythonMember,
+)
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.target_python import (
     TargetPythonVersion,
@@ -170,22 +173,44 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
     [
         (None, PythonNamespacePremise((), 0, 0, ()), None),
         (
-            PythonNamespacePremise(("a",), 0, 0, ()),
+            PythonNamespacePremise(
+                ("a",),
+                0,
+                0,
+                (),
+                normal_none_intrinsics=int(
+                    PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH
+                ),
+            ),
             PythonNamespacePremise(
                 ("b",),
                 int(PythonMember.IMPORT_HOOKS),
                 int(PythonMember.IMPORT_HOOKS),
                 (),
+                normal_none_intrinsics=int(
+                    PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH
+                ),
             ),
             PythonNamespacePremise(
                 ("a", "b"),
                 int(PythonMember.IMPORT_HOOKS),
                 int(PythonMember.IMPORT_HOOKS),
                 (),
+                normal_none_intrinsics=int(
+                    PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH
+                ),
             ),
         ),
         (
-            PythonNamespacePremise(None, 0, 0, ()),
+            PythonNamespacePremise(
+                None,
+                0,
+                0,
+                (),
+                normal_none_intrinsics=int(
+                    PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH
+                ),
+            ),
             PythonNamespacePremise(
                 ("b",),
                 int(PythonMember.IMPORT_HOOKS),
@@ -199,7 +224,10 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
     ],
 )
 def test_scan_authority_merge_and_payload_preserve_namespace_proof(
-    tmp_path, left, right, expected
+    tmp_path: Path,
+    left: PythonNamespacePremise | None,
+    right: PythonNamespacePremise | None,
+    expected: PythonNamespacePremise | None,
 ) -> None:
     source = _source(tmp_path / "owner.py", "pass\n")
     first = _ModuleGraphScanAuthority(
@@ -245,6 +273,7 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "cell_writer": expected.cell_writer,
             "exact_receivers": expected.exact_receivers,
             "foreign_universe": expected.foreign_universe,
+            "normal_none_intrinsics": expected.normal_none_intrinsics,
         }
     )
 

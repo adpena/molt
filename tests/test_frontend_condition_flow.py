@@ -697,3 +697,31 @@ def test_if_lowering_keeps_later_comprehension_iteration(phi: bool) -> None:
         op.args[0] for op in _ops(source, phi=phi) if op.kind == "CONST_STR" and op.args
     }
     assert {"later-iteration", "first-iteration"} <= strings
+
+
+@pytest.mark.parametrize("method", [False, True])
+@pytest.mark.parametrize("caught", [False, True])
+def test_sync_body_preserves_evaluation_and_only_emits_normal_successors(
+    method: bool, caught: bool
+) -> None:
+    from textwrap import indent
+
+    body = "if (effect('evaluated'), True)[1]:\n    raise ValueError('raised')\n"
+    if caught:
+        body = (
+            "try:\n"
+            + indent(body, "    ")
+            + "except ValueError:\n    effect('caught')\n"
+        )
+    function = (
+        "def probe("
+        + ("self, " if method else "")
+        + "effect):\n"
+        + indent(body + "effect('successor')\n", "    ")
+    )
+    source = "class Owner:\n" + indent(function, "    ") if method else function
+    ops = _ops(source, phi=False)
+    strings = {op.args[0] for op in ops if op.kind == "CONST_STR"}
+    assert {"evaluated", "raised"} <= strings
+    assert ("caught" in strings) is caught
+    assert ("successor" in strings) is caught

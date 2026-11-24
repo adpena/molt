@@ -478,6 +478,7 @@ class _ModuleResolutionCache:
         )
 
     module_root_aliases: _ModuleRootAliases | None = None
+    normal_none_intrinsics: int = 0
     python_resolvers: dict[tuple[Path, ...], "LocalPythonModuleResolver"] = field(
         default_factory=dict
     )
