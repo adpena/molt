@@ -129,6 +129,7 @@ from tools.driver_errors import (  # noqa: E402
     DriverError,
     CandidateFailure,
     GateFailure,
+    PublicationUnconfirmed,
 )
 from tools.molt_dev_common import _run_fast_captured_command  # noqa: E402
 from tests.integration_driver_fixture import (  # noqa: E402
@@ -6854,6 +6855,60 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     landed = {queue.read_result(paths, r.id)["landed"] for r in requests}
     assert landed == {_git(work, "rev-parse", "origin/main").stdout.strip()}
     assert queue.pending(paths) == [] and not paths.plan.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Git hook")
+def test_queue_reuses_exact_batch_after_publication_is_rejected(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    from tools import landing_receipt, molt_dev_queue as queue
+
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    base = _remote_main(work)
+    head = _lane(work, "retry", {"feature.py": "value = 1\n"})
+    tree = _git(work, "rev-parse", f"{head}^{{tree}}").stdout.strip()
+    paths, requests = _enqueue(drv, work, head)
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    with pytest.raises(PublicationUnconfirmed, match="PUSH NOT CONFIRMED"):
+        _run_queue(drv, work)
+
+    assert _remote_main(work) == base
+    assert queue.pending(paths) == requests
+    assert queue.tested_receipt(paths, requests) == (tree, base)
+    assert sorted(counter.read_text(encoding="utf-8").splitlines()) == [
+        "batch",
+        "static",
+        "try",
+    ]
+    # The prior receipt exists but cannot be carried by a different tree on
+    # the same base. Use the actual base commit as an independently known tree.
+    args = argparse.Namespace(carry_tree=tree, carry_base=base)
+    assert drv._carry_prior_gates(drv.Git(work), work, args, base, base) is None
+
+    hook.unlink()
+    assert _run_queue(drv, work) == EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed"]
+    assert "feature.py" in _origin_tree(work)
+    assert sorted(counter.read_text(encoding="utf-8").splitlines()) == [
+        "batch",
+        "static",
+        "static",
+        "try",
+    ]
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(work), tree=tree, base=base
+    )
+    assert receipt is not None
+    assert sum(gate.get("carried_from_base") == base for gate in receipt["gates"]) == 2
 
 
 def test_queue_lands_runnable_gates_with_absent_declared_toolchain(
