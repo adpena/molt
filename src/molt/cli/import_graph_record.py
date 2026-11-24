@@ -38,7 +38,10 @@ from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_imports import ImportScanMode
-from molt.compiler_analysis.python_namespace_graph import python_namespace_name_universe
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    python_namespace_name_universe,
+)
 from molt.compiler_analysis.python_source_keys import decode_python_source_key
 from molt.compiler_analysis.python_import_redirects import (
     ImportRedirects,
@@ -127,6 +130,16 @@ def _read_custody(raw: object) -> _RuntimeImportScanCustody | None:
             for row in _list(value["digests"])
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryContextKey:
+    # The wire keeps path spellings even where Path compares case-insensitively.
+    roots: tuple[str, ...] | None
+    stdlib: str | None
+    allowlist: frozenset[str] | None
+    aliases: tuple[tuple[str, str], ...]
+    custody: bytes | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,9 +346,11 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
         return
     rows: list[object] = []
     contexts: list[object] = []
-    context_ids: dict[bytes, int] = {}
+    context_ids: dict[_QueryContextKey, int] = {}
+    # Observations keep each immutable custody object alive for this publication.
+    custodies: dict[int, tuple[bytes, object]] = {}
     premises: list[object] = []
-    premise_ids: dict[bytes, int] = {}
+    premise_ids: dict[PythonNamespacePremise | None, int] = {}
     for observation in plan.import_query_closure.observations:
         query = observation.query
         lease = query.source_lease
@@ -345,30 +360,44 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
             or query.supplied_ast_digest is not None
         ):
             return
-        common = {
-            "roots": None
-            if query.roots is None
-            else [str(path) for path in query.roots],
-            "stdlib": None if query.stdlib_root is None else str(query.stdlib_root),
-            "allowlist": None
-            if query.stdlib_allowlist is None
-            else sorted(query.stdlib_allowlist),
-            "aliases": [[name, str(path)] for name, path in query.module_root_aliases],
-            "custody": _custody(query.runtime_custody),
-        }
-        identity = _bytes(common)
+        custody_payload = None
+        custody_key = None
+        if query.runtime_custody is not None:
+            owner = id(query.runtime_custody)
+            recorded = custodies.get(owner)
+            if recorded is None:
+                custody_payload = _custody(query.runtime_custody)
+                recorded = (_bytes(custody_payload), custody_payload)
+                custodies[owner] = recorded
+            custody_key, custody_payload = recorded
+        identity = _QueryContextKey(
+            None if query.roots is None else tuple(map(str, query.roots)),
+            None if query.stdlib_root is None else str(query.stdlib_root),
+            query.stdlib_allowlist,
+            tuple((name, str(path)) for name, path in query.module_root_aliases),
+            custody_key,
+        )
         index = context_ids.get(identity)
         if index is None:
             index = len(contexts)
             context_ids[identity] = index
-            contexts.append(common)
-        premise = codec._namespace_premise_cache_identity(query.namespace_premise)
-        premise_identity = _bytes(premise)
-        premise_index = premise_ids.get(premise_identity)
+            contexts.append(
+                {
+                    "roots": identity.roots,
+                    "stdlib": identity.stdlib,
+                    "allowlist": None
+                    if identity.allowlist is None
+                    else sorted(identity.allowlist),
+                    "aliases": identity.aliases,
+                    "custody": custody_payload,
+                }
+            )
+        premise = query.namespace_premise
+        premise_index = premise_ids.get(premise)
         if premise_index is None:
             premise_index = len(premises)
-            premise_ids[premise_identity] = premise_index
-            premises.append(premise)
+            premise_ids[premise] = premise_index
+            premises.append(codec._namespace_premise_cache_identity(premise))
         rows.append(
             {
                 "path": str(query.source_path),
