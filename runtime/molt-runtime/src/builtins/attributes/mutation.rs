@@ -1556,6 +1556,78 @@ pub(crate) unsafe fn molt_set_attr_object_attached_body(
     }
 }
 
+/// The initializer already owns its attribute name through the code object.
+/// A compiled byte literal resolves its name only when storage needs an object.
+#[derive(Clone, Copy)]
+pub(super) struct WriteSiteName<'a> {
+    pub(super) bytes: &'a [u8],
+    object: Option<u64>,
+}
+
+impl WriteSiteName<'_> {
+    pub(super) fn with_object(self, py: &PyToken<'_>, use_name: impl FnOnce(u64)) {
+        if let Some(name) = self.object {
+            use_name(name);
+        } else if let Some(name) = dynamic_attr_name_bits(py, self.bytes) {
+            use_name(name);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+        }
+    }
+}
+
+fn set_attr_at_site(py: &PyToken<'_>, object: u64, name: WriteSiteName<'_>, value: u64, site: u64) {
+    unsafe {
+        if super::field_sites::write_cached_field(py, site, object, value, name) {
+            return;
+        }
+        name.with_object(py, |name| {
+            if super::field_sites::remember_field_site(
+                py,
+                super::field_sites::FieldAccess::Write,
+                site,
+                object,
+                name,
+            )
+            .is_ok()
+            {
+                let _ = mutate_attr_name(
+                    py,
+                    object,
+                    name,
+                    DescriptorMutation::Set(value),
+                    AttributeMutation::Normal,
+                );
+            }
+        });
+    }
+}
+
+/// A code-owned name can use the compiled write-site transaction. Other name
+/// objects retain ordinary attribute validation and Python string semantics.
+pub(crate) fn set_attr_name_at_site(
+    py: &PyToken<'_>,
+    object: u64,
+    name: u64,
+    value: u64,
+    site: u64,
+) -> u64 {
+    if let Some(bytes) = unsafe { crate::object::ops::exact_string_bytes(py, name) } {
+        set_attr_at_site(
+            py,
+            object,
+            WriteSiteName {
+                bytes,
+                object: Some(name),
+            },
+            value,
+            site,
+        );
+        MoltObject::none().bits()
+    } else {
+        molt_set_attr_name_attached_body(py, object, name, value)
+    }
+}
+
 /// A compiled generic write site. A warm site whose receivers keep one plain
 /// class stores the inferred field directly; any other receiver takes the
 /// same transaction as `molt_set_attr_object`.
@@ -1590,24 +1662,16 @@ pub(crate) unsafe fn molt_set_attr_object_ic_attached_body(
                 );
             };
             let bytes = std::slice::from_raw_parts(attr_name_ptr, length);
-            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits, bytes) {
-                return MoltObject::none().bits();
-            }
-            let Some(name) = dynamic_attr_name_bits(py, bytes) else {
-                return MoltObject::none().bits();
-            };
-            if super::field_sites::remember_field_site(
+            set_attr_at_site(
                 py,
-                super::field_sites::FieldAccess::Write,
-                site_id,
                 obj_bits,
-                name,
-            )
-            .is_ok()
-            {
-                let _ = mutate_attr_name(py, obj_bits, name, mutation, AttributeMutation::Normal);
-            }
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+                WriteSiteName {
+                    bytes,
+                    object: None,
+                },
+                val_bits,
+                site_id,
+            );
             MoltObject::none().bits()
         })
     }

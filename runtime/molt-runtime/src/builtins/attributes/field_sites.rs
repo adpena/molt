@@ -23,44 +23,54 @@
 //! dictionary replacement, equality callbacks and displaced-value retirement.
 
 use super::*;
+use crate::builtins::attr::AttrNameCacheKey;
 use crate::builtins::attr::{class_inferred_field_offset, class_namespace_lookup_mro_pure};
 use crate::object::accessors::{object_field_get_ptr_raw, object_field_set_ptr_raw};
 use molt_cpython_abi::hooks::AttributeMutation;
-use std::cell::Cell;
+use std::cell::RefCell;
 
-#[derive(Clone, Copy)]
 struct FieldSiteEntry {
+    name: AttrNameCacheKey,
     site_id: u64,
     class_bits: u64,
     type_version: u64,
     target: FieldSiteTarget,
 }
 
-#[derive(Clone, Copy)]
-enum FieldSiteTarget {
-    Inferred(usize),
-    Dictionary,
+impl FieldSiteEntry {
+    /// Inlined operations may share a source index in the emitted caller.
+    /// The site identifies a cache slot; its bytes identify the attribute.
+    fn matches(&self, site: u64, class: u64, epoch: u64, name: &[u8]) -> bool {
+        self.site_id == site
+            && self.class_bits == class
+            && self.type_version == epoch
+            && self.name.as_slice() == name
+    }
 }
 
-const EMPTY_FIELD_SITE: FieldSiteEntry = FieldSiteEntry {
-    site_id: 0,
-    class_bits: 0,
-    type_version: 0,
-    target: FieldSiteTarget::Inferred(0),
-};
+#[derive(Clone, Copy)]
+enum FieldSiteTarget {
+    Inferred {
+        offset: usize,
+        // Number of later physical words, when all are consecutive inferred
+        // rows. The receipt is valid only for this exact class and epoch.
+        following: Option<usize>,
+    },
+    Dictionary,
+}
 
 /// Direct-mapped by site id, like the call and method caches.
 const FIELD_SITE_SLOTS: usize = 256;
 
-type FieldSiteTable = [Cell<FieldSiteEntry>; FIELD_SITE_SLOTS];
+type FieldSiteTable = [RefCell<Option<FieldSiteEntry>>; FIELD_SITE_SLOTS];
 
 // Reads and writes keep separate tables: their admission facts differ, so a
 // colliding site id must never let a read entry bypass a custom __setattr__.
 thread_local! {
     static READ_SITES: FieldSiteTable =
-        const { [const { Cell::new(EMPTY_FIELD_SITE) }; FIELD_SITE_SLOTS] };
+        const { [const { RefCell::new(None) }; FIELD_SITE_SLOTS] };
     static WRITE_SITES: FieldSiteTable =
-        const { [const { Cell::new(EMPTY_FIELD_SITE) }; FIELD_SITE_SLOTS] };
+        const { [const { RefCell::new(None) }; FIELD_SITE_SLOTS] };
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -102,18 +112,21 @@ unsafe fn cached_target(
     access: FieldAccess,
     site_id: u64,
     obj_bits: u64,
+    name: &[u8],
 ) -> Option<(*mut u8, FieldSiteTarget)> {
     unsafe {
-        let entry = access
-            .table()
-            .with(|table| table[slot_index(site_id)].get());
-        if entry.site_id != site_id || entry.class_bits == 0 {
-            return None;
-        }
-        let obj_ptr = plain_instance(obj_bits)?;
-        (object_class_bits(obj_ptr) == entry.class_bits
-            && crate::object::global_type_version() == entry.type_version)
-            .then_some((obj_ptr, entry.target))
+        access.table().with(|table| {
+            let row = table[slot_index(site_id)].borrow();
+            let row = row.as_ref()?;
+            let object = plain_instance(obj_bits)?;
+            row.matches(
+                site_id,
+                object_class_bits(object),
+                crate::object::global_type_version(),
+                name,
+            )
+            .then_some((object, row.target))
+        })
     }
 }
 
@@ -122,9 +135,11 @@ unsafe fn cached_offset(
     access: FieldAccess,
     site_id: u64,
     obj_bits: u64,
+    name: &[u8],
 ) -> Option<(*mut u8, usize)> {
     unsafe {
-        let (object, FieldSiteTarget::Inferred(offset)) = cached_target(access, site_id, obj_bits)?
+        let (object, FieldSiteTarget::Inferred { offset, .. }) =
+            cached_target(access, site_id, obj_bits, name)?
         else {
             return None;
         };
@@ -137,8 +152,9 @@ pub(super) fn cached_offset_for_test(
     access: FieldAccess,
     site_id: u64,
     obj_bits: u64,
+    name: &[u8],
 ) -> Option<usize> {
-    unsafe { cached_offset(access, site_id, obj_bits).map(|(_, offset)| offset) }
+    unsafe { cached_offset(access, site_id, obj_bits, name).map(|(_, offset)| offset) }
 }
 
 /// A warm read site. `Some` carries the owned field value, or tagged None
@@ -147,9 +163,10 @@ pub(super) unsafe fn read_cached_field(
     py: &PyToken<'_>,
     site_id: u64,
     obj_bits: u64,
+    name: &[u8],
 ) -> Option<u64> {
     unsafe {
-        let (obj_ptr, offset) = cached_offset(FieldAccess::Read, site_id, obj_bits)?;
+        let (obj_ptr, offset) = cached_offset(FieldAccess::Read, site_id, obj_bits, name)?;
         let Ok(bits) = object_field_get_ptr_raw(py, obj_ptr, offset) else {
             return Some(MoltObject::none().bits());
         };
@@ -162,33 +179,39 @@ pub(super) unsafe fn read_cached_field(
     }
 }
 
-/// A warm write site. Dictionary entries retain no name reference: the static
-/// site's name is resolved through the canonical interner on each hit.
+/// A warm write site. Dictionary entries retain no name reference.
 /// `true` means the write completed or raised; `false` takes the generic path.
 pub(super) unsafe fn write_cached_field(
     py: &PyToken<'_>,
     site_id: u64,
     obj_bits: u64,
     val_bits: u64,
-    name: &[u8],
+    name: super::mutation::WriteSiteName<'_>,
 ) -> bool {
     unsafe {
-        let Some((object, target)) = cached_target(FieldAccess::Write, site_id, obj_bits) else {
+        let Some((object, target)) =
+            cached_target(FieldAccess::Write, site_id, obj_bits, name.bytes)
+        else {
             return false;
         };
         match target {
-            FieldSiteTarget::Inferred(offset) => {
+            FieldSiteTarget::Inferred { offset, following } => {
                 if crate::object::field_storage::dictionary_backed(object) {
                     return false;
+                }
+                if let Some(following) = following
+                    && crate::object::accessors::try_initialize_inferred_field(
+                        py, object, offset, following, val_bits,
+                    )
+                {
+                    return true;
                 }
                 let _ = object_field_set_ptr_raw(py, object, offset, val_bits);
             }
             FieldSiteTarget::Dictionary => {
-                let Some(name) = dynamic_attr_name_bits(py, name) else {
-                    return true;
-                };
-                let _ = crate::object::field_storage::set_item(py, object, name, val_bits);
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+                name.with_object(py, |name| {
+                    let _ = crate::object::field_storage::set_item(py, object, name, val_bits);
+                });
             }
         }
         true
@@ -218,11 +241,15 @@ pub(super) unsafe fn remember_field_site(
         }
         let type_version = crate::object::global_type_version();
         let slot = slot_index(site_id);
-        let recorded = access.table().with(|table| table[slot].get());
-        if recorded.site_id == site_id
-            && recorded.class_bits == class_bits
-            && recorded.type_version == type_version
-        {
+        let Some(name) = crate::object::ops::exact_string_bytes(py, name_bits) else {
+            return Ok(());
+        };
+        if access.table().with(|table| {
+            table[slot]
+                .borrow()
+                .as_ref()
+                .is_some_and(|row| row.matches(site_id, class_bits, type_version, name))
+        }) {
             // The class facts stand; this receiver missed for an instance
             // reason (a dictionary or an unset field).
             return Ok(());
@@ -250,7 +277,14 @@ pub(super) unsafe fn remember_field_site(
             return Ok(());
         }
         let target = match class_inferred_field_offset(py, class, name_bits)? {
-            Some(offset) => FieldSiteTarget::Inferred(offset),
+            Some(offset) => FieldSiteTarget::Inferred {
+                offset,
+                following: if access == FieldAccess::Write && !cfg!(feature = "free-threaded") {
+                    crate::object::class_layout::consecutive_inferred_suffix(py, class, offset)
+                } else {
+                    None
+                },
+            },
             None if access == FieldAccess::Write
                 && crate::object::field_storage::allows_dictionary(py, obj_ptr) =>
             {
@@ -264,12 +298,13 @@ pub(super) unsafe fn remember_field_site(
             return Ok(());
         }
         access.table().with(|table| {
-            table[slot].set(FieldSiteEntry {
+            table[slot].replace(Some(FieldSiteEntry {
+                name: AttrNameCacheKey::new(name),
                 site_id,
                 class_bits,
                 type_version,
                 target,
-            });
+            }));
         });
         Ok(())
     }
