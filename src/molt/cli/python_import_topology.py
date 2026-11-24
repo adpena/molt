@@ -65,6 +65,31 @@ class _ProbeObservation(NamedTuple):
     has_link: bool
 
 
+def _probe_listed_entry(
+    path: Path, parent: _DirectoryObservation
+) -> _ProbeObservation | None:
+    """Project an exact, non-link entry from its already fenced directory."""
+    state = parent.state
+    if os.name == "nt" or state is None or parent.racy:
+        return None
+    entry = parent.entries_by_name.get(path.name)
+    if entry is None:
+        # A missing spelling need not be a missing lexical lookup on a
+        # case-insensitive filesystem.
+        return None
+    # DirEntry's cached type can succeed with directory read permission
+    # alone. A lexical probe also requires permission to search it.
+    try:
+        kind = stat.S_IFMT(entry.stat(follow_symlinks=False).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if kind not in (stat.S_IFDIR, stat.S_IFREG):
+        # A link's target is not part of the containing directory epoch.
+        return None
+    resolved = state.path / path.name
+    return _ProbeObservation(PythonImportPath(resolved, kind), resolved != path)
+
+
 def _probe(path: Path, *, parent: _DirectoryState | None) -> _ProbeObservation:
     if os.name != "nt" and parent is not None and path.name not in ("", ".."):
         # The enclosing read fences the resolved parent. A direct entry
@@ -392,9 +417,11 @@ class PythonImportTopology:
         path = _lexical_path(path)
         if path not in self._probes:
             parent = self._directory(path.parent)
-            _state, probe = self._stable_read(
-                path.parent, lambda state: _probe(path, parent=state)
-            )
+            probe = _probe_listed_entry(path, parent)
+            if probe is None:
+                _, probe = self._stable_read(
+                    path.parent, lambda state: _probe(path, parent=state)
+                )
             self._remember_probe(path, probe, parent)
         return self._probes[path]
 

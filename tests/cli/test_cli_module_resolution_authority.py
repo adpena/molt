@@ -217,6 +217,54 @@ def test_package_child_generation_is_custodied(tmp_path, mutation):
     assert _cpython_origin("before", [tmp_path]) == expected
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX listed-entry probe")
+def test_listed_non_link_module_is_fenced_against_link_retarget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    source = root / "member.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    target = root / "other.py"
+    target.write_text("VALUE = 2\n", encoding="utf-8")
+    monkeypatch.setattr(topology, "DIGEST_RACY_WINDOW_NS", 0)
+    owner = topology.PythonImportTopology()
+    assert owner.source_child_names(root) == {"member", "other"}
+    probe = owner.probe(source)
+    assert probe is not None and probe.path == source
+    info = root.stat()
+    source.unlink()
+    source.symlink_to(target)
+    os.utime(root, ns=(info.st_atime_ns, info.st_mtime_ns))
+    assert _cpython_origin("member", [root]) == str(source)
+    assert source.resolve() == target
+    with pytest.raises(topology.PythonImportTopologyChangedError):
+        owner.validate()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory search permissions")
+def test_listed_module_still_requires_search_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    child = root / "member.py"
+    child.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(topology, "DIGEST_RACY_WINDOW_NS", 0)
+    root.chmod(0o400)
+    try:
+        try:
+            child.lstat()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("process can search directories without execute permission")
+        owner = topology.PythonImportTopology()
+        assert owner.source_child_names(root) == {"member"}
+        with pytest.raises(PermissionError):
+            owner.probe(child)
+    finally:
+        root.chmod(0o700)
+
+
 @pytest.mark.parametrize("policy", ["racy", "windows", "unavailable_change_time"])
 def test_coarse_directory_metadata_never_certifies_stale_child_names(
     tmp_path, monkeypatch, policy
