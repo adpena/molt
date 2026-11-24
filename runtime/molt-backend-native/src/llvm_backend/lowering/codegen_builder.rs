@@ -956,7 +956,9 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
     fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value {
         let helper = match body {
             SiteBody::FieldGet { offset } => self.backend.field_slot_get_helper(offset),
-            SiteBody::FieldSet { offset } => self.backend.field_slot_set_helper(offset),
+            SiteBody::FieldSet { offset, suffix } => {
+                self.backend.field_slot_set_helper(offset, suffix)
+            }
             SiteBody::BuiltinFieldGet { field } => self.backend.builtin_field_get_helper(field),
             SiteBody::ItemGet { containers, cold } => {
                 self.backend.list_item_get_helper(containers, cold)

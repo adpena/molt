@@ -61,6 +61,7 @@ from molt.frontend._types import (
     BuiltinClass,
     ClassId,
     ClassRef,
+    GeneratedCallableReservation,
     MoltOp,
     MoltValue,
     TypeHint,
@@ -888,7 +889,40 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     init_options["kw_only"],
                     self.python_binding_index,
                 )
-        if dataclass_opts is not None:
+        dataclass_spec = (
+            DataclassSpec(
+                params=tuple(sorted(dataclass_opts.items())),
+                init_projection=init_candidate_fields,
+            )
+            if dataclass_opts is not None
+            else None
+        )
+        # A plain required-field schema proposes ordinary instance storage. It
+        # says nothing about what the decorator returns or which __init__ runs.
+        # The normal layout checks still own the class's physical offsets.
+        inferred_dataclass = (
+            dataclass_opts is not None
+            and dataclass_opts["init"]
+            and not dataclass_opts["slots"]
+            and not dataclass_opts["frozen"]
+            and not other_decorators
+            and bases == [OBJECT_CLASS]
+            and layout_refusal is None
+            and init_candidate_fields is not None
+            and len(init_candidate_fields) > 0
+            and len(init_candidate_fields) == len(node.body)
+            and all(
+                isinstance(item, ast.AnnAssign)
+                and isinstance(item.target, ast.Name)
+                and item.value is None
+                and field.name == item.target.id
+                and not field.name.startswith("__")
+                and field.init
+                and not field.initvar
+                for item, field in zip(node.body, init_candidate_fields)
+            )
+        )
+        if dataclass_spec is not None and not inferred_dataclass:
             for item in node.body:
                 if (
                     isinstance(item, ast.AnnAssign)
@@ -920,10 +954,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     class_attr_count=len(class_attrs),
                     method_count=len(pending_methods),
                 ),
-                dataclass=DataclassSpec(
-                    params=tuple(sorted(dataclass_opts.items())),
-                    init_projection=init_candidate_fields,
-                ),
+                dataclass=dataclass_spec,
                 possible_data_descriptors=self._possible_data_descriptor_attrs(
                     node, class_attrs
                 ),
@@ -958,7 +989,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 field_order.append(name)
 
             def add_field_hint(name: str, annotation: ast.AST | None) -> None:
-                if not self._hints_enabled() or annotation is None:
+                if (
+                    dataclass_spec is not None
+                    or not self._hints_enabled()
+                    or annotation is None
+                ):
                     return
                 hint = self._annotation_to_hint(cast(ast.expr, annotation))
                 if hint is None or name in field_hints:
@@ -1122,7 +1157,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     class_attr_count=len(class_attrs),
                     method_count=len(pending_methods),
                 ),
-                dataclass=None,
+                dataclass=dataclass_spec,
                 possible_data_descriptors=self._possible_data_descriptor_attrs(
                     node, class_attrs
                 ),
@@ -1699,7 +1734,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         if not dynamic_build:
             # Collect field offsets into attrs
-            if draft.dataclass is None and draft.layout.static and draft.layout.fields:
+            if draft.layout.static and draft.layout.fields:
                 field_items: list[MoltValue] = []
                 for field in sorted(item.name for item in draft.layout.fields):
                     key_val = MoltValue(self.next_var(), type_hint="str")
@@ -1832,7 +1867,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     and post_init.kind is not MemberKind.DATA
                     for owner in mro
                 )
-                template_node = initializer_template(
+                proposal = initializer_template(
                     init_candidate_fields,
                     frozen=init_options["frozen"],
                     slots=init_options["slots"],
@@ -1840,12 +1875,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     location=node,
                 )
                 defaults = self._emit_function_default_values([], [], [])
+                initializer_symbol = self._function_symbol(proposal.initializer.name)
                 template = self._compile_class_method(
                     node,
-                    template_node,
+                    proposal.factory,
                     defaults,
                     bind_receiver=False,
+                    nested_callable=GeneratedCallableReservation(
+                        python_node_source_key(proposal.initializer), initializer_symbol
+                    ),
                 )["func"]
+                draft.initializer_code_candidate = initializer_symbol
                 schema = (
                     init_options["frozen"],
                     init_options["slots"],

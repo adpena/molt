@@ -116,6 +116,30 @@ pub unsafe extern "C" fn molt_call_func_owned(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_func_owned_attached_body(_py, func_bits, args_ptr_bits, nargs, code_id)
 }
+#[unsafe(export_name = "molt_call_class_candidate_owned__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_call_class_candidate_owned(
+    __context: u64,
+    func_bits: u64,
+    args_ptr_bits: u64,
+    nargs: u64,
+    definition_slot: u64,
+    initializer_code: u64,
+) -> u64 {
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_call_class_candidate_owned,
+    );
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_call_class_candidate_owned_attached_body(
+        _py,
+        func_bits,
+        args_ptr_bits,
+        nargs,
+        definition_slot,
+        initializer_code,
+    )
+}
 #[unsafe(export_name = "molt_call_inputs_release__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_call_inputs_release(

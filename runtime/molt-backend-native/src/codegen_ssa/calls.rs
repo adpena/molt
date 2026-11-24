@@ -356,18 +356,28 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             .map(|&operand| view.operand(b, &mut custody, operand))
             .collect();
         let (args, nargs) = spill_words(b, &words[1..], "owned_call_args");
-        let owned = b.runtime_callee(RuntimeFn::CallFuncOwned);
-        let no_site = b.constant(0);
+        let candidate = (op.opcode == OpCode::CallClassCandidate)
+            .then(|| self.linked_target(op))
+            .flatten();
         view.surrender(b, &custody, &op.operands, &[]);
-        let call_args = [
-            b.word_value(words[0]),
-            b.word_value(args),
-            b.word_value(nargs),
-            b.word_value(no_site),
-        ];
-        let result = b
-            .call(owned, &call_args)
-            .expect("molt_call_func_owned returns a word");
+        let callable = b.word_value(words[0]);
+        let args = b.word_value(args);
+        let nargs = b.word_value(nargs);
+        let result = if let Some((target, abi)) = candidate {
+            let init = b.function_callee(&target, &abi);
+            let code = b.function_address(init);
+            let slot = super::object::class_definition_slot(b, op);
+            let slot = b.word_value(slot);
+            let code = b.word_value(code);
+            let entry = b.runtime_callee(RuntimeFn::CallClassCandidateOwned);
+            b.call(entry, &[callable, args, nargs, slot, code])
+        } else {
+            let no_site = b.constant(0);
+            let no_site = b.word_value(no_site);
+            let entry = b.runtime_callee(RuntimeFn::CallFuncOwned);
+            b.call(entry, &[callable, args, nargs, no_site])
+        }
+        .expect("owned call returns a word");
         b.set_name(result, "call_func_owned");
         let result = b.expect_word(result);
         view.finish(b, custody, result, "owned_call_result", |_| {})
@@ -378,8 +388,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// by its role, or a dynamic call of operand 0.
     pub(crate) fn call_op(&mut self, b: &mut B, op: &TirOp) {
         let origin = op.origin;
-        if matches!(origin, Some(OpKind::CallFunc | OpKind::CallFunction))
-            && !op.operands.is_empty()
+        if op.opcode == OpCode::CallClassCandidate && op.operands.is_empty() {
+            self.fatal("class call candidate requires its captured callable");
+            return;
+        }
+        if op.opcode == OpCode::CallClassCandidate
+            || (matches!(origin, Some(OpKind::CallFunc | OpKind::CallFunction))
+                && !op.operands.is_empty())
         {
             // An ordinary source call adopted its callable and arguments.
             let result = if op.argument_custody().is_some() {

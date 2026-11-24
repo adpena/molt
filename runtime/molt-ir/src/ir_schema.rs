@@ -115,7 +115,7 @@ impl std::fmt::Display for OpShapeDiagnostic {
             OpShapeViolation::ForbiddenClassDefinition => {
                 write!(
                     f,
-                    "forbids `class_definition`; only class stamps and layout guards name a class statement"
+                    "forbids `class_definition`; this operation names no class statement"
                 )
             }
             OpShapeViolation::ForbiddenExactFieldSlots => {

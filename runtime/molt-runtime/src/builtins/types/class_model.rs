@@ -967,7 +967,7 @@ unsafe fn class_attachment(
         if !crate::object::class_layout::visible_fields_match(_py, current_class, target_class) {
             return None;
         }
-        let dictionary_backed = crate::object::instance_dict_bits(obj_ptr) != 0;
+        let dictionary_backed = crate::object::field_storage::dictionary_backed(obj_ptr);
         if current_size == target_size
             && crate::object::class_layout::fields_match(_py, current_class, target_class)
             && (dictionary_backed

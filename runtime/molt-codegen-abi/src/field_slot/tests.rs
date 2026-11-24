@@ -66,10 +66,18 @@ impl Machine {
     }
 
     fn set_on(&mut self, object: u64, value: u64, locking: ListLocking) {
-        generate_field_slot_set(self, object, OFFSET, value, locking, |m, pointer| {
-            assert_eq!(pointer, OBJECT, "the miss receives the unboxed receiver");
-            m.events.push(Event::Cold);
-        });
+        generate_field_slot_set(
+            self,
+            object,
+            OFFSET,
+            value,
+            FieldStoreSuffix::Unknown,
+            locking,
+            |m, pointer| {
+                assert_eq!(pointer, OBJECT, "the miss receives the unboxed receiver");
+                m.events.push(Event::Cold);
+            },
+        );
     }
 
     fn write_field(&mut self, value: u64) {
@@ -141,11 +149,12 @@ fn every_word_the_inline_slot_does_not_own_takes_the_runtime() {
         assert_eq!(m.read_field(), COLD, "{name}");
         assert_eq!(m.events, [Event::Cold], "{name}");
     }
-    for (name, refuse) in &refusals[..2] {
+    for (name, refuse) in &refusals {
         let mut m = Machine::receiver(0, int(3));
         refuse(&mut m);
+        let old = m.field();
         m.write_field(int(4));
-        assert_eq!(m.field(), int(3), "{name}");
+        assert_eq!(m.field(), old, "{name}");
         assert_eq!(m.events, [Event::Cold], "{name}");
     }
 }
@@ -175,6 +184,7 @@ fn a_store_retains_the_new_word_before_it_releases_the_old_one() {
         ]
     );
     // HAS_PTRS is already set: no second write of the header.
+    m.object(VALUE, TYPE_ID_STRING, 0, 0, 0);
     m.events.clear();
     m.write_field(int(2));
     m.write_field(boxed(VALUE));
@@ -199,6 +209,33 @@ fn an_immediate_store_leaves_the_header_alone() {
     let mut m = Machine::receiver(HEADER_FLAG_HAS_PTRS, int(1));
     m.write_field(int(9));
     assert_eq!(m.events, [Event::Retain(int(9)), Event::Release(int(1))]);
+}
+
+#[test]
+fn a_known_allocation_suffix_admits_only_order_preserving_first_writes() {
+    let missing = boxed(VALUE);
+    for (words, later, cold) in [
+        (3, int(7), false),
+        (4, missing, false),
+        (4, int(7), true),
+        (5, missing, true),
+    ] {
+        let mut m = Machine::receiver(0, missing);
+        m.object(VALUE, TYPE_ID_OBJECT, crate::HEADER_FLAG_IMMORTAL, 0, 0);
+        m.write_bytes(OBJECT, OFFSET + 8, later, 8);
+        let suffix = FieldStoreSuffix::from_allocation(Some(words), OFFSET);
+        generate_field_slot_set(
+            &mut m,
+            boxed(OBJECT),
+            OFFSET,
+            int(5),
+            suffix,
+            ListLocking::Gil,
+            |m, _| m.events.push(Event::Cold),
+        );
+        assert_eq!(m.events.contains(&Event::Cold), cold);
+        assert_eq!(m.field(), if cold { missing } else { int(5) });
+    }
 }
 
 #[test]

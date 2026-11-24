@@ -1888,6 +1888,7 @@ def _validate_ssa_attr_transport(
     valid_opcodes = {
         "Copy",
         "Call",
+        "CallClassCandidate",
         "CallBuiltin",
         "LoadAttr",
         "StoreAttr",
@@ -2086,10 +2087,10 @@ def _validate_async_work_poll_after_kinds(
             raise OpKindTableError(
                 f"async_work_poll_after_kinds kind {kind!r} is not a known kind spelling"
             )
-        if opcode not in {"Call", "CallMethod"}:
+        if opcode not in {"Call", "CallClassCandidate", "CallMethod"}:
             raise OpKindTableError(
                 f"async_work_poll_after_kinds {kind!r} maps to OpCode::{opcode}; "
-                "call-return Copy observations may only map to Call or CallMethod"
+                "call-return Copy observations require a source call opcode"
             )
 
 

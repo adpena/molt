@@ -52,6 +52,8 @@ from molt.frontend._types import (
     FrontendOpKind,
     FunctionDefaults,
     FunctionDefinitionValues,
+    GeneratedCallableId,
+    GeneratedCallableReservation,
     ImportForm,
     LoopScope,
     MethodDescriptor,
@@ -177,7 +179,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     python_class_frame_owner: ClassId | None
     python_frame_context_active: Any
     qualname_stack: list[tuple[str, bool]]
-    reserved_func_symbols: dict[CallableId, str]
+    reserved_func_symbols: dict[CallableId | GeneratedCallableId, str]
     reserved_python_identifiers: set[str]
     return_label: int | None
     return_slot: MoltValue | None
@@ -638,6 +640,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         defaults: FunctionDefaults,
         *,
         bind_receiver: bool = ...,
+        nested_callable: GeneratedCallableReservation | None = ...,
     ) -> MethodInfo: ...
 
     def _comprehension_binds_homes(self) -> bool: ...
@@ -1429,6 +1432,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_owned_value_alias(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_parallel_assign(self, node: ast.Assign) -> bool: ...
+
+    def _emit_positional_call(
+        self,
+        node: ast.Call,
+        callee: MoltValue,
+        args: list[MoltValue],
+        result: MoltValue,
+    ) -> None: ...
 
     def _emit_proven_builtin_value(self, node: ast.Name) -> MoltValue | None: ...
 

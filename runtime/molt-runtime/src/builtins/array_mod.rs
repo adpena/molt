@@ -640,12 +640,11 @@ unsafe fn object_array_handle_bits(py: &PyToken<'_>, object: *mut u8) -> Option<
                 to_i64(obj_from_bits(offset)).and_then(|n| usize::try_from(n).ok())
             && let Some(field) = field_storage::field_at_offset(py, object, offset)
         {
-            let slot = object.add(field.offset).cast::<u64>();
-            let bits = match field_storage::resolve(py, object, field.offset, slot)? {
+            let bits = match field_storage::resolve(py, object, field.offset)? {
                 FieldStorage::Inline(slot) => *slot,
                 FieldStorage::Dictionary { dictionary, .. } => dict_get_str_bytes_borrowed(
                     py,
-                    obj_from_bits(dictionary).as_ptr()?,
+                    obj_from_bits(dictionary?).as_ptr()?,
                     b"_handle",
                 )?,
             };

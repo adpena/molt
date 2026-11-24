@@ -931,8 +931,41 @@ pub(crate) fn molt_call_func_owned_attached_body(
     nargs: u64,
     code_id: u64,
 ) -> u64 {
+    let _ = code_id;
+    with_owned_call_inputs(_py, func_bits, args_ptr_bits, nargs, |args| unsafe {
+        crate::call::bind::call_owned_arguments(_py, func_bits, args)
+    })
+}
+
+/// The class and initializer are candidates. The outer call still owns all
+/// its inputs, including when an argument rebound the callable or __init__.
+pub(crate) fn molt_call_class_candidate_owned_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+    args_ptr_bits: u64,
+    nargs: u64,
+    definition_slot: u64,
+    initializer_code: u64,
+) -> u64 {
+    with_owned_call_inputs(_py, func_bits, args_ptr_bits, nargs, |args| unsafe {
+        crate::call::bind::call_owned_class_candidate(
+            _py,
+            func_bits,
+            args,
+            definition_slot,
+            initializer_code,
+        )
+    })
+}
+
+fn with_owned_call_inputs(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+    args_ptr_bits: u64,
+    nargs: u64,
+    dispatch: impl FnOnce(&[u64]) -> u64,
+) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let _ = code_id;
         let Some(args) = (unsafe { crate::call::bind::EntryArguments::copy(args_ptr_bits, nargs) })
         else {
             // The arguments are unreachable; the callable still ends here.
@@ -943,7 +976,7 @@ pub(crate) fn molt_call_func_owned_attached_body(
                 "call argument range is invalid for the active target",
             );
         };
-        unsafe { crate::call::bind::call_owned_arguments(_py, func_bits, args.as_slice()) }
+        dispatch(args.as_slice())
     })
 }
 

@@ -543,7 +543,7 @@ pub(crate) unsafe fn call_class_init_with_args(
             Ok(arguments) => arguments,
             Err(error) => return error,
         };
-        construct_regular_class(_py, class_ptr, &arguments)
+        construct_regular_class(_py, class_ptr, &arguments, None)
     }
 }
 
@@ -554,6 +554,7 @@ pub(crate) unsafe fn construct_regular_class(
     py: &PyToken<'_>,
     class: *mut u8,
     arguments: &crate::call::bind::CallArguments<'_, '_>,
+    initializer_code: Option<u64>,
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(class).bits();
@@ -642,12 +643,32 @@ pub(crate) unsafe fn construct_regular_class(
                 let receiver = crate::builtins::exceptions::ExceptionValue::pin(py, instance);
                 let function = crate::builtins::exceptions::ExceptionValue::pin(py, raw_init);
                 match arguments.constructor_child(None, arguments.positional()) {
-                    Ok(child) => crate::call::bind::call_bind_with_receiver(
-                        py,
-                        function.bits(),
-                        Some(receiver.bits()),
-                        child,
-                    ),
+                    Ok(child) => {
+                        // __new__ and allocation may run Python. Check the code
+                        // on the selected function, retaining its actual closure,
+                        // defaults and globals. Both branches use this instance.
+                        let direct = initializer_code.and_then(|code| {
+                            let ptr = obj_from_bits(function.bits()).as_ptr()?;
+                            if function_fn_ptr(ptr) != code || exception_pending(py) {
+                                return None;
+                            }
+                            crate::call::bind::try_call_borrowed_receiver(
+                                py,
+                                function.bits(),
+                                ptr,
+                                receiver.bits(),
+                                &child,
+                            )
+                        });
+                        direct.unwrap_or_else(|| {
+                            crate::call::bind::call_bind_with_receiver(
+                                py,
+                                function.bits(),
+                                Some(receiver.bits()),
+                                child,
+                            )
+                        })
+                    }
                     Err(error) => error,
                 }
             };

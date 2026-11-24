@@ -2723,13 +2723,18 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "native.integration.bench-cli" in proof_plan_text
     assert "native.integration.capability-manifest" in proof_plan_text
     assert '"tests/test_manifest_pipeline_e2e.py"' in proof_plan_text
-    assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
-        ci_text
-    )
-    assert (
-        "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
-        not in (ci_text)
-    )
+    native_bench_owners = [
+        command
+        for command in tomllib.loads(proof_plan_text)["command"]
+        if any(
+            target.partition("::")[0] == "tests/test_bench_native_cli.py"
+            for target in command.get("pytest", ())
+        )
+    ]
+    (native_bench,) = native_bench_owners
+    assert native_bench["id"] == "native.integration.bench-cli"
+    assert native_bench["resource_class"] == "compiler-build-resource"
+    assert "cargo" in native_bench["toolchains"]
     assert "tests/test_bench_harness.py" in proof_plan_text
     assert "tests/test_bench_tool.py" in proof_plan_text
     assert "tests/test_ci_workflow_topology.py" in proof_plan_text

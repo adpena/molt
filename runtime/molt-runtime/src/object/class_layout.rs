@@ -1064,9 +1064,16 @@ pub(crate) unsafe fn prepare<'guard>(
         }
         // These are sealed concrete rows, never raw ancestor offset maps.
         // Inferred fields are ordinary attribute names, not inherited addresses.
+        // A class with declared slots retires those slots before dictionary
+        // entries. Keep inherited ordinary attributes in their dictionary so
+        // neither physical offset order nor compiled terminal release can
+        // retire a base's dictionary value before a subclass's slot.
+        let inherit_inferred = !native_extension
+            && own_slots.is_empty()
+            && !rows.iter().any(|field| field.kind.is_declared_slot());
         let mro = class_mro_view(py, class);
         for bits in mro.iter().copied().skip(1) {
-            if native_extension {
+            if !inherit_inferred {
                 break;
             }
             let base = obj_from_bits(bits).as_ptr().expect("class MRO entry");

@@ -271,6 +271,20 @@ fn publishing_an_instance_dictionary_sets_the_sticky_flag() {
             field_storage::replace_dictionary(py, ptr, None).expect("restore lazy backing");
             assert_eq!(instance_dict_bits(ptr), 0);
             assert_ne!(flags() & HEADER_FLAG_HAS_INSTANCE_DICT, 0);
+            // Deletion keeps an empty logical dictionary while its first
+            // insertion is still lazy. Even this fitting word stays retired.
+            assert!(matches!(
+                field_storage::resolve(py, ptr, 0),
+                Some(field_storage::FieldStorage::Dictionary {
+                    dictionary: None,
+                    ..
+                })
+            ));
+            let item = MoltObject::from_int(7).bits();
+            crate::object_field_set_ptr_raw(py, ptr, 0, item).unwrap();
+            assert!(is_missing_bits(py, *ptr.cast::<u64>()));
+            assert_ne!(instance_dict_bits(ptr), 0);
+            assert_eq!(crate::object_field_get_ptr_raw(py, ptr, 0), Ok(item));
             // The class shares the bit with its finalizer meaning: untouched.
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let class_flags = (*header_from_obj_ptr(class_ptr)).load_metadata_flags();

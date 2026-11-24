@@ -15510,6 +15510,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_call_builtin__molt_context_d1086a27578cda22",
         },
+        "molt_call_class_candidate_owned" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_call_class_candidate_owned__molt_context_d1086a27578cda22",
+        },
         "molt_call_func_dispatch" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_call_func_dispatch__molt_context_d1086a27578cda22",

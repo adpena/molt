@@ -1497,6 +1497,13 @@ name = "call_func_owned"
 return_contract = "owned_object"
 type = 6
 
+# Captured callable, positional span and count, class statement slot and
+# linked initializer code address. The runtime keeps the original CALL custody.
+[[import]]
+name = "call_class_candidate_owned"
+return_contract = "owned_object"
+type = 10
+
 # A call instruction's adopted inputs that no callee took over (after a
 # borrowing callee, or a failure before invocation): (callable or 0, spilled
 # arguments, count), released in CALL's order.

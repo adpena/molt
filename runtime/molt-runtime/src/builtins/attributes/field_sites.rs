@@ -128,7 +128,7 @@ unsafe fn cached_offset(
         else {
             return None;
         };
-        (instance_dict_bits(object) == 0).then_some((object, offset))
+        (!crate::object::field_storage::dictionary_backed(object)).then_some((object, offset))
     }
 }
 
@@ -178,7 +178,7 @@ pub(super) unsafe fn write_cached_field(
         };
         match target {
             FieldSiteTarget::Inferred(offset) => {
-                if instance_dict_bits(object) != 0 {
+                if crate::object::field_storage::dictionary_backed(object) {
                     return false;
                 }
                 let _ = object_field_set_ptr_raw(py, object, offset, val_bits);

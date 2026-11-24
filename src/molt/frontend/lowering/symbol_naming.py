@@ -12,7 +12,7 @@ import ast
 from molt import compiled_symbols
 from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend._types import CallableId
+from molt.frontend._types import CallableId, GeneratedCallableId
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_lexical_scope import function_contains_yield
 from molt.compiler_analysis.source_function_symbols import (
@@ -96,11 +96,15 @@ class SymbolNamingMixin(GeneratorMixinBase):
         *,
         kind: FunctionKind = FunctionKind.SYNC,
     ) -> str:
-        identity = CallableId(self.module_name, python_node_source_key(node))
+        definition = python_node_source_key(node)
+        identity = (
+            CallableId(self.module_name, definition)
+            if self.current_func_name == "molt_main"
+            else GeneratedCallableId(self.current_func_name, definition)
+        )
         reserved = self.reserved_func_symbols.get(identity)
         if (
             reserved is not None
-            and self.current_func_name == "molt_main"
             and reserved not in self.funcs_map
             and f"{reserved}_poll" not in self.funcs_map
         ):
