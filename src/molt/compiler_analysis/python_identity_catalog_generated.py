@@ -202,6 +202,7 @@ class PythonIdentity(IntFlag):
     BUILTIN_ZERODIVISIONERROR = 1 << 187
     BUILTIN_BUILD_CLASS = 1 << 188
     INTRINSIC_NAMESPACE_ENTRY_GET = 1 << 189
+    INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH = 1 << 191
 
 
 class PythonMember(IntFlag):
@@ -462,6 +463,7 @@ PUBLIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (
 INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
         'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
+        'molt_importlib_zip_archive_path': PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH,
         'molt_dataclasses_init_globals': PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS,
         'molt_namespace_entry_get': PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET,
         'molt_dataclasses_init': PythonIdentity.INTRINSIC_DATACLASSES_INIT,
@@ -502,6 +504,12 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
         int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
         int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
         int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO): PythonTargetProperty.SYS_VERSION_INFO,
+    }
+)
+
+INTRINSIC_NONE_WITHOUT_FEATURE: Final[Mapping[IdentityMask, str]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH): 'stdlib_archive',
     }
 )
 
@@ -582,6 +590,7 @@ INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS: Final[tuple[IdentityMask, ...]] = (
 
 ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_SYS_PLATFORM) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH) |
     int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS) |
     int(PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET) |
     int(PythonIdentity.INTRINSIC_DATACLASSES_INIT) |

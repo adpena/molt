@@ -345,6 +345,10 @@ class ModuleImportFlow:
         # conservative runtime anchor until that phase has an explicit event.
         return self.states_by_node.get(python_node_source_key(node), self.all_states)
 
+    def may_execute(self, node: ast.AST) -> bool:
+        """Whether the strict flow admits the site under any import context."""
+        return bool(self.states_for(node))
+
     def proven_unreachable(self, node: ast.AST) -> bool:
         """Whether a projection recorded this site's explicit absence.
 

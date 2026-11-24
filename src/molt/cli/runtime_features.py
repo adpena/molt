@@ -11,7 +11,16 @@ from molt._runtime_feature_gates import (
     target_os,
 )
 from molt.cli.compiler_metadata import _compiler_root
-from molt.compilation_target import ArtifactTarget, TargetKind
+from molt.compilation_target import (
+    ArtifactTarget,
+    Target,
+    TargetKind,
+    is_wasm_target,
+    resolve_artifact_target,
+)
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    INTRINSIC_NONE_WITHOUT_FEATURE,
+)
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -368,6 +377,29 @@ def runtime_fingerprint_features_for_profile(
                 "no-default-features",
             ]
         )
+    )
+
+
+def runtime_normal_none_intrinsics(target: Target, profile: str) -> int:
+    """Normal-result facts shared by every runtime this native build may link."""
+    if (
+        profile == AUTO_STDLIB_PROFILE
+        or target is TargetKind.MLIR
+        or is_wasm_target(target)
+    ):
+        return 0
+    # Source extensions are discovered later. Include every feature they
+    # might add, even when this program ultimately needs none of them.
+    requested = runtime_fingerprint_features_for_profile(
+        profile,
+        target=resolve_artifact_target(target),
+        extra_runtime_features=SOURCE_EXTENSION_RUNTIME_FEATURES,
+    )
+    enabled = runtime_enabled_cargo_features(requested)
+    return sum(
+        identity
+        for identity, feature in INTRINSIC_NONE_WITHOUT_FEATURE.items()
+        if feature not in enabled
     )
 
 

@@ -456,6 +456,8 @@ class PythonBindingFlowPolicy:
     # analysis, with no graph, keeps the conservative premise.
     frame_locals_writer: str | None = NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
     declaration_only: tuple[PythonSourceKey, ...] = ()
+    # Exact intrinsics whose only normal result on the linked runtime is None.
+    normal_none_intrinsics: IdentityMask = 0
 
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
@@ -496,6 +498,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             class_preparation=self.class_preparation,
             frame_locals_writer=self.frame_locals_writer,
             declaration_only=self.declaration_only,
+            normal_none_intrinsics=self.normal_none_intrinsics,
         )
 
 
@@ -3029,10 +3032,13 @@ class _DeferredJobState:
 
 @dataclass(frozen=True, slots=True)
 class _DeferredJobReads:
-    activation_groups: frozenset[frozenset[PythonSourceKey]]
+    activation_groups: tuple[frozenset[PythonSourceKey], ...]
+    foreign_names: frozenset[str]
+    empty_module_expiry: bool
     facts: tuple[_BindingFactAccess | None, ...]
     earlier_scope_writes: frozenset[int]
     state: _DeferredJobState | None
+    scope_end: int
     slot_end: int
     next_owner_token: int
     callback_slots: int
@@ -3045,6 +3051,8 @@ class _DeferredJobRecorder:
     def __init__(self, analyzer: _Analyzer) -> None:
         self.tables = analyzer.transfer.watch_tables()
         self.initializer_reads = analyzer._opaque_activation_reads.copy()
+        self.initializer_foreign_names = frozenset(analyzer._foreign_reads or ())
+        self.initializer_empty_expiry = analyzer._has_empty_module_expiry
         self.jobs: list[_DeferredJobReads] = []
 
     def run(self, analyzer: _Analyzer, job: _FunctionJob, state_id: int) -> None:
@@ -3065,24 +3073,42 @@ class _DeferredJobRecorder:
         )
         for table in self.tables:
             table.observing = True
-        groups: set[frozenset[PythonSourceKey]] = set()
+        groups: dict[frozenset[PythonSourceKey], None] = {}
         earlier_scope_writes: set[int] = set()
         analyzer._recorded_activation_groups = groups
+        prior_names = analyzer._foreign_reads
+        job_names: set[str] = set()
+        if prior_names is not None:
+            # A job owns the namespace reads behind its slot lookups, even
+            # when an earlier transfer already looked up the same slot.
+            analyzer._scope_slot_cache.clear()
+            analyzer._foreign_reads = job_names
+        prior_expiry = analyzer._has_empty_module_expiry
+        analyzer._has_empty_module_expiry = False
         analyzer._deferred_scope_writes = (scope_count, earlier_scope_writes)
         try:
             analyzer._analyze_function_job(job, state_id)
         finally:
             analyzer._recorded_activation_groups = None
             analyzer._deferred_scope_writes = None
+            analyzer._foreign_reads = prior_names
+            if prior_names is not None:
+                prior_names.update(job_names)
+            empty_module_expiry = analyzer._has_empty_module_expiry
+            analyzer._has_empty_module_expiry |= prior_expiry
             accesses = tuple(table.access for table in self.tables)
             for table in self.tables:
                 table.observing = False
                 table.access = None
-        # A replay may append only this job's lexical scope and local slots.
+        # A replay may own the function and its comprehension scopes in one interval.
         if (
             not groups
             or earlier_scope_writes
-            or len(analyzer.scopes) != scope_count + 1
+            or len(analyzer.scopes) <= scope_count
+            or any(
+                scope.kind != "comprehension"
+                for scope in analyzer.scopes[scope_count + 1 :]
+            )
             or analyzer._deferred_queue_generation != queue_generation
             or analyzer.callback_module_slot_mask != state.callback_module_slots
             or any(
@@ -3094,10 +3120,13 @@ class _DeferredJobRecorder:
             state = None
         self.jobs.append(
             _DeferredJobReads(
-                frozenset(groups),
+                tuple(groups),
+                frozenset(job_names),
+                empty_module_expiry,
                 accesses,
                 frozenset(earlier_scope_writes),
                 state,
+                len(analyzer.scopes),
                 len(analyzer.slot_names),
                 analyzer._next_owner_token,
                 analyzer.callback_slot_mask,
@@ -3138,7 +3167,9 @@ class _Analyzer:
         self._opaque_lexical_activations: dict[
             int, tuple[frozenset[PythonSourceKey], bool]
         ] = {}
-        self._recorded_activation_groups: set[frozenset[PythonSourceKey]] | None = None
+        self._recorded_activation_groups: (
+            dict[frozenset[PythonSourceKey], None] | None
+        ) = None
         self._foreign_universe = policy.foreign_namespace_universe
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
@@ -3805,7 +3836,7 @@ class _Analyzer:
             answer = not sources.isdisjoint(opaque)
             self._opaque_activation_reads[sources] = answer
         if self._recorded_activation_groups is not None:
-            self._recorded_activation_groups.add(sources)
+            self._recorded_activation_groups.setdefault(sources)
         return answer
 
     def _lexical_activation_is_opaque(self, scope: _Scope) -> bool:
@@ -3822,7 +3853,7 @@ class _Analyzer:
         else:
             group, answer = cached
             if self._recorded_activation_groups is not None:
-                self._recorded_activation_groups.add(group)
+                self._recorded_activation_groups.setdefault(group)
         return answer
 
     def _name_uses_activation_namespace(
@@ -4965,6 +4996,13 @@ class _Analyzer:
             # Preserve the acquisition's existing effects and all operand
             # lifetime rules. Only its successful result identity is known.
             effects |= UNKNOWN_EFFECTS
+        elif exact and callee & self.policy.normal_none_intrinsics:
+            # Knowing a normal result says nothing about evaluation: the
+            # provider may audit, raise, call Python, and retire its operands.
+            result_fact = StaticExpressionResult.scalar(None, evaluation_required=True)
+            result = result_fact.identities
+            effects |= UNKNOWN_EFFECTS
+            source_result_projected = True
         elif (
             (target_property := INTRINSIC_TARGET_PROPERTIES.get(callee)) is not None
             and not node.args
@@ -10150,9 +10188,13 @@ class _RecordedBindingTransfer:
     state_count: int
     telemetry: PythonBindingTelemetry
     initializer_reads: Mapping[frozenset[PythonSourceKey], bool]
+    initializer_foreign_names: frozenset[str]
+    initializer_empty_expiry: bool
     jobs: tuple[_DeferredJobReads, ...]
 
-    def revise(self, policy: PythonBindingFlowPolicy) -> _BindingAnalysis | None:
+    def revise(
+        self, policy: PythonBindingFlowPolicy, *, suffix_jobs: int | None
+    ) -> tuple[_BindingAnalysis, _RecordedBindingTransfer] | None:
         activation_sources = policy.opaque_activation_sources
         if (
             activation_sources is None
@@ -10176,7 +10218,11 @@ class _RecordedBindingTransfer:
             for index, record in enumerate(self.jobs)
             if any(differs(group) for group in record.activation_groups)
         ]
-        if not changed or any(self.jobs[index].state is None for index in changed):
+        if (
+            not changed
+            or (suffix_jobs is not None and len(changed) >= suffix_jobs)
+            or any(self.jobs[index].state is None for index in changed)
+        ):
             return None
         work = self.analyzer._fork_at_deferred_boundary()
         work.policy = policy
@@ -10185,14 +10231,31 @@ class _RecordedBindingTransfer:
             group: not group.isdisjoint(active)
             for group in work._opaque_activation_reads
         }
+        jobs = list(self.jobs)
         try:
             for index in changed:
-                self._refresh_job(work, index)
+                jobs[index] = self._refresh_job(work, index)
         except _BindingReplayRefused:
             return None
+        # Rebuild the module-wide witnesses from the actual initializer and
+        # job reads. Reversing a revision can remove a former dependency.
+        work._opaque_activation_reads = dict(self.initializer_reads)
+        for job in jobs:
+            for group in job.activation_groups:
+                work._opaque_activation_reads[group] = not group.isdisjoint(active)
+        if work._foreign_reads is not None:
+            work._foreign_reads = set(self.initializer_foreign_names)
+            for job in jobs:
+                work._foreign_reads.update(job.foreign_names)
+        work._has_empty_module_expiry = self.initializer_empty_expiry or any(
+            job.empty_module_expiry for job in jobs
+        )
+        # Projection reads module slots too. Cached lookups from the previous
+        # projection cannot supply those reads to this generation's witness.
+        work._scope_slot_cache.clear()
         result = work._project_analysis()
         # A refreshed result shares the unaffected transfer's state statistics.
-        return replace(
+        result = replace(
             result,
             facts=replace(
                 result.facts,
@@ -10201,13 +10264,15 @@ class _RecordedBindingTransfer:
             ),
         )
 
-    def _refresh_job(self, work: _Analyzer, index: int) -> None:
+        return result, replace(self, analyzer=work, jobs=tuple(jobs))
+
+    def _refresh_job(self, work: _Analyzer, index: int) -> _DeferredJobReads:
         record = self.jobs[index]
         state = record.state
         assert state is not None
         later = self.jobs[index + 1 :]
         if any(
-            scope_id <= state.scope_count
+            scope_id < record.scope_end
             for other in later
             for scope_id in other.earlier_scope_writes
         ):
@@ -10215,7 +10280,7 @@ class _RecordedBindingTransfer:
         for later_job in work.function_jobs[index + 1 :]:
             parent: _Scope | None = later_job.parent_scope
             while parent is not None:
-                if parent.scope_id == state.scope_count:
+                if state.scope_count <= parent.scope_id < record.scope_end:
                     raise _BindingReplayRefused
                 parent = parent.parent
 
@@ -10262,17 +10327,24 @@ class _RecordedBindingTransfer:
             table.observing = True
         leaf.states, entry = state.entry.open()
         leaf._active_module_states = (entry,)
+        groups: dict[frozenset[PythonSourceKey], None] = {}
+        leaf._recorded_activation_groups = groups
+        if leaf._foreign_reads is not None:
+            leaf._foreign_reads = set()
+        leaf._has_empty_module_expiry = False
         try:
             leaf._analyze_function_job(job, entry)
         finally:
             leaf._active_module_states = None
             leaf._deferred_scope_writes = None
+            leaf._recorded_activation_groups = None
+            accesses = tuple(table.access for table in watched)
             for table in watched:
                 table.observing = False
                 table.access = None
 
         if (
-            len(leaf.scopes) != state.scope_count + 1
+            len(leaf.scopes) != record.scope_end
             or leaf.slot_names != work.slot_names[: record.slot_end]
             or leaf.slot_owner_scope_ids != work.slot_owner_scope_ids[: record.slot_end]
             or leaf._next_owner_token != record.next_owner_token
@@ -10285,14 +10357,18 @@ class _RecordedBindingTransfer:
             or earlier_scope_writes
         ):
             raise _BindingReplayRefused
-        scope = leaf.scopes[-1]
-        old_scope = work.scopes[state.scope_count]
-        if (
-            scope.source != old_scope.source
-            or scope.kind != old_scope.kind
-            or scope.slots != old_scope.slots
-        ):
-            raise _BindingReplayRefused
+        refreshed_scopes = leaf.scopes[state.scope_count :]
+        for scope in refreshed_scopes:
+            original = work.scopes[scope.scope_id]
+            if (
+                scope.source != original.source
+                or scope.kind != original.kind
+                or scope.slots != original.slots
+                or scope.parent is None
+                or original.parent is None
+                or scope.parent.scope_id != original.parent.scope_id
+            ):
+                raise _BindingReplayRefused
 
         for table_index, (table, old, new) in enumerate(
             zip(work_tables, record.facts, watched, strict=True)
@@ -10321,16 +10397,21 @@ class _RecordedBindingTransfer:
                 else:
                     del table[key]
 
-        scope.parent = old_scope.parent
-        work.scopes[state.scope_count] = scope
+        for scope in refreshed_scopes:
+            assert scope.parent is not None
+            scope.parent = work.scopes[scope.parent.scope_id]
+            work.scopes[scope.scope_id] = scope
         for key, prior_scope in work._source_scopes.items():
-            if prior_scope is old_scope:
-                work._source_scopes[key] = scope
-        work._opaque_activation_reads.update(leaf._opaque_activation_reads)
-        if work._foreign_reads is not None and leaf._foreign_reads is not None:
-            work._foreign_reads.update(leaf._foreign_reads)
-        work._has_empty_module_expiry |= leaf._has_empty_module_expiry
+            if state.scope_count <= prior_scope.scope_id < record.scope_end:
+                work._source_scopes[key] = work.scopes[prior_scope.scope_id]
         work._module_import_flow_required |= leaf._module_import_flow_required
+        return replace(
+            record,
+            activation_groups=tuple(groups),
+            foreign_names=frozenset(leaf._foreign_reads or ()),
+            empty_module_expiry=leaf._has_empty_module_expiry,
+            facts=accesses,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -10551,12 +10632,7 @@ class _BindingRevisions:
             prior = self._recent.get(key, ())
             recorded = self._recorded.get(key)
             initializers = self._initializers.get(initializer_key, ())
-        if recorded is not None:
-            revised = recorded.revise(policy)
-            if revised is not None:
-                return revised
-        checkpoints: list[_BindingCheckpoint] = []
-        cursor = 0
+        accepted: _BindingCheckpoint | None = None
         for checkpoint in reversed(prior):
             prefix = checkpoint.prefix
             previous_arguments = prefix._activation_argument_values
@@ -10578,15 +10654,32 @@ class _BindingRevisions:
                 answer == (not owners.isdisjoint(active))
                 for owners, answer in prefix._opaque_activation_reads.items()
             ):
-                analyzer = prefix._fork_at_deferred_boundary()
-                analyzer.policy = policy
-                analyzer._opaque_activation_sources = active
-                analyzer._activation_argument_values = arguments.copy()
-                cursor = checkpoint.completed_jobs
-                checkpoints.extend(
-                    item for item in prior if item.completed_jobs <= cursor
-                )
+                accepted = checkpoint
                 break
+        if recorded is not None:
+            # Compare the recorded leaves with the newest proven prefix before
+            # either strategy forks an analyzer. Ties keep the contiguous suffix.
+            suffix_jobs = (
+                len(recorded.jobs) - accepted.completed_jobs
+                if accepted is not None
+                else None
+            )
+            revised = recorded.revise(policy, suffix_jobs=suffix_jobs)
+            if revised is not None:
+                result, refreshed = revised
+                with self._lock:
+                    if self._recorded.get(key) is recorded:
+                        self._recorded[key] = refreshed
+                return result
+        checkpoints: list[_BindingCheckpoint] = []
+        cursor = 0
+        if accepted is not None:
+            analyzer = accepted.prefix._fork_at_deferred_boundary()
+            analyzer.policy = policy
+            analyzer._opaque_activation_sources = active
+            analyzer._activation_argument_values = arguments.copy()
+            cursor = accepted.completed_jobs
+            checkpoints.extend(item for item in prior if item.completed_jobs <= cursor)
         else:
             for initializer in reversed(initializers):
                 rebased = initializer.revise(analyzer)
@@ -10686,6 +10779,8 @@ class _BindingRevisions:
                     result.facts.state_count,
                     result.facts.telemetry,
                     recorder.initializer_reads,
+                    recorder.initializer_foreign_names,
+                    recorder.initializer_empty_expiry,
                     tuple(recorder.jobs),
                 )
             if checkpoints:

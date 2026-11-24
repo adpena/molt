@@ -77,6 +77,7 @@ class IntrinsicCallable:
     attribute_read: tuple[int, str] | None = None
     native_initializer: str | None = None
     namespace_entry_read: tuple[int, int, int] | None = None
+    none_without_feature: str | None = None
 
 
 @dataclass(frozen=True)
@@ -471,6 +472,9 @@ def load_schema(
     rows = data["intrinsic_callable"]
     if not isinstance(rows, list) or not rows:
         raise SchemaError("intrinsic_callable must be a nonempty array of tables")
+    runtime_features = tomllib.loads(
+        (ROOT / "runtime/molt-runtime/Cargo.toml").read_text(encoding="utf-8")
+    )["features"]
     for row in rows:
         if not isinstance(row, dict) or set(row) - {"compiler_from"} not in (
             {"name", "identity", "target_property"},
@@ -478,6 +482,7 @@ def load_schema(
             {"name", "identity", "acquisition"},
             {"name", "identity", "attribute_read"},
             {"name", "identity", "namespace_entry_read"},
+            {"name", "identity", "none_without_feature"},
             {"name", "identity", "native_initializer"},
             {"name", "identity"},
         ):
@@ -514,6 +519,14 @@ def load_schema(
         producer = producers.get(name)
         if producer is None:
             raise SchemaError(f"intrinsic callable {name!r} has no manifest producer")
+        missing_feature = row.get("none_without_feature")
+        if "none_without_feature" in row and (
+            not isinstance(missing_feature, str)
+            or missing_feature not in runtime_features
+        ):
+            raise SchemaError(
+                "conditional normal result requires a runtime Cargo feature"
+            )
         attribute_read = row.get("attribute_read")
         if attribute_read is not None:
             if not isinstance(attribute_read, dict) or set(attribute_read) != {
@@ -621,6 +634,7 @@ def load_schema(
                 attribute_read,
                 native_initializer,
                 namespace_entry_read,
+                missing_feature,
             )
         )
     if used_properties != set(properties):
@@ -808,6 +822,16 @@ def render_python(schema: Schema) -> str:
             )
             for row in schema.intrinsic_callables
             if row.target_property is not None
+        ],
+    )
+    mapping(
+        "INTRINSIC_NONE_WITHOUT_FEATURE",
+        "IdentityMask",
+        "str",
+        [
+            (f"int(PythonIdentity.{row.identity})", repr(row.none_without_feature))
+            for row in schema.intrinsic_callables
+            if row.none_without_feature is not None
         ],
     )
     mapping(

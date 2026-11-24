@@ -525,7 +525,7 @@ def _collect_static_source_execution_requests(
 
     if isinstance(tree, ast.Module):
         for stmt in ast_digest_admission.module_setup_nodes:
-            if not import_flow.states_for(stmt):
+            if not import_flow.may_execute(stmt):
                 continue
             if isinstance(stmt, ast.Import):
                 for alias in stmt.names:
@@ -602,7 +602,7 @@ def _collect_static_source_execution_requests(
     # visible to calls nested in entry-module functions.
     if isinstance(tree, ast.Module):
         for stmt in ast_digest_admission.module_setup_nodes:
-            if not import_flow.states_for(stmt):
+            if not import_flow.may_execute(stmt):
                 continue
             assignment: tuple[ast.expr, ast.expr] | None = None
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
@@ -635,7 +635,7 @@ def _collect_static_source_execution_requests(
     ):
         if not isinstance(node, ast.Call):
             continue
-        if not import_flow.states_for(node):
+        if not import_flow.may_execute(node):
             continue
         target = qualified_name(node.func)
         request_name: str | None
@@ -1861,7 +1861,7 @@ def _collect_imports(
         for node in ast.walk(stmt):
             if not isinstance(node, ast.Call):
                 continue
-            if not import_flow.states_for(node):
+            if not import_flow.may_execute(node):
                 continue
             callable = _static_import_callable(node, allow_possible=True)
             if callable is None:
@@ -2030,7 +2030,7 @@ def _collect_imports(
             _star_modules.extend(resolved)
 
     def _collect_import_call(node: ast.Call) -> None:
-        if not import_flow.states_for(node):
+        if not import_flow.may_execute(node):
             return
         _record_helper_call_imports(node)
         # Graph custody includes every admitted import alternative after a
@@ -2127,7 +2127,7 @@ def _collect_imports(
         # Full depth describes source permission and protocol requirements;
         # execution belongs to the source-demand owner. Inventory alone cannot
         # admit a dormant import, cache write, or source execution.
-        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
+        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.may_execute(node):
             return
         record_protocol_use(node)
         if _dynamic_relative_import_discovery is None:
@@ -2153,7 +2153,7 @@ def _collect_imports(
         node: ast.AST,
     ) -> None:
         nonlocal needs_string_templatelib, needs_typing, uses_runtime_import_protocol
-        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
+        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.may_execute(node):
             return
         held_cache_store = False
         native_receiver_origins = empty_receiver_origins

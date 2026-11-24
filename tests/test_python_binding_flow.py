@@ -7065,3 +7065,126 @@ def test_initializer_revision_matches_fresh_binding_facts(
         replace(result, state_count=fresh.state_count, telemetry=fresh.telemetry)
         == fresh
     )
+
+
+@pytest.mark.parametrize(
+    ("expression", "isolated"),
+    [
+        ("[[len(item) for item in row] for row in values]", True),
+        ("[(len(row), lambda: row) for row in values]", False),
+    ],
+)
+def test_opacity_revision_preserves_comprehension_scope_ownership(
+    expression: str, isolated: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        f"def changed(values): return {expression}\n"
+        "def sibling(): return len(())\n"
+        "def final(): return len([1])\n"
+    )
+    tree = ast.parse(source)
+    changed = python_node_source_key(tree.body[0])
+    policy = python_binding_flow.PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    revised = replace(policy, opaque_activation_sources=(changed,))
+    jobs = []
+    analyze_job = python_binding_flow._Analyzer._analyze_function_job
+
+    def record(
+        owner: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        outer_state: int,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        analyze_job(owner, job, outer_state)
+
+    monkeypatch.setattr(python_binding_flow._Analyzer, "_analyze_function_job", record)
+    monkeypatch.setattr(
+        python_binding_flow, "_CORE_CACHE", python_binding_flow._BindingCache()
+    )
+    with python_binding_flow.python_binding_revision_scope():
+        python_binding_flow.analyze_python_source_bindings(source, policy=policy)
+        jobs.clear()
+        actual = python_binding_flow.analyze_python_source_bindings(
+            source, policy=revised
+        )
+        if isolated:
+            assert jobs == [changed]
+        else:
+            assert python_node_source_key(tree.body[1]) in jobs
+            assert any(key[-1] == "Lambda" for key in jobs)
+
+    monkeypatch.setattr(
+        python_binding_flow, "_CORE_CACHE", python_binding_flow._BindingCache()
+    )
+    fresh = python_binding_flow.analyze_python_source_bindings(source, policy=revised)
+    assert (
+        replace(actual, state_count=fresh.state_count, telemetry=fresh.telemetry)
+        == fresh
+    )
+
+
+def test_successive_opacity_revisions_match_each_fresh_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_source_keys import python_source_digest
+
+    source = (
+        "def first(): return helper(sibling)\n"
+        "def other(): return sorted(())\n"
+        "def helper(*args): return 1\n"
+        "def sibling(): pass\n"
+        "if False:\n    def projected_only(): pass\n"
+    )
+    tree = ast.parse(source)
+    digest = python_source_digest(source)
+    first, other, helper = map(python_node_source_key, tree.body[:3])
+    base = python_binding_flow.PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset(
+            {"helper", "sibling", "sorted", "projected_only"}
+        ),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    ).flow_policy()
+    inputs = ((), (first,), (first, other), (other,), ())
+    policies = [replace(base, opaque_activation_sources=active) for active in inputs]
+    fresh = [
+        python_binding_flow._Analyzer(policy, digest).analyze(tree)
+        for policy in policies
+    ]
+    jobs = []
+    analyze_job = python_binding_flow._Analyzer._analyze_function_job
+
+    def record(
+        owner: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        state: int,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        analyze_job(owner, job, state)
+
+    monkeypatch.setattr(python_binding_flow._Analyzer, "_analyze_function_job", record)
+    with python_binding_flow.python_binding_revision_scope():
+        for index, (policy, cold) in enumerate(zip(policies, fresh, strict=True)):
+            jobs.clear()
+            actual = python_binding_flow._Analyzer(policy, digest).analyze(tree)
+            if index in (1, 3):
+                assert jobs == [first]
+            if index == 2:
+                assert jobs == [other]
+            assert (
+                replace(
+                    actual,
+                    facts=replace(
+                        actual.facts,
+                        state_count=cold.facts.state_count,
+                        telemetry=cold.facts.telemetry,
+                    ),
+                )
+                == cold
+            )
