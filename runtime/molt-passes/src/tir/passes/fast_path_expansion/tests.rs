@@ -377,6 +377,28 @@ fn a_cold_module_chunk_calls_the_runtime_instead_of_inlining_fast_paths() {
 }
 
 #[test]
+fn cold_call_legalization_honors_the_compiled_target_without_warming_the_block() {
+    let (mut func, result) = guarded_call(false);
+    func.name = "py.app.__molt_module_chunk_1".into();
+    let entry = func.entry_block;
+    let sum = func.fresh_value();
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block
+        .ops
+        .push(TirOp::new(OpCode::Add, vec![result, ValueId(1)], vec![sum]));
+    block.terminator = Terminator::Return { values: vec![sum] };
+
+    let linkage = targets(1, false);
+    assert_eq!(super::run(&mut func, &linkage).values_changed, 0);
+    func.blocks.get_mut(&entry).unwrap().ops[0].set_proven_target(true);
+    assert_eq!(super::run(&mut func, &linkage).values_changed, 1);
+    assert_eq!(ops(&func, OpCode::DirectCall).len(), 1);
+    assert_eq!(ops(&func, OpCode::Add).len(), 1);
+    assert!(ops(&func, OpCode::Call).is_empty());
+    assert_valid(&func);
+}
+
+#[test]
 fn the_verifier_ties_runtime_entries_to_call_runtime() {
     let (mut func, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
     run(&mut func);

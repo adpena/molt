@@ -152,8 +152,23 @@ pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {
     op.callee.filter(|_| has_direct_role(op))
 }
 
-fn is_guarded_call(op: &TirOp) -> bool {
-    op.opcode == OpCode::Call && op.origin == Some(crate::OpKind::CallGuarded)
+/// The dispatch contract of a captured-callable operation before legalization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuardedDispatch {
+    /// Admit the candidate at runtime or dispatch through the captured value.
+    Speculative,
+    /// Enter the compiled declaration. A surviving call is a lowering error.
+    Required,
+}
+
+pub fn guarded_dispatch(op: &TirOp) -> Option<GuardedDispatch> {
+    (op.opcode == OpCode::Call && op.origin == Some(crate::OpKind::CallGuarded)).then(|| {
+        if op.proven_target() {
+            GuardedDispatch::Required
+        } else {
+            GuardedDispatch::Speculative
+        }
+    })
 }
 
 /// The declaration and argument layout validated at a terminal call site.
@@ -165,7 +180,7 @@ pub fn final_call_arguments(
     use crate::ir::CompiledCallArguments;
     let callee = op.callee?;
     let count = op.operands.len();
-    let arguments = if is_guarded_call(op) {
+    let arguments = if guarded_dispatch(op).is_some() {
         CompiledCallArguments::Guarded(count)
     } else if op.opcode == OpCode::DirectCall {
         CompiledCallArguments::Direct(count)
@@ -201,7 +216,7 @@ pub fn static_call(op: &TirOp) -> Option<StaticCall<'_>> {
             arguments: &op.operands,
         });
     }
-    if !is_guarded_call(op) || !op.has_valid_shape() || !op.proven_target() {
+    if guarded_dispatch(op) != Some(GuardedDispatch::Required) || !op.has_valid_shape() {
         return None;
     }
     let (&callable, arguments) = op.operands.split_first()?;
