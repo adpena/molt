@@ -1806,38 +1806,6 @@ for (const api of [require(lifecyclePath), browser.MoltRuntimeLifecycle]) {
     )
 
 
-def test_node_runner_trace_milestones_cover_linked_and_direct_boundaries() -> None:
-    source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
-    for name, end_name, stages in (
-        ("runDirectLink", "runLinked", ("runtime_instantiate", "app_instantiate")),
-        ("runLinked", "runMain", ("instantiate",)),
-    ):
-        body = source[
-            source.index(f"const {name} = async () => {{") : source.index(
-                f"const {end_name} = async () => {{"
-            )
-        ]
-        prefix = "direct" if name == "runDirectLink" else "linked"
-        marks = [
-            f"traceMark('{prefix}:{stage}:{edge}');"
-            for stage in (*stages, "bootstrap", "execution", "guest")
-            for edge in ("enter", "completed")
-        ]
-        # Execution owns guest entry, pending checks and leave. A guest return
-        # alone must not be mistaken for a completed execution boundary.
-        marks.remove(f"traceMark('{prefix}:execution:completed');")
-        marks.append(f"traceMark('{prefix}:execution:completed');")
-        offsets = [body.index(mark) for mark in marks]
-        assert offsets == sorted(offsets)
-        assert body.index(f"traceMark('{prefix}:guest:enter');") < body.index(
-            "molt_main(context);"
-        )
-        assert body.index("molt_main(context);") < body.index(
-            f"traceMark('{prefix}:guest:completed');"
-        )
-        assert body.count("WebAssembly.instantiate(") == len(stages)
-
-
 def test_shared_runtime_lifetime_custody_and_failure_ordering(tmp_path: Path) -> None:
     _run_node(
         "const {createRuntimeLifetime, combinedError} = require("

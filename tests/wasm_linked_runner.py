@@ -375,6 +375,38 @@ def run_cpython_reference(
     )
 
 
+def assert_node_startup_boundary_trace(trace: Path, *, split_runtime: bool) -> None:
+    if split_runtime:
+        mode = "direct"
+        instantiation = ("runtime_instantiate", "app_instantiate")
+    else:
+        mode = "linked"
+        instantiation = ("instantiate",)
+    stages = (*instantiation, "bootstrap", "execution", "guest")
+    expected = [
+        f"{mode}:{stage}:{edge}"
+        for stage in (*instantiation, "bootstrap")
+        for edge in ("enter", "completed")
+    ]
+    # Guest return precedes completion of the execution lease that owns it.
+    expected.extend(
+        f"{mode}:{event}"
+        for event in (
+            "execution:enter",
+            "guest:enter",
+            "guest:completed",
+            "execution:completed",
+        )
+    )
+    boundaries = tuple(f"{mode}:{stage}:" for stage in stages)
+    observed = [
+        event
+        for event in trace.read_text(encoding="utf-8").splitlines()
+        if event.startswith(boundaries)
+    ]
+    assert observed == expected
+
+
 def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
