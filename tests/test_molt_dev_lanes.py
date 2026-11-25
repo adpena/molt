@@ -2595,6 +2595,29 @@ def test_old_in_lane_runner_repins_after_unlock_and_retires_without_gates(
     assert not paths.plan.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires unlinking the process cwd")
+def test_queue_records_a_publication_after_its_launch_directory_is_removed(
+    family: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import molt_dev_queue as queue
+
+    repo = family / "molt-src"
+    head = molt_dev.Git(repo).head_sha()
+    paths = queue.queue_paths(repo)
+    request = queue.enqueue(paths, head=head, worktree=repo, branch=None)
+
+    launch_directory = tmp_path / "launch-directory"
+    launch_directory.mkdir()
+    monkeypatch.chdir(launch_directory)
+    launch_directory.rmdir()
+    assert queue._after_landing(repo, [request], _args(family), paths, head)
+    assert Path.cwd() == repo.resolve()
+    result = queue.read_result(paths, request.id)
+    assert result is not None
+    assert result["status"] == "landed"
+    assert result["landed"] == head
+
+
 def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
     """The ledger's edges table orders lanes; a departure needs a recorded reason."""
 
