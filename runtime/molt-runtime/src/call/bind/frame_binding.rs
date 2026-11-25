@@ -509,7 +509,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 if let Some(bound_args) =
                     builtin_args::bind_positional_builtin_call(_py, func_bits, func_ptr, &view)
                 {
-                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
+                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_ref());
                 }
                 if exception_pending(_py) {
                     return MoltObject::none().bits();

@@ -5,6 +5,7 @@ use crate::BuiltinExc;
 use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{dict_update_apply, dict_update_set_in_place};
+use std::borrow::Cow;
 
 /// Builtin binders read a borrowed view of the call's argument vector; the
 /// vector keeps ownership and releases after the call.
@@ -565,12 +566,12 @@ unsafe fn bind_builtin_object_constructor(
     Some(vec![receiver])
 }
 
-pub(super) unsafe fn bind_positional_builtin_call(
+pub(super) unsafe fn bind_positional_builtin_call<'a>(
     _py: &PyToken<'_>,
     func_bits: u64,
     func_ptr: *mut u8,
-    args: &CallArgumentView<'_>,
-) -> Option<Vec<u64>> {
+    args: &CallArgumentView<'a>,
+) -> Option<Cow<'a, [u64]>> {
     unsafe {
         if !args.kw_names.is_empty() {
             // A native callable whose parameters are all positional-only
@@ -604,7 +605,6 @@ pub(super) unsafe fn bind_positional_builtin_call(
             );
         }
 
-        let mut out = args.pos.to_vec();
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
@@ -613,16 +613,16 @@ pub(super) unsafe fn bind_positional_builtin_call(
             );
             return None;
         };
-        if out.len() > arity {
+        if args.pos.len() > arity {
             return raise_exception::<_>(
                 _py,
                 BuiltinExc::TypeError,
                 "too many positional arguments",
             );
         }
-        let missing = arity - out.len();
+        let missing = arity - args.pos.len();
         if missing == 0 {
-            return Some(out);
+            return Some(Cow::Borrowed(args.pos));
         }
         // Consult __defaults__ tuple stored on the function.
         // This handles user-defined functions with keyword default arguments
@@ -645,8 +645,10 @@ pub(super) unsafe fn bind_positional_builtin_call(
                 // The defaults tuple covers the last n_defaults
                 // parameters.  We need the last `missing` entries.
                 let start = n_defaults - missing;
-                out.extend(defaults.iter().take(n_defaults).skip(start).copied());
-                return Some(out);
+                let mut out = Vec::with_capacity(arity);
+                out.extend_from_slice(args.pos);
+                out.extend(defaults.iter().skip(start).copied());
+                return Some(Cow::Owned(out));
             }
         }
 
