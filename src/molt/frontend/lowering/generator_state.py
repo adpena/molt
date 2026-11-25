@@ -435,7 +435,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
         self._gpu_body_origin_candidates: dict[int, dict[str, Any]] = {}
-        self.local_intrinsic_wrappers: set[str] = set()
+        self.local_intrinsic_wrappers: dict[str, tuple[str, ...]] = {}
         # Track aliases for ``import typing as <alias>`` so that
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._reset_async_scope_state()
