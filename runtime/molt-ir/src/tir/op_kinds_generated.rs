@@ -24176,7 +24176,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
 }
 
 #[inline]
-pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
+pub const fn copy_kind_forwards_python_value_table(kind: OpKind) -> bool {
     match kind {
         OpKind::MAnd
         | OpKind::Abs

@@ -247,6 +247,18 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 Some(_) => Some(""),
                 None => None,
             };
+            if let Some(flag) = op
+                .attrs
+                .get(crate::class_identity::STABLE_INSTANCE_CLASS_ATTR)
+                && (op.opcode != OpCode::ObjectNewBound || flag != &AttrValue::Bool(true))
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_index,
+                    "stable_instance_class must be true and carried by an allocation",
+                ));
+                continue;
+            }
             match original_kind.or(kind) {
                 Some(kind) => {
                     if let Err(error) =

@@ -68,6 +68,34 @@ pub(super) struct Inputs<'a> {
 }
 
 impl Inputs<'_> {
+    /// A shared entry executes one body. A proven positional argument can
+    /// still determine an observed result without creating a new context.
+    fn forwarded_result(
+        &self,
+        callee: usize,
+        site: &Site,
+        facts: &HashMap<ValueId, TirType>,
+    ) -> Option<TirType> {
+        if self.specializable[callee]
+            || !site.result_demanded
+            || !returns_value(&self.module.functions[callee])
+            || self.module.functions[callee].is_codegen_partition()
+        {
+            return None;
+        }
+        if !site
+            .parameter_arguments()
+            .any(|(_, value)| facts.get(&value).is_some_and(|ty| *ty != TirType::DynBox))
+        {
+            return None;
+        }
+        let parameter = self.exact_plan(callee).forwarded_return_parameter()?;
+        let (_, argument) = site
+            .parameter_arguments()
+            .find(|(position, _)| *position == parameter)?;
+        facts.get(&argument).cloned()
+    }
+
     fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {
         self.exact_plans[body].get_or_init(|| ExactScalarPlan::new(&self.module.functions[body]))
     }
@@ -191,7 +219,9 @@ impl Analysis {
                     next.push(target);
                 }
                 self.readers[target.0].insert(id);
-                let ret = self.contexts[target.0].ret.clone();
+                let ret = inputs
+                    .forwarded_result(callee, site, &facts)
+                    .unwrap_or_else(|| self.contexts[target.0].ret.clone());
                 let context = &mut self.contexts[id.0];
                 context.targets[position] = Some(target);
                 let result = join_return(&context.results[position], &ret);

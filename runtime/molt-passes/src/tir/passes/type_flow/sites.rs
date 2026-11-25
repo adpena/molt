@@ -28,6 +28,8 @@ pub(super) struct Site {
     pub(super) callee: FunctionId,
     first_parameter: usize,
     args: Vec<ValueId>,
+    pub(super) result: ValueId,
+    pub(super) result_demanded: bool,
 }
 
 impl Site {
@@ -143,6 +145,8 @@ pub(super) fn site_of(
         callee: call.callee,
         first_parameter,
         args: call.arguments.to_vec(),
+        result: op.results[0],
+        result_demanded: false,
     })
 }
 

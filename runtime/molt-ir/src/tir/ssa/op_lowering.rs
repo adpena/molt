@@ -205,6 +205,12 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.class_definition {
             attrs.insert("class_definition".into(), AttrValue::Str(v.clone()));
         }
+        if op.stable_instance_class {
+            attrs.insert(
+                crate::class_identity::STABLE_INSTANCE_CLASS_ATTR.into(),
+                AttrValue::Bool(true),
+            );
+        }
         if let Some(slots) = &op.exact_field_slots {
             attrs.insert(
                 crate::class_identity::EXACT_FIELD_SLOTS_ATTR.into(),
@@ -287,9 +293,9 @@ impl<'a> SsaContext<'a> {
         // An allocation's result is exactly an instance of the class
         // statement it names (I6, C1): the only producer of `Class(id)`.
         if op.kind == crate::OpKind::ObjectNewBound
-            && let Some(symbol) = op.class_definition.as_deref()
+            && let Some(id) = crate::class_identity::stable_allocation_class(&attrs)
         {
-            let class = TirType::Class(crate::ClassId::of_definition(symbol));
+            let class = TirType::Class(id);
             for &result in &results {
                 self.value_types.insert(result, class.clone());
             }

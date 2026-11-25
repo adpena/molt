@@ -50,6 +50,8 @@ pub(super) fn annotate_lowered_op(
     if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("class_definition") {
         opir.class_definition = Some(symbol.clone());
     }
+    opir.stable_instance_class =
+        molt_ir::class_identity::stable_allocation_class(&tir_op.attrs).is_some();
     // An allocation's proven instance plan rides with it across every
     // relift (HF-202).
     if let Some(&AttrValue::Int(words)) =

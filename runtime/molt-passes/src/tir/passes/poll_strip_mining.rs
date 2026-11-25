@@ -51,7 +51,7 @@ use super::check_exception_elim::classify::RaiseFacts;
 use super::counted_loop::loop_guard_path;
 use super::frame_home_placement::is_home_store;
 use super::scev::{ScalarEvolution, ScevResult};
-use super::value_identity::{no_heap_alias_source, scalar_value_source};
+use super::value_identity::{forwarded_python_value_source, no_heap_alias_source};
 
 /// Iterations between polls. At a few instructions per call-free iteration
 /// the added service latency is microseconds.
@@ -387,7 +387,10 @@ impl Context {
     /// The scalar value `value` forwards, through copies and publications.
     fn canonical(&self, func: &TirFunction, mut value: ValueId) -> ValueId {
         for _ in 0..=self.definitions.len() {
-            match self.defining_op(func, value).and_then(scalar_value_source) {
+            match self
+                .defining_op(func, value)
+                .and_then(forwarded_python_value_source)
+            {
                 Some(source) => value = source,
                 None => break,
             }
@@ -407,7 +410,7 @@ impl Context {
             if let Some(index) = args.iter().position(|arg| arg.id == value) {
                 return Some(index);
             }
-            value = scalar_value_source(self.defining_op(func, value)?)?;
+            value = forwarded_python_value_source(self.defining_op(func, value)?)?;
         }
         None
     }

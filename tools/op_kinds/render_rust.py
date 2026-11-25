@@ -188,7 +188,7 @@ def _render_rs_unformatted(data: dict) -> str:
         ),
         ("copy_kind_is_explicit_no_heap_move_table", "classifier_no_heap_move"),
         ("copy_kind_is_binding_view_table", "classifier_binding_view"),
-        ("copy_kind_forwards_scalar_value_table", "classifier_scalar_value_forward"),
+        ("copy_kind_forwards_python_value_table", "classifier_python_value_forward"),
     ):
         out.append(_wire.boolean(data, name, data.get(table, [])))
 

@@ -152,6 +152,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "OBJECT_NEW_BOUND requires a class statement that stamps its identity"
                 )
             _onb_op["class_definition"] = _onb_definition
+            if self._instance_class_writer() is None:
+                _onb_op["stable_instance_class"] = True
             _onb_size = _onb_md.get("class_size_bytes")
             if isinstance(_onb_size, int) and _onb_size > 0:
                 _onb_op["value"] = _onb_size

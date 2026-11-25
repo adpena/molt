@@ -64,12 +64,7 @@ pub(super) fn attr_result_type_override<T>(
         TypeRefineAttrResultTypeRule::None => None,
         // The allocation's class statement (I6, C1).
         TypeRefineAttrResultTypeRule::ObjectClassDefinition => {
-            match attrs.get("class_definition") {
-                Some(AttrValue::Str(symbol)) => {
-                    Some(TirType::Class(molt_ir::ClassId::of_definition(symbol)))
-                }
-                _ => None,
-            }
+            molt_ir::class_identity::stable_allocation_class(attrs).map(TirType::Class)
         }
         TypeRefineAttrResultTypeRule::CallReturnType => {
             attrs.get("return_type").and_then(|v| match v {
