@@ -411,6 +411,7 @@ def _record_parallel_worker_result(
     result: Mapping[str, Any],
     submitted_ns: int,
     received_ns: int,
+    in_worker: bool,
 ) -> None:
     timings = cast(Mapping[str, Any], result.get("timings", {}))
     worker_meta = cast(Mapping[str, Any], result.get("worker", {}))
@@ -422,12 +423,12 @@ def _record_parallel_worker_result(
         exec_ms = exec_from_ns
     layer_state.results[module_name] = dict(result)
     layer_state.worker_timings_by_module[module_name] = {
-        "mode": "parallel",
+        "mode": "parallel" if in_worker else "serial",
         "queue_ms": _duration_ms_from_ns(submitted_ns, worker_started_ns),
         "wait_ms": _duration_ms_from_ns(worker_finished_ns, received_ns),
         "exec_ms": round(max(0.0, exec_ms), 6),
         "roundtrip_ms": _duration_ms_from_ns(submitted_ns, received_ns),
-        "worker_pid": worker_meta.get("pid"),
+        "worker_pid": worker_meta.get("pid") if in_worker else None,
     }
 
 

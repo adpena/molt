@@ -7,12 +7,14 @@ import functools
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from itertools import batched
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
     Collection,
+    Iterator,
     Mapping,
     Sequence,
     cast,
@@ -62,11 +64,14 @@ if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
 
 
+_SubmitFrontendWork = Callable[[dict[str, Any]], Callable[[], dict[str, object]]]
+
+
 @dataclass(frozen=True)
 class _ParallelWorkerSubmission:
     module_name: str
     submitted_ns: int
-    future: Any
+    result: Callable[[], dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -287,32 +292,34 @@ def _run_frontend_parallel_enabled_layers(
     frontend_parallel_layers: list[dict[str, Any]],
 ) -> _CliFailure | None:
     parallel_pool_usable = True
-    executor = ProcessPoolExecutor(
-        max_workers=frontend_parallel_config.workers,
-        mp_context=compiler_process.worker_context(),
-        initializer=compiler_process.worker_initializer,
-        initargs=(_input_report.worker_log_dir(),),
-    )
+    executor: ProcessPoolExecutor | None = None
+
+    def submit(payload: dict[str, Any]) -> Callable[[], dict[str, object]]:
+        nonlocal executor
+        if executor is None:
+            executor = ProcessPoolExecutor(
+                max_workers=frontend_parallel_config.workers,
+                mp_context=compiler_process.worker_context(),
+                initializer=compiler_process.worker_initializer,
+                initargs=(_input_report.worker_log_dir(),),
+            )
+        return executor.submit(
+            _frontend_worker._frontend_lower_module_worker, payload
+        ).result
+
     try:
         for layer_index, layer in enumerate(module_layers):
             layer_started_ns = time.time_ns()
-            # A broken pool from the previous layer is recreated here exactly
-            # once per break, so the very next layer runs in parallel again. This
-            # replaces the old behavior that latched parallelism off for the
-            # entire remainder of the build after one worker failure.
+            # The next layer only replaces a broken pool if it needs workers.
             if not parallel_pool_usable:
+                assert executor is not None
                 executor.shutdown(wait=False, cancel_futures=True)
-                executor = ProcessPoolExecutor(
-                    max_workers=frontend_parallel_config.workers,
-                    mp_context=compiler_process.worker_context(),
-                    initializer=compiler_process.worker_initializer,
-                    initargs=(_input_report.worker_log_dir(),),
-                )
+                executor = None
                 parallel_pool_usable = True
             layer_run_result, layer_error = _run_frontend_layer(
                 layer,
                 layer_index=layer_index,
-                executor=executor,
+                submit=submit,
                 execution_context=execution_context,
                 runtime_hooks=runtime_hooks,
                 frontend_parallel_config=frontend_parallel_config,
@@ -342,7 +349,8 @@ def _run_frontend_parallel_enabled_layers(
                 fallback_reason=layer_state.fallback_reason,
             )
     finally:
-        executor.shutdown(wait=True)
+        if executor is not None:
+            executor.shutdown(wait=True)
     return None
 
 
@@ -425,7 +433,7 @@ def _run_frontend_parallel_layer_batches(
     candidates: Sequence[str],
     *,
     layer_workers: int,
-    executor: Any,
+    submit: _SubmitFrontendWork,
     known_classes_snapshot_source: Mapping[ClassId, ClassModel],
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
@@ -462,15 +470,15 @@ def _run_frontend_parallel_layer_batches(
         module_dep_closures=module_dep_closures,
         known_classes_snapshot=known_classes_snapshot,
     )
-    for batch_start in range(0, len(candidates), layer_workers):
-        batch = list(candidates[batch_start : batch_start + layer_workers])
-        worker_submissions: list[_ParallelWorkerSubmission] = []
-        try:
+
+    def admit_misses() -> Iterator[tuple[str, dict[str, Any]]]:
+        # Probe before scheduling. Cache hits must not occupy the slots that
+        # could otherwise bring independent misses together in one worker wave.
+        for batch in batched(candidates, layer_workers):
             (
                 cached_results,
                 worker_payloads,
                 context_digest_by_module,
-                batch_error,
             ) = _frontend_worker._prepare_frontend_parallel_batch(
                 batch,
                 module_graph=module_graph,
@@ -500,32 +508,41 @@ def _run_frontend_parallel_layer_batches(
                 target_sys_platform=target_sys_platform,
                 frontend_phase_timeout=frontend_phase_timeout,
             )
+            layer_state.context_digests.update(context_digest_by_module)
+            for module_name, cached_result in cached_results.items():
+                _frontend_parallel._record_parallel_cached_module_result(
+                    layer_state,
+                    module_name,
+                    cached_result,
+                )
+            yield from worker_payloads
+
+    batches = batched(admit_misses(), layer_workers)
+    while True:
+        try:
+            batch = next(batches, ())
         except PythonSourceChangedError as exc:
             return layer_state, str(exc), None, False
-        if batch_error is not None:
-            return layer_state, batch_error, None, False
-        layer_state.context_digests.update(context_digest_by_module)
-        for module_name, cached_result in cached_results.items():
-            _frontend_parallel._record_parallel_cached_module_result(
-                layer_state,
-                module_name,
-                cached_result,
-            )
-        for module_name, payload in worker_payloads:
-            worker_submissions.append(
-                _ParallelWorkerSubmission(
-                    module_name=module_name,
-                    submitted_ns=time.time_ns(),
-                    future=executor.submit(
-                        _frontend_worker._frontend_lower_module_worker, payload
-                    ),
+        if not batch:
+            break
+        use_workers = len(batch) > 1
+        submissions: list[_ParallelWorkerSubmission] = []
+        for module_name, payload in batch:
+            submitted_ns = time.time_ns()
+            get_result = (
+                submit(payload)
+                if use_workers
+                else functools.partial(
+                    _frontend_worker._frontend_lower_module_worker, payload
                 )
             )
-        for submission in worker_submissions:
+            submissions.append(
+                _ParallelWorkerSubmission(module_name, submitted_ns, get_result)
+            )
+        for submission in submissions:
             module_name = submission.module_name
-            future = submission.future
             try:
-                result = future.result()
+                result = submission.result()
                 received_ns = time.time_ns()
                 # Persist THE MOMENT this module's lowering succeeds, not at the
                 # end of the layer (observed_inputs.md invariant 4: a killed /
@@ -545,8 +562,8 @@ def _run_frontend_parallel_layer_batches(
                             source_lease=module_source_catalog.lease_for(
                                 module_name, module_graph[module_name]
                             ),
-                            worker_mode="parallel",
-                            context_digest=context_digest_by_module.get(module_name),
+                            worker_mode="parallel" if use_workers else "serial",
+                            context_digest=layer_state.context_digests.get(module_name),
                             result=result,
                         )
                     )
@@ -556,6 +573,7 @@ def _run_frontend_parallel_layer_batches(
                     result=result,
                     submitted_ns=submission.submitted_ns,
                     received_ns=received_ns,
+                    in_worker=use_workers,
                 )
             except PythonSourceChangedError as exc:
                 return layer_state, str(exc), None, False
@@ -807,7 +825,7 @@ def _run_frontend_layer(
     layer: Sequence[str],
     *,
     layer_index: int,
-    executor: Any | None,
+    submit: _SubmitFrontendWork,
     execution_context: _FrontendLayerExecutionContext,
     runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_config: _FrontendParallelConfig,
@@ -827,12 +845,11 @@ def _run_frontend_layer(
         scc_serial_modules=execution_context.scc_serial_modules,
     )
     if layer_plan.mode == "parallel":
-        assert executor is not None
         layer_state, batch_error, layer_failure_detail, pool_broken = (
             _run_frontend_parallel_layer_batches(
                 layer_plan.candidates,
                 layer_workers=layer_plan.workers,
-                executor=executor,
+                submit=submit,
                 known_classes_snapshot_source=execution_context.known_classes,
                 module_graph=execution_context.module_graph,
                 module_source_catalog=execution_context.module_source_catalog,

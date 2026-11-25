@@ -23,7 +23,7 @@ import pytest
 
 from molt.cli import frontend_execution as FE
 from molt.cli import frontend_worker as FW
-from molt.cli.models import _ModuleGraphMetadata
+from molt.cli.models import _FrontendParallelLayerState, _ModuleGraphMetadata
 from molt.cli.module_source import _build_module_source_catalog
 from tests.source_record_test_support import source_records
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
@@ -51,23 +51,18 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _clear_path_caches()
 
 
-class _ImmediateFuture:
-    def __init__(self, fn: Callable[..., Any], *args: Any) -> None:
-        self._fn = fn
-        self._args = args
+def _run_batch(
+    project_root: Path,
+    module_graph: dict[str, Path],
+    *,
+    layer_workers: int | None = None,
+    worker_submissions: list[str] | None = None,
+) -> tuple[_FrontendParallelLayerState, str | None, str | None, bool]:
+    def submit(payload: dict[str, Any]) -> Callable[[], dict[str, object]]:
+        if worker_submissions is not None:
+            worker_submissions.append(payload["module_name"])
+        return lambda: FW._frontend_lower_module_worker(payload)
 
-    def result(self) -> Any:
-        return self._fn(*self._args)
-
-
-class _SyncExecutor:
-    """Runs each submitted worker in-process (no ProcessPool spawn / flake)."""
-
-    def submit(self, fn: Callable[..., Any], *args: Any) -> _ImmediateFuture:
-        return _ImmediateFuture(fn, *args)
-
-
-def _run_batch(project_root: Path, module_graph: dict[str, Path]):
     names = sorted(module_graph)
     metadata = _ModuleGraphMetadata(
         logical_source_path_by_module={n: str(module_graph[n]) for n in names},
@@ -81,8 +76,8 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
     )
     return FE._run_frontend_parallel_layer_batches(
         names,
-        layer_workers=len(names),
-        executor=_SyncExecutor(),
+        layer_workers=layer_workers or len(names),
+        submit=submit,
         known_classes_snapshot_source={},
         module_graph=module_graph,
         module_source_catalog=_build_module_source_catalog(module_graph),
@@ -226,3 +221,28 @@ def test_changed_worker_generation_is_terminal_and_never_persisted(
     assert broken is False
     assert "good" not in state.results
     assert source_records("module-lowering") == {}
+
+
+def test_independent_misses_share_worker_wave_across_hit_windows(
+    tmp_path: Path,
+) -> None:
+    paths = {name: tmp_path / f"{name}.py" for name in ("a", "b", "c", "d")}
+    for index, path in enumerate(paths.values()):
+        path.write_text(f"VALUE = {index}\n", encoding="utf-8")
+    cold, error, detail, broken = _run_batch(tmp_path, paths, layer_workers=2)
+    assert error is detail is None and not broken
+
+    paths["a"].write_text("VALUE = 10\n", encoding="utf-8")
+    paths["c"].write_text("VALUE = 20\n", encoding="utf-8")
+    submitted: list[str] = []
+    edit, error, detail, broken = _run_batch(
+        tmp_path, paths, layer_workers=2, worker_submissions=submitted
+    )
+
+    assert error is detail is None and not broken
+    assert submitted == ["a", "c"]
+    for name in ("b", "d"):
+        assert edit.results[name]["functions"] == cold.results[name]["functions"]
+        assert edit.worker_timings_by_module[name]["mode"] == "parallel_cache_hit"
+    for name in submitted:
+        assert edit.results[name]["functions"] != cold.results[name]["functions"]
