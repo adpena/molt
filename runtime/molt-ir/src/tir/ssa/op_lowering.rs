@@ -211,6 +211,12 @@ impl<'a> SsaContext<'a> {
                 AttrValue::Bool(true),
             );
         }
+        if let Some(method) = &op.exact_method {
+            attrs.insert(
+                crate::class_identity::ExactMethod::ATTR.into(),
+                method.encode(),
+            );
+        }
         if let Some(slots) = &op.exact_field_slots {
             attrs.insert(
                 crate::class_identity::EXACT_FIELD_SLOTS_ATTR.into(),

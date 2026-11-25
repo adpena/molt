@@ -687,6 +687,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.direct_shape && op.kind != crate::OpKind::FuncNew {
         return Err(format!("op `{}` cannot carry direct_shape", op.kind));
     }
+    if let Some(method) = &op.exact_method {
+        method.validate(Some(op.kind), op.value)?;
+        if op.task_kind.is_some() {
+            return Err("a task factory cannot publish an exact method".into());
+        }
+    }
     if op.release_plan.is_some() && op.kind != crate::OpKind::ObjectNewBound {
         return Err(format!("op `{}` cannot carry release_plan", op.kind));
     }

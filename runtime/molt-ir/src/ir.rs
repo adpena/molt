@@ -720,6 +720,9 @@ pub struct OpIR {
     /// field load or store (`exact_receiver_fields`). No other kind carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact_field_slots: Option<Vec<(String, i64)>>,
+    /// Ordinary lookup on this exact class selects the function being created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_method: Option<crate::class_identity::ExactMethod>,
     /// Generated target-admission requirement bits for conservative acquisition
     /// provenance that is not an executable runtime/link symbol.
     #[serde(default)]
@@ -891,6 +894,7 @@ impl OpIR {
             class_definition: Default::default(),
             stable_instance_class: false,
             exact_field_slots: Default::default(),
+            exact_method: Default::default(),
             runtime_requirement_bits: Default::default(),
             passes_execution_context: Default::default(),
             runtime: None,
@@ -2409,6 +2413,7 @@ mod json_parse_tests {
             class_definition: Some("class:module:Owner".to_string()),
             exact_field_slots: None,
             stable_instance_class: false,
+            exact_method: None,
             runtime_requirement_bits: 3,
             passes_execution_context: true,
             proven_target: true,

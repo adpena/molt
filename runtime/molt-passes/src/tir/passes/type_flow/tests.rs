@@ -963,3 +963,138 @@ fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
         vec![expected.clone(), expected]
     );
 }
+
+#[test]
+fn exact_method_uses_the_original_load_pair_and_checks_physical_binding() {
+    use crate::tir::lower_from_simple::lower_to_tir;
+    use crate::tir::lower_to_simple::lower_to_simple_ir;
+    use molt_ir::{FunctionIR, OpKind, ParameterCustody};
+    use serde_json::json;
+
+    let definition = "class:m:Reader";
+    let class = TirType::Class(molt_ir::ClassId::of_definition(definition));
+    let make = |name: &str, params: &[&str], ops| {
+        lower_to_tir(&FunctionIR {
+            name: name.into(),
+            params: params.iter().map(|p| p.to_string()).collect(),
+            ops: serde_json::from_value(ops).unwrap(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ..Default::default()
+        })
+    };
+    let mut factory = make(
+        "factory",
+        &["cls", "cells"],
+        json!([
+            {"kind":"func_new_closure", "value":2, "args":["cells"], "out":"fn",
+             "exact_method":[definition, "read"]},
+            {"kind":"class_set_definition", "args":["cls"], "class_definition":definition},
+            {"kind":"ret","args":["fn"]}
+        ]),
+    );
+    let creation = factory
+        .blocks
+        .values_mut()
+        .flat_map(|b| &mut b.ops)
+        .find(|op| op.origin == Some(OpKind::FuncNewClosure))
+        .unwrap();
+    creation.callee = Some(FunctionId(1));
+    let wire = lower_to_simple_ir(&factory);
+    let publication = wire
+        .iter()
+        .find(|op| op.kind == OpKind::FuncNewClosure)
+        .unwrap();
+    assert_eq!(publication.callee, Some(FunctionId(1)));
+    let binding = publication.exact_method.as_ref().unwrap();
+    assert_eq!((&*binding.0, &*binding.1), (definition, "read"));
+
+    let mut target = make(
+        "reader_body",
+        &[molt_ir::MOLT_CLOSURE_PARAM_NAME, "self", "arg"],
+        json!([{"kind":"ret","args":["arg"]}]),
+    );
+    target.set_parameter_custody(&[
+        ParameterCustody::Borrowed,
+        ParameterCustody::Transferred,
+        ParameterCustody::Transferred,
+    ]);
+    let mut caller = make(
+        "reader",
+        &["receiver", "other", "callback"],
+        json!([
+            {"kind":"load_method","args":["receiver"],"s_value":"read","var":"f","out":"s"},
+            {"kind":"load_method","args":["other"],"s_value":"read","var":"g","out":"t"},
+            {"kind":"call_indirect","args":["callback"],"out":"arg"},
+            {"kind":"call_loaded_method","args":["f","s","arg"],"out":"chosen","argument_custody":["transferred","transferred","transferred"]},
+            {"kind":"call_loaded_method","args":["g","t","arg"],"out":"dynamic","argument_custody":["transferred","transferred","transferred"]},
+            {"kind":"call_loaded_method","args":["f","t","arg"],"out":"mixed","argument_custody":["transferred","transferred","transferred"]},
+            {"kind":"call_loaded_method","args":["f","s"],"out":"short","argument_custody":["transferred","transferred"]},
+            {"kind":"ret","args":["chosen"]}
+        ]),
+    );
+    caller.exact_param_types = vec![class, TirType::DynBox, TirType::DynBox];
+    let module = TirModule::with_own_table("m", vec![factory, target, caller.clone()]);
+    let entries = |m: &TirModule| exact_receiver_fields::exact_members(m, &m.body_index());
+    let ops = &caller.blocks[&caller.entry_block].ops;
+    let call_index = ops
+        .iter()
+        .position(|op| op.opcode == OpCode::CallLoadedMethod)
+        .unwrap();
+    let loaded = ops[call_index].clone();
+    let mut selected = caller.clone();
+    assert_eq!(
+        exact_receiver_fields::run(&mut selected, &entries(&module)),
+        2
+    );
+    let rewritten = &selected.blocks[&selected.entry_block].ops;
+    let mut prefix = ops[..call_index].to_vec();
+    prefix
+        .iter_mut()
+        .find(|op| op.opcode == OpCode::LoadMethod)
+        .unwrap()
+        .set_proven_target(true);
+    assert_eq!(
+        serde_json::to_value(&rewritten[..call_index]).unwrap(),
+        serde_json::to_value(&prefix).unwrap()
+    );
+    let call = &rewritten[call_index];
+    assert_eq!(call.operands, loaded.operands);
+    assert_eq!(call.argument_custody(), loaded.argument_custody());
+    assert_eq!(
+        molt_ir::tir::call_targets::static_call(call)
+            .unwrap()
+            .callee,
+        FunctionId(1)
+    );
+    assert_eq!(
+        serde_json::to_value(&rewritten[call_index + 1..]).unwrap(),
+        serde_json::to_value(&ops[call_index + 1..]).unwrap()
+    );
+    // Remove the intentionally crossed dynamic pair before whole-body verification.
+    let block = selected.blocks.get_mut(&selected.entry_block).unwrap();
+    block.ops.remove(call_index + 2);
+    molt_ir::tir::verify::verify_function(&selected).unwrap();
+    for duplicate in [false, true] {
+        let mut inconsistent = module.clone();
+        if duplicate {
+            let block = inconsistent.functions[0]
+                .blocks
+                .values_mut()
+                .find(|b| b.ops.iter().any(|op| op.callee.is_some()))
+                .unwrap();
+            let row = block
+                .ops
+                .iter()
+                .find(|op| op.callee.is_some())
+                .unwrap()
+                .clone();
+            block.ops.push(row);
+        } else {
+            inconsistent.functions[1].set_parameter_custody(&[ParameterCustody::Borrowed; 3]);
+        }
+        assert_eq!(
+            exact_receiver_fields::run(&mut caller.clone(), &entries(&inconsistent)),
+            0
+        );
+    }
+}

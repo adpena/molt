@@ -515,6 +515,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     kind="FUNC_NEW_CLOSURE",
                     args=[method_symbol, len(params), closure_val],
                     result=func_val,
+                    metadata={"method_definition": (defining_class, item.name)},
                 )
             )
         else:
@@ -523,6 +524,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     kind="FUNC_NEW",
                     args=[method_symbol, len(params)],
                     result=func_val,
+                    metadata={"method_definition": (defining_class, item.name)},
                 )
             )
         name_layout = self._collect_callable_name_layout(

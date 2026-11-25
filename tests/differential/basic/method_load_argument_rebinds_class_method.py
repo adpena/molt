@@ -93,3 +93,22 @@ try:
     object().evaluate(argument())
 except AttributeError:
     print("missing")
+
+# A successful ordinary selection owns self across argument evaluation.
+class Reader:
+    def __init__(self, value):
+        self.value = value
+
+    def read(self, arg):
+        print(self.value, arg)
+
+
+def identity(value):
+    return value
+
+
+def discard(item):
+    identity(item).read((item := None))
+
+
+discard(Reader(47))

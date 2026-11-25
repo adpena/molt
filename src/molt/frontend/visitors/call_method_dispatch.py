@@ -207,22 +207,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             self._emit_guarded_setattr(receiver, name, value, class_id)
         return True
 
-    def _try_emit_user_method_static_call(
-        self,
-        node: ast.Call,
-        attr_node: ast.Attribute,
-        receiver: MoltValue,
-        obj_name: str | None,
-    ) -> MoltValue | None:
-        """Select the ordinary method of an already evaluated exact instance.
-
-        The allocation's value carries the same proof as a local holding it.
-        A constructor through a replaceable binding, a custom __new__, or a
-        return annotation alone supplies no such proof.
-        """
-        class_id = self._exact_class_for_value(receiver, obj_name, fields=True)
-        if class_id is None:
-            return None
+    def _exact_positional_method(
+        self, class_id: ClassId, method_name: str
+    ) -> Member | None:
+        """Plain synchronous function selected by ordinary lookup on an exact instance."""
         view = self.classes.get(class_id)
         if view is None:
             return None
@@ -231,9 +219,8 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         # binding.
         if not namespace_closed(view) or not view.binding_proven:
             return None
-        if view.dataclass is not None:
+        if view.dataclass is not None or view.layout.field(method_name) is not None:
             return None
-        method_name = attr_node.attr
         member, owner_class = self._resolve_member(class_id, method_name)
         if member is None or owner_class is None:
             return None
@@ -259,12 +246,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
                 or defines(owner_view, "__getattr__")
             ):
                 return None
-        if node.keywords:
-            return None
-        for arg in node.args:
-            if isinstance(arg, ast.Starred):
-                return None
-        if shape.defaults or shape.kwonly or len(node.args) != shape.params - 1:
+        if shape.defaults or shape.kwonly or shape.params < 1:
             return None
         method_symbol = member.symbol
         if method_symbol is None or method_symbol not in self.func_symbol_names:
@@ -280,6 +262,36 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         # (`static_module_cells._proven_call_reason` holds the same rule).
         if not self._entry_adopts_symbol(method_symbol):
             return None
+
+        return member
+
+    def _try_emit_user_method_static_call(
+        self,
+        node: ast.Call,
+        attr_node: ast.Attribute,
+        receiver: MoltValue,
+        obj_name: str | None,
+    ) -> MoltValue | None:
+        """Select the ordinary method of an already evaluated exact instance.
+
+        The allocation's value carries the same proof as a local holding it.
+        A constructor through a replaceable binding, a custom __new__, or a
+        return annotation alone supplies no such proof.
+        """
+        class_id = self._exact_class_for_value(receiver, obj_name, fields=True)
+        if class_id is None:
+            return None
+        member = self._exact_positional_method(class_id, attr_node.attr)
+        if member is None or member.shape is None or member.symbol is None:
+            return None
+        if (
+            node.keywords
+            or any(isinstance(arg, ast.Starred) for arg in node.args)
+            or len(node.args) != member.shape.params - 1
+        ):
+            return None
+        method_name = attr_node.attr
+        method_symbol = member.symbol
 
         # Capture the method before an argument can change the receiver's
         # class. This selection itself runs no Python code and cannot fail.

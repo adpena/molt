@@ -739,6 +739,23 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if op.kind == FrontendKinds.FUNC_NEW_CLOSURE:
                 entry["args"] = [op.args[2].name]
             metadata = op.metadata or {}
+            # Only the final class model can certify which of the body's
+            # declarations ordinary lookup selects. Attach that proof to the
+            # function creation whose callee is relocated by the decoder.
+            method_definition = metadata.get("method_definition")
+            if method_definition is not None:
+                owner, name = method_definition
+                member = self._exact_positional_method(owner, name)
+                definition = self._class_layout_definition(owner)
+                if (
+                    definition is not None
+                    and member is not None
+                    and member.symbol == func_name
+                    and member.shape is not None
+                    and member.shape.params == arity
+                    and self._instance_class_writer() is None
+                ):
+                    entry["exact_method"] = (definition, name)
             if metadata.get("direct_shape") is True:
                 entry["direct_shape"] = True
             if "task_kind" in metadata or "task_closure_size" in metadata:

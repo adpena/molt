@@ -208,6 +208,10 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 }
             }
 
+            if let Err(error) = crate::class_identity::ExactMethod::from_tir(op) {
+                errors.push(VerifyError::op(*bid, op_index, error));
+                continue;
+            }
             let original_kind = op.origin;
             let kind = if op.opcode == super::ops::OpCode::Copy
                 || (op.opcode == super::ops::OpCode::Call
@@ -875,6 +879,18 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
         }
     }
 
+    // Ordinary lookup of a proven function returns two owned Python
+    // objects. Its second word is the receiver captured at lookup, even if
+    // the original home changes during argument evaluation. A generic load
+    // or a super lookup may still produce the sentinel.
+    let may_be_null = |value: &ValueId| {
+        loaded.contains(value)
+            && !matches!(origins[1].get(value),
+            Some(PairOrigin::Load(block, i)) if {
+                let load = &func.blocks[block].ops[*i];
+                load.opcode == OpCode::LoadMethod && load.proven_target()
+            })
+    };
     for (bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
             if op.opcode == OpCode::DecRef || dominators::is_exception_transfer_edge(op.opcode) {
@@ -937,7 +953,7 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
                 op.operands.clone()
             };
             for operand in observed {
-                if loaded.contains(&operand) {
+                if may_be_null(&operand) {
                     errors.push(VerifyError::op(
                         *bid,
                         op_idx,
@@ -947,7 +963,7 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
             }
         }
         if let Some(value) = block_terminator_condition(&block.terminator)
-            && loaded.contains(&value)
+            && may_be_null(&value)
         {
             errors.push(VerifyError::block(
                 *bid,
@@ -956,7 +972,7 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
         }
         if let Terminator::Return { values } = &block.terminator {
             for value in values {
-                if loaded.contains(value) {
+                if may_be_null(value) {
                     errors.push(VerifyError::block(
                         *bid,
                         format!("return observes self_or_null {value}"),
@@ -1559,6 +1575,15 @@ mod tests {
             block.terminator = terminator;
             func
         };
+        for opcode in [OpCode::LoadMethod, OpCode::LoadSuperMethod] {
+            let mut func = build(&Shape::Returned);
+            let load = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
+            load.opcode = opcode;
+            load.set_proven_target(true);
+            let mut errors = Vec::new();
+            verify_loaded_method_pairs(&func, &mut errors);
+            assert_eq!(errors.is_empty(), opcode == OpCode::LoadMethod);
+        }
         for (shape, expected) in [
             (Shape::Direct, None),
             (Shape::Prefix, None),
