@@ -11,6 +11,9 @@ import pytest
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli import python_source_closure as graph
 from molt.cli.python_import_resolution import (
+    LocalPythonImportAnalysis,
+    LocalPythonModuleResolver,
+    LocalPythonModuleSource,
     PythonImportPolicy,
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -2250,27 +2253,30 @@ def test_namespace_premise_fixpoint_reuses_every_cached_round(
 def test_distinct_operation_queries_share_bytes_but_keep_exact_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
 ) -> None:
-    left, right, shared, only_left, only_right = (
+    left, right, shared, dependency, only_left, only_right = (
         tmp_path / name
         for name in (
             "left.py",
             "right.py",
             "shared.py",
+            "dependency.py",
             "only_left.py",
             "only_right.py",
         )
     )
     left.write_bytes(b"import shared\nimport only_left\n")
     right.write_bytes(b"import shared\nimport only_right\n")
-    shared.write_bytes(b"VALUE = 'shared'\n")
+    shared_source = b"import dependency\nVALUE = 'shared'\n"
+    shared.write_bytes(shared_source)
+    dependency.write_bytes(b"VALUE = 42\n")
     only_left.write_bytes(b"VALUE = 'left'\n")
     only_right.write_bytes(b"VALUE = 'right'\n")
     expected = {
         left: local_python_import_closure(tmp_path, (left,)),
         right: local_python_import_closure(tmp_path, (right,)),
     }
-    assert set(expected[left].paths) == {left, shared, only_left}
-    assert set(expected[right].paths) == {right, shared, only_right}
+    assert set(expected[left].paths) == {left, shared, dependency, only_left}
+    assert set(expected[right].paths) == {right, shared, dependency, only_right}
     captures = []
     capture = graph.LocalPythonModuleResolver.capture_source
 
@@ -2279,6 +2285,20 @@ def test_distinct_operation_queries_share_bytes_but_keep_exact_receipts(
         return capture(resolver, path)
 
     monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", observe)
+    shared_projections = []
+    resolve = graph.resolve_local_import_requests
+
+    def observe_projection(
+        analysis: LocalPythonImportAnalysis,
+        resolver: LocalPythonModuleResolver,
+        policy: PythonImportPolicy,
+    ) -> set[LocalPythonModuleSource]:
+        sources = resolve(analysis, resolver, policy)
+        if LocalPythonModuleSource("dependency", dependency) in sources:
+            shared_projections.append(sources)
+        return sources
+
+    monkeypatch.setattr(graph, "resolve_local_import_requests", observe_projection)
     seeds = (right, left) if reverse else (left, right)
     with graph.local_python_import_graph_transaction():
         for seed in seeds:
@@ -2286,12 +2306,13 @@ def test_distinct_operation_queries_share_bytes_but_keep_exact_receipts(
             assert actual == expected[seed]
             assert (
                 actual.source_sha256[shared]
-                == hashlib.sha256(b"VALUE = 'shared'\n").hexdigest()
+                == hashlib.sha256(shared_source).hexdigest()
             )
             with graph.local_python_import_graph_transaction():
                 assert local_python_import_closure(tmp_path, (seed,)) is actual
-    assert set(captures) == {left, right, shared, only_left, only_right}
-    assert len(captures) == 5
+    assert set(captures) == {left, right, shared, dependency, only_left, only_right}
+    assert len(captures) == 6
+    assert shared_projections == [{LocalPythonModuleSource("dependency", dependency)}]
 
 
 def test_operation_inventory_is_shared_across_seeds_and_premise_rounds(

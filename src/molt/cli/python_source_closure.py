@@ -97,6 +97,30 @@ class LocalPythonSourceClosure:
         )
 
 
+@dataclass(slots=True)
+class _AdmittedImportProjection:
+    """One decoded variant and its edges in the owning operation's topology."""
+
+    # Keep the payload alive while its object identity is used as a key.
+    payload: object
+    analysis: LocalPythonImportAnalysis
+    writes: tuple[PythonNamespaceWrite, ...]
+    _edges: dict[PythonImportPolicy, frozenset[LocalPythonModuleSource]] = field(
+        default_factory=dict
+    )
+
+    def dependencies(
+        self, resolver: LocalPythonModuleResolver, policy: PythonImportPolicy
+    ) -> frozenset[LocalPythonModuleSource]:
+        edges = self._edges.get(policy)
+        if edges is None:
+            edges = frozenset(
+                resolve_local_import_requests(self.analysis, resolver, policy)
+            )
+            self._edges[policy] = edges
+        return edges
+
+
 @dataclass(frozen=True)
 class _CoveredSourceDomain:
     paths: frozenset[Path]
@@ -124,6 +148,7 @@ class _GraphDomain:
         default_factory=dict
     )
     receipts: dict[_GraphQuery, LocalPythonSourceClosure] = field(default_factory=dict)
+    admitted: dict[int, _AdmittedImportProjection] = field(default_factory=dict)
 
     def capture(self, path: Path) -> PythonSourceSnapshot:
         if path not in self.snapshots:
@@ -426,9 +451,10 @@ def _cached_analysis(
     source_digest: str,
     contract_digest: str,
     analysis_digest: str,
+    admitted: dict[int, _AdmittedImportProjection],
     *,
     reads_namespace_premise: bool,
-) -> tuple[LocalPythonImportAnalysis, tuple[PythonNamespaceWrite, ...]] | None:
+) -> _AdmittedImportProjection | None:
     if (
         not isinstance(value, dict)
         or value.get("source_sha256") != source_digest
@@ -437,6 +463,9 @@ def _cached_analysis(
         or value.get("reads_namespace_premise") is not reads_namespace_premise
     ):
         return None
+    cached = admitted.get(id(value))
+    if cached is not None:
+        return cached
     writes = _cached_namespace_writes(value.get("namespace_writes"))
     if writes is None:
         return None
@@ -520,7 +549,8 @@ def _cached_analysis(
                 column,
             )
         )
-    return (
+    projection = _AdmittedImportProjection(
+        value,
         LocalPythonImportAnalysis(
             tuple(requests[: len(rows)]),
             tuple(unresolved),
@@ -530,6 +560,8 @@ def _cached_analysis(
         ),
         writes,
     )
+    admitted[id(value)] = projection
+    return projection
 
 
 def _read_python_import_manifest(
@@ -770,10 +802,9 @@ def local_python_import_closure(
 
     def walk(
         graph_writes: PythonGraphNamespaceWrites,
-    ) -> tuple[set[LocalPythonModuleSource], set[Path], str]:
+    ) -> tuple[set[LocalPythonModuleSource], bool]:
         """Reach the graph under one namespace premise."""
-        covered_sources: set[Path] = set()
-        topology_digest = ""
+        needs_inventory = False
         pending = list(seed_sources)
         visited: set[LocalPythonModuleSource] = set()
         while pending:
@@ -806,6 +837,7 @@ def local_python_import_closure(
                     snapshot.sha256,
                     contract_digest,
                     analysis_digest,
+                    domain.admitted,
                     reads_namespace_premise=False,
                 )
                 premise = None
@@ -822,12 +854,10 @@ def local_python_import_closure(
                         snapshot.sha256,
                         contract_digest,
                         analysis_digest,
+                        domain.admitted,
                         reads_namespace_premise=True,
                     )
-                analysis_missed = cached is None
-                if cached is not None:
-                    analysis, writes = cached
-                else:
+                if cached is None:
                     # Share captured bytes without retaining the analysis AST
                     # (or decoded text) in the walk's byte-identity owner.
                     parsed = PythonSourceSnapshot(snapshot.path, snapshot.content)
@@ -848,44 +878,30 @@ def local_python_import_closure(
                             target_python=_local_import_binding_policy().target_python,
                         ).foreign_writes
                     del parsed
-                writes_by_source[module_source] = writes
-                # Reapply the contract even on a cache hit; accepted unresolved
-                # sites are retained, never silently converted into a complete
-                # analysis.
-                analysis.validate_dynamic_contract(
-                    source, policy, expected_dynamic_imports
-                )
-                if analysis_missed:
-                    # A validated hit already owns its serialized storage.
                     # Rebuild only misses, merging aliases without mutating
-                    # cached_entries.
+                    # other variants or publishing rows before the query closes.
                     variants = dict(variants)
                     result_key = (
                         policy_digest
                         if analysis.reads_namespace_premise
                         else lexical_key
                     )
-                    variants[result_key] = {
+                    payload = {
                         "source_sha256": snapshot.sha256,
                         "dynamic_contract_sha256": contract_digest,
                         "analysis_authority_sha256": analysis_digest,
                         **_analysis_payload(analysis, writes),
                     }
+                    variants[result_key] = payload
                     next_entries[cache_key] = variants
-                dependencies = resolve_local_import_requests(
-                    analysis,
-                    resolver,
-                    policy,
+                    cached = _AdmittedImportProjection(payload, analysis, writes)
+                    domain.admitted[id(payload)] = cached
+                writes_by_source[module_source] = cached.writes
+                cached.analysis.validate_dynamic_contract(
+                    source, policy, expected_dynamic_imports
                 )
-                if analysis.relative_source_obligations and not topology_digest:
-                    # Inventory members are byte dependencies, not executable
-                    # graph requests. Complete coverage requires no recursive
-                    # AST analysis of these speculative owners. Ordinary reached
-                    # sources still follow their graph and validate all exact
-                    # manifest obligations.
-                    covered = domain.inventory(policy)
-                    covered_sources.update(covered.paths)
-                    topology_digest = covered.topology_digest
+                dependencies = cached.dependencies(resolver, policy)
+                needs_inventory |= bool(cached.analysis.relative_source_obligations)
             except ValueError as exc:
                 raise ValueError(
                     f"cannot derive Python tooling import closure for {source}: {exc}"
@@ -893,7 +909,7 @@ def local_python_import_closure(
             for dependency in dependencies:
                 if dependency not in visited:
                     pending.append(dependency)
-        return visited, covered_sources, topology_digest
+        return visited, needs_inventory
 
     # Spec 0216 admits only named namespace writes, so the reached graph's
     # summaries bound what a callback can rebind. Start from no named write and
@@ -901,7 +917,7 @@ def local_python_import_closure(
     # only add names, so the premise grows monotonically to its fixpoint.
     graph_writes = NO_GRAPH_NAMESPACE_WRITES
     while True:
-        visited, covered_sources, topology_digest = walk(graph_writes)
+        visited, needs_inventory = walk(graph_writes)
         found = graph_python_namespace_writes(
             (
                 bind_namespace_writer(write, module_source.name)
@@ -915,17 +931,22 @@ def local_python_import_closure(
         if found == graph_writes:
             break
         graph_writes = found
-    resolver.import_topology.validate()
     reached = {module_source.path for module_source in visited}
+    topology_digest = ""
+    if needs_inventory:
+        # The converged graph decides coverage. Speculative owners contribute
+        # exact bytes without entering the analysis or dependency worklist.
+        covered = domain.inventory(policy)
+        reached.update(covered.paths)
+        topology_digest = covered.topology_digest
+    resolver.import_topology.validate()
     if domain.cache_pruned or next_entries != domain.persisted_entries:
         _write_graph_cache(root, next_entries)
     _remember_process_graph_entries(root, next_entries)
     domain.entries = next_entries
     domain.persisted_entries = next_entries
     domain.cache_pruned = False
-    content_by_path = {
-        path: snapshots[path].content for path in reached | covered_sources
-    }
+    content_by_path = {path: snapshots[path].content for path in reached}
     if manifest is not None:
         content_by_path[manifest[0]] = manifest[1]
     paths = tuple(sorted(content_by_path, key=lambda path: path.as_posix()))
