@@ -464,17 +464,15 @@ def resolve_explicit_tool_command(
     return (str(path), *argv[1:])
 
 
-def _capture_executable_content(
-    path: Path,
-    *,
-    label: str,
-) -> tuple[Path, StableRegularFileIdentity, bytes]:
-    """Capture executable digest and header together, including entrypoint fences."""
+@contextmanager
+def _open_file_entrypoint(
+    path: Path, *, label: str
+) -> Generator[tuple[Path, StableRegularFileHandle]]:
+    """Hold the entrypoint and its resolved regular file through consumption."""
     entrypoint, resolved = _executable_paths(path, label=label)
     before_entry = _stat_identity(entrypoint.lstat())
     with open_stable_regular_file(resolved, label=label) as opened:
-        identity = stable_regular_file_handle_identity(opened, label=label)
-        header = opened.stream.read(4)
+        yield entrypoint, opened
         final_entrypoint, final_resolved = _executable_paths(entrypoint, label=label)
         if (
             final_entrypoint != entrypoint
@@ -484,6 +482,17 @@ def _capture_executable_content(
             raise StableRegularFileChangedError(
                 f"{label} entrypoint changed during capture: {entrypoint}"
             )
+
+
+def _capture_executable_content(
+    path: Path,
+    *,
+    label: str,
+) -> tuple[Path, StableRegularFileIdentity, bytes]:
+    """Capture executable digest and header together, including entrypoint fences."""
+    with _open_file_entrypoint(path, label=label) as (entrypoint, opened):
+        identity = stable_regular_file_handle_identity(opened, label=label)
+        header = opened.stream.read(4)
     return entrypoint, identity, header
 
 
@@ -552,7 +561,17 @@ def _sha256_stream(stream: BinaryIO, *, max_bytes: int) -> str:
 def stable_file_sha256(path: Path, *, label: str) -> str:
     """Hash a regular file while proving its pathname and open handle stayed stable."""
 
-    return _stable_file_content(path, label=label)[3]
+    lexical = path.expanduser().absolute()
+    try:
+        metadata = lexical.lstat()
+    except OSError as exc:
+        raise StableRegularFileError(f"{label} is unavailable: {lexical}") from exc
+    if metadata_is_link_like(metadata):
+        with _open_file_entrypoint(lexical, label=label) as (_, opened):
+            return _sha256_stream(opened.stream, max_bytes=opened.stat.st_size)
+    return stable_regular_file_identity(
+        lexical, label=label, expected_path_stat=metadata
+    ).sha256
 
 
 def executable_content_identity(path: Path, *, label: str) -> dict[str, str | int]:

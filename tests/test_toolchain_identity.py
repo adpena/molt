@@ -632,6 +632,46 @@ def test_content_consumers_reject_write_restore_during_hash(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("link_kind", ["leaf", "parent"])
+def test_data_digest_follows_an_alias_and_refuses_retargeting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_kind: str
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "data").write_bytes(b"selected")
+    (second / "data").write_bytes(b"redirect")
+    alias = tmp_path / "alias"
+    is_directory = link_kind == "parent"
+    old_target = first if is_directory else first / "data"
+    new_target = second if is_directory else second / "data"
+    try:
+        alias.symlink_to(old_target, target_is_directory=is_directory)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    selected = alias / "data" if is_directory else alias
+    assert (
+        identity.stable_file_sha256(selected, label="data")
+        == hashlib.sha256(b"selected").hexdigest()
+    )
+    original = identity._sha256_stream
+
+    def retarget(stream: BinaryIO, *, max_bytes: int) -> str:
+        digest = original(stream, max_bytes=max_bytes)
+        if is_directory and os.name == "nt":
+            alias.rmdir()
+        else:
+            alias.unlink()
+        alias.symlink_to(new_target, target_is_directory=is_directory)
+        return digest
+
+    monkeypatch.setattr(
+        identity, "_sha256_stream", current_thread_only(retarget, original)
+    )
+    with pytest.raises(ValueError, match="changed"):
+        identity.stable_file_sha256(selected, label="data")
+
+
 def test_executable_digest_and_header_share_one_owned_descriptor(tmp_path, monkeypatch):
     path = tmp_path / "tool.exe"
     data = b"MZ00payload"
