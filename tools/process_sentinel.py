@@ -717,12 +717,15 @@ def skipped_protected_process_groups(
     observed_pgids: set[int] | None = None,
     known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
     within_pids: Collection[int] | None = None,
+    host_control_plane_only: bool = False,
 ) -> list[ProcessGroup]:
     """Molt-matched process groups that protection kept out of the kill set.
 
     ``within_pids`` bounds the match to one sentinel's candidate scope: a
     current-tree sentinel can skip only the groups of its own tree, so it
     reads argv for that tree and its ancestry alone. None matches the host.
+    A prior group observation can independently match a protected group.
+    Host diagnostics require a control-plane member in the protected group.
     """
 
     grouped = _group_samples_by_pgid(samples)
@@ -737,26 +740,40 @@ def skipped_protected_process_groups(
         self_pgid=self_pgid,
         owned_pids=explicitly_owned,
     )
-    owned = _owned_process_ids(
+    scoped = (
         samples
         if within_pids is None
-        else {pid: samples[pid] for pid in within_pids if pid in samples},
-        root=root,
-        self_pid=self_pid,
-        known_process_identities=known_process_identities,
+        else {pid: samples[pid] for pid in within_pids if pid in samples}
     )
-    matched = _candidate_process_group_ids(samples, owned)
-    if observed_pgids:
-        matched.update(observed_pgids)
+    matched = set(observed_pgids or ())
+    possible = matched | {_sample_pgid(sample) for sample in scoped.values()}
+    candidates = {
+        pgid
+        for pgid in protected_pgids & possible
+        if pgid in grouped
+        and (
+            not host_control_plane_only
+            or any(is_host_control_plane_process(sample) for sample in grouped[pgid])
+        )
+    }
+    # Ownership can parse guarded entrypoints. Only do that work when it can
+    # change the diagnostic. Keep the whole scope for ancestry across groups.
+    if candidates - matched:
+        owned = _owned_process_ids(
+            scoped,
+            root=root,
+            self_pid=self_pid,
+            known_process_identities=known_process_identities,
+        )
+        matched.update(_candidate_process_group_ids(scoped, owned))
     return sorted(
         (
             ProcessGroup(
                 pgid=pgid,
-                samples=tuple(sorted(group, key=lambda item: item.pid)),
+                samples=tuple(sorted(grouped[pgid], key=lambda item: item.pid)),
                 matched=False,
             )
-            for pgid, group in grouped.items()
-            if pgid in matched and pgid in protected_pgids
+            for pgid in candidates & matched
         ),
         key=lambda group: group.pgid,
     )

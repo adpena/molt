@@ -2811,3 +2811,79 @@ def test_current_tree_decisions_read_argv_only_for_the_tree_and_its_ancestry() -
     assert skipped == []
     assert set(bound) <= {10, 20, 30, 31}
     assert not set(bound) & set(host)
+
+
+def test_protected_host_diagnostic_only_classifies_possible_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = process_sentinel
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=100,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200, ppid=1, pgid=200, rss_kb=100, command="python -m molt.cli"
+        ),
+    }
+
+    def unexpected_entrypoint_scan(*args: object, **kwargs: object) -> bool:
+        pytest.fail("ownership classification cannot affect this diagnostic")
+
+    monkeypatch.setattr(module, "is_molt_process", unexpected_entrypoint_scan)
+    for seen, expected in [(None, []), ({100}, [100])]:
+        skipped = module.skipped_protected_process_groups(
+            samples,
+            root=root,
+            self_pid=200,
+            self_pgid=200,
+            within_pids={200},
+            host_control_plane_only=True,
+            observed_pgids=seen,
+        )
+        assert [group.pgid for group in skipped] == expected
+
+
+def test_protected_host_diagnostic_follows_owned_ancestor_in_another_group() -> None:
+    module = process_sentinel
+    sample = module.memory_guard.ProcessSample
+    root = Path("/repo/molt")
+    samples = {
+        100: sample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=100,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+            started_at_ns=1000,
+        ),
+        200: sample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=100,
+            command="/repo/molt/target/release-fast/molt-backend",
+            started_at_ns=2000,
+        ),
+        300: sample(
+            pid=300,
+            ppid=200,
+            pgid=100,
+            rss_kb=100,
+            command="/usr/bin/true",
+            started_at_ns=3000,
+        ),
+    }
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        self_pgid=9999,
+        within_pids={200, 300},
+        host_control_plane_only=True,
+    )
+    assert [group.pids for group in skipped] == [[100, 300]]

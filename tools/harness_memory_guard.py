@@ -2179,13 +2179,9 @@ class RepoProcessMemorySentinel:
             self_pgid=memory_guard._safe_getpgrp(),
             known_process_identities=self._observed_process_identities,
             within_pids=within_pids,
+            host_control_plane_only=True,
         )
         for group in protected:
-            if not any(
-                process_sentinel.is_host_control_plane_process(sample)
-                for sample in group.samples
-            ):
-                continue
             if group.pgid in self._protected_pgids_recorded:
                 continue
             self._protected_pgids_recorded.add(group.pgid)
