@@ -3323,8 +3323,10 @@ def test_deferred_history_retains_insertion_into_previously_absent_namespace() -
     pool.set_taint_domain(1)
     exposed = pool.taint_exposed_bindings(0)
     history = python_binding_flow._HistorySummary.build(pool, [0, exposed])
-    assert history.binding(pool, 0, 0) == int(PythonIdentity.UNBOUND) | OTHER_IDENTITY
-    assert history.binding(pool, 0, 1) == int(PythonIdentity.UNBOUND)
+    assert (
+        history.project(pool, 0, 0)[0] == int(PythonIdentity.UNBOUND) | OTHER_IDENTITY
+    )
+    assert history.project(pool, 0, 1)[0] == int(PythonIdentity.UNBOUND)
 
 
 @pytest.mark.parametrize(

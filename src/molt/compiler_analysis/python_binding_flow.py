@@ -1952,31 +1952,27 @@ class _StatePool:
             )
         )
 
-    def transition_binding_events(
-        self, previous: int, current: int
-    ) -> tuple[tuple[int, IdentityMask], ...]:
-        direct: dict[int, IdentityMask] = {}
+    def transition_binding_slots(self, previous: int, current: int) -> tuple[int, ...]:
+        """Index explicit writes and nonlocal changes at observation boundaries."""
+        direct: set[int] = set()
         cursor = current
         while cursor != previous:
             state = self._states[cursor]
             if state.updated_slot >= 0:
-                value = state.updated_value
-                if state.updated_clean is False and value != UNBOUND_IDENTITY:
-                    value |= OTHER_IDENTITY
-                direct.setdefault(state.updated_slot, value)
-            for slot, value, _static_value, _result, _owner_token, clean in reversed(
-                state.updated_bindings
-            ):
-                if not clean and value != UNBOUND_IDENTITY:
-                    value |= OTHER_IDENTITY
-                direct.setdefault(slot, value)
+                direct.add(state.updated_slot)
+            direct.update(row[0] for row in state.updated_bindings)
             if len(state.parents) != 1:
                 break
             cursor = state.parents[0]
         if cursor == previous:
-            return tuple(sorted(direct.items()))
+            return tuple(sorted(direct))
         return tuple(
-            sorted(self._binding_differences(previous, current, semantic=True))
+            sorted(
+                slot
+                for slot, _ in self._binding_differences(
+                    previous, current, semantic=True
+                )
+            )
         )
 
     def slot_updated_between(self, previous: int, current: int, slot: int) -> bool:
@@ -2594,18 +2590,21 @@ class _HistorySummary:
     taint_epoch_suffix: tuple[int, ...]
     namespace_unknown_suffix: tuple[bool, ...]
     taint_indices: tuple[int, ...]
-    slot_events: dict[
+    slot_events: dict[int, list[int]]
+    slot_suffixes: dict[
         int,
         tuple[
             tuple[int, ...],
             tuple[IdentityMask, ...],
+            tuple[StaticExpressionResult, ...],
         ],
     ]
-    result_suffixes: dict[int, tuple[StaticExpressionResult, ...]]
     domain_generation: int
     state_count: int
     stored_slot_limit: int
     domain_mask: int
+    callback_deletion_mask: int
+    storage_limit_exact: bool = False
 
     @classmethod
     def build(cls, pool: _StatePool, states: Sequence[int]) -> _HistorySummary:
@@ -2633,46 +2632,16 @@ class _HistorySummary:
             taint_epoch_suffix[index] = taint_epoch
             namespace_unknown_suffix[index] = namespace_unknown
 
-        events: dict[int, list[tuple[int, IdentityMask]]] = {}
+        events: dict[int, list[int]] = {}
         taint_indices: list[int] = []
         for index in range(1, count):
             previous = states[index - 1]
             current = states[index]
             if pool.get(current).taint_epoch > pool.get(previous).taint_epoch:
                 taint_indices.append(index)
-            for slot, value in pool.transition_binding_events(previous, current):
-                events.setdefault(slot, []).append((index, value))
+            for slot in pool.transition_binding_slots(previous, current):
+                events.setdefault(slot, []).append(index)
 
-        slot_events: dict[
-            int,
-            tuple[
-                tuple[int, ...],
-                tuple[IdentityMask, ...],
-            ],
-        ] = {}
-        result_suffixes: dict[int, tuple[StaticExpressionResult, ...]] = {}
-        for slot, rows in events.items():
-            suffix_values = [NO_IDENTITIES] * len(rows)
-            suffix_results = [UNKNOWN_EXPRESSION_RESULT] * len(rows)
-            value = NO_IDENTITIES
-            result = UNKNOWN_EXPRESSION_RESULT
-            for index in range(len(rows) - 1, -1, -1):
-                value |= rows[index][1]
-                suffix_values[index] = value
-                result = join_static_expression_results(
-                    (
-                        result,
-                        expression_result_without_value_facts(
-                            pool.result(states[rows[index][0]], slot)
-                        ),
-                    )
-                )
-                suffix_results[index] = result
-            result_suffixes[slot] = tuple(suffix_results)
-            slot_events[slot] = (
-                tuple(row[0] for row in rows),
-                tuple(suffix_values),
-            )
         return cls(
             states,
             tuple(maybe_suffix),
@@ -2680,25 +2649,49 @@ class _HistorySummary:
             tuple(taint_epoch_suffix),
             tuple(namespace_unknown_suffix),
             tuple(taint_indices),
-            slot_events,
-            result_suffixes,
+            events,
+            {},
             pool.taint_domain_generation,
             count,
             stored_chunks << _BINDING_CHUNK_SHIFT,
             pool._taint_domain_mask,
+            pool._callback_deletion_mask,
         )
 
     def refresh(self, pool: _StatePool) -> None:
         if self.state_count == len(self.states):
             if self.domain_generation == pool.taint_domain_generation:
                 return
-            added = pool._taint_domain_mask & ~self.domain_mask
+            added = (pool._taint_domain_mask & ~self.domain_mask) | (
+                pool._callback_deletion_mask & ~self.callback_deletion_mask
+            )
+            if (
+                added
+                and not self.storage_limit_exact
+                and (added & -added).bit_length() <= self.stored_slot_limit
+            ):
+                # The final radix chunk only gives an upper bound. Refine it
+                # when an admitted slot first lands inside that chunk.
+                last_chunk = (self.stored_slot_limit - 1) >> _BINDING_CHUNK_SHIFT
+                last_mask = 0
+                for state in self.states:
+                    environment = pool._binding_environments[state]
+                    if environment.chunk_count == last_chunk + 1:
+                        chunk = pool._chunk_at(environment, last_chunk)
+                        last_mask |= chunk.active_mask | chunk.clean_mask
+                        if last_mask.bit_length() == _BINDING_CHUNK_SIZE:
+                            break
+                self.stored_slot_limit = (
+                    last_chunk << _BINDING_CHUNK_SHIFT
+                ) + last_mask.bit_length()
+                self.storage_limit_exact = True
             if not added or (added & -added).bit_length() > self.stored_slot_limit:
                 # New activation slots cannot alter this completed history's
                 # immutable storage. Absent slots project exposure on query;
                 # their admission must not replay every historical transition.
                 self.domain_generation = pool.taint_domain_generation
                 self.domain_mask = pool._taint_domain_mask
+                self.callback_deletion_mask = pool._callback_deletion_mask
                 return
         current = type(self).build(pool, self.states)
         for item in fields(self):
@@ -2712,39 +2705,55 @@ class _HistorySummary:
             self.namespace_unknown_suffix[start],
         )
 
-    def binding(self, pool: _StatePool, start: int, slot: int) -> IdentityMask:
+    def project(
+        self, pool: _StatePool, start: int, slot: int
+    ) -> tuple[IdentityMask, StaticExpressionResult]:
         self.refresh(pool)
-        rows = self.slot_events.get(slot)
-        # Start at the actual query position: exposure before start is still
-        # live even when no write event records it. Namespace membership can
-        # change this projection, so keep no second cache of live bindings.
-        value = pool.binding(self.states[start], slot)
-        if rows is not None:
-            indices, suffix_values = rows
+        # Exposure before start remains live even when there was no stored write.
+        pool.binding_lookups += 1
+        value, _, observed, _ = pool._binding_details(self.states[start], slot)
+        result = expression_result_without_value_facts(observed)
+        suffix = self.slot_suffixes.get(slot)
+        if suffix is None and (events := self.slot_events.get(slot)) is not None:
+            # Close over the events for this slot once. Module and closure
+            # histories often contain temporaries that no nested body reads.
+            suffix_values = [NO_IDENTITIES] * len(events)
+            suffix_results = [UNKNOWN_EXPRESSION_RESULT] * len(events)
+            future_value = NO_IDENTITIES
+            future_result = UNKNOWN_EXPRESSION_RESULT
+            for index in range(len(events) - 1, -1, -1):
+                identities, _, observed, _ = pool._binding_details(
+                    self.states[events[index]], slot
+                )
+                future_value |= identities
+                suffix_values[index] = future_value
+                future_result = join_static_expression_results(
+                    (future_result, expression_result_without_value_facts(observed))
+                )
+                suffix_results[index] = future_result
+            suffix = (
+                tuple(events),
+                tuple(suffix_values),
+                tuple(suffix_results),
+            )
+            self.slot_suffixes[slot] = suffix
+            del self.slot_events[slot]
+        if suffix is not None:
+            indices, suffix_values, suffix_results = suffix
             event_index = bisect_left(indices, start)
             if event_index < len(indices):
                 value |= suffix_values[event_index]
-        if pool.slot_in_taint_domain(slot):
-            taint_index = bisect_left(self.taint_indices, start)
-            if taint_index < len(self.taint_indices):
-                # A callback may insert a previously absent binding as well
-                # as replace an existing one. Deferred overlays retain both.
-                value |= OTHER_IDENTITY
-        return value
-
-    def result(self, pool: _StatePool, start: int, slot: int) -> StaticExpressionResult:
-        self.refresh(pool)
-        result = expression_result_without_value_facts(
-            pool.result(self.states[start], slot)
-        )
-        rows = self.slot_events.get(slot)
-        if rows is not None:
-            event_index = bisect_left(rows[0], start)
-            if event_index < len(rows[0]):
                 result = join_static_expression_results(
-                    (result, self.result_suffixes[slot][event_index])
+                    (result, suffix_results[event_index])
                 )
-        return result
+        if pool.slot_in_taint_domain(slot) and bisect_left(
+            self.taint_indices, start
+        ) < len(self.taint_indices):
+            # A callback may introduce a name as well as overwrite it.
+            value |= OTHER_IDENTITY
+            if pool._callback_deletion_mask & (1 << slot):
+                value |= UNBOUND_IDENTITY
+        return value, result
 
 
 @dataclass(slots=True)
@@ -9718,13 +9727,15 @@ class _Analyzer:
             tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ] = []
         for slot, base_binding in base_bindings:
-            future_binding = summary.binding(self.states, summary_start, slot)
+            future_binding, future_value = summary.project(
+                self.states, summary_start, slot
+            )
             future_result = join_static_expression_results(
                 (
                     expression_result_without_value_facts(
                         self.states.result(state_id, slot)
                     ),
-                    summary.result(self.states, summary_start, slot),
+                    future_value,
                 )
             )
             updates.append(

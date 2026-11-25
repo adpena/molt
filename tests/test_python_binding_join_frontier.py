@@ -263,9 +263,9 @@ def _assert_fold(pool: flow._StatePool, frame: flow._ObservedStateFrame) -> None
     for slot in (0, 1, 31, 32, 129):
         assert _projection(pool, folded, slot) == _projection(pool, flat, slot)
     for base in set(frame.states):
-        assert pool.transition_binding_events(
+        assert pool.transition_binding_slots(
             base, folded
-        ) == pool.transition_binding_events(base, flat)
+        ) == pool.transition_binding_slots(base, flat)
         for slot in (0, 1, 32):
             assert pool.slot_updated_between(
                 base, folded, slot
@@ -504,14 +504,14 @@ def test_deferred_history_exposure_uses_sparse_suffix_without_stale_values() -> 
     history = [plain, published, rebound]
     summary = flow._HistorySummary.build(pool, history)
     for start in range(len(history)):
-        projected = summary.result(pool, start, 0)
+        projected = summary.project(pool, start, 0)[1]
         assert projected.exposes_module_globals is (start < 2)
         assert projected.kind == "unknown" and not projected.value_known
         assert projected.identities == OTHER_IDENTITY and projected.release_may_call
     history.append(pool.set_binding(rebound, 0, INERT, result=exposed))
-    assert summary.result(pool, 2, 0).exposes_module_globals
+    assert summary.project(pool, 2, 0)[1].exposes_module_globals
     pool.set_taint_domain(1)
-    assert summary.result(pool, 2, 0).exposes_module_globals
+    assert summary.project(pool, 2, 0)[1].exposes_module_globals
 
 
 def _assert_dense_join(
@@ -576,9 +576,9 @@ def test_wide_join_prunes_internal_reads_and_preserves_original_write_history() 
     _assert_dense_join(pool, parents, joined, (0, 32, 1024, 2048))
     assert pool.slot_updated_between(base, joined, 0)
     assert not pool.slot_updated_between(base, control, 0)
-    assert pool.transition_binding_events(
-        base, joined
-    ) == pool.transition_binding_events(base, control)
+    assert pool.transition_binding_slots(base, joined) == pool.transition_binding_slots(
+        base, control
+    )
     # The independent child-read observer exposes expansion before leaf dedup.
     # Same storage contributors must cost the same as the two-root control.
     assert wide_reads == control_reads
@@ -707,16 +707,18 @@ def test_semantic_history_ignores_sharing_and_includes_absent_domain_slots() -> 
     other = pool.invalidate_members(tainted, 1)
     joined = pool.join(tainted, other)
     assert pool.changed_slots_between(base, joined) == ()
-    events = pool.transition_binding_events(base, joined)
-    assert dict(events)[0] & OTHER_IDENTITY
-    assert dict(events)[129] == UNBOUND_IDENTITY | OTHER_IDENTITY
+    events = pool.transition_binding_slots(base, joined)
+    assert events == (0, 129)
+    summary = flow._HistorySummary.build(pool, (base, joined))
+    assert summary.project(pool, 0, 0)[0] & OTHER_IDENTITY
+    assert summary.project(pool, 0, 129)[0] == UNBOUND_IDENTITY | OTHER_IDENTITY
     assert not pool.equivalent(base, joined)
     environment = pool._binding_environments[joined]
     root = _detached(environment.root)
     assert isinstance(root, flow._BindingBranch)
     pool._binding_environments[joined] = replace(environment, root=root)
     assert pool.changed_slots_between(base, joined) == (0,)
-    assert pool.transition_binding_events(base, joined) == events
+    assert pool.transition_binding_slots(base, joined) == events
     assert not pool.equivalent(base, joined)
 
 
@@ -791,13 +793,13 @@ def test_history_summary_refreshes_domain_dependent_events_and_initial_projectio
     joined = pool.join(older, other)
     history = [stored, joined]
     summary = flow._HistorySummary.build(pool, history)
-    assert summary.binding(pool, 0, 0) == INERT
+    assert summary.project(pool, 0, 0)[0] == INERT
     pool.set_taint_domain((1 << 0) | (1 << 129))
     reference = flow._HistorySummary.build(pool, history)
     for slot in (0, 129):
-        assert summary.binding(pool, 0, slot) == reference.binding(pool, 0, slot)
+        assert summary.project(pool, 0, slot)[0] == reference.project(pool, 0, slot)[0]
     assert summary.domain_generation == pool.taint_domain_generation
-    assert summary.binding(pool, 0, 129) & OTHER_IDENTITY
+    assert summary.project(pool, 0, 129)[0] & OTHER_IDENTITY
     history.append(pool.set_binding(joined, 1, INERT, 2))
     summary.refresh(pool)
     assert summary.state_count == len(history)
@@ -831,18 +833,18 @@ def test_absent_history_binding_matches_every_suffix_state(
         # Query before exposure too, so a cached initial projection cannot hide
         # a later admission. No retained state has storage for this slot.
         for start in range(len(history)):
-            assert summary.binding(pool, start, slot) == UNBOUND_IDENTITY
+            assert summary.project(pool, start, slot)[0] == UNBOUND_IDENTITY
         pool.set_taint_domain(1 << slot)
     for start in range(len(history)):
         expected = 0
         for state in history[start:]:
             expected |= pool.binding(state, slot)
-        assert summary.binding(pool, start, slot) == expected
+        assert summary.project(pool, start, slot)[0] == expected
     if shape == "chain":
         # Exposure happened before the last start position, but remains live.
-        assert summary.binding(pool, 2, slot) == UNBOUND_IDENTITY | OTHER_IDENTITY
+        assert summary.project(pool, 2, slot)[0] == UNBOUND_IDENTITY | OTHER_IDENTITY
     if shape == "decreasing":
-        assert summary.binding(pool, 3, slot) == UNBOUND_IDENTITY
+        assert summary.project(pool, 3, slot)[0] == UNBOUND_IDENTITY
 
 
 def test_unrelated_activation_slots_do_not_replay_completed_history(
@@ -861,18 +863,44 @@ def test_unrelated_activation_slots_do_not_replay_completed_history(
 
     domain = 0
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "transition_binding_events", forbidden_replay)
-        for slot in (32, 63, 64, 129, 1024):
+        patch.setattr(pool, "transition_binding_slots", forbidden_replay)
+        for slot in (1, 7, 31, 32, 63, 64, 129, 1024):
             domain |= 1 << slot
             pool.set_taint_domain(domain)
             summary.refresh(pool)
-            assert summary.binding(pool, 2, slot) == UNBOUND_IDENTITY | OTHER_IDENTITY
-            assert summary.result(pool, 2, slot) == UNKNOWN_EXPRESSION_RESULT
+            assert (
+                summary.project(pool, 2, slot)[0] == UNBOUND_IDENTITY | OTHER_IDENTITY
+            )
+            assert summary.project(pool, 2, slot)[1] == UNKNOWN_EXPRESSION_RESULT
 
     # Appending actual storage must still refresh the completed summary.
     history.append(pool.set_binding(history[-1], 129, INERT, 2))
-    assert summary.binding(pool, 3, 129) == INERT
+    assert summary.project(pool, 3, 129)[0] == INERT
     assert summary.state_count == len(history)
+
+
+@pytest.mark.parametrize("epoch_exposure", [False, True])
+def test_history_projection_retains_callback_deletion(epoch_exposure: bool) -> None:
+    pool = flow._StatePool()
+    stored = pool.set_binding(0, 0, INERT, 1)
+    if epoch_exposure:
+        pool.set_taint_domain(1)
+        exposed = pool.taint_exposed_bindings(stored)
+    else:
+        exposed = pool.taint_slots(stored, 1)
+        pool.set_taint_domain(1)
+    rebound = pool.set_binding(exposed, 0, INERT, 2)
+    states = [stored, exposed, rebound]
+    summary = flow._HistorySummary.build(pool, states)
+    assert not summary.project(pool, 0, 0)[0] & UNBOUND_IDENTITY
+
+    # A later admitted nonlocal deleter changes historical callback results.
+    pool.add_callback_deletions(1)
+    for start in range(len(states)):
+        expected = 0
+        for state in states[start:]:
+            expected |= pool.binding(state, 0)
+        assert summary.project(pool, start, 0)[0] == expected
 
 
 @pytest.mark.parametrize("admit_before_summary", [False, True])
@@ -895,7 +923,7 @@ def test_present_history_binding_retains_prior_exposure_and_clean_rebind(
         reference = 0
         for state in history[start:]:
             reference |= pool.binding(state, 0)
-        assert summary.binding(pool, start, 0) == reference == identities
+        assert summary.project(pool, start, 0)[0] == reference == identities
 
 
 @pytest.mark.parametrize("admitted", [(), (1, 33), tuple(range(64))])

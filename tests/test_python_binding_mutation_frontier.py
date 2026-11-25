@@ -362,10 +362,7 @@ def test_recorded_same_shape_and_owner_only_writes_keep_history_without_copies()
     assert pool._binding_environments[recorded] is pool._binding_environments[base]
     assert (pool.binding_chunk_copies, pool.binding_branch_copies) == before
     assert pool.changed_slots_between(base, recorded) == ()
-    assert pool.transition_binding_events(base, recorded) == (
-        (0, OTHER_IDENTITY),
-        (32, OTHER_IDENTITY),
-    )
+    assert pool.transition_binding_slots(base, recorded) == (0, 32)
     assert pool.slot_updated_between(base, recorded, 0)
     owner_only = pool.set_binding(
         recorded, 0, OTHER_IDENTITY, result=result, owner_token=8
@@ -502,7 +499,7 @@ def test_duplicate_slot_batches_preserve_ordered_effective_writes() -> None:
         assert (pool.binding_chunk_copies, pool.binding_branch_copies) == before
         assert tuple(row[3] for row in pool.get(returned).updated_bindings) == (b, a)
         assert pool.slot_updated_between(base, returned, 0)
-        assert pool.transition_binding_events(base, returned) == ((0, INERT),)
+        assert pool.transition_binding_slots(base, returned) == (0,)
         _assert_frontier(pool, returned)
     pool = flow._StatePool()
     base = pool.set_bindings(0, ((0, INERT, 1, a, 7), (32, INERT, 1, a, 9)))
@@ -578,7 +575,7 @@ def test_storage_diff_does_not_replace_epoch_or_absent_domain_comparison() -> No
     assert pool.binding(base, 4096) == UNBOUND_IDENTITY
     assert pool.binding(exposed, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
     summary = flow._HistorySummary.build(pool, (base, exposed))
-    assert summary.binding(pool, 0, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
+    assert summary.project(pool, 0, 4096)[0] == UNBOUND_IDENTITY | OTHER_IDENTITY
 
 
 def test_augmented_scalar_operation_does_not_become_target_callback() -> None:
