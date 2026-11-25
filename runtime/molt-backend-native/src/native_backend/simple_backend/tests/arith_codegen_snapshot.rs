@@ -27,9 +27,8 @@ fn binop(kind: OpKind, lhs: &str, rhs: &str, out: &str) -> OpIR {
     }
 }
 
-/// Typed int-primary function: exercises the raw-int carrier lanes of
-/// `add`/`sub`/`mul`/`inplace_*` (branchless `iadd`/`isub`/`imul` with deferred
-/// overflow) plus the boxed tag-check merge lanes, over `int` params.
+/// The arithmetic chain under int annotations. Entry annotations alone
+/// cannot exclude boxed arguments or remove the generic Python fallback.
 fn typed_int_function() -> FunctionIR {
     FunctionIR {
         module: None,
@@ -89,8 +88,8 @@ fn generic_function() -> FunctionIR {
     }
 }
 
-/// Float-typed function: exercises the float-lane `fadd`/`fsub`/`fmul` fast
-/// paths of `add`/`sub`/`mul` and their in-place forms.
+/// The arithmetic chain under float annotations. Proven raw float operations
+/// have separate machine and TIR oracles.
 fn typed_float_function() -> FunctionIR {
     FunctionIR {
         module: None,
@@ -119,33 +118,39 @@ fn typed_float_function() -> FunctionIR {
     }
 }
 
-fn compile_arith_families_object() -> Vec<u8> {
-    let ir = SimpleIR {
-        functions: vec![
-            typed_int_function(),
-            generic_function(),
-            typed_float_function(),
-        ],
-        profile: None,
-    };
-    SimpleBackend::new().compile(ir).bytes
+fn compile_arithmetic_object(function: FunctionIR) -> Vec<u8> {
+    SimpleBackend::new()
+        .compile(SimpleIR {
+            functions: vec![function],
+            profile: None,
+        })
+        .bytes
 }
 
 #[test]
 fn arith_codegen_is_deterministic_and_size_bounded() {
     let _runtime = super::enter_full_runtime_fixture();
-    let first = compile_arith_families_object();
-    let second = compile_arith_families_object();
-    assert_eq!(
-        first, second,
-        "native arithmetic codegen must be deterministic"
-    );
-    assert!(
-        first.len() <= ARITH_OBJECT_SIZE_CEILING,
-        "native arithmetic stress object grew past its explicit size ceiling: len={}, digest=0x{:016x}",
-        first.len(),
-        fnv1a_64(&first),
-    );
+    // Build each family as the entry. Putting three unreferenced functions
+    // in one document lets whole-program reachability discard two of them.
+    for function in [
+        typed_int_function(),
+        generic_function(),
+        typed_float_function(),
+    ] {
+        let name = function.name.clone();
+        let first = compile_arithmetic_object(function.clone());
+        let second = compile_arithmetic_object(function);
+        assert_eq!(
+            first, second,
+            "{name}: native arithmetic codegen changed bytes"
+        );
+        assert!(
+            first.len() <= ARITH_OBJECT_SIZE_CEILING,
+            "{name}: native arithmetic stress object grew past its explicit size ceiling: len={}, digest=0x{:016x}",
+            first.len(),
+            fnv1a_64(&first),
+        );
+    }
 }
 
 // Variant E with the merged producer-carrier plan emits 4,552 bytes on arm64
@@ -175,6 +180,11 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // 44874314443) and 6,896 bytes (FNV 15b0f00d7379fdb8) at ccd5ac1ed8 (run
 // 44889909492); the 6,144 ceiling from 4d99469744's 5,576 bytes kept main red.
 //
+// Successful immediate-word guards now remove RC only inside the proven
+// region. On f3581ad29, Linux x86-64 cross-emission measured 11,040 bytes
+// before the change and 7,824 bytes after it for the int-annotated and
+// generic functions. Keep the existing ceilings for each individual object.
+//
 // Linux arm64 ELF from 0ce3f9c419, 2026-11-23, emits 5,880 bytes with
 // debug assertions (FNV ff26fb6f2144ba98) and 9,160 without them (FNV
 // 5111047ad1cbe8fe). The changed compiler produces the same release object.
@@ -200,10 +210,17 @@ const ARITH_OBJECT_SIZE_CEILING: usize = {
 #[ignore = "capture-only: prints the golden digest, does not assert"]
 fn arith_codegen_golden_capture() {
     let _runtime = super::enter_full_runtime_fixture();
-    let bytes = compile_arith_families_object();
-    println!(
-        "ARITH_GOLDEN_LEN = {};\nARITH_GOLDEN_DIGEST = 0x{:016x};",
-        bytes.len(),
-        fnv1a_64(&bytes)
-    );
+    for function in [
+        typed_int_function(),
+        generic_function(),
+        typed_float_function(),
+    ] {
+        let name = function.name.clone();
+        let bytes = compile_arithmetic_object(function);
+        println!(
+            "{name}: {} bytes, FNV-1a=0x{:016x}",
+            bytes.len(),
+            fnv1a_64(&bytes)
+        );
+    }
 }

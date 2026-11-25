@@ -1,5 +1,6 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::RefcountBalanceRole;
 use crate::tir::passes::alias_analysis::AliasAnalysisResult;
@@ -12,16 +13,17 @@ pub(super) fn eliminate_local_pairs(
     func: &mut TirFunction,
     alias: &AliasAnalysisResult,
     inert_values: &HashSet<ValueId>,
+    guarded_sites: &HashSet<(BlockId, usize)>,
     stats: &mut PassStats,
 ) {
-    for block in func.blocks.values_mut() {
+    for (&block_id, block) in &mut func.blocks {
         let mut pending: HashMap<ValueId, Vec<usize>> = HashMap::default();
         let mut remove = vec![false; block.ops.len()];
         for (index, op) in block.ops.iter().enumerate() {
             let role = refcount_balance_role(op.opcode);
             if role.is_refcount_balance() && op.has_valid_shape() && op.operands.len() == 1 {
                 let root = alias.root(op.operands[0]);
-                if inert_values.contains(&root) {
+                if inert_values.contains(&root) || guarded_sites.contains(&(block_id, index)) {
                     remove[index] = true;
                     continue;
                 }
