@@ -63,6 +63,7 @@ from molt.file_publication import (
     is_staged_file_path,
     metadata_is_link_like,
     reclaim_retired_paths,
+    resolve_owned_path,
     unlink_owned_file,
 )
 
@@ -1311,6 +1312,55 @@ def _prune_locked(
             if len(path.name) == 2 and all(c in "0123456789abcdef" for c in path.name)
         ],
     }
+
+
+def reclaim_source_record_backlog(
+    cache_root: Path,
+    *,
+    owned_roots: tuple[Path, ...],
+    device: int,
+    deadline: float,
+    needs_space: Callable[[], bool],
+) -> bool:
+    """Use an existing store's free pages without retiring cache records."""
+    from molt.cli.source_record_store import (
+        STORE_RELATIVE_PATH,
+        SourceRecordBusy,
+        source_record_store,
+    )
+
+    try:
+        database = resolve_owned_path(cache_root / STORE_RELATIVE_PATH)
+        if not any(database.is_relative_to(root) for root in owned_roots):
+            return False
+        metadata = database.stat()
+    except (FileNotFoundError, ValueError):
+        return False
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_dev != device:
+        return False
+    lock = shared_cache_lock_path(cache_root, "prune")
+    handle = _try_acquire_file_lock(lock)
+    if handle is None:
+        return False
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=lock):
+            if time.monotonic() >= deadline or not needs_space():
+                return False
+            store = source_record_store(cache_root)
+            with store.maintenance(dry_run=False) as maintenance:
+                attempted = False
+                while time.monotonic() < deadline and needs_space():
+                    attempted = True
+                    # About 16 MiB at SQLite's default page size. Check the
+                    # live filesystem after each bounded, checkpointed batch.
+                    pages = maintenance.reclaim(pages=4096)
+                    if not pages or maintenance.checkpoint_busy:
+                        break
+                return attempted
+    except (FileNotFoundError, SourceRecordBusy):
+        return False
+    finally:
+        _release_file_lock(handle)
 
 
 def _prune(
