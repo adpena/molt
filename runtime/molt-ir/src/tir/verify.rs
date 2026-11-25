@@ -785,7 +785,7 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     ));
                 }
             }
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 }
@@ -1020,6 +1020,7 @@ fn block_terminator_condition(terminator: &Terminator) -> Option<ValueId> {
         Terminator::StateDispatch { .. }
         | Terminator::Branch { .. }
         | Terminator::Return { .. }
+        | Terminator::Unwind
         | Terminator::Unreachable => None,
     }
 }
@@ -1171,7 +1172,7 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     }
                 }
             }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 }
@@ -1303,7 +1304,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     check_use(*bid, None, *v, errors);
                 }
             }
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 }

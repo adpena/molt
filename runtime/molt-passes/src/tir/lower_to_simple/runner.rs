@@ -376,6 +376,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     Terminator::Switch { .. }
                     | Terminator::StateDispatch { .. }
                     | Terminator::Return { .. }
+                    | Terminator::Unwind
                     | Terminator::Unreachable => break,
                 }
             }
@@ -709,7 +710,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // Simple terminators only.
         let then_target = match &then_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
-            Terminator::Return { .. } | Terminator::Unreachable => None,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => None,
             Terminator::CondBranch { .. }
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. } => {
@@ -718,7 +719,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         };
         let else_target = match &else_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
-            Terminator::Return { .. } | Terminator::Unreachable => None,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => None,
             Terminator::CondBranch { .. }
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. } => {
@@ -923,7 +924,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     Terminator::Branch { target, args } => {
                         emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
                     }
-                    Terminator::Unreachable => emit_terminator(
+                    Terminator::Unwind | Terminator::Unreachable => emit_terminator(
                         arm,
                         &block_param_vars,
                         &block_label_id,

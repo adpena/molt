@@ -16,13 +16,15 @@ fn compiler_bootstrap_fixture_has_object_return_linkage_on_every_exit() {
             .iter()
             .filter(|op| op.kind == molt_ir::OpKind::Ret)
             .count(),
-        2
+        1
     );
-    assert!(
-        !function
+    assert_eq!(
+        function
             .ops
             .iter()
-            .any(|op| op.kind == molt_ir::OpKind::RetVoid)
+            .filter(|op| op.is_unwind_return())
+            .count(),
+        1
     );
     for returned in function
         .ops

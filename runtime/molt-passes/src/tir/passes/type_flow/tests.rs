@@ -640,7 +640,7 @@ fn shared_return_preserves_the_supplied_argument_type_without_a_clone() {
             {"kind":"ret","args":["returned"]},
             {"kind":"end_if"},
             {"kind":"raise","args":["cls"]},
-            {"kind":"ret_void"}
+            {"kind":"ret_void","unwind":true}
         ]
     })).unwrap();
     let validator = lower_to_tir(&validator);

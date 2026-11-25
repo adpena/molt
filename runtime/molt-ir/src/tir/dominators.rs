@@ -150,6 +150,18 @@ pub fn exception_transfer_target(
     }
 }
 
+/// A resolved executable exception observer. The normal continuation starts
+/// after this operation and its exceptional successor bypasses that point.
+pub fn checked_exception_observer(
+    op: &TirOp,
+    resolve_label: impl FnOnce(i64) -> Option<BlockId>,
+) -> Option<BlockId> {
+    if op.opcode != OpCode::CheckException || !op.has_valid_shape() {
+        return None;
+    }
+    super::clone_support::exception_label_of(op).and_then(resolve_label)
+}
+
 /// Whether an op's label-valued `value` attr is an exception-transfer CFG edge.
 ///
 /// `TryEnd` is intentionally excluded even though it has a label-valued `value`

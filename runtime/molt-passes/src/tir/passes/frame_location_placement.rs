@@ -433,7 +433,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let block = &func.blocks[bid];
             let mut live = match &block.terminator {
                 // Every frame-retiring path ends here; exit freezes the word.
-                Terminator::Return { .. } => true,
+                Terminator::Return { .. } | Terminator::Unwind => true,
                 terminator => dominators::terminator_successors(terminator)
                     .into_iter()
                     .any(|succ| live_in.get(&succ).copied().unwrap_or(false)),

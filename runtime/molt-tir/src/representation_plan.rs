@@ -70,12 +70,15 @@ pub(crate) fn effective_return_type_from_repr(
         .values()
         .filter(|block| reachable.contains(&block.id))
     {
-        if let crate::tir::blocks::Terminator::Return { values } = &block.terminator {
-            let carrier = values.first().map_or(TirType::None, |id| {
-                effective_value_type_from_repr(*id, &tir_func.return_type, repr_by_value)
-            });
-            result = result.meet(&carrier);
-        }
+        let Some(values) = block.terminator.exit_values() else {
+            continue;
+        };
+        // A value-less exit still has a boxed empty carrier in the current
+        // pending-state ABI. Semantic return analysis ignores unwind exits.
+        let carrier = values.first().map_or(TirType::None, |id| {
+            effective_value_type_from_repr(*id, &tir_func.return_type, repr_by_value)
+        });
+        result = result.meet(&carrier);
     }
     if result == TirType::Never {
         TirType::None

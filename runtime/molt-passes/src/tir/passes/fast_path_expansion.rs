@@ -1218,7 +1218,7 @@ fn recursion_refusal(
         }
         failure.push(check);
     }
-    new_block(block, failure, Terminator::Return { values: vec![] })
+    new_block(block, failure, Terminator::Unwind)
 }
 
 /// Charge ordinary compiled calls whose target can reenter Python. The callee's
@@ -1818,21 +1818,17 @@ fn expand_guarded_call(
         ),
     );
 
-    // An admitted call's exact result belongs to its continuation. A
-    // recursion refusal must still run the source observer, including any
-    // work poll, but its sentinel is only input to that exceptional edge.
-    let checked_result = rest.first().filter(|check| {
-        proven.is_some()
-            && op.exact_result_proof().is_some()
-            && check.opcode == OpCode::CheckException
-            && crate::tir::dominators::exception_transfer_target(
-                check,
-                exception_labels
-                    .get_or_init(|| crate::tir::dominators::exception_label_to_block(func)),
-            )
-            .is_some()
+    let observer = rest.first().filter(|check| {
+        crate::tir::dominators::checked_exception_observer(check, |label| {
+            exception_labels
+                .get_or_init(|| crate::tir::dominators::exception_label_to_block(func))
+                .get(&label)
+                .copied()
+        })
+        .is_some()
     });
-    let direct_result = if checked_result.is_some() {
+    let direct_continuation = observer.is_some() && proven.is_some();
+    let direct_result = if direct_continuation {
         result
     } else {
         fresh_typed(func, TirType::DynBox)
@@ -1864,34 +1860,29 @@ fn expand_guarded_call(
     }
     direct_ops.push(call);
     direct_ops.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
-    if let Some(check) = checked_result {
+    if let Some(check) = observer {
         let failure = recursion_refusal(func, &op, Some(check), refuse);
         func.blocks.insert(refuse, failure);
-        direct_ops.extend(rest);
-        func.blocks
-            .insert(direct, new_block(direct, direct_ops, terminator));
-        func.move_loop_terminator(block, direct);
-        return direct;
+        if direct_continuation {
+            direct_ops.extend(rest);
+            func.blocks
+                .insert(direct, new_block(direct, direct_ops, terminator));
+            func.move_loop_terminator(block, direct);
+            return direct;
+        }
+    } else {
+        // An unobserved wire call still exposes its ABI sentinel.
+        let mut failure = recursion_refusal(func, &op, None, refuse);
+        let none = fresh_typed(func, TirType::None);
+        failure
+            .ops
+            .push(new_op(OpCode::ConstNone, vec![], vec![none], span));
+        failure.terminator = branch(join, none);
+        func.blocks.insert(refuse, failure);
     }
-
     func.blocks.insert(
         direct,
         new_block(direct, direct_ops, branch(join, direct_result)),
-    );
-    let none = fresh_typed(func, TirType::None);
-    let mut raise = runtime_call(RuntimeFn::RaiseRecursionError, vec![], vec![], span);
-    if let Some(source) = op.attrs.get("exception_source") {
-        raise
-            .attrs
-            .insert("exception_source".into(), source.clone());
-    }
-    func.blocks.insert(
-        refuse,
-        new_block(
-            refuse,
-            vec![raise, new_op(OpCode::ConstNone, vec![], vec![none], span)],
-            branch(join, none),
-        ),
     );
 
     if proven.is_none() {

@@ -658,7 +658,7 @@ fn terminator_values(term: &Terminator) -> Vec<(String, ValueId)> {
                 out.push((format!("return[{idx}]"), value));
             }
         }
-        Terminator::Unreachable => {}
+        Terminator::Unwind | Terminator::Unreachable => {}
     }
     out
 }

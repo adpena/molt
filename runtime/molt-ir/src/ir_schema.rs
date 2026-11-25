@@ -822,6 +822,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             op.kind
         ));
     }
+    if op.unwind
+        && (op.kind != crate::OpKind::RetVoid
+            || op.args.as_ref().is_some_and(|args| !args.is_empty()))
+    {
+        return Err("unwind must be a value-less ret_void".into());
+    }
     validate_argument_custody(op)?;
     validate_native_callable_fields(op)?;
     Ok(())

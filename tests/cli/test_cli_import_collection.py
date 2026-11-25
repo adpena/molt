@@ -9210,11 +9210,10 @@ def test_direct_native_callable_wrapper_owns_ffi_and_publication_metadata() -> N
     assert wrapper_ops[invoke_index + 2] == {"kind": "release", "args": ["v0"]}
     failure_label = wrapper_ops.index({"kind": "label", "value": 1})
     assert wrapper_ops[failure_label + 1] == {"kind": "release", "args": ["v0"]}
+    unwind = {"kind": "ret_void", "unwind": True}
+    assert wrapper_ops[failure_label + 2] == unwind
     allocation_failure_label = wrapper_ops.index({"kind": "label", "value": 2})
-    assert wrapper_ops[allocation_failure_label + 1]["kind"] == "const_none"
-    assert all(
-        op["kind"] != "release" for op in wrapper_ops[allocation_failure_label + 1 :]
-    )
+    assert wrapper_ops[allocation_failure_label + 1 :] == [unwind]
 
     assert sum(op["kind"] == "func_new" for op in init_ops) == 1
     const_strings = {

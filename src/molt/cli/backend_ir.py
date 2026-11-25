@@ -310,7 +310,6 @@ def _guard_initialization_ops(
     ops: Sequence[SimpleIROp],
     *,
     failure_label: int | None = None,
-    failure_returns_object: bool = False,
 ) -> list[SimpleIROp]:
     """Preserve pending setup failure before any subsequent initialization work.
 
@@ -340,16 +339,7 @@ def _guard_initialization_ops(
             guarded.append(check.copy())
     if owns_failure_exit:
         guarded.append({"kind": "label", "value": failure_label})
-        if failure_returns_object:
-            result = f"v{_next_tir_var_index(ops)}"
-            guarded.extend(
-                [
-                    {"kind": "const_none", "out": result},
-                    {"kind": "ret", "args": [result]},
-                ]
-            )
-        else:
-            guarded.append({"kind": "ret_void"})
+        guarded.append({"kind": "ret_void", "unwind": True})
     return guarded
 
 
@@ -372,7 +362,7 @@ def _build_isolate_bootstrap_ops(
             {"kind": "ret", "args": [result]},
         ]
     )
-    return _guard_initialization_ops(ops, failure_returns_object=True)
+    return _guard_initialization_ops(ops)
 
 
 def _build_isolate_import_ops(
@@ -460,10 +450,8 @@ def _build_isolate_import_ops(
     import_ops = _guard_initialization_ops(
         import_ops, failure_label=import_failed_label
     )
-    failed_var = import_var()
     import_ops.append({"kind": "label", "value": import_failed_label})
-    import_ops.append({"kind": "const_none", "out": failed_var})
-    import_ops.append({"kind": "ret", "args": [failed_var]})
+    import_ops.append({"kind": "ret_void", "unwind": True})
     return import_ops
 
 
@@ -1196,19 +1184,12 @@ def _native_callable_wrapper_function(
     ops.append({"kind": "label", "value": 1})
     if uses_callargs:
         ops.append({"kind": "release", "args": ["v0"]})
-    failure_result = "v4" if uses_callargs else "v1"
-    ops.extend(
-        [
-            {"kind": "const_none", "out": failure_result},
-            {"kind": "ret", "args": [failure_result]},
-        ]
-    )
+    ops.append({"kind": "ret_void", "unwind": True})
     if uses_callargs:
         ops.extend(
             [
                 {"kind": "label", "value": 2},
-                {"kind": "const_none", "out": "v5"},
-                {"kind": "ret", "args": ["v5"]},
+                {"kind": "ret_void", "unwind": True},
             ]
         )
     return {
@@ -1537,9 +1518,9 @@ def _guard_generated_native_module_init_ops(
         *_guard_initialization_ops(after_publication, failure_label=2),
         {"kind": "label", "value": 2},
         {"kind": "module_cache_del", "args": [module_name_var]},
-        {"kind": "ret_void"},
+        {"kind": "ret_void", "unwind": True},
         {"kind": "label", "value": 1},
-        {"kind": "ret_void"},
+        {"kind": "ret_void", "unwind": True},
     ]
 
 

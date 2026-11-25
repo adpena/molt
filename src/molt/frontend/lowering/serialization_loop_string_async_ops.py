@@ -559,7 +559,11 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
         elif op.kind == FrontendKinds.ret:
             ctx.json_ops.append({"kind": "ret", "args": [op.args[0].name]})
         elif op.kind == FrontendKinds.ret_void:
-            ctx.json_ops.append({"kind": "ret_void"})
+            ctx.json_ops.append(
+                {"kind": "ret_void", "unwind": True}
+                if op.unwind
+                else {"kind": "ret_void"}
+            )
         elif op.kind == FrontendKinds.STATE_SWITCH:
             (frame_size,) = op.args
             ctx.json_ops.append({"kind": "state_switch", "value": frame_size})

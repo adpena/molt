@@ -165,14 +165,13 @@ impl<'a> ExactScalarPlan<'a> {
                     && crate::tir::call_targets::direct_boxed_runtime(op)
                         .is_some_and(|entry| entry.returns_exact_int_on_success())
                     && let Some(check) = block.ops.get(index + 1)
-                    && check.opcode == OpCode::CheckException
                     && matches!(check.origin, None | Some(molt_ir::OpKind::CheckException))
-                    && check.has_valid_shape()
-                    && crate::tir::dominators::exception_transfer_target(
-                        check,
+                    && crate::tir::dominators::checked_exception_observer(check, |label| {
                         labels
-                            .get_or_init(|| crate::tir::dominators::exception_label_to_block(func)),
-                    )
+                            .get_or_init(|| crate::tir::dominators::exception_label_to_block(func))
+                            .get(&label)
+                            .copied()
+                    })
                     .is_some()
                 {
                     integer_checks.insert(*result, (*id, index + 1));
@@ -249,12 +248,10 @@ impl<'a> ExactScalarPlan<'a> {
             .enumerate()
             .map(|(i, arg)| (arg.id, i))
             .collect();
-        let mut has_empty_return = false;
         for id in &self.order {
             let block = &self.func.blocks[id];
             if let Terminator::Return { values } = &block.terminator {
                 match values.len() {
-                    0 => has_empty_return = true,
                     1 => {}
                     _ => return None,
                 }
@@ -276,57 +273,7 @@ impl<'a> ExactScalarPlan<'a> {
         {
             return None;
         }
-        if has_empty_return && self.may_succeed_without_value() {
-            return None;
-        }
         Some(parameter)
-    }
-
-    /// An empty return is harmless only on unwind. A handler that just
-    /// pops the frame and returns propagates the pending exception. Any
-    /// other handler may consume it and resume ordinary execution.
-    fn may_succeed_without_value(&self) -> bool {
-        let labels = crate::tir::dominators::exception_label_to_block(self.func);
-        let mut pending = vec![self.func.entry_block];
-        for handler in &self.handlers {
-            let block = &self.func.blocks[handler];
-            if !matches!(&block.terminator, Terminator::Return { values } if values.is_empty())
-                || !block.ops.iter().all(|op| {
-                    op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::TraceExit)
-                })
-            {
-                pending.push(*handler);
-            }
-        }
-        let mut seen = HashSet::default();
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            let block = &self.func.blocks[&id];
-            // Raise sets pending state. Only an executable targeted check
-            // transfers control: an untargeted observer permits a successor
-            // to clear the exception and return normally.
-            if block.ops.windows(2).any(|ops| {
-                ops[0].opcode == OpCode::Raise
-                    && ops[1].opcode == OpCode::CheckException
-                    && crate::tir::dominators::exception_transfer_target(&ops[1], &labels).is_some()
-            }) {
-                continue;
-            }
-            if matches!(&block.terminator, Terminator::Return { values } if values.is_empty()) {
-                if block
-                    .ops
-                    .last()
-                    .is_some_and(|op| op.opcode == OpCode::Raise)
-                {
-                    continue;
-                }
-                return true;
-            }
-            block.terminator.for_each_edge(|id, _| pending.push(id));
-        }
-        false
     }
 
     pub(crate) fn return_values(&self) -> &[ValueId] {

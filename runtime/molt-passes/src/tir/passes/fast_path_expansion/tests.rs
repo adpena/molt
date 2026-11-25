@@ -1472,7 +1472,7 @@ fn recursion_refusal_does_not_feed_the_proven_call_result() {
         .0;
     let failure = &func.blocks[&refusal];
     assert_eq!(failure.ops[1].opcode, OpCode::CheckException);
-    assert!(matches!(failure.terminator, Terminator::Return { ref values } if values.is_empty()));
+    assert!(matches!(failure.terminator, Terminator::Unwind));
     assert_eq!(
         crate::tir::type_refine::extract_exact_scalar_map(&func).get(&result),
         Some(&TirType::I64)
@@ -1951,7 +1951,7 @@ fn a_static_call_only_enters_or_adopts_arguments_on_the_admitted_path() {
         assert_eq!(refused.ops.len(), 1);
         assert_eq!(refused.ops[0].runtime, Some(RuntimeFn::RaiseRecursionError));
         assert!(refused.ops[0].results.is_empty());
-        assert!(matches!(&refused.terminator, Terminator::Return { values } if values.is_empty()));
+        assert!(matches!(refused.terminator, Terminator::Unwind));
     }
 }
 

@@ -255,7 +255,7 @@ fn terminator_values(terminator: &Terminator) -> Vec<ValueId> {
             .chain(default_args.iter().copied())
             .collect(),
         Terminator::Return { values } => values.clone(),
-        Terminator::Unreachable => Vec::new(),
+        Terminator::Unwind | Terminator::Unreachable => Vec::new(),
     }
 }
 

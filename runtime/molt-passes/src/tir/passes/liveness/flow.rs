@@ -16,7 +16,7 @@ pub(super) fn terminator_direct_uses(term: &Terminator) -> Vec<ValueId> {
         // time, not an SSA value — it has no direct value use.
         Terminator::StateDispatch { .. } => vec![],
         Terminator::Return { values } => values.clone(),
-        Terminator::Unreachable => vec![],
+        Terminator::Unwind | Terminator::Unreachable => vec![],
     }
 }
 

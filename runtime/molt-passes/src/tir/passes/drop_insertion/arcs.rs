@@ -109,7 +109,7 @@ pub(super) fn terminator_arcs(term: &Terminator) -> Vec<Arc> {
             });
             out
         }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => vec![],
     }
 }
 

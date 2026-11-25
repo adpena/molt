@@ -838,6 +838,33 @@ fn arithmetic_return_contracts_require_exact_not_annotated_operands() {
 }
 
 #[test]
+fn a_pending_exception_exit_does_not_widen_a_successful_return() {
+    let mut ir: FunctionIR = serde_json::from_value(serde_json::json!({
+        "name":"checked_integer", "params":["exception"], "return_abi":"value",
+        "ops":[
+            {"kind":"check_exception", "exception_edge":"origin", "value":12},
+            {"kind":"const", "value":7, "out":"answer"},
+            {"kind":"ret", "args":["answer"]},
+            {"kind":"label", "value":12},
+            {"kind":"ret_void", "unwind":true}
+        ]
+    }))
+    .unwrap();
+    let body = lower_to_tir(&ir);
+    assert_eq!(body.return_type, TirType::I64);
+    assert!(
+        body.blocks
+            .values()
+            .any(|block| matches!(block.terminator, Terminator::Unwind))
+    );
+    ir.ops.last_mut().unwrap().unwind = false;
+    assert_eq!(
+        lower_to_tir(&ir).return_type,
+        TirType::I64.meet(&TirType::None)
+    );
+}
+
+#[test]
 fn annotated_parameter_returns_do_not_promise_exact_scalar_abi() {
     for annotation in ["int", "float", "bool", "str", "bytes"] {
         let mut source = make_func(

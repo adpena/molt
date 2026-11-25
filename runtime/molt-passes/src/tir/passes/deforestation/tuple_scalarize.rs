@@ -137,7 +137,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
                     *use_counts.entry(*v).or_insert(0) += 1;
                 }
             }
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 

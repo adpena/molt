@@ -126,6 +126,7 @@ pub(super) fn emit_structured_loop_region(
                     Terminator::Switch { .. }
                     | Terminator::StateDispatch { .. }
                     | Terminator::Return { .. }
+                    | Terminator::Unwind
                     | Terminator::Unreachable => break,
                 };
                 if next == region.cond_block {
@@ -265,6 +266,7 @@ pub(super) fn emit_structured_loop_region(
                     | Terminator::Switch { .. }
                     | Terminator::StateDispatch { .. }
                     | Terminator::Return { .. }
+                    | Terminator::Unwind
                     | Terminator::Unreachable => {}
                 }
             }
@@ -304,7 +306,7 @@ pub(super) fn emit_structured_loop_region(
             func.blocks.get(bid).is_some_and(|blk| {
                 matches!(
                     blk.terminator,
-                    Terminator::Return { .. } | Terminator::Unreachable
+                    Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable
                 )
             })
         })
@@ -409,6 +411,7 @@ pub(super) fn emit_structured_loop_region(
                         Terminator::Switch { .. }
                         | Terminator::StateDispatch { .. }
                         | Terminator::Return { .. }
+                        | Terminator::Unwind
                         | Terminator::Unreachable => break,
                     }
                 }
@@ -711,6 +714,11 @@ pub(super) fn emit_terminator(
     match &block.terminator {
         Terminator::Return { values } => {
             emit_return_ops(values, out);
+        }
+        Terminator::Unwind => {
+            let mut exit = OpIR::new(molt_ir::OpKind::RetVoid);
+            exit.unwind = true;
+            out.push(exit);
         }
 
         Terminator::Branch { target, args } => {

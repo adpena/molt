@@ -639,6 +639,9 @@ pub struct OpIR {
     pub exception_edge: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exception_source: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
+    /// A value-less return that propagates the pending exception.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub unwind: bool,
     /// LocationId an Origin check's taken edge (and a poll's service path)
     /// stores before capture. Only the frame-location placement pass sets it,
     /// and only on an Origin check that one publication reaches.
@@ -864,11 +867,18 @@ fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
 }
 
 impl OpIR {
+    /// The serialized form of an exceptional TIR exit. At the wire boundary
+    /// the physical operation is still a value-less ABI return.
+    pub fn is_unwind_return(&self) -> bool {
+        self.kind == crate::OpKind::RetVoid && self.unwind
+    }
+
     pub fn new(kind: crate::OpKind) -> Self {
         Self {
             kind,
             value: Default::default(),
             exception_source: None,
+            unwind: false,
             frame_location: None,
             exception_edge: kind
                 .is_exception_check()
@@ -2391,6 +2401,7 @@ mod json_parse_tests {
             kind: crate::OpKind::Nop,
             exception_edge: None,
             exception_source: None,
+            unwind: false,
             frame_location: None,
             value: Some(7),
             f_value: Some(1.25),

@@ -21,7 +21,7 @@ fn real_uses_in_terminator(term: &Terminator, uses: &mut HashSet<ValueId>) {
         Terminator::Return { values } => {
             uses.extend(values.iter().copied());
         }
-        Terminator::Unreachable => {}
+        Terminator::Unwind | Terminator::Unreachable => {}
     }
 }
 
@@ -115,7 +115,7 @@ fn propagate_terminator_liveness(
             }
             changed
         }
-        Terminator::Return { .. } | Terminator::Unreachable => false,
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => false,
     }
 }
 

@@ -1,9 +1,7 @@
-use molt_ir::deterministic_hash::HashSet;
-
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
+use crate::tir::dominators::{checked_exception_observer, executable_reachable_blocks};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, TirOp, dead_placeholder_const_for_type};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::owned_alias;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -11,7 +9,6 @@ use crate::tir::values::{TirValue, ValueId};
 use super::activation::{Activations, Binding};
 use super::call_sites::{CallSite, call_site_has_arg_incref};
 use super::clone_body::clone_function_body_with_fresh_ids;
-use crate::tir::clone_support::exception_label_of;
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
 /// `callee` (an owned snapshot) with the callee's inlined body.
@@ -123,36 +120,37 @@ pub(super) fn splice_call_site(
     }
     let callee = activations.prepare(callee, &bindings)?;
 
-    // Classify the callee's `Return` blocks on its **terminator-only** CFG:
-    //  * NORMAL return - reachable from entry through terminator edges. Carries
-    //    the function's actual return value.
-    //  * EXCEPTION EXIT - reachable ONLY via implicit exception edges
-    //    (`CheckException` -> function-exit). A `ret_void` "propagate the pending
-    //    flag" exit; it carries no value.
-    // This classification (computed on the callee, before any mutation) drives
-    // both the pre-check below and the exception-exit routing in the rewrite loop.
-    let normal_reachable = reachable_blocks_with(callee, CfgEdgePolicy::TerminatorOnly);
-
-    // Return-arity compatibility pre-check (BEFORE any mutation, so a refusal
-    // leaves `caller` byte-identical - no fragile mid-splice rollback). The
-    // continuation carries one argument iff the call produces a value. Every
-    // NORMAL-return site must then carry a value: a value call demands exactly
-    // one returned value from each normal return. A normal return that carries
-    // *no* value while the call expects one is a frontend-shape mismatch we
-    // refuse rather than fabricate a value for. (An EXCEPTION-EXIT carries no
-    // value by construction; it is handled by direct handler routing or
-    // placeholder padding, not refused. Refusing it would re-dormant the inliner
-    // on every value-returning observation-only callee, which is the whole point
-    // of this arc.)
-    let call_wants_value = call_result.is_some();
-    if call_wants_value {
-        for (bid, block) in &callee.blocks {
-            if let Terminator::Return { values } = &block.terminator
-                && normal_reachable.contains(bid)
-                && values.is_empty()
-            {
-                return None;
-            }
+    // A value call requires one result from a reachable ordinary return.
+    // An unwind requires a caller observer that can run without a result.
+    let reachable = std::cell::OnceCell::new();
+    let check = callee
+        .blocks
+        .values()
+        .any(|block| matches!(block.terminator, Terminator::Unwind))
+        .then(|| {
+            checked_unwind_observer(
+                caller,
+                caller.blocks[&block_id].ops.get(op_index + 1),
+                call_result,
+            )
+        })
+        .flatten();
+    for block in callee.blocks.values() {
+        let incompatible = match &block.terminator {
+            Terminator::Return { values } => call_result.is_some() && values.is_empty(),
+            Terminator::Unwind => check.is_none(),
+            Terminator::Branch { .. }
+            | Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Unreachable => false,
+        };
+        if incompatible
+            && reachable
+                .get_or_init(|| executable_reachable_blocks(callee))
+                .contains(&block.id)
+        {
+            return None;
         }
     }
 
@@ -228,17 +226,6 @@ pub(super) fn splice_call_site(
     // Clone the prepared body into the caller (params -> bindings).
     let cloned = clone_function_body_with_fresh_ids(callee, caller, &parameter_values);
 
-    // The cloned block ids of the callee's EXCEPTION-EXIT blocks (reached only
-    // via exception edges). Their cloned `Return`s either branch directly to the
-    // caller handler or use placeholder padding when the continuation carries a
-    // value.
-    let exception_exit_clones: HashSet<BlockId> = callee
-        .blocks
-        .keys()
-        .filter(|bid| !normal_reachable.contains(bid))
-        .filter_map(|bid| cloned.block_map.get(bid).copied())
-        .collect();
-
     // Split the caller block. Take the original block out, partition its ops.
     let original = caller
         .blocks
@@ -280,108 +267,39 @@ pub(super) fn splice_call_site(
         None => Vec::new(),
     };
     let cont_arity = cont_args.len();
-    let cont_ty: Option<TirType> = cont_args.first().map(|a| a.ty.clone());
-    debug_assert!(
-        cont_arity <= 1,
-        "continuation arity is 0 (void) or 1 (value)"
-    );
-
-    // Observation-only exception exits can bypass the value continuation when
-    // the caller's first post-call op is the expected `CheckException`: pending
-    // exceptions would immediately jump to that handler, and the call result is
-    // dead on that edge. Branching directly to the handler avoids fabricating a
-    // `None`/placeholder value into the normal continuation phi, which would
-    // otherwise poison scalar raw-carrier projection for inlined numeric callees.
-    let direct_exception_target = (cont_arity == 1)
-        .then(|| post_call_exception_target(caller, &cont_ops))
-        .flatten();
-
-    // Rewrite each cloned `Return { values }` into a branch to the continuation
-    // or, for directable observation-only exception exits, straight to the
-    // caller's exception target.
-    //  * A NORMAL return (value call): branch with the returned value - the
-    //    pre-check guarantees it carries one.
-    //  * An EXCEPTION-EXIT return (`ret_void`) with a direct exception target:
-    //    branch straight to that target with no args. The call result is dead on
-    //    that edge because the post-call `CheckException` would reroute before
-    //    any result use.
-    //  * An EXCEPTION-EXIT return (`ret_void`) into a value-carrying continuation
-    //    with no direct target: synthesize a representation-matched DEAD
-    //    placeholder for the missing continuation arg. The value is provably
-    //    dead, and the typed placeholder keeps the continuation phi's
-    //    representation clean for codegen.
-    //  * A void call (cont_arity 0): branch with no args (any returned value, on
-    //    the normal or exception path, is discarded - the call discarded it too).
+    debug_assert!(cont_arity <= 1);
     for &cloned_bid in &cloned.cloned_blocks {
-        let return_values: Option<Vec<ValueId>> = match &caller.blocks[&cloned_bid].terminator {
-            Terminator::Return { values } => Some(values.clone()),
-            _ => None,
-        };
-        let Some(values) = return_values else {
+        let unwind = matches!(caller.blocks[&cloned_bid].terminator, Terminator::Unwind);
+        let Some(values) = caller.blocks[&cloned_bid].terminator.exit_values() else {
             continue;
         };
-
-        if let Some(held) = held_callable {
-            // Site-owned, after the prepared result capture and frame clear,
-            // on both normal and implicit exceptional exits. Do not put it
-            // in the shared prepared body or the caller's continuation.
-            let mut release = TirOp::new(OpCode::DelBoundary, vec![held], vec![]);
-            release.source_span = call_span;
-            caller
-                .blocks
-                .get_mut(&cloned_bid)
-                .expect("cloned return block")
-                .ops
-                .push(release);
-        }
-
-        if exception_exit_clones.contains(&cloned_bid)
-            && let Some(target) = direct_exception_target
-        {
-            caller
-                .blocks
-                .get_mut(&cloned_bid)
-                .expect("cloned block missing")
-                .terminator = Terminator::Branch {
-                target,
-                args: Vec::new(),
-            };
-            continue;
-        }
-
-        let branch_args: Vec<ValueId> = match (cont_arity, values.first()) {
-            (0, _) => Vec::new(),
-            (1, Some(&v)) => vec![v],
-            (1, None) => {
-                // Void return into a value-carrying continuation. The pre-check
-                // refused any NORMAL return that carries no value, so this is
-                // exclusively an exception-exit.
-                debug_assert!(
-                    exception_exit_clones.contains(&cloned_bid),
-                    "void return survived the pre-check in a non-exception-exit block"
-                );
-                let ty = cont_ty.clone().unwrap_or(TirType::DynBox);
-                let placeholder = caller.fresh_value();
-                caller.value_types.entry(placeholder).or_insert(ty.clone());
-                let const_op = dead_placeholder_const_for_type(&ty, placeholder);
-                caller
-                    .blocks
-                    .get_mut(&cloned_bid)
-                    .expect("cloned block missing")
-                    .ops
-                    .push(const_op);
-                vec![placeholder]
-            }
-            _ => unreachable!("continuation arity is 0 or 1 (debug-asserted)"),
-        };
-        caller
+        let branch_args = values.first().copied().filter(|_| cont_arity == 1);
+        let block = caller
             .blocks
             .get_mut(&cloned_bid)
-            .expect("cloned block missing")
-            .terminator = Terminator::Branch {
-            target: cont_block_id,
-            args: branch_args,
-        };
+            .expect("cloned activation exit");
+
+        if let Some(held) = held_callable {
+            let mut release = TirOp::new(OpCode::DelBoundary, vec![held], vec![]);
+            release.source_span = call_span;
+            block.ops.push(release);
+        }
+        if unwind {
+            if let Some(observer) = check.as_ref() {
+                // Keep the caller's traceback and poll even on a spliced exit.
+                block.ops.push(observer.clone());
+            } else {
+                // Only structurally retained unreachable callee exits arrive here.
+                block.terminator = Terminator::Unreachable;
+            }
+        } else if cont_arity == 1 && branch_args.is_none() {
+            block.terminator = Terminator::Unreachable;
+        } else {
+            block.terminator = Terminator::Branch {
+                target: cont_block_id,
+                args: branch_args.into_iter().collect(),
+            };
+        }
     }
 
     // Insert B_pre (original id, ops 0..call, branch into cloned entry).
@@ -431,16 +349,19 @@ fn callee_return_value_type(callee: &TirFunction) -> Option<TirType> {
     None
 }
 
-fn post_call_exception_target(caller: &TirFunction, cont_ops: &[TirOp]) -> Option<BlockId> {
-    let first = cont_ops.first()?;
-    if first.opcode != OpCode::CheckException {
-        return None;
-    }
-    let label = exception_label_of(first)?;
-    let target = caller
-        .label_id_map
-        .iter()
-        .find_map(|(block, block_label)| (*block_label == label).then_some(BlockId(*block)))?;
-    let target_block = caller.blocks.get(&target)?;
-    target_block.args.is_empty().then_some(target)
+fn checked_unwind_observer(
+    caller: &TirFunction,
+    first: Option<&TirOp>,
+    call_result: Option<ValueId>,
+) -> Option<TirOp> {
+    let check = first.filter(|op| {
+        op.results.is_empty() && !call_result.is_some_and(|result| op.operands.contains(&result))
+    })?;
+    checked_exception_observer(check, |label| {
+        caller
+            .label_id_map
+            .iter()
+            .find_map(|(&block, &value)| (value == label).then_some(BlockId(block)))
+    })
+    .map(|_| check.clone())
 }

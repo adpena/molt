@@ -8,7 +8,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
-from .paths import TABLE
+from tools.correspondence_sources import parse_rust_enum_variants
+
+from .paths import TABLE, tir_path
 from .schema import (
     FUNCTION_REFERENCE_ROLES,
     _SIMPLEIR_OP_VALUE_RULES,
@@ -57,7 +59,6 @@ from .schema import (
     _SSA_S_VALUE_ATTR_KEYS,
     _STRENGTH_REDUCTION_RULES,
     _TERMINATOR_OWNERSHIP_LEAVES,
-    _TERMINATOR_VARIANTS,
     _TIR_VERIFY_ATTR_RULES,
     _TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
     _TYPE_REFINE_OPERAND_TYPE_RULES,
@@ -2784,13 +2785,15 @@ def _validate_terminators(data: dict) -> None:
                     f"terminator {name}: {col!r} must be one of "
                     f"{sorted(_TERMINATOR_OWNERSHIP_LEAVES)}, got {leaf!r}"
                 )
-    if seen != set(_TERMINATOR_VARIANTS):
+    source = tir_path("blocks.rs").read_text(encoding="utf-8")
+    variants = set(parse_rust_enum_variants(source, "Terminator"))
+    if seen != variants:
         raise OpKindTableError(
             "[[terminator]] must be EXHAUSTIVE over the Terminator enum "
             "(an unclassified variant would silently inherit a transfer/borrow "
             "assumption in drop_insertion's transfer carve-out): "
-            f"table-only={sorted(seen - set(_TERMINATOR_VARIANTS))} "
-            f"enum-only={sorted(set(_TERMINATOR_VARIANTS) - seen)}"
+            f"table-only={sorted(seen - variants)} "
+            f"enum-only={sorted(variants - seen)}"
         )
 
 

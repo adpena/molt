@@ -342,20 +342,6 @@ _SIMPLEIR_CONTROL_FACT_FIELDS = (
 )
 _SIMPLEIR_RETURN_SHAPES = {"value", "void"}
 
-# The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
-# EXHAUSTIVE over this set (a new variant fails to render until classified —
-# mirroring the [[opcode]] exhaustiveness discipline). Kept here (not parsed from
-# Rust) as the single declarative expectation; tests/test_gen_op_kinds.py
-# cross-checks it against the enum declared in blocks.rs so the two cannot drift.
-_TERMINATOR_VARIANTS = (
-    "Branch",
-    "CondBranch",
-    "Switch",
-    "StateDispatch",
-    "Return",
-    "Unreachable",
-)
-
 # The flat classifier sets (mirroring the flat `matches!` arms in
 # alias_analysis.rs). Kept distinct from the mapper's alias grouping because
 # the classifier groups per-individual-kind, not per-OpCode-equivalence.
@@ -554,7 +540,6 @@ __all__ = (
     "_SSA_S_VALUE_ATTR_KEYS",
     "_STRENGTH_REDUCTION_RULES",
     "_TERMINATOR_OWNERSHIP_LEAVES",
-    "_TERMINATOR_VARIANTS",
     "_TIR_VERIFY_ATTR_RULES",
     "_BOXED_ALLOCATION_LAYOUT_RULES",
     "_TYPE_REFINE_ATTR_RESULT_TYPE_RULES",
