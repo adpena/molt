@@ -33,7 +33,45 @@ use crate::tir::types::TirType;
 #[derive(Default)]
 pub struct ExactMembers {
     fields: HashMap<ClassId, HashMap<String, i64>>,
-    methods: HashMap<ClassId, HashMap<String, Option<MethodEntry>>>,
+    methods: HashMap<String, MethodCandidates>,
+}
+
+#[derive(Default)]
+pub(super) struct MethodCandidates(HashMap<ClassId, Option<MethodEntry>>);
+
+impl MethodCandidates {
+    fn entry(&self, class: ClassId) -> Option<&MethodEntry> {
+        self.0.get(&class)?.as_ref()
+    }
+
+    pub(super) fn resolve(&self, class: ClassId, arity: usize) -> Option<FunctionId> {
+        let entry = self.entry(class)?;
+        (entry.arity == arity).then_some(entry.callee)
+    }
+
+    pub(super) fn callees(&self, arity: usize) -> impl Iterator<Item = FunctionId> + '_ {
+        self.0
+            .values()
+            .flatten()
+            .filter_map(move |entry| (entry.arity == arity).then_some(entry.callee))
+    }
+}
+
+impl ExactMembers {
+    pub(super) fn candidates(&self, name: &str) -> Option<&MethodCandidates> {
+        self.methods.get(name)
+    }
+
+    pub(super) fn has_methods(&self) -> bool {
+        !self.methods.is_empty()
+    }
+
+    pub(super) fn late_modules(&self) -> impl Iterator<Item = &str> {
+        self.methods
+            .values()
+            .flat_map(|methods| methods.0.values().flatten())
+            .filter_map(|entry| entry.maker.as_ref().map(|maker| maker.module.as_str()))
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,15 +80,6 @@ struct Maker {
     body: usize,
     block: BlockId,
     value: ValueId,
-}
-
-impl ExactMembers {
-    pub(super) fn late_modules(&self) -> impl Iterator<Item = &str> {
-        self.methods
-            .values()
-            .flat_map(|methods| methods.values().flatten())
-            .filter_map(|entry| entry.maker.as_ref().map(|maker| maker.module.as_str()))
-    }
 }
 
 struct MethodEntry {
@@ -175,15 +204,19 @@ pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembe
             }
             table
                 .methods
-                .entry(class)
-                .or_default()
                 .entry(name)
+                .or_default()
+                .0
+                .entry(class)
                 .and_modify(|previous| *previous = None)
                 .or_insert(entry);
         }
     }
-    table.methods.retain(|class, methods| {
-        for entry in methods.values_mut().flatten() {
+    table.methods.retain(|_, methods| {
+        methods.0.retain(|class, entry| {
+            let Some(entry) = entry else {
+                return false;
+            };
             if entry
                 .cell
                 .as_ref()
@@ -191,8 +224,9 @@ pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembe
             {
                 entry.cell = None;
             }
-        }
-        stamps.get(class) == Some(&true)
+            stamps.get(class) == Some(&true)
+        });
+        !methods.0.is_empty()
     });
     table
 }
@@ -208,38 +242,74 @@ fn field_rewrite(op: &TirOp) -> Option<(OpKind, bool)> {
     }
 }
 
-/// Rewrite field accesses and complete method load/call pairs on exact receivers.
-pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
-    run_with_cells(func, table, &mut CellRequests::default())
+/// A method value and bound receiver are created together, before arguments.
+pub(super) fn method_load(op: &TirOp) -> Option<((ValueId, ValueId), ValueId, &str)> {
+    let [receiver] = op.operands[..] else {
+        return None;
+    };
+    let [callable, bound_self] = op.results[..] else {
+        return None;
+    };
+    if op.opcode != OpCode::LoadMethod {
+        return None;
+    }
+    let AttrValue::Str(name) = op.attrs.get("name")? else {
+        return None;
+    };
+    Some(((callable, bound_self), receiver, name))
 }
 
+pub(super) fn method_call(op: &TirOp) -> Option<((ValueId, ValueId), &[ValueId])> {
+    let [callable, bound_self, args @ ..] = op.operands.as_slice() else {
+        return None;
+    };
+    (op.opcode == OpCode::CallLoadedMethod
+        && op.results.len() == 1
+        && (0..op.operands.len()).all(|i| op.operand_custody(i) == ParameterCustody::Transferred))
+    .then_some(((*callable, *bound_self), args))
+}
+
+#[cfg(test)]
+pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
+    run_with_cells(
+        func,
+        table,
+        &mut CellRequests::default(),
+        &HashMap::default(),
+    )
+    .0
+}
+
+pub(super) type MethodTargets = HashMap<(BlockId, usize), (FunctionId, FunctionId)>;
+
+/// Type flow supplies a specialized body ID paired with the original callee
+/// proved by this same member table.
 pub(super) fn run_with_cells(
     func: &mut TirFunction,
     table: &ExactMembers,
     cells: &mut CellRequests,
-) -> usize {
+    targets: &MethodTargets,
+) -> (usize, usize) {
     if !func.blocks.values().flat_map(|b| &b.ops).any(|op| {
         (!table.fields.is_empty() && field_rewrite(op).is_some())
             || (!table.methods.is_empty() && op.opcode == OpCode::LoadMethod)
     }) {
-        return 0;
+        return (0, 0);
     }
     let exact = crate::tir::type_refine::extract_exact_class_map(func);
     if exact.is_empty() {
-        return 0;
+        return (0, 0);
     }
     let mut rewritten = 0;
+    let mut specialized = 0;
     let mut pairs = HashMap::default();
     if !table.methods.is_empty() {
         for op in func.blocks.values_mut().flat_map(|b| &mut b.ops) {
-            if op.opcode == OpCode::LoadMethod
-                && let [receiver] = op.operands.as_slice()
-                && let [callable, bound_self] = op.results.as_slice()
-                && let Some(TirType::Class(class)) = exact.get(receiver)
-                && let Some(AttrValue::Str(name)) = op.attrs.get("name")
-                && let Some(Some(entry)) = table.methods.get(class).and_then(|m| m.get(name))
+            if let Some((pair, receiver, name)) = method_load(op)
+                && let Some(TirType::Class(class)) = exact.get(&receiver)
+                && let Some(entry) = table.candidates(name).and_then(|m| m.entry(*class))
             {
-                pairs.insert((*callable, *bound_self), entry);
+                pairs.insert(pair, entry);
                 if !op.proven_target() {
                     op.set_proven_target(true);
                     rewritten += 1;
@@ -248,24 +318,27 @@ pub(super) fn run_with_cells(
         }
     }
     let mut cell_reads = HashMap::default();
-    for block in func.blocks.values_mut() {
-        for op in &mut block.ops {
-            if op.opcode == OpCode::CallLoadedMethod
-                && op.results.len() == 1
-                && let [callable, bound_self, args @ ..] = op.operands.as_slice()
-                && let Some(entry) = pairs.get(&(*callable, *bound_self))
+    for (&block_id, block) in &mut func.blocks {
+        for (index, op) in block.ops.iter_mut().enumerate() {
+            if let Some((pair, args)) = method_call(op)
+                && let Some(entry) = pairs.get(&pair)
                 && entry.arity == args.len() + 1
-                && (0..op.operands.len())
-                    .all(|i| op.operand_custody(i) == ParameterCustody::Transferred)
             {
                 // Keep the captured operands. The direct entry uses the live
                 // function object's globals and closure.
                 if entry.cell.is_some() || entry.maker.is_some() {
-                    cell_reads.insert((*callable, *bound_self), *entry);
+                    cell_reads.insert(pair, *entry);
                 }
+                let callee = match targets.get(&(block_id, index)) {
+                    Some(&(origin, clone)) if origin == entry.callee => {
+                        specialized += 1;
+                        clone
+                    }
+                    _ => entry.callee,
+                };
                 op.opcode = OpCode::Call;
                 op.origin = Some(OpKind::CallGuarded);
-                op.callee = Some(entry.callee);
+                op.callee = Some(callee);
                 op.set_method_site(None);
                 op.set_proven_target(true);
                 rewritten += 1;
@@ -292,7 +365,10 @@ pub(super) fn run_with_cells(
             rewritten += 1;
         }
     }
-    rewritten + replace_cell_loads(func, &cell_reads, cells)
+    (
+        rewritten + replace_cell_loads(func, &cell_reads, cells),
+        specialized,
+    )
 }
 
 fn replace_cell_loads(

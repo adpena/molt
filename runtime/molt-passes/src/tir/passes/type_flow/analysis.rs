@@ -24,7 +24,7 @@ use crate::tir::type_refine::{ExactCallResults, ExactScalarPlan, ExactSeeds};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::sites::{ArgKind, Site, join_return, returns_value};
+use super::sites::{ArgKind, Resolution, Site, join_return, returns_value};
 
 pub(super) type Key = Vec<ArgKind>;
 
@@ -58,7 +58,7 @@ pub(super) struct Analysis {
 pub(super) struct Inputs<'a> {
     pub(super) module: &'a TirModule,
     pub(super) body_index: &'a [Option<usize>],
-    pub(super) sites: &'a [Vec<Site>],
+    pub(super) sites: &'a [Vec<Site<'a>>],
     pub(super) result_sites: Vec<HashMap<ValueId, usize>>,
     pub(super) relevant: &'a [Vec<bool>],
     pub(super) participates: &'a [bool],
@@ -73,7 +73,7 @@ impl Inputs<'_> {
     fn forwarded_result(
         &self,
         callee: usize,
-        site: &Site,
+        site: &Site<'_>,
         facts: &HashMap<ValueId, TirType>,
     ) -> Option<TirType> {
         if self.specializable[callee]
@@ -83,15 +83,16 @@ impl Inputs<'_> {
         {
             return None;
         }
+        let first = usize::from(self.module.functions[callee].has_closure_parameter());
         if !site
-            .parameter_arguments()
+            .parameter_arguments(first)
             .any(|(_, value)| facts.get(&value).is_some_and(|ty| *ty != TirType::DynBox))
         {
             return None;
         }
         let parameter = self.exact_plan(callee).forwarded_return_parameter()?;
         let (_, argument) = site
-            .parameter_arguments()
+            .parameter_arguments(first)
             .find(|(position, _)| *position == parameter)?;
         facts.get(&argument).cloned()
     }
@@ -207,22 +208,29 @@ impl Analysis {
             let facts = self.facts(inputs, id);
             let mut moved = false;
             for (position, site) in inputs.sites[body].iter().enumerate() {
-                let Some(key) = site_key(inputs, site, &facts) else {
-                    continue;
+                let (target, ret) = match site.resolve(&facts) {
+                    Resolution::Pending => continue,
+                    Resolution::Opaque => (None, TirType::DynBox),
+                    Resolution::Body(callee) => {
+                        let callee = inputs.body_index[callee.index()]
+                            .expect("a resolved site names a body");
+                        let Some(key) = site_key(inputs, callee, site, &facts) else {
+                            continue;
+                        };
+                        let fresh = self.contexts.len();
+                        let target = self.intern(inputs, callee, key);
+                        if self.contexts.len() != fresh {
+                            next.push(target);
+                        }
+                        self.readers[target.0].insert(id);
+                        let ret = inputs
+                            .forwarded_result(callee, site, &facts)
+                            .unwrap_or_else(|| self.contexts[target.0].ret.clone());
+                        (Some(target), ret)
+                    }
                 };
-                let callee =
-                    inputs.body_index[site.callee.index()].expect("a resolved site names a body");
-                let fresh = self.index.len();
-                let target = self.intern(inputs, callee, key);
-                if self.index.len() != fresh {
-                    next.push(target);
-                }
-                self.readers[target.0].insert(id);
-                let ret = inputs
-                    .forwarded_result(callee, site, &facts)
-                    .unwrap_or_else(|| self.contexts[target.0].ret.clone());
                 let context = &mut self.contexts[id.0];
-                context.targets[position] = Some(target);
+                context.targets[position] = target;
                 let result = join_return(&context.results[position], &ret);
                 if result != context.results[position] {
                     context.results[position] = result;
@@ -264,16 +272,21 @@ pub(super) fn seeds_of(key: &Key, params: usize) -> Vec<TirType> {
 
 /// The key a site's argument facts select in its callee, or `None` while an
 /// argument the key reads is still bottom.
-fn site_key(inputs: &Inputs<'_>, site: &Site, facts: &HashMap<ValueId, TirType>) -> Option<Key> {
-    let callee = inputs.body_index[site.callee.index()]?;
+fn site_key(
+    inputs: &Inputs<'_>,
+    callee: usize,
+    site: &Site<'_>,
+    facts: &HashMap<ValueId, TirType>,
+) -> Option<Key> {
     if !inputs.specializable[callee] {
         return Some(Vec::new());
     }
     let relevant = &inputs.relevant[callee];
+    let first = usize::from(inputs.module.functions[callee].has_closure_parameter());
     // Captured cells can change even when the executable target is unique.
     let mut key = Vec::with_capacity(relevant.len());
-    key.resize(site.first_parameter(), ArgKind::Dyn);
-    for (position, arg) in site.parameter_arguments() {
+    key.resize(first, ArgKind::Dyn);
+    for (position, arg) in site.parameter_arguments(first) {
         let kind = if relevant[position] {
             ArgKind::of(facts.get(&arg).unwrap_or(&TirType::DynBox))?
         } else {
