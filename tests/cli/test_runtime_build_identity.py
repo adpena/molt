@@ -541,6 +541,10 @@ def test_wasm_pair_reuses_only_its_independent_source_and_member_observation(
     from molt.cli.runtime_wasm_build_spec import _RuntimeWasmBuildSpec
     from tests.cli.test_runtime_wasm_single_compile import _specs
 
+    # The Python unit partition has no host WASI SDK. Bind the existing
+    # receipt-backed fixture before resolving the pair through real admission.
+    clear_wasm_toolchain_selection(monkeypatch)
+    monkeypatch.setenv("WASI_SDK_PATH", str(_sdk(identity_root).sdk))
     manifest = identity_root / "Cargo.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8")
