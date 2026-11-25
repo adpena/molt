@@ -63,28 +63,43 @@ pub(crate) fn effective_return_type_from_repr(
     tir_func: &TirFunction,
     repr_by_value: &HashMap<ValueId, Repr>,
 ) -> TirType {
+    let (success, unwinds) = return_carriers(tir_func, repr_by_value);
+    if unwinds {
+        // The public pending-state ABI has a boxed empty carrier on unwind.
+        success.meet(&TirType::None)
+    } else if success == TirType::Never {
+        TirType::None
+    } else {
+        success
+    }
+}
+
+fn return_carriers(
+    tir_func: &TirFunction,
+    repr_by_value: &HashMap<ValueId, Repr>,
+) -> (TirType, bool) {
+    use crate::tir::blocks::Terminator;
     let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
     let mut result = TirType::Never;
+    let mut unwinds = false;
     for block in tir_func
         .blocks
         .values()
         .filter(|block| reachable.contains(&block.id))
     {
+        if matches!(block.terminator, Terminator::Unwind) {
+            unwinds = true;
+            continue;
+        }
         let Some(values) = block.terminator.exit_values() else {
             continue;
         };
-        // A value-less exit still has a boxed empty carrier in the current
-        // pending-state ABI. Semantic return analysis ignores unwind exits.
         let carrier = values.first().map_or(TirType::None, |id| {
             effective_value_type_from_repr(*id, &tir_func.return_type, repr_by_value)
         });
         result = result.meet(&carrier);
     }
-    if result == TirType::Never {
-        TirType::None
-    } else {
-        result
-    }
+    (result, unwinds)
 }
 
 /// Shared producer-proven physical carriers for a TIR function.
@@ -176,6 +191,7 @@ impl ProducerCarrierPlan {
             return_type: signature
                 .returns_value
                 .then(|| self.effective_return_type(body)),
+            return_availability: Default::default(),
         }
     }
 
@@ -186,6 +202,13 @@ impl ProducerCarrierPlan {
 
     pub fn effective_return_type(&self, tir_func: &TirFunction) -> TirType {
         effective_return_type_from_repr(tir_func, &self.repr_by_value)
+    }
+
+    /// A scalar carrier usable by an entry whose callers all observe unwind
+    /// before reading the result. Entry selection owns that call-site proof.
+    pub fn checked_return_type(&self, tir_func: &TirFunction) -> Option<TirType> {
+        let (success, unwinds) = return_carriers(tir_func, &self.repr_by_value);
+        (unwinds && success.is_numeric()).then_some(success)
     }
 }
 

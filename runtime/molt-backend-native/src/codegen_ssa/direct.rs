@@ -11,6 +11,7 @@ use super::function::{FunctionCx, ResultCustody};
 use super::scalar;
 use super::value_table::HeldCarrier;
 use crate::tir::ops::TirOp;
+use crate::tir::types::TirType;
 
 /// The boxed word of `None`.
 const NONE_WORD: u64 = nanbox::QNAN | nanbox::TAG_NONE;
@@ -50,6 +51,17 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// through would drop its side effect or alias a fresh value, which the
     /// drop pass then frees twice (`alias_analysis::CopyLowering`).
     pub(crate) fn copy_op(&mut self, b: &mut B, op: &TirOp) {
+        if let Some(source) = op.checked_call_result_source() {
+            let result = op.results[0];
+            let carrier = self.plan.effective_value_type(result, &TirType::DynBox);
+            if carrier.is_numeric() {
+                let operands = self.operands();
+                let value = operands.resolve(b, source);
+                let value = self.coerce(b, value, operands.held(source), Some(source), &carrier);
+                self.bind(result, value, HeldCarrier::of(&carrier));
+                return;
+            }
+        }
         let Some(kind) = op.origin else {
             self.pass_through(b, op);
             return;

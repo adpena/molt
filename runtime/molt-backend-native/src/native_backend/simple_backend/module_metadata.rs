@@ -4,6 +4,95 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(feature = "native-backend")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
+/// A specialized clone has no published object or external declaration. It
+/// can use the success-only ABI when every terminal reference calls it and
+/// checks for unwind before using the raw result. Generic and frozen provider
+/// rows keep their ordinary ABI.
+pub(super) fn checked_private_returns<'a>(
+    bodies: impl IntoIterator<
+        Item = Option<(
+            &'a crate::tir::TirFunction,
+            &'a crate::representation_plan::ProducerCarrierPlan,
+        )>,
+    >,
+    private_entries: impl IntoIterator<Item = molt_ir::FunctionId>,
+) -> BTreeMap<molt_ir::FunctionId, crate::tir::types::TirType> {
+    use crate::tir::type_refine::checked_successful_call_results;
+    use crate::tir::types::TirType;
+    use molt_ir::tir::call_targets::final_call_arguments;
+
+    let report = super::compile_driver::backend_timing_enabled();
+    let mut private_entries = private_entries.into_iter().peekable();
+    if private_entries.peek().is_none() {
+        if report {
+            eprintln!("MOLT_BACKEND_TIMING: checked raw returns 0 (no private entries)");
+        }
+        return BTreeMap::new();
+    }
+    let bodies: Vec<_> = bodies.into_iter().collect();
+    let mut candidates = BTreeMap::new();
+    let mut considered = 0;
+    for id in private_entries {
+        considered += 1;
+        if let Some((body, carriers)) = bodies[id.index()]
+            && body.return_abi.returns_value()
+            && let Some(ty) = carriers.checked_return_type(body)
+        {
+            candidates.insert(id, (ty, false));
+        }
+    }
+    let not_scalar = considered - candidates.len();
+    let (mut non_direct, mut carrier_mismatch, mut unobserved) = (0, 0, 0);
+    for (body, carriers) in bodies.into_iter().flatten() {
+        if candidates.is_empty() {
+            break;
+        }
+        let successful = std::cell::OnceCell::new();
+        for op in body.blocks.values().flat_map(|block| &block.ops) {
+            let Some(callee) = op.callee else { continue };
+            let Some((ty, used)) = candidates.get_mut(&callee) else {
+                continue;
+            };
+            let direct = final_call_arguments(op).is_some_and(|(_, args)| {
+                matches!(
+                    args,
+                    molt_ir::ir::CompiledCallArguments::Parameters(_)
+                        | molt_ir::ir::CompiledCallArguments::Direct(_)
+                )
+            });
+            if !direct {
+                non_direct += 1;
+            } else if let [result] = op.results.as_slice()
+                && carriers.effective_value_type(*result, &TirType::DynBox) == *ty
+            {
+                if successful
+                    .get_or_init(|| checked_successful_call_results(body))
+                    .contains(result)
+                {
+                    *used = true;
+                    continue;
+                }
+                unobserved += 1;
+            } else {
+                carrier_mismatch += 1;
+            }
+            candidates.remove(&callee);
+        }
+    }
+    let no_caller = candidates.values().filter(|(_, used)| !used).count();
+    let chosen: BTreeMap<_, _> = candidates
+        .into_iter()
+        .filter_map(|(id, (ty, used))| used.then_some((id, ty)))
+        .collect();
+    if report {
+        eprintln!(
+            "MOLT_BACKEND_TIMING: checked raw returns {}/{considered}, rejected: no raw success carrier={not_scalar} non-direct reference={non_direct} carrier mismatch={carrier_mismatch} unchecked use={unobserved} no caller={no_caller}",
+            chosen.len()
+        );
+    }
+    chosen
+}
+
 /// The compiled application handoff. Its declarations accompany terminal TIR;
 /// they have no source operations and must never enter the source IR decoder.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -70,6 +159,66 @@ pub(crate) struct NativeFinalFunction {
 
 #[cfg(feature = "native-backend")]
 impl NativeFinalFunctions {
+    pub(super) fn admit_checked_clone_returns(
+        &mut self,
+        clones: &[crate::tir::passes::type_flow::SpecializedClone],
+    ) {
+        let checked =
+            checked_private_returns(self.body_carriers(), clones.iter().map(|clone| clone.id));
+        for (id, ty) in checked {
+            let abi = self.rows[id.index()]
+                .local_linkage
+                .as_mut()
+                .expect("checked clone linkage");
+            abi.set_checked_raw_return(ty);
+        }
+    }
+
+    fn body_carriers(
+        &self,
+    ) -> impl Iterator<
+        Item = Option<(
+            &crate::tir::TirFunction,
+            &crate::representation_plan::ProducerCarrierPlan,
+        )>,
+    > {
+        self.rows
+            .iter()
+            .map(|row| row.body.as_ref().map(|body| (&body.tir, &body.carriers)))
+    }
+
+    #[cfg(feature = "jit")]
+    pub(super) fn validate_checked_returns(
+        &self,
+        linkage: &NativeBackendModuleContext,
+    ) -> Result<(), String> {
+        let expected: BTreeMap<_, _> = self
+            .ir
+            .functions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, function)| {
+                let abi = linkage.function_linkage_abi(&function.name)?;
+                abi.checked_raw_return().then(|| {
+                    (
+                        molt_ir::FunctionId::from_index(index),
+                        abi.return_type
+                            .as_ref()
+                            .expect("validated success carrier")
+                            .clone(),
+                    )
+                })
+            })
+            .collect();
+        let checked = checked_private_returns(self.body_carriers(), expected.keys().copied());
+        if checked != expected {
+            return Err(
+                "prepared JIT checked return differs from terminal call or carrier evidence".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Direct codegen fixtures deliberately author their final CFG, lifetime
     /// operations and backend metadata. Analyze that exact source without
     /// replacing it with a TIR projection or materializing executable polls.
@@ -296,9 +445,20 @@ impl NativeFinalFunctions {
     pub(super) fn into_jit_artifact(
         self,
         registry: ModuleRegistryIR,
-        linkage: NativeBackendModuleContext,
+        mut linkage: NativeBackendModuleContext,
         callables: crate::passes::AppCallableManifest,
     ) -> Result<PreparedJitApplication, String> {
+        for (function, row) in self.ir.functions.iter().zip(&self.rows) {
+            if let Some(abi) = row
+                .local_linkage
+                .as_ref()
+                .filter(|abi| abi.checked_raw_return())
+            {
+                linkage
+                    .function_linkage_abis
+                    .insert(function.name.clone(), abi.clone());
+            }
+        }
         let table = molt_ir::FunctionTable::of(&self.ir.functions);
         let bodies = self
             .rows
@@ -466,6 +626,18 @@ impl NativeBackendModuleContext {
                     function.name
                 ));
             }
+            if linkage_abi.checked_raw_return()
+                && (function.is_extern
+                    || !linkage_abi
+                        .return_type
+                        .as_ref()
+                        .is_some_and(|ty| ty.is_numeric()))
+            {
+                return Err(format!(
+                    "native linkage ABI `{}` has an invalid private success carrier",
+                    function.name
+                ));
+            }
             if signature != linkage_abi.source_signature {
                 return Err(format!(
                     "function `{}` signature {:?} disagrees with frozen native linkage signature {:?}",
@@ -543,6 +715,7 @@ impl NativeBackendModuleContext {
                         parameter_custody: function.parameter_custody.clone(),
                         param_types: carriers.param_types,
                         return_type,
+                        return_availability: Default::default(),
                     },
                 )
             })

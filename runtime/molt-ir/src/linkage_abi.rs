@@ -5,6 +5,15 @@
 //! late lowering stage of TIR reads it to admit a guarded direct call
 //! (HF-821 D4).
 
+/// Whether a machine return value can be consumed before checking pending
+/// exception state. A success-only slot carries an inert value on unwind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum ReturnAvailability {
+    #[default]
+    EveryExit,
+    SuccessOnly,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct NativeFunctionLinkageAbi {
     /// Target-neutral source ABI frozen from the owning FunctionIR before
@@ -19,6 +28,20 @@ pub struct NativeFunctionLinkageAbi {
     pub param_types: Vec<crate::tir::types::TirType>,
     /// `None` is a true native-void ABI. `Some` is the exact return carrier.
     pub return_type: Option<crate::tir::types::TirType>,
+    #[serde(default)]
+    pub return_availability: ReturnAvailability,
+}
+
+impl NativeFunctionLinkageAbi {
+    pub fn checked_raw_return(&self) -> bool {
+        self.return_availability == ReturnAvailability::SuccessOnly
+    }
+
+    pub fn set_checked_raw_return(&mut self, carrier: crate::tir::types::TirType) {
+        assert!(self.source_signature.returns_value && carrier.is_numeric());
+        self.return_type = Some(carrier);
+        self.return_availability = ReturnAvailability::SuccessOnly;
+    }
 }
 
 /// The source signature of every function a document defines or declares,

@@ -545,8 +545,15 @@ mod tests {
                 parameter_custody: vec![],
                 param_types: vec![],
                 return_type: returns_value.then_some(TirType::DynBox),
+                return_availability: Default::default(),
             };
-            emit_return(&mut cx, &mut b, &abi, value, Some(&frame));
+            emit_return(
+                &mut cx,
+                &mut b,
+                &abi,
+                super::super::returns::FunctionExit::Return(value),
+                Some(&frame),
+            );
             assert_eq!(b.edges.as_slice(), std::slice::from_ref(&expected));
             if expected == Edge::Unreachable {
                 assert!(diagnostics.borrow()[0].contains("native-void"));

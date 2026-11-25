@@ -691,6 +691,19 @@ pub fn finalize_function_drops(
         Some(audit_start.elapsed().as_millis()),
     );
     let stats = super::passes::run_drop_phase(func, tti);
+    // Exceptional cleanup may introduce the first use of the physical
+    // word outside the normal continuation. Preserve that distinction in
+    // the final SSA consumed by representation and linkage planning.
+    if func.blocks.values().any(|block| {
+        block
+            .ops
+            .iter()
+            .any(|op| op.callee.is_some() && op.exact_result_proof().is_some())
+    }) {
+        lowering_changed |= super::type_refine::project_checked_call_results(func, |op| {
+            op.exact_result_proof().is_some()
+        });
+    }
     emit_drop_function_audit(
         "after-drop-pass",
         func,

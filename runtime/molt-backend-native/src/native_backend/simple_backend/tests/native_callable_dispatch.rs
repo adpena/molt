@@ -1524,6 +1524,7 @@ fn terminal_drops_cleanup_matrix_links_and_executes_once() {
             molt_ir::linkage_abi::NativeFunctionLinkageAbi {
                 param_types: vec![word.clone(); source_signature.arity],
                 return_type: source_signature.returns_value.then_some(word),
+                return_availability: Default::default(),
                 parameter_custody: function.parameter_custody.clone(),
                 source_signature,
             },

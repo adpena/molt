@@ -101,6 +101,7 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         parameter_custody: vec![molt_backend::ir::ParameterCustody::Transferred],
         param_types: vec![molt_backend::tir::types::TirType::DynBox],
         return_type: Some(molt_backend::tir::types::TirType::DynBox),
+        return_availability: Default::default(),
     };
     let mut context = base_context.clone();
     context["function_linkage_abis"] = serde_json::json!({"target": abi});
