@@ -126,7 +126,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     local_class_ids: list[ClassId]
     local_imported_modules: set[str]
     local_imported_names: set[str]
-    local_intrinsic_wrappers: set[str]
+    local_intrinsic_wrappers: dict[str, tuple[str, ...]]
     locals: dict[str, MoltValue]
     loop_guard_assumptions: list[dict[str, tuple[ClassId, bool, int]]]
     loop_layout_guards: list[dict[str, tuple[ClassId, MoltValue, int]]]
@@ -1880,8 +1880,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
 
-    @staticmethod
-    def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool: ...
+    def _is_safe_intrinsic_namespace_expr(self, expr: ast.expr) -> bool: ...
 
     def _iterable_element_hint(self, iterable: MoltValue) -> TypeHint | None: ...
 
@@ -2536,6 +2535,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue | None: ...
 
     def _try_emit_inline_sum_genexpr(self, node: ast.Call) -> MoltValue | None: ...
+
+    def _try_emit_literal_intrinsic(
+        self, node: ast.Call, parameters: tuple[str, ...]
+    ) -> MoltValue | None: ...
 
     def _try_emit_named_builtin_call(
         self, node: ast.Call, builtin: PythonIdentity | None, needs_bind: bool

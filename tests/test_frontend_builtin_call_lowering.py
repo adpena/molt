@@ -1698,7 +1698,7 @@ def test_map_lowering_uses_call_bind() -> None:
     assert _first_builtin_call_kind(source, "molt_map_builtin") == "call_bind"
 
 
-def test_local_require_builtin_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+def test_local_intrinsic_wrapper_keeps_unproved_namespace_read() -> None:
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
         "_NS = globals()\n"
@@ -1706,7 +1706,13 @@ def test_local_require_builtin_intrinsic_wrapper_lowers_known_intrinsic() -> Non
         "    return _require_intrinsic(name, _NS)\n"
         "_HOOK = _require_builtin_intrinsic('molt_asyncgen_hooks_get')\n"
     )
-    assert _has_builtin_func(source, "molt_asyncgen_hooks_get")
+    assert not _has_builtin_func(source, "molt_asyncgen_hooks_get")
+    ops = next(
+        function["ops"]
+        for function in compile_to_tir(source)["functions"]
+        if function["name"] == "py.__main__._require_builtin_intrinsic"
+    )
+    assert _module_attr_accesses(ops, "module_get_global", "_NS")
 
 
 def test_local_warnings_intrinsic_wrapper_lowers_known_intrinsic() -> None:
@@ -1730,6 +1736,46 @@ def test_local_callable_guard_intrinsic_wrapper_lowers_known_intrinsic() -> None
         "_HOOK = _require_callable_intrinsic('molt_gc_collect')\n"
     )
     assert _has_builtin_func(source, "molt_gc_collect")
+
+
+@pytest.mark.parametrize(
+    ("body", "call", "direct"),
+    [
+        ("", "require_intrinsic(name='molt_gc_collect', namespace=None)", True),
+        ("", "require_intrinsic('molt_getargv', name='molt_gc_collect')", False),
+        ("", "require_intrinsic('molt_gc_collect', missing_namespace)", False),
+        (
+            "def globals(): return side_effect()",
+            "require_intrinsic('molt_gc_collect', globals())",
+            False,
+        ),
+        (
+            "def wrap(symbol): return require_intrinsic(symbol)",
+            "wrap(symbol='molt_gc_collect')",
+            True,
+        ),
+        (
+            "def wrap(symbol): return require_intrinsic(symbol)",
+            "wrap('molt_gc_collect', None)",
+            False,
+        ),
+        (
+            "def wrap(symbol): return require_intrinsic(symbol)",
+            "wrap('molt_gc_collect', namespace=None)",
+            False,
+        ),
+        (
+            "def wrap(symbol): return require_intrinsic(symbol, name=symbol)",
+            "wrap('molt_gc_collect')",
+            False,
+        ),
+    ],
+)
+def test_literal_intrinsic_resolver_preserves_python_argument_binding(
+    body: str, call: str, direct: bool
+) -> None:
+    source = f"from _intrinsics import require_intrinsic\n{body}\nselected = {call}\n"
+    assert _has_builtin_func(source, "molt_gc_collect") is direct
 
 
 @pytest.mark.parametrize("target", [(3, 13), (3, 15)])

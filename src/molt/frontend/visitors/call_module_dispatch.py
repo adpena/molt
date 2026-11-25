@@ -16,6 +16,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.lowering.runtime_references import (
+    INTRINSIC_RESOLVER_PARAMETERS,
+    bind_intrinsic_resolver_arguments,
+)
 from molt.frontend.sema import parse_stateful_function_type_hint
 from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
@@ -233,70 +237,33 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             return None
         if not is_compiler_intrinsics_module(imported_from):
             return None
-        if len(node.args) > 2 or any(kw.arg is None for kw in node.keywords):
+        return self._try_emit_literal_intrinsic(node, INTRINSIC_RESOLVER_PARAMETERS)
+
+    def _try_emit_literal_intrinsic(
+        self, node: ast.Call, parameters: tuple[str, ...]
+    ) -> MoltValue | None:
+        operands = bind_intrinsic_resolver_arguments(node, parameters)
+        if operands is None:
             return None
-        name_expr: ast.expr | None = node.args[0] if node.args else None
-        namespace_expr: ast.expr | None = node.args[1] if len(node.args) == 2 else None
-        name_kw = next((kw for kw in node.keywords if kw.arg == "name"), None)
-        if name_kw is not None:
-            name_expr = name_kw.value
-        if name_expr is None:
-            return None
-        runtime_name = self._try_extract_const_str(name_expr)
+        name, namespace = operands
+        runtime_name = self._try_extract_const_str(name)
         if runtime_name is None:
             return None
-        if any(kw.arg not in {"name", "namespace"} for kw in node.keywords):
-            return None
-        namespace_kw = next((kw for kw in node.keywords if kw.arg == "namespace"), None)
-        if namespace_kw is not None:
-            namespace_expr = namespace_kw.value
-        arity = _intrinsic_arity_exact(runtime_name)
-        if arity is None:
-            return None
-        if namespace_expr is not None and not self._is_safe_intrinsic_namespace_expr(
-            namespace_expr
+        if namespace is not None and not self._is_safe_intrinsic_namespace_expr(
+            namespace
         ):
+            return None
+        if _intrinsic_arity_exact(runtime_name) is None:
             return None
         return self._emit_intrinsic_function(runtime_name)
 
     def _try_lower_local_intrinsic_wrapper_call(
         self, *, func_id: str, node: ast.Call
     ) -> MoltValue | None:
-        if func_id not in self.local_intrinsic_wrappers:
+        parameters = self.local_intrinsic_wrappers.get(func_id)
+        if parameters is None:
             return None
-        if (
-            not node.args
-            or len(node.args) > 2
-            or any(kw.arg is None for kw in node.keywords)
-        ):
-            return None
-        runtime_name: str | None = None
-        if node.args:
-            runtime_name = self._try_extract_const_str(node.args[0])
-            if runtime_name is None:
-                return None
-        if len(node.args) == 2 and not self._is_safe_intrinsic_namespace_expr(
-            node.args[1]
-        ):
-            return None
-        name_kw = next((kw for kw in node.keywords if kw.arg == "name"), None)
-        if name_kw is not None:
-            runtime_name = self._try_extract_const_str(name_kw.value)
-            if runtime_name is None:
-                return None
-        namespace_kw = next((kw for kw in node.keywords if kw.arg == "namespace"), None)
-        if namespace_kw is not None and not self._is_safe_intrinsic_namespace_expr(
-            namespace_kw.value
-        ):
-            return None
-        if runtime_name is None:
-            return None
-        if any(kw.arg not in {"name", "namespace"} for kw in node.keywords):
-            return None
-        arity = _intrinsic_arity_exact(runtime_name)
-        if arity is None:
-            return None
-        return self._emit_intrinsic_function(runtime_name)
+        return self._try_emit_literal_intrinsic(node, parameters)
 
     def _local_name_shadows_import_binding(self, name: str) -> bool:
         if self.current_func_name == "molt_main":
