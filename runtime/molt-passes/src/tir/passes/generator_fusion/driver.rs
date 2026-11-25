@@ -1,11 +1,9 @@
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::super::call_graph::CallGraph;
 use super::super::super::function::{TirFunction, TirModule};
 use super::super::super::target_info::TargetInfo;
-use super::{
-    FusionStats, PollRefusal, apply_fusion, collect_fusion_candidates, poll_fusion_refusal,
-};
+use super::{FusionStats, PollRefusal, apply_fusion, next_fusion_candidate, poll_fusion_refusal};
 
 /// Run generator fusion over `module`. Returns the elided-frame statistics.
 ///
@@ -71,12 +69,11 @@ pub fn run_generator_fusion(
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
+        let mut declined = HashSet::default();
         loop {
             let candidate = {
                 let caller = &module.functions[caller_idx];
-                collect_fusion_candidates(caller, &poll_bodies, call_graph)
-                    .into_iter()
-                    .next()
+                next_fusion_candidate(caller, &poll_bodies, &declined)
             };
             let Some(candidate) = candidate else { break };
             if tti.supports_pending_call_eval_breaker_poll() {
@@ -114,28 +111,27 @@ pub fn run_generator_fusion(
                 if super::super::spliced_frame::prune_brackets(caller) != 0 {
                     let _ = super::super::reoptimize(caller, tti);
                 }
-                // A bracket hands Python code a snapshot of the generator's
-                // locals. Where the program holds a PEP 667 frame-locals
-                // writer (HF-901) that code may rebind them, which the
-                // snapshot would drop: keep the generator unfused (5.1).
+                // An observer may write through the locals proxy (3.13+) or
+                // clear the escaped frame to close its suspended generator
+                // (before 3.13). Both need the ordinary activation (5.1).
                 if poll_owned.frame_locals_exposed()
-                    && super::super::spliced_frame::has_bracket(caller)
+                    && super::super::spliced_frame::has_observer_bracket(caller, unfused.next_value)
                 {
                     *caller = unfused;
                     stats = unfused_stats;
                     stats
                         .refused_polls
-                        .push((poll_owned.name.clone(), PollRefusal::FrameLocalsWriter));
-                    break;
+                        .push((poll_owned.name.clone(), PollRefusal::MutableFrame));
+                    declined.insert(candidate.alloc_val);
+                    continue;
                 }
                 if !stats.changed_functions.contains(&caller_id) {
                     stats.changed_functions.push(caller_id);
                 }
             } else {
-                // The candidate could not be spliced (a conservative
-                // mid-analysis bail). Stop processing this caller to avoid an
-                // infinite re-collect loop on the same un-spliceable site.
-                break;
+                // A failed transaction leaves this allocation and every other
+                // site's coordinates intact. Other sites may still splice.
+                declined.insert(candidate.alloc_val);
             }
         }
     }

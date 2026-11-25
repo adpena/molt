@@ -208,7 +208,7 @@ pub(crate) fn clear_frame_home_tls_storage() {
 pub(crate) struct FrameRecord(NonNull<u64>);
 
 impl FrameRecord {
-    fn from_word(word: u64) -> Option<Self> {
+    pub(super) fn from_word(word: u64) -> Option<Self> {
         NonNull::new(crate::provenance::abi::mut_ptr::<u64>(word)?).map(Self)
     }
 
@@ -268,6 +268,18 @@ impl FrameRecord {
     #[inline]
     pub(crate) fn code_bits(self) -> u64 {
         unsafe { *self.header(FRAME_RECORD_CODE_OFFSET) }
+    }
+
+    /// A compiled adapter promoted to a native callable has an implementation
+    /// record for its own execution, but contributes no Python stack frame.
+    pub(super) fn python_visible(self, py: &PyToken<'_>) -> bool {
+        super::entry_has_code(self.entry())
+            && (self.flags() & (FRAME_RECORD_OWNED | FRAME_RECORD_STATEFUL) != 0
+                || !crate::builtin_classes_if_initialized(py).is_some_and(|classes| {
+                    classes.is_native_callable_class(unsafe {
+                        crate::object_class_bits(self.function())
+                    })
+                }))
     }
 
     /// Whether the frame runs a class body.
@@ -541,7 +553,7 @@ pub(crate) fn unlink_stateful(record: FrameRecord) {
     );
     tls()
         .frame_top
-        .set(unsafe { *record.header(FRAME_RECORD_PREV_OFFSET) });
+        .set(unsafe { record.header(FRAME_RECORD_PREV_OFFSET).replace(0) });
 }
 
 /// What an unlinked record owned.
@@ -653,10 +665,19 @@ impl Abandoned {
 /// the homes stay reserved until [`Abandoned::exit`]. A stateful record owns
 /// nothing and its storage belongs to its activation: it is only unlinked.
 pub(crate) fn abandon_all() -> Abandoned {
-    let frames = innermost_first()
-        .filter(|record| !record.is_stateful())
-        .map(Unlinked::of)
-        .collect();
+    let mut frames = Vec::new();
+    let mut current = top();
+    while let Some(record) = current {
+        current = record.prev();
+        if record.is_stateful() {
+            unsafe { record.header(FRAME_RECORD_PREV_OFFSET).write(0) };
+        } else {
+            if let Some(owner) = obj_from_bits(record.observer()).as_ptr() {
+                super::bindings::freeze_location(owner);
+            }
+            frames.push(Unlinked::of(record));
+        }
+    }
     tls().frame_top.set(0);
     Abandoned(frames)
 }

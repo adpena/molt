@@ -17,6 +17,16 @@ use crate::tir::types::TirType;
 
 use super::clone::is_bookkeeping_op;
 
+/// The splice removes its state machinery along with the exception check
+/// immediately following a removed bookkeeping call.
+pub(super) fn skip_frame_op(op: &TirOp, after_dropped_call: &mut bool) -> bool {
+    if matches!(op.opcode, OpCode::StateSwitch | OpCode::StateSet) || is_bookkeeping_op(op) {
+        *after_dropped_call = op.runtime.is_some();
+        return true;
+    }
+    std::mem::take(after_dropped_call) && op.opcode == OpCode::CheckException
+}
+
 /// The index of each poll of `block` that may move to a service block: one
 /// the clone keeps (the check observing a dropped bookkeeping call goes with
 /// that call) and whose only job is the work. A poll with an Origin edge also
@@ -27,11 +37,7 @@ fn kept_polls(block: &TirBlock) -> Vec<usize> {
     let mut polls = Vec::new();
     let mut after_dropped_call = false;
     for (index, op) in block.ops.iter().enumerate() {
-        if matches!(op.opcode, OpCode::StateSwitch | OpCode::StateSet) || is_bookkeeping_op(op) {
-            after_dropped_call = op.runtime.is_some();
-            continue;
-        }
-        if std::mem::take(&mut after_dropped_call) && op.opcode == OpCode::CheckException {
+        if skip_frame_op(op, &mut after_dropped_call) {
             continue;
         }
         if op.opcode == OpCode::CheckException

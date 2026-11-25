@@ -9694,12 +9694,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_spliced_frame_bind",
-        arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_spliced_frame_link",
-        arity: 3,
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -18686,6 +18681,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_context_set__molt_context_d1086a27578cda22",
         },
+        "molt_frame_f_back_get" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_frame_f_back_get__molt_context_d1086a27578cda22",
+        },
         "molt_frame_f_lasti_get" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_f_lasti_get__molt_context_d1086a27578cda22",
@@ -25205,6 +25204,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_spliced_frame_bind" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_spliced_frame_bind__molt_context_d1086a27578cda22",
+        },
+        "molt_spliced_frame_finish" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_spliced_frame_finish__molt_context_d1086a27578cda22",
         },
         "molt_spliced_frame_link" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

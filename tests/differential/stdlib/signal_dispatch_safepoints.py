@@ -9,6 +9,7 @@ bounded, and a missing dispatch prints False instead of hanging.
 
 import _thread
 import signal
+import sys
 import threading
 import time
 
@@ -25,9 +26,10 @@ def outcome(action):
 
 def raise_signal_runs_the_handler_before_returning():
     hits = []
-    signal.signal(signal.SIGUSR1, lambda signum, frame: hits.append(signum))
+    caller = sys._getframe()
+    signal.signal(signal.SIGUSR1, lambda signum, frame: hits.append((signum, frame is caller)))
     signal.raise_signal(signal.SIGUSR1)
-    print("immediate", hits == [signal.SIGUSR1])
+    print("immediate", hits == [(signal.SIGUSR1, True)])
     signal.signal(signal.SIGUSR1, signal.SIG_DFL)
 
 

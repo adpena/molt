@@ -24,6 +24,10 @@ pub enum Dialect {
 pub enum OpCode {
     /// Publish the code-table location observed by callbacks and exceptions.
     FrameSetLocation,
+    /// Address of a zero-initialized identity word owned by a spliced activation.
+    SplicedFrameSlot,
+    /// Whether an observer has materialized the activation's frame.
+    SplicedFrameObserved,
     // Arithmetic
     Add,
     Sub,
@@ -736,6 +740,20 @@ pub fn alloc_task_operands<T>(operands: &[T]) -> (&T, &[T]) {
 }
 
 impl TirOp {
+    /// Operand that borrows a spliced activation's identity slot.
+    pub fn spliced_frame_identity_operand(&self) -> Option<usize> {
+        use crate::runtime_fn_generated::RuntimeFn;
+
+        if self.opcode == OpCode::SplicedFrameObserved {
+            return Some(0);
+        }
+        match self.runtime {
+            Some(RuntimeFn::SplicedFrameLink) => Some(2),
+            Some(RuntimeFn::SplicedFrameFinish) => Some(0),
+            _ => None,
+        }
+    }
+
     /// A Molt-dialect op with no attributes, origin, runtime entry or span.
     pub fn new(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Self {
         Self {

@@ -273,7 +273,12 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
             crate::NameId,
             &AtomicU64,
             crate::builtins::functions::RuntimeCallableRef,
-        ); 2] = [
+        ); 3] = [
+            (
+                crate::NameId::FBack,
+                &state.frame_f_back_get_fn,
+                fn_ref!(molt_frame_f_back_get),
+            ),
             (
                 crate::NameId::FLineno,
                 &state.frame_f_lineno_get_fn,

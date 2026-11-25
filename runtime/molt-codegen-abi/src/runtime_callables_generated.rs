@@ -1260,6 +1260,7 @@ pub enum RuntimeCallable {
     molt_frame_cell_publish = 0xFFFFFF594D69028C,
     molt_frame_class_locals_set = 0xFFFFFF440FA6DEE7,
     molt_frame_clear = 0xFFFFFF7C0589F5C1,
+    molt_frame_f_back_get = 0xFFFFFF9A696248CA,
     molt_frame_f_lasti_get = 0xFFFFFF0589CF000D,
     molt_frame_f_lineno_get = 0xFFFFFF2D7A409477,
     molt_frame_f_locals_get = 0xFFFFFF2451A2FDCA,
@@ -2539,7 +2540,6 @@ pub enum RuntimeCallable {
     molt_sorted_builtin = 0xFFFFFFC58DC8D017,
     molt_spawn = 0xFFFFFFCE1A3664E9,
     molt_spliced_frame_bind = 0xFFFFFFEFEE1017B7,
-    molt_spliced_frame_link = 0xFFFFFF198DA6BAA3,
     molt_spliced_frame_origin = 0xFFFFFFD8B2972643,
     molt_spliced_frame_unlink = 0xFFFFFFF6553C6756,
     molt_sqlite3_arraysize_set = 0xFFFFFF40F1A8F820,
@@ -4439,6 +4439,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_frame_cell_publish.key() == runtime_callable_key("molt_frame_cell_publish"));
     assert!(RuntimeCallable::molt_frame_class_locals_set.key() == runtime_callable_key("molt_frame_class_locals_set"));
     assert!(RuntimeCallable::molt_frame_clear.key() == runtime_callable_key("molt_frame_clear"));
+    assert!(RuntimeCallable::molt_frame_f_back_get.key() == runtime_callable_key("molt_frame_f_back_get"));
     assert!(RuntimeCallable::molt_frame_f_lasti_get.key() == runtime_callable_key("molt_frame_f_lasti_get"));
     assert!(RuntimeCallable::molt_frame_f_lineno_get.key() == runtime_callable_key("molt_frame_f_lineno_get"));
     assert!(RuntimeCallable::molt_frame_f_locals_get.key() == runtime_callable_key("molt_frame_f_locals_get"));
@@ -5718,7 +5719,6 @@ const _: () = {
     assert!(RuntimeCallable::molt_sorted_builtin.key() == runtime_callable_key("molt_sorted_builtin"));
     assert!(RuntimeCallable::molt_spawn.key() == runtime_callable_key("molt_spawn"));
     assert!(RuntimeCallable::molt_spliced_frame_bind.key() == runtime_callable_key("molt_spliced_frame_bind"));
-    assert!(RuntimeCallable::molt_spliced_frame_link.key() == runtime_callable_key("molt_spliced_frame_link"));
     assert!(RuntimeCallable::molt_spliced_frame_origin.key() == runtime_callable_key("molt_spliced_frame_origin"));
     assert!(RuntimeCallable::molt_spliced_frame_unlink.key() == runtime_callable_key("molt_spliced_frame_unlink"));
     assert!(RuntimeCallable::molt_sqlite3_arraysize_set.key() == runtime_callable_key("molt_sqlite3_arraysize_set"));

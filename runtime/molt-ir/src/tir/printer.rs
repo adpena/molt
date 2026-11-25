@@ -239,17 +239,33 @@ pub fn print_dialect(dialect: Dialect) -> &'static str {
     }
 }
 
-/// Return the lowercase opcode name (e.g. "add", "const_int").
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OpcodeSpelling {
+    Tir,
+    Mlir,
+}
+
+/// Return the lowercase TIR opcode name.
 pub fn print_opcode(op: &OpCode) -> &'static str {
+    opcode_name(op, OpcodeSpelling::Tir)
+}
+
+/// The two text formats share the vocabulary except for these MLIR spellings.
+pub fn opcode_name(op: &OpCode, spelling: OpcodeSpelling) -> &'static str {
     match op {
         OpCode::FrameSetLocation => "frame_set_location",
+        OpCode::SplicedFrameSlot => "spliced_frame_slot",
+        OpCode::SplicedFrameObserved => "spliced_frame_observed",
         OpCode::Add => "add",
         OpCode::CheckedAdd => "checked_add",
         OpCode::Sub => "sub",
         OpCode::Mul => "mul",
         OpCode::CheckedMul => "checked_mul",
+        OpCode::InplaceAdd if spelling == OpcodeSpelling::Mlir => "add",
         OpCode::InplaceAdd => "inplace_add",
+        OpCode::InplaceSub if spelling == OpcodeSpelling::Mlir => "sub",
         OpCode::InplaceSub => "inplace_sub",
+        OpCode::InplaceMul if spelling == OpcodeSpelling::Mlir => "mul",
         OpCode::InplaceMul => "inplace_mul",
         OpCode::Div => "div",
         // Canonical wire spelling (op_kinds.toml); matches lower_to_simple.
@@ -298,7 +314,9 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::CallargsPushMethodReceiver => "callargs_push_method_receiver",
         OpCode::CallBuiltin => "call_builtin",
         OpCode::OrdAt => "ord_at",
+        OpCode::BoxVal if spelling == OpcodeSpelling::Mlir => "box",
         OpCode::BoxVal => "box_val",
+        OpCode::UnboxVal if spelling == OpcodeSpelling::Mlir => "unbox",
         OpCode::UnboxVal => "unbox_val",
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",
@@ -336,6 +354,9 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
+        OpCode::StateSet if spelling == OpcodeSpelling::Mlir => "state_set",
+        OpCode::IsPending if spelling == OpcodeSpelling::Mlir => "is_pending",
+        OpCode::TaskWait if spelling == OpcodeSpelling::Mlir => "task_wait",
         OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => {
             super::op_kinds_generated::opcode_canonical_kind_table(*op)
                 .expect("state operations have canonical wire kinds")

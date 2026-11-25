@@ -34,15 +34,17 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::tir::blocks::BlockId;
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::{
     CfgEdgePolicy, build_dom_children, build_pred_map_with, compute_dominance_frontiers,
     compute_dominator_tree_with, dom_tree_preorder, exception_label_to_block, exception_successors,
     iterated_dominance_frontier, reachable_blocks_with,
 };
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use super::clone::{exception_stack_values, is_bookkeeping_op};
 use super::{GEN_CONTROL_BYTES, attr_value_int};
@@ -73,6 +75,9 @@ pub(super) struct SlotPlan {
     pub(super) reads: HashMap<ValueId, SlotDef>,
     /// Per join block, the slots its appended arguments carry, ascending.
     pub(super) joins: BTreeMap<BlockId, Vec<usize>>,
+    /// Joins reachable from an unbound predecessor without an intervening
+    /// store. These carry a Boolean presence argument alongside the value.
+    pub(super) optional_joins: BTreeSet<(BlockId, usize)>,
     /// Per block with an edge into a join, each slot's definition at its exit.
     pub(super) exits: HashMap<BlockId, Vec<Option<SlotDef>>>,
     /// Each slot's frame offset, by slot.
@@ -181,6 +186,9 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let mut offsets: BTreeSet<_> = (GEN_CONTROL_BYTES..payload_end).step_by(8).collect();
     // Every user-slot access of the body, in op order.
     let mut accesses: HashMap<BlockId, Vec<FrameAccess>> = HashMap::default();
+    let mut publications = HashMap::default();
+    let mut has_observer = false;
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(poll);
     for (&bid, block) in &poll.blocks {
         let mut frame_used = false;
         block
@@ -189,9 +197,22 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         if frame_used {
             return None;
         }
+        let mut after_dropped_call = false;
         for (index, op) in block.ops.iter().enumerate() {
+            let skipped = super::frame_states::skip_frame_op(op, &mut after_dropped_call);
             let access = frame_access(op, index, frame).ok()?;
             let Some(access) = access else {
+                if body.contains(&bid) && !skipped {
+                    let yielding = op.opcode == OpCode::StateYield;
+                    let observes = !yielding
+                        && (op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin)
+                            || op.runtime == Some(RuntimeFn::ExceptionTracePrepend)
+                            || super::super::spliced_frame::may_observe_frames(op, &exact));
+                    if observes || yielding {
+                        has_observer |= observes;
+                        publications.entry(bid).or_insert(index);
+                    }
+                }
                 continue;
             };
             let (offset, read, stored) = match access {
@@ -214,6 +235,12 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
             } else if executable.contains(&bid) && read {
                 return None;
             }
+        }
+        if body.contains(&bid)
+            && matches!(block.terminator, Terminator::Return { .. })
+            && block.ops.iter().any(|op| op.opcode == OpCode::StateSet)
+        {
+            publications.entry(bid).or_insert(block.ops.len());
         }
         if executable.contains(&bid) && !body.contains(&bid) {
             let mut enters_body = false;
@@ -244,20 +271,30 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let slots = offsets.len();
     let mut stores: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
     let mut live: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
-    for (&bid, block_accesses) in &accesses {
-        let mut stored = vec![false; slots];
-        for access in block_accesses {
+    for &bid in &body {
+        let mut first_store = vec![usize::MAX; slots];
+        for access in accesses.get(&bid).into_iter().flatten() {
             match *access {
                 FrameAccess::Read { offset, .. } => {
                     let slot = slot_of[&offset];
-                    if !stored[slot] {
+                    if first_store[slot] == usize::MAX {
                         live[slot].insert(bid);
                     }
                 }
-                FrameAccess::Write { offset, .. } => {
+                FrameAccess::Write { offset, index, .. } => {
                     let slot = slot_of[&offset];
-                    stored[slot] = true;
+                    first_store[slot] = first_store[slot].min(index);
                     stores[slot].insert(bid);
+                }
+            }
+        }
+        // A publication reads every bound slot. Only its first occurrence
+        // can read the block's incoming value before the block overwrites it.
+        // Yield and completion only refresh a frame first exposed elsewhere.
+        if has_observer && let Some(&publish) = publications.get(&bid) {
+            for (slot, &written) in first_store.iter().enumerate() {
+                if publish <= written {
+                    live[slot].insert(bid);
                 }
             }
         }
@@ -327,23 +364,52 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         exit_state.insert(block, state);
     }
 
-    // Each edge into a join carries a definition of every slot it merges.
-    let mut exits: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
+    // Propagate possible absence along the SSA edges between joins, including
+    // loop backedges. A store or constructor argument supplies a bound value.
+    let mut exits = HashMap::default();
+    let mut optional_joins = BTreeSet::new();
+    let mut users: HashMap<_, Vec<_>> = HashMap::default();
     for &block in &body {
-        let mut merged: Vec<usize> = Vec::new();
-        poll.blocks[&block].terminator.for_each_edge(|target, _| {
-            merged.extend(joins.get(&target).into_iter().flatten().copied());
-        });
-        if merged.is_empty() {
-            continue;
-        }
         let state = &exit_state[&block];
-        for slot in merged {
-            if let SlotDef::Argument(position) = state[slot]? {
-                arguments.insert(position);
+        let mut feeds_join = false;
+        poll.blocks[&block].terminator.for_each_edge(|target, _| {
+            for &slot in joins.get(&target).into_iter().flatten() {
+                feeds_join = true;
+                let join = (target, slot);
+                match state[slot] {
+                    None => {
+                        optional_joins.insert(join);
+                    }
+                    Some(SlotDef::Join { block, slot }) => {
+                        users.entry((block, slot)).or_default().push(join);
+                    }
+                    Some(SlotDef::Argument(position)) => {
+                        arguments.insert(position);
+                    }
+                    Some(SlotDef::Stored { .. }) => {}
+                }
+            }
+        });
+        if feeds_join {
+            exits.insert(block, state.clone());
+        }
+    }
+    let mut work: Vec<_> = optional_joins.iter().copied().collect();
+    while let Some(join) = work.pop() {
+        for &user in users.get(&join).into_iter().flatten() {
+            if optional_joins.insert(user) {
+                work.push(user);
             }
         }
-        exits.insert(block, state.clone());
+    }
+    // A snapshot can represent an unbound slot. A program load requires the
+    // actual stored value, and must never read the unused absence payload.
+    if reads.values().any(|def| {
+        matches!(
+            def, SlotDef::Join { block, slot } if optional_joins.contains(&(*block, *slot))
+        )
+    }) {
+        return None;
     }
 
     Some(SlotPlan {
@@ -352,6 +418,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         stores: promoted_stores,
         reads,
         joins,
+        optional_joins,
         exits,
         offsets: offsets.iter().copied().collect(),
         entry: entry_state,

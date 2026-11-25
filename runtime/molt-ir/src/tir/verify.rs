@@ -180,6 +180,7 @@ fn verify_no_duplicate_values(func: &TirFunction, errors: &mut Vec<VerifyError>)
 /// output module. No whole-function SSA or program-closure assumptions apply.
 pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError>> {
     let mut errors = Vec::new();
+    let mut identity_places = None;
     for (bid, block) in &func.blocks {
         for (op_index, op) in block.ops.iter().enumerate() {
             if let Err(error) =
@@ -187,6 +188,24 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
             {
                 errors.push(VerifyError::op(*bid, op_index, error));
                 continue;
+            }
+            if let Some(index) = op.spliced_frame_identity_operand() {
+                let places = identity_places.get_or_insert_with(|| {
+                    func.blocks
+                        .values()
+                        .flat_map(|block| &block.ops)
+                        .filter(|op| op.opcode == OpCode::SplicedFrameSlot)
+                        .flat_map(|op| op.results.iter().copied())
+                        .collect::<HashSet<_>>()
+                });
+                if !op.operands.get(index).is_some_and(|id| places.contains(id)) {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_index,
+                        "spliced frame identity must borrow its activation's stack place",
+                    ));
+                    continue;
+                }
             }
 
             let original_kind = op.origin;

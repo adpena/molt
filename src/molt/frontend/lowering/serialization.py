@@ -756,10 +756,12 @@ class SerializationMixin(
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == WireKinds.TRACE_ENTER_SLOT for op in json_ops):
                 func_entry["execution_context"] = "local"
-            # A PEP 667 frame proxy may rebind a 3.13+ function's locals only
-            # while the closed program holds a frame-locals writer (HF-901);
-            # a splice that snapshots locals for Python code reads it.
-            if frame_exposed:
+            # Before 3.13 an observer can close a suspended generator through
+            # its frame. The poll must keep its continuation if a bracket survives.
+            if frame_exposed or (
+                self.target_python < (3, 13)
+                and any(op.get("kind") == WireKinds.STATE_YIELD for op in json_ops)
+            ):
                 func_entry["frame_locals_exposed"] = True
             if name in self.constructor_fallbacks:
                 metadata["constructor_fallbacks"] = list(

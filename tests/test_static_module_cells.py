@@ -862,6 +862,46 @@ def test_a_generic_call_without_a_generator_fact_is_untouched(
     assert diagnostics == []
 
 
+@pytest.mark.parametrize("fixed,supplied", [(0, 0), (0, 2), (1, 1), (1, 3)])
+def test_proven_variadic_generator_packs_only_surplus_positionals(
+    fixed: int, supplied: int
+) -> None:
+    funcs = _generator_call_program(shape=False, arity=fixed + 1, supplied=supplied)
+    producer = next(op for op in funcs[0]["ops"] if op.get("out") == "f_helper")
+    producer["task_vararg_slot"] = fixed
+    check = {"kind": "check_exception", "exception_edge": "origin", "value": 7}
+    funcs[1]["ops"].append(check)
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    pack, pack_check, allocation, allocation_check = functions[1]["ops"][-4:]
+    assert pack["kind"] == "tuple_new"
+    assert pack["args"] == [f"a{i}" for i in range(fixed, supplied)]
+    assert pack_check == allocation_check == check
+    assert allocation["kind"] == "alloc_task"
+    assert allocation["args"] == [
+        "callee",
+        *(f"a{i}" for i in range(fixed)),
+        pack["out"],
+    ]
+    assert "argument_custody" not in allocation
+
+
+@pytest.mark.parametrize("supplied,checked", [(0, True), (3, False)])
+def test_variadic_generator_keeps_binder_for_missing_fixed_arg_or_unchecked_pack(
+    supplied: int, checked: bool
+) -> None:
+    funcs = _generator_call_program(shape=False, arity=2, supplied=supplied)
+    producer = next(op for op in funcs[0]["ops"] if op.get("out") == "f_helper")
+    producer["task_vararg_slot"] = 1
+    if checked:
+        funcs[1]["ops"].append(
+            {"kind": "check_exception", "exception_edge": "origin", "value": 7}
+        )
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics
+    assert _generic_call(functions)["kind"] == "call_func"
+
+
 def _set_attr(owner: str, name: str, value: str) -> dict[str, Any]:
     return {
         "kind": "set_attr_generic_obj",

@@ -50,6 +50,23 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
     ) -> bool {
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
+            OpCode::SplicedFrameSlot => {
+                let slot = b.entry_slot("spliced_frame_identity");
+                let zero = b.constant(0);
+                b.store_slot(slot, zero);
+                let address = b.slot_pointer(slot);
+                let address = b.address_to_word(address);
+                self.bind(op.results[0], b.word_value(address), HeldCarrier::RawI64);
+            }
+            OpCode::SplicedFrameObserved => {
+                let address = self.operands().resolve(b, op.operands[0]);
+                let address = b.expect_word(address);
+                let address = b.word_to_address(address);
+                let bindings = b.load_word(address, 0);
+                let zero = b.constant(0);
+                let observed = b.int_compare(IntComparison::NotEqual, bindings, zero);
+                self.bind(op.results[0], b.bit_value(observed), HeldCarrier::RawBool);
+            }
             OpCode::AsyncWorkPending => {
                 let pending = b.async_work_pending();
                 if let Some(&result) = op.results.first() {
@@ -214,6 +231,9 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                     .runtime
                     .expect("verified: CallRuntime carries its runtime entry");
                 match runtime {
+                    RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameFinish => {
+                        self.spliced_frame_call(b, op, runtime);
+                    }
                     RuntimeFn::CpythonAbiRunStaticExtensionInit | RuntimeFn::NativeForwardF32 => {
                         self.native_transaction(b, op, runtime);
                     }

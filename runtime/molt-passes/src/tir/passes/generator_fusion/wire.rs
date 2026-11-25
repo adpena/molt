@@ -8,15 +8,20 @@
 //! the generator's control flow. The orchestrating `apply_fusion` and
 //! recognition live in [`super`].
 
-use molt_ir::deterministic_hash::HashSet;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::clone_support::{LabelAllocator, function_label_ids};
+use crate::tir::dominators::{
+    exception_edge_binds_handler_arguments, exception_label_to_block, exception_transfer_target,
+};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
+use crate::tir::passes::spliced_frame::{Level, bracket_ops, finish_op};
 use crate::tir::ssa_update::{self, Variable};
 use crate::tir::types::TirType;
-use crate::tir::values::TirValue;
+use crate::tir::values::{TirValue, ValueId};
 
 use super::clone::{ClonedPoll, const_int_op};
 use super::{FusionCandidate, is_get_iter_op};
@@ -47,6 +52,7 @@ pub(super) fn wire_fused_loop(
     clone: &ClonedPoll,
     preheader_init_ops: Vec<TirOp>,
     owners: &mut Replacements,
+    identity: ValueId,
 ) -> bool {
     let old_header = candidate.loop_header.unwrap_or(candidate.cond_block);
     // --- 1. Splice the consumer body at the yield site. ---
@@ -84,20 +90,23 @@ pub(super) fn wire_fused_loop(
             args: Vec::new(),
         };
     }
+    if let Some(frame) = &clone.yield_frame {
+        publish_if_observed(caller, pre_block, frame);
+    }
 
     // --- 2. Route the cloned returns: the exhausted return leaves the loop,
     //        an exception exit reaches the iteration's handler with the
     //        exception pending. A straight-line poll returns from its yield
     //        block, whose terminator the split moved to the post-yield half. ---
-    for (&rb, exception_exit) in clone
+    for (&cloned_return, exception_exit) in clone
         .return_blocks
         .iter()
         .map(|rb| (rb, clone.exception_exits.contains(rb)))
     {
-        let rb = if rb == clone.yield_block {
+        let rb = if cloned_return == clone.yield_block {
             post_block
         } else {
-            rb
+            cloned_return
         };
         // The handler takes what the iteration's check passed it; the
         // values are defined before the loop, so they dominate the fused body.
@@ -114,6 +123,9 @@ pub(super) fn wire_fused_loop(
             return false;
         }
         caller.blocks.get_mut(&rb).unwrap().terminator = Terminator::Branch { target, args };
+        if let Some(frame) = clone.return_frames.get(&cloned_return) {
+            publish_if_observed(caller, rb, frame);
+        }
     }
 
     // --- 3. Delete the frame-creation ops and bind the parameter slots. ---
@@ -177,7 +189,156 @@ pub(super) fn wire_fused_loop(
             ty: entry.ty.clone(),
         })
         .collect();
-    variables.is_empty() || ssa_update::repair(caller, &variables).is_ok()
+    if !variables.is_empty() && ssa_update::repair(caller, &variables).is_err() {
+        return false;
+    }
+    retire_identity(caller, candidate, clone.entry, identity);
+    true
+}
+
+/// Refresh escaped frames at a suspension or return. The common unobserved
+/// path proceeds directly to the continuation.
+fn publish_if_observed(caller: &mut TirFunction, source: BlockId, frame: &Level) {
+    let Terminator::Branch { target, args } = caller.blocks[&source].terminator.clone() else {
+        unreachable!("a frame publication continues along one edge");
+    };
+    let snapshot = caller.fresh_block();
+    let (mut ops, unlink) = bracket_ops(caller, std::slice::from_ref(frame), None);
+    ops.extend(unlink);
+    caller.blocks.insert(
+        snapshot,
+        TirBlock {
+            id: snapshot,
+            args: Vec::new(),
+            ops,
+            terminator: Terminator::Branch {
+                target,
+                args: args.clone(),
+            },
+        },
+    );
+    let observed = caller.fresh_value();
+    caller.value_types.insert(observed, TirType::Bool);
+    let block = caller.blocks.get_mut(&source).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::SplicedFrameObserved,
+        vec![frame.identity],
+        vec![observed],
+    ));
+    block.terminator = Terminator::CondBranch {
+        cond: observed,
+        then_block: snapshot,
+        then_args: Vec::new(),
+        else_block: target,
+        else_args: args,
+    };
+}
+
+/// The identity word owns the observed frame throughout the fused activation,
+/// including when the consumer is executing between yields. Route every edge
+/// out of that extent through one release landing per destination.
+fn retire_identity(
+    caller: &mut TirFunction,
+    candidate: &FusionCandidate,
+    entry: BlockId,
+    identity: ValueId,
+) {
+    let labels = exception_label_to_block(caller);
+    let reach = |root, stop: &dyn Fn(BlockId) -> bool| {
+        let mut seen = HashSet::default();
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            if stop(id) || !seen.insert(id) {
+                continue;
+            }
+            let block = &caller.blocks[&id];
+            block.terminator.append_successors(&mut pending);
+            pending.extend(
+                block
+                    .ops
+                    .iter()
+                    .filter(|op| exception_edge_binds_handler_arguments(op.opcode))
+                    .filter_map(|op| exception_transfer_target(op, &labels)),
+            );
+        }
+        seen
+    };
+    // A shared continuation also visited outside the splice cannot borrow
+    // its local place. Both traversals follow only executable edges.
+    let outside = reach(caller.entry_block, &|id| id == entry);
+    let active = reach(entry, &|id| {
+        id == candidate.exit_block || id == candidate.handler || outside.contains(&id)
+    });
+    let is_exit = |target: BlockId| target == entry || !active.contains(&target);
+    let entry_args: Vec<_> = caller.blocks[&entry]
+        .args
+        .iter()
+        .map(|arg| arg.ty.clone())
+        .collect();
+    let mut ids: Vec<_> = active.iter().copied().collect();
+    ids.sort_unstable();
+    let mut fresh_labels = LabelAllocator::after_labels(function_label_ids(caller));
+    let mut landings = HashMap::default();
+    for id in ids {
+        let mut block = caller.blocks.remove(&id).unwrap();
+        if matches!(block.terminator, Terminator::Return { .. }) {
+            block.ops.push(finish_op(caller, identity));
+        }
+        let mut landing = |target| {
+            *landings.entry(target).or_insert_with(|| {
+                let id = caller.fresh_block();
+                let types = if target == entry {
+                    entry_args.clone()
+                } else {
+                    caller.blocks[&target]
+                        .args
+                        .iter()
+                        .map(|arg| arg.ty.clone())
+                        .collect()
+                };
+                let args: Vec<_> = types
+                    .into_iter()
+                    .map(|ty| {
+                        let id = caller.fresh_value();
+                        caller.value_types.insert(id, ty.clone());
+                        TirValue { id, ty }
+                    })
+                    .collect();
+                let terminator = Terminator::Branch {
+                    target,
+                    args: args.iter().map(|arg| arg.id).collect(),
+                };
+                let release = finish_op(caller, identity);
+                caller.blocks.insert(
+                    id,
+                    TirBlock {
+                        id,
+                        args,
+                        ops: vec![release],
+                        terminator,
+                    },
+                );
+                let label = fresh_labels.fresh();
+                caller.label_id_map.insert(id.0, label);
+                (id, label)
+            })
+        };
+        block.terminator.for_each_edge_mut(|target, _| {
+            if is_exit(*target) {
+                *target = landing(*target).0;
+            }
+        });
+        for op in &mut block.ops {
+            if exception_edge_binds_handler_arguments(op.opcode)
+                && let Some(target) = exception_transfer_target(op, &labels)
+                && is_exit(target)
+            {
+                op.attrs
+                    .insert("value".into(), AttrValue::Int(landing(target).1));
+            }
+        }
+        caller.blocks.insert(id, block);
+    }
 }
 
 fn location_op(location: i64) -> TirOp {

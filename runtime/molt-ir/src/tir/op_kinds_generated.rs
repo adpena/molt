@@ -861,6 +861,10 @@ pub enum OpKind {
     SliceNew,
     #[serde(rename = "sorted")]
     Sorted,
+    #[serde(rename = "spliced_frame_observed")]
+    SplicedFrameObserved,
+    #[serde(rename = "spliced_frame_slot")]
+    SplicedFrameSlot,
     #[serde(rename = "stack_alloc")]
     StackAlloc,
     #[serde(rename = "state_block_end")]
@@ -1457,6 +1461,8 @@ impl OpKind {
         Self::Slice,
         Self::SliceNew,
         Self::Sorted,
+        Self::SplicedFrameObserved,
+        Self::SplicedFrameSlot,
         Self::StackAlloc,
         Self::StateBlockEnd,
         Self::StateBlockStart,
@@ -1968,6 +1974,8 @@ impl OpKind {
             Self::Slice => "slice",
             Self::SliceNew => "slice_new",
             Self::Sorted => "sorted",
+            Self::SplicedFrameObserved => "spliced_frame_observed",
+            Self::SplicedFrameSlot => "spliced_frame_slot",
             Self::StackAlloc => "stack_alloc",
             Self::StateBlockEnd => "state_block_end",
             Self::StateBlockStart => "state_block_start",
@@ -2490,6 +2498,8 @@ impl std::str::FromStr for OpKind {
             "slice" => Ok(Self::Slice),
             "slice_new" => Ok(Self::SliceNew),
             "sorted" => Ok(Self::Sorted),
+            "spliced_frame_observed" => Ok(Self::SplicedFrameObserved),
+            "spliced_frame_slot" => Ok(Self::SplicedFrameSlot),
             "stack_alloc" => Ok(Self::StackAlloc),
             "state_block_end" => Ok(Self::StateBlockEnd),
             "state_block_start" => Ok(Self::StateBlockStart),
@@ -3024,6 +3034,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -3612,6 +3624,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -4142,6 +4156,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -4664,6 +4680,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -5179,6 +5197,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -5689,6 +5709,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -6209,6 +6231,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -6722,6 +6746,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -7241,6 +7267,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -7757,6 +7785,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -8273,6 +8303,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -8784,6 +8816,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -9300,6 +9334,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -9820,6 +9856,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -10330,6 +10368,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -10849,6 +10889,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -11369,6 +11411,8 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -11887,6 +11931,8 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -12383,6 +12429,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -12917,6 +12965,8 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -13433,6 +13483,8 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -13938,6 +13990,8 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -14471,6 +14525,8 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -15134,6 +15190,8 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -15648,6 +15706,8 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -16092,6 +16152,8 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Rshift
         | OpKind::Shl
         | OpKind::Shr
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StoreVar
         | OpKind::Sub
         | OpKind::Sum
@@ -16995,6 +17057,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -17521,6 +17585,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -18039,6 +18105,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -18558,6 +18626,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -19075,6 +19145,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -19651,6 +19723,8 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::Pow => Some(OpCode::Pow),
         OpKind::Raise => Some(OpCode::Raise),
         OpKind::Rshift | OpKind::Shr => Some(OpCode::Shr),
+        OpKind::SplicedFrameObserved => Some(OpCode::SplicedFrameObserved),
+        OpKind::SplicedFrameSlot => Some(OpCode::SplicedFrameSlot),
         OpKind::StackAlloc => Some(OpCode::StackAlloc),
         OpKind::StateBlockEnd => Some(OpCode::StateBlockEnd),
         OpKind::StateBlockStart => Some(OpCode::StateBlockStart),
@@ -19682,6 +19756,8 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
 pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
     match opcode {
         OpCode::FrameSetLocation => Some(OpKind::FrameSetLocation),
+        OpCode::SplicedFrameSlot => Some(OpKind::SplicedFrameSlot),
+        OpCode::SplicedFrameObserved => Some(OpKind::SplicedFrameObserved),
         OpCode::Add => Some(OpKind::Add),
         OpCode::Sub => Some(OpKind::Sub),
         OpCode::Mul => Some(OpKind::Mul),
@@ -19832,6 +19908,8 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
 pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -20369,6 +20447,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -20745,6 +20825,8 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Shl
         | OpKind::Shr
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -21427,6 +21509,8 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -21936,6 +22020,8 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -22445,6 +22531,8 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -22959,6 +23047,8 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -23476,6 +23566,8 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -23989,6 +24081,8 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -24504,6 +24598,8 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -24598,6 +24694,8 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
 /// opcode lists in pass-local modules.
 pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::FrameSetLocation,
+    OpCode::SplicedFrameSlot,
+    OpCode::SplicedFrameObserved,
     OpCode::Add,
     OpCode::Sub,
     OpCode::Mul,
@@ -24747,6 +24845,8 @@ pub const ALL_OPCODES: &[OpCode] = &[
 pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -24896,6 +24996,8 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
 pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => true,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => true,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -25045,6 +25147,8 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
 pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -25235,6 +25339,8 @@ pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     let mut effects = match opcode {
         OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::SplicedFrameSlot => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::SplicedFrameObserved => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
@@ -25795,6 +25901,8 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -26315,6 +26423,8 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -26832,6 +26942,8 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -27336,6 +27448,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -27860,6 +27974,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -28375,6 +28491,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -28890,6 +29008,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -29405,6 +29525,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -29920,6 +30042,8 @@ impl OpKind {
             | OpKind::Slice
             | OpKind::SliceNew
             | OpKind::Sorted
+            | OpKind::SplicedFrameObserved
+            | OpKind::SplicedFrameSlot
             | OpKind::StackAlloc
             | OpKind::StateBlockEnd
             | OpKind::StateBlockStart
@@ -30018,6 +30142,8 @@ impl OpKind {
 pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -30169,6 +30295,8 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
 pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
     match opcode {
         OpCode::FrameSetLocation => Some(0),
+        OpCode::SplicedFrameSlot => Some(1),
+        OpCode::SplicedFrameObserved => Some(1),
         OpCode::Add => Some(1),
         OpCode::Sub => Some(1),
         OpCode::Mul => Some(1),
@@ -30430,6 +30558,8 @@ pub const FUZZ_TIR_OPCODE_SHAPES: &[FuzzTirOpcodeShape] = &[
 pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => Some(2),
         OpCode::Sub => Some(2),
         OpCode::Mul => Some(2),
@@ -30579,6 +30709,8 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
 pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPayloadRule {
     match opcode {
         OpCode::FrameSetLocation => FuzzTirAttrPayloadRule::None,
+        OpCode::SplicedFrameSlot => FuzzTirAttrPayloadRule::None,
+        OpCode::SplicedFrameObserved => FuzzTirAttrPayloadRule::None,
         OpCode::Add => FuzzTirAttrPayloadRule::None,
         OpCode::Sub => FuzzTirAttrPayloadRule::None,
         OpCode::Mul => FuzzTirAttrPayloadRule::None,
@@ -30735,6 +30867,8 @@ pub enum PredicateSemantics {
 pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -31101,6 +31235,8 @@ pub fn opcode_primitive_effects_table(
 pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
     match opcode {
         OpCode::FrameSetLocation => count == 0,
+        OpCode::SplicedFrameSlot => count == 0,
+        OpCode::SplicedFrameObserved => count == 1,
         OpCode::Add => count == 2,
         OpCode::Sub => count == 2,
         OpCode::Mul => count == 2,
@@ -31307,6 +31443,8 @@ pub fn opcode_operand_independent_result_type_table(
 ) -> Option<OperandIndependentResultType> {
     let results: &[Option<OperandIndependentResultType>] = match opcode {
         OpCode::FrameSetLocation => &[],
+        OpCode::SplicedFrameSlot => &[Some(OperandIndependentResultType::I64)],
+        OpCode::SplicedFrameObserved => &[Some(OperandIndependentResultType::Bool)],
         OpCode::Add => &[],
         OpCode::Sub => &[],
         OpCode::Mul => &[],
@@ -31485,6 +31623,8 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
 ) -> TypeRefineAttrResultTypeRule {
     match opcode {
         OpCode::FrameSetLocation => TypeRefineAttrResultTypeRule::None,
+        OpCode::SplicedFrameSlot => TypeRefineAttrResultTypeRule::None,
+        OpCode::SplicedFrameObserved => TypeRefineAttrResultTypeRule::None,
         OpCode::Add => TypeRefineAttrResultTypeRule::None,
         OpCode::Sub => TypeRefineAttrResultTypeRule::None,
         OpCode::Mul => TypeRefineAttrResultTypeRule::None,
@@ -31659,6 +31799,8 @@ pub enum TypeRefineOperandTypeRule {
 pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineOperandTypeRule {
     match opcode {
         OpCode::FrameSetLocation => TypeRefineOperandTypeRule::None,
+        OpCode::SplicedFrameSlot => TypeRefineOperandTypeRule::None,
+        OpCode::SplicedFrameObserved => TypeRefineOperandTypeRule::None,
         OpCode::Add => TypeRefineOperandTypeRule::Add,
         OpCode::Sub => TypeRefineOperandTypeRule::NumericArithmetic,
         OpCode::Mul => TypeRefineOperandTypeRule::Mul,
@@ -31821,6 +31963,8 @@ pub enum SccpConstantSeedRule {
 pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedRule {
     match opcode {
         OpCode::FrameSetLocation => SccpConstantSeedRule::None,
+        OpCode::SplicedFrameSlot => SccpConstantSeedRule::None,
+        OpCode::SplicedFrameObserved => SccpConstantSeedRule::None,
         OpCode::Add => SccpConstantSeedRule::None,
         OpCode::Sub => SccpConstantSeedRule::None,
         OpCode::Mul => SccpConstantSeedRule::None,
@@ -31997,6 +32141,8 @@ pub enum SccpConstantEvalRule {
 pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalRule {
     match opcode {
         OpCode::FrameSetLocation => SccpConstantEvalRule::None,
+        OpCode::SplicedFrameSlot => SccpConstantEvalRule::None,
+        OpCode::SplicedFrameObserved => SccpConstantEvalRule::None,
         OpCode::Add => SccpConstantEvalRule::Add,
         OpCode::Sub => SccpConstantEvalRule::Sub,
         OpCode::Mul => SccpConstantEvalRule::Mul,
@@ -32147,6 +32293,8 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
 pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -32317,6 +32465,8 @@ pub enum ValueRangeTransferRule {
 pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTransferRule {
     match opcode {
         OpCode::FrameSetLocation => ValueRangeTransferRule::None,
+        OpCode::SplicedFrameSlot => ValueRangeTransferRule::None,
+        OpCode::SplicedFrameObserved => ValueRangeTransferRule::None,
         OpCode::Add => ValueRangeTransferRule::Add,
         OpCode::Sub => ValueRangeTransferRule::Sub,
         OpCode::Mul => ValueRangeTransferRule::Mul,
@@ -32482,6 +32632,8 @@ pub enum FastPathExpansionRule {
 pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansionRule {
     match opcode {
         OpCode::FrameSetLocation => FastPathExpansionRule::None,
+        OpCode::SplicedFrameSlot => FastPathExpansionRule::None,
+        OpCode::SplicedFrameObserved => FastPathExpansionRule::None,
         OpCode::Add => FastPathExpansionRule::NumericAdd,
         OpCode::Sub => FastPathExpansionRule::NumericSub,
         OpCode::Mul => FastPathExpansionRule::NumericMul,
@@ -32647,6 +32799,8 @@ pub enum ValueRangeConstFoldRule {
 pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeConstFoldRule {
     match opcode {
         OpCode::FrameSetLocation => ValueRangeConstFoldRule::None,
+        OpCode::SplicedFrameSlot => ValueRangeConstFoldRule::None,
+        OpCode::SplicedFrameObserved => ValueRangeConstFoldRule::None,
         OpCode::Add => ValueRangeConstFoldRule::Add,
         OpCode::Sub => ValueRangeConstFoldRule::Sub,
         OpCode::Mul => ValueRangeConstFoldRule::Mul,
@@ -32806,6 +32960,8 @@ pub enum ValueRangeCondNarrowRule {
 pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCondNarrowRule {
     match opcode {
         OpCode::FrameSetLocation => ValueRangeCondNarrowRule::None,
+        OpCode::SplicedFrameSlot => ValueRangeCondNarrowRule::None,
+        OpCode::SplicedFrameObserved => ValueRangeCondNarrowRule::None,
         OpCode::Add => ValueRangeCondNarrowRule::None,
         OpCode::Sub => ValueRangeCondNarrowRule::None,
         OpCode::Mul => ValueRangeCondNarrowRule::None,
@@ -32969,6 +33125,8 @@ pub fn opcode_value_range_container_length_rule_table(
 ) -> ValueRangeContainerLengthRule {
     match opcode {
         OpCode::FrameSetLocation => ValueRangeContainerLengthRule::None,
+        OpCode::SplicedFrameSlot => ValueRangeContainerLengthRule::None,
+        OpCode::SplicedFrameObserved => ValueRangeContainerLengthRule::None,
         OpCode::Add => ValueRangeContainerLengthRule::None,
         OpCode::Sub => ValueRangeContainerLengthRule::None,
         OpCode::Mul => ValueRangeContainerLengthRule::ListRepeat,
@@ -33129,6 +33287,8 @@ pub enum RangeDevirtRole {
 pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
     match opcode {
         OpCode::FrameSetLocation => RangeDevirtRole::None,
+        OpCode::SplicedFrameSlot => RangeDevirtRole::None,
+        OpCode::SplicedFrameObserved => RangeDevirtRole::None,
         OpCode::Add => RangeDevirtRole::None,
         OpCode::Sub => RangeDevirtRole::None,
         OpCode::Mul => RangeDevirtRole::None,
@@ -33312,6 +33472,16 @@ pub struct VectorizeOpcodeFacts {
 pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
     match opcode {
         OpCode::FrameSetLocation => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::SplicedFrameSlot => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::SplicedFrameObserved => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -34040,6 +34210,8 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
 ) -> ReprRawI64FullDeoptSeedRule {
     match opcode {
         OpCode::FrameSetLocation => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::SplicedFrameSlot => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::SplicedFrameObserved => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Add => ReprRawI64FullDeoptSeedRule::ExactSumOfInlinePayloads,
         OpCode::Sub => ReprRawI64FullDeoptSeedRule::ExactSumOfInlinePayloads,
         OpCode::Mul => ReprRawI64FullDeoptSeedRule::None,
@@ -34227,6 +34399,8 @@ impl CountedLoopComparisonRole {
 pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopComparisonRole {
     match opcode {
         OpCode::FrameSetLocation => CountedLoopComparisonRole::None,
+        OpCode::SplicedFrameSlot => CountedLoopComparisonRole::None,
+        OpCode::SplicedFrameObserved => CountedLoopComparisonRole::None,
         OpCode::Add => CountedLoopComparisonRole::None,
         OpCode::Sub => CountedLoopComparisonRole::None,
         OpCode::Mul => CountedLoopComparisonRole::None,
@@ -34376,6 +34550,8 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
 pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<OpCode> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -34545,6 +34721,8 @@ impl GvnNumberingRole {
 pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
     match opcode {
         OpCode::FrameSetLocation => GvnNumberingRole::Never,
+        OpCode::SplicedFrameSlot => GvnNumberingRole::Never,
+        OpCode::SplicedFrameObserved => GvnNumberingRole::Never,
         OpCode::Add => GvnNumberingRole::TypeGated,
         OpCode::Sub => GvnNumberingRole::TypeGated,
         OpCode::Mul => GvnNumberingRole::TypeGated,
@@ -34725,6 +34903,8 @@ const GVN_VALUE_KEY_ATTRS_STATIC_CELL_BASE: &[&str] = &["s_value"];
 pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -34903,6 +35083,8 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
 pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -35054,6 +35236,8 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
 pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -35203,6 +35387,8 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
 pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -35353,6 +35539,8 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
 pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -35503,6 +35691,8 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
 pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -35653,6 +35843,8 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
 pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -35837,6 +36029,8 @@ impl RefcountBalanceRole {
 pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole {
     match opcode {
         OpCode::FrameSetLocation => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::SplicedFrameSlot => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::SplicedFrameObserved => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Add => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Sub => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Mul => RefcountBalanceRole::NotRefcountBalance,
@@ -35988,6 +36182,8 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
 pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -36138,6 +36334,8 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
 pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -36310,6 +36508,8 @@ impl GeneratorFusionPollRole {
 pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusionPollRole {
     match opcode {
         OpCode::FrameSetLocation => GeneratorFusionPollRole::Neutral,
+        OpCode::SplicedFrameSlot => GeneratorFusionPollRole::Neutral,
+        OpCode::SplicedFrameObserved => GeneratorFusionPollRole::Neutral,
         OpCode::Add => GeneratorFusionPollRole::Neutral,
         OpCode::Sub => GeneratorFusionPollRole::Neutral,
         OpCode::Mul => GeneratorFusionPollRole::Neutral,
@@ -36470,6 +36670,8 @@ pub enum GeneratorFusionIterUseRole {
 pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorFusionIterUseRole {
     match opcode {
         OpCode::FrameSetLocation => GeneratorFusionIterUseRole::None,
+        OpCode::SplicedFrameSlot => GeneratorFusionIterUseRole::None,
+        OpCode::SplicedFrameObserved => GeneratorFusionIterUseRole::None,
         OpCode::Add => GeneratorFusionIterUseRole::None,
         OpCode::Sub => GeneratorFusionIterUseRole::None,
         OpCode::Mul => GeneratorFusionIterUseRole::None,
@@ -36622,6 +36824,8 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
 pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -36772,6 +36976,8 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
 pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -36950,6 +37156,8 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
 ) -> ModuleConcurrencyMarkerSourceFacts {
     match opcode {
         OpCode::FrameSetLocation => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::SplicedFrameSlot => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::SplicedFrameObserved => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Add => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Sub => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Mul => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -37122,6 +37330,8 @@ pub enum ModuleSlotAccessRole {
 pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessRole {
     match opcode {
         OpCode::FrameSetLocation => ModuleSlotAccessRole::None,
+        OpCode::SplicedFrameSlot => ModuleSlotAccessRole::None,
+        OpCode::SplicedFrameObserved => ModuleSlotAccessRole::None,
         OpCode::Add => ModuleSlotAccessRole::None,
         OpCode::Sub => ModuleSlotAccessRole::None,
         OpCode::Mul => ModuleSlotAccessRole::None,
@@ -37282,6 +37492,8 @@ pub enum BoxedAllocationLayoutRule {
 pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocationLayoutRule {
     match opcode {
         OpCode::FrameSetLocation => BoxedAllocationLayoutRule::None,
+        OpCode::SplicedFrameSlot => BoxedAllocationLayoutRule::None,
+        OpCode::SplicedFrameObserved => BoxedAllocationLayoutRule::None,
         OpCode::Add => BoxedAllocationLayoutRule::None,
         OpCode::Sub => BoxedAllocationLayoutRule::None,
         OpCode::Mul => BoxedAllocationLayoutRule::None,
@@ -37444,6 +37656,8 @@ pub enum TirVerifyAttrRule {
 pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
     match opcode {
         OpCode::FrameSetLocation => TirVerifyAttrRule::None,
+        OpCode::SplicedFrameSlot => TirVerifyAttrRule::None,
+        OpCode::SplicedFrameObserved => TirVerifyAttrRule::None,
         OpCode::Add => TirVerifyAttrRule::None,
         OpCode::Sub => TirVerifyAttrRule::None,
         OpCode::Mul => TirVerifyAttrRule::None,
@@ -37606,6 +37820,8 @@ pub enum StrengthReductionRule {
 pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReductionRule {
     match opcode {
         OpCode::FrameSetLocation => StrengthReductionRule::None,
+        OpCode::SplicedFrameSlot => StrengthReductionRule::None,
+        OpCode::SplicedFrameObserved => StrengthReductionRule::None,
         OpCode::Add => StrengthReductionRule::None,
         OpCode::Sub => StrengthReductionRule::None,
         OpCode::Mul => StrengthReductionRule::MulByTwo,
@@ -37767,6 +37983,8 @@ pub enum ScevExprRule {
 pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
     match opcode {
         OpCode::FrameSetLocation => ScevExprRule::None,
+        OpCode::SplicedFrameSlot => ScevExprRule::None,
+        OpCode::SplicedFrameObserved => ScevExprRule::None,
         OpCode::Add => ScevExprRule::Add,
         OpCode::Sub => ScevExprRule::Sub,
         OpCode::Mul => ScevExprRule::Mul,
@@ -37928,6 +38146,8 @@ pub enum CheckedIntLoopRule {
 pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule {
     match opcode {
         OpCode::FrameSetLocation => CheckedIntLoopRule::None,
+        OpCode::SplicedFrameSlot => CheckedIntLoopRule::None,
+        OpCode::SplicedFrameObserved => CheckedIntLoopRule::None,
         OpCode::Add => CheckedIntLoopRule::CheckedAdd,
         OpCode::Sub => CheckedIntLoopRule::ExactSub,
         OpCode::Mul => CheckedIntLoopRule::CheckedMul,
@@ -38081,6 +38301,8 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
 pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -38232,6 +38454,8 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
 pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38382,6 +38606,8 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
 pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38532,6 +38758,8 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
 pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38685,6 +38913,8 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
 pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38835,6 +39065,8 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
 pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38985,6 +39217,8 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
 pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39135,6 +39369,8 @@ pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
 pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39285,6 +39521,8 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
 pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39442,6 +39680,8 @@ pub enum ExceptionRegionNestingRole {
 pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRegionNestingRole {
     match opcode {
         OpCode::FrameSetLocation => ExceptionRegionNestingRole::None,
+        OpCode::SplicedFrameSlot => ExceptionRegionNestingRole::None,
+        OpCode::SplicedFrameObserved => ExceptionRegionNestingRole::None,
         OpCode::Add => ExceptionRegionNestingRole::None,
         OpCode::Sub => ExceptionRegionNestingRole::None,
         OpCode::Mul => ExceptionRegionNestingRole::None,
@@ -39598,6 +39838,8 @@ pub enum AliasTransparentAliasRole {
 pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTransparentAliasRole {
     match opcode {
         OpCode::FrameSetLocation => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::SplicedFrameSlot => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::SplicedFrameObserved => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Add => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Sub => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Mul => AliasTransparentAliasRole::NotTransparentAlias,
@@ -39760,6 +40002,8 @@ pub enum AliasMemoryRegionClass {
 pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClass {
     match opcode {
         OpCode::FrameSetLocation => AliasMemoryRegionClass::ScalarRegister,
+        OpCode::SplicedFrameSlot => AliasMemoryRegionClass::GenericHeap,
+        OpCode::SplicedFrameObserved => AliasMemoryRegionClass::GenericHeap,
         OpCode::Add => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Sub => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Mul => AliasMemoryRegionClass::ScalarRegister,
@@ -39921,6 +40165,8 @@ pub enum AliasSlotObservation {
 pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservation {
     match opcode {
         OpCode::FrameSetLocation => AliasSlotObservation::ConservativeObserver,
+        OpCode::SplicedFrameSlot => AliasSlotObservation::ConservativeObserver,
+        OpCode::SplicedFrameObserved => AliasSlotObservation::ConservativeObserver,
         OpCode::Add => AliasSlotObservation::ConservativeObserver,
         OpCode::Sub => AliasSlotObservation::ConservativeObserver,
         OpCode::Mul => AliasSlotObservation::ConservativeObserver,
@@ -40104,6 +40350,8 @@ const PASS_DELTA_OPCODE_FACTS_NONE: PassDeltaOpcodeFacts = PassDeltaOpcodeFacts 
 pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
     match opcode {
         OpCode::FrameSetLocation => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::SplicedFrameSlot => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::SplicedFrameObserved => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Add => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Sub => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Mul => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -40334,6 +40582,8 @@ pub enum LiteralPayloadKind {
 pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloadKind> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -40510,6 +40760,8 @@ pub fn opcode_canonicalize_commutative_domain_table(
 ) -> Option<CanonicalizeCommutativeDomain> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => Some(CanonicalizeCommutativeDomain::Numeric),
         OpCode::Sub => None,
         OpCode::Mul => Some(CanonicalizeCommutativeDomain::Numeric),
@@ -40659,6 +40911,8 @@ pub fn opcode_canonicalize_commutative_domain_table(
 pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Option<OpCode> {
     match opcode {
         OpCode::FrameSetLocation => None,
+        OpCode::SplicedFrameSlot => None,
+        OpCode::SplicedFrameObserved => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -41100,6 +41354,8 @@ const CANONICALIZE_BINARY_RULES_OR: &[CanonicalizeBinaryRule] = &[
 pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [CanonicalizeBinaryRule] {
     match opcode {
         OpCode::FrameSetLocation => &[],
+        OpCode::SplicedFrameSlot => &[],
+        OpCode::SplicedFrameObserved => &[],
         OpCode::Add => CANONICALIZE_BINARY_RULES_ADD,
         OpCode::Sub => CANONICALIZE_BINARY_RULES_SUB,
         OpCode::Mul => CANONICALIZE_BINARY_RULES_MUL,
@@ -41336,6 +41592,8 @@ mod operand_ownership_schema_tests {
 pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> OperandOwnership {
     match opcode {
         OpCode::FrameSetLocation => OperandOwnership::Borrowed,
+        OpCode::SplicedFrameSlot => OperandOwnership::Borrowed,
+        OpCode::SplicedFrameObserved => OperandOwnership::Borrowed,
         OpCode::Add => OperandOwnership::Borrowed,
         OpCode::Sub => OperandOwnership::Borrowed,
         OpCode::Mul => OperandOwnership::Borrowed,
@@ -41923,6 +42181,8 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -42430,6 +42690,8 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -42945,6 +43207,8 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -43462,6 +43726,8 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -43561,6 +43827,8 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
 pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
     match opcode {
         OpCode::FrameSetLocation => false,
+        OpCode::SplicedFrameSlot => false,
+        OpCode::SplicedFrameObserved => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -44138,6 +44406,8 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -44649,6 +44919,8 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Shr
         | OpKind::Slice
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -45170,6 +45442,8 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Slice
         | OpKind::SliceNew
         | OpKind::Sorted
+        | OpKind::SplicedFrameObserved
+        | OpKind::SplicedFrameSlot
         | OpKind::StackAlloc
         | OpKind::StateBlockEnd
         | OpKind::StateBlockStart
@@ -45275,6 +45549,8 @@ pub enum ResultValidity {
 pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> ResultValidity {
     match opcode {
         OpCode::FrameSetLocation => ResultValidity::AlwaysValid,
+        OpCode::SplicedFrameSlot => ResultValidity::AlwaysValid,
+        OpCode::SplicedFrameObserved => ResultValidity::AlwaysValid,
         OpCode::Add => ResultValidity::AlwaysValid,
         OpCode::Sub => ResultValidity::AlwaysValid,
         OpCode::Mul => ResultValidity::AlwaysValid,
@@ -45456,6 +45732,8 @@ pub fn opcode_explicit_release_operands_table(
 ) -> ExplicitReleaseOperands {
     match opcode {
         OpCode::FrameSetLocation => ExplicitReleaseOperands::None,
+        OpCode::SplicedFrameSlot => ExplicitReleaseOperands::None,
+        OpCode::SplicedFrameObserved => ExplicitReleaseOperands::None,
         OpCode::Add => ExplicitReleaseOperands::None,
         OpCode::Sub => ExplicitReleaseOperands::None,
         OpCode::Mul => ExplicitReleaseOperands::None,

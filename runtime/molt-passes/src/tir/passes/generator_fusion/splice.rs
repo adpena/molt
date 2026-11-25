@@ -180,6 +180,9 @@ fn apply_fusion_staged(
     };
     let mut arguments: HashMap<usize, ValueId> = HashMap::default();
     let mut preheader_init_ops: Vec<TirOp> = Vec::new();
+    let identity = caller.fresh_value();
+    caller.value_types.insert(identity, TirType::I64);
+    preheader_init_ops.push(TirOp::new(OpCode::SplicedFrameSlot, vec![], vec![identity]));
     for (position, argument) in bound {
         let slot = caller.fresh_value();
         let ty = caller
@@ -212,13 +215,21 @@ fn apply_fusion_staged(
     // remains untouched because this stage is discarded.
     let frame = FusedFrame {
         function: candidate.function,
+        identity,
         handler: candidate.handler,
         handler_args: candidate.handler_args.clone(),
     };
     let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners, &frame)?;
 
     // --- Wire the fused loop. ---
-    if !wire_fused_loop(caller, candidate, &clone, preheader_init_ops, &mut owners) {
+    if !wire_fused_loop(
+        caller,
+        candidate,
+        &clone,
+        preheader_init_ops,
+        &mut owners,
+        identity,
+    ) {
         return None;
     }
 

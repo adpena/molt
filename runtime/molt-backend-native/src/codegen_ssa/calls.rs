@@ -475,7 +475,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let runtime_target = op
             .runtime
             .filter(|function| runtime_role && function.params() == op.operands.len());
-        if let Some(abi) = runtime_target.and_then(RuntimeFn::boxed_abi) {
+        if let Some(function @ (RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameFinish)) =
+            runtime_target
+        {
+            self.spliced_frame_call(b, op, function);
+        } else if let Some(abi) = runtime_target.and_then(RuntimeFn::boxed_abi) {
             self.boxed_runtime_call(b, op, abi);
         } else if let Some(function) =
             runtime_target.filter(|function| function.form() == RuntimeCallForm::RawCall)
@@ -487,6 +491,50 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             ));
             self.bind_none(b, op);
         }
+    }
+
+    /// The identity place is an address in caller storage. Its payload is
+    /// transferred to the runtime only on an observed activation's exit.
+    pub(crate) fn spliced_frame_call(&mut self, b: &mut B, op: &TirOp, function: RuntimeFn) {
+        if !self.runtime.contains(function) {
+            self.fatal(format!("missing runtime entry '{}'", function.symbol()));
+            return;
+        }
+        let slot = *op.operands.last().expect("spliced frame call with a slot");
+        debug_assert_eq!(self.operands().held(slot), HeldCarrier::RawI64);
+        let slot = self.operands().resolve(b, slot);
+        let slot = b.expect_word(slot);
+        let callee = b.runtime_callee(function);
+        if function == RuntimeFn::SplicedFrameLink {
+            let slot = b.word_value(slot);
+            self.runtime_call(
+                b,
+                op,
+                CallTarget::Callee(callee),
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                    RuntimeArg::Word(slot),
+                ],
+                ResultCustody::SideEffect,
+                "spliced_frame_link",
+                function.symbol(),
+            );
+            return;
+        }
+        let address = b.word_to_address(slot);
+        let bindings = b.load_word(address, 0);
+        let zero = b.constant(0);
+        let observed = b.int_compare(IntComparison::NotEqual, bindings, zero);
+        let release = b.create_block("spliced_frame_finish");
+        let next = b.create_block("spliced_frame_finished");
+        b.branch_if(observed, (release, &[]), (next, &[]));
+        b.switch_to_block(release);
+        b.store_word(address, 0, zero);
+        b.call_cold(callee, &[b.word_value(bindings)]);
+        b.jump(next, &[]);
+        b.switch_to_block(next);
+        self.bind_none(b, op);
     }
 
     /// The linker symbol a call names: its typed callee's row (HF-847), else

@@ -2644,6 +2644,32 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "SplicedFrameSlot"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["i64"]
+may_throw = false
+side_effecting = false
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "SplicedFrameObserved"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "Add"
 may_call_python = true
 operand_arity = 2
@@ -4354,6 +4380,16 @@ mapper_opcode = "Add"
 canonical = "frame_set_location"
 aliases = []
 mapper_opcode = "FrameSetLocation"
+
+[[kind]]
+canonical = "spliced_frame_slot"
+aliases = []
+mapper_opcode = "SplicedFrameSlot"
+
+[[kind]]
+canonical = "spliced_frame_observed"
+aliases = []
+mapper_opcode = "SplicedFrameObserved"
 
 [[kind]]
 canonical = "sub"

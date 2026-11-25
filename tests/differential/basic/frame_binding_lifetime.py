@@ -170,6 +170,21 @@ def generator_frame_locals():
     del frame
 
 
+def yielded_frames():
+    for step in range(2):
+        yield sys._getframe()
+
+
+def clear_suspended_frame():
+    for frame in yielded_frames():
+        try:
+            frame.clear()
+        except RuntimeError as exc:
+            events.append(str(exc))
+        else:
+            events.append("closed")
+
+
 def holding_generator():
     held = Value("generator local")  # noqa: F841
     yield 1
@@ -211,6 +226,7 @@ for case in (
     comprehension_restores_its_name,
     super_reads_the_rebound_argument,
     generator_frame_locals,
+    clear_suspended_frame,
     completed_generator_releases_its_frame,
     completed_coroutine_releases_its_frame,
 ):
