@@ -801,6 +801,9 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "AsyncWorkPending",
         # Stores a location id in the frame record, not in a heap object.
         "FrameSetLocation",
+        # Reserve an activation-local identity word and sample its current value.
+        "SplicedFrameSlot",
+        "SplicedFrameObserved",
         "FunctionDefaultsVersion",
         "StackAlloc",
     }
@@ -1403,6 +1406,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
 
     expected = {
         "Pow": "dynbox",
+        "SplicedFrameSlot": "i64",
+        "SplicedFrameObserved": "bool",
         "IsInlineInt": "bool",
         "UnboxInlineInt": "i64",
         "IsFloatWord": "bool",
