@@ -431,7 +431,12 @@ validated scalar data. The admitted raw manifest generation owns one canonical
 release fingerprint, with the existing JSON encoding at the identity boundary.
 Executable and runtime observations still validate live bytes or generation
 fences. Source-tree enumeration derives portable child names from the admitted
-directory prefix and compares closing directory generations. The lifetime is
+directory prefix and compares closing directory generations. It derives the set
+of expected directories from portable manifest names and walks each shared
+parent prefix once. The verifier retains each observed directory path for the
+closing fence. Hash-only captures consume the bounded extent of a fresh
+handle and close it directly. Callers retaining a handle for later consumption
+still get a rewind. The lifetime is
 the compiler operation, as with [rustc's shared compilation data](https://rustc-dev-guide.rust-lang.org/memory.html).
 
 Installed stdlib summary admission binds the release manifest digest to one

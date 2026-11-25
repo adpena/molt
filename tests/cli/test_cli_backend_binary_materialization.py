@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import BinaryIO
 
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
@@ -1233,21 +1234,22 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
     generation_stat = first.binary.stat()
     probes.clear()
 
-    captures: list[Path] = []
-    capture = toolchain_identity.stable_regular_file_handle_identity
+    hashed_extents: list[int] = []
+    hash_stream = toolchain_identity._sha256_stream
 
-    def count_capture(
-        opened: toolchain_identity.StableRegularFileHandle, *, label: str
-    ) -> toolchain_identity.StableRegularFileIdentity:
-        captures.append(opened.path)
-        return capture(opened, label=label)
+    def count_payload_read(stream: BinaryIO, *, max_bytes: int) -> str:
+        observed = os.fstat(stream.fileno())
+        if (observed.st_dev, observed.st_ino) == (
+            generation_stat.st_dev,
+            generation_stat.st_ino,
+        ):
+            hashed_extents.append(max_bytes)
+        return hash_stream(stream, max_bytes=max_bytes)
 
-    monkeypatch.setattr(
-        toolchain_identity, "stable_regular_file_handle_identity", count_capture
-    )
+    monkeypatch.setattr(toolchain_identity, "_sha256_stream", count_payload_read)
 
     second = ensure()
-    assert captures.count(first.binary) == 1
+    assert hashed_extents == [generation_stat.st_size]
     assert second.cache_compiler_fingerprint == first.cache_compiler_fingerprint
     assert second.binary == first.binary or second.binary.samefile(first.binary)
     assert builds and len(builds) == 1

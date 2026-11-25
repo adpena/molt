@@ -619,7 +619,7 @@ def open_stable_regular_file(
     ChangeTime alone cannot distinguish writes within one filesystem clock tick.
     """
 
-    lexical = path.expanduser().absolute()
+    lexical = path if path.is_absolute() else path.expanduser().absolute()
     try:
         before_path = (
             lexical.lstat() if expected_path_stat is None else expected_path_stat
@@ -760,8 +760,10 @@ def _stable_regular_file_snapshot(
         with open_stable_regular_file(
             path, label=label, expected_path_stat=expected_path_stat
         ) as opened:
+            # A new descriptor is positioned at the start and has no later
+            # consumer. Hash its exact extent and close it without rewinding.
             digest = (
-                stable_regular_file_handle_identity(opened, label=label).sha256
+                _sha256_stream(opened.stream, max_bytes=opened.stat.st_size)
                 if hash_content
                 else None
             )

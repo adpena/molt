@@ -120,21 +120,20 @@ def _verify_source_files(
     root = resolve_owned_path(root)
     label = scope.value
     exact = scope is _SourceInventoryScope.RELEASE
-    directories = (
-        {
-            parent.as_posix()
-            for name in expected
-            for parent in Path(name).parents
-            if parent != Path(".")
-        }
-        if exact
-        else set()
-    )
+    # Inventory names are canonical POSIX paths. Once a parent is known,
+    # all its ancestors were already admitted by the same walk.
+    directories: set[str] = set()
+    if exact:
+        for name in expected:
+            parent = name.rpartition("/")[0]
+            while parent and parent not in directories:
+                directories.add(parent)
+                parent = parent.rpartition("/")[0]
     allowed = set(expected)
     if manifest_name is not None:
         allowed.add(manifest_name)
     observed: dict[str, os.stat_result] = {}
-    observed_dirs: dict[str, os.stat_result] = {}
+    observed_dirs: dict[str, tuple[Path, os.stat_result]] = {}
     root_metadata = root.lstat()
     pending = [(root, root_metadata, "")]
 
@@ -163,23 +162,23 @@ def _verify_source_files(
         check_directory(current, metadata)
         with os.scandir(current) as entries:
             for entry in entries:
-                path = current / entry.name
                 relative = prefix + entry.name
                 # DirEntry.stat omits device/inode identity on Windows.
                 member = (
-                    path.lstat()
+                    (current / entry.name).lstat()
                     if os.name == "nt"
                     else entry.stat(follow_symlinks=False)
                 )
                 if not exact and entry.name == "__pycache__" and entry.is_dir():
                     continue
                 if metadata_is_link_like(member):
-                    raise ValueError(f"{label} contains a link: {path}")
+                    raise ValueError(f"{label} contains a link: {current / entry.name}")
                 if stat.S_ISDIR(member.st_mode) and (
                     not exact or relative in directories
                 ):
-                    observed_dirs[relative] = member
-                    pending.append((path, member, relative + "/"))
+                    child = current / entry.name
+                    observed_dirs[relative] = (child, member)
+                    pending.append((child, member, relative + "/"))
                 elif stat.S_ISREG(member.st_mode) and relative in allowed:
                     observed[relative] = member
                 elif not (stat.S_ISDIR(member.st_mode) or stat.S_ISREG(member.st_mode)):
@@ -193,6 +192,7 @@ def _verify_source_files(
     if exact and (set(observed) != allowed or set(observed_dirs) != directories):
         raise ValueError("Compiler source file/directory closure is not exact")
     check_modes = exact and os.name != "nt"
+    capture_label = label.lower()
 
     # Check entries in manifest order. Most are small enough that scheduling
     # and contended metadata calls cost more than hashing their bytes.
@@ -201,7 +201,7 @@ def _verify_source_files(
         if metadata is None:
             continue
         identity = stable_regular_file_identity(
-            root / name, label=label.lower(), expected_path_stat=metadata
+            root / name, label=capture_label, expected_path_stat=metadata
         )
         if (identity.size, identity.sha256) != (entry["size"], entry["sha256"]):
             raise ValueError(f"{label} content changed: {name}")
@@ -217,8 +217,8 @@ def _verify_source_files(
     if resolve_owned_path(root) != root:
         raise ValueError(f"{label} root changed during verification")
     check_directory(root, root_metadata)
-    for name, metadata in observed_dirs.items():
-        check_directory(root / name, metadata)
+    for path, metadata in observed_dirs.values():
+        check_directory(path, metadata)
     return root
 
 
