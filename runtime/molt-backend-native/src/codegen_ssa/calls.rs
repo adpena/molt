@@ -708,6 +708,18 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         release_call_inputs(b, None, &extracted);
         let none = b.constant(NONE_WORD);
         if let Some(&result) = op.results.first() {
+            // Keep the linkage carrier when the caller's producer plan agrees.
+            // Argument boxing can still fail before entry, in which case the
+            // custody join needs the legacy boxed sentinel.
+            if let Some(value) = returned
+                && return_type.is_unboxed()
+                && self.plan.effective_value_type(result, &TirType::DynBox) == return_type
+                && !custody.can_fail()
+            {
+                view.finish(b, custody, none, "direct_call_result", |_| {});
+                self.bind(result, value, HeldCarrier::of(&return_type));
+                return;
+            }
             let raw = returned.unwrap_or_else(|| b.word_value(none));
             let word = if return_type == TirType::DynBox {
                 b.expect_word(raw)
@@ -1197,6 +1209,7 @@ mod tests {
     use crate::representation_plan::ProducerCarrierPlan;
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect};
+    use molt_ir::repr::Repr;
     use std::collections::BTreeMap;
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
@@ -1424,16 +1437,20 @@ mod tests {
         op: TirOp,
         inputs: &[u64],
         linkage: BTreeMap<String, NativeFunctionLinkageAbi>,
+        result_repr: Option<Repr>,
         machine_only: bool,
     ) -> Run<Vec<String>> {
-        let lowering = kernel!(family: Family = family, op: TirOp = op, linkage: BTreeMap<String, NativeFunctionLinkageAbi> = linkage; |b, inputs| -> Vec<String> {
+        let lowering = kernel!(family: Family = family, op: TirOp = op, linkage: BTreeMap<String, NativeFunctionLinkageAbi> = linkage, result_repr: Option<Repr> = result_repr; |b, inputs| -> Vec<String> {
             let func = TirFunction::new(
                 "calls".into(),
                 vec![],
                 TirType::None,
                 molt_ir::FunctionReturnAbi::Value,
             );
-            let plan = ProducerCarrierPlan::default();
+            let mut plan = ProducerCarrierPlan::default();
+            if let (Some(&result), Some(repr)) = (op.results.first(), *result_repr) {
+                plan.repr_by_value.insert(result, repr);
+            }
             let mut values = ValueTable::with_capacity(8);
             for (index, &input) in inputs.iter().enumerate() {
                 values.set_value(ValueId(index as u32), input);
@@ -1487,7 +1504,7 @@ mod tests {
 
     /// [`lower_linked`] in a program with no compiled functions.
     fn lower(family: Family, op: TirOp, inputs: &[u64], machine_only: bool) -> Run<Vec<String>> {
-        lower_linked(family, op, inputs, BTreeMap::new(), machine_only)
+        lower_linked(family, op, inputs, BTreeMap::new(), None, machine_only)
     }
 
     /// The boxed id of the first inline-cache site of `lane` in `calls`.
@@ -1560,7 +1577,14 @@ mod tests {
             Some(TirType::DynBox),
         );
         let call = direct_call(symbol, 2, 2);
-        let run = lower_linked(Family::Call, call, &[OBJECT, inline(5)], program, false);
+        let run = lower_linked(
+            Family::Call,
+            call,
+            &[OBJECT, inline(5)],
+            program,
+            None,
+            false,
+        );
         assert!(run.fact.is_empty(), "{:?}", run.fact);
         assert_eq!(
             run.results,
@@ -1569,16 +1593,23 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_direct_call_result_is_boxed_for_its_boxed_result() {
+    fn a_raw_direct_call_result_is_boxed_only_when_required_by_the_caller() {
         let symbol = "walker_compiled_raw";
         let program = linked(symbol, vec![TirType::I64, TirType::I64], Some(TirType::I64));
         let call = direct_call(symbol, 2, 2);
-        let run = lower_linked(Family::Call, call, &[inline(2), inline(3)], program, false);
-        assert!(run.fact.is_empty(), "{:?}", run.fact);
-        assert_eq!(
-            run.results,
-            [Value::Word(inline(compiled_result(symbol, &[2, 3]) as i64))]
-        );
+        let raw = compiled_result(symbol, &[2, 3]);
+        for (repr, expected) in [(None, inline(raw as i64)), (Some(Repr::RawI64Safe), raw)] {
+            let run = lower_linked(
+                Family::Call,
+                call.clone(),
+                &[inline(2), inline(3)],
+                program.clone(),
+                repr,
+                false,
+            );
+            assert!(run.fact.is_empty(), "{:?}", run.fact);
+            assert_eq!(run.results, [Value::Word(expected)]);
+        }
     }
 
     #[test]
@@ -1595,6 +1626,7 @@ mod tests {
             call,
             &[FUNCTION_WORD, OBJECT],
             program,
+            None,
             false,
         );
         assert!(run.fact.is_empty(), "{:?}", run.fact);

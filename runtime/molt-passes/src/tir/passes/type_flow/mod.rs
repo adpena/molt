@@ -364,12 +364,17 @@ fn apply(
                 changed = true;
             }
         }
-        if let Some(ty) = &decision.result
-            && op.exact_result_proof().as_ref() != Some(ty)
-            && op.mark_exact_result_proof(ty)
-        {
-            outcome.results_typed += 1;
-            changed = true;
+        if op.exact_result_proof() != decision.result {
+            if decision
+                .result
+                .as_ref()
+                .is_some_and(|ty| op.mark_exact_result_proof(ty))
+            {
+                outcome.results_typed += 1;
+                changed = true;
+            } else {
+                changed |= op.clear_exact_result_proof();
+            }
         }
     }
     (changed, method_targets)
