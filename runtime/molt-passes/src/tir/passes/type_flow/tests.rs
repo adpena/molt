@@ -534,10 +534,11 @@ fn proven_closure_specializes_user_arguments_and_keeps_the_captured_callable() {
     };
     let mut module = TirModule::with_own_table("m", vec![closure, caller, forward]);
     let body_index = module.body_index();
+    let members = exact_receiver_fields::exact_members(&module, &body_index);
     let mut sites: Vec<_> = module
         .functions
         .iter()
-        .map(|func| sites::sites_of(func, &body_index, &module))
+        .map(|func| sites::sites_of(func, &body_index, &module, &members))
         .collect();
     let relevant = relevance::solve(&module, &mut sites, &body_index, &[true; 3]);
     assert_eq!(relevant[2], [true]);
@@ -918,10 +919,11 @@ fn relevance_propagates_through_forwarded_values_and_reversed_call_order() {
     }
     let module = TirModule::with_own_table("m", functions);
     let body_index = module.body_index();
+    let members = exact_receiver_fields::exact_members(&module, &body_index);
     let mut sites: Vec<_> = module
         .functions
         .iter()
-        .map(|func| sites::sites_of(func, &body_index, &module))
+        .map(|func| sites::sites_of(func, &body_index, &module, &members))
         .collect();
     let relevant = relevance::solve(&module, &mut sites, &body_index, &vec![true; chain + 2]);
 
@@ -951,10 +953,11 @@ fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
     };
     let module = TirModule::with_own_table("m", vec![caller, leaf]);
     let body_index = module.body_index();
+    let members = exact_receiver_fields::exact_members(&module, &body_index);
     let mut sites: Vec<_> = module
         .functions
         .iter()
-        .map(|func| sites::sites_of(func, &body_index, &module))
+        .map(|func| sites::sites_of(func, &body_index, &module, &members))
         .collect();
     let mut expected = vec![false; 66];
     expected[64] = true;
@@ -974,6 +977,91 @@ fn method_fixture_function(name: &str, params: &[&str], ops: serde_json::Value) 
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ..Default::default()
     })
+}
+
+#[test]
+fn exact_method_feeds_arguments_and_results_back_into_type_flow() {
+    use molt_ir::{OpKind, ParameterCustody};
+    use serde_json::json;
+
+    let definition = "class:m:Reader";
+    let mut factory = method_fixture_function(
+        "factory",
+        &["cls", "cells"],
+        json!([
+            {"kind":"func_new_closure", "value":2, "args":["cells"], "out":"fn",
+             "exact_method":[definition, "read"]},
+            {"kind":"class_set_definition", "args":["cls"], "class_definition":definition},
+            {"kind":"object_new_bound", "args":["cls"], "out":"receiver",
+             "class_definition":definition, "stable_instance_class":true},
+            {"kind":"ret","args":["receiver"]}
+        ]),
+    );
+    factory
+        .blocks
+        .values_mut()
+        .flat_map(|b| &mut b.ops)
+        .find(|op| op.origin == Some(OpKind::FuncNewClosure))
+        .unwrap()
+        .callee = Some(FunctionId(1));
+    let mut read = method_fixture_function(
+        "read",
+        &[molt_ir::MOLT_CLOSURE_PARAM_NAME, "self", "arg"],
+        json!([
+            {"kind":"const", "value":1, "out":"one"},
+            {"kind":"add", "args":["arg","one"], "out":"sum"},
+            {"kind":"ret","args":["sum"]}
+        ]),
+    );
+    read.set_parameter_custody(&[
+        ParameterCustody::Borrowed,
+        ParameterCustody::Transferred,
+        ParameterCustody::Transferred,
+    ]);
+    let wrapper = method_fixture_function(
+        "wrapper",
+        &["receiver", "arg"],
+        json!([
+            {"kind":"load_method","args":["receiver"],"s_value":"read","var":"f","out":"s"},
+            {"kind":"call_loaded_method","args":["f","s","arg"],"out":"answer",
+             "argument_custody":["transferred","transferred","transferred"]},
+            {"kind":"ret","args":["answer"]}
+        ]),
+    );
+    let mut main = function("main", 2);
+    let entry = main.entry_block;
+    let args: Vec<_> = main.blocks[&entry].args.iter().map(|arg| arg.id).collect();
+    let receiver = proven_call(&mut main, entry, FunctionId(0), &args);
+    let arg = const_int(&mut main, entry, 40);
+    let result = proven_call(&mut main, entry, FunctionId(2), &[receiver, arg]);
+    main.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut module = TirModule::with_own_table("m", vec![factory, read, wrapper, main]);
+    let flow = run(&mut module, &llvm(), &HashSet::default(), true);
+    let find_clone = |origin| {
+        flow.clones
+            .iter()
+            .find(|clone| clone.origin == FunctionId(origin))
+            .unwrap_or_else(|| panic!("{:#?}", flow.report))
+            .id
+    };
+    let read_clone = find_clone(1);
+    let wrapper_clone = find_clone(2);
+    let specialized = calls(body(&module, module.table.symbol(wrapper_clone)));
+    assert_eq!(specialized[0].callee, Some(read_clone));
+    assert_eq!(specialized[0].exact_result_proof(), Some(TirType::I64));
+    assert_eq!(
+        calls(body(&module, "main"))[1].exact_result_proof(),
+        Some(TirType::I64)
+    );
+    let generic = body(&module, "wrapper");
+    assert!(
+        generic.blocks.values().flat_map(|b| &b.ops).any(|op| {
+            op.opcode == OpCode::CallLoadedMethod && op.exact_result_proof().is_none()
+        })
+    );
 }
 
 #[test]

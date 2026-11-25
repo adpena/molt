@@ -403,7 +403,7 @@ impl<'a> ExactScalarPlan<'a> {
                         }
                         continue;
                     }
-                    let seeded = if op.opcode == OpCode::Call {
+                    let seeded = if matches!(op.opcode, OpCode::Call | OpCode::CallLoadedMethod) {
                         seeds.call_results.and_then(|results| {
                             results
                                 .sites
