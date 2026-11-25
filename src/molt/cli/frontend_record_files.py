@@ -201,6 +201,49 @@ def _seek_index(path: Path, prefix: bytes) -> _RecordLocation | None:
     return None
 
 
+# After repeated exhausted searches in a fragmented store, remember which
+# 24-bit key prefixes occur in its immutable indices. A set bit still needs
+# the ordinary lookup (including its kind, priority and extent validation).
+_PREFIX_BYTES: Final = 1 << 21
+_PREFIX_AFTER_MISSES: Final = 16
+_PREFIX_INPUT_LIMIT: Final = 256 << 20
+
+
+def _index_key_prefixes(indices: tuple[Path, ...]) -> bytearray | None:
+    prefixes = bytearray(_PREFIX_BYTES)
+    remaining = _PREFIX_INPUT_LIMIT
+    for path in indices:
+        try:
+            with open(
+                path, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
+            ) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > remaining:
+                    return None
+                remaining -= info.st_size
+                header = stream.readline(len(_INDEX_HEADER))
+                if header != _INDEX_HEADER:
+                    return None
+                digest = hashlib.sha256(header)
+                size = len(header)
+                while line := stream.readline(_INDEX_ROW_LIMIT + 1):
+                    size += len(line)
+                    if len(line) > _INDEX_ROW_LIMIT or size > info.st_size:
+                        return None
+                    digest.update(line)
+                    kind_end = line.find(b" ")
+                    if kind_end < 0:
+                        return None
+                    prefix = int(line[kind_end + 1 : kind_end + 7], 16)
+                    prefixes[prefix >> 3] |= 1 << (prefix & 7)
+                # Only content-addressed, complete snapshots prove absence.
+                if size != info.st_size or digest.hexdigest() != path.stem:
+                    return None
+        except (OSError, ValueError):
+            return None
+    return prefixes
+
+
 def _read_indices(indices: tuple[Path, ...]) -> _RecordIndex:
     result: _RecordIndex = {}
     for index in reversed(indices):
@@ -231,6 +274,8 @@ class FrontendRecordFiles:
         self._lookups: dict[tuple[str, str], _RecordLocation | None] = {}
         self._indices: tuple[Path, ...] = ()
         self._index_generation: tuple[int, int, int] | None = None
+        self._key_prefixes: bytearray | None = None
+        self._exhausted_searches = 0
         self._pending: _RecordIndex = {}
         self._payloads: dict[str, bytes] = {}
         self._payload_bytes = 0
@@ -304,18 +349,38 @@ class FrontendRecordFiles:
         if generation != self._index_generation:
             self._indices = _index_paths(self._index)
             self._lookups.clear()
+            self._key_prefixes = None
+            self._exhausted_searches = 0
             self._index_generation = generation
-        if address not in self._lookups:
-            prefix = f"{kind} {key} ".encode("ascii")
-            self._lookups[address] = next(
-                (
-                    found
-                    for index in self._indices
-                    if (found := _seek_index(index, prefix)) is not None
-                ),
-                None,
-            )
-        return self._lookups[address]
+        if address in self._lookups:
+            return self._lookups[address]
+        if (
+            self._exhausted_searches == _PREFIX_AFTER_MISSES
+            and len(self._indices) > _MERGE_INDEX_FILES
+        ):
+            self._exhausted_searches += 1
+            self._key_prefixes = _index_key_prefixes(self._indices)
+            if self._directory_generation() != generation:
+                # Publication or compaction raced the scan. Observe the new
+                # generation before using any negative result.
+                return self._location(kind, key)
+        if self._key_prefixes is not None:
+            prefix_bits = int(key[:6], 16)
+            if not self._key_prefixes[prefix_bits >> 3] & (1 << (prefix_bits & 7)):
+                return None
+        prefix = f"{kind} {key} ".encode("ascii")
+        location = next(
+            (
+                found
+                for index in self._indices
+                if (found := _seek_index(index, prefix)) is not None
+            ),
+            None,
+        )
+        self._lookups[address] = location
+        if location is None:
+            self._exhausted_searches += 1
+        return location
 
     def addresses(self) -> dict[tuple[str, str], str]:
         """Explicit inventory of every address, including this view's writes."""
