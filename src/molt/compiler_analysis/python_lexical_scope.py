@@ -12,12 +12,17 @@ import ast
 from molt.python_private_names import python_import_binding
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from threading import RLock
 from typing import Literal, TypeAlias
 
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,
     python_pattern_capture_names,
+)
+from molt.compiler_analysis.python_syntax import (
+    PYTHON_SYNTAX_NODE_TYPES,
+    require_python_syntax_target,
 )
 from molt.compiler_analysis.static_truth import (
     ContextExecutionPhase,
@@ -1166,27 +1171,32 @@ class PythonDependencyAuthority:
         self.eager_annotations = eager_annotations
         self.future_annotations = future_annotations
         self.include_lexical_read = include_lexical_read
+        self._lock = RLock()
         self.node_visits = 0
         self.declaration_scans = 0
         self._declarations: dict[ast.AST, PythonScopeDeclarations] = {}
         self.summaries: dict[ast.AST, PythonDefinitionDependencies] = {}
+        self._module_read_names: dict[ast.Module, tuple[str, ...]] = {}
         self._regions: dict[ast.AST, DefinitionLexicalRegions] = {}
         # Per expression: (contains an await, contains a yield or yield from),
         # each counted only where it suspends the evaluating frame.
         self._suspension_expressions: dict[ast.AST, tuple[bool, bool]] = {}
 
     def _expression_suspension(self, node: ast.AST) -> tuple[bool, bool]:
-        """The dependency traversal also publishes descendant expression facts;
-        overlapping frontend queries reuse that work without skipping reads."""
+        """Reuse descendant facts without skipping the dependency traversal."""
         cached = self._suspension_expressions.get(node)
-        if cached is None:
-            visitor = _DependencyProjection(
-                self, variable_annotations=False, suspension_only=True
-            )
-            visitor.visit(node)
-            cached = (visitor.contains_await, visitor.contains_yield)
-            self._suspension_expressions[node] = cached
-        return cached
+        if cached is not None:
+            return cached
+        with self._lock:
+            cached = self._suspension_expressions.get(node)
+            if cached is None:
+                visitor = _DependencyProjection(
+                    self, variable_annotations=False, suspension_only=True
+                )
+                visitor.visit(node)
+                cached = (visitor.contains_await, visitor.contains_yield)
+                self._suspension_expressions[node] = cached
+            return cached
 
     def expression_contains_await(self, node: ast.AST) -> bool:
         """Whether evaluating this node awaits in its enclosing code scope."""
@@ -1206,33 +1216,65 @@ class PythonDependencyAuthority:
         variable_annotations: bool = False,
         implicit_class_cell: bool = False,
     ) -> PythonDependencyProjection:
-        visitor = _DependencyProjection(self, variable_annotations=variable_annotations)
-        for node in nodes:
-            visitor.visit(node)
-        if implicit_class_cell and visitor.loads_class_cell:
-            visitor.loads.add("__class__")
-        return PythonDependencyProjection(
-            frozenset(visitor.loads),
-            frozenset(visitor.nested),
-            frozenset(visitor.globals),
-            visitor.contains_await,
-        )
+        with self._lock:
+            visitor = _DependencyProjection(
+                self, variable_annotations=variable_annotations
+            )
+            for node in nodes:
+                visitor.visit(node)
+            if implicit_class_cell and visitor.loads_class_cell:
+                visitor.loads.add("__class__")
+            return PythonDependencyProjection(
+                frozenset(visitor.loads),
+                frozenset(visitor.nested),
+                frozenset(visitor.globals),
+                visitor.contains_await,
+            )
+
+    def module_read_names(self, tree: ast.Module) -> tuple[str, ...]:
+        """All names a module namespace expiration must be able to reach."""
+        names = self._module_read_names.get(tree)
+        if names is not None:
+            return names
+        with self._lock:
+            names = self._module_read_names.get(tree)
+            if names is None:
+                reads = self.project(
+                    tree.body, variable_annotations=not self.future_annotations
+                )
+                names = tuple(sorted(reads.lexical | reads.globals))
+                self._module_read_names[tree] = names
+            return names
 
     def regions(self, node: LexicalDefinitionNode) -> DefinitionLexicalRegions:
         result = self._regions.get(node)
-        if result is None:
-            result = definition_lexical_regions(
-                node,
-                eager_annotations=self.eager_annotations,
-                future_annotations=self.future_annotations,
-            )
-            self._regions[node] = result
-        return result
+        if result is not None:
+            return result
+        with self._lock:
+            result = self._regions.get(node)
+            if result is None:
+                result = definition_lexical_regions(
+                    node,
+                    eager_annotations=self.eager_annotations,
+                    future_annotations=self.future_annotations,
+                )
+                self._regions[node] = result
+            return result
 
     def declarations(self, node: LexicalDefinitionNode) -> PythonScopeDeclarations:
         cached = self._declarations.get(node)
         if cached is not None:
             return cached
+        with self._lock:
+            cached = self._declarations.get(node)
+            if cached is None:
+                cached = self._compute_declarations(node)
+                self._declarations[node] = cached
+            return cached
+
+    def _compute_declarations(
+        self, node: LexicalDefinitionNode
+    ) -> PythonScopeDeclarations:
         regions = self.regions(node)
         self.declaration_scans += 1
         if regions.kind == "comprehension":
@@ -1262,13 +1304,22 @@ class PythonDependencyAuthority:
                 eager_annotations=self.eager_annotations
                 and not self.future_annotations,
             )
-        self._declarations[node] = declarations
         return declarations
 
     def summary(self, node: LexicalDefinitionNode) -> PythonDefinitionDependencies:
         cached = self.summaries.get(node)
         if cached is not None:
             return cached
+        with self._lock:
+            cached = self.summaries.get(node)
+            if cached is None:
+                cached = self._compute_summary(node)
+                self.summaries[node] = cached
+            return cached
+
+    def _compute_summary(
+        self, node: LexicalDefinitionNode
+    ) -> PythonDefinitionDependencies:
         regions = self.regions(node)
         declarations = self.declarations(node)
         body = _DependencyProjection(
@@ -1323,8 +1374,39 @@ class PythonDependencyAuthority:
                 | (body.nested_deletions - declarations.bound - declarations.globals)
             ),
         )
-        self.summaries[node] = result
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class PythonModuleLexicalPlan:
+    """Target-checked syntax shared by every binding of an admitted AST."""
+
+    authority: PythonDependencyAuthority
+    module_declarations: PythonScopeDeclarations
+    star_import_origins: frozenset[PythonSourceKey]
+
+    @classmethod
+    def build(
+        cls, tree: ast.Module, *, target_python: tuple[int, int]
+    ) -> PythonModuleLexicalPlan:
+        future, eager = module_annotation_execution(tree, target_python=target_python)
+        star_origins: set[PythonSourceKey] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, PYTHON_SYNTAX_NODE_TYPES):
+                require_python_syntax_target(node, target_python)
+            if isinstance(node, ast.ImportFrom):
+                star_origins.update(
+                    python_node_source_key(alias)
+                    for alias in node.names
+                    if alias.name == "*"
+                )
+        return cls(
+            PythonDependencyAuthority(
+                eager_annotations=eager, future_annotations=future
+            ),
+            python_scope_declarations(tree.body, eager_annotations=eager),
+            frozenset(star_origins),
+        )
 
 
 def python_scope_declarations(

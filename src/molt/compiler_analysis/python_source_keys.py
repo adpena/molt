@@ -9,11 +9,13 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
+from threading import Lock
 from typing import TYPE_CHECKING, TypeAlias, cast
 from types import MappingProxyType
 from collections.abc import Mapping
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
     from molt.compiler_analysis.python_imports import SourceAllExports
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
@@ -287,7 +289,26 @@ class _PythonAstDigestAdmission:
         tuple[tuple[int, int], str | None], PythonNamespaceSummary
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
+    _lexical_plans: dict[tuple[int, int], PythonModuleLexicalPlan] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _lexical_plan_lock: Lock = field(
+        default_factory=Lock, init=False, repr=False, compare=False
+    )
     _canonical: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def lexical_plan(
+        self, tree: ast.Module, *, target_python: tuple[int, int]
+    ) -> PythonModuleLexicalPlan:
+        from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
+
+        self.canonical_tree(tree)
+        with self._lexical_plan_lock:
+            plan = self._lexical_plans.get(target_python)
+            if plan is None:
+                plan = PythonModuleLexicalPlan.build(tree, target_python=target_python)
+                self._lexical_plans[target_python] = plan
+            return plan
 
     def canonical_tree(self, tree: ast.Module) -> ast.Module:
         if self.tree is not tree:

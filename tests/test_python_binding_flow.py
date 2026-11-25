@@ -43,6 +43,7 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    _PythonAstDigestAdmission,
     python_ast_digest,
     python_node_source_key,
     python_source_digest,
@@ -56,6 +57,39 @@ from molt.compiler_analysis.static_truth import (
 # A whole program with no PEP 667 frame-locals writer (HF-901): its callbacks
 # cannot rebind a running function's locals on any target.
 NO_FRAME_LOCALS_WRITER = PythonBindingPolicy(frame_locals_writer=None)
+
+
+def test_binding_revisions_share_admitted_lexical_work() -> None:
+    tree = ast.parse(
+        "published = 1\n"
+        "def outer(seed):\n"
+        "    def inner(default=seed):\n"
+        "        return default, published\n"
+        "    return inner\n"
+    )
+    admission = _PythonAstDigestAdmission(tree)
+    policy = PythonBindingFlowPolicy(target_python=(3, 12), foreign_namespace_writes=())
+    first = python_binding_flow._Analyzer(policy, admission.digest)
+    first.analyze(tree, ast_digest_admission=admission)
+    authority = first._dependency_authority
+    assert authority is not None
+    previous_scans = authority.declaration_scans
+    assert previous_scans == 2
+
+    revised = replace(policy, foreign_namespace_writes=("published",))
+    other = python_binding_flow._Analyzer(revised, admission.digest)
+    actual = other.analyze(tree, ast_digest_admission=admission).facts
+    fresh = python_binding_flow._Analyzer(revised, admission.digest)
+    expected = fresh.analyze(tree).facts
+
+    assert other._dependency_authority is authority
+    assert authority.declaration_scans == previous_scans
+    assert actual.source_namespaces == expected.source_namespaces
+    assert actual.source_callable_declarations == expected.source_callable_declarations
+    assert actual.source_function_results == expected.source_function_results
+    assert (
+        admission.lexical_plan(tree, target_python=(3, 14)).authority is not authority
+    )
 
 
 def _last_call(source: str):
