@@ -2,8 +2,8 @@
 //!
 //! The pass runs first in the TIR module phase, over the optimized bodies of
 //! the whole document. It finds the calls whose callee and argument binding
-//! the program proves (a proven `call_guarded`, a `call_internal`), solves the
-//! exact scalar types that reach each callee per relevant parameter
+//! the program proves (including a method selected by an exact receiver) and
+//! solves the exact types that reach each callee per relevant parameter
 //! ([`analysis`], [`relevance`]), and compiles one clone per context whose key
 //! proves something:
 //!
@@ -106,16 +106,24 @@ pub(in crate::tir) fn run_with_registry(
     let mut outcome = TypeFlowOutcome::default();
     let base_rows = module.table.len();
     let body_index = module.body_index();
-    let mut sites: Vec<Vec<Site>> = module
+    let members = exact_receiver_fields::exact_members(module, &body_index);
+    let mut sites: Vec<Vec<Site<'_>>> = module
         .functions
         .iter()
-        .map(|func| sites::sites_of(func, &body_index, module))
+        .map(|func| sites::sites_of(func, &body_index, module, &members))
         .collect();
-    let members = exact_receiver_fields::exact_members(module, &body_index);
     let mut cells =
         exact_receiver_fields::CellRequests::new(module, registry, non_inlinable, &members);
     if sites.iter().all(Vec::is_empty) {
-        optimize_bodies(module, tti, &members, cells, non_inlinable, &mut outcome);
+        optimize_bodies(
+            module,
+            tti,
+            &members,
+            cells,
+            non_inlinable,
+            &[],
+            &mut outcome,
+        );
         return outcome;
     }
     let final_tir = tti.lowering.final_lowering == FinalLowering::FinalTir;
@@ -129,8 +137,10 @@ pub(in crate::tir) fn run_with_registry(
     for (caller, calls) in sites.iter().enumerate() {
         participates[caller] |= !calls.is_empty();
         for site in calls {
-            let callee = body_index[site.callee.index()].expect("a resolved site names a body");
-            participates[callee] = true;
+            site.for_each_candidate(|id| {
+                let callee = body_index[id.index()].expect("a candidate names a body");
+                participates[callee] = true;
+            });
         }
     }
     let relevant = relevance::solve(module, &mut sites, &body_index, &participates);
@@ -177,14 +187,14 @@ pub(in crate::tir) fn run_with_registry(
 
     // Dispatch on the bodies the analysis evaluated: each body under its own
     // context, so every recorded fact is the one the analysis proved.
-    let mut proofs: Vec<(usize, Vec<SiteDecision>)> = Vec::new();
+    let mut proofs = Vec::with_capacity(base_rows + clones.len());
     let mut report = Vec::new();
     for body in 0..module.functions.len() {
         let decisions = analysis
             .generic(body)
             .map(|id| decide(&inputs, &analysis, id, &clone_of_context))
             .unwrap_or_default();
-        proofs.push((body, decisions));
+        proofs.push(decisions);
     }
     let clone_decisions: Vec<Vec<SiteDecision>> = clones
         .iter()
@@ -201,15 +211,10 @@ pub(in crate::tir) fn run_with_registry(
         );
     }
 
-    for (body, decisions) in &proofs {
-        if apply(&mut module.functions[*body], decisions, &mut outcome) {
-            outcome.changed.insert(module.ids[*body]);
-        }
-    }
     let first_clone = module.functions.len();
     let mut clone_origin = Vec::with_capacity(clones.len());
-    for ((context, mut clone), decisions) in clones.into_iter().zip(&clone_decisions) {
-        apply(&mut clone, decisions, &mut outcome);
+    proofs.extend(clone_decisions);
+    for (context, clone) in clones {
         clone_origin.push(analysis.context(context).body);
         let id = module.table.push(&molt_ir::FunctionIR {
             name: clone.name.clone(),
@@ -221,7 +226,15 @@ pub(in crate::tir) fn run_with_registry(
     }
 
     cells.exclude_cloned_owners(&clone_origin);
-    optimize_bodies(module, tti, &members, cells, non_inlinable, &mut outcome);
+    optimize_bodies(
+        module,
+        tti,
+        &members,
+        cells,
+        non_inlinable,
+        &proofs,
+        &mut outcome,
+    );
 
     merge_identical(
         module,
@@ -243,15 +256,21 @@ fn optimize_bodies(
     members: &ExactMembers,
     mut cells: exact_receiver_fields::CellRequests,
     external: &HashSet<String>,
+    proofs: &[Vec<SiteDecision>],
     outcome: &mut TypeFlowOutcome,
 ) {
-    for (func, &id) in module.functions.iter_mut().zip(&module.ids) {
-        let members_changed = if external.contains(&func.name) {
-            exact_receiver_fields::run(func, members)
+    for (body, (func, &id)) in module.functions.iter_mut().zip(&module.ids).enumerate() {
+        let decisions = proofs.get(body).map_or(&[][..], Vec::as_slice);
+        let (calls_changed, method_targets) = apply(func, decisions, outcome);
+        let requests = if external.contains(&func.name) {
+            &mut exact_receiver_fields::CellRequests::default()
         } else {
-            exact_receiver_fields::run_with_cells(func, members, &mut cells)
+            &mut cells
         };
-        if class_tests::fold_exact_isinstance(func) || members_changed > 0 {
+        let (members_changed, methods_specialized) =
+            exact_receiver_fields::run_with_cells(func, members, requests, &method_targets);
+        outcome.sites_specialized += methods_specialized;
+        if class_tests::fold_exact_isinstance(func) || calls_changed || members_changed > 0 {
             outcome.changed.insert(id);
         }
     }
@@ -277,6 +296,8 @@ struct SiteDecision {
     position: (crate::tir::blocks::BlockId, usize),
     /// The clone's provisional row, when the site enters one.
     retarget: Option<FunctionId>,
+    /// The original callee of a method pair, when the receiver resolved.
+    method_origin: Option<FunctionId>,
     /// The exact type of the call's result, when one is proven.
     result: Option<TirType>,
 }
@@ -307,6 +328,11 @@ fn decide(
             SiteDecision {
                 position: site.position(),
                 retarget,
+                method_origin: if matches!(site.kind, SiteKind::Method(_)) {
+                    target.map(|id| inputs.module.ids[analysis.context(id).body])
+                } else {
+                    None
+                },
                 result,
             }
         })
@@ -318,8 +344,9 @@ fn apply(
     func: &mut TirFunction,
     decisions: &[SiteDecision],
     outcome: &mut TypeFlowOutcome,
-) -> bool {
+) -> (bool, exact_receiver_fields::MethodTargets) {
     let mut changed = false;
+    let mut method_targets = HashMap::default();
     for decision in decisions {
         let (block, index) = decision.position;
         let op = &mut func
@@ -328,9 +355,13 @@ fn apply(
             .expect("a decided site's block exists")
             .ops[index];
         if let Some(clone) = decision.retarget {
-            op.callee = Some(clone);
-            outcome.sites_specialized += 1;
-            changed = true;
+            if let Some(origin) = decision.method_origin {
+                method_targets.insert(decision.position, (origin, clone));
+            } else {
+                op.callee = Some(clone);
+                outcome.sites_specialized += 1;
+                changed = true;
+            }
         }
         if let Some(ty) = &decision.result
             && op.exact_result_proof().as_ref() != Some(ty)
@@ -340,7 +371,7 @@ fn apply(
             changed = true;
         }
     }
-    changed
+    (changed, method_targets)
 }
 
 /// Merge clones of one function whose bodies compile identically, and fold a
@@ -535,7 +566,7 @@ fn describe(
     inputs: &Inputs<'_>,
     analysis: &Analysis,
     refusals: &[Result<(), Unspecializable>],
-    proofs: &[(usize, Vec<SiteDecision>)],
+    proofs: &[Vec<SiteDecision>],
     clone_of_context: &[Option<FunctionId>],
     report: &mut Vec<String>,
 ) {
@@ -546,9 +577,9 @@ fn describe(
         *contexts += 1;
         *clones += usize::from(clone.is_some());
     }
-    for (body, decisions) in proofs {
-        let func = &module.functions[*body];
-        let sites = &inputs.sites[*body];
+    for (body, decisions) in proofs.iter().enumerate() {
+        let func = &module.functions[body];
+        let sites = &inputs.sites[body];
         let unresolved = sites::unknown_callee_count(func);
         if unresolved > 0 {
             let kinds = sites::unknown_callee_kinds(func)
@@ -558,7 +589,7 @@ fn describe(
                 .join(", ");
             report.push(format!("[type-flow-unknown] {}: {kinds}", func.name));
         }
-        let (contexts, clones) = body_counts[*body];
+        let (contexts, clones) = body_counts[body];
         if sites.is_empty() && contexts <= 1 {
             if unresolved > 0 {
                 report.push(format!(
@@ -577,22 +608,32 @@ fn describe(
             continue;
         }
         let context = analysis
-            .generic(*body)
+            .generic(body)
             .expect("a body with resolved call sites has a generic context");
         let facts = analysis.facts(inputs, context);
         for (site, decision) in sites.iter().zip(decisions) {
             if decision.retarget.is_some() {
                 continue;
             }
-            let callee = inputs.body_index[site.callee.index()].expect("a site names a body");
+            let Some(callee_id) = site.fixed_callee().or(decision.method_origin) else {
+                continue;
+            };
+            let callee = inputs.body_index[callee_id.index()].expect("a site names a body");
             let callee_name = &module.functions[callee].name;
             let why = match refusals[callee] {
                 Err(refusal) => refusal.describe().to_string(),
-                Ok(()) => generic_argument(func, site, &facts, &inputs.relevant[callee]),
+                Ok(()) => generic_argument(
+                    func,
+                    site,
+                    &facts,
+                    &inputs.relevant[callee],
+                    usize::from(module.functions[callee].has_closure_parameter()),
+                ),
             };
             let kind = match site.kind {
-                SiteKind::ProvenGuarded => "proven call",
-                SiteKind::Internal => "internal call",
+                SiteKind::ProvenGuarded(_) => "proven call",
+                SiteKind::Internal(_) => "internal call",
+                SiteKind::Method(_) => "exact receiver call",
             };
             report.push(format!(
                 "[type-flow]   {kind} of {callee_name} at block {} op {}: generic: {why}",
@@ -605,18 +646,15 @@ fn describe(
 /// Why a specializable callee's generic body serves `site`.
 fn generic_argument(
     func: &TirFunction,
-    site: &Site,
+    site: &Site<'_>,
     facts: &HashMap<ValueId, TirType>,
     relevant: &[bool],
+    first_parameter: usize,
 ) -> String {
-    if !relevant
-        .iter()
-        .skip(site.first_parameter())
-        .any(|flag| *flag)
-    {
+    if !relevant.iter().skip(first_parameter).any(|flag| *flag) {
         return "no parameter's type changes the callee's code".to_string();
     }
-    for (position, arg) in site.parameter_arguments() {
+    for (position, arg) in site.parameter_arguments(first_parameter) {
         if !relevant.get(position).copied().unwrap_or(true) {
             continue;
         }

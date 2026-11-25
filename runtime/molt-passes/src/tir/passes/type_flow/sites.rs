@@ -7,42 +7,80 @@ use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use molt_ir::FunctionId;
+use molt_ir::deterministic_hash::HashMap;
+
+use super::super::exact_receiver_fields::{
+    ExactMembers, MethodCandidates, method_call, method_load,
+};
 
 /// How a resolved call enters its callee.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SiteKind {
+#[derive(Clone, Copy)]
+pub(super) enum SiteKind<'a> {
     /// A `call_guarded` whose callee integration proved (HF-846 slice 2): the
     /// callee word is the target's function object and the call is exactly
     /// positional. Operand 0 is the callee word.
-    ProvenGuarded,
+    ProvenGuarded(FunctionId),
     /// A `call_internal`: a direct call of a compiled function.
-    Internal,
+    Internal(FunctionId),
+    /// This load/call pair selects a target only in a context that proves
+    /// the original receiver's exact class. Argument zero is that receiver
+    /// for analysis and remains the captured bound self in emitted code.
+    Method(&'a MethodCandidates),
 }
 
-/// One call whose callee and argument binding the program proves.
-#[derive(Clone, Debug)]
-pub(super) struct Site {
+/// One call the program can bind directly in at least one context.
+pub(super) struct Site<'a> {
     pub(super) block: BlockId,
     pub(super) index: usize,
-    pub(super) kind: SiteKind,
-    pub(super) callee: FunctionId,
-    first_parameter: usize,
+    pub(super) kind: SiteKind<'a>,
     args: Vec<ValueId>,
     pub(super) result: ValueId,
     pub(super) result_demanded: bool,
 }
 
-impl Site {
+pub(super) enum Resolution {
+    Pending,
+    Opaque,
+    Body(FunctionId),
+}
+
+impl Site<'_> {
     pub(super) fn position(&self) -> (BlockId, usize) {
         (self.block, self.index)
     }
 
-    pub(super) fn parameter_arguments(&self) -> impl Iterator<Item = (usize, ValueId)> + '_ {
-        (self.first_parameter..).zip(self.args.iter().copied())
+    pub(super) fn parameter_arguments(
+        &self,
+        first_parameter: usize,
+    ) -> impl Iterator<Item = (usize, ValueId)> + '_ {
+        (first_parameter..).zip(self.args.iter().copied())
     }
 
-    pub(super) fn first_parameter(&self) -> usize {
-        self.first_parameter
+    pub(super) fn fixed_callee(&self) -> Option<FunctionId> {
+        match self.kind {
+            SiteKind::ProvenGuarded(id) | SiteKind::Internal(id) => Some(id),
+            SiteKind::Method(_) => None,
+        }
+    }
+
+    pub(super) fn resolve(&self, facts: &HashMap<ValueId, TirType>) -> Resolution {
+        let SiteKind::Method(candidates) = self.kind else {
+            return Resolution::Body(self.fixed_callee().expect("static call has a callee"));
+        };
+        match facts.get(&self.args[0]) {
+            Some(TirType::Never) => Resolution::Pending,
+            Some(TirType::Class(class)) => candidates
+                .resolve(*class, self.args.len())
+                .map_or(Resolution::Opaque, Resolution::Body),
+            _ => Resolution::Opaque,
+        }
+    }
+
+    pub(super) fn for_each_candidate(&self, mut f: impl FnMut(FunctionId)) {
+        match self.kind {
+            SiteKind::ProvenGuarded(id) | SiteKind::Internal(id) => f(id),
+            SiteKind::Method(candidates) => candidates.callees(self.args.len()).for_each(f),
+        }
     }
 }
 
@@ -114,13 +152,13 @@ pub(super) fn returns_value(func: &TirFunction) -> bool {
 }
 
 /// The resolved call `op` makes, if any, against the module's bodies.
-pub(super) fn site_of(
+fn static_site(
     op: &TirOp,
     block: BlockId,
     index: usize,
     body_index: &[Option<usize>],
     module: &TirModule,
-) -> Option<Site> {
+) -> Option<Site<'static>> {
     if op.opcode != OpCode::Call || op.results.len() != 1 {
         return None;
     }
@@ -128,8 +166,10 @@ pub(super) fn site_of(
     let callee_index = body_index.get(call.callee.index()).copied().flatten()?;
     let body = &module.functions[callee_index];
     let kind = match op.origin {
-        Some(molt_ir::OpKind::CallGuarded) if call.callable.is_some() => SiteKind::ProvenGuarded,
-        Some(molt_ir::OpKind::CallInternal) => SiteKind::Internal,
+        Some(molt_ir::OpKind::CallGuarded) if call.callable.is_some() => {
+            SiteKind::ProvenGuarded(call.callee)
+        }
+        Some(molt_ir::OpKind::CallInternal) => SiteKind::Internal(call.callee),
         _ => return None,
     };
     let first_parameter = usize::from(body.has_closure_parameter());
@@ -142,27 +182,51 @@ pub(super) fn site_of(
         block,
         index,
         kind,
-        callee: call.callee,
-        first_parameter,
         args: call.arguments.to_vec(),
         result: op.results[0],
         result_demanded: false,
     })
 }
 
-/// Every resolved call of `func`, in block-id then op order.
-pub(super) fn sites_of(
+/// Calls of `func` that can resolve, in block-id then op order.
+pub(super) fn sites_of<'a>(
     func: &TirFunction,
     body_index: &[Option<usize>],
     module: &TirModule,
-) -> Vec<Site> {
+    members: &'a ExactMembers,
+) -> Vec<Site<'a>> {
+    let mut loads = HashMap::default();
+    if members.has_methods() {
+        for op in func.blocks.values().flat_map(|block| &block.ops) {
+            if let Some((pair, receiver, name)) = method_load(op)
+                && let Some(candidates) = members.candidates(name)
+            {
+                loads.insert(pair, (receiver, candidates));
+            }
+        }
+    }
     let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
     blocks.sort_unstable();
     let mut sites = Vec::new();
     for block in blocks {
         for (index, op) in func.blocks[&block].ops.iter().enumerate() {
-            if let Some(site) = site_of(op, block, index, body_index, module) {
+            if let Some(site) = static_site(op, block, index, body_index, module) {
                 sites.push(site);
+            } else if let Some((pair, args)) = method_call(op)
+                && let Some(&(receiver, candidates)) = loads.get(&pair)
+                && candidates.callees(args.len() + 1).next().is_some()
+            {
+                // The physical closure offset is selected with the body.
+                sites.push(Site {
+                    block,
+                    index,
+                    kind: SiteKind::Method(candidates),
+                    args: std::iter::once(receiver)
+                        .chain(args.iter().copied())
+                        .collect(),
+                    result: op.results[0],
+                    result_demanded: false,
+                });
             }
         }
     }

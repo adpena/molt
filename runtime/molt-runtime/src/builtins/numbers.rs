@@ -775,16 +775,24 @@ pub(crate) fn index_integral_payload_bits(bits: u64) -> Option<u64> {
     (obj.is_int() || obj.is_bool() || bigint_ptr_from_bits(payload).is_some()).then_some(payload)
 }
 
-pub(crate) fn index_i64_integral_bits(bits: u64) -> Option<i64> {
+/// Project an integer to a bounded scalar while its storage owner is live.
+/// Overflow carries only its sign so clipping and checked conversions share
+/// this path without copying the arbitrary-precision magnitude.
+fn bounded_integral_bits(bits: u64) -> Option<Result<i64, Sign>> {
     let payload = index_integral_payload_bits(bits)?;
     let obj = obj_from_bits(payload);
     if let Some(value) = obj.as_int() {
-        return Some(value);
+        return Some(Ok(value));
     }
     if let Some(value) = obj.as_bool() {
-        return Some(i64::from(value));
+        return Some(Ok(i64::from(value)));
     }
-    unsafe { bigint_ref(bigint_ptr_from_bits(payload)?) }.to_i64()
+    let value = unsafe { bigint_ref(bigint_ptr_from_bits(payload)?) };
+    Some(value.to_i64().ok_or_else(|| value.sign()))
+}
+
+pub(crate) fn index_i64_integral_bits(bits: u64) -> Option<i64> {
+    bounded_integral_bits(bits)?.ok()
 }
 
 pub(crate) fn index_bigint_integral_bits(bits: u64) -> Option<BigInt> {
@@ -806,13 +814,9 @@ pub(crate) fn index_c_int_from_obj(
     _py: &PyToken<'_>,
     obj_bits: u64,
 ) -> Option<std::os::raw::c_int> {
-    let value = if let Some(value) = index_i64_integral_bits(obj_bits) {
-        i32::try_from(value).ok()
-    } else {
-        let name = class_name_for_error(type_of_bits(_py, obj_bits));
-        let err = format!("'{name}' object cannot be interpreted as an integer");
-        index_bigint_from_obj(_py, obj_bits, &err)?.to_i32()
-    };
+    let value = bounded_index_from_obj(_py, obj_bits, not_an_integer(_py, obj_bits))?
+        .ok()
+        .and_then(|v| i32::try_from(v).ok());
     value.or_else(|| {
         raise_exception::<Option<i32>>(
             _py,
@@ -830,13 +834,7 @@ pub(crate) fn index_off_t_from_obj(py: &PyToken<'_>, obj_bits: u64) -> Option<i6
     const OVERFLOW: &str = "int too big to convert";
     #[cfg(not(any(windows, target_pointer_width = "32")))]
     const OVERFLOW: &str = "Python int too large to convert to C long";
-    let value = if let Some(value) = index_i64_integral_bits(obj_bits) {
-        Some(value)
-    } else {
-        let name = class_name_for_error(type_of_bits(py, obj_bits));
-        let err = format!("'{name}' object cannot be interpreted as an integer");
-        index_bigint_from_obj(py, obj_bits, &err)?.to_i64()
-    };
+    let value = bounded_index_from_obj(py, obj_bits, not_an_integer(py, obj_bits))?.ok();
     value.or_else(|| raise_exception::<Option<i64>>(py, BuiltinExc::OverflowError, OVERFLOW))
 }
 
@@ -847,27 +845,18 @@ pub(crate) fn index_ssize_clamped_from_obj(
     bits: u64,
     err: impl ErrorText,
 ) -> Option<isize> {
-    if let Some(value) = index_i64_integral_bits(bits) {
-        return Some(value.clamp(isize::MIN as i64, isize::MAX as i64) as isize);
-    }
-    let value = index_bigint_from_obj(py, bits, err)?;
-    Some(value.to_isize().unwrap_or_else(|| {
-        if value.sign() == Sign::Minus {
-            isize::MIN
-        } else {
-            isize::MAX
-        }
-    }))
+    Some(match bounded_index_from_obj(py, bits, err)? {
+        Ok(value) => value.clamp(isize::MIN as i64, isize::MAX as i64) as isize,
+        Err(Sign::Minus) => isize::MIN,
+        Err(_) => isize::MAX,
+    })
 }
 
 pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: impl ErrorText) -> i64 {
-    if let Some(value) = index_i64_integral_bits(obj_bits) {
-        return value;
-    }
-    let Some(value) = index_bigint_from_obj(_py, obj_bits, err) else {
+    let Some(value) = bounded_index_from_obj(_py, obj_bits, err) else {
         return 0;
     };
-    value.to_i64().unwrap_or_else(|| {
+    value.unwrap_or_else(|_| {
         raise_exception::<i64>(
             _py,
             BuiltinExc::OverflowError,
@@ -935,27 +924,16 @@ pub(crate) fn compare_numbers(lhs: MoltObject, rhs: MoltObject) -> Option<Orderi
 /// backend; admission follows the target pointer width. Inline and validated
 /// scalar carriers do not construct an error message on successful conversion.
 pub(crate) fn index_ssize_from_obj(_py: &PyToken<'_>, obj_bits: u64) -> i64 {
-    if let Some(value) = index_i64_integral_bits(obj_bits) {
-        return match isize::try_from(value) {
-            Ok(value) => value as i64,
-            Err(_) => raise_exception::<i64>(
-                _py,
-                BuiltinExc::OverflowError,
-                "Python int too large to convert to C ssize_t",
-            ),
-        };
-    }
-    let obj = obj_from_bits(obj_bits);
-    let msg = format!(
-        "'{}' object cannot be interpreted as an integer",
-        crate::type_name(_py, obj)
-    );
-    let Some(value) = index_bigint_from_obj(_py, obj_bits, &msg) else {
+    let err = LazyMessage(|| {
+        format!(
+            "'{}' object cannot be interpreted as an integer",
+            crate::type_name(_py, obj_from_bits(obj_bits))
+        )
+    });
+    let Some(value) = bounded_index_from_obj(_py, obj_bits, err) else {
         return 0;
     };
-    // The boxed transport is i64 on every backend, but Python's index-sized
-    // admission follows the target pointer width (also used by sys.maxsize).
-    match value.to_isize() {
+    match value.ok().and_then(|v| isize::try_from(v).ok()) {
         Some(value) => value as i64,
         None => raise_exception::<i64>(
             _py,
@@ -971,8 +949,7 @@ pub(crate) fn index_i64_with_overflow(
     err: impl ErrorText,
     overflow_err: Option<&str>,
 ) -> Option<i64> {
-    let value = index_bigint_from_obj(_py, obj_bits, err)?;
-    if let Some(i) = value.to_i64() {
+    if let Ok(i) = bounded_index_from_obj(_py, obj_bits, err)? {
         return Some(i);
     }
     let msg = match overflow_err {
@@ -998,9 +975,6 @@ pub(crate) fn sequence_index_i64_with_type_error(
     key_bits: u64,
     type_err: impl ErrorText,
 ) -> Option<i64> {
-    if let Some(i) = index_i64_integral_bits(key_bits) {
-        return Some(i);
-    }
     index_i64_with_overflow(_py, key_bits, type_err, None)
 }
 
@@ -1039,16 +1013,8 @@ pub(crate) fn sequence_index_i64(
     key_bits: u64,
     container_tp: &str,
 ) -> Option<i64> {
-    // Fast path: int / bool / int-subclass — no BigInt allocation, no float.
-    if let Some(i) = index_i64_integral_bits(key_bits) {
-        return Some(i);
-    }
-    // Slow path: bare bigint, `__index__` objects, overflow -> IndexError, and
-    // the TypeError raise for float / other non-index keys. The message is the
-    // CPython "<container> indices must be integers or slices, not <keytype>"
-    // sequence family, shared by tuple / list / range / byte / bytearray.
-    let type_err = sequence_index_type_error(_py, key_bits, container_tp);
-    index_i64_with_overflow(_py, key_bits, &type_err, None)
+    let type_err = LazyMessage(|| sequence_index_type_error(_py, key_bits, container_tp));
+    index_i64_with_overflow(_py, key_bits, type_err, None)
 }
 
 /// Foreign storage is inspected only after entering a numeric conversion.
@@ -1088,7 +1054,15 @@ fn native_numeric_result(
 /// the actual integer owner; a foreign physical payload has its own temporary
 /// owned projection. This is deliberately separate from pure carrier probes.
 pub(crate) fn integer_storage_bigint(py: &PyToken<'_>, bits: u64) -> Result<Option<BigInt>, ()> {
-    if let Some(value) = index_bigint_integral_bits(bits) {
+    project_integer_storage(py, bits, index_bigint_integral_bits)
+}
+
+fn project_integer_storage<T>(
+    py: &PyToken<'_>,
+    bits: u64,
+    project: impl Fn(u64) -> Option<T>,
+) -> Result<Option<T>, ()> {
+    if let Some(value) = project(bits) {
         return Ok(Some(value));
     }
     let Some(native) = native_numeric_object(bits) else {
@@ -1108,7 +1082,7 @@ pub(crate) fn integer_storage_bigint(py: &PyToken<'_>, bits: u64) -> Result<Opti
     let _owner = obj_from_bits(payload)
         .as_ptr()
         .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
-    let Some(value) = index_bigint_integral_bits(payload) else {
+    let Some(value) = project(payload) else {
         raise_exception::<()>(
             py,
             BuiltinExc::SystemError,
@@ -1412,7 +1386,24 @@ pub(crate) fn index_bigint_from_obj(
     bits: u64,
     err: impl ErrorText,
 ) -> Option<BigInt> {
-    match integer_storage_bigint(py, bits) {
+    project_index_from_obj(py, bits, err, index_bigint_integral_bits)
+}
+
+fn bounded_index_from_obj(
+    py: &PyToken<'_>,
+    bits: u64,
+    err: impl ErrorText,
+) -> Option<Result<i64, Sign>> {
+    project_index_from_obj(py, bits, err, bounded_integral_bits)
+}
+
+fn project_index_from_obj<T>(
+    py: &PyToken<'_>,
+    bits: u64,
+    err: impl ErrorText,
+    project: impl Fn(u64) -> Option<T>,
+) -> Option<T> {
+    match project_integer_storage(py, bits, &project) {
         Ok(Some(value)) => return Some(value),
         Ok(None) => {}
         Err(()) => return None,
@@ -1421,7 +1412,7 @@ pub(crate) fn index_bigint_from_obj(
         let _owner = obj_from_bits(result)
             .as_ptr()
             .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
-        return integer_storage_bigint(py, result).ok().flatten();
+        return project_integer_storage(py, result, project).ok().flatten();
     }
     if !exception_pending(py) {
         err.with_text(|text| raise_exception::<()>(py, BuiltinExc::TypeError, text));
@@ -1964,6 +1955,52 @@ mod float_conversion_tests {
 
     extern "C" fn scalar_binary_override(__context: u64, value: u64, _other: u64) -> u64 {
         float_conversion_callback(__context, value)
+    }
+
+    #[test]
+    fn bounded_index_respects_range_policy_and_retains_callback_storage() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = conversion_class(py, builtin_classes(py).object, false, true);
+            let adapter = plain_instance(py, class);
+            for (value, clipped) in [
+                (BigInt::from(i64::MAX), isize::MAX),
+                (BigInt::from(i64::MIN), isize::MIN),
+                (BigInt::from(1) << 65536usize, isize::MAX),
+                (BigInt::from(-1) << 65536usize, isize::MIN),
+            ] {
+                let expected = value.to_i64();
+                let bits = bigint_bits(py, value);
+                let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                let header = unsafe { crate::header_from_obj_ptr(ptr) };
+                let before = unsafe { (*header).ref_count_snapshot() };
+                reset_callbacks(bits, false);
+                for receiver in [bits, adapter] {
+                    let unused = || LazyMessage(|| panic!("unexpected index type diagnostic"));
+                    assert_eq!(
+                        index_ssize_clamped_from_obj(py, receiver, unused()),
+                        Some(clipped)
+                    );
+                    assert_eq!(
+                        index_i64_with_overflow(py, receiver, unused(), Some("range exceeded")),
+                        expected
+                    );
+                    if expected.is_none() {
+                        assert_error(py, BuiltinExc::IndexError, "range exceeded");
+                    }
+                    assert!(!exception_pending(py));
+                }
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 2);
+                assert_eq!(unsafe { (*header).ref_count_snapshot() }, before);
+                dec_ref_bits(py, bits);
+            }
+            reset_callbacks(0, true);
+            assert_eq!(sequence_index_i64(py, adapter, "tuple"), None);
+            assert_error(py, BuiltinExc::LookupError, "index protocol failure");
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
+            dec_ref_bits(py, adapter);
+            dec_ref_bits(py, class);
+        });
     }
 
     #[test]

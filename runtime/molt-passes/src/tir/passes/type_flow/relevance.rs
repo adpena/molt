@@ -54,7 +54,7 @@ impl DemandGraph {
 /// Per body (module index), per parameter: whether its type matters.
 pub(super) fn solve(
     module: &TirModule,
-    sites: &mut [Vec<Site>],
+    sites: &mut [Vec<Site<'_>>],
     body_index: &[Option<usize>],
     participates: &[bool],
 ) -> Vec<Vec<bool>> {
@@ -83,18 +83,26 @@ pub(super) fn solve(
                     for &result in &op.results {
                         graph.forward((body, result), (body, source));
                     }
-                } else if op.opcode == OpCode::Call
+                } else if matches!(op.opcode, OpCode::Call | OpCode::CallLoadedMethod)
                     && let Ok(call) = calls.binary_search_by_key(&(block_id, index), Site::position)
                 {
                     let site = &calls[call];
                     graph.heads.entry((body, site.result)).or_default();
+                    let Some(callee_id) = site.fixed_callee() else {
+                        // This call remains opaque in a generic context. Keep
+                        // its input demand without expanding every possible
+                        // callee into the backward graph.
+                        pending.extend(op.operands.iter().map(|&value| (body, value)));
+                        continue;
+                    };
                     let callee_index =
-                        body_index[site.callee.index()].expect("a resolved site names a body");
+                        body_index[callee_id.index()].expect("a resolved site names a body");
                     let callee = &module.functions[callee_index];
                     if let Some(entry) = callee.blocks.get(&callee.entry_block) {
-                        for (position, actual) in site.parameter_arguments() {
+                        let first = usize::from(callee.has_closure_parameter());
+                        for (position, actual) in site.parameter_arguments(first) {
                             if let Some(formal) = entry.args.get(position) {
-                                graph.forward((site.callee, formal.id), (body, actual));
+                                graph.forward((callee_id, formal.id), (body, actual));
                             }
                         }
                     }
