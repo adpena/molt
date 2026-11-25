@@ -1672,7 +1672,6 @@ def test_find_spec_member_rebinding_invalidates_all_aliases() -> None:
         "util.find_spec('pkg.leaf')\n"
     )
     assert call.callee_identities == OTHER_IDENTITY
-    assert call.definitely_invalidated_members_after & int(PythonMember.UTIL_FIND_SPEC)
 
 
 def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
@@ -1867,9 +1866,6 @@ def test_unconditional_member_rebinding_removes_canonical_identity() -> None:
         "importlib.import_module('pkg.leaf')\n"
     )
     assert call.callee_identities == OTHER_IDENTITY
-    assert call.definitely_invalidated_members_after & int(
-        PythonMember.IMPORTLIB_IMPORT_MODULE
-    )
 
 
 def test_conditional_member_rebinding_is_possible_not_definite() -> None:
@@ -1881,12 +1877,6 @@ def test_conditional_member_rebinding_is_possible_not_definite() -> None:
     )
     assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert call.callee_identities & OTHER_IDENTITY
-    assert call.maybe_invalidated_members_after & int(
-        PythonMember.IMPORTLIB_IMPORT_MODULE
-    )
-    assert not call.definitely_invalidated_members_after & int(
-        PythonMember.IMPORTLIB_IMPORT_MODULE
-    )
 
 
 def test_function_parameter_shadows_outer_importlib_for_whole_scope() -> None:
@@ -2003,9 +1993,6 @@ def test_module_spec_member_mutation_invalidates_all_aliases() -> None:
         "value = machinery.ModuleSpec('pkg.leaf', None)\n"
     )
     assert call.callee_identities == OTHER_IDENTITY
-    assert call.definitely_invalidated_members_after & int(
-        PythonMember.MACHINERY_MODULE_SPEC
-    )
 
 
 def test_globals_module_and_frame_capabilities_share_exact_identities() -> None:
@@ -2084,7 +2071,6 @@ def test_import_hook_mutation_downgrades_later_standard_import_to_possible() -> 
     )
     assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert call.callee_identities & OTHER_IDENTITY
-    assert call.maybe_invalidated_members_after & int(PythonMember.IMPORT_HOOKS)
 
 
 def test_reference_release_callbacks_poison_exposed_global_bindings() -> None:

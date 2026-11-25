@@ -21,7 +21,6 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_NAMES_BY_IDENTITY,
     BUILTIN_SHAPE_NAMES_BY_IDENTITY,
     IdentityMask,
-    MemberMask,
     PythonIdentity,
 )
 from molt.compiler_analysis.python_value_identity import (
@@ -803,8 +802,6 @@ class PythonCallSiteFact:
     cleanup_effects: EffectMask
     callee_elision_safe: bool
     callee_retention_safe: bool
-    maybe_invalidated_members_after: MemberMask
-    definitely_invalidated_members_after: MemberMask
     # Snapshot after all arguments/expansions, before invocation and cleanup.
     module_metadata_at_invocation: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
     # Shape builtins whose specialized lowering is valid for this call's

@@ -949,7 +949,7 @@ def test_projection_frontier_matches_full_slot_oracle_across_storage_and_epochs(
     pool.set_taint_domain(sum(1 << slot for slot in (*admitted, 129)))
     for previous, current in product(states, repeat=2):
         expected = tuple(
-            (slot, pool.binding(current, slot))
+            slot
             for slot in slots
             if _projection(pool, previous, slot)[:3]
             != _projection(pool, current, slot)[:3]
@@ -976,9 +976,8 @@ def test_taint_domain_rejects_negative_masks_without_changing_projection() -> No
             pool.set_taint_domain(invalid)
         assert pool._taint_domain_mask == 1
         assert pool.taint_domain_generation == generation
-        assert dict(pool._binding_differences(base, exposed, semantic=True)) == {
-            0: INERT | OTHER_IDENTITY,
-        }
+        assert tuple(pool._binding_differences(base, exposed, semantic=True)) == (0,)
+        assert pool.binding(exposed, 0) == INERT | OTHER_IDENTITY
 
 
 def test_sparse_epoch_frontier_prunes_shared_subtrees_and_unaffected_slots() -> None:
@@ -1006,11 +1005,17 @@ def test_sparse_epoch_frontier_prunes_shared_subtrees_and_unaffected_slots() -> 
     assert visited == {33, far}
     assert pool.structural_diff_node_visits - before < 12
     assert list(pool._changed_chunks(base, exposed)) == []
-    assert dict(pool._binding_differences(base, exposed, semantic=True)) == {
-        33: INERT | OTHER_IDENTITY,
-        far: INERT | OTHER_IDENTITY,
-        far + 1: UNBOUND_IDENTITY | OTHER_IDENTITY,
-    }
+    assert tuple(pool._binding_differences(base, exposed, semantic=True)) == (
+        33,
+        far,
+        far + 1,
+    )
+    assert (
+        pool.binding(exposed, 33)
+        == pool.binding(exposed, far)
+        == (INERT | OTHER_IDENTITY)
+    )
+    assert pool.binding(exposed, far + 1) == UNBOUND_IDENTITY | OTHER_IDENTITY
 
 
 def test_absent_domain_projection_is_resolved_once_not_per_slot(
@@ -1032,9 +1037,7 @@ def test_absent_domain_projection_is_resolved_once_not_per_slot(
 
     monkeypatch.setattr(pool, "_resolve_chunk_binding", record)
     events = tuple(pool._binding_differences(0, exposed, semantic=True))
-    assert events == tuple(
-        (slot, UNBOUND_IDENTITY | OTHER_IDENTITY) for slot in range(1024)
-    )
+    assert events == tuple(range(1024))
     assert resolutions == 2
     resolutions = 0
     assert tuple(pool._binding_differences(exposed, twice, semantic=True)) == ()

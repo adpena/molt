@@ -1894,8 +1894,8 @@ class _StatePool:
 
     def _binding_differences(
         self, previous: int, current: int, *, semantic: bool
-    ) -> Iterator[tuple[int, IdentityMask]]:
-        """One exact projection comparison, with explicit storage/public scope."""
+    ) -> Iterator[int]:
+        """Yield slots whose projection differs, including shared state if semantic."""
         previous_epoch = self._states[previous].taint_epoch
         current_epoch = self._states[current].taint_epoch
         epochs_differ = previous_epoch != current_epoch
@@ -1919,7 +1919,7 @@ class _StatePool:
                     or not same_python_static_value(old.static_value, new.static_value)
                     or old.result != new.result
                 ):
-                    yield slot, new.identities
+                    yield slot
         if semantic and epochs_differ:
             remaining = self._taint_domain_mask & ~stored_domain
             if remaining:
@@ -1936,7 +1936,7 @@ class _StatePool:
                     while remaining:
                         bit = remaining & -remaining
                         remaining ^= bit
-                        yield bit.bit_length() - 1, new.identities
+                        yield bit.bit_length() - 1
 
     def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
         """Project exact differences on structurally changed storage only.
@@ -1945,12 +1945,7 @@ class _StatePool:
         Semantic equality and history fallback use _binding_differences with
         semantic=True, including shared storage and absent live-domain slots.
         """
-        return tuple(
-            slot
-            for slot, _value in self._binding_differences(
-                previous, current, semantic=False
-            )
-        )
+        return tuple(self._binding_differences(previous, current, semantic=False))
 
     def transition_binding_slots(self, previous: int, current: int) -> tuple[int, ...]:
         """Index explicit writes and nonlocal changes at observation boundaries."""
@@ -1967,12 +1962,7 @@ class _StatePool:
         if cursor == previous:
             return tuple(sorted(direct))
         return tuple(
-            sorted(
-                slot
-                for slot, _ in self._binding_differences(
-                    previous, current, semantic=True
-                )
-            )
+            sorted(self._binding_differences(previous, current, semantic=True))
         )
 
     def slot_updated_between(self, previous: int, current: int, slot: int) -> bool:
@@ -6402,7 +6392,6 @@ class _Analyzer:
                     builtin_specializations |= identity
             if previous_call is not None:
                 builtin_specializations &= previous_call.builtin_specializations
-            after = self.states.get(state_id)
             self.transfer.calls[key] = PythonCallSiteFact(
                 key,
                 scope.scope_id,
@@ -6442,18 +6431,6 @@ class _Analyzer:
                 and (previous_call is None or previous_call.callee_elision_safe),
                 callee_retention_safe
                 and (previous_call is None or previous_call.callee_retention_safe),
-                after.maybe_invalidated_members
-                | (
-                    previous_call.maybe_invalidated_members_after
-                    if previous_call is not None
-                    else NO_INVALID_MEMBERS
-                ),
-                after.definitely_invalidated_members
-                & (
-                    previous_call.definitely_invalidated_members_after
-                    if previous_call is not None
-                    else ALL_INVALID_MEMBERS
-                ),
                 metadata_at_invocation
                 if previous_call is None
                 else metadata_at_invocation.intersect(
