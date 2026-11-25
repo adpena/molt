@@ -42,6 +42,7 @@ from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
 from tests.wasm_linked_runner import (
     WasmTestBuildCommand,
     _run_wasm_test_process,
+    assert_node_startup_boundary_trace,
     wasm_test_build_env,
 )
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
@@ -2126,9 +2127,11 @@ print(remainder(float("5.5"), float("-2.0")))
     app = (out_dir / "app.wasm").read_bytes()
     assert b"dylink.0" in app
     expected = "42\n0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n0.5\n-0.5\n"
-    node = _run_split_direct(out_dir)
+    trace = tmp_path / "node-startup.trace"
+    node = _run_split_direct(out_dir, extra_env={"MOLT_WASM_TRACE_FILE": str(trace)})
     assert node.returncode == 0, node.stderr
     assert node.stdout == expected
+    assert_node_startup_boundary_trace(trace, split_runtime=True)
     host = resolve_molt_wasm_host_binary(ROOT, cargo_profile="dev-fast")
     assert host is not None, "build molt-wasm-host with cargo build --profile dev-fast"
     wasmtime = _run_wasm_test_process(

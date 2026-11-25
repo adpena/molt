@@ -1002,6 +1002,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     assert result.stdout == "42\n"
     # Exercise both finite lifetime owners against the same built artifact;
     # flushing in one host must not hide missing teardown in the other.
+    trace = tmp_path / "node-startup.trace"
     node = wasm_runner._run_wasm_test_process(
         [
             wasm_runner.require_node_binary(),
@@ -1010,7 +1011,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
         ],
         role="guest-host",
         cwd=root,
-        env=os.environ.copy(),
+        env=dict(os.environ, MOLT_WASM_TRACE_FILE=str(trace)),
         capture_output=True,
         text=True,
         timeout=20,
@@ -1018,6 +1019,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     )
     assert node.returncode == 0, node.stderr
     assert node.stdout == result.stdout
+    wasm_runner.assert_node_startup_boundary_trace(trace, split_runtime=False)
 
 
 @pytest.mark.slow
