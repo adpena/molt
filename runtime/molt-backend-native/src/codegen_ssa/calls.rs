@@ -442,17 +442,26 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.bind_owned(b, op, result);
             return;
         }
-        if origin == Some(OpKind::CallGuarded) && !op.operands.is_empty() {
-            // A guarded call adopts as an instruction, whatever it resolves
-            // to: its callable and arguments take the owned lane.
-            let result = if op.argument_custody().is_some() {
-                self.call_func_owned_runtime(b, op)
-            } else {
-                self.call_func_runtime(b, op.operands[0], &op.operands[1..])
-            };
-            let result = b.word_value(result);
-            self.bind_owned(b, op, result);
-            return;
+        use molt_ir::tir::call_targets::{GuardedDispatch, guarded_dispatch};
+        match guarded_dispatch(op) {
+            Some(GuardedDispatch::Required) => {
+                self.fatal(format!(
+                    "required compiled call to {:?} survived call legalization",
+                    op.callee
+                ));
+                return;
+            }
+            Some(GuardedDispatch::Speculative) if !op.operands.is_empty() => {
+                let result = if op.argument_custody().is_some() {
+                    self.call_func_owned_runtime(b, op)
+                } else {
+                    self.call_func_runtime(b, op.operands[0], &op.operands[1..])
+                };
+                let result = b.word_value(result);
+                self.bind_owned(b, op, result);
+                return;
+            }
+            Some(GuardedDispatch::Speculative) | None => {}
         }
         let Some(target) = self.call_target(op) else {
             if op.operands.is_empty() {

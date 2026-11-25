@@ -120,6 +120,7 @@ use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 use molt_ir::repr::Repr;
+use molt_ir::tir::call_targets::{GuardedDispatch, guarded_dispatch};
 
 /// Expand every eligible op of `func`. Requires: the module phase is complete
 /// and drops are not inserted; `func` belongs to a target whose backend
@@ -129,15 +130,28 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         name: "fast_path_expansion",
         ..Default::default()
     };
+    let hot = CodeTemperature::of_function(&func.name).inline_fast_paths();
     let mut pending: Vec<_> = func
         .blocks
         .iter()
         .filter_map(|(&id, block)| {
-            block
-                .ops
-                .iter()
-                .any(|op| may_expand(op, targets))
-                .then_some(id)
+            let mut eligible = block.ops.iter().filter(|op| may_expand(op, targets));
+            if hot {
+                return eligible.next().map(|_| (id, false, true));
+            }
+            let mut required = false;
+            let mut optional = false;
+            for op in eligible {
+                if guarded_dispatch(op) == Some(GuardedDispatch::Required) {
+                    required = true;
+                } else {
+                    optional = true;
+                }
+                if required && optional {
+                    break;
+                }
+            }
+            (required || optional).then_some((id, required, optional))
         })
         .collect();
     if pending.is_empty() {
@@ -145,28 +159,33 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     }
 
     let facts = super::value_identity::ScalarFacts::new(func);
-    if !CodeTemperature::of_function(&func.name).inline_fast_paths() {
-        // A module initializer runs once. A natural loop inside it can
-        // execute repeatedly. Keep the rest of the initializer compact.
-        let repeated: HashSet<_> = facts
+    let repeated: HashSet<_> = if !hot && pending.iter().any(|&(_, _, optional)| optional) {
+        facts
             .loops()
             .bodies
             .values()
             .flat_map(|body| body.iter().copied())
-            .collect();
-        pending.retain(|id| repeated.contains(id));
-        if pending.is_empty() {
-            return stats;
-        }
+            .collect()
+    } else {
+        HashSet::default()
+    };
+    pending.retain_mut(|(id, required, optional)| {
+        *optional &= hot || repeated.contains(id);
+        *required || *optional
+    });
+    if pending.is_empty() {
+        return stats;
     }
     let vr = super::value_range::compute_with_scalar_facts(&facts);
     let repr = crate::representation_facts::repr_by_value_from(&facts, Some(&vr));
     let exact = facts.types();
-    if !pending.iter().any(|block| {
+    let allowed =
+        |op: &TirOp, optional| optional || guarded_dispatch(op) == Some(GuardedDispatch::Required);
+    if !pending.iter().any(|(block, _, optional)| {
         func.blocks[block]
             .ops
             .iter()
-            .any(|op| expansion_of(op, &repr, exact, targets).is_some())
+            .any(|op| allowed(op, *optional) && expansion_of(op, &repr, exact, targets).is_some())
     }) {
         return stats;
     }
@@ -174,13 +193,14 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let raise = super::check_exception_elim::classify::RaiseFacts::from_scalar_facts(facts);
     let exact = raise.exact_types();
     record_inline_int_proofs(func, &repr, &vr, exact);
-    pending.sort_unstable_by(|a, b| b.cmp(a));
+    pending.sort_unstable_by_key(|(block, _, _)| std::cmp::Reverse(*block));
     let exception_labels = std::cell::OnceCell::new();
-    while let Some(block) = pending.pop() {
+    while let Some((block, _, optional)) = pending.pop() {
         let Some((index, expansion)) = func.blocks[&block]
             .ops
             .iter()
             .enumerate()
+            .filter(|(_, op)| allowed(op, optional))
             .find_map(|(index, op)| expansion_of(op, &repr, exact, targets).map(|e| (index, e)))
         else {
             continue;
@@ -221,7 +241,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         stats.ops_added += 6;
         stats.values_changed += 1;
         // Only the join is rescanned: the slow arm keeps its op.
-        pending.push(join);
+        pending.push((join, false, optional));
     }
     stats
 }
@@ -345,9 +365,7 @@ pub type GuardedTargets = std::collections::BTreeMap<molt_ir::FunctionId, Callee
 /// frontend expected, by its typed callee. The callee word may be any
 /// object at run time.
 fn guarded_target(op: &TirOp) -> Option<molt_ir::FunctionId> {
-    if op.opcode != OpCode::Call || op.origin != Some(molt_ir::OpKind::CallGuarded) {
-        return None;
-    }
+    guarded_dispatch(op)?;
     op.callee
 }
 
@@ -838,7 +856,7 @@ fn expansion_of(
         FastPathExpansionRule::GuardedCall => {
             let facts = targets.get(&guarded_target(op)?)?;
             let boxed_callee = is_boxed_word(repr, op.operands[0]);
-            if op.proven_target() {
+            if guarded_dispatch(op) == Some(GuardedDispatch::Required) {
                 // Integration proved the callee is the target's function
                 // object with an exact positional call (HF-846 slice 2); the
                 // linkage row must agree, or the wiring is broken. A closure

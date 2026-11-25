@@ -998,6 +998,36 @@ mod tests {
     }
 
     #[test]
+    fn an_unlegalized_required_call_cannot_enter_runtime_dispatch() {
+        let mut func = TirFunction::new(
+            "walk_required_call".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        let mut call = op(OpCode::Call, &[0], &[result.0], None);
+        call.origin = Some(molt_ir::OpKind::CallGuarded);
+        call.callee = Some(molt_ir::FunctionId(0));
+        call.set_proven_target(true);
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops.push(call);
+        block.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let run = walk(&func, &[OBJECT]);
+        let errors = run
+            .fact
+            .expect_err("required call must have been legalized");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("required compiled call"))
+        );
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
     fn a_parameter_crosses_a_block_parameter_to_the_return() {
         let mut func = TirFunction::new(
             "walk_identity".into(),
