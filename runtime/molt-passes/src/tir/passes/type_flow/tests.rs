@@ -100,7 +100,7 @@ fn observe(func: &mut TirFunction, block: crate::tir::blocks::BlockId) {
                 id: exit,
                 args: vec![],
                 ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
+                terminator: Terminator::Unwind,
             },
         );
         func.label_id_map.insert(exit.0, EXCEPTION_LABEL);
@@ -320,6 +320,96 @@ fn generic_contexts_include_resolved_leaf_results_and_skip_isolated_bodies() {
 }
 
 #[test]
+fn bounded_checked_returns_keep_the_python_hull_across_a_wrapper() {
+    // The same mask on negative, small and heap-sized Python integers gives
+    // the residues 0..7; the wrapper translates every result by -12.
+    let mut leaf = function("residue", 1);
+    let entry = leaf.entry_block;
+    let arg = leaf.blocks[&entry].args[0].id;
+    let mask = const_int(&mut leaf, entry, 7);
+    let result = binary(&mut leaf, entry, OpCode::BitAnd, arg, mask);
+    leaf.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut wrapper = function("translate", 1);
+    let entry = wrapper.entry_block;
+    let arg = wrapper.blocks[&entry].args[0].id;
+    let word = proven_call(&mut wrapper, entry, FunctionId(0), &[arg]);
+    let twelve = const_int(&mut wrapper, entry, 12);
+    let result = binary(&mut wrapper, entry, OpCode::Sub, word, twelve);
+    wrapper.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let main = caller("driver", FunctionId(1), &[Literal::Int(-19)]);
+    let mut module = TirModule::with_own_table("m", vec![leaf, wrapper, main]);
+    run(&mut module, &llvm(), &HashSet::default(), false);
+
+    let body = body(&module, "driver");
+    let call = calls(body)[0];
+    let range = call.exact_result_range().expect("all exact-int callers");
+    let oracle = (-16..16)
+        .map(|i| ((1i128 << 99) + i) & 7)
+        .map(|i| (i - 12) as i64);
+    assert_eq!(Some(range.lo), oracle.clone().min());
+    assert_eq!(Some(range.hi), oracle.max());
+    let value_ranges = crate::tir::passes::value_range::compute_with_scalar_facts(
+        &crate::tir::passes::value_identity::ScalarFacts::new(body),
+    );
+    assert_eq!(value_ranges.global_range_of(call.results[0]), Some(range));
+    assert!(
+        crate::representation_facts::raw_i64_safe_values_for(body, &value_ranges)
+            .contains(&call.results[0])
+    );
+}
+
+#[test]
+fn a_mixed_call_ranges_only_its_checked_success_value() {
+    use crate::tir::passes::value_identity::ScalarFacts;
+    use crate::tir::passes::value_range::compute_with_scalar_facts;
+    use crate::tir::values::TirValue;
+
+    let mut func = caller("mixed", FunctionId(0), &[]);
+    let entry = func.entry_block;
+    let exit = func.blocks.keys().copied().find(|id| *id != entry).unwrap();
+    let argument = func.fresh_value();
+    func.blocks.get_mut(&exit).unwrap().args.push(TirValue {
+        id: argument,
+        ty: TirType::DynBox,
+    });
+    let ops = &mut func.blocks.get_mut(&entry).unwrap().ops;
+    let call = ops.iter_mut().find(|op| op.opcode == OpCode::Call).unwrap();
+    let word = call.results[0];
+    let range = IntRange::point(-17);
+    call.mark_exact_result_proof(&TirType::I64);
+    call.set_exact_result_range(Some(range));
+    ops.last_mut().unwrap().operands.push(word);
+
+    let before = compute_with_scalar_facts(&ScalarFacts::new(&func));
+    assert_eq!(before.global_range_of(word), None);
+    assert!(crate::tir::type_refine::project_checked_call_results(
+        &mut func,
+        |_| true
+    ));
+    let [success] = func.blocks[&entry].ops.last().unwrap().results[..] else {
+        unreachable!()
+    };
+    let after = compute_with_scalar_facts(&ScalarFacts::new(&func));
+    assert_eq!(after.global_range_of(success), Some(range));
+    assert_eq!(after.global_range_of(word), None);
+    assert_eq!(after.global_range_of(argument), None);
+
+    // Moving the projection before its observer cannot make the return ABI
+    // word safe to unbox on either path.
+    let ops = &mut func.blocks.get_mut(&entry).unwrap().ops;
+    let last = ops.len() - 1;
+    ops.swap(last, last - 1);
+    let early = compute_with_scalar_facts(&ScalarFacts::new(&func));
+    assert_eq!(early.global_range_of(success), None);
+    assert_eq!(early.global_range_of(word), None);
+}
+
+#[test]
 fn a_discarded_result_still_specializes_its_call() {
     let mut main = caller("main", FunctionId(0), &[Literal::Int(30)]);
     let entry = main.entry_block;
@@ -368,6 +458,7 @@ fn recursive_int_context_enters_its_own_clone() {
     assert_eq!(clone_calls.len(), 2);
     for call in clone_calls {
         assert_eq!(call.callee, Some(clone));
+        assert_eq!(call.exact_result_range(), None, "fib grows past i64");
         assert_eq!(call.exact_result_proof(), Some(TirType::I64));
     }
     // The generic body serves every other caller and proves nothing.

@@ -73,9 +73,23 @@ pub fn repr_by_value_for(
 
 /// Compute the full carrier plan, sharing one SSA proof with range analysis.
 pub fn analyze_representations(tir_func: &TirFunction) -> HashMap<ValueId, Repr> {
+    representations_from(&ScalarFacts::new(tir_func))
+}
+
+/// Terminal codegen also needs the observations used to justify its carriers.
+/// Reuse the exact same immutable body analysis for linkage admission.
+pub fn analyze_representations_and_checked_calls(
+    tir_func: &TirFunction,
+) -> (HashMap<ValueId, Repr>, HashSet<ValueId>) {
     let facts = ScalarFacts::new(tir_func);
-    let ranges = compute_with_scalar_facts(&facts);
-    repr_by_value_from(&facts, Some(&ranges))
+    let representations = representations_from(&facts);
+    let checked = facts.checked_call_results();
+    (representations, checked)
+}
+
+fn representations_from(facts: &ScalarFacts<'_>) -> HashMap<ValueId, Repr> {
+    let ranges = compute_with_scalar_facts(facts);
+    repr_by_value_from(facts, Some(&ranges))
 }
 
 pub(crate) fn repr_by_value_from(
@@ -525,7 +539,7 @@ fn demanding_phi_incomings(
                     crate::tir::dominators::exception_transfer_target(op, &labels)
                 && let Some(handler_block) = func.blocks.get(&handler)
             {
-                for (&source, argument) in op.operands.iter().zip(&handler_block.args) {
+                for (&source, argument) in op.exception_payload().iter().zip(&handler_block.args) {
                     demanding.insert((argument.id, source));
                 }
             }
@@ -561,7 +575,7 @@ impl SourceLiveness {
                 continue;
             }
             for op in &block.ops {
-                for &operand in &op.operands {
+                for &operand in op.exception_payload() {
                     use_blocks.entry(operand).or_default().push(block.id);
                 }
             }
@@ -1023,11 +1037,11 @@ fn non_heap_values_in_domain(
     representations
         .into_iter()
         .filter_map(|(value, repr)| {
-            (matches!(
-                repr,
-                Repr::RawI64Safe | Repr::Bool | Repr::FloatUnboxed | Repr::BoxedImmortal
-            ) || (matches!(domain, RefcountDomain::Carrier) && repr == Repr::RawI64FullDeopt))
-                .then_some(value)
+            let non_heap = match domain {
+                RefcountDomain::Carrier => repr.carrier_refcount_is_noop(),
+                RefcountDomain::Boxed => repr.boxed_refcount_is_noop(),
+            };
+            non_heap.then_some(value)
         })
         .collect()
 }
@@ -1164,7 +1178,7 @@ pub(crate) fn block_arg_incomings_for(
                 && let Some(AttrValue::Int(label)) = op.attrs.get("value")
                 && let Some(&target) = labels.get(label)
             {
-                add_edge(target, &op.operands);
+                add_edge(target, op.exception_payload());
             }
         }
         block.terminator.for_each_edge(&mut add_edge);

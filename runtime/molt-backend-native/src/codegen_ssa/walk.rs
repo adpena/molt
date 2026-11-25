@@ -370,7 +370,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// `CheckException`: when an exception is pending, take the op's
-    /// explicit exceptional successor with its operands as arguments. An
+    /// explicit exceptional successor with its handler payload. An
     /// async-work poll services pending work first and answers its own
     /// pending word. An unwind edge branches straight to the successor; an
     /// origin edge first publishes the site's location and captures the
@@ -421,7 +421,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                     at.source,
                     "check-exception-unwind-edge",
                     target,
-                    &op.operands,
+                    op.exception_payload(),
                     &mut diagnostics,
                 );
                 b.branch_if(raised, (target_block, &passed), (continued, &[]));
@@ -448,7 +448,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                     at.source,
                     "check-exception-origin-edge",
                     target,
-                    &op.operands,
+                    op.exception_payload(),
                     &mut diagnostics,
                 );
                 b.jump(target_block, &passed);
@@ -976,10 +976,24 @@ mod tests {
         args: &[u64],
         state: ThreadState,
     ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
-        let linkage = row(func);
+        walk_linked(
+            func,
+            args,
+            state,
+            &row(func),
+            &molt_ir::FunctionTable::default(),
+        )
+    }
+
+    fn walk_linked(
+        func: &TirFunction,
+        args: &[u64],
+        state: ThreadState,
+        linkage: &BTreeMap<String, NativeFunctionLinkageAbi>,
+        functions: &molt_ir::FunctionTable,
+    ) -> crate::codegen_ssa::differential::Run<Result<(), Vec<String>>> {
         let plan = ProducerCarrierPlan::default();
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
-        let functions = molt_ir::FunctionTable::default();
         run_function_in(args, state, |b, params| {
             let physical_entry = b.words.builder.current_block().unwrap();
             lower_function(
@@ -990,8 +1004,8 @@ mod tests {
                     plan: &plan,
                     physical_entry,
                     entry: params,
-                    linkage: &linkage,
-                    functions: &functions,
+                    linkage,
+                    functions,
                     runtime: &runtime,
                 },
             )
@@ -1392,6 +1406,53 @@ mod tests {
             let run = walk_in(&func, &[OBJECT], state);
             assert_eq!(run.fact, Ok(()));
             assert_eq!(run.results, [Value::Word(answer)], "hint {hint:#x}");
+        }
+    }
+
+    #[test]
+    fn checked_compiled_word_and_unwind_payload_reach_their_own_returns() {
+        use crate::codegen_ssa::scalar::tests::compiled_result;
+        use molt_ir::function_table::FunctionRowKind;
+        use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+        let mut func = checked();
+        let symbol = "walker_compiled_boxed";
+        let target = TirFunction::new(
+            symbol.into(),
+            vec![TirType::DynBox; 2],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let functions = molt_ir::FunctionTable::from_rows([(symbol, FunctionRowKind::Body)]);
+        let mut linkage = row(&func);
+        linkage.extend(row(&target));
+        let word = func.fresh_value();
+        func.value_types.insert(word, TirType::DynBox);
+        let mut call = op(OpCode::Call, &[0, 0], &[word.0], None);
+        call.callee = Some(molt_ir::FunctionId(0));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops[0].bind_checked_invocation(word);
+        entry.ops.insert(0, call);
+        entry.terminator = Terminator::Return { values: vec![word] };
+        let handler = func.blocks.get_mut(&BlockId(1)).unwrap();
+        handler.terminator = Terminator::Return {
+            values: vec![handler.args[0].id],
+        };
+
+        for kind in [ExceptionEdgeKind::Unwind, ExceptionEdgeKind::Origin] {
+            func.blocks.get_mut(&func.entry_block).unwrap().ops[1].set_exception_edge_kind(kind);
+            for (raised, expected) in [
+                (false, compiled_result(symbol, &[OBJECT, OBJECT])),
+                (true, OBJECT),
+            ] {
+                let state = ThreadState {
+                    hint: u8::from(raised),
+                    raised,
+                    ..ThreadState::default()
+                };
+                let run = walk_linked(&func, &[OBJECT], state, &linkage, &functions);
+                assert_eq!(run.fact, Ok(()));
+                assert_eq!(run.results, [Value::Word(expected)]);
+            }
         }
     }
 

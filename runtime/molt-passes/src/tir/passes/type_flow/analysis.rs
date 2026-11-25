@@ -97,7 +97,7 @@ impl Inputs<'_> {
         facts.get(&argument).cloned()
     }
 
-    fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {
+    pub(super) fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {
         self.exact_plans[body].get_or_init(|| ExactScalarPlan::new(&self.module.functions[body]))
     }
 }
@@ -249,7 +249,7 @@ impl Analysis {
             }
         };
         let func = &inputs.module.functions[body];
-        let ret = if returns_value(func) {
+        let ret = if returns_value(func) && !inputs.exact_plan(body).has_non_value_return() {
             inputs
                 .exact_plan(body)
                 .return_values()

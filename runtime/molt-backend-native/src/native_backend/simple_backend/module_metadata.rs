@@ -17,7 +17,6 @@ pub(super) fn checked_private_returns<'a>(
     >,
     private_entries: impl IntoIterator<Item = molt_ir::FunctionId>,
 ) -> BTreeMap<molt_ir::FunctionId, crate::tir::types::TirType> {
-    use crate::tir::type_refine::checked_successful_call_results;
     use crate::tir::types::TirType;
     use molt_ir::tir::call_targets::final_call_arguments;
 
@@ -47,7 +46,6 @@ pub(super) fn checked_private_returns<'a>(
         if candidates.is_empty() {
             break;
         }
-        let successful = std::cell::OnceCell::new();
         for op in body.blocks.values().flat_map(|block| &block.ops) {
             let Some(callee) = op.callee else { continue };
             let Some((ty, used)) = candidates.get_mut(&callee) else {
@@ -65,10 +63,7 @@ pub(super) fn checked_private_returns<'a>(
             } else if let [result] = op.results.as_slice()
                 && carriers.effective_value_type(*result, &TirType::DynBox) == *ty
             {
-                if successful
-                    .get_or_init(|| checked_successful_call_results(body))
-                    .contains(result)
-                {
+                if carriers.is_checked_call_result(*result) {
                     *used = true;
                     continue;
                 }

@@ -1281,6 +1281,7 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
         return false;
     }
     let implicit_handler_words = crate::tir::type_refine::implicit_handler_call_results(func);
+    let exception_labels = std::cell::OnceCell::new();
     // Split later sites first so indices in the original block stay valid.
     sites.sort_unstable_by(|a, b| b.cmp(a));
     for (block, index) in sites {
@@ -1310,9 +1311,11 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             .first()
             .copied()
             .filter(|word| implicit_handler_words.contains(word));
-        let check = rest
-            .first()
-            .filter(|check| check.opcode == OpCode::CheckException && common_word.is_none());
+        let check = rest.first().filter(|check| {
+            common_word.is_none()
+                && crate::tir::type_refine::checked_result_observer(func, &exception_labels, check)
+                    .is_some()
+        });
         let mut failure = recursion_refusal(func, &op, check, refuse);
         let mut entered = Vec::with_capacity(rest.len() + 3);
         entered.push(new_op(OpCode::RecursionCount, vec![], vec![], span));

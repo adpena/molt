@@ -457,6 +457,7 @@ pub enum AttrValue {
     Bool(bool),
     Bytes(Vec<u8>),
     RuntimeCandidate(crate::runtime_fn_generated::RuntimeFn),
+    IntRange(super::numeric_facts::IntRange),
 }
 
 /// Attribute dictionary attached to an operation.
@@ -596,7 +597,9 @@ pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 /// result. Records the result of closed-world call analysis, or preserves a
 /// proof when a rewrite replaces the original producer.
 pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
+const EXACT_RESULT_RANGE_ATTR: &str = "exact_result_range";
 const CHECKED_CALL_RESULT_ATTR: &str = "checked_call_result";
+pub(super) const CHECKED_INVOCATION_ATTR: &str = "checked_invocation";
 /// The linker symbol of a `NativeSymbolAddr` or `CallNative`: a source
 /// extension's exported name, taken verbatim from its manifest.
 pub const NATIVE_SYMBOL_ATTR: &str = "native_symbol";
@@ -790,6 +793,43 @@ impl TirOp {
     pub fn set_exception_edge_kind(&mut self, kind: super::op_kinds_generated::ExceptionEdgeKind) {
         self.attrs
             .insert("exception_edge".into(), AttrValue::Int(kind as i64));
+    }
+
+    /// Bind the physical result after the handler arguments. As an SSA operand
+    /// it follows ordinary value substitution, cloning and serialization.
+    pub fn bind_checked_invocation(&mut self, physical: ValueId) {
+        assert_eq!(self.opcode, OpCode::CheckException);
+        assert!(!self.attrs.contains_key(CHECKED_INVOCATION_ATTR));
+        self.attrs
+            .insert(CHECKED_INVOCATION_ATTR.into(), AttrValue::Bool(true));
+        self.operands.push(physical);
+    }
+
+    pub fn checked_invocation_source(&self) -> Option<ValueId> {
+        if self.opcode == OpCode::CheckException
+            && matches!(self.origin, None | Some(crate::OpKind::CheckException))
+            && self.results.is_empty()
+            && self.attrs.get(CHECKED_INVOCATION_ATTR) == Some(&AttrValue::Bool(true))
+            && self.exception_edge_kind().is_some()
+        {
+            self.operands.last().copied()
+        } else {
+            None
+        }
+    }
+
+    pub fn has_checked_invocation_binding(&self) -> bool {
+        self.attrs.contains_key(CHECKED_INVOCATION_ATTR)
+    }
+
+    /// Only these values bind the handler's block arguments. The checked
+    /// invocation source identifies the pending-state observation on both paths.
+    pub fn exception_payload(&self) -> &[ValueId] {
+        if self.checked_invocation_source().is_some() {
+            &self.operands[..self.operands.len() - 1]
+        } else {
+            &self.operands
+        }
     }
 
     /// The site LocationId an Origin check materializes on its cold edges.
@@ -1170,12 +1210,50 @@ impl TirOp {
             TirType::Class(id) => AttrValue::Bytes(id.0.to_le_bytes().to_vec()),
             _ => return false,
         };
+        if *ty != TirType::I64 {
+            self.attrs.remove(EXACT_RESULT_RANGE_ATTR);
+        }
         self.attrs.insert(EXACT_RESULT_PROOF_ATTR.into(), encoded);
         true
     }
 
     pub fn clear_exact_result_proof(&mut self) -> bool {
-        self.attrs.remove(EXACT_RESULT_PROOF_ATTR).is_some()
+        let had_range = self.attrs.remove(EXACT_RESULT_RANGE_ATTR).is_some();
+        self.attrs.remove(EXACT_RESULT_PROOF_ATTR).is_some() || had_range
+    }
+
+    /// The finite interval of an exact integer call result on success.
+    /// The caller must still prove that the value is available at its use.
+    pub fn exact_result_range(&self) -> Option<super::numeric_facts::IntRange> {
+        let AttrValue::IntRange(range) = self.attrs.get(EXACT_RESULT_RANGE_ATTR)? else {
+            return None;
+        };
+        (range.lo <= range.hi
+            && range.is_bounded()
+            && self.exact_result_proof() == Some(TirType::I64))
+        .then_some(*range)
+    }
+
+    pub fn set_exact_result_range(
+        &mut self,
+        range: Option<super::numeric_facts::IntRange>,
+    ) -> bool {
+        let encoded = range
+            .filter(|range| {
+                range.lo <= range.hi
+                    && range.is_bounded()
+                    && self.exact_result_proof() == Some(TirType::I64)
+            })
+            .map(AttrValue::IntRange);
+        if self.attrs.get(EXACT_RESULT_RANGE_ATTR) == encoded.as_ref() {
+            return false;
+        }
+        if let Some(encoded) = encoded {
+            self.attrs.insert(EXACT_RESULT_RANGE_ATTR.into(), encoded);
+        } else {
+            self.attrs.remove(EXACT_RESULT_RANGE_ATTR);
+        }
+        true
     }
 
     /// Project a call's physical result on its successful continuation. The

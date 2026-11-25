@@ -206,6 +206,7 @@ fn producer_carrier_plan_refcount_obligations_require_a_value_proof() {
             (ValueId(1), Repr::BoxedImmortal),
             (ValueId(2), Repr::DynBox),
         ]),
+        ..Default::default()
     };
     assert!(plan.carrier_refcount_is_noop(ValueId(0)));
     assert!(

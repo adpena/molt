@@ -63,7 +63,7 @@ use super::target_info::TargetInfo;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::time::Instant;
 
-const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v1\0";
+const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v2\0";
 
 /// A request's existing artifact store, borrowed only while its terminal
 /// bodies are mutable. The target digest comes from the shared pipeline's
@@ -91,7 +91,7 @@ impl<'a> FinalizationCache<'a> {
         linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
     ) -> String {
         let mut key =
-            molt_ir::content_digest::CompilationCacheKey::new(b"molt-post-admission-final-tir-v1");
+            molt_ir::content_digest::CompilationCacheKey::new(b"molt-post-admission-final-tir-v2");
         key.field(b"target-contract", self.target_contract.as_bytes());
         key.field(
             b"semantic-environment",
@@ -703,6 +703,9 @@ pub fn finalize_function_drops(
         lowering_changed |= super::type_refine::project_checked_call_results(func, |op| {
             op.exact_result_proof().is_some()
         });
+    }
+    if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+        lowering_changed |= super::type_refine::bind_checked_invocations(func);
     }
     emit_drop_function_audit(
         "after-drop-pass",

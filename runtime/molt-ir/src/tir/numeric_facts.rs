@@ -19,7 +19,7 @@ pub const INLINE_INT47_LO: i64 = -(1i64 << 46);
 pub const INLINE_INT47_HI: i64 = (1i64 << 46) - 1;
 
 /// A closed integer interval `[lo, hi]` over the i64 domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct IntRange {
     pub lo: i64,
     pub hi: i64,

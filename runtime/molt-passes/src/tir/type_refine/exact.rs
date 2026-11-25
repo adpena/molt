@@ -10,19 +10,23 @@
 //! [`extract_exact_scalar_map`], which keeps the scalars; the type flow keys
 //! its contexts on both (design 78 section 3.2).
 
+use std::borrow::Cow;
+
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::executable_reverse_postorder;
 use crate::tir::function::TirFunction;
+use crate::tir::numeric_facts::IntRange;
 use crate::tir::op_kinds_generated::{
     comparison_scalar_domain, opcode_exact_scalar_result_tir_type,
 };
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::cfg_edges::{collect_branch_edges, handler_entry_blocks};
+use super::checked_results::CheckedResults;
 use super::result_inference::infer_result_facts_with_attrs;
 
 fn exact_or_bottom(ty: TirType) -> TirType {
@@ -101,13 +105,15 @@ pub struct ExactCallResults<'a> {
 }
 
 pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
-    let mut facts = solve_exact_scalars(
-        func,
-        ExactSeeds {
-            params: &func.exact_param_types,
-            call_results: None,
-        },
-    );
+    exact_scalar_map_from_plan(ExactScalarPlan::new(func))
+}
+
+pub(crate) fn exact_scalar_map_from_plan(plan: ExactScalarPlan<'_>) -> HashMap<ValueId, TirType> {
+    let seeds = ExactSeeds {
+        params: &plan.func.exact_param_types,
+        call_results: None,
+    };
+    let mut facts = plan.solve_once(seeds);
     facts.retain(|_, ty| comparison_scalar_domain(ty).is_some());
     facts
 }
@@ -130,33 +136,41 @@ pub fn extract_exact_class_map(func: &TirFunction) -> HashMap<ValueId, TirType> 
 /// reachable value, with `Never` for one no executable path has reached and
 /// `DynBox` for one that is not an exact scalar.
 pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
-    let mut plan = ExactScalarPlan::new(func);
-    let initial = std::mem::take(&mut plan.initial);
-    plan.solve_from(initial, seeds)
+    ExactScalarPlan::new(func).solve_once(seeds)
 }
 
 /// Input-independent shape of a body, shared by every interprocedural context.
 pub(crate) struct ExactScalarPlan<'a> {
     func: &'a TirFunction,
-    order: Vec<BlockId>,
+    order: Cow<'a, [BlockId]>,
     handlers: HashSet<BlockId>,
     incoming: HashMap<BlockId, Vec<Vec<ValueId>>>,
     initial: HashMap<ValueId, TirType>,
     successful_integers: HashSet<ValueId>,
-    unproven_compiled_results: HashSet<ValueId>,
+    checked: Cow<'a, CheckedResults>,
     projected_calls: HashMap<ValueId, &'a crate::tir::ops::TirOp>,
     returns: Vec<ValueId>,
+    has_non_value_return: bool,
     returned_parameter: std::cell::OnceCell<Option<usize>>,
 }
 
 impl<'a> ExactScalarPlan<'a> {
     pub(crate) fn new(func: &'a TirFunction) -> Self {
         let order = executable_reverse_postorder(func);
+        let checked = CheckedResults::collect(func, &order);
+        Self::from_checked(func, Cow::Owned(order), Cow::Owned(checked))
+    }
+
+    pub(crate) fn from_checked(
+        func: &'a TirFunction,
+        order: Cow<'a, [BlockId]>,
+        checked: Cow<'a, CheckedResults>,
+    ) -> Self {
         let handlers = handler_entry_blocks(func);
         let mut initial = HashMap::default();
         let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::default();
         let mut returns = Vec::new();
-        let checked = super::checked_results::CheckedResults::collect(func, &order);
+        let mut has_non_value_return = false;
         let projected_calls = checked
             .projections
             .iter()
@@ -165,7 +179,7 @@ impl<'a> ExactScalarPlan<'a> {
                 (projection, &func.blocks[&site.block].ops[site.call])
             })
             .collect();
-        for id in &order {
+        for id in order.iter() {
             let block = &func.blocks[id];
             for arg in &block.args {
                 initial.insert(arg.id, TirType::Never);
@@ -179,23 +193,29 @@ impl<'a> ExactScalarPlan<'a> {
                 incoming.entry(target).or_default().push(args);
             }
             if let Terminator::Return { values } = &block.terminator {
-                returns.extend(values);
+                if let [value] = values.as_slice() {
+                    returns.push(*value);
+                } else {
+                    has_non_value_return = true;
+                }
             }
         }
+        let successful_integers = checked
+            .sites
+            .iter()
+            .filter_map(|(&word, site)| (!site.compiled && !site.physical_use).then_some(word))
+            .collect();
         Self {
             func,
-            successful_integers: checked
-                .sites
-                .into_iter()
-                .filter_map(|(word, site)| (!site.compiled && !site.physical_use).then_some(word))
-                .collect(),
-            unproven_compiled_results: checked.unproven,
+            successful_integers,
+            checked,
             projected_calls,
             order,
             handlers,
             incoming,
             initial,
             returns,
+            has_non_value_return,
             returned_parameter: std::cell::OnceCell::new(),
         }
     }
@@ -215,6 +235,7 @@ impl<'a> ExactScalarPlan<'a> {
         if self.incoming.contains_key(&entry)
             || self.handlers.contains(&entry)
             || self.returns.is_empty()
+            || self.has_non_value_return
         {
             return None;
         }
@@ -225,7 +246,7 @@ impl<'a> ExactScalarPlan<'a> {
             .enumerate()
             .map(|(i, arg)| (arg.id, i))
             .collect();
-        for id in &self.order {
+        for id in self.order.iter() {
             let block = &self.func.blocks[id];
             if let Terminator::Return { values } = &block.terminator {
                 match values.len() {
@@ -257,8 +278,35 @@ impl<'a> ExactScalarPlan<'a> {
         &self.returns
     }
 
+    pub(crate) fn has_non_value_return(&self) -> bool {
+        self.has_non_value_return
+    }
+
+    pub(crate) fn block_order(&self) -> &[BlockId] {
+        &self.order
+    }
+
+    pub(crate) fn normal_incoming_edges(&self, block: BlockId) -> Option<&[Vec<ValueId>]> {
+        if block == self.func.entry_block || self.handlers.contains(&block) {
+            return None;
+        }
+        self.incoming.get(&block).map(Vec::as_slice)
+    }
+
+    pub(crate) fn call_range_values(
+        &self,
+        range_of: impl Fn(&TirOp) -> Option<IntRange>,
+    ) -> Vec<(ValueId, IntRange)> {
+        self.checked.call_range_values(self.func, range_of)
+    }
+
     pub(crate) fn solve(&self, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
         self.solve_from(self.initial.clone(), seeds)
+    }
+
+    fn solve_once(mut self, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
+        let initial = std::mem::take(&mut self.initial);
+        self.solve_from(initial, seeds)
     }
 
     fn solve_from(
@@ -275,7 +323,7 @@ impl<'a> ExactScalarPlan<'a> {
         // through the same joins.
         loop {
             let mut changed = false;
-            for &block_id in &self.order {
+            for &block_id in self.order.iter() {
                 let block = &func.blocks[&block_id];
                 for (index, arg) in block.args.iter().enumerate() {
                     // A parameter holds its seed on function entry; a branch back
@@ -342,9 +390,7 @@ impl<'a> ExactScalarPlan<'a> {
                     } else {
                         None
                     };
-                    let types = if !valid_shape
-                        || self.unproven_compiled_results.contains(&first_result)
-                    {
+                    let types = if !valid_shape || self.checked.unproven.contains(&first_result) {
                         vec![TirType::DynBox; op.results.len()]
                     } else if let Some(seeded) = seeded {
                         // The callee context's return type (design 78, 3.3).

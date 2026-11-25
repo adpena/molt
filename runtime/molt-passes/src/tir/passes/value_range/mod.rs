@@ -3,7 +3,7 @@
 //!
 //! For each integer SSA value the analysis computes a conservative interval
 //! [`IntRange`] `[lo, hi]` (saturating to the i64 domain). Ranges come from
-//! three sources, joined as a lattice:
+//! constants, loop and branch facts, and bounded integer returns:
 //!
 //!   1. **Constants** — `ConstInt v` ⇒ `[v, v]`.
 //!   2. **Scalar evolution** — a canonical induction variable `i` of
@@ -15,6 +15,8 @@
 //!      header `CondBranch(Lt(i, n))`, `i < n`; of `Le(i, n)`, `i <= n`. These
 //!      narrow the body range further (and are what proves the `while`-loop
 //!      bounds cases).
+//!   4. **Checked calls** — the callee's integer return interval applies to
+//!      the validated successful result or its explicit success projection.
 //!
 //! The analysis also records **container lengths** (`BuildList`, list-repeat
 //! `Mul`, and `len(c)` symbols) so [`ValueRangeResult::proves_index_in_bounds`]
@@ -56,6 +58,7 @@ use loops::{
 };
 use propagation::{narrow_loop_header_phis, propagate_op_ranges};
 use report::emit_vrange_report;
+pub(super) use transfer::transfer_op_range;
 
 // Analysis registration
 // ---------------------------------------------------------------------------
@@ -117,6 +120,9 @@ fn compute_seeded(
     // carries container lengths, which a displaced finalizer may have changed.
     for (&value, &source) in facts.forwarding() {
         result.record_copy_source(value, source);
+    }
+    for &(success, range) in facts.checked_call_ranges() {
+        result.record_global_range(success, range);
     }
 
     // ---- constants + container lengths --------------------------------------

@@ -542,6 +542,7 @@ pub fn print_terminator(term: &Terminator) -> String {
 pub fn print_attr_value(val: &AttrValue) -> String {
     match val {
         AttrValue::RuntimeCandidate(runtime) => format!("@{}", runtime.symbol()),
+        AttrValue::IntRange(range) => format!("[{}, {}]", range.lo, range.hi),
         AttrValue::Int(i) => i.to_string(),
         AttrValue::Float(f) => format!("{:?}", f),
         AttrValue::Str(s) => format!("{:?}", s),

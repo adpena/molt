@@ -456,6 +456,72 @@ mod tests {
     }
 
     #[test]
+    fn checked_invocation_restores_its_normal_point_and_distinct_unwind_payload() {
+        use super::super::dominators::{checked_invocation, exception_label_to_block};
+        use super::super::op_kinds_generated::ExceptionEdgeKind;
+        let mut func = TirFunction::new(
+            "caller".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            FunctionReturnAbi::Value,
+        );
+        let entry = func.entry_block;
+        let fallback = func.blocks[&entry].args[0].id;
+        let word = func.fresh_value();
+        let handler_arg = func.fresh_value();
+        let copied = func.fresh_value();
+        let handler = func.fresh_block();
+        let mut call =
+            TirOp::new(OpCode::Call, vec![], vec![word]).with_origin(crate::OpKind::CallInternal);
+        call.callee = Some(crate::FunctionId(0));
+        let mut check = TirOp::new(OpCode::CheckException, vec![fallback], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(73));
+        check.set_exception_edge_kind(ExceptionEdgeKind::Unwind);
+        check.bind_checked_invocation(word);
+        let body = func.blocks.get_mut(&entry).unwrap();
+        body.ops = vec![
+            call,
+            TirOp::new(OpCode::RecursionRelease, vec![], vec![]),
+            TirOp::new(OpCode::Copy, vec![fallback], vec![copied]),
+            check,
+        ];
+        body.terminator = Terminator::Return { values: vec![word] };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![handler_arg],
+                },
+            },
+        );
+        func.label_id_map.insert(handler.0, 73);
+        let roundtrip = |func: &TirFunction| {
+            let bytes = serialize_tir_function(func, &table(&["helper"])).unwrap();
+            deserialize_tir_function(&bytes, &|_| Some(crate::FunctionId(8)))
+        };
+        let restored = roundtrip(&func).expect("the checked word is not a second handler argument");
+        let body = &restored.blocks[&entry];
+        let edge = checked_invocation(body, 3, &exception_label_to_block(&restored)).unwrap();
+        assert_eq!(edge.physical, body.ops[0].results[0]);
+        assert_eq!(edge.normal, (entry, body.ops.len()));
+        assert_eq!(edge.exceptional, handler);
+        assert_eq!(edge.payload, &[fallback]);
+
+        let check = &mut func.blocks.get_mut(&entry).unwrap().ops[3];
+        check.operands.swap(0, 1);
+        assert!(
+            roundtrip(&func).is_none(),
+            "a dominating parameter is not the call's result"
+        );
+    }
+
+    #[test]
     fn typed_origin_roundtrips_and_legacy_identity_channels_are_rejected() {
         let mut function = TirFunction::new(
             "origin".into(),

@@ -2298,3 +2298,36 @@ fn recursion_refusal_defines_the_physical_word_for_a_direct_handler_read() {
         );
     }
 }
+
+#[test]
+fn checked_static_recursion_refusal_leaves_an_independent_poll_on_the_admitted_path() {
+    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+    let (mut func, word) = guarded_call(true);
+    func.has_exception_handling = true;
+    let handler = func.fresh_block();
+    func.label_id_map.insert(handler.0, 40);
+    func.blocks.insert(
+        handler,
+        super::new_block(handler, vec![], Terminator::Return { values: vec![word] }),
+    );
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops[0].origin = Some(molt_ir::OpKind::CallInternal);
+    let mut poll = TirOp::new(OpCode::CheckException, vec![], vec![]);
+    poll.origin = Some(molt_ir::OpKind::AsyncWorkPoll);
+    poll.attrs.insert("value".into(), AttrValue::Int(40));
+    poll.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+    entry.ops.push(poll);
+    assert_valid(&func);
+    assert!(super::charge_static_calls(&mut func, &Default::default()));
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::CheckException).len(), 1);
+    let refusal = ops(&func, OpCode::CallRuntime)
+        .into_iter()
+        .find(|(_, op)| op.runtime == Some(RuntimeFn::RaiseRecursionError))
+        .unwrap()
+        .0;
+    assert!(matches!(
+        func.blocks[&refusal].terminator,
+        Terminator::Unwind
+    ));
+}

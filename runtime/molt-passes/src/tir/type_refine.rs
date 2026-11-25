@@ -21,13 +21,14 @@ mod tests;
 use self::cfg_edges::collect_branch_edges;
 pub use self::checked_results::checked_successful_call_results;
 pub(crate) use self::checked_results::{
-    checked_result_observer, implicit_handler_call_results, project_checked_call_results,
+    CheckedResults, bind_checked_invocations, checked_result_observer,
+    implicit_handler_call_results, project_checked_call_results,
 };
-pub(crate) use self::exact::ExactScalarPlan;
 pub use self::exact::{
     ExactCallResults, ExactScalarWitness, ExactSeeds, exact_scalar_witnesses,
     extract_exact_class_map, extract_exact_scalar_map, solve_exact_scalars,
 };
+pub(crate) use self::exact::{ExactScalarPlan, exact_scalar_map_from_plan};
 pub(crate) use self::facts::infer_return_type;
 use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,

@@ -155,6 +155,11 @@ pub fn forwarded_python_value_source(op: &TirOp) -> Option<ValueId> {
 /// SSA body. The shared borrow prevents reusing these facts after a rewrite.
 pub(crate) struct ScalarFacts<'f> {
     body: &'f TirFunction,
+    checked_calls: OnceCell<(
+        Vec<crate::tir::blocks::BlockId>,
+        crate::tir::type_refine::CheckedResults,
+    )>,
+    call_ranges: OnceCell<Vec<(ValueId, crate::tir::numeric_facts::IntRange)>>,
     types: OnceCell<Cow<'f, HashMap<ValueId, TirType>>>,
     forwarding: OnceCell<HashMap<ValueId, ValueId>>,
     loops: OnceCell<LoopForestResult>,
@@ -164,6 +169,8 @@ impl<'f> ScalarFacts<'f> {
     pub(crate) fn new(body: &'f TirFunction) -> Self {
         Self {
             body,
+            checked_calls: OnceCell::new(),
+            call_ranges: OnceCell::new(),
             types: OnceCell::new(),
             forwarding: OnceCell::new(),
             loops: OnceCell::new(),
@@ -186,16 +193,60 @@ impl<'f> ScalarFacts<'f> {
     }
 
     pub(crate) fn types(&self) -> &HashMap<ValueId, TirType> {
-        self.types.get_or_init(|| {
-            Cow::Owned(crate::tir::type_refine::extract_exact_scalar_map(self.body))
-        })
+        self.types
+            .get_or_init(|| Cow::Owned(Self::solve_types(self.body, self.checked_calls())))
     }
 
     pub(crate) fn into_types(self) -> HashMap<ValueId, TirType> {
         self.types
             .into_inner()
             .map(Cow::into_owned)
-            .unwrap_or_else(|| crate::tir::type_refine::extract_exact_scalar_map(self.body))
+            .unwrap_or_else(|| {
+                self.checked_calls.get().map_or_else(
+                    || crate::tir::type_refine::extract_exact_scalar_map(self.body),
+                    |checked| Self::solve_types(self.body, checked),
+                )
+            })
+    }
+
+    fn checked_calls(
+        &self,
+    ) -> &(
+        Vec<crate::tir::blocks::BlockId>,
+        crate::tir::type_refine::CheckedResults,
+    ) {
+        self.checked_calls.get_or_init(|| {
+            let order = crate::tir::dominators::executable_reverse_postorder(self.body);
+            let checked = crate::tir::type_refine::CheckedResults::collect(self.body, &order);
+            (order, checked)
+        })
+    }
+
+    fn solve_types(
+        body: &TirFunction,
+        (order, checked): &(
+            Vec<crate::tir::blocks::BlockId>,
+            crate::tir::type_refine::CheckedResults,
+        ),
+    ) -> HashMap<ValueId, TirType> {
+        use crate::tir::type_refine::{ExactScalarPlan, exact_scalar_map_from_plan};
+        exact_scalar_map_from_plan(ExactScalarPlan::from_checked(
+            body,
+            Cow::Borrowed(order),
+            Cow::Borrowed(checked),
+        ))
+    }
+
+    pub(crate) fn checked_call_results(&self) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+        self.checked_calls().1.successful_call_results(self.body)
+    }
+
+    pub(crate) fn checked_call_ranges(&self) -> &[(ValueId, crate::tir::numeric_facts::IntRange)] {
+        self.call_ranges.get_or_init(|| {
+            self.checked_calls()
+                .1
+                .call_range_values(self.body, TirOp::exact_result_range)
+        })
     }
 
     pub(crate) fn forwarding(&self) -> &HashMap<ValueId, ValueId> {

@@ -323,6 +323,101 @@ fn splice_unwind_preserves_the_callers_exception_observer() {
     }
 }
 
+#[test]
+fn splice_unwind_preserves_physical_result_reads_outside_the_success_continuation() {
+    #[derive(Clone, Copy, Debug)]
+    enum Use {
+        ObserverPayload,
+        HandlerOperand,
+        HandlerTerminator,
+        MergedCleanup,
+    }
+
+    let callee = observation_callee_with_type("obs", 7, TirType::DynBox);
+    for use_kind in [
+        Use::ObserverPayload,
+        Use::HandlerOperand,
+        Use::HandlerTerminator,
+        Use::MergedCleanup,
+    ] {
+        let mut caller = caller_calling_obs_with_label_and_type("c", "obs", 90, TirType::DynBox);
+        let entry = caller.entry_block;
+        let result = caller.blocks[&entry].ops[1].results[0];
+        let handler = BlockId(
+            *caller
+                .label_id_map
+                .iter()
+                .find(|(_, label)| **label == 90)
+                .unwrap()
+                .0,
+        );
+        match use_kind {
+            Use::ObserverPayload => {
+                let payload = caller.fresh_value();
+                caller.value_types.insert(payload, TirType::DynBox);
+                caller.blocks.get_mut(&handler).unwrap().args =
+                    vec![crate::tir::values::TirValue {
+                        id: payload,
+                        ty: TirType::DynBox,
+                    }];
+                caller.blocks.get_mut(&entry).unwrap().ops[2].operands = vec![result];
+            }
+            Use::HandlerOperand => {
+                caller
+                    .blocks
+                    .get_mut(&handler)
+                    .unwrap()
+                    .ops
+                    .push(TirOp::new(OpCode::DelBoundary, vec![result], vec![]));
+            }
+            Use::HandlerTerminator => {
+                caller.blocks.get_mut(&handler).unwrap().terminator = Terminator::Return {
+                    values: vec![result],
+                };
+            }
+            Use::MergedCleanup => {
+                let cleanup = caller.fresh_block();
+                for block in [entry, handler] {
+                    caller.blocks.get_mut(&block).unwrap().terminator = Terminator::Branch {
+                        target: cleanup,
+                        args: vec![],
+                    };
+                }
+                caller.blocks.insert(
+                    cleanup,
+                    TirBlock {
+                        id: cleanup,
+                        args: vec![],
+                        ops: vec![TirOp::new(OpCode::DelBoundary, vec![result], vec![])],
+                        terminator: Terminator::Unwind,
+                    },
+                );
+            }
+        }
+
+        // A physical ABI result exists before its check even on failure.
+        // Defining it only at the spliced normal continuation would make
+        // these already-valid exceptional reads fail SSA dominance.
+        let (mut caller, sites) = sites_in(caller, &["obs"]);
+        assert_eq!(sites.len(), 1);
+        crate::tir::verify::verify_function(&caller)
+            .unwrap_or_else(|e| panic!("{use_kind:?}: original caller invalid: {e:?}"));
+        let before = format!("{caller:?}");
+        assert!(
+            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+                .is_none(),
+            "{use_kind:?}: unwind must retain the call's physical result definition"
+        );
+        assert_eq!(
+            format!("{caller:?}"),
+            before,
+            "{use_kind:?}: refusal is atomic"
+        );
+        crate::tir::verify::verify_function(&caller)
+            .unwrap_or_else(|e| panic!("{use_kind:?}: refused caller invalid: {e:?}"));
+    }
+}
+
 /// The spliced activation binds each parameter by its custody. A callee that
 /// owns its parameter binds the caller's temporary through one owned
 /// `binding_alias` where the call was; its return captures that binding first,
