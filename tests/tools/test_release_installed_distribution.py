@@ -1112,7 +1112,6 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     tmp_path, monkeypatch, defect
 ):
     """Release join uses real retained bytes; native replay is a named seam."""
-    from types import SimpleNamespace
     from molt import compiler_distribution
     from molt.exact_json import canonical_json_sha256, write_exact
     from tools.cross_run import SealedExecutionProjection
@@ -1127,17 +1126,22 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     retained.mkdir(parents=True)
     record = {"path": "bin/backend", "sha256": "a" * 64}
     files = [{"path": "compiler-source", "size": 1, "sha256": "a" * 64}]
-    installed = SimpleNamespace(
+    installed = compiler_distribution.InstalledCompiler(
         source_sha="a" * 40,
         source_root=release_authority.ROOT,
         record=record,
         launcher={"path": "bin/molt"},
         wasm_facts={"path": "bin/facts"},
         runtime={"cells": ["runtime"]},
-        files=files,
-        verify_launcher=lambda: None,
-        verify_wasm_facts=lambda: None,
+        files=tuple(files),
+        stdlib_source_summaries={
+            "path": compiler_distribution.STDLIB_SOURCE_SUMMARIES_PATH,
+            "size": 1,
+            "sha256": "c" * 64,
+        },
     )
+    monkeypatch.setattr(type(installed), "verify_launcher", lambda self: None)
+    monkeypatch.setattr(type(installed), "verify_wasm_facts", lambda self: None)
     monkeypatch.setattr(
         compiler_distribution, "installed_compiler", lambda path: installed
     )

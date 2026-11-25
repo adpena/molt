@@ -11,7 +11,7 @@ installed by release archives, package managers and platform wheels.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import stat
+from types import MappingProxyType
 from typing import Any, TypedDict
 
 from molt.exact_json import canonical_json_sha256, loads_exact
@@ -135,7 +136,7 @@ def _verify_source_files(
     observed: dict[str, os.stat_result] = {}
     observed_dirs: dict[str, os.stat_result] = {}
     root_metadata = root.lstat()
-    pending = [(root, root_metadata)]
+    pending = [(root, root_metadata, "")]
 
     def directory_generation(
         metadata: os.stat_result,
@@ -158,12 +159,12 @@ def _verify_source_files(
             raise ValueError(f"{label} directory changed: {path}")
 
     while pending:
-        current, metadata = pending.pop()
+        current, metadata, prefix = pending.pop()
         check_directory(current, metadata)
         with os.scandir(current) as entries:
             for entry in entries:
                 path = current / entry.name
-                relative = path.relative_to(root).as_posix()
+                relative = prefix + entry.name
                 # DirEntry.stat omits device/inode identity on Windows.
                 member = (
                     path.lstat()
@@ -178,7 +179,7 @@ def _verify_source_files(
                     not exact or relative in directories
                 ):
                     observed_dirs[relative] = member
-                    pending.append((path, member))
+                    pending.append((path, member, relative + "/"))
                 elif stat.S_ISREG(member.st_mode) and relative in allowed:
                     observed[relative] = member
                 elif not (stat.S_ISDIR(member.st_mode) or stat.S_ISREG(member.st_mode)):
@@ -574,9 +575,37 @@ class InstalledCompiler:
     record: dict[str, Any]
     launcher: dict[str, Any]
     wasm_facts: dict[str, Any]
-    files: tuple[dict[str, Any], ...]
+    files: tuple[Mapping[str, Any], ...]
     runtime: dict[str, Any]
     stdlib_source_summaries: StdlibSourceSummariesRecord
+
+    def source_inventory_sha256(self) -> str:
+        """Canonical SHA-256 of the released source record array."""
+        return canonical_json_sha256(self.files, default=dict)
+
+    def release_fingerprint(self) -> str:
+        """Hash the admitted release facts once within their live operation."""
+        manifests = _INSTALLED_MANIFESTS.get()
+        owner = None if manifests is None else manifests.get(self.source_root)
+        admitted = owner is not None and owner.compiler == self
+        if admitted and owner.fingerprint is not None:
+            return owner.fingerprint
+        fingerprint = canonical_json_sha256(
+            {
+                "schema": "molt.installed-compiler-identity.v1",
+                "source": self.source_sha,
+                "files": self.files,
+                "compiler": self.record,
+                "launcher": self.launcher,
+                "runtime": self.runtime,
+                "wasm_facts": self.wasm_facts,
+                "stdlib_source_summaries": self.stdlib_source_summaries,
+            },
+            default=dict,
+        )
+        if admitted:
+            owner.fingerprint = fingerprint
+        return fingerprint
 
     @property
     def binary(self) -> Path:
@@ -802,6 +831,7 @@ class _StdlibSummarySnapshot:
 class _InstalledManifest:
     raw: bytes
     compiler: InstalledCompiler
+    fingerprint: str | None = None
     sources_verified: bool = False
     stdlib_summary: _StdlibSummarySnapshot | None = None
 
@@ -867,8 +897,17 @@ def installed_compiler(
         manifest.sources_verified = True
     if manifests is None:
         return manifest.compiler
-    # InstalledCompiler exposes mutable records. Every caller receives a copy.
-    return deepcopy(manifest.compiler)
+    # Source rows contain only checked scalar values and are immutable.
+    # Release metadata returned to callers remains a private projection.
+    compiler = manifest.compiler
+    return replace(
+        compiler,
+        record=deepcopy(compiler.record),
+        launcher=deepcopy(compiler.launcher),
+        wasm_facts=deepcopy(compiler.wasm_facts),
+        runtime=deepcopy(compiler.runtime),
+        stdlib_source_summaries=deepcopy(compiler.stdlib_source_summaries),
+    )
 
 
 def _validate_installed_manifest(source_root: Path, raw: bytes) -> InstalledCompiler:
@@ -966,7 +1005,7 @@ def _validate_installed_manifest(source_root: Path, raw: bytes) -> InstalledComp
         compiler,
         validate_launcher_record(payload["launcher"]),
         wasm_facts,
-        tuple(files),
+        tuple(MappingProxyType(entry) for entry in files),
         runtime,
         StdlibSourceSummariesRecord(
             path=summaries["path"], size=summaries["size"], sha256=summaries["sha256"]
