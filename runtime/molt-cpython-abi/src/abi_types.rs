@@ -7,6 +7,7 @@
 //!
 //! All layouts validated against cpython/Include/object.h (CPython 3.12.x).
 
+use molt_lang_obj_model::{BuiltinExc, ExceptionBaseSpec};
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_double, c_int, c_uint, c_ulong};
 
@@ -2385,7 +2386,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         // before their runtime dictionaries are projected. Publish the inherited
         // object setter now, as an actual C slot. The metatype installs its own
         // override in init_type_getattro; extension-owned NULL slots stay NULL.
-        for object in type_static_ptrs().chain(exc_singleton_ptrs()) {
+        for object in type_static_ptrs().chain(exc_singletons().map(|(_, pointer)| pointer)) {
             let kind = object.cast::<PyTypeObject>();
             if (*kind).tp_setattro.is_none() && (*kind).tp_setattr.is_none() {
                 (*kind).tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
@@ -2524,11 +2525,8 @@ pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRu
                 },
             }
         })
-        .chain(exc_singleton_ptrs().map(|object| {
-            let spec = exc_singleton_name(object)
-                .and_then(|name| name.strip_prefix("PyExc_"))
-                .and_then(molt_lang_obj_model::builtin_exception_spec)
-                .expect("canonical exception shell has a declaration schema");
+        .chain(exc_singletons().map(|(kind, object)| {
+            let spec = kind.spec();
             StaticTypeRuntimeEntry {
                 type_ptr: object.cast(),
                 bootstrap_ready: false,
@@ -2593,10 +2591,9 @@ pub(crate) fn process_heap_type_storage(tp: *mut PyTypeObject) -> Option<*mut Py
 unsafe fn init_exception_singleton_type(
     ty: *mut PyTypeObject,
     tp_name: *const c_char,
-    builtin_name: &str,
+    kind: BuiltinExc,
 ) {
-    let spec = molt_lang_obj_model::builtin_exception_spec(builtin_name)
-        .expect("every exception singleton has a shared schema row");
+    let spec = kind.spec();
     let root = spec.layout_root();
     let layout = spec.layout();
     unsafe {
@@ -2610,10 +2607,9 @@ unsafe fn init_exception_singleton_type(
             | Py_TPFLAGS_IMMUTABLETYPE
             | Py_TPFLAGS_BASE_EXC_SUBCLASS;
         (*ty).tp_base = match spec.bases() {
-            molt_lang_obj_model::ExceptionBaseSpec::Root => &raw mut PyBaseObject_Type,
-            molt_lang_obj_model::ExceptionBaseSpec::One(parent)
-            | molt_lang_obj_model::ExceptionBaseSpec::Two(parent, _) => {
-                exc_singleton_for_builtin_name(parent)
+            ExceptionBaseSpec::Root => &raw mut PyBaseObject_Type,
+            ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _) => {
+                exc_singleton_for_kind(parent)
                     .expect("parent exception singleton must exist")
                     .cast::<PyTypeObject>()
             }
@@ -2628,10 +2624,8 @@ unsafe fn init_exception_singleton_type(
         (*ty).tp_getattro = Some(crate::api::object::PyObject_GenericGetAttr);
         (*ty).tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
         (*ty).tp_dictoffset = core::mem::offset_of!(PyBaseExceptionObject, dict) as Py_ssize_t;
-        (*ty).tp_members =
-            crate::api::errors::native_exception_members_for_builtin(builtin_name, root);
-        (*ty).tp_getset =
-            crate::api::errors::native_exception_getset_for_builtin(builtin_name, root);
+        (*ty).tp_members = crate::api::errors::native_exception_members_for_builtin(kind, root);
+        (*ty).tp_getset = crate::api::errors::native_exception_getset_for_builtin(kind, root);
         // Normalization can construct an error while PyType_Ready is itself
         // failing. Its immutable inherited rendering slots must work without
         // allocating a namespace or recursively trying type readiness.
@@ -2642,108 +2636,75 @@ unsafe fn init_exception_singleton_type(
 }
 
 macro_rules! exc_singletons {
-    ($($name:ident),* $(,)?) => {
+    ($($kind:ident => $name:ident),* $(,)?) => {
         $(
             #[unsafe(no_mangle)]
             pub static mut $name: PyTypeObject = unsafe { std::mem::zeroed() };
         )*
 
-        /// If `ptr` is the address of one of the exception singletons, return
-        /// its C name (e.g. `"PyExc_Exception"`). Pointer-identity only — no
-        /// dereference — so it is safe for any `*const PyObject`.
-        pub fn exc_singleton_name(ptr: *const PyObject) -> Option<&'static str> {
-            if std::ptr::eq(
-                ptr,
-                (&raw const PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>(),
-            ) {
-                return Some("PyExc_ExceptionGroup");
+        /// Identify a process-owned C shell by address without dereferencing it.
+        pub fn exc_singleton_kind(ptr: *const PyObject) -> Option<BuiltinExc> {
+            if std::ptr::eq(ptr, (&raw const PYEXC_EXCEPTION_GROUP_INTERNAL).cast()) {
+                return Some(BuiltinExc::ExceptionGroup);
             }
             $(
-                if std::ptr::eq(ptr, (&raw const $name).cast::<PyObject>()) {
-                    return Some(stringify!($name));
+                if std::ptr::eq(ptr, (&raw const $name).cast()) {
+                    return Some(BuiltinExc::$kind);
                 }
             )*
             None
         }
 
-        /// Resolve canonical exception layout from exact exported static type
-        /// identity. This deliberately never reads ``tp_name``: an extension
-        /// type named ``OSError`` is still its declared base layout, not an
-        /// OSError allocation.
+        /// C symbol spelling for diagnostics.
+        pub fn exc_singleton_name(ptr: *const PyObject) -> Option<&'static str> {
+            match exc_singleton_kind(ptr)? {
+                BuiltinExc::ExceptionGroup => Some("PyExc_ExceptionGroup"),
+                $(BuiltinExc::$kind => Some(stringify!($name)),)*
+                _ => unreachable!("identified exception must have a C shell"),
+            }
+        }
+
+        /// Resolve physical layout from the shell's exact identity.
         pub fn exc_singleton_layout_root(
             ptr: *const PyObject,
         ) -> Option<molt_lang_obj_model::ExceptionLayoutRoot> {
-            if std::ptr::eq(
-                ptr,
-                (&raw const PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>(),
-            ) {
-                return Some(molt_lang_obj_model::ExceptionLayoutRoot::BaseExceptionGroup);
-            }
-            $(
-                if std::ptr::eq(ptr, (&raw const $name).cast::<PyObject>()) {
-                    let builtin_name = stringify!($name).strip_prefix("PyExc_").unwrap();
-                    return molt_lang_obj_model::builtin_exception_spec(builtin_name)
-                        .map(|spec| spec.layout_root());
-                }
-            )*
-            None
+            Some(exc_singleton_kind(ptr)?.spec().layout_root())
         }
 
-        /// Resolve a runtime builtin exception class name (without `PyExc_`)
-        /// back to the canonical exported C exception object.
-        pub fn exc_singleton_for_builtin_name(name: &str) -> Option<*mut PyObject> {
-            let name = molt_lang_obj_model::builtin_exception_spec(name)
-                .map(|spec| spec.canonical_name())
-                .unwrap_or(name);
-            if name == "ExceptionGroup" {
-                return Some((&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>());
-            }
-            $(
-                if name == stringify!($name).strip_prefix("PyExc_").unwrap_or(stringify!($name)) {
-                    return Some(&raw mut $name as *mut PyObject);
+        /// The C shell for this builtin, where the ABI exposes one.
+        pub fn exc_singleton_for_kind(kind: BuiltinExc) -> Option<*mut PyObject> {
+            match kind {
+                BuiltinExc::ExceptionGroup => {
+                    Some((&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast())
                 }
-            )*
-            None
+                $(BuiltinExc::$kind => Some((&raw mut $name).cast()),)*
+                _ => None,
+            }
         }
 
-        /// The base class of a builtin exception singleton per the Python 3.12
-        /// hierarchy, or `None` for `BaseException` (root) and for a pointer
-        /// that is not an exception singleton. Powers the subclass walk in
-        /// `PyErr_GivenExceptionMatches` (`except LookupError` catching a
-        /// pending `IndexError`). Pointer-identity only — no dereference.
+        /// Primary builtin base used by bootstrap subtype checks.
         pub fn exc_singleton_parent(ptr: *const PyObject) -> Option<*mut PyObject> {
-            let name = exc_singleton_name(ptr)?.strip_prefix("PyExc_")?;
-            let parent = match molt_lang_obj_model::builtin_exception_spec(name)?.bases() {
-                molt_lang_obj_model::ExceptionBaseSpec::Root => return None,
-                molt_lang_obj_model::ExceptionBaseSpec::One(parent)
-                | molt_lang_obj_model::ExceptionBaseSpec::Two(parent, _) => parent,
+            let parent = match exc_singleton_kind(ptr)?.spec().bases() {
+                ExceptionBaseSpec::Root => return None,
+                ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _) => parent,
             };
-            exc_singleton_for_builtin_name(parent)
+            exc_singleton_for_kind(parent)
         }
 
-        /// Secondary base for a schema-declared multiple-inheritance builtin.
-        /// Keeping this separate from the primary ``tp_base`` edge lets every
-        /// subtype consumer use the generated hierarchy instead of spelling an
-        /// ExceptionGroup special case.
+        /// Secondary base when the exception schema declares multiple inheritance.
         pub fn exc_singleton_secondary_parent(ptr: *const PyObject) -> Option<*mut PyObject> {
-            let name = exc_singleton_name(ptr)?.strip_prefix("PyExc_")?;
-            let molt_lang_obj_model::ExceptionBaseSpec::Two(_, parent) =
-                molt_lang_obj_model::builtin_exception_spec(name)?.bases()
-            else {
+            let ExceptionBaseSpec::Two(_, parent) = exc_singleton_kind(ptr)?.spec().bases() else {
                 return None;
             };
-            exc_singleton_for_builtin_name(parent)
+            exc_singleton_for_kind(parent)
         }
 
-        /// Addresses of every exception singleton, for bridge registration. These
-        /// are canonical runtime data symbols a native extension resolves (via the
-        /// split-runtime GOT data retarget) and then hands back to the runtime as a
-        /// `PyDict_SetItem` value (numpy's `error = Exception`), so the bridge must
-        /// resolve them in `pyobj_to_handle` instead of failing the lookup.
-        pub fn exc_singleton_ptrs() -> impl Iterator<Item = *mut PyObject> {
+        /// Typed process-owned shells in declaration order, including the private
+        /// ExceptionGroup shell at the end.
+        pub fn exc_singletons() -> impl Iterator<Item = (BuiltinExc, *mut PyObject)> {
             [
-                $( &raw mut $name as *mut PyObject, )*
-                (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>(),
+                $((BuiltinExc::$kind, (&raw mut $name).cast()),)*
+                (BuiltinExc::ExceptionGroup, (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast()),
             ].into_iter()
         }
 
@@ -2751,11 +2712,10 @@ macro_rules! exc_singletons {
             $(
                 let ty = &raw mut $name;
                 unsafe {
-                    let builtin_name = stringify!($name).strip_prefix("PyExc_").unwrap();
                     init_exception_singleton_type(
                         ty,
                         concat!(stringify!($name), "\0").as_ptr().add(6).cast(),
-                        builtin_name,
+                        BuiltinExc::$kind,
                     );
                 }
             )*
@@ -2763,7 +2723,7 @@ macro_rules! exc_singletons {
                 init_exception_singleton_type(
                     (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyTypeObject>(),
                     c"ExceptionGroup".as_ptr(),
-                    "ExceptionGroup",
+                    BuiltinExc::ExceptionGroup,
                 );
                 // CPython creates ExceptionGroup through PyErr_NewException:
                 // a mutable heap class, unlike the exported static exceptions.
@@ -2813,72 +2773,72 @@ macro_rules! exc_singletons {
 }
 
 exc_singletons!(
-    PyExc_BaseException,
-    PyExc_Exception,
-    PyExc_BaseExceptionGroup,
-    PyExc_StopAsyncIteration,
-    PyExc_StopIteration,
-    PyExc_GeneratorExit,
-    PyExc_ArithmeticError,
-    PyExc_LookupError,
-    PyExc_AssertionError,
-    PyExc_AttributeError,
-    PyExc_BufferError,
-    PyExc_EOFError,
-    PyExc_FloatingPointError,
-    PyExc_OSError,
-    PyExc_ImportError,
-    PyExc_ModuleNotFoundError,
-    PyExc_IndexError,
-    PyExc_KeyError,
-    PyExc_KeyboardInterrupt,
-    PyExc_MemoryError,
-    PyExc_NameError,
-    PyExc_OverflowError,
-    PyExc_RuntimeError,
-    PyExc_RecursionError,
-    PyExc_NotImplementedError,
-    PyExc_SyntaxError,
-    PyExc_IndentationError,
-    PyExc_TabError,
-    PyExc_ReferenceError,
-    PyExc_SystemError,
-    PyExc_SystemExit,
-    PyExc_TypeError,
-    PyExc_UnboundLocalError,
-    PyExc_ValueError,
-    PyExc_UnicodeError,
-    PyExc_UnicodeEncodeError,
-    PyExc_UnicodeDecodeError,
-    PyExc_UnicodeTranslateError,
-    PyExc_ZeroDivisionError,
-    PyExc_BlockingIOError,
-    PyExc_ChildProcessError,
-    PyExc_ConnectionError,
-    PyExc_BrokenPipeError,
-    PyExc_ConnectionAbortedError,
-    PyExc_ConnectionRefusedError,
-    PyExc_ConnectionResetError,
-    PyExc_FileExistsError,
-    PyExc_FileNotFoundError,
-    PyExc_InterruptedError,
-    PyExc_IsADirectoryError,
-    PyExc_NotADirectoryError,
-    PyExc_PermissionError,
-    PyExc_ProcessLookupError,
-    PyExc_TimeoutError,
-    PyExc_Warning,
-    PyExc_UserWarning,
-    PyExc_DeprecationWarning,
-    PyExc_PendingDeprecationWarning,
-    PyExc_SyntaxWarning,
-    PyExc_RuntimeWarning,
-    PyExc_FutureWarning,
-    PyExc_ImportWarning,
-    PyExc_UnicodeWarning,
-    PyExc_BytesWarning,
-    PyExc_EncodingWarning,
-    PyExc_ResourceWarning,
+    BaseException => PyExc_BaseException,
+    Exception => PyExc_Exception,
+    BaseExceptionGroup => PyExc_BaseExceptionGroup,
+    StopAsyncIteration => PyExc_StopAsyncIteration,
+    StopIteration => PyExc_StopIteration,
+    GeneratorExit => PyExc_GeneratorExit,
+    ArithmeticError => PyExc_ArithmeticError,
+    LookupError => PyExc_LookupError,
+    AssertionError => PyExc_AssertionError,
+    AttributeError => PyExc_AttributeError,
+    BufferError => PyExc_BufferError,
+    EOFError => PyExc_EOFError,
+    FloatingPointError => PyExc_FloatingPointError,
+    OSError => PyExc_OSError,
+    ImportError => PyExc_ImportError,
+    ModuleNotFoundError => PyExc_ModuleNotFoundError,
+    IndexError => PyExc_IndexError,
+    KeyError => PyExc_KeyError,
+    KeyboardInterrupt => PyExc_KeyboardInterrupt,
+    MemoryError => PyExc_MemoryError,
+    NameError => PyExc_NameError,
+    OverflowError => PyExc_OverflowError,
+    RuntimeError => PyExc_RuntimeError,
+    RecursionError => PyExc_RecursionError,
+    NotImplementedError => PyExc_NotImplementedError,
+    SyntaxError => PyExc_SyntaxError,
+    IndentationError => PyExc_IndentationError,
+    TabError => PyExc_TabError,
+    ReferenceError => PyExc_ReferenceError,
+    SystemError => PyExc_SystemError,
+    SystemExit => PyExc_SystemExit,
+    TypeError => PyExc_TypeError,
+    UnboundLocalError => PyExc_UnboundLocalError,
+    ValueError => PyExc_ValueError,
+    UnicodeError => PyExc_UnicodeError,
+    UnicodeEncodeError => PyExc_UnicodeEncodeError,
+    UnicodeDecodeError => PyExc_UnicodeDecodeError,
+    UnicodeTranslateError => PyExc_UnicodeTranslateError,
+    ZeroDivisionError => PyExc_ZeroDivisionError,
+    BlockingIOError => PyExc_BlockingIOError,
+    ChildProcessError => PyExc_ChildProcessError,
+    ConnectionError => PyExc_ConnectionError,
+    BrokenPipeError => PyExc_BrokenPipeError,
+    ConnectionAbortedError => PyExc_ConnectionAbortedError,
+    ConnectionRefusedError => PyExc_ConnectionRefusedError,
+    ConnectionResetError => PyExc_ConnectionResetError,
+    FileExistsError => PyExc_FileExistsError,
+    FileNotFoundError => PyExc_FileNotFoundError,
+    InterruptedError => PyExc_InterruptedError,
+    IsADirectoryError => PyExc_IsADirectoryError,
+    NotADirectoryError => PyExc_NotADirectoryError,
+    PermissionError => PyExc_PermissionError,
+    ProcessLookupError => PyExc_ProcessLookupError,
+    TimeoutError => PyExc_TimeoutError,
+    Warning => PyExc_Warning,
+    UserWarning => PyExc_UserWarning,
+    DeprecationWarning => PyExc_DeprecationWarning,
+    PendingDeprecationWarning => PyExc_PendingDeprecationWarning,
+    SyntaxWarning => PyExc_SyntaxWarning,
+    RuntimeWarning => PyExc_RuntimeWarning,
+    FutureWarning => PyExc_FutureWarning,
+    ImportWarning => PyExc_ImportWarning,
+    UnicodeWarning => PyExc_UnicodeWarning,
+    BytesWarning => PyExc_BytesWarning,
+    EncodingWarning => PyExc_EncodingWarning,
+    ResourceWarning => PyExc_ResourceWarning,
 );
 
 #[cfg(test)]
@@ -2948,7 +2908,7 @@ mod exc_hierarchy_tests {
         );
         // EVERY singleton chain terminates at BaseException with no cycle
         // (bounded walk) — a wrong edge cannot hide.
-        for ptr in exc_singleton_ptrs() {
+        for (_, ptr) in exc_singletons() {
             let names = chain(ptr);
             assert!(names.len() <= 8, "suspicious chain length for {names:?}");
             assert_eq!(*names.last().unwrap(), "PyExc_BaseException");
@@ -2959,9 +2919,11 @@ mod exc_hierarchy_tests {
     fn all_exported_exception_types_use_shared_layout_and_true_aliases() {
         let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
-        for ptr in exc_singleton_ptrs() {
+        for (shell_kind, ptr) in exc_singletons() {
             let c_name = exc_singleton_name(ptr).expect("exported exception name");
             let builtin_name = c_name.strip_prefix("PyExc_").unwrap();
+            assert_eq!(BuiltinExc::from_name(builtin_name), Some(shell_kind));
+            assert_eq!(exc_singleton_for_kind(shell_kind), Some(ptr));
             let kind = molt_lang_obj_model::builtin_exception_spec(builtin_name)
                 .expect("exported exception schema row")
                 .layout();
@@ -2974,7 +2936,10 @@ mod exc_hierarchy_tests {
         }
         let os_error = (&raw mut PyExc_OSError).cast::<PyObject>();
         for alias in ["OSError", "EnvironmentError", "IOError", "WindowsError"] {
-            assert_eq!(exc_singleton_for_builtin_name(alias), Some(os_error));
+            let kind = molt_lang_obj_model::builtin_exception_spec(alias)
+                .unwrap()
+                .kind();
+            assert_eq!(exc_singleton_for_kind(kind), Some(os_error));
         }
     }
 
@@ -3342,7 +3307,7 @@ mod unresolved_pyobject_tests {
             assert!(cohort.iter().any(|entry| entry.type_ptr == extension
                 && entry.namespace == StaticTypeNamespace::NativeDeclarations));
         }
-        let group = exc_singleton_for_builtin_name("ExceptionGroup")
+        let group = exc_singleton_for_kind(BuiltinExc::ExceptionGroup)
             .unwrap()
             .cast();
         assert!(cohort.iter().any(|entry| entry.type_ptr == group
@@ -3420,7 +3385,7 @@ mod immortal_authority_tests {
             &raw mut Py_EllipsisObject,
             &raw mut PyDateTime_TimeZone_UTC_Object,
         ];
-        singletons.extend(exc_singleton_ptrs());
+        singletons.extend(exc_singletons().map(|(_, pointer)| pointer));
         singletons.extend(type_static_ptrs());
         for p in singletons {
             let rc = unsafe { (*p).ob_refcnt };

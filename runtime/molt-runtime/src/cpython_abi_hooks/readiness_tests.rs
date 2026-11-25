@@ -59,7 +59,7 @@ fn c_type_exposure_failure_keeps_hooks_live_and_can_retry() {
             crate::clear_exception(py);
             assert!(expose_cpython_types());
             for pointer in molt_cpython_abi::abi_types::type_static_ptrs()
-                .chain(molt_cpython_abi::abi_types::exc_singleton_ptrs())
+                .chain(molt_cpython_abi::abi_types::exc_singletons().map(|(_, pointer)| pointer))
             {
                 let ty = pointer.cast::<PyTypeObject>();
                 assert!(!(*ty).tp_dict.is_null());

@@ -1233,45 +1233,45 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "BaseExceptionGroup",
         BuiltinExc::BaseExceptionGroup,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         Some(ExceptionLayoutRoot::BaseExceptionGroup),
     )
     .with_str_slot(ExceptionStrSlot::Group),
     exception_spec(
         "Exception",
         BuiltinExc::Exception,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         None,
     ),
     exception_spec(
         "ExceptionGroup",
         BuiltinExc::ExceptionGroup,
-        ExceptionBaseSpec::Two("BaseExceptionGroup", "Exception"),
+        ExceptionBaseSpec::Two(BuiltinExc::BaseExceptionGroup, BuiltinExc::Exception),
         None,
     )
     .with_heap_class("builtins"),
     exception_spec(
         "GeneratorExit",
         BuiltinExc::GeneratorExit,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         None,
     ),
     exception_spec(
         "KeyboardInterrupt",
         BuiltinExc::KeyboardInterrupt,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         None,
     ),
     exception_spec(
         "SystemExit",
         BuiltinExc::SystemExit,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         Some(ExceptionLayoutRoot::SystemExit),
     ),
     exception_spec(
         "CancelledError",
         BuiltinExc::CancelledError,
-        ExceptionBaseSpec::One("BaseException"),
+        ExceptionBaseSpec::One(BuiltinExc::BaseException),
         None,
     )
     .with_heap_class("asyncio.exceptions")
@@ -1279,37 +1279,37 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "ArithmeticError",
         BuiltinExc::ArithmeticError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "AssertionError",
         BuiltinExc::AssertionError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "AttributeError",
         BuiltinExc::AttributeError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::AttributeError),
     ),
     exception_spec(
         "BufferError",
         BuiltinExc::BufferError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "EOFError",
         BuiltinExc::EOFError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "PickleError",
         BuiltinExc::PickleError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     )
     .with_heap_class("_pickle")
@@ -1317,7 +1317,7 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "PicklingError",
         BuiltinExc::PicklingError,
-        ExceptionBaseSpec::One("PickleError"),
+        ExceptionBaseSpec::One(BuiltinExc::PickleError),
         None,
     )
     .with_heap_class("_pickle")
@@ -1325,7 +1325,7 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "UnpicklingError",
         BuiltinExc::UnpicklingError,
-        ExceptionBaseSpec::One("PickleError"),
+        ExceptionBaseSpec::One(BuiltinExc::PickleError),
         None,
     )
     .with_heap_class("_pickle")
@@ -1333,39 +1333,39 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "ImportError",
         BuiltinExc::ImportError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::ImportError),
     )
     .with_str_slot(ExceptionStrSlot::Import),
     exception_spec(
         "LookupError",
         BuiltinExc::LookupError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "MemoryError",
         BuiltinExc::MemoryError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "NameError",
         BuiltinExc::NameError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::NameError),
     ),
     exception_spec(
         "OSError",
         BuiltinExc::OSError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::OSError),
     )
     .with_str_slot(ExceptionStrSlot::OSError),
     exception_spec(
         "gaierror",
         BuiltinExc::SocketGaiError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     )
     .with_heap_class("socket")
@@ -1373,7 +1373,7 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "herror",
         BuiltinExc::SocketHError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     )
     .with_heap_class("socket")
@@ -1381,19 +1381,19 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "ReferenceError",
         BuiltinExc::ReferenceError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "RuntimeError",
         BuiltinExc::RuntimeError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "_DeadlockError",
         BuiltinExc::DeadlockError,
-        ExceptionBaseSpec::One("RuntimeError"),
+        ExceptionBaseSpec::One(BuiltinExc::RuntimeError),
         None,
     )
     .with_heap_class("_frozen_importlib")
@@ -1401,44 +1401,44 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "StopIteration",
         BuiltinExc::StopIteration,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::StopIteration),
     ),
     exception_spec(
         "StopAsyncIteration",
         BuiltinExc::StopAsyncIteration,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "SyntaxError",
         BuiltinExc::SyntaxError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         Some(ExceptionLayoutRoot::SyntaxError),
     )
     .with_str_slot(ExceptionStrSlot::Syntax),
     exception_spec(
         "SystemError",
         BuiltinExc::SystemError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "TypeError",
         BuiltinExc::TypeError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "ValueError",
         BuiltinExc::ValueError,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "StatisticsError",
         BuiltinExc::StatisticsError,
-        ExceptionBaseSpec::One("ValueError"),
+        ExceptionBaseSpec::One(BuiltinExc::ValueError),
         None,
     )
     .with_heap_class("statistics")
@@ -1446,7 +1446,7 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "Error",
         BuiltinExc::BinasciiError,
-        ExceptionBaseSpec::One("ValueError"),
+        ExceptionBaseSpec::One(BuiltinExc::ValueError),
         None,
     )
     .with_heap_class("binascii")
@@ -1455,7 +1455,7 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "Incomplete",
         BuiltinExc::BinasciiIncomplete,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     )
     .with_heap_class("binascii")
@@ -1464,146 +1464,146 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "Warning",
         BuiltinExc::Warning,
-        ExceptionBaseSpec::One("Exception"),
+        ExceptionBaseSpec::One(BuiltinExc::Exception),
         None,
     ),
     exception_spec(
         "FloatingPointError",
         BuiltinExc::FloatingPointError,
-        ExceptionBaseSpec::One("ArithmeticError"),
+        ExceptionBaseSpec::One(BuiltinExc::ArithmeticError),
         None,
     ),
     exception_spec(
         "OverflowError",
         BuiltinExc::OverflowError,
-        ExceptionBaseSpec::One("ArithmeticError"),
+        ExceptionBaseSpec::One(BuiltinExc::ArithmeticError),
         None,
     ),
     exception_spec(
         "ZeroDivisionError",
         BuiltinExc::ZeroDivisionError,
-        ExceptionBaseSpec::One("ArithmeticError"),
+        ExceptionBaseSpec::One(BuiltinExc::ArithmeticError),
         None,
     ),
     exception_spec(
         "ModuleNotFoundError",
         BuiltinExc::ModuleNotFoundError,
-        ExceptionBaseSpec::One("ImportError"),
+        ExceptionBaseSpec::One(BuiltinExc::ImportError),
         None,
     ),
     exception_spec(
         "IndexError",
         BuiltinExc::IndexError,
-        ExceptionBaseSpec::One("LookupError"),
+        ExceptionBaseSpec::One(BuiltinExc::LookupError),
         None,
     ),
     exception_spec(
         "KeyError",
         BuiltinExc::KeyError,
-        ExceptionBaseSpec::One("LookupError"),
+        ExceptionBaseSpec::One(BuiltinExc::LookupError),
         None,
     )
     .with_str_slot(ExceptionStrSlot::KeyError),
     exception_spec(
         "UnboundLocalError",
         BuiltinExc::UnboundLocalError,
-        ExceptionBaseSpec::One("NameError"),
+        ExceptionBaseSpec::One(BuiltinExc::NameError),
         None,
     ),
     exception_spec(
         "ConnectionError",
         BuiltinExc::ConnectionError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "BrokenPipeError",
         BuiltinExc::BrokenPipeError,
-        ExceptionBaseSpec::One("ConnectionError"),
+        ExceptionBaseSpec::One(BuiltinExc::ConnectionError),
         None,
     ),
     exception_spec(
         "ConnectionAbortedError",
         BuiltinExc::ConnectionAbortedError,
-        ExceptionBaseSpec::One("ConnectionError"),
+        ExceptionBaseSpec::One(BuiltinExc::ConnectionError),
         None,
     ),
     exception_spec(
         "ConnectionRefusedError",
         BuiltinExc::ConnectionRefusedError,
-        ExceptionBaseSpec::One("ConnectionError"),
+        ExceptionBaseSpec::One(BuiltinExc::ConnectionError),
         None,
     ),
     exception_spec(
         "ConnectionResetError",
         BuiltinExc::ConnectionResetError,
-        ExceptionBaseSpec::One("ConnectionError"),
+        ExceptionBaseSpec::One(BuiltinExc::ConnectionError),
         None,
     ),
     exception_spec(
         "BlockingIOError",
         BuiltinExc::BlockingIOError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "ChildProcessError",
         BuiltinExc::ChildProcessError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "FileExistsError",
         BuiltinExc::FileExistsError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "FileNotFoundError",
         BuiltinExc::FileNotFoundError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "InterruptedError",
         BuiltinExc::InterruptedError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "IsADirectoryError",
         BuiltinExc::IsADirectoryError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "NotADirectoryError",
         BuiltinExc::NotADirectoryError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "PermissionError",
         BuiltinExc::PermissionError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "ProcessLookupError",
         BuiltinExc::ProcessLookupError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "TimeoutError",
         BuiltinExc::TimeoutError,
-        ExceptionBaseSpec::One("OSError"),
+        ExceptionBaseSpec::One(BuiltinExc::OSError),
         None,
     ),
     exception_spec(
         "UnsupportedOperation",
         BuiltinExc::UnsupportedOperation,
-        ExceptionBaseSpec::Two("OSError", "ValueError"),
+        ExceptionBaseSpec::Two(BuiltinExc::OSError, BuiltinExc::ValueError),
         None,
     )
     .with_heap_class("_io")
@@ -1611,130 +1611,130 @@ pub(crate) const BUILTIN_EXCEPTION_SPECS: [BuiltinExceptionSpec; 82] = [
     exception_spec(
         "NotImplementedError",
         BuiltinExc::NotImplementedError,
-        ExceptionBaseSpec::One("RuntimeError"),
+        ExceptionBaseSpec::One(BuiltinExc::RuntimeError),
         None,
     ),
     exception_spec(
         "PythonFinalizationError",
         BuiltinExc::PythonFinalizationError,
-        ExceptionBaseSpec::One("RuntimeError"),
+        ExceptionBaseSpec::One(BuiltinExc::RuntimeError),
         None,
     )
     .since_python_minor(13),
     exception_spec(
         "RecursionError",
         BuiltinExc::RecursionError,
-        ExceptionBaseSpec::One("RuntimeError"),
+        ExceptionBaseSpec::One(BuiltinExc::RuntimeError),
         None,
     ),
     exception_spec(
         "IndentationError",
         BuiltinExc::IndentationError,
-        ExceptionBaseSpec::One("SyntaxError"),
+        ExceptionBaseSpec::One(BuiltinExc::SyntaxError),
         None,
     ),
     exception_spec(
         "TabError",
         BuiltinExc::TabError,
-        ExceptionBaseSpec::One("IndentationError"),
+        ExceptionBaseSpec::One(BuiltinExc::IndentationError),
         None,
     ),
     exception_spec(
         "UnicodeError",
         BuiltinExc::UnicodeError,
-        ExceptionBaseSpec::One("ValueError"),
+        ExceptionBaseSpec::One(BuiltinExc::ValueError),
         None,
     ),
     exception_spec(
         "UnicodeDecodeError",
         BuiltinExc::UnicodeDecodeError,
-        ExceptionBaseSpec::One("UnicodeError"),
+        ExceptionBaseSpec::One(BuiltinExc::UnicodeError),
         Some(ExceptionLayoutRoot::UnicodeDecodeError),
     )
     .with_str_slot(ExceptionStrSlot::UnicodeDecode),
     exception_spec(
         "UnicodeEncodeError",
         BuiltinExc::UnicodeEncodeError,
-        ExceptionBaseSpec::One("UnicodeError"),
+        ExceptionBaseSpec::One(BuiltinExc::UnicodeError),
         Some(ExceptionLayoutRoot::UnicodeEncodeError),
     )
     .with_str_slot(ExceptionStrSlot::UnicodeEncode),
     exception_spec(
         "UnicodeTranslateError",
         BuiltinExc::UnicodeTranslateError,
-        ExceptionBaseSpec::One("UnicodeError"),
+        ExceptionBaseSpec::One(BuiltinExc::UnicodeError),
         Some(ExceptionLayoutRoot::UnicodeTranslateError),
     )
     .with_str_slot(ExceptionStrSlot::UnicodeTranslate),
     exception_spec(
         "DeprecationWarning",
         BuiltinExc::DeprecationWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "PendingDeprecationWarning",
         BuiltinExc::PendingDeprecationWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "RuntimeWarning",
         BuiltinExc::RuntimeWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "SyntaxWarning",
         BuiltinExc::SyntaxWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "UserWarning",
         BuiltinExc::UserWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "FutureWarning",
         BuiltinExc::FutureWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "ImportWarning",
         BuiltinExc::ImportWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "UnicodeWarning",
         BuiltinExc::UnicodeWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "BytesWarning",
         BuiltinExc::BytesWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "ResourceWarning",
         BuiltinExc::ResourceWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
     exception_spec(
         "EncodingWarning",
         BuiltinExc::EncodingWarning,
-        ExceptionBaseSpec::One("Warning"),
+        ExceptionBaseSpec::One(BuiltinExc::Warning),
         None,
     ),
-    exception_alias("EnvironmentError", "OSError"),
-    exception_alias("IOError", "OSError"),
-    exception_alias("WindowsError", "OSError").on_windows_only(),
+    exception_alias("EnvironmentError", BuiltinExc::OSError),
+    exception_alias("IOError", BuiltinExc::OSError),
+    exception_alias("WindowsError", BuiltinExc::OSError).on_windows_only(),
 ];
 
 /// Resolve a builtin alias spelling to its schema row.

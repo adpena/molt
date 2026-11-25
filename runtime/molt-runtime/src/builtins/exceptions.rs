@@ -3259,13 +3259,13 @@ fn construct_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc) -> u64 
     let builtins = builtin_classes(py);
     let base_bits = match spec.bases() {
         ExceptionBaseSpec::Root => builtins.base_exception,
-        ExceptionBaseSpec::One(base) => builtin_exception_class_bits_by_name(py, base),
+        ExceptionBaseSpec::One(base) => exception_class_bits(py, base),
         ExceptionBaseSpec::Two(left, right) => {
-            let left_bits = builtin_exception_class_bits_by_name(py, left);
+            let left_bits = exception_class_bits(py, left);
             if left_bits == 0 {
                 return 0;
             }
-            let right_bits = builtin_exception_class_bits_by_name(py, right);
+            let right_bits = exception_class_bits(py, right);
             if right_bits == 0 {
                 return 0;
             }
