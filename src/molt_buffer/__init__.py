@@ -6,14 +6,18 @@ import sys as _sys
 import _intrinsics as _molt_intrinsics
 
 
-_MOLT_RUNTIME_ACTIVE = _molt_intrinsics.runtime_active()
+# Store the Boolean decision shared by initialization and every accessor.
+_MOLT_RUNTIME_ACTIVE = not not _molt_intrinsics.runtime_active()
 
 if _MOLT_RUNTIME_ACTIVE:
-    _MOLT_BUFFER2D_NEW = _molt_intrinsics.require_intrinsic("molt_buffer2d_new")
-    _MOLT_BUFFER2D_GET = _molt_intrinsics.require_intrinsic("molt_buffer2d_get")
-    _MOLT_BUFFER2D_ROWS = _molt_intrinsics.require_intrinsic("molt_buffer2d_rows")
-    _MOLT_BUFFER2D_COLS = _molt_intrinsics.require_intrinsic("molt_buffer2d_cols")
-    _MOLT_BUFFER2D_SET = _molt_intrinsics.require_intrinsic("molt_buffer2d_set")
+    from _intrinsics import require_intrinsic as _require_intrinsic
+
+    _MOLT_BUFFER2D_NEW = _require_intrinsic("molt_buffer2d_new")
+    _MOLT_BUFFER2D_GET = _require_intrinsic("molt_buffer2d_get")
+    _MOLT_BUFFER2D_ROWS = _require_intrinsic("molt_buffer2d_rows")
+    _MOLT_BUFFER2D_COLS = _require_intrinsic("molt_buffer2d_cols")
+    _MOLT_BUFFER2D_SET = _require_intrinsic("molt_buffer2d_set")
+    del _require_intrinsic
 
 
 def _integer(value, name: str) -> int:
