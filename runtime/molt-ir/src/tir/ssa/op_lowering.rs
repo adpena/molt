@@ -199,6 +199,18 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.builtin_name {
             attrs.insert("builtin_name".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(candidate) = op.runtime_candidate
+            && super::super::call_targets::positional_runtime_candidate(
+                candidate,
+                op.args.as_ref().map_or(0, Vec::len),
+            )
+            .is_some()
+        {
+            attrs.insert(
+                super::super::call_targets::RUNTIME_CANDIDATE_ATTR.into(),
+                AttrValue::RuntimeCandidate(candidate),
+            );
+        }
         if let Some(ref v) = op.runtime_symbol {
             attrs.insert("runtime_symbol".into(), AttrValue::Str(v.clone()));
         }

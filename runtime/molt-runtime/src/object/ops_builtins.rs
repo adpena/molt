@@ -922,17 +922,32 @@ pub(crate) fn molt_call_func_dispatch_attached_body(
 ///   func_bits: the adopted callable
 ///   args_ptr: pointer to the adopted argument bits (spilled by the caller)
 ///   nargs: number of arguments
-///   code_id: call-site identity, 0 when absent
+///   runtime_candidate: an expected runtime callable key, or zero for generic CALL
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_call_func_owned_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
     args_ptr_bits: u64, // u64 to match the WASM all-i64 ABI
     nargs: u64,
-    code_id: u64,
+    runtime_candidate: u64,
 ) -> u64 {
-    let _ = code_id;
     with_owned_call_inputs(_py, func_bits, args_ptr_bits, nargs, |args| unsafe {
+        if runtime_candidate != 0
+            && !exception_pending(_py)
+            && crate::call::bind::admits_runtime_candidate(
+                _py,
+                func_bits,
+                args.len(),
+                runtime_candidate,
+            )
+        {
+            // The target borrows its vector. Its normal fixed-arity entry owns
+            // the exception baseline, recursion, invocation frame and result.
+            let result = crate::call::function::call_function_obj_bound_vec(_py, func_bits, args);
+            crate::call::bind::release_stack_arguments(_py, None, args);
+            dec_ref_bits(_py, func_bits);
+            return result;
+        }
         crate::call::bind::call_owned_arguments(_py, func_bits, args)
     })
 }
@@ -1170,6 +1185,7 @@ pub(crate) fn molt_function_direct_call_eligible_attached_body(
 #[cfg(test)]
 mod direct_call_tests {
     use super::*;
+    use crate::call::bind::admits_runtime_candidate;
     use crate::object::layout::{
         CodeExecutionKind, code_publish_execution_kind, function_set_closure_bits,
     };
@@ -1196,6 +1212,105 @@ mod direct_call_tests {
         assert_eq!(context, crate::state::molt_attached_context());
         let _py = unsafe { crate::PyToken::from_attached_context(context) };
         adopting_identity_entry(context, unsafe { *(argv as *const u64) }) as i64
+    }
+
+    #[test]
+    fn positional_runtime_candidate_checks_the_captured_object_before_calling() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let builtin =
+                    crate::builtins::methods::alloc_builtin_function(py, fn_ref!(molt_len), 1);
+                let managed = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    fn_ref!(molt_len),
+                    1,
+                );
+                let managed = MoltObject::from_ptr(managed).bits();
+                let key = fn_key!(molt_len);
+                assert!(admits_runtime_candidate(py, builtin, 1, key));
+                assert!(!admits_runtime_candidate(py, builtin, 2, key));
+                assert!(!admits_runtime_candidate(
+                    py,
+                    builtin,
+                    1,
+                    fn_key!(molt_abs_builtin)
+                ));
+                assert!(!admits_runtime_candidate(py, managed, 1, key));
+                dec_ref_bits(py, managed);
+                let buffer_get = crate::intrinsics::registry::try_resolve_intrinsic_func(
+                    py,
+                    "molt_buffer2d_get",
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+                assert!(admits_runtime_candidate(
+                    py,
+                    buffer_get,
+                    3,
+                    fn_key!(molt_buffer2d_get)
+                ));
+                dec_ref_bits(py, buffer_get);
+                let specialized = crate::intrinsics::registry::try_resolve_intrinsic_func(
+                    py,
+                    "molt_memoryview_cast",
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+                assert!(!admits_runtime_candidate(
+                    py,
+                    specialized,
+                    4,
+                    fn_key!(molt_memoryview_cast)
+                ));
+                dec_ref_bits(py, specialized);
+                let type_call = crate::builtins::methods::alloc_builtin_function(
+                    py,
+                    fn_ref!(molt_type_call),
+                    1,
+                );
+                assert!(!admits_runtime_candidate(
+                    py,
+                    type_call,
+                    1,
+                    fn_key!(molt_type_call)
+                ));
+                dec_ref_bits(py, type_call);
+                for candidate in [key, fn_key!(molt_abs_builtin)] {
+                    // Both calls invoke the captured len. Keep one extra
+                    // reference to check the argument and callable each lose
+                    // exactly the instruction's reference.
+                    let tuple = alloc_tuple(py, &[MoltObject::none().bits()]);
+                    let argument = MoltObject::from_ptr(tuple).bits();
+                    inc_ref_bits(py, argument);
+                    inc_ref_bits(py, builtin);
+                    let before = (*header_from_obj_ptr(tuple)).ref_count_snapshot();
+                    let callable = obj_from_bits(builtin).as_ptr().unwrap();
+                    let callable_before = (*header_from_obj_ptr(callable)).ref_count_snapshot();
+                    let result = molt_call_func_owned_attached_body(
+                        py,
+                        builtin,
+                        (&raw const argument) as usize as u64,
+                        1,
+                        candidate,
+                    );
+                    assert_eq!(obj_from_bits(result).as_int(), Some(1));
+                    assert!(!exception_pending(py));
+                    assert_eq!(
+                        (*header_from_obj_ptr(tuple)).ref_count_snapshot() + 1,
+                        before
+                    );
+                    assert_eq!(
+                        (*header_from_obj_ptr(callable)).ref_count_snapshot() + 1,
+                        callable_before
+                    );
+                    dec_ref_bits(py, argument);
+                }
+                dec_ref_bits(py, builtin);
+            }
+        });
     }
 
     #[test]

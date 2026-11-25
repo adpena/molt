@@ -335,7 +335,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 
     /// An ordinary source call that adopted its callable and arguments:
-    /// `molt_call_func_owned(callable, args, nargs, 0)`. The runtime's owned
+    /// `molt_call_func_owned(callable, args, nargs, candidate_key_or_zero)`. The runtime's owned
     /// lane ends a temporary bound method before its function runs, moves
     /// the arguments into an adopting frame or releases them after a
     /// borrowing callee, and releases the callable last; nothing is released
@@ -372,10 +372,16 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let entry = b.runtime_callee(RuntimeFn::CallClassCandidateOwned);
             b.call(entry, &[callable, args, nargs, slot, code])
         } else {
-            let no_site = b.constant(0);
-            let no_site = b.word_value(no_site);
+            let key = molt_ir::tir::call_targets::runtime_candidate(op).map_or(0, |candidate| {
+                candidate
+                    .callable()
+                    .expect("verified runtime candidate")
+                    .key
+            });
+            let key = b.constant(key);
+            let key = b.word_value(key);
             let entry = b.runtime_callee(RuntimeFn::CallFuncOwned);
-            b.call(entry, &[callable, args, nargs, no_site])
+            b.call(entry, &[callable, args, nargs, key])
         }
         .expect("owned call returns a word");
         b.set_name(result, "call_func_owned");
@@ -1195,7 +1201,7 @@ mod tests {
         Func,
         Bind,
         FuncOrBind,
-        Owned,
+        Owned(Option<RuntimeFn>),
     }
 
     /// Call %0 with arguments %1.. (all boxed inputs) by `route`.
@@ -1231,8 +1237,8 @@ mod tests {
                 Route::Func => cx.call_func_runtime(b, ValueId(0), &args),
                 Route::Bind => cx.call_bind_runtime(b, ValueId(0), &args),
                 Route::FuncOrBind => cx.call_func_or_bind_runtime(b, ValueId(0), &args),
-                Route::Owned => {
-                    let op = TirOp {
+                Route::Owned(candidate) => {
+                    let mut op = TirOp {
                         dialect: Dialect::Molt,
                         opcode: OpCode::Call,
                         operands: (0..inputs.len() as u32).map(ValueId).collect(),
@@ -1243,6 +1249,12 @@ mod tests {
                         runtime: None,
                         callee: None,
                     };
+                    if let Some(candidate) = candidate {
+                        op.attrs.insert(molt_ir::tir::call_targets::RUNTIME_CANDIDATE_ATTR.into(),
+                            AttrValue::RuntimeCandidate(candidate));
+                        op.origin = Some(OpKind::CallFunc);
+                        op.set_argument_custody(&vec![ParameterCustody::Transferred; inputs.len()]);
+                    }
                     cx.call_func_owned_runtime(b, &op)
                 }
             };
@@ -1318,7 +1330,7 @@ mod tests {
     #[test]
     fn an_owned_call_hands_the_callable_and_every_argument_to_the_runtime() {
         let inputs = [OBJECT, inline(1), inline(2)];
-        let run = call(Route::Owned, &inputs, false);
+        let run = call(Route::Owned(None), &inputs, false);
         let mut expected = key(&inputs);
         expected.extend(0u64.to_le_bytes());
         assert_eq!(
@@ -1329,6 +1341,23 @@ mod tests {
             ))]
         );
         assert!(run.refcounts.is_empty(), "nothing is released on success");
+    }
+
+    #[test]
+    fn positional_runtime_candidate_is_passed_with_the_original_inputs() {
+        let candidate = RuntimeFn::Buffer2dGet;
+        let inputs = [OBJECT, inline(91), inline(2), inline(7)];
+        let run = call(Route::Owned(Some(candidate)), &inputs, false);
+        let mut expected = key(&inputs);
+        expected.extend(candidate.callable().unwrap().key.to_le_bytes());
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(
+                RuntimeFn::CallFuncOwned,
+                &expected
+            ))]
+        );
+        assert!(run.refcounts.is_empty());
     }
 
     /// A second boxed object (a builder, a class).

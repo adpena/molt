@@ -402,6 +402,55 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
 /// except a borrowed one, a loaded method call adopts its loaded pair and its
 /// argument, and an unmarked call borrows every operand.
 #[test]
+fn positional_runtime_candidate_keeps_dynamic_callee_and_custody() {
+    use molt_ir::ParameterCustody::Transferred;
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let fixture = |candidate| FunctionIR {
+        name: "call_after_capture".into(),
+        params: vec!["callable".into(), "arg".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                args: Some(vec!["callable".into(), "arg".into()]),
+                out: Some("answer".into()),
+                runtime_candidate: Some(candidate),
+                argument_custody: Some(vec![Transferred; 2]),
+                ..OpIR::new(molt_ir::OpKind::CallFunc)
+            },
+            OpIR {
+                args: Some(vec!["answer".into()]),
+                ..OpIR::new(molt_ir::OpKind::Ret)
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    for (candidate, admitted) in [
+        (RuntimeFn::Buffer2dRows, true),
+        (RuntimeFn::Buffer2dGet, false),
+        (RuntimeFn::FunctionDirectCallEligible, false),
+    ] {
+        let mut func = fixture(candidate);
+        for _ in 0..2 {
+            let tir = lower_to_tir(&func);
+            let call = tir.blocks[&tir.entry_block]
+                .ops
+                .iter()
+                .find(|op| op.origin == Some(molt_ir::OpKind::CallFunc))
+                .unwrap();
+            assert_eq!(call.runtime, None);
+            assert_eq!(call.callee, None);
+            assert_eq!(call.operands.len(), 2);
+            assert_eq!(call.argument_custody(), Some(vec![Transferred; 2]));
+            assert_eq!(
+                molt_ir::tir::call_targets::runtime_candidate(call),
+                admitted.then_some(candidate)
+            );
+            func.ops = lower_to_simple_ir(&tir);
+        }
+    }
+}
+
+#[test]
 fn source_call_argument_custody_survives_tir_roundtrip() {
     use molt_ir::ParameterCustody::{Borrowed, Transferred};
     let guarded = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {

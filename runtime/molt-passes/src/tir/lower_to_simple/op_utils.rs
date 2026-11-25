@@ -81,6 +81,7 @@ pub(super) fn annotate_lowered_op(
     // a typed transport fact; every relift and back-conversion keeps it.
     opir.global_slot = tir_op.global_slot();
     opir.method_site = tir_op.method_site();
+    opir.runtime_candidate = molt_ir::tir::call_targets::runtime_candidate(tir_op);
     opir.proven_target = tir_op.proven_target();
     // The typed callee (HF-847 slice 1) travels to every SimpleIR consumer.
     opir.callee = tir_op.callee;

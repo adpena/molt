@@ -21,6 +21,9 @@ pub(super) fn mlir_attributes<'c>(
         .into_iter()
         .map(|(name, value)| {
             let value: Attribute<'c> = match value {
+                AttrValue::RuntimeCandidate(runtime) => {
+                    StringAttribute::new(ctx, runtime.symbol()).into()
+                }
                 AttrValue::Int(value) => IntegerAttribute::new(i64_type, *value).into(),
                 AttrValue::Float(value) => FloatAttribute::new(ctx, f64_type, *value).into(),
                 AttrValue::Str(value) => StringAttribute::new(ctx, value).into(),
