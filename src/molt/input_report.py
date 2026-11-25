@@ -23,7 +23,14 @@ import threading
 from enum import IntFlag, StrEnum
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeVar, assert_never
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    Protocol,
+    TypeVar,
+    assert_never,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -55,6 +62,7 @@ class WorkerFactKind(StrEnum):
     REFUSE = "refuse"
     BUILD_OUTPUT = "build_output"
     BUILD_PRODUCTS = "build_products"
+    BUILD_STAGE = "build_stage"
     BUILD_CLAIM = "build_claim"
     BUILD_RESULT = "build_result"
     READ_STARTED = "read_started"
@@ -159,6 +167,8 @@ class FactSink(Protocol):
     def build_output(self, role: BuildOutputRole, selection: object) -> None: ...
 
     def build_products(self, products: object, /) -> None: ...
+
+    def build_stage(self, stage: Path, /) -> None: ...
 
     def build_claim(self, claim: object, /) -> None: ...
 
@@ -339,14 +349,14 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
                 path = "."
             if isinstance(path, (str, bytes, os.PathLike)):
                 name = os.path.abspath(os.fsdecode(path))
-                pending = getattr(_READ_CAPTURE, "import_scan", None)
+                pending = getattr(_READ_CAPTURE, "covered_scan", None)
                 if (
                     event == "os.scandir"
                     and pending is not None
                     and pending[0] == name
                     and pending[1] is _RECORDING_SESSION
                 ):
-                    _READ_CAPTURE.import_scan = None
+                    _READ_CAPTURE.covered_scan = None
                 else:
                     _observe(("directory", name))
         else:
@@ -491,6 +501,8 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         sink.build_output(BuildOutputRole(role), selection)
     elif kind is WorkerFactKind.BUILD_PRODUCTS:
         sink.build_products(entry[1])
+    elif kind is WorkerFactKind.BUILD_STAGE:
+        sink.build_stage(Path(entry[1]))
     elif kind is WorkerFactKind.BUILD_CLAIM:
         sink.build_claim(entry[1])
     elif kind is WorkerFactKind.BUILD_RESULT:
@@ -783,12 +795,24 @@ def scan_import_directory(
     The caller has enrolled the owning topology. Other opens and listings,
     including another listing of the same path, remain unbound audit inputs.
     """
-    pending = getattr(_READ_CAPTURE, "import_scan", None)
-    _READ_CAPTURE.import_scan = (os.path.abspath(path), _RECORDING_SESSION)
+    return _scan_without_listing_input(path)
+
+
+def probe_directory_readable(path: Path) -> None:
+    """Observe whether one entry can be read, independent of what it names."""
+    with _scan_without_listing_input(path) as entries:
+        next(entries, None)
+
+
+def _scan_without_listing_input(
+    path: Path,
+) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    pending = getattr(_READ_CAPTURE, "covered_scan", None)
+    _READ_CAPTURE.covered_scan = (os.path.abspath(path), _RECORDING_SESSION)
     try:
         return os.scandir(path)
     finally:
-        _READ_CAPTURE.import_scan = pending
+        _READ_CAPTURE.covered_scan = pending
 
 
 def report_directory(path: Path | str) -> None:
@@ -849,6 +873,14 @@ def report_build_products(
         _SINK.build_products(payload)
     else:
         _worker_log([WorkerFactKind.BUILD_PRODUCTS, payload])
+
+
+def report_build_stage(stage: Path) -> None:
+    """Report the publication writer's exclusively created temporary tree."""
+    if _SINK is not None:
+        _SINK.build_stage(stage)
+    else:
+        _worker_log([WorkerFactKind.BUILD_STAGE, os.fspath(stage)])
 
 
 def report_build_claim(claim: Mapping[str, object]) -> None:

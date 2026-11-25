@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from dataclasses import dataclass, replace
 import json
-from typing import Literal
+from typing import BinaryIO, Literal
 
 from .process_environment import ProcessEnvironment
 from .custody_layout import (
@@ -432,9 +432,21 @@ def hot_state(artifact_root: Path) -> HotState | None:
     key = artifact_root.absolute()
     if key in _HOT_STATES:
         return _HOT_STATES[key]
+    from molt.input_report import active, read_consumed_input
+
+    def consume(handle: BinaryIO, size: int) -> tuple[str, str]:
+        from molt.toolchain_identity import iter_captured_file_chunks
+
+        content = b"".join(iter_captured_file_chunks(handle, size=size))
+        return content.decode("utf-8"), hashlib.sha256(content).hexdigest()
+
     record = key / HOT_STATE_RECORD
     try:
-        text = record.read_text(encoding="utf-8")
+        text = (
+            read_consumed_input(record, consume)
+            if active()
+            else record.read_text(encoding="utf-8")
+        )
     except FileNotFoundError:
         _HOT_STATES[key] = None
         return None

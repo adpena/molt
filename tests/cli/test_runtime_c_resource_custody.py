@@ -1142,6 +1142,9 @@ def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
         def build_products(self, products: object) -> None:
             raise AssertionError("resource capture must not publish build products")
 
+        def build_stage(self, stage: Path) -> None:
+            raise AssertionError("resource capture must not publish a build stage")
+
         def build_claim(self, claim: object) -> None:
             raise AssertionError("resource capture must not claim build outputs")
 

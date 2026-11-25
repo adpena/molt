@@ -398,8 +398,9 @@ class VolumeUnresponsiveError(OSError):
 
 
 def _read_one_entry(directory: Path) -> None:
-    with os.scandir(directory) as entries:
-        next(entries, None)
+    from molt.input_report import probe_directory_readable
+
+    probe_directory_readable(directory)
 
 
 def _require_responsive_volume(

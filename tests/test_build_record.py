@@ -2002,6 +2002,49 @@ def test_equal_metadata_conflicting_digests_permanently_refuse(tmp_path, digests
     assert _write(tmp_path, ledger, output)[1] is not None
 
 
+def test_unretired_publication_stage_refuses_a_build_record(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.file_publication import staged_file_path
+
+    stage = staged_file_path(tmp_path / "product", purpose="oracle", suffix=".stage")
+    stage.mkdir()
+    with build_record.recording(transient) as ledger:
+        input_report.report_build_stage(stage)
+    build_record.resolve_observed(ledger, (transient,))
+    assert ledger.refusals == [f"build stage still exists: {stage}"]
+
+
+def test_missing_storage_placement_binds_only_its_own_path(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.default_paths import HOT_STATE_RECORD, hot_state
+
+    placement = tmp_path / HOT_STATE_RECORD
+    with build_record.recording(transient) as ledger:
+        assert hot_state(tmp_path) is None
+        assert ("file", str(placement)) not in ledger.observed
+        assert ledger.probes[str(placement)] is None
+        with pytest.raises(FileNotFoundError):
+            placement.read_text(encoding="utf-8")
+        assert ("file", str(placement)) in ledger.observed
+
+
+def test_volume_health_probe_does_not_claim_a_directory_listing(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.disk_capacity import _read_one_entry
+
+    path = tmp_path / "scratch"
+    path.mkdir()
+    (path / "example").touch()
+    with build_record.recording(transient) as ledger:
+        _read_one_entry(path)
+        assert ("directory", str(path)) not in ledger.observed
+        assert len(list(path.iterdir())) == 1
+        assert ("directory", str(path)) in ledger.observed
+
+
 def test_recent_custody_digest_is_not_a_consumed_read(tmp_path):
     source = tmp_path / "source.py"
     source.write_bytes(b"x = 1\n")

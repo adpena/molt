@@ -438,11 +438,19 @@ and native link facts are admitted. The directory transaction owns durability.
 Staged and published member validation and later link reads keep their own
 obligations, including the concurrent-winner path. The published archive,
 manifest and callable projection enter the build record as consumed, signed
-bytes. The admission reports consumed evidence for published paths. POSIX
-generation checks compare the full no-follow metadata token without opening the file.
-Windows uses handle ChangeTime. Actual payload reads retain their own open-handle
-fences, and link success still requires checking the admitted runtime generation
-after the linker runs.
+bytes. POSIX generation checks compare the full no-follow metadata token
+without opening the file. Windows uses handle ChangeTime. Payload reads retain
+their open-handle fences. Link success still requires checking the admitted
+generation after the linker runs.
+
+The native retention transaction reports its exclusively created, destination-bound
+stage after it admits the public generation. The recorder projects raw observations
+beneath that exact retired stage. A stage present at record time refuses reuse.
+Explicitly reported inputs and separate reads of the retained members still bind
+the record. The recorder also projects the selected checkout-owned scratch
+directories. A volume-health probe consumes no entry names. An optional hot-state
+binding records its exact absence or the bytes read from that path, so creating
+unrelated siblings does not invalidate the build.
 
 **Racy rule.** Except for files proven exclusively consumed as above,
 `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over

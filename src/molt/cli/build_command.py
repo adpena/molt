@@ -221,6 +221,8 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         dx.backend_daemon_socket_dir(project_root, os.environ),
         dx.backend_ir_lease_dir(project_root, os.environ),
         dx.backend_ir_lease_dir(compiler_root, os.environ),
+        dx.scratch_root(project_root, os.environ),
+        dx.scratch_root(compiler_root, os.environ),
         runtime_paths._build_state_root(project_root),
         runtime_paths._cargo_target_root(project_root),
         runtime_paths._build_state_root(compiler_root),

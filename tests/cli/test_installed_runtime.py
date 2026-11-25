@@ -349,7 +349,13 @@ def test_new_retained_native_members_are_consumed_build_inputs(
         assert ledger.files[key].evidence == input_report.FileEvidence.CONSUMED
         expected = hashlib.sha256(member.path.read_bytes()).hexdigest()
         assert ledger.files[key].sha256 == expected
-    assert not any(Path(path).parent.name.endswith(".stage") for path in ledger.files)
+    (stage,) = ledger.build_stages
+    assert not stage.exists()
+    assert stage.parent == cell.retained_root.parent
+    build_record.resolve_observed(ledger, (tmp_path / "recording",))
+    assert str(stage.parent) not in ledger.directories
+    assert not any(Path(path).is_relative_to(stage) for path in ledger.probes)
+    assert not any(Path(path).is_relative_to(stage) for path in ledger.files)
 
 
 def test_warm_native_admits_only_the_consumed_member_bytes(
@@ -473,7 +479,14 @@ def test_damaged_shipped_member_fails_before_retention(bundle, tmp_path, role):
     with pytest.raises(InstalledRuntimeError, match="damaged"):
         installed_runtime.admit_installed_native_runtime(cell)
     assert not (tmp_path / "home" / "installed-runtime" / cell.id).exists()
-    assert not list(cell.retained_root.parent.glob(f".{cell.id}.*.stage"))
+    from molt.file_publication import is_owned_staged_file_path
+
+    assert not any(
+        is_owned_staged_file_path(
+            candidate, cell.retained_root, purpose="runtime-cell", suffix=".stage"
+        )
+        for candidate in cell.retained_root.parent.iterdir()
+    )
 
 
 def test_unshipped_cell_fails_with_the_shipped_matrix(bundle):

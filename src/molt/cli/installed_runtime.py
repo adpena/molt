@@ -30,7 +30,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import stat
 from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping, Sequence, cast
-import uuid
 
 from molt import input_report
 from molt.native_target import resolve_native_target_spec
@@ -87,6 +86,7 @@ from molt.compiler_distribution import (
 )
 from molt.exact_json import loads_exact
 from molt.file_publication import (
+    staged_file_path,
     is_link_like,
     resolve_owned_path,
 )
@@ -709,8 +709,7 @@ def _retain_native(
         )
         return _bind_retained_native(cell, product, custody_admission)
 
-    root.parent.mkdir(parents=True, exist_ok=True)
-    stage = root.parent / f".{cell.id}.{uuid.uuid4().hex}.stage"
+    stage = staged_file_path(root, purpose="runtime-cell", suffix=".stage")
     stage.mkdir()
     try:
         staged_lib = stage / archive_name
@@ -738,12 +737,14 @@ def _retain_native(
             source_identity=custody_identity,
         ) as custody_admission:
             staged = admit(staged_lib, custody_admission)
-        return publish_native_runtime_directory(
+        admission = publish_native_runtime_directory(
             stage,
             root,
             verify_staged=staged.verify,
             admit=lambda directory: admit(directory / archive.path.name),
         )
+        input_report.report_build_stage(stage)
+        return admission
     finally:
         if stage.exists():
             with contextlib.suppress(OSError):

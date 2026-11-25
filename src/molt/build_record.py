@@ -574,6 +574,7 @@ class InputLedger:
     # ("file" | "directory", absolute path) seen by the audit
     # hook; resolved against the excluded roots when the record is written.
     observed: set[tuple[str, str]] = field(default_factory=set)
+    build_stages: set[Path] = field(default_factory=set)
     output_selections: dict[BuildOutputRole, BuildOutputSelection] = field(
         default_factory=dict
     )
@@ -702,6 +703,15 @@ class InputLedger:
             previous = self.output_selections.setdefault(role, selected)
             if previous != selected:
                 self.refusals.append(f"build selected conflicting {role} outputs")
+
+    def build_stage(self, stage: Path, /) -> None:
+        if not stage.is_absolute() or not file_publication.is_staged_file_path(stage):
+            self.refuse(
+                f"build stage does not have a reserved publication path: {stage}"
+            )
+            return
+        with self._lock:
+            self.build_stages.add(stage)
 
     def build_products(self, value: object) -> None:
         try:
@@ -1019,12 +1029,22 @@ def resolve_observed(
     observed = sorted(ledger.observed)
     resolved_paths = {name: os.path.realpath(name) for _kind, name in observed}
     custody = _publication_custody(set(resolved_paths.values()), outputs)
-    roots = tuple(
-        {
-            resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
-            for root in excluded_roots
-        }
-    )
+    roots = {
+        resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
+        for root in excluded_roots
+    }
+    for stage in ledger.build_stages:
+        try:
+            stage.lstat()
+        except FileNotFoundError:
+            # The publisher supplied this physical name. Resolving it again
+            # could make a replacement symlink hide independent input reads.
+            roots.add(resolved_host_path_key(stage) + os.sep)
+        except OSError as error:
+            ledger.refuse(f"unobservable build stage {stage}: {error}")
+        else:
+            ledger.refuse(f"build stage still exists: {stage}")
+    excluded_prefixes = tuple(roots)
     # Only this resolution's completed chains prove that a failed lookup has
     # a generation boundary. Explicit probes may not have recorded one.
     completed_lookups: set[str] = set()
@@ -1070,7 +1090,7 @@ def resolve_observed(
         # processes rewrite those control files.
         if kind != "directory" and is_checkout_state_control_file(Path(resolved)):
             continue
-        if (real + os.sep).startswith(roots):
+        if (real + os.sep).startswith(excluded_prefixes):
             continue
         if real.startswith(("/dev/", "/proc/", "/sys/")):
             continue
