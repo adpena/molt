@@ -116,7 +116,7 @@ class StableRegularFileObservation:
                 self.identity, label=label, hash_content=True
             )
         else:
-            verify_stable_regular_file_metadata(self.identity, label=label)
+            verify_stable_regular_file_identity(self.identity, label=label)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1219,11 +1219,16 @@ def verify_stable_regular_file_identity(
     expected_path_stat: os.stat_result | None = None,
     hash_content: bool = False,
 ) -> None:
-    """Compare current handle metadata with a previously observed generation.
+    """Compare the current file generation with a previous observation.
 
-    Detached observations do not retain read custody. Metadata polling does not
-    revalidate bytes; content-cache admission must explicitly request hashing.
+    POSIX metadata verification uses one no-follow lookup. Windows takes a
+    handle for ChangeTime. Neither verifies content unless asked to hash it.
     """
+    if not hash_content and os.name != "nt":
+        _verify_posix_regular_file_metadata(
+            identity, label=label, expected_path_stat=expected_path_stat
+        )
+        return
     if hash_content and not isinstance(identity, StableRegularFileIdentity):
         raise ValueError(f"{label} lacks a captured content digest: {identity.path}")
     _path, file_stat, change_time_ns, digest = _stable_regular_file_snapshot(
@@ -1244,34 +1249,30 @@ def verify_stable_regular_file_identity(
         )
 
 
-def verify_stable_regular_file_metadata(
+def _verify_posix_regular_file_metadata(
     identity: StableRegularFileVersion,
     *,
     label: str,
     expected_path_stat: os.stat_result | None = None,
 ) -> None:
-    """Compare one POSIX path stat with a captured generation.
-
-    On POSIX the path's stat carries the same (device, inode, mode, size,
-    mtime, ctime) a fresh handle would report, so no open is needed. Windows
-    needs the handle's ChangeTime: use verify_stable_regular_file_identity.
-    """
-    if os.name == "nt":
-        raise ValueError("Windows file metadata needs a handle ChangeTime query")
-    if expected_path_stat is not None and (
-        _stat_identity(expected_path_stat) != identity._stat_identity
-        or expected_path_stat.st_ctime_ns != identity._content_change_time_ns
-    ):
-        raise ValueError(f"{label} changed since identity capture: {identity.path}")
+    """Use the POSIX path stat's device, inode, mode, size, mtime and ctime."""
     try:
         metadata = identity.path.lstat()
     except OSError as exc:
-        raise ValueError(f"{label} is unavailable: {identity.path}") from exc
+        raise StableRegularFileError(
+            f"{label} is unavailable: {identity.path}"
+        ) from exc
     if (
         _stat_identity(metadata) != identity._stat_identity
         or metadata.st_ctime_ns != identity._content_change_time_ns
+        or (
+            expected_path_stat is not None
+            and _stat_identity(expected_path_stat) != identity._stat_identity
+        )
     ):
-        raise ValueError(f"{label} changed since identity capture: {identity.path}")
+        raise StableRegularFileChangedError(
+            f"{label} changed since identity capture: {identity.path}"
+        )
 
 
 def read_stable_regular_file(

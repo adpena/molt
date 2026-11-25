@@ -20,7 +20,6 @@ from molt.toolchain_identity import (
     resolve_executable,
     stable_regular_file_version,
     verify_stable_regular_file_identity,
-    verify_stable_regular_file_metadata,
 )
 
 
@@ -154,14 +153,9 @@ class NodeExecutionPlan:
         handle interval cannot prove which bytes the OS eventually executed.
         """
         try:
-            if os.name == "nt":
-                verify_stable_regular_file_identity(
-                    self.file_version, label="Node execution host"
-                )
-            else:
-                verify_stable_regular_file_metadata(
-                    self.file_version, label="Node execution host"
-                )
+            verify_stable_regular_file_identity(
+                self.file_version, label="Node execution host"
+            )
         except (OSError, ValueError) as exc:
             raise NodeRuntimeError(str(exc)) from exc
 

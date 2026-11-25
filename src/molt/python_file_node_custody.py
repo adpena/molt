@@ -21,7 +21,6 @@ from molt.toolchain_identity import (
     read_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
-    verify_stable_regular_file_metadata,
 )
 from molt.python_identity_common import (
     PythonEnvironmentIdentityError,
@@ -241,14 +240,9 @@ class PythonFileCaptureContext:
         label: str,
         expected_path_stat: os.stat_result | None = None,
     ) -> None:
-        if os.name == "nt":
-            verify_stable_regular_file_identity(
-                identity, label=label, expected_path_stat=expected_path_stat
-            )
-        else:
-            verify_stable_regular_file_metadata(
-                identity, label=label, expected_path_stat=expected_path_stat
-            )
+        verify_stable_regular_file_identity(
+            identity, label=label, expected_path_stat=expected_path_stat
+        )
 
     def bind_many(
         self, rows: Sequence[tuple[Path, os.stat_result]], *, label: str

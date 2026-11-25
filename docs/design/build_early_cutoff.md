@@ -436,7 +436,13 @@ retention writes the archive to its private stage from the same payload
 blocks. The candidate stays private until the signed source, staged closure
 and native link facts are admitted. The directory transaction owns durability.
 Staged and published member validation and later link reads keep their own
-obligations, including the concurrent-winner path.
+obligations, including the concurrent-winner path. The published archive,
+manifest and callable projection enter the build record as consumed, signed
+bytes. The admission reports consumed evidence for published paths. POSIX
+generation checks compare the full no-follow metadata token without opening the file.
+Windows uses handle ChangeTime. Actual payload reads retain their own open-handle
+fences, and link success still requires checking the admitted runtime generation
+after the linker runs.
 
 **Racy rule.** Except for files proven exclusively consumed as above,
 `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over

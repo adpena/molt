@@ -29,7 +29,6 @@ from molt.toolchain_identity import (
     executable_content_path,
     stable_native_executable_probe,
     verify_stable_regular_file_identity,
-    verify_stable_regular_file_metadata,
 )
 
 
@@ -418,10 +417,7 @@ class CargoResourceCustody:
         for item in self.files:
             if item.identity.path in verified:
                 continue
-            if os.name == "nt":
-                verify_stable_regular_file_identity(item.identity, label=item.label)
-            else:
-                verify_stable_regular_file_metadata(item.identity, label=item.label)
+            verify_stable_regular_file_identity(item.identity, label=item.label)
             verified.add(item.identity.path)
 
     def _selection_unchanged(self) -> bool:

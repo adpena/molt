@@ -332,6 +332,26 @@ def test_installed_native_cell_is_admitted_and_retained_outside_bundle(
     cell.installed.verify_runtime()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX metadata checks do not open files")
+def test_new_retained_native_members_are_consumed_build_inputs(
+    bundle: Path, tmp_path: Path
+) -> None:
+    from molt import build_record, input_report
+
+    cell = _cell(bundle)
+    assert not cell.retained_root.exists()
+    with build_record.recording(tmp_path / "recording") as ledger:
+        admission = installed_runtime.admit_installed_native_runtime(cell)
+        admission.verify()
+
+    for _role, member in admission.members():
+        key = str(member.path)
+        assert ledger.files[key].evidence == input_report.FileEvidence.CONSUMED
+        expected = hashlib.sha256(member.path.read_bytes()).hexdigest()
+        assert ledger.files[key].sha256 == expected
+    assert not any(Path(path).parent.name.endswith(".stage") for path in ledger.files)
+
+
 def test_warm_native_admits_only_the_consumed_member_bytes(
     custody_bundle: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

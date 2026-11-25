@@ -74,8 +74,8 @@ schema = "molt-perf-methodology-v1"
 # lock (2026-11-21). Earlier reports retain their recorded class.
 # Benchmark references use admitted source packages and locked wheels.
 # Build and execution observations identify the physical backend and runtime.
-version = 68
-content_sha256 = "118a5f70f394ffc02def1f2fef8a0a1f5b5fbf4bbd0a08ea2acd16708c71f03e"
+version = 69
+content_sha256 = "ad2ac91b895590cf186194939543b45c79fb7310812a59bdba9e0722124fbde4"
 
 [[methodology]]
 path = "tools/safe_run.py"

@@ -231,8 +231,11 @@ def test_expected_path_stat_is_checked_without_repeating_the_opening_lookup(
         identity.verify_stable_regular_file_identity(
             captured, label="payload", expected_path_stat=expected
         )
-    # Both fresh opened-path and closing-path checks remain mandatory.
-    assert lookups == [path, path]
+    if operation == "verify" and os.name != "nt":
+        assert lookups == [path]
+    else:
+        # A held descriptor still has opening and closing path checks.
+        assert lookups == [path, path]
 
 
 @pytest.mark.parametrize("operation", ["capture", "verify"])
@@ -1448,13 +1451,13 @@ def test_metadata_fence_uses_no_open_and_preserves_inventory_snapshot(
         raise AssertionError("metadata fence reopened content")
 
     monkeypatch.setattr(identity, "open_stable_regular_file", refuse)
-    identity.verify_stable_regular_file_metadata(
+    identity.verify_stable_regular_file_identity(
         captured, label="input", expected_path_stat=original
     )
     path.write_bytes(b"actual content")
     os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
     with pytest.raises(ValueError, match="changed since identity capture"):
-        identity.verify_stable_regular_file_metadata(
+        identity.verify_stable_regular_file_identity(
             captured, label="input", expected_path_stat=original
         )
 

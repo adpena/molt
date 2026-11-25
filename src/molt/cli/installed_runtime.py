@@ -29,7 +29,7 @@ import contextlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 import stat
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping, Sequence, cast
 import uuid
 
 from molt import input_report
@@ -110,6 +110,7 @@ if TYPE_CHECKING:
 WASM_RUNTIME_TARGET = "wasm32-wasip1"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
 _RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
+_RuntimeManifestRole = Literal["native_link_manifest", "wasm_generation_manifest"]
 _ADMISSION_ERRORS = (
     OSError,
     ValueError,
@@ -216,17 +217,26 @@ class InstalledRuntimeCell:
                 f"reinstall Molt: {exc}"
             ) from exc
 
-    def member_json(self, role: str) -> tuple[StableRegularFileIdentity, object]:
-        try:
-            path = resolve_owned_path(
-                self.members_root / self.file_record(role)["name"]
-            )
+    def _read_signed_metadata(
+        self, role: _RuntimeManifestRole | Literal["runtime_callable_symbols"]
+    ) -> tuple[StableRegularFileIdentity, bytes]:
+        path = resolve_owned_path(self.members_root / self.file_record(role)["name"])
+        with input_report.capture_read(path) as receipt:
             identity, content = capture_stable_regular_file(
                 path,
                 max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
                 label=f"installed runtime {role}",
             )
             self.require_signed_member(role, identity)
+            receipt.opened()
+            receipt.complete(identity.stat_token(), identity.sha256)
+        return identity, content
+
+    def member_json(
+        self, role: _RuntimeManifestRole
+    ) -> tuple[StableRegularFileIdentity, object]:
+        try:
+            identity, content = self._read_signed_metadata(role)
             return identity, loads_exact(content.decode("utf-8"))
         except (
             OSError,
@@ -242,15 +252,7 @@ class InstalledRuntimeCell:
     def member_projection(self) -> tuple[StableRegularFileIdentity, bytes]:
         role = NATIVE_CALLABLE_PROJECTION_ROLE
         try:
-            path = resolve_owned_path(
-                self.members_root / self.file_record(role)["name"]
-            )
-            identity, content = capture_stable_regular_file(
-                path,
-                label="installed callable projection",
-                max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
-            )
-            return self.require_signed_member(role, identity), content
+            return self._read_signed_metadata(role)
         except (OSError, ValueError, _runtime_contract.InstalledRuntimeError) as exc:
             raise _runtime_contract.InstalledRuntimeError(
                 f"installed runtime cell {self.id} {role} is missing or damaged; "
@@ -289,12 +291,25 @@ class InstalledRuntimeCell:
 
     def verify_retained_file(self, role: str, path: Path) -> StableRegularFileIdentity:
         """Hash one retained member once; the identity fences every later read."""
-        return self.require_signed_member(
-            role,
-            stable_regular_file_identity(
-                resolve_owned_path(path), label=f"retained installed runtime {role}"
-            ),
+        path = resolve_owned_path(path)
+        # The private staging name disappears on publication. Only the final
+        # member is a build input that can be replayed.
+        capture = (
+            input_report.capture_read(path)
+            if path.parent == self.retained_root
+            else contextlib.nullcontext()
         )
+        with capture as receipt:
+            identity = self.require_signed_member(
+                role,
+                stable_regular_file_identity(
+                    path, label=f"retained installed runtime {role}"
+                ),
+            )
+            if receipt is not None:
+                receipt.opened()
+                receipt.complete(identity.stat_token(), identity.sha256)
+        return identity
 
 
 def _describe_cells(installed: InstalledCompiler, kind: str) -> str:
