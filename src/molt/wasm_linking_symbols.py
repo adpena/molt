@@ -508,22 +508,40 @@ def _resolve_undefined_indexed_symbol_names(
     return WasmLinkingSymbolTable(tuple(symbols))
 
 
+def _linking_symbol_queries(
+    expected_symbol_kinds: Mapping[str, str],
+) -> dict[tuple[WasmLinkingSymbolKind, int], dict[bytes, str]]:
+    queries: dict[tuple[WasmLinkingSymbolKind, int], dict[bytes, str]] = {}
+    for name, kind in _validated_expected_symbol_kinds(expected_symbol_kinds):
+        encoded = name.encode("utf-8")
+        queries.setdefault((kind, len(encoded)), {})[encoded] = name
+    return queries
+
+
+def parse_wasm_linking_defined_names(
+    data: WasmBuffer, expected_symbol_kinds: Mapping[str, str]
+) -> frozenset[str]:
+    """Resolve typed symbol obligations from the caller's admitted bytes."""
+    if not expected_symbol_kinds:
+        return frozenset()
+    names = _parse_wasm_linking_symbols(
+        data, _linking_symbol_queries(expected_symbol_kinds)
+    )
+    assert isinstance(names, frozenset)
+    return names
+
+
 def _read_mapped(
     path: Path,
     *,
     expected_symbol_kinds: Mapping[str, str] | None,
     observed: StableRegularFileIdentity | None = None,
 ) -> WasmLinkingSymbolTable | frozenset[str]:
-    expected_by_kind_and_length: (
-        dict[tuple[WasmLinkingSymbolKind, int], dict[bytes, str]] | None
-    ) = None
-    if expected_symbol_kinds is not None:
-        expected_by_kind_and_length = {}
-        for name, kind in _validated_expected_symbol_kinds(expected_symbol_kinds):
-            encoded = name.encode("utf-8")
-            expected_by_kind_and_length.setdefault((kind, len(encoded)), {})[
-                encoded
-            ] = name
+    expected_by_kind_and_length = (
+        None
+        if expected_symbol_kinds is None
+        else _linking_symbol_queries(expected_symbol_kinds)
+    )
     with open_stable_regular_file(
         path, label="WASM linking symbols", observed=observed
     ) as opened:

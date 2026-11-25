@@ -447,6 +447,15 @@ without retaining the archive. The build record uses its existing consumed
 read receipt and validates the checksum on reuse. A separate raw read still
 retains its independent obligation.
 
+Wasm runtime admission derives layout facts and any new typed linking obligations
+from the same content-verified member bytes. The structural validator runs
+while that direct-file observation is held, and the closing fence precedes
+cache publication. Repeated admission still hashes each required member in
+full. A cache hit streams that verification without allocating a full member
+buffer. The output mode selects the members, so linked admission consumes only
+the relocatable member while a deployment admission also consumes the shared
+member.
+
 Installed native runtime admission derives the whole-file release digest and
 the canonical ordered archive-member digest from one bounded payload pass
 under the same stable handle. Framing, indexes and padding enter only the

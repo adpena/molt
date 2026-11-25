@@ -330,19 +330,15 @@ def runtime_wasm_generation_admission(
     shared_missing: tuple[str, ...] = ()
     reloc_missing: tuple[str, ...] = ()
     try:
-        generation.verify_members(use=use)
-        pair = generation if isinstance(generation, RuntimeWasmGeneration) else None
-        shared = (
-            pair.facts()
-            if use is RuntimeWasmCodegenUse.DEPLOYED_RUNTIME and pair is not None
-            else None
+        shared_observation, reloc = generation.observe_members(
+            use, wasm_runtime_required_export_symbol_kinds(required_exports)
         )
-        reloc = generation.facts(relocatable=True)
+        shared = None if shared_observation is None else shared_observation.facts
     except (OSError, UnicodeError, ValueError, IndexError) as exc:
         return RuntimeWasmAdmissionReport(
             (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
         )
-    for member, facts in (("shared", shared), ("reloc", reloc)):
+    for member, facts in (("shared", shared), ("reloc", reloc.facts)):
         if facts is not None and facts.code_functions == 0:
             issues.append(
                 RuntimeWasmAdmissionIssue(
@@ -357,17 +353,21 @@ def runtime_wasm_generation_admission(
                 "artifact is missing the shared memory/table import ABI",
             )
         )
-    try:
-        generation.validate_structure(use=use)
-    except (OSError, ValueError) as exc:
-        issues.append(RuntimeWasmAdmissionIssue("generation", "structure", str(exc)))
+    for observation in (shared_observation, reloc):
+        if observation is not None and observation.structural_error is not None:
+            issues.append(
+                RuntimeWasmAdmissionIssue(
+                    "generation", "structure", observation.structural_error
+                )
+            )
+            break
     if shared is not None:
-        assert pair is not None
+        assert isinstance(generation, RuntimeWasmGeneration)
         shared_missing = tuple(
             sorted(
                 wasm_split_runtime_missing_required_exports(
                     _runtime_wasm_typed_export_names(
-                        pair.shared,
+                        generation.shared,
                         wasm_split_runtime_required_export_symbol_kinds(
                             required_exports
                         ),
@@ -377,15 +377,18 @@ def runtime_wasm_generation_admission(
                 )
             )
         )
-    try:
-        available = generation.linking_names(
-            wasm_runtime_required_export_symbol_kinds(required_exports)
+    if reloc.linking_error is not None:
+        issues.append(
+            RuntimeWasmAdmissionIssue("reloc", "linking", reloc.linking_error)
         )
+    else:
         reloc_missing = tuple(
-            sorted(wasm_runtime_missing_required_exports(available, required_exports))
+            sorted(
+                wasm_runtime_missing_required_exports(
+                    reloc.defined_names, required_exports
+                )
+            )
         )
-    except (OSError, UnicodeError, ValueError) as exc:
-        issues.append(RuntimeWasmAdmissionIssue("reloc", "linking", str(exc)))
     try:
         generation.verify_members(use=use)
     except (OSError, ValueError) as exc:

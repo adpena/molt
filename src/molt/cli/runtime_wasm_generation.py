@@ -17,7 +17,7 @@ import re
 import shutil
 import tempfile
 from contextlib import AbstractContextManager, ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from enum import Enum
 from collections.abc import Mapping
@@ -113,6 +113,21 @@ class RuntimeWasmCodegenUse(Enum):
         return cls.LINKED if linked and not split_runtime else cls.DEPLOYED_RUNTIME
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeWasmMemberObservation:
+    facts: WasmRuntimeFacts
+    defined_names: frozenset[str]
+    structural_error: str | None
+    linking_error: str | None
+
+
+@dataclass(slots=True)
+class _RuntimeWasmMemberFacts:
+    facts: WasmRuntimeFacts
+    defined: dict[tuple[str, str], bool] = field(default_factory=dict)
+    structurally_valid: bool = False
+
+
 @dataclass(frozen=True, kw_only=True)
 class RuntimeWasmRelocGeneration:
     receipt_role: ClassVar[RuntimeWasmReceiptRole]
@@ -156,91 +171,122 @@ class RuntimeWasmRelocGeneration:
             )
 
     @cached_property
-    def _reloc_facts(self) -> WasmRuntimeFacts:
-        from molt.wasm_artifact import read_wasm_runtime_facts
-
-        return read_wasm_runtime_facts(self.reloc_member_identity, relocatable=True)
-
-    def facts(self, *, relocatable: bool = False) -> WasmRuntimeFacts:
-        if not relocatable:
-            raise ValueError("shared WASM facts require a paired runtime")
-        use = RuntimeWasmCodegenUse.LINKED
-        self.verify_members(use=use)
-        if "_reloc_facts" in self.__dict__:
-            verify_stable_regular_file_identity(
-                self.reloc_member_identity,
-                label="runtime WASM cached facts",
-                hash_content=True,
-            )
-        facts = self._reloc_facts
-        self.verify_members(use=use)
-        return facts
-
-    @cached_property
-    def _linking_obligations(self) -> dict[tuple[str, str], bool]:
+    def _member_facts(self) -> dict[StableRegularFileIdentity, _RuntimeWasmMemberFacts]:
         return {}
 
-    def linking_names(self, expected_kinds: Mapping[str, str]) -> frozenset[str]:
-        from molt.wasm_linking_symbols import wasm_linking_defined_names
+    def observe_members(
+        self, use: RuntimeWasmCodegenUse, required_linking_kinds: Mapping[str, str]
+    ) -> tuple[_RuntimeWasmMemberObservation | None, _RuntimeWasmMemberObservation]:
+        shared = reloc = None
+        for path, identity in self.member_observations(use):
+            if path.absolute() != identity.path:
+                raise ValueError("runtime WASM member observation changed path")
+            if path == self.reloc:
+                reloc = self._observe_member(
+                    identity,
+                    relocatable=True,
+                    required_linking_kinds=required_linking_kinds,
+                )
+            else:
+                shared = self._observe_member(
+                    identity, relocatable=False, required_linking_kinds={}
+                )
+        if reloc is None:
+            raise ValueError("runtime WASM admission lacks its relocatable member")
+        return shared, reloc
 
-        self.verify_members(use=RuntimeWasmCodegenUse.LINKED)
-        previous = self._linking_obligations
+    def observe_linking_names(
+        self, required_linking_kinds: Mapping[str, str]
+    ) -> frozenset[str]:
+        _, reloc = self.observe_members(
+            RuntimeWasmCodegenUse.LINKED, required_linking_kinds
+        )
+        if reloc.structural_error is not None:
+            raise ValueError(reloc.structural_error)
+        if reloc.linking_error is not None:
+            raise ValueError(reloc.linking_error)
+        return reloc.defined_names
+
+    def _observe_member(
+        self,
+        identity: StableRegularFileIdentity,
+        *,
+        relocatable: bool,
+        required_linking_kinds: Mapping[str, str],
+    ) -> _RuntimeWasmMemberObservation:
+        from molt.cli.runtime_wasm_validation import _validate_wasm_structural
+        from molt.wasm_artifact import parse_wasm_runtime_facts
+        from molt.wasm_linking_symbols import parse_wasm_linking_defined_names
+
+        cached = self._member_facts.get(identity)
+        prior = cached.defined if cached is not None else {}
         missing = {
             name: kind
-            for name, kind in expected_kinds.items()
-            if (name, kind) not in previous
+            for name, kind in required_linking_kinds.items()
+            if (name, kind) not in prior
         }
-        if missing:
-            available = wasm_linking_defined_names(
-                self.reloc, missing, observed=self.reloc_member_identity
-            )
-            previous.update(
-                ((name, kind), name in available) for name, kind in missing.items()
-            )
-        elif expected_kinds:
-            verify_stable_regular_file_identity(
-                self.reloc_member_identity,
-                label="runtime WASM cached linking symbols",
-                hash_content=True,
-            )
-        self.verify_members(use=RuntimeWasmCodegenUse.LINKED)
-        return frozenset(
-            name for name, kind in expected_kinds.items() if previous[(name, kind)]
-        )
-
-    @cached_property
-    def _structurally_validated_members(self) -> set[StableRegularFileIdentity]:
-        return set()
-
-    def validate_structure(
-        self, *, use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
-    ) -> None:
-        from molt.cli.runtime_wasm_validation import _validate_wasm_structural
-
-        self.verify_members(use=use)
-        validated = self._structurally_validated_members
-        for _, member in self.member_observations(use):
-            if member in validated:
-                verify_stable_regular_file_identity(
-                    member, label="runtime WASM cached structure", hash_content=True
-                )
-                continue
-            with open_stable_regular_file(
-                member.path, label="runtime WASM structural input", observed=member
-            ) as opened:
-                current = stable_regular_file_handle_identity(
-                    opened, label="runtime WASM structural input"
-                )
+        new_answers: dict[tuple[str, str], bool] = {}
+        structural_error: str | None = None
+        linking_error: str | None = None
+        label = "runtime WASM admission"
+        # All derived facts share one admitted byte observation. A cached fact
+        # still requires the full digest in a fresh stable-file context.
+        with open_stable_regular_file(
+            identity.path, label=label, observed=identity
+        ) as opened:
+            if cached is None or missing:
+                data = opened.stream.read(identity.size + 1)
                 verify_stable_regular_file_content(
-                    member,
+                    identity,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    size=len(data),
+                    label=label,
+                )
+                facts = (
+                    parse_wasm_runtime_facts(data, relocatable=relocatable)
+                    if cached is None
+                    else cached.facts
+                )
+                if missing:
+                    try:
+                        found = parse_wasm_linking_defined_names(data, missing)
+                        new_answers = {
+                            (name, kind): name in found
+                            for name, kind in missing.items()
+                        }
+                    except (UnicodeError, ValueError) as exc:
+                        linking_error = str(exc)
+                del data
+            else:
+                current = stable_regular_file_handle_identity(opened, label=label)
+                verify_stable_regular_file_content(
+                    identity,
                     sha256=current.sha256,
                     size=current.size,
-                    label="runtime WASM structural input",
+                    label=label,
                 )
-                error = _validate_wasm_structural(member.path)
-            if error is not None:
-                raise ValueError(error)
-            validated.add(member)
+                facts = cached.facts
+            if cached is None or not cached.structurally_valid:
+                structural_error = _validate_wasm_structural(identity.path)
+
+        # A failed closing fence leaves the retained fact cache untouched.
+        if cached is None:
+            cached = self._member_facts.setdefault(
+                identity, _RuntimeWasmMemberFacts(facts)
+            )
+        cached.defined.update(new_answers)
+        if structural_error is None:
+            cached.structurally_valid = True
+        return _RuntimeWasmMemberObservation(
+            facts,
+            frozenset(
+                name
+                for name, kind in required_linking_kinds.items()
+                if cached.defined.get((name, kind), False)
+            ),
+            structural_error,
+            linking_error,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -257,26 +303,6 @@ class RuntimeWasmGeneration(RuntimeWasmRelocGeneration):
         if use is RuntimeWasmCodegenUse.LINKED:
             return reloc
         return ((self.shared, self.shared_member_identity), *reloc)
-
-    @cached_property
-    def _shared_facts(self) -> WasmRuntimeFacts:
-        from molt.wasm_artifact import read_wasm_runtime_facts
-
-        return read_wasm_runtime_facts(self.shared_member_identity, relocatable=False)
-
-    def facts(self, *, relocatable: bool = False) -> WasmRuntimeFacts:
-        if relocatable:
-            return super().facts(relocatable=True)
-        self.verify_members()
-        if "_shared_facts" in self.__dict__:
-            verify_stable_regular_file_identity(
-                self.shared_member_identity,
-                label="runtime WASM cached facts",
-                hash_content=True,
-            )
-        facts = self._shared_facts
-        self.verify_members()
-        return facts
 
     def shared_runtime_import_names(self) -> tuple[str, ...]:
         """Generated runtime ABI the shared member's own build must export."""

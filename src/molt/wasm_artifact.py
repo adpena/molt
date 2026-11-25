@@ -1958,13 +1958,8 @@ class WasmRuntimeFacts:
     code_functions: int
 
 
-def read_wasm_runtime_facts(
-    identity: StableRegularFileIdentity, *, relocatable: bool
-) -> WasmRuntimeFacts:
-    """Parse one admitted physical generation, through its bound stable reader."""
-    from molt.toolchain_identity import read_stable_regular_file
-
-    data = read_stable_regular_file(identity, label="runtime WASM semantic observation")
+def parse_wasm_runtime_facts(data: bytes, *, relocatable: bool) -> WasmRuntimeFacts:
+    """Derive compact runtime layout facts from the caller's admitted bytes."""
     spans = parse_wasm_section_spans(data)
     # Never copy code/debug/linking sections into a semantic snapshot. A reloc
     # layout needs no type/export/global parser; those sections may use valid

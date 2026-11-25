@@ -419,7 +419,7 @@ def _prepare_backend_setup(
                 runtime_state.wasm_runtime_callable_binding = (
                     wasm_runtime_callable_binding(
                         reloc,
-                        binding.generation.linking_names,
+                        binding.generation.observe_linking_names,
                         projection_path=reloc.path,
                     )
                 )
