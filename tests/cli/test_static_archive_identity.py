@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
 from pathlib import Path
+import hashlib
 import os
 
 import pytest
@@ -11,6 +12,7 @@ from molt.cli.static_archive_identity import (
     StaticArchiveMember,
     StaticArchiveIdentityError,
     artifact_content_identity,
+    capture_archive_artifact_identity,
     static_archive_identity,
     validate_artifact_content_identity,
     visit_static_archive_members,
@@ -21,6 +23,7 @@ from molt.cli.native_link_manifest import (
     write_native_link_dependency_manifest,
 )
 from molt.process_environment import ProcessEnvironment
+from molt.toolchain_identity import open_stable_regular_file
 from molt.cli.link_fingerprints import _link_fingerprint
 from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
@@ -199,8 +202,16 @@ def test_semantic_identity_ignores_derived_tables_and_root_rustc_id(
         symbol_table=b"different-derived-symbol-index",
     )
 
+    expected_semantics = static_archive_identity(first)
+    for path in (first, second):
+        raw = path.read_bytes()
+        with open_stable_regular_file(path, label="test archive") as opened:
+            identity, semantic = capture_archive_artifact_identity(opened)
+        assert identity.sha256 == hashlib.sha256(raw).hexdigest()
+        assert identity.size == len(raw)
+        assert semantic == expected_semantics
     assert first.read_bytes() != second.read_bytes()
-    assert static_archive_identity(first) == static_archive_identity(second)
+    assert static_archive_identity(second) == expected_semantics
 
 
 @pytest.mark.parametrize("change", ("content", "member", "order"))

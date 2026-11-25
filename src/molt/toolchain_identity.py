@@ -589,6 +589,18 @@ class StableRegularFileHandle:
     stat: os.stat_result
     content_change_time_ns: int
 
+    def consumed_identity(
+        self, sha256: str, *, label: str
+    ) -> StableRegularFileIdentity:
+        """Bind a digest of the full stream to the held file generation."""
+        if self.stream.tell() != self.stat.st_size:
+            raise StableRegularFileChangedError(
+                f"{label} size changed during capture: {self.path}"
+            )
+        return _regular_file_identity(
+            self.path, self.stat, self.content_change_time_ns, sha256
+        )
+
 
 @contextmanager
 def open_stable_regular_file(
@@ -790,14 +802,9 @@ def stable_regular_file_handle_identity(
         raise ValueError(f"{label} exceeds size limit: {opened.path}")
     opened.stream.seek(0)
     digest = _sha256_stream(opened.stream, max_bytes=opened.stat.st_size)
-    if opened.stream.tell() != opened.stat.st_size:
-        raise StableRegularFileChangedError(
-            f"{label} size changed during capture: {opened.path}"
-        )
+    identity = opened.consumed_identity(digest, label=label)
     opened.stream.seek(0)
-    return _regular_file_identity(
-        opened.path, opened.stat, opened.content_change_time_ns, digest
-    )
+    return identity
 
 
 def verify_stable_regular_file_content(
