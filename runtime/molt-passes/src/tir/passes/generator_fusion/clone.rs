@@ -634,7 +634,7 @@ pub(super) fn clone_and_rewrite_poll(
                 }
             }
         });
-        if matches!(new_term, Terminator::Return { .. }) {
+        if new_term.exits_activation() {
             return_blocks.push(new_bid);
             // A normal return reports the generator's completion (`state_set`
             // before it); every other return leaves with an exception pending,

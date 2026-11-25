@@ -70,6 +70,7 @@ class SimpleIROp(TypedDict):
     """Serialized operation: closed identity, existing operation-specific payload."""
 
     kind: WireOpKind
+    unwind: NotRequired[bool]
     args: NotRequired[Any]
     argument_custody: NotRequired[Any]
     async_work_poll: NotRequired[Any]
@@ -453,6 +454,7 @@ class MoltOp:
     source_end_line: int | None = None
     exception_edge: ExceptionEdgeKind | None = None
     exception_source: ExceptionEdgeKind | None = None
+    unwind: bool = False
     class_frame: ClassId | None = None
 
 

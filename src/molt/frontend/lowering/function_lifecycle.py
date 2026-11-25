@@ -650,8 +650,11 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
     def _emit_void_return_terminator(self) -> None:
         self._emit_return_terminator("ret_void", [])
 
+    def _emit_unwind_terminator(self) -> None:
+        self._emit_return_terminator("ret_void", [], unwind=True)
+
     def _emit_return_terminator(
-        self, kind: FrontendOpKind, args: list[MoltValue]
+        self, kind: FrontendOpKind, args: list[MoltValue], *, unwind: bool = False
     ) -> None:
         function = self.funcs_map[self.current_func_name]
         if kind == FrontendKinds.ret and function["return_abi"] != "value":
@@ -682,7 +685,14 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             or self.current_ops[-1].kind != FrontendKinds.TRACE_EXIT
         ):
             self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind=kind, args=args, result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind=kind,
+                args=args,
+                result=MoltValue("none"),
+                unwind=unwind,
+            )
+        )
 
     def _emit_restore_exception_stack_depth(
         self, *, exit_baseline: bool = True
@@ -769,7 +779,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self._emit_raise_if_pending()
             if owns_entry_attempt and module_failure_cleanup:
                 self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-            self._emit_void_return_terminator()
+            self._emit_unwind_terminator()
         entry_failure_label = self.funcs_map[self.current_func_name].get(
             "frame_entry_failure_label"
         )
@@ -785,7 +795,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                         result=MoltValue("none"),
                     )
                 )
-                self._emit_void_return_terminator()
+                self._emit_unwind_terminator()
         self.function_exception_label = prev_label
 
     def _ends_with_return_jump(self) -> bool:

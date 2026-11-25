@@ -97,13 +97,12 @@ def test_bootstrap_guards_setup_before_later_work_without_clearing() -> None:
         "check_exception",
         "ret",
         "label",
-        "const_none",
-        "ret",
+        "ret_void",
     ]
     assert {op["value"] for op in ops if op["kind"] == "check_exception"} == {
-        ops[-3]["value"]
+        ops[-2]["value"]
     }
-    assert ops[-1]["args"] != ops[-4]["args"]
+    assert ops[-1] == {"kind": "ret_void", "unwind": True}
 
 
 def test_entry_guards_include_late_insertions() -> None:
@@ -130,15 +129,15 @@ def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
     )
     assert not any(op["kind"] == "exception_clear" for op in ops)
     assert ops[1] == {"kind": "check_exception", "exception_edge": "origin", "value": 1}
-    for index, op in enumerate(ops[:-3]):
+    for index, op in enumerate(ops[:-2]):
         if op["kind"] in {"call", "module_cache_get", "const_str", "string_eq"}:
             assert ops[index + 1] == {
                 "kind": "check_exception",
                 "exception_edge": "origin",
                 "value": 1,
             }
-    assert ops[-3] == {"kind": "label", "value": 1}
-    assert ops[-1] == {"kind": "ret", "args": [ops[-2]["out"]]}
+    assert ops[-2] == {"kind": "label", "value": 1}
+    assert ops[-1] == {"kind": "ret_void", "unwind": True}
     assert not any(
         left == right and left["kind"] == "check_exception"
         for left, right in zip(ops, ops[1:])
@@ -212,7 +211,7 @@ def test_guard_preserves_control_structure_and_uses_fresh_exit_label() -> None:
         body[5],
         body[6],
         {"kind": "label", "value": 8},
-        {"kind": "ret_void"},
+        {"kind": "ret_void", "unwind": True},
     ]
 
 

@@ -32,14 +32,8 @@
       "value": 1
     },
     {
-      "kind": "const_none",
-      "out": "v1"
-    },
-    {
-      "kind": "ret",
-      "args": [
-        "v1"
-      ]
+      "kind": "ret_void",
+      "unwind": true
     }
   ]
 }

@@ -24,11 +24,6 @@ pub(super) struct ClonedCallee {
     pub(super) entry: BlockId,
     /// Every fresh block id introduced by the clone, in deterministic order.
     pub(super) cloned_blocks: Vec<BlockId>,
-    /// The callee `BlockId` -> cloned `BlockId` map. The splicer uses it to carry
-    /// the callee-side classification of each `Return` block (normal-return vs
-    /// exception-exit, computed on the callee's terminator-only CFG) onto the
-    /// cloned blocks when rewriting `Return`s into continuation branches.
-    pub(super) block_map: HashMap<BlockId, BlockId>,
 }
 
 fn clone_attrs_for_inlined_body(
@@ -375,7 +370,6 @@ pub(super) fn clone_function_body_with_fresh_ids(
     ClonedCallee {
         entry: remap_block(callee.entry_block),
         cloned_blocks: callee_block_ids.iter().map(|b| remap_block(*b)).collect(),
-        block_map,
     }
 }
 

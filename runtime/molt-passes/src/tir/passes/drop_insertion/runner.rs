@@ -512,7 +512,7 @@ fn run_planned(
                 if !reachable.contains(&dblk) {
                     continue;
                 }
-                if !matches!(func.blocks[&dblk].terminator, Terminator::Return { .. }) {
+                if !func.blocks[&dblk].terminator.exits_activation() {
                     continue;
                 }
                 accepted.insert(r);
@@ -891,7 +891,7 @@ fn run_planned(
             continue;
         }
         let block = &func.blocks[&bid];
-        if matches!(block.terminator, Terminator::Return { .. }) {
+        if block.terminator.exits_activation() {
             let plan = plans
                 .get_mut(&bid)
                 .expect("reachable block plan must exist before lexical custody");
@@ -960,7 +960,7 @@ fn run_planned(
                 continue;
             }
             let block = &func.blocks[&bid];
-            if !matches!(block.terminator, Terminator::Return { .. }) {
+            if !block.terminator.exits_activation() {
                 continue;
             }
             let mut releases = plans[&bid].before_term.clone();

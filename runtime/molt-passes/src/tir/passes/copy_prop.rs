@@ -230,7 +230,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     }
                 }
             }
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 

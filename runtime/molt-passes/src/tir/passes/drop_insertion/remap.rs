@@ -76,6 +76,7 @@ pub(super) fn remap_terminator_values(
         Terminator::Return { values } => Terminator::Return {
             values: remap_values(values),
         },
+        Terminator::Unwind => Terminator::Unwind,
         Terminator::Unreachable => Terminator::Unreachable,
     }
 }

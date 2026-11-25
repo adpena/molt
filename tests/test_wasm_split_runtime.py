@@ -242,10 +242,8 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
         "exception_edge": "origin",
         "value": 1,
     }
-    assert ops[-3]["kind"] == "label"
-    assert ops[-3]["value"] == 1
-    assert ops[-2]["kind"] == "const_none"
-    assert ops[-1] == {"kind": "ret", "args": [ops[-2]["out"]]}
+    assert ops[-2] == {"kind": "label", "value": 1}
+    assert ops[-1] == {"kind": "ret_void", "unwind": True}
 
 
 def test_isolate_import_module_order_is_explicit_import_bounded() -> None:

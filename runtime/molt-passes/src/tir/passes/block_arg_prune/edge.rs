@@ -72,7 +72,7 @@ pub(super) fn prune_terminator_payloads(
             }
             removed
         }
-        Terminator::Return { .. } | Terminator::Unreachable => 0,
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => 0,
     }
 }
 

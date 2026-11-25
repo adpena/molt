@@ -23,6 +23,9 @@ impl<'a> SsaContext<'a> {
         if let Some(op) = last_op
             && kind.is_return_terminator()
         {
+            if op.is_unwind_return() {
+                return Terminator::Unwind;
+            }
             let mut values = Vec::new();
             crate::tir::simple_def_use::visit_simple_ir_return_values(op, |a| {
                 if let Some(vid) =

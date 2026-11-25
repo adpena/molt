@@ -866,6 +866,9 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             Terminator::Return { values: returned } => {
                 returns::emit_return(&mut cx, b, own, returned.first().copied(), frame.as_ref());
             }
+            Terminator::Unwind => {
+                returns::emit_return(&mut cx, b, own, None, frame.as_ref());
+            }
             Terminator::StateDispatch {
                 cases,
                 default,

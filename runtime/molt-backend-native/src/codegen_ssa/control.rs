@@ -242,7 +242,9 @@ impl<B: CodegenBuilder> Edges<'_, B> {
                 );
             }
             Terminator::Unreachable => b.unreachable(),
-            Terminator::Return { .. } | Terminator::StateDispatch { .. } => return false,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::StateDispatch { .. } => {
+                return false;
+            }
         }
         true
     }

@@ -281,12 +281,9 @@ fn splice_observation_callee_remaps_labels_collision_free() {
 }
 
 #[test]
-fn splice_void_exception_exit_branches_directly_to_post_call_exception_target() {
-    // The observation callee's exception-exit returns NO value, but the call
-    // wants one. The splice must NOT refuse (that would re-dormant the inliner
-    // on every value-returning observation callee). With a post-call
-    // CheckException at the continuation start, the exception-exit branch goes
-    // directly to the caller handler, and the merged fn verifies.
+fn splice_unwind_preserves_the_callers_exception_observer() {
+    // The callee unwinds without a result. The splice must keep the
+    // caller's observer on that path and leave the value continuation alone.
     for (idx, ty) in [TirType::I64, TirType::Bool, TirType::F64, TirType::DynBox]
         .into_iter()
         .enumerate()
@@ -311,24 +308,17 @@ fn splice_void_exception_exit_branches_directly_to_post_call_exception_target() 
             panic!("merged fn invalid SSA after direct exception branch for {ty:?}: {e:?}")
         });
 
-        let handler = caller
-            .label_id_map
-            .iter()
-            .find_map(|(block, label)| (*label == 90).then_some(BlockId(*block)))
-            .expect("caller exception handler label survives");
-        let direct_exception_branches = caller
-            .blocks
-            .values()
-            .filter(|block| {
-                matches!(
-                    &block.terminator,
-                    Terminator::Branch { target, args } if *target == handler && args.is_empty()
-                )
-            })
-            .count();
         assert!(
-            direct_exception_branches >= 1,
-            "void exception-exit branches directly to the caller handler for {ty:?}"
+            caller.blocks.values().any(|block| {
+                matches!(block.terminator, Terminator::Unwind)
+                    && block.ops.iter().any(|op| {
+                        op.opcode == OpCode::CheckException
+                            && op.attrs.get("value") == Some(&AttrValue::Int(90))
+                            && op.exception_edge_kind()
+                                == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
+                    })
+            }),
+            "inlined unwind retains the caller's observer for {ty:?}"
         );
     }
 }

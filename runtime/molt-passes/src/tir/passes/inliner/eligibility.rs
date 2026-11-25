@@ -220,6 +220,6 @@ fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
         | Terminator::StateDispatch { cases, default, .. } => {
             *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
         }
-        Terminator::Return { .. } | Terminator::Unreachable => false,
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => false,
     })
 }

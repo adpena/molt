@@ -259,6 +259,7 @@ pub fn remap_terminator(
         Terminator::Return { values } => Terminator::Return {
             values: values.iter().map(|item| value(*item)).collect(),
         },
+        Terminator::Unwind => Terminator::Unwind,
         Terminator::Unreachable => Terminator::Unreachable,
     }
 }

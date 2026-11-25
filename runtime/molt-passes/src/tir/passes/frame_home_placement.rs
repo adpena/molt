@@ -1005,7 +1005,7 @@ impl<'a> Planner<'a> {
                 self.write_all(&mut state, at, &mut events);
             }
         }
-        if matches!(block.terminator, Terminator::Return { .. })
+        if block.terminator.exits_activation()
             || terminator_observer(&block.terminator, &self.exact).is_some()
         {
             self.write_all(

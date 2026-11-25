@@ -63,7 +63,7 @@ fn count_terminator_uses(term: &Terminator, uses: &mut HashMap<ValueId, usize>) 
                 *uses.entry(*v).or_insert(0) += 1;
             }
         }
-        Terminator::Unreachable => {}
+        Terminator::Unwind | Terminator::Unreachable => {}
     }
 }
 

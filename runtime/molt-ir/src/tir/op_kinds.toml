@@ -5269,6 +5269,12 @@ direct = "transferred"
 branch_arg = "none"
 
 [[terminator]]
+# Exceptional frame exit. Pending exception state is already published.
+name = "Unwind"
+direct = "none"
+branch_arg = "none"
+
+[[terminator]]
 # Unreachable: no operands at all (no direct, no forwarded).
 name = "Unreachable"
 direct = "none"

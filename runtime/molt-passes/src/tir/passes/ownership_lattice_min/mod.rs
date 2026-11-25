@@ -176,6 +176,7 @@ fn terminator_kind(term: &Terminator) -> TerminatorKind {
         Terminator::Switch { .. } => TerminatorKind::Switch,
         Terminator::StateDispatch { .. } => TerminatorKind::StateDispatch,
         Terminator::Return { .. } => TerminatorKind::Return,
+        Terminator::Unwind => TerminatorKind::Unwind,
         Terminator::Unreachable => TerminatorKind::Unreachable,
     }
 }
@@ -214,7 +215,7 @@ pub(crate) fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
             }
             out.extend(default_args.iter().copied());
         }
-        Terminator::Return { .. } | Terminator::Unreachable => {}
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => {}
     }
     out
 }
@@ -240,6 +241,7 @@ pub(crate) fn terminator_uses_root(
         Terminator::StateDispatch { .. }
         | Terminator::Branch { .. }
         | Terminator::Return { .. }
+        | Terminator::Unwind
         | Terminator::Unreachable => false,
     }
 }

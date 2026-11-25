@@ -534,6 +534,7 @@ pub fn print_terminator(term: &Terminator) -> String {
             parts.push(format!("  default: ^{}{}", default, default_arg_str));
             parts.join("\n")
         }
+        Terminator::Unwind => "unwind".to_string(),
         Terminator::Unreachable => "unreachable".to_string(),
     }
 }

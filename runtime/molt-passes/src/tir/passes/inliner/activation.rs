@@ -223,7 +223,7 @@ fn prepare_activation(callee: &TirFunction, bindings: &[Binding]) -> Option<TirF
     let mut exits: Vec<BlockId> = body
         .blocks
         .iter()
-        .filter(|(_, block)| matches!(block.terminator, Terminator::Return { .. }))
+        .filter(|(_, block)| block.terminator.exits_activation())
         .map(|(&exit, _)| exit)
         .collect();
     exits.sort_unstable_by_key(|exit| exit.0);
@@ -236,10 +236,11 @@ fn prepare_activation(callee: &TirFunction, bindings: &[Binding]) -> Option<TirF
             .collect();
         let mut releases = clear.map(|clear| clear.teardown()).unwrap_or_default();
         releases.extend(&borrowed);
-        let Terminator::Return { values } = &body.blocks[&exit].terminator else {
-            unreachable!("frame exits are Return blocks");
-        };
-        let mut values = values.clone();
+        let mut values = body.blocks[&exit]
+            .terminator
+            .exit_values()
+            .expect("activation exit")
+            .to_vec();
         let mut teardown = Vec::with_capacity(releases.len());
         for value in &mut values {
             if captured.contains(&aliases.root(*value)) {
@@ -254,7 +255,9 @@ fn prepare_activation(callee: &TirFunction, bindings: &[Binding]) -> Option<TirF
         teardown.extend(releases.into_iter().map(del_boundary));
         let block = body.blocks.get_mut(&exit).expect("frame exit block");
         block.ops.extend(teardown);
-        block.terminator = Terminator::Return { values };
+        if let Terminator::Return { values: returned } = &mut block.terminator {
+            *returned = values;
+        }
     }
     Some(body)
 }

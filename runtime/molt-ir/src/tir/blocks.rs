@@ -112,11 +112,32 @@ pub enum Terminator {
     },
     /// Return from the function with zero or more values.
     Return { values: Vec<ValueId> },
+    /// Exit the activation with the pending Python exception. There is no
+    /// Python result, including when the function has a value-returning ABI.
+    Unwind,
     /// Marks unreachable code (e.g. after a guaranteed raise).
     Unreachable,
 }
 
 impl Terminator {
+    /// An exit that must release the current activation's custody.
+    pub fn exits_activation(&self) -> bool {
+        self.exit_values().is_some()
+    }
+
+    /// Values published by an activation exit. An unwind publishes none.
+    pub fn exit_values(&self) -> Option<&[ValueId]> {
+        match self {
+            Self::Return { values } => Some(values),
+            Self::Unwind => Some(&[]),
+            Self::Branch { .. }
+            | Self::CondBranch { .. }
+            | Self::Switch { .. }
+            | Self::StateDispatch { .. }
+            | Self::Unreachable => None,
+        }
+    }
+
     /// Visit every explicit CFG edge and the values forwarded to its target.
     ///
     /// This is the canonical structural projection of a terminator into CFG
@@ -172,7 +193,7 @@ impl Terminator {
                 }
                 visit(TerminatorEdge::StateDefault, *default, default_args);
             }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 
@@ -210,7 +231,7 @@ impl Terminator {
                 }
                 visit(default, default_args);
             }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 
@@ -230,7 +251,7 @@ impl Terminator {
             Terminator::Switch { cases, .. } | Terminator::StateDispatch { cases, .. } => {
                 cases.len() + 1
             }
-            Terminator::Return { .. } | Terminator::Unreachable => 0,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => 0,
         }
     }
 
@@ -251,7 +272,7 @@ impl Terminator {
             Terminator::CondBranch { cond, .. } => visit(*cond),
             Terminator::Switch { value, .. } => visit(*value),
             Terminator::Return { values } => values.iter().copied().for_each(visit),
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
 
@@ -270,7 +291,7 @@ impl Terminator {
             Terminator::CondBranch { cond, .. } => visit(cond),
             Terminator::Switch { value, .. } => visit(value),
             Terminator::Return { values } => values.iter_mut().for_each(&mut visit),
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
         self.for_each_edge_mut(|_, args| args.iter_mut().for_each(&mut visit));
     }
@@ -291,7 +312,7 @@ impl Terminator {
             | Terminator::StateDispatch { cases, default, .. } => {
                 cases.iter().any(|(_, successor, _)| *successor == target) || *default == target
             }
-            Terminator::Return { .. } | Terminator::Unreachable => false,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => false,
         }
     }
 
@@ -337,7 +358,7 @@ impl Terminator {
                     (*edge_target == target).then_some(args.as_slice())
                 })
                 .or_else(|| (*default == target).then_some(default_args.as_slice())),
-            Terminator::Return { .. } | Terminator::Unreachable => None,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => None,
         }
     }
 }

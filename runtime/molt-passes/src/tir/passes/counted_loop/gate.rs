@@ -75,6 +75,7 @@ pub(super) fn loop_gate(
         | Terminator::Switch { .. }
         | Terminator::StateDispatch { .. }
         | Terminator::Return { .. }
+        | Terminator::Unwind
         | Terminator::Unreachable => None,
     }
 }

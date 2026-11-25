@@ -358,8 +358,7 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
             id: exc_exit,
             args: vec![],
             ops: vec![],
-            // ret_void - propagate the pending flag.
-            terminator: Terminator::Return { values: vec![] },
+            terminator: Terminator::Unwind,
         },
     );
     // The exception edge resolves through label_id_map: the exit block carries
@@ -445,7 +444,7 @@ fn caller_calling_obs_with_label_and_type(
             id: caller_exit,
             args: vec![],
             ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
+            terminator: Terminator::Unwind,
         },
     );
     c.label_id_map.insert(caller_exit.0, caller_label);

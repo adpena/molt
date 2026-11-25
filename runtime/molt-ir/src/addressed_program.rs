@@ -476,6 +476,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         callee: _,
         exception_edge: _,
         exception_source: _,
+        unwind: _,
         frame_location: _,
     } = op;
     let text = |value: &Option<String>| value.as_ref().map_or(0, String::capacity);

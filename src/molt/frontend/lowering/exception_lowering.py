@@ -767,9 +767,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 )
             )
             return
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        self._emit_normal_return_terminator(none_val)
+        self._emit_unwind_terminator()
 
     def _emit_raise_if_pending(self) -> None:
         # Use the same fast inline flag check as check_exception instead

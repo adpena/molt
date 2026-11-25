@@ -450,6 +450,7 @@ pub fn terminator_effects(
         | Terminator::Switch { .. }
         | Terminator::StateDispatch { .. }
         | Terminator::Return { .. }
+        | Terminator::Unwind
         | Terminator::Unreachable => OPCODE_EFFECTS_PURE,
     }
 }

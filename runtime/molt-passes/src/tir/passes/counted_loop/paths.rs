@@ -135,6 +135,7 @@ pub(crate) fn loop_guard_path(
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. }
             | Terminator::Return { .. }
+            | Terminator::Unwind
             | Terminator::Unreachable => return None,
         }
     }
@@ -180,6 +181,7 @@ pub(super) fn loop_body_path(
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. }
             | Terminator::Return { .. }
+            | Terminator::Unwind
             | Terminator::Unreachable => return None,
         }
     }

@@ -34,7 +34,8 @@ pub(super) fn emit_terminator<'c, 'a>(
     location: Location<'c>,
 ) -> Result<(), String> {
     match terminator {
-        Terminator::Return { values } => {
+        Terminator::Return { .. } | Terminator::Unwind => {
+            let values = terminator.exit_values().expect("activation exit");
             if values.len() > 1 {
                 return Err(format!(
                     "MLIR backend supports one Python return value, found {} in '{}'",

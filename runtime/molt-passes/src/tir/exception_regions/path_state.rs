@@ -435,7 +435,7 @@ fn terminator_successors_with_state(
             }
             successors
         }
-        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => Vec::new(),
     }
 }
 

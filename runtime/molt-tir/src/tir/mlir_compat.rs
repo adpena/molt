@@ -146,6 +146,9 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
                 }
                 writeln!(out, "default: ^bb{}({})]", default.0, da.join(", ")).unwrap();
             }
+            Terminator::Unwind => {
+                writeln!(out, "  \"molt.unwind\"() : () -> ()").unwrap();
+            }
             Terminator::Unreachable => {
                 writeln!(out, "  \"molt.unreachable\"() : () -> ()").unwrap();
             }

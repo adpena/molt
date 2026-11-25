@@ -136,7 +136,7 @@ fn entry_has_predecessor(func: &TirFunction) -> bool {
         Terminator::StateDispatch { cases, default, .. } => {
             *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
         }
-        Terminator::Return { .. } | Terminator::Unreachable => false,
+        Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => false,
     })
 }
 
@@ -208,7 +208,7 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
                     bump(v, &mut counts);
                 }
             }
-            Terminator::Unreachable => {}
+            Terminator::Unwind | Terminator::Unreachable => {}
         }
     }
     counts
@@ -419,7 +419,7 @@ pub(super) fn terminator_uses(term: &Terminator, v: ValueId) -> bool {
             ..
         } => default_args.contains(&v) || cases.iter().any(|(_, _, a)| a.contains(&v)),
         Terminator::Return { values } => values.contains(&v),
-        Terminator::Unreachable => false,
+        Terminator::Unwind | Terminator::Unreachable => false,
     }
 }
 
@@ -521,6 +521,7 @@ fn recognize_iteration(caller: &TirFunction, iter_val: ValueId) -> Option<Iterat
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. }
             | Terminator::Return { .. }
+            | Terminator::Unwind
             | Terminator::Unreachable => return None,
         }
     }

@@ -46048,6 +46048,7 @@ pub enum TerminatorKind {
     Switch,
     StateDispatch,
     Return,
+    Unwind,
     Unreachable,
 }
 
@@ -46089,6 +46090,8 @@ pub fn terminator_operand_ownership_table(
         }
         (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
         (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperand,
+        (TerminatorKind::Unwind, OperandCategory::Direct) => OperandOwnership::NoOperand,
+        (TerminatorKind::Unwind, OperandCategory::BranchArg) => OperandOwnership::NoOperand,
         (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperand,
         (TerminatorKind::Unreachable, OperandCategory::BranchArg) => OperandOwnership::NoOperand,
     }

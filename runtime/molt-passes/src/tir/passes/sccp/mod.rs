@@ -385,6 +385,7 @@ fn decided_edge(term: &Terminator, lattice: &HashMap<ValueId, Lattice>) -> Optio
         Terminator::Branch { .. }
         | Terminator::StateDispatch { .. }
         | Terminator::Return { .. }
+        | Terminator::Unwind
         | Terminator::Unreachable => None,
     }
 }
@@ -870,7 +871,7 @@ impl<'f> Solver<'f> {
                 _ => decided_edge(term, &self.lattice),
             },
             Terminator::Branch { .. } | Terminator::StateDispatch { .. } => None,
-            Terminator::Return { .. } | Terminator::Unreachable => return,
+            Terminator::Return { .. } | Terminator::Unwind | Terminator::Unreachable => return,
         };
         term.for_each_labeled_edge(|label, target, args| {
             if feasible.is_some_and(|decided| decided != label) {
@@ -941,6 +942,7 @@ fn build_uses(
             Terminator::Branch { .. }
             | Terminator::StateDispatch { .. }
             | Terminator::Return { .. }
+            | Terminator::Unwind
             | Terminator::Unreachable => {}
         }
         block

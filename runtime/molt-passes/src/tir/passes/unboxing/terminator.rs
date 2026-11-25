@@ -44,7 +44,7 @@ pub(super) fn terminator_values(term: &Terminator) -> Vec<ValueId> {
             v
         }
         Terminator::Return { values } => values.clone(),
-        Terminator::Unreachable => vec![],
+        Terminator::Unwind | Terminator::Unreachable => vec![],
     }
 }
 
@@ -114,6 +114,6 @@ pub(super) fn replace_in_terminator(
                 replace(v);
             }
         }
-        Terminator::Unreachable => {}
+        Terminator::Unwind | Terminator::Unreachable => {}
     }
 }

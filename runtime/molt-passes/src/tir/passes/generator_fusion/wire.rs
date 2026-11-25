@@ -281,7 +281,7 @@ fn retire_identity(
     let mut landings = HashMap::default();
     for id in ids {
         let mut block = caller.blocks.remove(&id).unwrap();
-        if matches!(block.terminator, Terminator::Return { .. }) {
+        if block.terminator.exits_activation() {
             block.ops.push(finish_op(caller, identity));
         }
         let mut landing = |target| {
