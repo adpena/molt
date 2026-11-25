@@ -37,7 +37,10 @@ from molt.cli.backend_execution import (
     _backend_features_for_build_target,
 )
 from molt.cli.build_output_layout import _resolve_cache_root
-from molt.cli.backend_artifact_contract import BackendArtifactContract
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
+    BackendArtifactValidation,
+)
 from molt.cli.cache_keys import (
     FunctionDigests,
     _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
@@ -775,6 +778,11 @@ def _prepare_backend_cache_setup(
         artifact_contract=artifact_contract,
         backend_environment=backend_environment,
         cache_enabled=True,
+        output_validation=(
+            BackendArtifactValidation(artifact_contract, cached_output.identity)
+            if cached_output is not None
+            else None
+        ),
         backend_emission_origin=cached_output.emission_origin
         if cached_output is not None
         else None,

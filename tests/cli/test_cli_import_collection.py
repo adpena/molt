@@ -106,6 +106,8 @@ from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
+    BackendArtifactKind,
+    BackendArtifactValidation,
     resolve_backend_artifact_contract,
 )
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
@@ -23435,6 +23437,78 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert link_calls == []
     monkeypatch.setattr(cli_non_native_output, "__file__", str(deployment_source))
 
+    # This fixture admits an independent empty Wasm module. Use the real
+    # backend publication that moves those validated bytes to the linker.
+    from molt.cli import runtime_wasm_validation
+
+    contract = BackendArtifactContract(BackendArtifactKind.WASM_OBJECT)
+    original = output_wasm.read_bytes()
+    assert original == b"\0asm\x01\0\0\0"
+    emitted = tmp_path / "backend-output.wasm"
+    emitted.write_bytes(original)
+
+    def validate_fixture_app(path: Path) -> str | None:
+        return None if path.read_bytes() == original else "unexpected app bytes"
+
+    with monkeypatch.context() as publication:
+        publication.setattr(
+            runtime_wasm_validation,
+            "_reusable_wasm_artifact_validation_error",
+            validate_fixture_app,
+        )
+        result = cli_backend_cache._stage_backend_output_and_caches(
+            tmp_path,
+            emitted,
+            output_wasm,
+            cache_path=None,
+            cache_key=None,
+            stdlib_object_cache_key=None,
+            function_cache_path=None,
+            warnings=[],
+            artifact_contract=contract,
+        )
+    assert result.error is None and result.validation is not None
+    validation = result.validation
+
+    def repeated_validation(path: Path) -> str:
+        pytest.fail(f"backend proof was ignored for {path}")
+
+    common_kwargs["output_validation"] = validation
+    with monkeypatch.context() as transfer:
+        transfer.setattr(
+            cli_non_native_output, "_validate_wasm_structural", repeated_validation
+        )
+        # A byte-distinct, structurally valid module cannot borrow the proof.
+        output_wasm.write_bytes(original + b"\0\x01\0")
+        rejected_app, rejected_app_err = (
+            cli_non_native_output._prepare_non_native_build_result(
+                validate_inputs=lambda: None, **common_kwargs
+            )
+        )
+        assert rejected_app is None and rejected_app_err is not None
+        assert "application bytes differ from validated backend output" in (
+            capsys.readouterr().out
+        )
+        assert not linked_wasm.exists() and not link_calls
+        if os.name != "nt":
+            other = tmp_path / "same-bytes.wasm"
+            other.write_bytes(original)
+            output_wasm.unlink()
+            output_wasm.symlink_to(other)
+            rejected_alias, alias_error = (
+                cli_non_native_output._prepare_non_native_build_result(
+                    validate_inputs=lambda: None, **common_kwargs
+                )
+            )
+            assert rejected_alias is None and alias_error is not None
+            assert "not one stable regular file" in capsys.readouterr().out
+            assert not linked_wasm.exists() and not link_calls
+            output_wasm.unlink()
+        output_wasm.write_bytes(original)
+    monkeypatch.setattr(
+        cli_non_native_output, "_validate_wasm_structural", repeated_validation
+    )
+
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     with build_record.recording(tmp_path / "recording") as ledger:
         first, first_err = cli_non_native_output._prepare_non_native_build_result(
@@ -31116,7 +31190,7 @@ def test_backend_daemon_log_tail_bounds_file_bytes(tmp_path: Path) -> None:
     assert read_bytes and sum(read_bytes) <= budget
 
 
-def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
+def test_backend_daemon_output_sync_track_artifact_state(
     tmp_path: Path,
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
@@ -31137,23 +31211,20 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
         artifact=output_artifact,
     )
 
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="obj"
-            ),
-            cache_key="module-key",
-            function_cache_key="function-key",
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="obj"
+        ),
+        cache_key="module-key",
+        function_cache_key="function-key",
     )
 
-    assert skip_module is True
-    assert skip_function is False
+    assert synced is not None and synced.tier == "module"
 
 
-def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_reread(
+def test_backend_daemon_output_sync_uses_known_sync_state_without_reread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
@@ -31182,26 +31253,23 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
 
     monkeypatch.setattr(BACKEND_CACHE, "_read_artifact_sync_state", fail_read)
 
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="obj"
-            ),
-            cache_key="module-key",
-            function_cache_key="function-key",
-            state_path=state_path,
-            state=state,
-            output_stat=output_stat,
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="obj"
+        ),
+        cache_key="module-key",
+        function_cache_key="function-key",
+        state_path=state_path,
+        state=state,
+        output_stat=output_stat,
     )
 
-    assert skip_module is True
-    assert skip_function is False
+    assert synced is not None and synced.tier == "module"
 
 
-def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
+def test_backend_daemon_output_sync_rejects_missing_shared_stdlib(
     tmp_path: Path,
 ) -> None:
     output_artifact = tmp_path / "dist" / "output.o"
@@ -31224,22 +31292,19 @@ def test_backend_daemon_skip_output_sync_flags_rejects_missing_shared_stdlib(
         artifact=output_artifact,
     )
 
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="bin"
-            ),
-            cache_key="module-key",
-            function_cache_key="function-key",
-            stdlib_object_path=tmp_path / "cache" / "stdlib_shared_test.o",
-            stdlib_object_cache_key="stdlib-key",
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="bin"
+        ),
+        cache_key="module-key",
+        function_cache_key="function-key",
+        stdlib_object_path=tmp_path / "cache" / "stdlib_shared_test.o",
+        stdlib_object_cache_key="stdlib-key",
     )
 
-    assert skip_module is False
-    assert skip_function is False
+    assert synced is None
 
 
 def test_read_artifact_sync_state_reuses_process_cache(
@@ -32239,7 +32304,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         warnings: list[str],
         identity=None,
         emission_origin=None,
-        validation: cli_backend_cache._ValidatedBackendArtifact | None = None,
+        validation: BackendArtifactValidation | None = None,
     ):
         if dst == function_cache_path:
             raise OSError("link failed")
@@ -32383,19 +32448,16 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     assert hit is not None and hit.tier == "function"
     assert hit.emission_origin is None
     assert warnings == []
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="obj"
-            ),
-            cache_key="module-key",
-            function_cache_key="function-key",
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="obj"
+        ),
+        cache_key="module-key",
+        function_cache_key="function-key",
     )
-    assert skip_module is True
-    assert skip_function is False
+    assert synced is not None and synced.tier == "module"
 
 
 def test_try_cached_backend_candidates_promoted_native_function_hit_marks_context_module_synced(
@@ -32438,22 +32500,19 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     assert hit is not None and hit.tier == "function"
     assert hit.emission_origin is None
     assert warnings == []
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="bin"
-            ),
-            cache_key="module-key",
-            function_cache_key="function-key",
-            stdlib_object_path=stdlib_object,
-            stdlib_object_cache_key="stdlib-key",
-            stdlib_object_manifest=stdlib_manifest,
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="bin"
+        ),
+        cache_key="module-key",
+        function_cache_key="function-key",
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
-    assert skip_module is True
-    assert skip_function is False
+    assert synced is not None and synced.tier == "module"
     state = cli_artifact_sync._read_artifact_sync_state(
         cli_artifact_sync._artifact_sync_state_path(tmp_path, output_artifact)
     )
@@ -32913,7 +32972,7 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
     ).exists()
 
 
-def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with_unresolved_user_module_chunks(
+def test_backend_daemon_output_sync_rejects_synced_native_output_with_unresolved_user_module_chunks(
     tmp_path: Path,
 ) -> None:
     output_artifact = _compile_c_object(
@@ -32964,24 +33023,21 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
         artifact=output_artifact,
     )
 
-    skip_module, skip_function = (
-        cli_backend_cache._backend_daemon_skip_output_sync_flags(
-            tmp_path,
-            output_artifact,
-            artifact_contract=resolve_backend_artifact_contract(
-                target=admit_target("native"), emit_mode="bin"
-            ),
-            cache_key="module-key",
-            function_cache_key=None,
-            stdlib_object_path=stdlib_object,
-            stdlib_object_cache_key="stdlib-key",
-            stdlib_object_manifest=stdlib_manifest,
-            stdlib_modules=None,
-        )
+    synced = cli_backend_cache._backend_daemon_output_sync(
+        tmp_path,
+        output_artifact,
+        artifact_contract=resolve_backend_artifact_contract(
+            target=admit_target("native"), emit_mode="bin"
+        ),
+        cache_key="module-key",
+        function_cache_key=None,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
+        stdlib_modules=None,
     )
 
-    assert skip_module is False
-    assert skip_function is False
+    assert synced is None
 
 
 def test_backend_daemon_health_from_response_parses_int_fields() -> None:

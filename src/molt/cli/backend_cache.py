@@ -46,6 +46,7 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
+    BackendArtifactValidation,
     BackendArtifactKind,
     BackendArtifactValidationError,
     stdlib_archive_contract,
@@ -89,21 +90,13 @@ def _record_backend_cache_stage_ms(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _ValidatedBackendArtifact:
-    """An operation's structural proof for an exact byte sequence and contract."""
-
-    contract: BackendArtifactContract
-    identity: StableRegularFileIdentity
-
-
 def _validate_backend_cache_artifact(
     path: Path,
     *,
     artifact_contract: BackendArtifactContract,
     identity: StableRegularFileIdentity | None = None,
     publish_symbol_facts: bool = False,
-    validation: _ValidatedBackendArtifact | None = None,
+    validation: BackendArtifactValidation | None = None,
 ) -> StableRegularFileIdentity:
     if validation is not None and validation.contract != artifact_contract:
         raise BackendArtifactValidationError(
@@ -138,10 +131,7 @@ def _validate_backend_cache_artifact(
                 # Exact equal bytes carry structural validity across copies.
                 # A different winner still needs its own validation before the
                 # caller distinguishes invalid cache bytes from a conflict.
-                if validation is None or (identity.sha256, identity.size) != (
-                    validation.identity.sha256,
-                    validation.identity.size,
-                ):
+                if validation is None or not validation.admits(identity):
                     artifact_contract.validate(path)
         return identity
     except _native_symbols.NativeSymbolArtifactError as error:
@@ -343,6 +333,7 @@ class _BackendCacheGeneration:
 class _BackendArtifactStageResult:
     error: str | None
     emission_origin: BackendEmissionOrigin | None
+    validation: BackendArtifactValidation | None = None
 
 
 def _backend_cache_generation(
@@ -372,7 +363,7 @@ def _publish_immutable_backend_cache_artifact(
     warnings: list[str],
     identity: StableRegularFileIdentity | None = None,
     emission_origin: BackendEmissionOrigin | None = None,
-    validation: _ValidatedBackendArtifact | None = None,
+    validation: BackendArtifactValidation | None = None,
 ) -> _BackendCacheGeneration:
     """Publish bytes and their optional origin under one generation lock.
 
@@ -385,7 +376,7 @@ def _publish_immutable_backend_cache_artifact(
         identity=identity,
         validation=validation,
     )
-    validation = _ValidatedBackendArtifact(artifact_contract, identity)
+    validation = BackendArtifactValidation(artifact_contract, identity)
     if emission_origin is not None and (
         emission_origin.output_sha256 != identity.sha256
         or emission_origin.output_size != identity.size
@@ -507,7 +498,7 @@ def restore_backend_cache_artifact(
         warnings=warnings,
         identity=identity,
         emission_origin=origin,
-        validation=_ValidatedBackendArtifact(artifact_contract, identity),
+        validation=BackendArtifactValidation(artifact_contract, identity),
     )
     if warnings or published.identity.path != destination.expanduser().absolute():
         raise BackendArtifactValidationError(
@@ -748,7 +739,7 @@ def _materialize_cached_backend_artifact(
                     warnings=warnings,
                     identity=candidate_identity,
                     emission_origin=emission_origin,
-                    validation=_ValidatedBackendArtifact(
+                    validation=BackendArtifactValidation(
                         artifact_contract, candidate_identity
                     ),
                 )
@@ -1094,7 +1085,7 @@ def _try_cached_backend_candidates(
     return None
 
 
-def _backend_daemon_skip_output_sync_flags(
+def _backend_daemon_output_sync(
     project_root: Path,
     output_artifact: Path,
     *,
@@ -1108,7 +1099,7 @@ def _backend_daemon_skip_output_sync_flags(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
     artifact_contract: BackendArtifactContract,
-) -> tuple[bool, bool]:
+) -> _SyncedBackendOutput | None:
     artifact_contract.validate_shared_stdlib(
         enabled=stdlib_object_path is not None or bool(stdlib_object_cache_key)
     )
@@ -1116,7 +1107,7 @@ def _backend_daemon_skip_output_sync_flags(
         try:
             output_stat = output_artifact.stat()
         except OSError:
-            return False, False
+            return None
     if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key_locked(
         stdlib_object_path,
         stdlib_object_cache_key,
@@ -1124,11 +1115,11 @@ def _backend_daemon_skip_output_sync_flags(
         stdlib_modules=stdlib_modules,
         target_triple=artifact_contract.target_triple,
     ):
-        return False, False
+        return None
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
-    synced = _synced_backend_output_cache_hit(
+    return _synced_backend_output_cache_hit(
         state,
         output_artifact,
         output_stat,
@@ -1138,9 +1129,6 @@ def _backend_daemon_skip_output_sync_flags(
         stdlib_object_path=stdlib_object_path,
         artifact_contract=artifact_contract,
     )
-    if synced is None:
-        return False, False
-    return synced.tier == "module", synced.tier == "function"
 
 
 @contextmanager
@@ -1191,7 +1179,7 @@ def _stage_backend_output_and_caches(
         staged_identity = _validate_backend_cache_artifact(
             backend_output, artifact_contract=artifact_contract
         )
-        staged_validation = _ValidatedBackendArtifact(
+        staged_validation = BackendArtifactValidation(
             artifact_contract, staged_identity
         )
         if emission_origin is not None and (
@@ -1260,6 +1248,7 @@ def _stage_backend_output_and_caches(
     try:
         if output_already_synced:
             assert synced_identity is not None
+            output_identity = synced_identity
             emission_origin = _artifact_sync_emission_origin(
                 state, identity=synced_identity
             )
@@ -1314,7 +1303,11 @@ def _stage_backend_output_and_caches(
             backend_output.unlink(missing_ok=True)
         except OSError as exc:
             warnings.append(f"Backend private output cleanup failed: {exc}")
-    return _BackendArtifactStageResult(None, emission_origin)
+    return _BackendArtifactStageResult(
+        None,
+        emission_origin,
+        BackendArtifactValidation(artifact_contract, output_identity),
+    )
 
 
 def _stdlib_object_count_sidecar_path(stdlib_object_path: Path) -> Path:

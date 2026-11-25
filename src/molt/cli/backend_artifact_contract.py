@@ -52,6 +52,7 @@ from molt.native_artifact_header import (
 from molt.native_target_shape import native_artifact_shape
 from molt.toolchain_identity import (
     StableRegularFileHandle,
+    StableRegularFileIdentity,
     open_stable_regular_file,
     iter_stable_regular_file_chunks,
 )
@@ -364,6 +365,20 @@ def wasm_relocatable_object_error(data: bytes) -> str | None:
     except ValueError as error:
         return str(error)
     return "module has no linking section (not relocatable)"
+
+
+@dataclass(frozen=True, slots=True)
+class BackendArtifactValidation:
+    """The structural contract proved for one exact backend artifact."""
+
+    contract: BackendArtifactContract
+    identity: StableRegularFileIdentity
+
+    def admits(self, identity: StableRegularFileIdentity) -> bool:
+        return (identity.sha256, identity.size) == (
+            self.identity.sha256,
+            self.identity.size,
+        )
 
 
 def stdlib_archive_contract(target_triple: str | None) -> BackendArtifactContract:

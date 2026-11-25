@@ -198,6 +198,7 @@ def _emit_backend_pipeline_outputs(
                 require_linked=require_linked,
                 capture_link_inputs=capture_link_inputs,
                 emission_origin=prepared_backend_compile.backend_emission_origin,
+                output_validation=prepared_backend_compile.output_validation,
                 compiler_cache_path=cache_path if cache else None,
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,

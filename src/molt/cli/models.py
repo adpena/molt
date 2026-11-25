@@ -86,7 +86,10 @@ if TYPE_CHECKING:
         SyntaxErrorName,
     )
     from molt.frontend import ClassId, ClassModel
-    from molt.cli.backend_artifact_contract import BackendArtifactContract
+    from molt.cli.backend_artifact_contract import (
+        BackendArtifactContract,
+        BackendArtifactValidation,
+    )
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import (
@@ -899,6 +902,7 @@ class _BackendCacheSetup:
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
     backend_emission_origin: BackendEmissionOrigin | None = None
+    output_validation: BackendArtifactValidation | None = None
 
 
 @dataclass(frozen=True)
@@ -2175,6 +2179,7 @@ class _PreparedBackendCompile:
     backend_daemon_health: dict[str, Any] | None
     backend_daemon_config_digest: str | None
     backend_emission_origin: BackendEmissionOrigin | None = None
+    output_validation: BackendArtifactValidation | None = None
 
 
 @dataclass(frozen=True)
