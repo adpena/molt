@@ -192,6 +192,13 @@ def _string_sequence(value: object, *, label: str) -> tuple[str, ...]:
     return tuple(cast(Sequence[str], value))
 
 
+def validate_runtime_features(value: object) -> tuple[str, ...]:
+    features = _string_sequence(value, label="features")
+    if features != tuple(sorted(set(features))):
+        raise ValueError("runtime features must be sorted and unique")
+    return features
+
+
 def _validated_common_config(payload: object) -> Mapping[str, object]:
     value = string_keyed_mapping(payload)
     required = {
@@ -213,9 +220,7 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
     for field_name in ("cargo_profile", "target_triple", "producer_artifact_selection"):
         if not isinstance(value[field_name], str) or not value[field_name]:
             raise ValueError(f"runtime common configuration {field_name} is invalid")
-    features = _string_sequence(value["runtime_features"], label="features")
-    if features != tuple(sorted(set(features))):
-        raise ValueError("runtime features must be sorted and unique")
+    validate_runtime_features(value["runtime_features"])
     command = _string_sequence(value["cargo_command"], label="Cargo command")
     if not command or command[0] != "cargo":
         raise ValueError("runtime Cargo command must use its content-attested role")

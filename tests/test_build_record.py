@@ -2283,6 +2283,7 @@ def _native_result_fixture(tmp_path: Path):
         *(build_record.RecordedArtifact.capture(paths[name]) for name in paths),
         (),
         None,
+        ("no-default-features", "stdlib_micro"),
     )
     claim = build_record.RecordedBuildClaim.capture(
         build_record.BuildClaimKind.ARTIFACTS, artifacts
@@ -2293,6 +2294,23 @@ def _native_result_fixture(tmp_path: Path):
     record, reason = _write(tmp_path, ledger, paths["binary"])
     assert reason is None
     return paths, ledger, record, result, claim
+
+
+@pytest.mark.parametrize("features", [None, [], ["stdlib_micro", "stdlib_micro"]])
+def test_native_record_without_valid_runtime_variant_rebuilds(
+    tmp_path: Path, features: list[str] | None
+) -> None:
+    _, _, record, _, _ = _native_result_fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    if features is None:
+        payload["result"].pop("runtime_features")
+    else:
+        payload["result"]["runtime_features"] = features
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert not isinstance(
+        build_record.check(record, KEY, claim=lambda _: None, require_result=True),
+        build_record.BuildRecordHit,
+    )
 
 
 @pytest.mark.parametrize("role", ["binary", "archive", "stub", "runtime", "compiler"])

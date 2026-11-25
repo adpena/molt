@@ -399,6 +399,7 @@ class NativeBuildResult:
     compiler: RecordedArtifact
     selected_profiles: tuple[tuple[str, str], ...]
     emission_origin: BackendEmissionOrigin | None
+    runtime_features: tuple[str, ...]
 
     def verify_paths(self) -> None:
         for artifact in (
@@ -450,6 +451,7 @@ class NativeBuildResult:
                 for name in ("binary", "archive", "stub", "runtime", "compiler")
             },
             "selected_profiles": dict(self.selected_profiles),
+            "runtime_features": list(self.runtime_features),
             "emission_origin": None
             if self.emission_origin is None
             else self.emission_origin.payload(),
@@ -458,6 +460,7 @@ class NativeBuildResult:
     @classmethod
     def from_payload(cls, value: object) -> NativeBuildResult:
         from molt.backend_protocol import BackendEmissionOrigin
+        from molt.cli.runtime_identity_schema import validate_runtime_features
 
         if not isinstance(value, dict) or set(value) != {
             "facts",
@@ -467,6 +470,7 @@ class NativeBuildResult:
             "runtime",
             "compiler",
             "selected_profiles",
+            "runtime_features",
             "emission_origin",
         }:
             raise ValueError("invalid native build result")
@@ -476,6 +480,9 @@ class NativeBuildResult:
             for key, item in profiles.items()
         ):
             raise ValueError("invalid native build profiles")
+        runtime_features = validate_runtime_features(value["runtime_features"])
+        if not runtime_features:
+            raise ValueError("native build result has no runtime features")
         return cls(
             facts=NativeBuildFacts.from_payload(value["facts"]),
             binary=RecordedArtifact.from_payload(value["binary"]),
@@ -484,6 +491,7 @@ class NativeBuildResult:
             runtime=RecordedArtifact.from_payload(value["runtime"]),
             compiler=RecordedArtifact.from_payload(value["compiler"]),
             selected_profiles=tuple(sorted(profiles.items())),
+            runtime_features=runtime_features,
             emission_origin=None
             if value["emission_origin"] is None
             else BackendEmissionOrigin.from_payload(value["emission_origin"]),

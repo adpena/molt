@@ -27,6 +27,7 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 from tools import perf_authority as pa  # noqa: E402
 from tools import check_perf_freshness as freshness  # noqa: E402
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 
 
 # --- safe_speedup: a build failure can never become a ratio ------------------
@@ -178,7 +179,7 @@ def _canonical_scoreboard_doc(
     suite = benchmarks or pa.CANONICAL_PERF_BENCHMARKS
 
     def cell_for(benchmark: str, backend: str) -> dict[str, object]:
-        return {
+        cell: dict[str, object] = {
             "benchmark": benchmark,
             "workload": synthetic_workload(benchmark),
             "target": "native",
@@ -225,6 +226,28 @@ def _canonical_scoreboard_doc(
             "repeat_stability": "STABLE_ABOVE",
             "measured_quiescent": True,
         }
+        contract = benchmark_reference_contract(benchmark)
+        if not contract.external_baselines:
+            expected = contract.expected_stdout
+            assert expected is not None
+            cell.update(
+                cpython_ok=False,
+                cold_cpython_s=None,
+                warm_cpython_s=None,
+                warm_speedup=None,
+                cold_speedup=None,
+                startup_tax_ms=None,
+                cpython_peak_rss_mib=None,
+                verdict=pa.perf_schema.VERDICT_CPY_INCOMPAT,
+                output_parity=pa.perf_schema.molt_contract_parity_evidence(
+                    expected, [("molt:cold", expected, "", 0)]
+                ),
+                classification=None,
+                repeat_ci_lo=None,
+                repeat_ci_hi=None,
+                repeat_stability=None,
+            )
+        return cell
 
     return {
         "summary": {"classify_active": classify_active},

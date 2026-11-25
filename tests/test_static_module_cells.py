@@ -32,8 +32,10 @@ from molt.compiler_analysis.python_import_redirects import (
     NO_IMPORT_REDIRECTS,
     ImportRedirects,
     ImportWriter,
-    PythonImportKeyBound,
     import_redirects,
+)
+from molt.compiler_analysis.python_string_facts import (
+    PythonStringBound,
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
@@ -167,13 +169,13 @@ _WRITER = ImportWriter("app:3", "sys.modules write")
         (import_redirects(key_writers=(("other", _WRITER),)), True),
         (
             import_redirects(
-                bound_writers=((PythonImportKeyBound("m", "d", 3), _WRITER),)
+                bound_writers=((PythonStringBound("m", "d", 3), _WRITER),)
             ),
             False,
         ),
         (
             import_redirects(
-                bound_writers=((PythonImportKeyBound("", ".path", 5), _WRITER),)
+                bound_writers=((PythonStringBound("", ".path", 5), _WRITER),)
             ),
             True,
         ),
@@ -199,12 +201,12 @@ def test_a_redirect_of_the_row_keeps_the_dictionary(
         # An importer's failure carries the body failure it ran.
         ("app", False),
         ("unrelated", True),
-        (PythonImportKeyBound("mo", "", 2), False),
+        (PythonStringBound("mo", "", 2), False),
         (None, False),
     ],
 )
 def test_a_handler_that_can_swallow_the_body_failure_keeps_the_dictionary(
-    guarded: str | PythonImportKeyBound | None, eligible: bool
+    guarded: str | PythonStringBound | None, eligible: bool
 ) -> None:
     """M11/HF-877: a swallowed body failure re-runs the body with the first
     run's cell values, so the module keeps its dictionary."""

@@ -1729,8 +1729,9 @@ def test_bench_results_rejects_unstable_cpython_reference(
     assert entry["molt_output_parity"]["reason"] == "reference_unstable"
 
 
+@pytest.mark.parametrize("stdout", ["1249975000\n", "incorrect\n"])
 def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmark(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdout: str
 ) -> None:
     script = REPO_ROOT / "tests" / "benchmarks" / "bench_channel_throughput.py"
 
@@ -1748,7 +1749,7 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
     monkeypatch.setattr(
         bench_tool,
         "measure_molt_run",
-        lambda *args, **kwargs: bench_tool.RunSample(1.0, "intrinsic-only\n", ""),
+        lambda *args, **kwargs: bench_tool.RunSample(1.0, stdout, ""),
     )
 
     def fail_external_reference(*args, **kwargs):
@@ -1782,7 +1783,7 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
     )
     assert entry["cpython_time_s"] is None
     assert entry["cpython_samples_s"] is None
-    assert entry["molt_ok"] is True
+    assert entry["molt_ok"] == (stdout == "1249975000\n")
     assert entry["molt_output_parity"] == {
         "checked": False,
         "ok": None,

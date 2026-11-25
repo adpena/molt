@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools import perf_causality
+from tools.bench_metadata import benchmark_reference_contract
 from tools.perf_schema import (
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
@@ -90,11 +91,16 @@ def _load_cold_start_budgets() -> dict:
     return budgets
 
 
-def _budget_ms_for(budgets: dict, backend: str, profile: str) -> float:
+def _budget_ms_for(
+    budgets: dict, backend: str, profile: str, *, allow_missing: bool = False
+) -> float | None:
+    """Return the approved ceiling; diagnostic absence cannot excuse bad policy."""
     import math
 
     coordinate = f"{backend}/{profile}"
     entries = budgets.get("budgets")
+    if allow_missing and isinstance(entries, dict) and coordinate not in entries:
+        return None
     entry = entries.get(coordinate) if isinstance(entries, dict) else None
     val = entry.get("budget_ms") if isinstance(entry, dict) else None
     if (
@@ -357,8 +363,8 @@ class Cell:
     codon_equivalent: bool | None = None
     codon_note: str | None = None
 
-    # Historical report vocabulary. Live reference failures are RUN_ERROR;
-    # resource or measurement failure cannot infer semantic incompatibility.
+    # Declared intrinsic workloads check their Molt result without a CPython
+    # floor. Failed or missing CPython measurements remain RUN_ERROR.
     cpython_incompatible: bool = False
 
     # Provenance.
@@ -447,6 +453,13 @@ class Cell:
             return
         if not self.build_ok:
             self.verdict = VERDICT_BUILD_FAILED
+            return
+        contract = benchmark_reference_contract(self.benchmark)
+        if not contract.external_baselines:
+            self.cpython_incompatible = True
+            self.verdict = VERDICT_CPY_INCOMPAT if self.molt_ok else VERDICT_RUN_ERROR
+            if self.note is None:
+                self.note = contract.reason
             return
         # A missing baseline is missing measurement evidence. It does not prove
         # semantic incompatibility and must never waive a failed sample.

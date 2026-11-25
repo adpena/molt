@@ -2226,6 +2226,7 @@ def _bench_one(
     reference_contract = benchmark_reference_contract(script)
     run_args = workload.record["run_args"]
     sealed = workload.record["sealed_inputs"] is not None
+    cpython_only = sealed or "reference_wheel" in workload.record
     if sealed and "cpython" not in runtimes:
         raise ValueError(
             "sealed application measurement requires a qualified CPython reference"
@@ -2233,9 +2234,9 @@ def _bench_one(
     for rt_name, cmd in runtimes.items():
         if not reference_contract.external_baselines:
             continue
-        if sealed and rt_name != "cpython":
+        if cpython_only and rt_name != "cpython":
             print(
-                f"Refusing {rt_name} for {name}: sealed reference protocol is not qualified.",
+                f"Skipping {rt_name} for {name}: reference admission is CPython-only.",
                 file=sys.stderr,
             )
             continue
@@ -2271,7 +2272,7 @@ def _bench_one(
     codon_size: float | None = None
     codon_ok = False
     codon_batch: SampleBatch | None = None
-    if use_codon and reference_contract.external_baselines and not sealed:
+    if use_codon and reference_contract.external_baselines and not cpython_only:
         workload.verify()
         runner = _prepare_codon_runner(
             Path(script),
@@ -2321,7 +2322,7 @@ def _bench_one(
     nuitka_size: float | None = None
     nuitka_ok = False
     nuitka_batch: SampleBatch | None = None
-    if use_nuitka and reference_contract.external_baselines and not sealed:
+    if use_nuitka and reference_contract.external_baselines and not cpython_only:
         workload.verify()
         runner = _prepare_nuitka_runner(
             Path(script),
@@ -2369,7 +2370,7 @@ def _bench_one(
     pyodide_size: float | None = None
     pyodide_ok = False
     pyodide_batch: SampleBatch | None = None
-    if use_pyodide and reference_contract.external_baselines and not sealed:
+    if use_pyodide and reference_contract.external_baselines and not cpython_only:
         workload.verify()
         runner = _prepare_pyodide_runner(
             Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
@@ -2457,6 +2458,21 @@ def _bench_one(
             )
             molt_ok = molt_batch.ok
             molt_failure = molt_batch.failure
+            if molt_ok and not reference_contract.external_baselines:
+                output = _stable_output(molt_batch)
+                if output is None or not reference_contract.molt_output_matches(
+                    *output
+                ):
+                    molt_ok = False
+                    molt_failure = MoltFailure(
+                        phase="run",
+                        status="runtime_failed",
+                        returncode=0,
+                        timed_out=False,
+                        elapsed_s=None,
+                        detail="intrinsic_oracle_mismatch",
+                        message=f"expected stdout {reference_contract.expected_stdout!r} and empty stderr",
+                    )
             if molt_ok:
                 molt_samples = molt_batch.times_s
                 molt_time = statistics.mean(molt_samples)
@@ -2823,6 +2839,7 @@ def _main(workload_custody: ExitStack):
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
     bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    cpython_command = cpython_reference_command() if use_cpython else None
     workloads = {
         script: workload_custody.enter_context(
             admit_benchmark_workload(
@@ -2830,6 +2847,7 @@ def _main(workload_custody: ExitStack):
                 project_root=REPO_ROOT,
                 run_args=resolve_benchmark_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
+                cpython_command=cpython_command,
             )
         )
         for script in benchmarks

@@ -699,6 +699,7 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         output_obj=app,
         stub_path=first.stub_path,
         runtime_lib=runtime,
+        runtime_features=identity.runtime_features,
         external_native_artifacts=(),
         diagnostics_enabled=False,
         build_diagnostics_payload=lambda: (None, None),

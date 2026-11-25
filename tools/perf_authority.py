@@ -670,7 +670,7 @@ def perf_methodology_problems(provenance: Mapping[str, Any]) -> list[str]:
 
 
 def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
-    """One fail-closed acceptance rule for each required CPython comparison.
+    """Require each core workload to pass its declared reference contract.
 
     Classification remains diagnostic; only a measured, quiescent, repeated
     confidence interval entirely above CPython establishes a release win.
@@ -678,6 +678,7 @@ def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
     import math
 
     from tools.bench_evidence import workload_identity_problems
+    from tools.bench_metadata import benchmark_reference_contract
 
     problems: list[str] = perf_schema.cell_execution_host_problems(cell)
     problems.extend(workload_identity_problems(cell.get("workload")))
@@ -686,18 +687,37 @@ def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
         "benchmark"
     ):
         problems.append("benchmark name differs from admitted workload entry")
-    for field in ("build_ok", "molt_ok", "cpython_ok", "stable", "measured_quiescent"):
+    for field in ("build_ok", "molt_ok", "stable", "measured_quiescent"):
         if cell.get(field) is not True:
             problems.append(f"{field} must be true")
+    if cell.get("repeat_passes") != int(CANONICAL_PERF_REPEAT):
+        problems.append(f"repeat_passes must be {int(CANONICAL_PERF_REPEAT)}")
+    parity = cell.get("output_parity")
+    contract = benchmark_reference_contract(str(cell.get("benchmark")))
+    if not contract.external_baselines:
+        if cell.get("verdict") != perf_schema.VERDICT_CPY_INCOMPAT:
+            problems.append("Molt-only workload requires its no-reference verdict")
+        if not perf_schema.molt_contract_parity_passes(
+            parity, contract.expected_stdout
+        ):
+            problems.append(
+                "Molt-only workload must match its declared output contract"
+            )
+        return problems
+    if cell.get("cpython_ok") is not True:
+        problems.append("cpython_ok must be true")
     for field, expected in (
         ("verdict", "GREEN"),
         ("classification", "GREEN_STABLE"),
         ("repeat_stability", "STABLE_ABOVE"),
-        ("repeat_passes", int(CANONICAL_PERF_REPEAT)),
     ):
         if cell.get(field) != expected:
             problems.append(f"{field} must be {expected!r}")
-    if not perf_schema.output_parity_passes(cell.get("output_parity")):
+    if (
+        not isinstance(parity, Mapping)
+        or parity.get("reference_runtime") != "cpython"
+        or not perf_schema.output_parity_passes(parity)
+    ):
         problems.append("output parity must prove the same observable program")
     lo, hi = cell.get("repeat_ci_lo"), cell.get("repeat_ci_hi")
     if not all(
@@ -1011,6 +1031,11 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
     if not cells:
         problems.append("measured cells are missing")
         return problems
+    problems.extend(
+        perf_schema.runtime_board_binding_problems(
+            doc, cells, require_native_variants=True
+        )
+    )
     for cell in cells:
         observation = (
             cell.get("build_observation") if isinstance(cell, Mapping) else None

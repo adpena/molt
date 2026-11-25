@@ -143,6 +143,15 @@ consumer migrations. A source checkpoint is not a completed finding.
 | WASM through LLVM's wasm32 target, P0 | `e605908087` moved WASM codegen to LLVM and deleted the handwritten generator. `edfc0b42c9` delivered the LLVM split side-module execution path. The split app meets its budget (HF-859). Active work includes shared runtime size (HF-869), build latency (HF-861) and installed native/WASM qualification. The [performance design](../design/foundation/call_anatomy.md) owns the architecture and measurements. |
 | Scientific witness and remaining matrix (HF-04 and E1/E3) | Reproduce NumPy/SciPy extension seals through the current source-extension producer. Preserved schema-4 native seals are historical; schema-7 admission additionally binds consumed Python providers and Meson dependency facts. Historical digests cannot supply current registry entries. Reuse compatible products for native/WASM witness execution and the remaining declared platform/version/profile consumers. |
 
+On 2026-11-24 the exploratory core run at `22ea11aec3` attempted all 62
+Cranelift workloads. CPython and Molt matched stdout, stderr and exit status
+on 57. Four CPython controls failed to start or import, and one async compile
+timed out. The warm timings share the host with landing builds. This is
+coverage evidence for V1-07 and HF-185. Release measurement still requires a
+quiet host, comparable controls and complete LLVM and Wasm coverage. The
+batch restart regression proves recovery from an expired daemon lease. The
+first async timeout still needs its own compile-phase trace.
+
 Asyncio remains a P0 product outcome: integrated park/wake code does not qualify
 its lifecycle, target, idle CPU, wakeup latency or throughput contract. Constructor
 receiver gaps, including repeat subclass preservation and foreign-class rejection,

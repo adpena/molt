@@ -797,7 +797,11 @@ def _measure(workload: Workload, ctx: Mapping[str, Any]) -> dict[str, Any]:
         build_env.update(lane.environment())
     entry: dict[str, Any] = {"name": workload.name, "build_s": None, "run_s": None}
     with admit_benchmark_workload(
-        script, project_root=ROOT, run_args=run_args, molt_args=molt_args
+        script,
+        project_root=ROOT,
+        run_args=run_args,
+        molt_args=molt_args,
+        cpython_command=(ctx["cpython"], "-I"),
     ) as admitted:
         identity = admitted.record
 

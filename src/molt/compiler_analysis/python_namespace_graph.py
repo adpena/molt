@@ -44,6 +44,11 @@ from molt.compiler_analysis.python_value_identity import (
 )
 
 
+# Computed member writes affect every premise only when they can spell
+# one of the names governing instance type or closure cell identity.
+_IDENTITY_WRITE_NAMES: Final = ("__class__", "cell_contents")
+
+
 # The frame-locals writer as a scan view states it: present, site elided.
 _SCAN_FRAME_LOCALS_WRITER: Final = "a frame-locals writer in the graph"
 
@@ -339,9 +344,8 @@ class PythonGraphNamespaceWrites:
     member_stores: Mapping[str, str] = field(default_factory=dict)
     # Sources whose module value escapes; None when a computed key's does.
     escaped: frozenset[Path] | None = frozenset()
-    # The first computed-name attribute store on a receiver that is not a
-    # module (``computed_member_store`` rows).
-    computed_member_store: str | None = None
+    # First computed writer for each identity-sensitive member it may spell.
+    computed_member_writes: Mapping[str, str] = field(default_factory=dict)
     # Who can change what an import yields (bedrock §13, D1): one graph fact.
     import_redirects: ImportRedirects = NO_IMPORT_REDIRECTS
     # The first ``frame_locals`` row's site (a PEP 667 frame proxy use that
@@ -381,12 +385,12 @@ class PythonGraphNamespaceWrites:
                 ),
             ),
             _instance_class_writer(
-                self.member_stores, self.computed_member_store, native_code
+                self.member_stores, self.computed_member_writes, native_code
             ),
             _frame_locals_writer(self.frame_locals_writer, native_code),
             _cell_writer(
                 self.member_stores,
-                self.computed_member_store,
+                self.computed_member_writes,
                 self.frame_locals_writer,
                 native_code,
             ),
@@ -404,22 +408,25 @@ def _redirected_canonical(
 
 
 def _instance_class_writer(
-    stores: Mapping[str, str], computed: str | None, native_code: bool
+    stores: Mapping[str, str], computed: Mapping[str, str], native_code: bool
 ) -> str | None:
     if "__class__" in stores:
         return stores["__class__"]
-    if computed is not None:
-        return computed
-    return "a native extension module" if native_code else None
+    site = computed.get("__class__")
+    return site or ("a native extension module" if native_code else None)
 
 
 def _cell_writer(
     stores: Mapping[str, str],
-    computed: str | None,
+    computed: Mapping[str, str],
     frame_locals: str | None,
     native_code: bool,
 ) -> str | None:
-    for site in (stores.get("cell_contents"), computed, frame_locals):
+    for site in (
+        stores.get("cell_contents"),
+        computed.get("cell_contents"),
+        frame_locals,
+    ):
         if site is not None:
             return site
     return "a native extension module" if native_code else None
@@ -488,7 +495,9 @@ UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
     ALL_INVALID_MEMBERS,
     None,
     True,
-    computed_member_store="an unknown graph",
+    computed_member_writes=MappingProxyType(
+        dict.fromkeys(_IDENTITY_WRITE_NAMES, "an unknown graph")
+    ),
     import_redirects=UNKNOWN_IMPORT_REDIRECTS,
     frame_locals_writer="an unknown graph",
 )
@@ -594,7 +603,7 @@ class PythonGraphNamespaceIndex:
         self.code_rebinding = False
         self.member_stores: dict[str, str] = {}
         self.local_definition_stores: dict[str, str] = {}
-        self.computed_member_store: str | None = None
+        self.computed_member_writes: dict[str, str] = {}
         self.frame_locals_writer: str | None = None
         self.escaped: set[Path] | None = set()
         self.import_redirects = NO_IMPORT_REDIRECTS
@@ -615,14 +624,13 @@ class PythonGraphNamespaceIndex:
             self.local_definition_stores, batch.local_definition_stores
         )
         self.local_definition_stores.update(new_local_stores)
-        # The instance class writer and the cell writer are facts of every
-        # premise.
-        escape_global = "__class__" in new_stores or "cell_contents" in new_stores
-        if batch.computed_member_store is not None and (
-            self.computed_member_store is None
-        ):
-            self.computed_member_store = batch.computed_member_store
-            escape_global = True
+        new_computed = _earlier_sites(
+            self.computed_member_writes, batch.computed_member_writes
+        )
+        self.computed_member_writes.update(new_computed)
+        escape_global = bool(new_computed) or any(
+            name in new_stores for name in _IDENTITY_WRITE_NAMES
+        )
         # The frame-locals writer is one fact of every premise.
         if batch.frame_locals_writer is not None and self.frame_locals_writer is None:
             self.frame_locals_writer = batch.frame_locals_writer
@@ -732,12 +740,12 @@ class PythonGraphNamespaceIndex:
                 ),
             ),
             _instance_class_writer(
-                self.member_stores, self.computed_member_store, native_code
+                self.member_stores, self.computed_member_writes, native_code
             ),
             _frame_locals_writer(self.frame_locals_writer, native_code),
             _cell_writer(
                 self.member_stores,
-                self.computed_member_store,
+                self.computed_member_writes,
                 self.frame_locals_writer,
                 native_code,
             ),
@@ -777,7 +785,7 @@ def graph_python_namespace_writes(
     members = NO_INVALID_MEMBERS
     member_stores: dict[str, str] = {}
     local_definition_stores: dict[str, str] = {}
-    computed_member_store: tuple[int, str] | None = None
+    computed_member_writes: dict[str, str] = {}
     frame_locals: tuple[int, str] | None = None
     escaped: set[Path] | None = set()
     label = writer[0] if writer is not None else "<module>"
@@ -843,8 +851,11 @@ def graph_python_namespace_writes(
                 frame_locals = (write.line, f"{label}:{write.line}")
             continue
         if write.construct == "computed_member_store":
-            if computed_member_store is None or write.line < computed_member_store[0]:
-                computed_member_store = (write.line, f"{label}:{write.line}")
+            for name in _IDENTITY_WRITE_NAMES:
+                if (
+                    write.key_bound is None or write.key_bound.admits(name)
+                ) and _earlier_site(computed_member_writes.get(name), site):
+                    computed_member_writes[name] = site
             continue
         if write.construct == "member_store":
             assert write.name is not None
@@ -947,7 +958,7 @@ def graph_python_namespace_writes(
         code_rebinding,
         MappingProxyType(member_stores),
         None if escaped is None else frozenset(escaped),
-        None if computed_member_store is None else computed_member_store[1],
+        MappingProxyType(computed_member_writes),
         import_redirects(
             global_writers,
             key_writers,

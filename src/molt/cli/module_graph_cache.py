@@ -933,7 +933,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 # Completed projections from older schemas are never admitted as source requests.
 # 54: keys and source requests preserve every Python string code point.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 54
+# 55: bounded string spellings inform import and namespace invalidation.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 55
 
 
 def _import_scan_cache_key(

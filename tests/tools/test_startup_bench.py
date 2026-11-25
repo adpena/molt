@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
 from molt.python_interpreter import PythonInterpreterError
+from tests.process_guard_common import run_guarded_test_process
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    write_wasm_execution_manifest,
+)
 from tools import startup_bench
 
 
@@ -39,6 +45,42 @@ def test_node_phase_parser_reads_marker() -> None:
     )
     assert payload is not None
     assert payload["preload_to_exit_ms"] == 1.5
+
+
+def test_node_probe_records_compile_before_refusing_an_invalid_linked_abi(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for JavaScript startup phase evidence")
+    module = tmp_path / "linked.wasm"
+    module.write_bytes(EMPTY_WASM_MODULE)
+    manifest = write_wasm_execution_manifest(tmp_path, linked=module)
+    result = run_guarded_test_process(
+        [
+            node,
+            "--require",
+            str(startup_bench.NODE_PROBE),
+            str(startup_bench.WASM_RUNNER),
+            str(manifest),
+        ],
+        cwd=startup_bench.ROOT,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "application missing exact attached execution ABI section" in result.stderr
+    phases = startup_bench._phase_stats([{"stderr": result.stderr}])
+    assert phases["node_to_preload_ms"]["count"] == 1
+    assert phases["runner:manifest_and_module"]["median_ms"] >= 0
+    assert phases["runner:linked_engine_compile"]["median_ms"] >= 0
+    assert phases["runner:host_dispose"]["median_ms"] >= 0
+    assert "runner:linked_instantiate_and_abi" not in phases
+    assert "runner:linked_host_bootstrap" not in phases
+    assert "runner:linked_guest_entry" not in phases
 
 
 def test_baseline_attestation_does_not_claim_variant_ii_improvement() -> None:
