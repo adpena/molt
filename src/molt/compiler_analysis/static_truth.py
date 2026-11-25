@@ -788,6 +788,13 @@ def static_expression_result(
 
     if isinstance(expr, ast.Constant):
         return StaticExpressionResult.scalar(expr.value)
+    if isinstance(expr, ast.Call) and fact_result is not None:
+        # A root call (for example the condition of an if statement) uses
+        # the same completed invocation result as a call nested in an
+        # expression. The provider also owns the evaluation obligation.
+        recorded = fact_result(expr)
+        if recorded is not None:
+            return recorded
     if isinstance(expr, ast.BinOp):
         return static_binary_result(child(expr.left), expr.op, child(expr.right))
     if isinstance(expr, ast.NamedExpr):

@@ -69,6 +69,15 @@ class CallNamedBuiltinDispatchMixin(
         """
         index = self.python_binding_index
         fact = index.call_fact(node) if index is not None else None
+        if (
+            index is not None
+            and fact is not None
+            and fact.callee_is(PythonIdentity.INTRINSICS_RUNTIME_ACTIVE)
+            and fact.callee_elision_safe
+        ):
+            result = index.expression_result(node)
+            if result.value_known and not result.evaluation_required:
+                return self._emit_const_value(result.value)
         name = fact.exact_builtin_name() if fact is not None else None
         elision_safe = fact is not None and fact.callee_elision_safe
         if self._builtin_read_replaces_guard(node.func) is not None:
