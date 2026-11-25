@@ -175,6 +175,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let exact = raise.exact_types();
     record_inline_int_proofs(func, &repr, &vr, exact);
     pending.sort_unstable_by(|a, b| b.cmp(a));
+    let exception_labels = std::cell::OnceCell::new();
     while let Some(block) = pending.pop() {
         let Some((index, expansion)) = func.blocks[&block]
             .ops
@@ -210,9 +211,11 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
             }
             Expansion::FloatSqrt { operand } => expand_float_sqrt(func, block, split, operand),
             Expansion::Truthiness => expand_truthiness(func, block, split),
-            Expansion::GuardedCall => expand_guarded_call(func, block, split, None),
+            Expansion::GuardedCall => {
+                expand_guarded_call(func, block, split, None, &exception_labels)
+            }
             Expansion::ProvenCall { closure } => {
-                expand_guarded_call(func, block, split, Some(closure))
+                expand_guarded_call(func, block, split, Some(closure), &exception_labels)
             }
         };
         stats.ops_added += 6;
@@ -1170,6 +1173,54 @@ pub fn lower_static_call_arguments(
     true
 }
 
+/// Follow the call's exceptional observer without publishing a successful
+/// result. The refused call never adopts its arguments.
+fn recursion_refusal(
+    func: &mut TirFunction,
+    op: &TirOp,
+    check: Option<&TirOp>,
+    block: BlockId,
+) -> TirBlock {
+    let span = op.source_span;
+    let mut raise = runtime_call(
+        molt_ir::runtime_fn_generated::RuntimeFn::RaiseRecursionError,
+        vec![],
+        vec![],
+        span,
+    );
+    if let Some(source) = op.attrs.get("exception_source") {
+        raise
+            .attrs
+            .insert("exception_source".into(), source.clone());
+    }
+    let mut failure = vec![raise];
+    if let Some(mut check) = check.cloned() {
+        if check
+            .operands
+            .iter()
+            .any(|value| op.results.contains(value))
+        {
+            let none = fresh_typed(func, TirType::None);
+            failure.push(new_op(OpCode::ConstNone, vec![], vec![none], span));
+            for value in &mut check.operands {
+                if op.results.contains(value) {
+                    *value = none;
+                }
+            }
+        }
+        for result in &mut check.results {
+            let ty = func
+                .value_types
+                .get(result)
+                .cloned()
+                .unwrap_or(TirType::DynBox);
+            *result = fresh_typed(func, ty);
+        }
+        failure.push(check);
+    }
+    new_block(block, failure, Terminator::Return { values: vec![] })
+}
+
 /// Charge ordinary compiled calls whose target can reenter Python. The callee's
 /// finalized body proves when admission can be omitted. An extern has no such
 /// proof. Guarded calls own admission in their guarded expansion.
@@ -1210,55 +1261,11 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             cond_branch(admitted, enter, refuse),
         );
 
-        let mut raise = runtime_call(
-            molt_ir::runtime_fn_generated::RuntimeFn::RaiseRecursionError,
-            vec![],
-            vec![],
-            span,
-        );
-        if let Some(source) = op.attrs.get("exception_source") {
-            raise
-                .attrs
-                .insert("exception_source".into(), source.clone());
-        }
-        let mut failure = vec![raise];
-        // A source handler may catch this refusal in the calling function.
-        // The refusal supplies None for an exceptional edge carrying the
-        // unproduced call result, and has fresh SSA definitions of its own.
-        if let Some(check) = rest
+        let check = rest
             .first()
-            .filter(|check| check.opcode == OpCode::CheckException)
-        {
-            let mut check = check.clone();
-            if check
-                .operands
-                .iter()
-                .any(|value| op.results.contains(value))
-            {
-                let none = fresh_typed(func, TirType::None);
-                failure.push(new_op(OpCode::ConstNone, vec![], vec![none], span));
-                for value in &mut check.operands {
-                    if op.results.contains(value) {
-                        *value = none;
-                    }
-                }
-            }
-            for result in &mut check.results {
-                let ty = func
-                    .value_types
-                    .get(result)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
-                *result = fresh_typed(func, ty);
-            }
-            failure.push(check);
-        }
-        // No callee adopted its arguments. Lifetime finalization sees the
-        // refusal edge and releases every outstanding owner exactly once.
-        func.blocks.insert(
-            refuse,
-            new_block(refuse, failure, Terminator::Return { values: vec![] }),
-        );
+            .filter(|check| check.opcode == OpCode::CheckException);
+        let failure = recursion_refusal(func, &op, check, refuse);
+        func.blocks.insert(refuse, failure);
         let mut entered = Vec::with_capacity(rest.len() + 3);
         entered.push(new_op(OpCode::RecursionCount, vec![], vec![], span));
         entered.push(op);
@@ -1732,6 +1739,7 @@ fn expand_guarded_call(
     block: BlockId,
     split: Split,
     proven: Option<bool>,
+    exception_labels: &std::cell::OnceCell<HashMap<i64, BlockId>>,
 ) -> BlockId {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     let Split {
@@ -1810,7 +1818,25 @@ fn expand_guarded_call(
         ),
     );
 
-    let direct_result = fresh_typed(func, TirType::DynBox);
+    // An admitted call's exact result belongs to its continuation. A
+    // recursion refusal must still run the source observer, including any
+    // work poll, but its sentinel is only input to that exceptional edge.
+    let checked_result = rest.first().filter(|check| {
+        proven.is_some()
+            && op.exact_result_proof().is_some()
+            && check.opcode == OpCode::CheckException
+            && crate::tir::dominators::exception_transfer_target(
+                check,
+                exception_labels
+                    .get_or_init(|| crate::tir::dominators::exception_label_to_block(func)),
+            )
+            .is_some()
+    });
+    let direct_result = if checked_result.is_some() {
+        result
+    } else {
+        fresh_typed(func, TirType::DynBox)
+    };
     let mut call = op.clone();
     call.opcode = OpCode::DirectCall;
     call.origin = None;
@@ -1838,11 +1864,20 @@ fn expand_guarded_call(
     }
     direct_ops.push(call);
     direct_ops.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
+    if let Some(check) = checked_result {
+        let failure = recursion_refusal(func, &op, Some(check), refuse);
+        func.blocks.insert(refuse, failure);
+        direct_ops.extend(rest);
+        func.blocks
+            .insert(direct, new_block(direct, direct_ops, terminator));
+        func.move_loop_terminator(block, direct);
+        return direct;
+    }
+
     func.blocks.insert(
         direct,
         new_block(direct, direct_ops, branch(join, direct_result)),
     );
-
     let none = fresh_typed(func, TirType::None);
     let mut raise = runtime_call(RuntimeFn::RaiseRecursionError, vec![], vec![], span);
     if let Some(source) = op.attrs.get("exception_source") {

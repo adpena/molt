@@ -3,11 +3,11 @@
 import operator as _operator
 import sys as _sys
 
-import _intrinsics as _molt_intrinsics
+from _intrinsics import runtime_active as _runtime_active
 
-
-# Store the Boolean decision shared by initialization and every accessor.
-_MOLT_RUNTIME_ACTIVE = not not _molt_intrinsics.runtime_active()
+# A captured compiler intrinsic lets the frontend specialize the runtime
+# arm while the same source keeps its host-Python implementation.
+_MOLT_RUNTIME_ACTIVE = _runtime_active()
 
 if _MOLT_RUNTIME_ACTIVE:
     from _intrinsics import require_intrinsic as _require_intrinsic

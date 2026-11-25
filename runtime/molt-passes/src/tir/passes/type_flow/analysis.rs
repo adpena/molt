@@ -222,15 +222,22 @@ impl Analysis {
                         if self.contexts.len() != fresh {
                             next.push(target);
                         }
-                        self.readers[target.0].insert(id);
-                        let ret = inputs
-                            .forwarded_result(callee, site, &facts)
-                            .unwrap_or_else(|| self.contexts[target.0].ret.clone());
+                        let ret = if site.result_demanded {
+                            self.readers[target.0].insert(id);
+                            inputs
+                                .forwarded_result(callee, site, &facts)
+                                .unwrap_or_else(|| self.contexts[target.0].ret.clone())
+                        } else {
+                            TirType::Never
+                        };
                         (Some(target), ret)
                     }
                 };
                 let context = &mut self.contexts[id.0];
                 context.targets[position] = target;
+                if !site.result_demanded {
+                    continue;
+                }
                 let result = join_return(&context.results[position], &ret);
                 if result != context.results[position] {
                     context.results[position] = result;

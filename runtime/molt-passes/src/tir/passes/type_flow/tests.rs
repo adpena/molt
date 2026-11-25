@@ -320,6 +320,23 @@ fn generic_contexts_include_resolved_leaf_results_and_skip_isolated_bodies() {
 }
 
 #[test]
+fn a_discarded_result_still_specializes_its_call() {
+    let mut main = caller("main", FunctionId(0), &[Literal::Int(30)]);
+    let entry = main.entry_block;
+    let answer = const_int(&mut main, entry, 0);
+    main.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![answer],
+    };
+    let mut module = TirModule::with_own_table("m", vec![fib(), main]);
+
+    run(&mut module, &llvm(), &HashSet::default(), false);
+
+    let call = calls(body(&module, "main"))[0];
+    assert_eq!(call.callee, Some(id_of(&module, "fib__tf_i")));
+    assert_eq!(call.exact_result_proof(), Some(TirType::I64));
+}
+
+#[test]
 fn recursive_int_context_enters_its_own_clone() {
     let mut module = TirModule::with_own_table(
         "m",

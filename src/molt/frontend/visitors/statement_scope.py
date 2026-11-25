@@ -8,6 +8,9 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    COMPILER_INTRINSIC_CALLABLES,
+)
 from molt.compiler_analysis.python_namespace_writes import module_binds_name
 
 import ast
@@ -645,31 +648,15 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 if alias.name == "*":
                     continue
                 bind_name = alias.asname or alias.name
-                # Direct calls like `_require_intrinsic("name")` are rewritten
-                # to invoke the canonical runtime resolver by
-                # `_try_lower_intrinsic_lookup_call`. When the imported name is
-                # captured as a value (for example `_ri=_require_intrinsic` in a
-                # default argument), bind it to that same runtime callable so
-                # aliasing preserves the public two-argument API contract
-                # (`name`, optional `namespace`).
-                if alias.name in {
-                    "require_intrinsic",
-                    "_require_intrinsic",
-                }:
-                    bound_val = self._emit_intrinsic_function(
-                        "molt_require_intrinsic_runtime"
-                    )
-                elif alias.name in {"load_intrinsic", "_load_intrinsic"}:
-                    bound_val = self._emit_intrinsic_function(
-                        "molt_load_intrinsic_runtime"
-                    )
-                elif alias.name == "runtime_active":
-                    bound_val = self._emit_intrinsic_function(
-                        "molt_runtime_active_runtime"
-                    )
-                else:
+                # Binding analysis obtains the same callable identity from this
+                # catalog. The runtime's callable constructor owns its defaults.
+                member = COMPILER_INTRINSIC_CALLABLES.get(alias.name)
+                if member is None:
                     bound_val = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=bound_val))
+                else:
+                    _, runtime_name = member
+                    bound_val = self._emit_intrinsic_function(runtime_name)
                 self._publish_import_binding(bind_name, bound_val)
                 self._record_import_binding_origin(
                     bind_name, module_name, attr_name=alias.name

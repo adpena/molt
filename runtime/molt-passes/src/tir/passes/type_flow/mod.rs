@@ -315,13 +315,14 @@ fn decide(
         .map(|(position, site)| {
             let target = caller.targets[position];
             let retarget = target.and_then(|target| clone_of_context[target.0]);
-            // A non-clonable body can forward its actual argument even when
-            // the generic context cannot type its own formal parameter.
+            // Ownership lowering can use the final carrier even when type
+            // analysis did not subscribe to changes in the result.
             let result = target.map(|target| {
                 let callee = analysis.context(target);
-                if inputs.specializable[callee.body] {
+                if inputs.specializable[callee.body] || !site.result_demanded {
                     callee.ret.clone()
                 } else {
+                    // A non-clonable body can still forward an actual argument.
                     caller.results[position].clone()
                 }
             });

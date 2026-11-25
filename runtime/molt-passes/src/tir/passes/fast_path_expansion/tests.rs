@@ -1442,6 +1442,43 @@ fn a_proven_call_skips_admission_and_the_code_guard() {
     let _ = result;
 }
 
+#[test]
+fn recursion_refusal_does_not_feed_the_proven_call_result() {
+    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+
+    let (mut func, result) = guarded_call(true);
+    let entry = func.entry_block;
+    let handler = func.fresh_block();
+    let label = 20;
+    func.label_id_map.insert(handler.0, label);
+    func.blocks.insert(
+        handler,
+        super::new_block(handler, vec![], Terminator::Return { values: vec![] }),
+    );
+    let body = func.blocks.get_mut(&entry).unwrap();
+    body.ops[0].set_proven_target(true);
+    assert!(body.ops[0].mark_exact_result_proof(&TirType::I64));
+    let mut check = TirOp::new(OpCode::CheckException, vec![], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(label));
+    check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+    body.ops.push(check);
+
+    assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
+    assert_valid(&func);
+    let refusal = ops(&func, OpCode::CallRuntime)
+        .into_iter()
+        .find(|(_, op)| op.runtime == Some(RuntimeFn::RaiseRecursionError))
+        .unwrap()
+        .0;
+    let failure = &func.blocks[&refusal];
+    assert_eq!(failure.ops[1].opcode, OpCode::CheckException);
+    assert!(matches!(failure.terminator, Terminator::Return { ref values } if values.is_empty()));
+    assert_eq!(
+        crate::tir::type_refine::extract_exact_scalar_map(&func).get(&result),
+        Some(&TirType::I64)
+    );
+}
+
 /// A proven call of a closure target (design 78 5.10) passes the callee's own
 /// closure tuple, read live from the function object, after the callable:
 /// the place the target's entry takes its environment. An unproven closure
