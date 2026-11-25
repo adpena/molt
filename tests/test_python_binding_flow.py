@@ -2614,8 +2614,9 @@ def test_binding_revision_matches_fresh_facts_after_leaf_or_prefix_reuse(
 
 
 @pytest.mark.parametrize("initializer", ["", "external_callback()\n"])
-def test_unread_foreign_slots_project_exact_namespace_and_layout(
-    monkeypatch: pytest.MonkeyPatch, initializer: str
+@pytest.mark.parametrize("foreign_name", ["extra", "__getattr__"])
+def test_unread_foreign_slots_do_not_publish_source_values(
+    monkeypatch: pytest.MonkeyPatch, initializer: str, foreign_name: str
 ) -> None:
     flow = python_binding_flow
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
@@ -2624,23 +2625,27 @@ def test_unread_foreign_slots_project_exact_namespace_and_layout(
     )
     policy = PythonBindingPolicy(
         foreign_namespace_writes=(),
-        foreign_namespace_universe=frozenset({"extra", "first"}),
+        foreign_namespace_universe=frozenset({foreign_name, "first"}),
         opaque_activation_sources=(),
     )
-    analyze_python_source_bindings(source, policy=policy)
+    initial = analyze_python_source_bindings(source, policy=policy)
     analyze_python_source_bindings(
         source, policy=replace(policy, foreign_namespace_writes=("first",))
     )
-    revised = replace(policy, foreign_namespace_writes=("extra", "first"))
+    revised = replace(
+        policy, foreign_namespace_writes=tuple(sorted((foreign_name, "first")))
+    )
     projected = analyze_python_source_bindings(source, policy=revised)
     assert flow.python_binding_core_computations() == 1
 
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     fresh = analyze_python_source_bindings(source, policy=revised)
     assert replace(projected, telemetry=fresh.telemetry) == fresh
-    names = {name for _, bindings, _ in fresh.source_namespaces for name, _ in bindings}
-    assert ("extra" in names) == bool(initializer)
-    assert projected.scopes[0].binding_slots == fresh.scopes[0].binding_slots
+    assert projected.source_namespaces == initial.source_namespaces
+    assert foreign_name in dict(projected.scopes[0].binding_slots)
+    assert projected.module_getattr_may_be_bound is (
+        bool(initializer) and foreign_name == "__getattr__"
+    )
 
 
 def test_small_binding_revision_reuses_initializer_and_independent_jobs(

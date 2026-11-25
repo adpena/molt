@@ -2801,6 +2801,41 @@ def test_module_export_fact_qualifies_target_and_namespace_premise():
         )
 
 
+def test_opaque_module_getattr_still_blocks_proof_of_absent_exports(
+    tmp_path: Path,
+) -> None:
+    from types import ModuleType
+
+    source = "public = 1\n__getattr__ = tuple\n"
+    module = ModuleType("entry")
+    exec(compile(source, "entry.py", "exec"), vars(module))
+    assert getattr(module, "__all__") == tuple("__all__")
+
+    path = write(tmp_path / "entry.py", source)
+    cold = load(path)
+    assert cold.scan.source_requests.all_exports.status == "unknown"
+    assert not any(
+        name == "__getattr__"
+        for owner, names, _ in cold.scan.source_values.namespaces
+        if owner[-1] == "Module"
+        for name, _ in names
+    )
+
+    key = records._import_scan_cache_key(
+        path, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    module_row = next(
+        row for row in payload["source_values"]["namespaces"] if row[0][-1] == "Module"
+    )
+    module_row[1].append(["storage_only", []])
+    replace_source_record("import-scan", key, payload)
+    rebuilt = load(path)
+    assert not rebuilt.cache_hit
+    assert rebuilt.scan.source_requests == cold.scan.source_requests
+    assert load(path).cache_hit
+
+
 def test_module_export_fact_does_not_outlive_source_generation(tmp_path):
     source = write(tmp_path / "entry.py", "__all__ = ['before']\n")
     cache = _ModuleResolutionCache()

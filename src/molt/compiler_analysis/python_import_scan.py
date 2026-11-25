@@ -2814,12 +2814,7 @@ def _compute_static_module_all_exports(
     if unknown is None and exports is None:
         # Absence is a lookup claim. PEP 562 can supply __all__ even when no
         # direct binding exists; source hooks are never an empty export set.
-        if any(
-            name == "__getattr__"
-            for owner, names, _bases in facts.source_namespaces
-            if owner[-1] == "Module"
-            for name, _origins in names
-        ):
+        if facts.module_getattr_may_be_bound:
             unknown = "module __getattr__ may supply __all__"
     if unknown is not None:
         return SourceAllExports("unknown", reason=unknown)

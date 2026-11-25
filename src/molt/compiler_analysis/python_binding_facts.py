@@ -920,6 +920,8 @@ class PythonBindingFacts:
     state_count: int
     telemetry: PythonBindingTelemetry
     slot_names: tuple[str, ...]
+    # Module rows publish source origins. Class rows also retain names of
+    # opaque attributes because a store can invoke their descriptors.
     source_namespaces: tuple[
         tuple[
             PythonSourceKey,
@@ -928,6 +930,8 @@ class PythonBindingFacts:
         ],
         ...,
     ]
+    # Export lookup can invoke this hook even when its origin is opaque.
+    module_getattr_may_be_bound: bool
     source_attributes: tuple[
         tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
     ]
@@ -985,6 +989,7 @@ class PythonBindingFacts:
         source_bases: tuple[
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
         ] = (),
+        module_getattr_may_be_bound: bool = False,
         callbacks_rewrite_metadata: bool = True,
         class_builder_reads: Mapping[PythonNodeKey, IdentityMask] | None = None,
         decoration_annotation_heads: Mapping[PythonNodeKey, IdentityMask] | None = None,
@@ -1013,6 +1018,7 @@ class PythonBindingFacts:
             telemetry=telemetry,
             slot_names=slot_names,
             source_namespaces=source_namespaces,
+            module_getattr_may_be_bound=module_getattr_may_be_bound,
             source_attributes=source_attributes,
             source_bases=source_bases,
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,

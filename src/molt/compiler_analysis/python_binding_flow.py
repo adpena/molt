@@ -265,7 +265,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 71
+_ANALYSIS_SCHEMA: Final = 72
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -522,7 +522,7 @@ class _ForeignNamespaceReads:
     names: frozenset[str]
     declaration_end: int
     callback_end: int
-    tainted_exit: PythonSourceKey | None
+    tainted_at_exit: bool
     has_empty_module_expiry: bool
 
 
@@ -586,25 +586,14 @@ class _BindingAnalysis:
             *callback_layout,
             *slots[reads.callback_end :],
         )
-        # A callback can make an absent slot possibly present at module exit.
-        # Only its namespace row changes, since the transfer made no use of it.
-        empty_origins: frozenset[PythonSourceKey] = frozenset()
-        namespaces = tuple(
-            (
-                owner,
-                tuple(sorted((*bindings, *((name, empty_origins) for name in names))))
-                if owner == reads.tainted_exit
-                else bindings,
-                exposure,
-            )
-            for owner, bindings, exposure in self.facts.source_namespaces
-        )
+        facts = _project_binding_slots(self.facts, new_slots, additions)
+        # A callback may install a module export hook even when the incoming
+        # value has no source origin.
+        if reads.tainted_at_exit and "__getattr__" in names:
+            facts = replace(facts, module_getattr_may_be_bound=True)
         return replace(
             self,
-            facts=replace(
-                _project_binding_slots(self.facts, new_slots, additions),
-                source_namespaces=namespaces,
-            ),
+            facts=facts,
             foreign_namespace_reads=replace(
                 reads, callback_end=reads.callback_end + len(names)
             ),
@@ -3153,7 +3142,8 @@ class _Analyzer:
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
         self._appended_foreign_slots: tuple[int, int] | None = None
-        self._foreign_tainted_exit: PythonSourceKey | None = None
+        self._foreign_tainted_at_exit = False
+        self._module_getattr_may_be_bound = False
         self._has_empty_module_expiry = False
         self._initializer_premise_reads: _InitializerPremiseReads | None = None
         self._capture_initializer: (
@@ -7831,12 +7821,15 @@ class _Analyzer:
         ):
             # Another importer may observe a publication before a later overwrite
             # or deletion. Deferred function writes are admitted by body demand.
-            namespace = self.transfer.source_namespaces.setdefault(
-                self._module_source, {}
-            )
-            namespace[name] = (
-                namespace.get(name, frozenset()) | result.exposed_source_origins
-            )
+            if result.exposed_source_origins:
+                namespace = self.transfer.source_namespaces.setdefault(
+                    self._module_source, {}
+                )
+                namespace[name] = (
+                    namespace.get(name, frozenset()) | result.exposed_source_origins
+                )
+            if name == "__getattr__":
+                self._module_getattr_may_be_bound = True
         if (
             scope.kind == "class"
             and name not in scope.globals
@@ -9881,18 +9874,20 @@ class _Analyzer:
                     self._foreign_reads is not None
                     and self.states.get(module_flow.normal).taint_epoch
                 ):
-                    self._foreign_tainted_exit = self._module_source
+                    self._foreign_tainted_at_exit = True
                 for name, slot in module.slots.items():
                     if (
                         self.states.binding(module_flow.normal, slot)
-                        != UNBOUND_IDENTITY
+                        == UNBOUND_IDENTITY
                     ):
-                        namespace[name] = (
-                            namespace.get(name, frozenset())
-                            | self.states.result(
-                                module_flow.normal, slot
-                            ).exposed_source_origins
-                        )
+                        continue
+                    origins = self.states.result(
+                        module_flow.normal, slot
+                    ).exposed_source_origins
+                    if origins:
+                        namespace[name] = namespace.get(name, frozenset()) | origins
+                    if name == "__getattr__":
+                        self._module_getattr_may_be_bound = True
 
         finally:
             self._observed_stack.pop()
@@ -10011,6 +10006,7 @@ class _Analyzer:
                 )
                 for owner, namespace in sorted(self.transfer.source_namespaces.items())
             ),
+            module_getattr_may_be_bound=self._module_getattr_may_be_bound,
             source_attributes=tuple(
                 (owner, name, origins)
                 for owner, (name, origins) in sorted(
@@ -10149,7 +10145,7 @@ class _Analyzer:
                     frozenset(self._foreign_reads),
                     declaration_end,
                     callback_end,
-                    self._foreign_tainted_exit,
+                    self._foreign_tainted_at_exit,
                     self._has_empty_module_expiry,
                 )
             ),
@@ -10607,9 +10603,8 @@ class _RebasableInitializer:
             # Body histories keep their physical slot coordinates. The final
             # immutable layout puts newly named slots back in callback order.
             work._appended_foreign_slots = (appended_start, appended_end)
-            if work._foreign_tainted_exit is not None:
-                namespace = work.transfer.source_namespaces[work._foreign_tainted_exit]
-                namespace.update((name, frozenset()) for name in additions)
+            if work._foreign_tainted_at_exit and "__getattr__" in additions:
+                work._module_getattr_may_be_bound = True
         if self.continuation is not None:
             entry = self.continuation.completion.normal
             assert entry is not None
