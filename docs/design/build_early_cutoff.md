@@ -431,8 +431,12 @@ the canonical ordered archive-member digest from one bounded payload pass
 under the same stable handle. Framing, indexes and padding enter only the
 whole-file digest. Both original receipt comparisons remain in force. The
 same handle stays open through callable projection admission, and the recorder
-binds that read only after the closing mutation fences succeed. Separate
-retention, linking and other readers retain their own obligations.
+binds that read only after the closing mutation fences succeed. First
+retention writes the archive to its private stage from the same payload
+blocks. The candidate stays private until the signed source, staged closure
+and native link facts are admitted. The directory transaction owns durability.
+Staged and published member validation and later link reads keep their own
+obligations, including the concurrent-winner path.
 
 **Racy rule.** Except for files proven exclusively consumed as above,
 `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over

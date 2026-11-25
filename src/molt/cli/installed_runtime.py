@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, replace
 from pathlib import Path
+import stat
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence, cast
 import uuid
 
@@ -593,7 +594,9 @@ class _NativeRuntimeProduct:
     callable_semantic_digest: str
 
 
-def _read_native_runtime_product(cell: InstalledRuntimeCell) -> _NativeRuntimeProduct:
+def _read_native_runtime_product(
+    cell: InstalledRuntimeCell, *, staged_archive: Path | None = None
+) -> _NativeRuntimeProduct:
     role = "runtime_archive"
     try:
         path = resolve_owned_path(cell.members_root / cell.file_record(role)["name"])
@@ -602,11 +605,20 @@ def _read_native_runtime_product(cell: InstalledRuntimeCell) -> _NativeRuntimePr
                 path, label="installed native runtime"
             ) as opened:
                 consumed.opened()
-                identity, archive_content = capture_archive_artifact_identity(opened)
+                with (
+                    staged_archive.open("xb")
+                    if staged_archive is not None
+                    else contextlib.nullcontext()
+                ) as copy:
+                    identity, archive_content = capture_archive_artifact_identity(
+                        opened, stage=copy
+                    )
                 archive = cell.require_signed_member(role, identity)
                 facts, manifest = _native_link_facts(cell, archive, archive_content)
                 projection = _admit_native_callable_projection(cell, archive, opened)
             consumed.complete(archive.stat_token(), archive.sha256)
+        if staged_archive is not None:
+            staged_archive.chmod(stat.S_IMODE(opened.stat.st_mode))
         return _NativeRuntimeProduct(
             archive,
             manifest,
@@ -660,11 +672,9 @@ def _bind_retained_native(
 
 def _retain_native(
     cell: InstalledRuntimeCell,
-    source: _NativeRuntimeProduct,
-    custody_identity: StableRegularFileIdentity | None,
 ) -> _runtime_contract.InstalledNativeAdmission:
     root = cell.retained_root
-    archive = source.archive
+    archive_name = cast(str, cell.file_record("runtime_archive")["name"])
 
     def admit(
         path: Path, custody_admission: NativeLinkCustodyAdmission | None = None
@@ -688,8 +698,14 @@ def _retain_native(
     stage = root.parent / f".{cell.id}.{uuid.uuid4().hex}.stage"
     stage.mkdir()
     try:
-        staged_lib = stage / archive.path.name
-        _atomic_copy_file(archive.path, staged_lib, observed=archive)
+        staged_lib = stage / archive_name
+        source = _read_native_runtime_product(cell, staged_archive=staged_lib)
+        archive = source.archive
+        custody_identity = (
+            cell.member_file("native_link_custody_archive")
+            if cell.file_name("native_link_custody_archive") is not None
+            else None
+        )
         _atomic_copy_file(
             source.manifest.path,
             native_link_dependency_manifest_path(staged_lib),
@@ -741,13 +757,7 @@ def admit_installed_native_runtime(
             _probe_shipped_native_members(cell)
             product = _read_native_runtime_product(replace(cell, members_root=root))
             return _bind_retained_native(cell, product)
-        source = _read_native_runtime_product(cell)
-        custody_identity = (
-            cell.member_file("native_link_custody_archive")
-            if cell.file_name("native_link_custody_archive") is not None
-            else None
-        )
-        return _retain_native(cell, source, custody_identity)
+        return _retain_native(cell)
     except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:

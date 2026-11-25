@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+from typing import BinaryIO
 
 import pytest
 
@@ -296,14 +297,28 @@ def _forbid_cargo(monkeypatch) -> None:
 def test_installed_native_cell_is_admitted_and_retained_outside_bundle(
     bundle, tmp_path, monkeypatch
 ):
+    from molt import toolchain_identity
+
     _forbid_cargo(monkeypatch)
     cell = _cell(bundle)
+    shipped = bundle / distribution.RUNTIME_ROOT / cell.id / cell.runtime_lib.name
+    reads: list[Path] = []
+    open_descriptor = toolchain_identity.open_stable_read_descriptor
+
+    def record_descriptor(path: Path) -> int:
+        if path == shipped:
+            reads.append(path)
+        return open_descriptor(path)
+
+    monkeypatch.setattr(
+        toolchain_identity, "open_stable_read_descriptor", record_descriptor
+    )
     admission = installed_runtime.admit_installed_native_runtime(cell)
+    assert reads == [shipped]
     assert type(admission) is InstalledNativeAdmission
     runtime_lib, identity = admission.runtime_lib, admission.build_identity
     assert runtime_lib == cell.runtime_lib
     assert runtime_lib.is_relative_to(tmp_path / "home" / "installed-runtime")
-    shipped = bundle / distribution.RUNTIME_ROOT / cell.id / runtime_lib.name
     assert runtime_lib.read_bytes() == shipped.read_bytes()
     # The admission fences exactly the signed members it hashed.
     for role, member in admission.members():
@@ -354,10 +369,10 @@ def test_warm_native_admits_only_the_consumed_member_bytes(
     capture_archive = installed_runtime.capture_archive_artifact_identity
 
     def capture_native_member(
-        opened: StableRegularFileHandle,
+        opened: StableRegularFileHandle, *, stage: BinaryIO | None = None
     ) -> tuple[StableRegularFileIdentity, dict[str, object]]:
         reads.append(opened.path)
-        return capture_archive(opened)
+        return capture_archive(opened, stage=stage)
 
     monkeypatch.setattr(
         installed_runtime, "capture_archive_artifact_identity", capture_native_member
@@ -438,6 +453,7 @@ def test_damaged_shipped_member_fails_before_retention(bundle, tmp_path, role):
     with pytest.raises(InstalledRuntimeError, match="damaged"):
         installed_runtime.admit_installed_native_runtime(cell)
     assert not (tmp_path / "home" / "installed-runtime" / cell.id).exists()
+    assert not list(cell.retained_root.parent.glob(f".{cell.id}.*.stage"))
 
 
 def test_unshipped_cell_fails_with_the_shipped_matrix(bundle):

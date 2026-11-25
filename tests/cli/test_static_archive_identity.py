@@ -4,6 +4,7 @@ from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
 from pathlib import Path
 import hashlib
+from io import BytesIO
 import os
 
 import pytest
@@ -205,8 +206,12 @@ def test_semantic_identity_ignores_derived_tables_and_root_rustc_id(
     expected_semantics = static_archive_identity(first)
     for path in (first, second):
         raw = path.read_bytes()
-        with open_stable_regular_file(path, label="test archive") as opened:
-            identity, semantic = capture_archive_artifact_identity(opened)
+        with BytesIO() as staged:
+            with open_stable_regular_file(path, label="test archive") as opened:
+                identity, semantic = capture_archive_artifact_identity(
+                    opened, stage=staged
+                )
+            assert staged.getvalue() == raw
         assert identity.sha256 == hashlib.sha256(raw).hexdigest()
         assert identity.size == len(raw)
         assert semantic == expected_semantics
