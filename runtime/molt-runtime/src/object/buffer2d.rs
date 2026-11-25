@@ -789,7 +789,7 @@ mod tests {
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::I64(_, ..)
+                Buffer2DStorage::I64(..)
             ));
 
             let large = BigInt::from(1u8) << 90usize;
@@ -807,7 +807,7 @@ mod tests {
             dec_ref_bits(_py, large_bits);
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::Boxed(_, ..)
+                Buffer2DStorage::Boxed(..)
             ));
 
             let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(1));
@@ -854,7 +854,7 @@ mod tests {
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::I64(_, ..)
+                Buffer2DStorage::I64(..)
             ));
             let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(0));
             let result_ptr = obj_from_bits(result)
