@@ -15,8 +15,11 @@
 //! carries the typed callee. A matching method load/call pair keeps its two
 //! owned results and enters that callee directly.
 
+use crate::tir::values::ValueId;
 use molt_ir::class_identity::{EXACT_FIELD_SLOTS_ATTR, ExactMethod, decode_field_slots};
 use molt_ir::deterministic_hash::HashMap;
+use molt_ir::ir::GlobalSlotRef;
+use molt_ir::tir::dominators::ProgramPointDominance;
 use molt_ir::{ClassId, FunctionId, OpKind, ParameterCustody};
 
 use crate::tir::function::{TirFunction, TirModule};
@@ -30,10 +33,10 @@ pub struct ExactMembers {
     methods: HashMap<ClassId, HashMap<String, Option<MethodEntry>>>,
 }
 
-#[derive(Clone, Copy)]
 struct MethodEntry {
     callee: FunctionId,
     arity: usize,
+    cell: Option<GlobalSlotRef>,
 }
 
 fn declared_entry(op: &TirOp, module: &TirModule, bodies: &[Option<usize>]) -> Option<MethodEntry> {
@@ -54,47 +57,92 @@ fn declared_entry(op: &TirOp, module: &TirModule, bodies: &[Option<usize>]) -> O
     {
         return None;
     }
-    Some(MethodEntry { callee, arity })
+    Some(MethodEntry {
+        callee,
+        arity,
+        cell: None,
+    })
 }
 
 pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembers {
     let mut table = ExactMembers::default();
     let mut stamps = HashMap::default();
-    for op in module
-        .functions
-        .iter()
-        .flat_map(|f| f.blocks.values())
-        .flat_map(|b| &b.ops)
-    {
-        if op.origin == Some(OpKind::ClassSetDefinition)
-            && let Some(AttrValue::Str(definition)) = op.attrs.get("class_definition")
-        {
-            let class = ClassId::of_definition(definition);
-            stamps
-                .entry(class)
-                .and_modify(|unique| *unique = false)
-                .or_insert(true);
-            if let Some(AttrValue::Bytes(bytes)) = op.attrs.get(EXACT_FIELD_SLOTS_ATTR) {
-                let slots = decode_field_slots(bytes)
-                    .expect("exact field slots decode from their own encoding");
-                table.fields.insert(class, slots.into_iter().collect());
+    let mut cell_stores = HashMap::default();
+    for function in &module.functions {
+        let mut publications = HashMap::default();
+        let mut class_points = HashMap::default();
+        let mut methods = Vec::new();
+        for (&block, body) in &function.blocks {
+            for (index, op) in body.ops.iter().enumerate() {
+                if op.origin == Some(OpKind::ClassSetDefinition)
+                    && let Some(AttrValue::Str(definition)) = op.attrs.get("class_definition")
+                {
+                    let class = ClassId::of_definition(definition);
+                    stamps
+                        .entry(class)
+                        .and_modify(|unique| *unique = false)
+                        .or_insert(true);
+                    class_points.insert(class, (block, index));
+                    if let Some(AttrValue::Bytes(bytes)) = op.attrs.get(EXACT_FIELD_SLOTS_ATTR) {
+                        let slots = decode_field_slots(bytes)
+                            .expect("exact field slots decode from their own encoding");
+                        table.fields.insert(class, slots.into_iter().collect());
+                    }
+                } else if (op.opcode == OpCode::StaticCellSet
+                    || matches!(op.origin, Some(OpKind::ModuleSetAttr | OpKind::DictSet)))
+                    && let Some(slot) = op.global_slot()
+                    && slot.cell
+                {
+                    *cell_stores
+                        .entry((slot.module.clone(), slot.index))
+                        .or_insert(0usize) += 1;
+                    if op.opcode == OpCode::StaticCellSet
+                        && slot.init_once
+                        && let [_, value] = op.operands[..]
+                    {
+                        publications.insert(value, (block, index, slot));
+                    }
+                } else if let Ok(Some(ExactMethod(definition, name))) = ExactMethod::from_tir(op) {
+                    methods.push((op, ClassId::of_definition(&definition), name));
+                }
             }
-        } else if let Ok(Some(ExactMethod(definition, name))) = ExactMethod::from_tir(op) {
-            let class = ClassId::of_definition(&definition);
-            // Multiple publications for the same binding make it ambiguous,
-            // including a declaration whose physical entry we cannot use.
+        }
+        let mut dominance = None;
+        for (op, class, name) in methods {
+            // The existing function cell holds this very creation's object.
+            // Its publication must precede the class stamp on every path: a
+            // receiver bearing that class then witnesses an initialized cell.
+            let mut entry = declared_entry(op, module, bodies);
+            if let Some(entry) = entry.as_mut()
+                && let Some((store_block, store, slot)) = publications.get(&op.results[0])
+                && let Some(&(stamp_block, stamp)) = class_points.get(&class)
+                && dominance
+                    .get_or_insert_with(|| ProgramPointDominance::compute(function))
+                    .definition_available(*store_block, Some(*store), stamp_block, stamp)
+            {
+                entry.cell = Some(slot.clone());
+            }
             table
                 .methods
                 .entry(class)
                 .or_default()
                 .entry(name)
-                .and_modify(|entry| *entry = None)
-                .or_insert_with(|| declared_entry(op, module, bodies));
+                .and_modify(|previous| *previous = None)
+                .or_insert(entry);
         }
     }
-    table
-        .methods
-        .retain(|class, _| stamps.get(class) == Some(&true));
+    table.methods.retain(|class, methods| {
+        for entry in methods.values_mut().flatten() {
+            if entry
+                .cell
+                .as_ref()
+                .is_some_and(|slot| cell_stores.get(&(slot.module.clone(), slot.index)) != Some(&1))
+            {
+                entry.cell = None;
+            }
+        }
+        stamps.get(class) == Some(&true)
+    });
     table
 }
 
@@ -132,7 +180,7 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
                 && let Some(AttrValue::Str(name)) = op.attrs.get("name")
                 && let Some(Some(entry)) = table.methods.get(class).and_then(|m| m.get(name))
             {
-                pairs.insert((*callable, *bound_self), *entry);
+                pairs.insert((*callable, *bound_self), entry);
                 if !op.proven_target() {
                     op.set_proven_target(true);
                     rewritten += 1;
@@ -140,6 +188,7 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
             }
         }
     }
+    let mut cell_reads = HashMap::default();
     for block in func.blocks.values_mut() {
         for op in &mut block.ops {
             if op.opcode == OpCode::CallLoadedMethod
@@ -150,9 +199,11 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
                 && (0..op.operands.len())
                     .all(|i| op.operand_custody(i) == ParameterCustody::Transferred)
             {
-                // Keep the original load and both of its owned results. Python
-                // captures them before any argument callback. The direct entry
-                // uses that live function object's globals and closure.
+                // Keep the captured operands. The direct entry uses the live
+                // function object's globals and closure.
+                if let Some(slot) = &entry.cell {
+                    cell_reads.insert((*callable, *bound_self), slot);
+                }
                 op.opcode = OpCode::Call;
                 op.origin = Some(OpKind::CallGuarded);
                 op.callee = Some(entry.callee);
@@ -182,5 +233,53 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
             rewritten += 1;
         }
     }
-    rewritten
+    rewritten + replace_cell_loads(func, &cell_reads)
+}
+
+fn replace_cell_loads(
+    func: &mut TirFunction,
+    reads: &HashMap<(ValueId, ValueId), &GlobalSlotRef>,
+) -> usize {
+    if reads.is_empty() {
+        return 0;
+    }
+    let uses = super::dce::build_use_counts(func);
+    let mut count = 0;
+    let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable();
+    for block in blocks {
+        let ops = std::mem::take(&mut func.blocks.get_mut(&block).unwrap().ops);
+        let mut result = Vec::with_capacity(ops.len());
+        for op in ops {
+            if op.opcode == OpCode::LoadMethod
+                && let [callable, bound_self] = op.results[..]
+                && let Some(slot) = reads.get(&(callable, bound_self))
+                // Retain the pair protocol for builders, phi edges, and
+                // any additional consumer which still needs the loaded pair.
+                && uses.get(&callable) == Some(&1)
+                && uses.get(&bound_self) == Some(&1)
+            {
+                let view = func.fresh_value();
+                func.value_types.insert(view, TirType::DynBox);
+                let mut load = TirOp::new(OpCode::StaticCellLoad, vec![], vec![view]);
+                load.set_global_slot(Some(slot));
+                load.inherit_source_from(&op);
+                result.push(load);
+                // LOAD_METHOD acquired two owned references before any
+                // argument ran. A cell read is borrowed; retain it and the
+                // original receiver at exactly that point.
+                for (from, to) in [(view, callable), (op.operands[0], bound_self)] {
+                    let mut alias = TirOp::new(OpCode::Copy, vec![from], vec![to])
+                        .with_origin(OpKind::BindingAlias);
+                    alias.inherit_source_from(&op);
+                    result.push(alias);
+                }
+                count += 1;
+            } else {
+                result.push(op);
+            }
+        }
+        func.blocks.get_mut(&block).unwrap().ops = result;
+    }
+    count
 }

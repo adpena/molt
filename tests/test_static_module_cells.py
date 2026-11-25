@@ -1104,7 +1104,7 @@ def _constant_program(
 
 def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     from molt.cli.frontend_integration import stamp_global_slots
-    from molt.cli.static_module_cells import fold_init_once_constants
+    from molt.cli.static_module_cells import propagate_init_once_values
 
     plan = _dominance_plan(funcs, funcs)
     functions = list(funcs)
@@ -1118,7 +1118,7 @@ def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         plan.guard_masks,
         plan.init_dominated,
     )
-    folded = fold_init_once_constants(functions, module_functions, plan)
+    folded = propagate_init_once_values(functions, module_functions, plan)
     assert functions == module_functions["mod"], "both views see the rewrite"
     return functions, folded
 
@@ -1178,6 +1178,31 @@ def test_a_read_that_is_not_a_proven_immediate_constant_keeps_the_cell(
     functions, folded = _fold(_constant_program(producer, **change))
     assert folded == 0
     assert _scale_read(functions)["kind"] == "module_get_global"
+
+
+def test_a_dominated_read_carries_the_class_object_published_by_the_initializer() -> (
+    None
+):
+    funcs = _constant_program({"kind": "class_def"})
+    ops = funcs[0]["ops"]
+    maker = next(i for i, op in enumerate(ops) if op.get("out") == "v_scale")
+    stamp = {
+        "kind": "class_set_definition",
+        "args": ["v_scale"],
+        "class_definition": "class:mod:Scale",
+    }
+    ops.insert(maker + 1, stamp)
+    functions, propagated = _fold(funcs)
+    assert propagated == 1
+    read = _scale_read(functions)
+    assert read["kind"] == "module_get_global"
+    assert read["class_definition"] == stamp["class_definition"]
+
+    # The class is available but the initializer publishes some other object.
+    ops[maker + 1] = {**stamp, "args": ["different"]}
+    functions, propagated = _fold(funcs)
+    assert propagated == 0
+    assert "class_definition" not in _scale_read(functions)
 
 
 def _intrinsic_call_program(supplied: int) -> list[dict[str, Any]]:
@@ -1457,7 +1482,12 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
     init_ops, run_ops = funcs[0]["ops"], funcs[1]["ops"]
     store = next(op for op in init_ops if op["kind"] == "static_cell_set")
     assert store["args"][1] == "method0"
-    assert store["global_slot"] == {"module": "mod", "index": index, "cell": True}
+    assert store["global_slot"] == {
+        "module": "mod",
+        "index": index,
+        "cell": True,
+        "init_once": True,
+    }
     # The store follows the maker; the load becomes one cell read.
     assert [op["kind"] for op in init_ops[3:6]] == [
         maker_kind,

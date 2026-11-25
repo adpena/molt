@@ -105,6 +105,7 @@ class InitOnce:
     # producer is found by this name, never by an op index.
     value: str | None = None
     producer: Mapping[str, Any] | None = field(default=None, compare=False, repr=False)
+    class_definition: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,6 +268,7 @@ def _init_once_facts(
             store.line,
             store.value,
             producer,
+            store.class_definition if value_kind == "class" else None,
         )
     return found
 
@@ -1086,23 +1088,19 @@ def prove_init_once_calls(
 _IMMEDIATE_CONSTANTS = frozenset({"const", "const_bool", "const_none", "const_float"})
 
 
-def fold_init_once_constants(
+def propagate_init_once_values(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
     plan: StaticCellPlan,
 ) -> int:
-    """Replace each ``init_once`` read of a cell whose one store binds an
-    immediate constant with that constant (copy-on-write).
+    """Carry the cell's unique publication to each init-dominated read.
 
-    The InitOnce fact proves the store runs before the read and that no code in
-    the program writes or deletes the global afterward (closed world,
-    call_anatomy.md 4.5a), so the read always finds the value the store bound.
-    An immediate constant's copy is indistinguishable from it, so the read is
-    the constant: no cell load, no type test, and a typed value the optimizer
-    can use. Returns the number of reads folded."""
+    Immediate values can replace the read. A class keeps its real object
+    identity and carries the definition as a value fact. Returns the number
+    of reads updated."""
     position, views = _init_once_views(functions, module_functions)
     rewritten: dict[str, dict[str, Any]] = {}
-    folded = 0
+    propagated = 0
     for current in views.values():
         for name, func in current.items():
             ops = func.get("ops", ())
@@ -1120,7 +1118,12 @@ def fold_init_once_constants(
                     continue
                 cell_module, global_name = read
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
-                if fact is None or fact.value_kind != "other":
+                if fact is None:
+                    continue
+                if fact.class_definition is not None:
+                    changed[index] = {**op, "class_definition": fact.class_definition}
+                    continue
+                if fact.value_kind != "other":
                     continue
                 producer = fact.producer
                 if producer is None or producer.get("kind") not in _IMMEDIATE_CONSTANTS:
@@ -1137,13 +1140,13 @@ def fold_init_once_constants(
                 }
                 changed[index] = {**constant, **source, "out": op["out"]}
             if changed:
-                folded += len(changed)
+                propagated += len(changed)
                 rewritten[name] = {
                     **func,
                     "ops": [changed.get(index, op) for index, op in enumerate(ops)],
                 }
     _write_back(functions, module_functions, position, rewritten)
-    return folded
+    return propagated
 
 
 # Function cells (design 78, 5.9).
@@ -1297,6 +1300,7 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
                             "module": module,
                             "index": plan.cells[module][symbol],
                             "cell": True,
+                            "init_once": True,
                         },
                     }
                 )

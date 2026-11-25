@@ -33,6 +33,7 @@
 //! computed-name read may return, so its body stays.
 
 mod analysis;
+mod class_tests;
 mod relevance;
 mod sites;
 
@@ -220,7 +221,8 @@ fn optimize_bodies(
     outcome: &mut TypeFlowOutcome,
 ) {
     for (func, &id) in module.functions.iter_mut().zip(&module.ids) {
-        if exact_receiver_fields::run(func, members) > 0 {
+        let members_changed = exact_receiver_fields::run(func, members);
+        if class_tests::fold_exact_isinstance(func) || members_changed > 0 {
             outcome.changed.insert(id);
         }
         if outcome.changed.contains(&id) {

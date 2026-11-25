@@ -68,7 +68,7 @@ fn count_terminator_uses(term: &Terminator, uses: &mut HashMap<ValueId, usize>) 
 }
 
 /// Build a full use-count map from all ops and terminators in the function.
-pub(super) fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
+pub(in crate::tir::passes) fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
     let mut uses: HashMap<ValueId, usize> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {

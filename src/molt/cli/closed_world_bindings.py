@@ -100,6 +100,7 @@ class _BodyStore:
     line: int | None
     # Lowering rewrites can shift the store's index while keeping its identity.
     operation: Mapping[str, Any]
+    class_definition: str | None = None
 
 
 def _module_body_functions(
@@ -409,6 +410,8 @@ def summarize_module_initializer(
     chain = InitChain(module, funcs)
     for func in body:
         constants: dict[str, str] = {}
+        class_makers: dict[str, int] = {}
+        class_stamps: dict[str, tuple[str, int]] = {}
         own_modules = {
             param
             for param in func.get("params") or ()
@@ -419,8 +422,11 @@ def summarize_module_initializer(
         for index, op in enumerate(func.get("ops", ())):
             kind = op.get("kind")
             out = op.get("out")
+            args = op.get("args") or ()
             if isinstance(out, str):
                 producers[(name_of_function, out)] = op
+                if kind == "class_def":
+                    class_makers[out] = index
                 if imported := imported_module_of(op):
                     imports[(name_of_function, out)] = imported
                 symbol = op.get("s_value")
@@ -438,9 +444,21 @@ def summarize_module_initializer(
                     globals_dicts.add(out)
             elif kind == "builtin_func" and isinstance(out, str):
                 builtins[(name_of_function, out)] = op.get("s_value")
+            elif kind == "class_set_definition" and len(args) == 1:
+                definition = op.get("class_definition")
+                maker = class_makers.get(args[0])
+                if (
+                    isinstance(definition, str)
+                    and definition
+                    and maker is not None
+                    and chain.runs_once((name_of_function, maker))
+                    and chain.dominates(
+                        (name_of_function, maker), (name_of_function, index)
+                    )
+                ):
+                    class_stamps[args[0]] = (definition, index)
             elif kind is not None and "import_star" in kind:
                 star = True
-            args = op.get("args") or ()
             if len(args) < 2 or args[1] not in constants:
                 continue
             name = constants[args[1]]
@@ -448,13 +466,23 @@ def summarize_module_initializer(
                 kind == "dict_set" and args[0] in globals_dicts
             )
             if kind in _GLOBAL_STORES and own and len(args) == 3:
+                point = (name_of_function, index)
+                stamp = class_stamps.get(args[2])
+                # Require the real class object, not a decorator's result.
+                definition = (
+                    stamp[0]
+                    if stamp is not None
+                    and chain.dominates((name_of_function, stamp[1]), point)
+                    else None
+                )
                 stores.setdefault(name, []).append(
                     _BodyStore(
-                        chain.unconditional((name_of_function, index)),
+                        chain.unconditional(point),
                         args[2],
                         name_of_function,
                         op.get("source_line"),
                         op,
+                        definition,
                     )
                 )
             elif kind in _GLOBAL_DELETES:
