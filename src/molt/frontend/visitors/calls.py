@@ -73,10 +73,6 @@ class CallVisitorMixin(
         if builtin_result is not CALL_NOT_HANDLED:
             return builtin_result
 
-        user_method_fold = self._try_emit_user_method_static_call(node)
-        if user_method_fold is not None:
-            return user_method_fold
-
         importlib_literal = self._try_emit_importlib_import_module_literal_call(node)
         if importlib_literal is not None:
             return importlib_literal

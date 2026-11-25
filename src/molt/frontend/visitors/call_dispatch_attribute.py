@@ -246,6 +246,11 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             obj_name = None
             if isinstance(attr_node.value, ast.Name):
                 obj_name = attr_node.value.id
+            direct = self._try_emit_user_method_static_call(
+                node, attr_node, receiver, obj_name
+            )
+            if direct is not None:
+                return direct
             exact_class = self._exact_class_for_value(receiver, obj_name)
 
             def load_attr_callee() -> MoltValue:
