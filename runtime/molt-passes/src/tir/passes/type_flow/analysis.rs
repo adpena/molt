@@ -19,9 +19,8 @@ use molt_ir::deterministic_hash::HashMap;
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::tir::blocks::BlockId;
 use crate::tir::function::TirModule;
-use crate::tir::type_refine::{ExactScalarPlan, ExactSeeds};
+use crate::tir::type_refine::{ExactCallResults, ExactScalarPlan, ExactSeeds};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -60,6 +59,7 @@ pub(super) struct Inputs<'a> {
     pub(super) module: &'a TirModule,
     pub(super) body_index: &'a [Option<usize>],
     pub(super) sites: &'a [Vec<Site>],
+    pub(super) result_sites: Vec<HashMap<ValueId, usize>>,
     pub(super) relevant: &'a [Vec<bool>],
     pub(super) participates: &'a [bool],
     pub(super) exact_plans: Vec<OnceCell<ExactScalarPlan<'a>>>,
@@ -189,14 +189,13 @@ impl Analysis {
         let context = &self.contexts[id.0];
         let func = &inputs.module.functions[context.body];
         let params = seeds_of(&context.key, func.param_names.len());
-        let results: HashMap<(BlockId, usize), TirType> = inputs.sites[context.body]
-            .iter()
-            .zip(&context.results)
-            .map(|(site, ty)| (site.position(), ty.clone()))
-            .collect();
+        let sites = &inputs.result_sites[context.body];
         inputs.exact_plan(context.body).solve(ExactSeeds {
             params: &params,
-            call_results: Some(&results),
+            call_results: (!sites.is_empty()).then_some(ExactCallResults {
+                sites,
+                types: &context.results,
+            }),
         })
     }
 

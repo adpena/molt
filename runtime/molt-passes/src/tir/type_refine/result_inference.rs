@@ -23,8 +23,7 @@ pub(super) fn infer_result_facts_with_attrs(
     }
 
     let operands_ready = operand_facts.iter().all(|ty| !is_bottom_type(ty));
-    let operand_types: Vec<TirType> = operand_facts.to_vec();
-    infer_result_types_with_attrs(opcode, origin, &operand_types, attrs, result_count)
+    infer_result_types_with_attrs(opcode, origin, operand_facts, attrs, result_count)
         .into_iter()
         .map(|inferred| match inferred {
             Some(ty) if contains_bottom_type(&ty) => TirType::Never,

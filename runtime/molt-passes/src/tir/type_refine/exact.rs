@@ -87,9 +87,16 @@ pub fn exact_scalar_witnesses(func: &TirFunction) -> HashMap<ValueId, ExactScala
 pub struct ExactSeeds<'a> {
     /// One type per parameter; a missing entry is `DynBox`.
     pub params: &'a [TirType],
-    /// The result type of the op at `(block, index)`; `Never` while the
-    /// callee's return type is still unknown (optimistic, as SCCP is).
-    pub call_results: Option<&'a HashMap<(BlockId, usize), TirType>>,
+    pub call_results: Option<ExactCallResults<'a>>,
+}
+
+/// A body's result-to-site index is shared by all its contexts. Only the
+/// types change as the callees' return facts converge.
+#[derive(Clone, Copy, Debug)]
+pub struct ExactCallResults<'a> {
+    pub sites: &'a HashMap<ValueId, usize>,
+    /// `Never` while the callee's return type is still unknown.
+    pub types: &'a [TirType],
 }
 
 pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
@@ -372,29 +379,40 @@ impl<'a> ExactScalarPlan<'a> {
                         changed = true;
                     }
                 }
-                for (op_index, op) in block.ops.iter().enumerate() {
-                    if op.results.is_empty() {
+                for op in &block.ops {
+                    let Some(&first_result) = op.results.first() else {
+                        continue;
+                    };
+                    let valid_shape = op.has_valid_shape();
+                    let origin = if op.operands.len() == 1 && op.results.len() == 1 {
+                        op.origin
+                    } else {
+                        None
+                    };
+                    // A fixed result shape needs neither operand facts nor a
+                    // temporary vector to describe its one result.
+                    if valid_shape
+                        && op.results.len() == 1
+                        && let Some(ty) = opcode_exact_scalar_result_tir_type(op.opcode, origin, 0)
+                    {
+                        let previous = facts.get_mut(&first_result).expect("planned result");
+                        let next = exact_or_bottom(previous.meet(&ty));
+                        if *previous != next {
+                            *previous = next;
+                            changed = true;
+                        }
                         continue;
                     }
-                    let seeded = seeds
-                        .call_results
-                        .and_then(|results| results.get(&(block_id, op_index)));
-                    let operand_types: Vec<_> = op
-                        .operands
-                        .iter()
-                        .map(|value| facts.get(value).cloned().unwrap_or(TirType::DynBox))
-                        .collect();
-                    let instance =
-                        crate::tir::op_semantics::op_instance_facts(op.opcode, &operand_types);
-                    let effects = instance.as_ref().map_or_else(
-                        || crate::tir::op_kinds_generated::opcode_effects_table(op.opcode),
-                        |facts| facts.effects,
-                    );
-                    let scalar_source =
-                        crate::tir::passes::value_identity::forwarded_python_value_source(op);
-                    let transfers_exact =
-                        op.opcode != OpCode::Copy && effects.consistent && effects.effect_free;
-                    let valid_shape = op.has_valid_shape();
+                    let seeded = if op.opcode == OpCode::Call {
+                        seeds.call_results.and_then(|results| {
+                            results
+                                .sites
+                                .get(&first_result)
+                                .map(|&index| &results.types[index])
+                        })
+                    } else {
+                        None
+                    };
                     let types = if !valid_shape {
                         vec![TirType::DynBox; op.results.len()]
                     } else if let Some(seeded) = seeded {
@@ -403,43 +421,56 @@ impl<'a> ExactScalarPlan<'a> {
                     } else if let Some(proven) = op.exact_result_proof() {
                         // The late stage replaced an op whose result was exact.
                         vec![proven; op.results.len()]
-                    } else if self.successful_integers.contains(&op.results[0]) {
+                    } else if self.successful_integers.contains(&first_result) {
                         // Semantic Python int, including a heap-backed BigInt.
                         vec![TirType::I64]
-                    } else if let Some(source) = scalar_source {
+                    } else if let Some(source) =
+                        crate::tir::passes::value_identity::forwarded_python_value_source(op)
+                    {
                         vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
                     } else if let Some(class) = super::result_inference::exact_allocation_class(op)
                     {
                         // An allocation's result is exactly its class statement's
                         // instance (I6, C1).
                         vec![class; op.results.len()]
-                    } else if let Some(result_type) = instance.and_then(|facts| facts.result_type) {
-                        vec![result_type; op.results.len()]
-                    } else if let Some(ty) =
-                        crate::tir::call_targets::gpu_runtime_result_type_for_op(op)
-                    {
-                        vec![ty; op.results.len()]
-                    } else if transfers_exact {
-                        infer_result_facts_with_attrs(
-                            op.opcode,
-                            op.origin,
-                            &operand_types,
-                            None,
-                            op.results.len(),
-                        )
                     } else {
-                        vec![TirType::DynBox; op.results.len()]
+                        let operand_types: Vec<_> = op
+                            .operands
+                            .iter()
+                            .map(|value| facts.get(value).cloned().unwrap_or(TirType::DynBox))
+                            .collect();
+                        let instance =
+                            crate::tir::op_semantics::op_instance_facts(op.opcode, &operand_types);
+                        let effects = instance.as_ref().map_or_else(
+                            || crate::tir::op_kinds_generated::opcode_effects_table(op.opcode),
+                            |facts| facts.effects,
+                        );
+                        if let Some(ty) = instance.and_then(|facts| facts.result_type) {
+                            vec![ty; op.results.len()]
+                        } else if let Some(ty) =
+                            crate::tir::call_targets::gpu_runtime_result_type_for_op(op)
+                        {
+                            vec![ty; op.results.len()]
+                        } else if op.opcode != OpCode::Copy
+                            && effects.consistent
+                            && effects.effect_free
+                        {
+                            infer_result_facts_with_attrs(
+                                op.opcode,
+                                op.origin,
+                                &operand_types,
+                                None,
+                                op.results.len(),
+                            )
+                        } else {
+                            vec![TirType::DynBox; op.results.len()]
+                        }
                     };
                     for (index, (&result, inferred)) in op.results.iter().zip(types).enumerate() {
                         // Output shape is independent of purity: a mutable runtime
                         // read or checked arithmetic may still produce an exact
                         // Boolean status. Never broadcast slot zero into siblings.
                         let ty = if valid_shape {
-                            let origin = if op.operands.len() == 1 && op.results.len() == 1 {
-                                op.origin
-                            } else {
-                                None
-                            };
                             opcode_exact_scalar_result_tir_type(op.opcode, origin, index)
                                 .unwrap_or(inferred)
                         } else {

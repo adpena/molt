@@ -126,6 +126,16 @@ pub fn run(
         module,
         body_index: &body_index,
         sites: &sites,
+        result_sites: sites
+            .iter()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, site)| (site.result, index))
+                    .collect()
+            })
+            .collect(),
         relevant: &relevant,
         participates: &participates,
         exact_plans: (0..sites.len())
