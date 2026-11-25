@@ -95,9 +95,13 @@ class PythonFunctionResult(NamedTuple):
     returned_exposed: frozenset[PythonSourceKey]
     yielded: frozenset[PythonSourceKey]
     yielded_exposed: frozenset[PythonSourceKey]
-    # Aligned with the declaration's positional arguments. A parameter whose
-    # value may be observed beyond its literal classes has a None entry.
-    literal_classes: tuple[frozenset[str] | None, ...] | None = None
+
+
+class PythonActivationPartition(NamedTuple):
+    """Argument classes aligned with one declaration's positional parameters."""
+
+    owner: PythonSourceKey
+    classes: tuple[frozenset[str] | None, ...]
 
 
 class PythonSourceCall(NamedTuple):
@@ -954,6 +958,7 @@ class PythonBindingFacts:
     source_callable_declarations: tuple[PythonSourceCallableDeclaration, ...]
     source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
     source_function_results: tuple[PythonFunctionResult, ...]
+    source_activation_partitions: tuple[PythonActivationPartition, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
     _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
@@ -1003,6 +1008,7 @@ class PythonBindingFacts:
         ] = (),
         source_callable_declarations: tuple[PythonSourceCallableDeclaration, ...] = (),
         source_function_results: tuple[PythonFunctionResult, ...] = (),
+        source_activation_partitions: tuple[PythonActivationPartition, ...] = (),
     ) -> PythonBindingFacts:
         return cls(
             source_digest=source_digest,
@@ -1034,6 +1040,7 @@ class PythonBindingFacts:
             source_completions=source_completions,
             source_callable_declarations=source_callable_declarations,
             source_function_results=source_function_results,
+            source_activation_partitions=source_activation_partitions,
             _expression_lookup=MappingProxyType(
                 {fact.node: fact for fact in expressions}
             ),

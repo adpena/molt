@@ -217,6 +217,9 @@ class PythonSourceDemands:
         self.declarations: dict[SourceValue, PythonSourceCallableDeclaration] = {}
         self.arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
+        self.activation_partitions: dict[
+            SourceValue, tuple[frozenset[str] | None, ...]
+        ] = {}
         self.native_initializers: dict[SourceValue, PythonNativeInitializerSource] = {}
         self.native_initializers_by_receiver: dict[SourceValue, set[SourceValue]] = {}
         self.native_calls: dict[
@@ -474,6 +477,20 @@ class PythonSourceDemands:
             self._publish(
                 self.declarations, (module_name, declaration.owner), declaration
             )
+        for owner, classes in scan.source_values.activation_partitions:
+            value = (module_name, owner)
+            previous_classes = self.activation_partitions.get(value)
+            # Combine proofs across observed activations. An exact argument
+            # required in one context must remain distinct in all of them.
+            if previous_classes is not None:
+                classes = tuple(
+                    old | new if old is not None and new is not None else None
+                    for old, new in zip(previous_classes, classes, strict=True)
+                )
+            if classes != previous_classes:
+                self.activation_partitions[value] = classes
+                for arguments in self.body_activations.get(value, ()):
+                    self._schedule_body(value, arguments)
         for result in scan.source_values.functions:
             value = (module_name, result.owner)
             previous = self.functions.get(value)
@@ -486,12 +503,6 @@ class PythonSourceDemands:
                     yielded_exposed=previous.yielded_exposed | result.yielded_exposed,
                 )
             if self._publish(self.functions, value, result):
-                if (
-                    previous is None
-                    or result.literal_classes != previous.literal_classes
-                ):
-                    for arguments in self.body_activations.get(value, ()):
-                        self._schedule_body(value, arguments)
                 old = (
                     frozenset()
                     if previous is None
@@ -1560,9 +1571,8 @@ class PythonSourceDemands:
     def _schedule_body(self, value: SourceValue, arguments: tuple[str, ...]) -> None:
         """Scan a body once per argument class (``python_parameter_classes``)."""
         module_name, owner = value
-        result = self.functions.get(value)
-        if result is not None and result.literal_classes is not None:
-            arguments = representative_arguments(arguments, result.literal_classes)
+        if (classes := self.activation_partitions.get(value)) is not None:
+            arguments = representative_arguments(arguments, classes)
         body_arguments = self.body_jobs.setdefault(value, set())
         if arguments in body_arguments:
             return

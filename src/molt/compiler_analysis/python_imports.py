@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         PythonModuleMetadataProof,
         PythonStatementFact,
         PythonFunctionResult,
+        PythonActivationPartition,
         PythonSourceElement,
         PythonSourceCall,
         PythonSourceCallableDeclaration,
@@ -2605,6 +2606,7 @@ class _SourceValueSummary(NamedTuple):
     ] = ()
     native_initializers: tuple[PythonNativeInitializerSource, ...] = ()
     classes: tuple[PythonSourceClass, ...] = ()
+    activation_partitions: tuple[PythonActivationPartition, ...] = ()
 
 
 class _ImportScanRequests(NamedTuple):

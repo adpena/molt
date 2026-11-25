@@ -47,6 +47,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from threading import Lock
 from typing import Final
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -91,31 +92,76 @@ class CallEvidence:
 type CallEvidenceLookup = Callable[[ast.Call], CallEvidence | None]
 
 
-def parameter_literal_classes(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    *,
-    call_evidence: CallEvidenceLookup,
-) -> tuple[ParameterLiteralClass, ...]:
-    """One class per positional parameter, aligned with posonly + args."""
-    parameters = (*node.args.posonlyargs, *node.args.args)
-    if not parameters:
-        return ()
-    body: ast.expr | tuple[ast.stmt, ...] = (
-        node.body if isinstance(node, ast.Lambda) else tuple(node.body)
-    )
-    statements = body if isinstance(body, tuple) else (ast.Expr(body),)
-    if _may_read_caller_frame(statements, call_evidence):
-        return (None,) * len(parameters)
-    # The scope's own declarations (the lexical authority) decide rebinding;
-    # eager annotations make the collected set a superset.
-    declared = python_scope_declarations(statements, eager_annotations=True)
-    rebound = declared.bound | declared.globals | declared.nonlocals
-    return tuple(
-        None
-        if parameter.arg in rebound
-        else _Classifier(parameter.arg, call_evidence).classify(body)
-        for parameter in parameters
-    )
+@dataclass(frozen=True, slots=True)
+class _LiteralCandidate:
+    literals: frozenset[str]
+    message_calls: frozenset[ast.Call]
+
+
+class ParameterLiteralPlan:
+    """Source-owned argument classes. Observed call evidence never enters the plan."""
+
+    def __init__(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+        self._parameters = (*node.args.posonlyargs, *node.args.args)
+        self._body = node.body if isinstance(node, ast.Lambda) else tuple(node.body)
+        self._calls = (
+            tuple(
+                child
+                for root in self._statements()
+                for child in ast.walk(root)
+                if isinstance(child, ast.Call)
+            )
+            if self._parameters
+            else ()
+        )
+        self._unknown = (None,) * len(self._parameters)
+        self._candidates: tuple[_LiteralCandidate | None, ...] | None = (
+            None if self._parameters else ()
+        )
+        self._lock = Lock()
+
+    def _statements(self) -> tuple[ast.stmt, ...]:
+        return self._body if isinstance(self._body, tuple) else (ast.Expr(self._body),)
+
+    def _syntax(self) -> tuple[_LiteralCandidate | None, ...]:
+        cached = self._candidates
+        if cached is not None:
+            return cached
+        with self._lock:
+            cached = self._candidates
+            if cached is None:
+                # Eager annotations make the rebinding scan conservative across
+                # targets that defer their execution.
+                declared = python_scope_declarations(
+                    self._statements(), eager_annotations=True
+                )
+                rebound = declared.bound | declared.globals | declared.nonlocals
+                cached = tuple(
+                    None
+                    if param.arg in rebound
+                    else _Classifier(param.arg).classify(self._body)
+                    for param in self._parameters
+                )
+                self._candidates = cached
+            return cached
+
+    def resolve(
+        self, call_evidence: CallEvidenceLookup
+    ) -> tuple[ParameterLiteralClass, ...]:
+        unsafe_messages: set[ast.Call] = set()
+        for call in self._calls:
+            evidence = call_evidence(call)
+            if evidence is None or evidence.callees & BUILTIN_CALLER_FRAME_IDENTITIES:
+                return self._unknown
+            if evidence.reaches_source or evidence.callees & ~_MESSAGE_CALLEES:
+                unsafe_messages.add(call)
+        return tuple(
+            candidate.literals
+            if candidate is not None
+            and candidate.message_calls.isdisjoint(unsafe_messages)
+            else None
+            for candidate in self._syntax()
+        )
 
 
 def representative_arguments(
@@ -132,21 +178,6 @@ def representative_arguments(
     )
 
 
-def _may_read_caller_frame(
-    body: Sequence[ast.AST], call_evidence: CallEvidenceLookup
-) -> bool:
-    for root in body:
-        for child in ast.walk(root):
-            if isinstance(child, ast.Call):
-                evidence = call_evidence(child)
-                if (
-                    evidence is None
-                    or evidence.callees & BUILTIN_CALLER_FRAME_IDENTITIES
-                ):
-                    return True
-    return False
-
-
 def _string_literals(node: ast.expr) -> frozenset[str] | None:
     if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return None
@@ -159,20 +190,24 @@ def _string_literals(node: ast.expr) -> frozenset[str] | None:
 
 
 class _Classifier:
-    def __init__(self, name: str, call_evidence: CallEvidenceLookup):
+    def __init__(self, name: str):
         self.name = name
-        self.call_evidence = call_evidence
+        self.message_calls: set[ast.Call] = set()
         self.literals: set[str] = set()
         self.collapsible = True
 
-    def classify(self, body: ast.expr | tuple[ast.stmt, ...]) -> ParameterLiteralClass:
+    def classify(
+        self, body: ast.expr | tuple[ast.stmt, ...]
+    ) -> _LiteralCandidate | None:
         if isinstance(body, tuple):
             self.block(body, narrowed=False)
         else:
             self.expression(body)
         if not self.collapsible or UNMATCHED_ARGUMENT in self.literals:
             return None
-        return frozenset(self.literals)
+        return _LiteralCandidate(
+            frozenset(self.literals), frozenset(self.message_calls)
+        )
 
     # --- nested-scope references (a syntactic superset of captures) ------
 
@@ -264,13 +299,6 @@ class _Classifier:
             or call.keywords
         ):
             return False
-        evidence = self.call_evidence(call)
-        if (
-            evidence is None
-            or evidence.reaches_source
-            or evidence.callees & ~_MESSAGE_CALLEES
-        ):
-            return False
         for argument in call.args:
             if isinstance(argument, ast.JoinedStr):
                 for part in argument.values:
@@ -280,6 +308,7 @@ class _Classifier:
                         and part.value.id == self.name
                         and part.format_spec is None
                     ):
+                        self.message_calls.add(call)
                         continue
                     self.expression(part)
             else:

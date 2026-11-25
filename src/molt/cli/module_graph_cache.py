@@ -9,6 +9,7 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
     PythonElementProtocol,
     PythonFunctionResult,
+    PythonActivationPartition,
     PythonSourceCall,
     PythonSourceCallableDeclaration,
     PythonSourceElement,
@@ -935,7 +936,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 58
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 59
 
 
 def _import_scan_cache_key(
@@ -1375,6 +1376,7 @@ def _decode_import_scan_payload(
                 "calls",
                 "declarations",
                 "functions",
+                "activation_partitions",
                 "bases",
                 "completions",
                 "callables",
@@ -1465,17 +1467,9 @@ def _decode_import_scan_payload(
                     _source_cache_origins(exposed),
                     _source_cache_origins(yielded),
                     _source_cache_origins(yielded_exposed),
-                    None
-                    if literal_classes is None
-                    else tuple(
-                        None
-                        if literal_class is None
-                        else frozenset(_source_cache_sorted_strings(literal_class))
-                        for literal_class in _source_cache_list(literal_classes)
-                    ),
                 )
-                for owner, origins, exposed, yielded, yielded_exposed, literal_classes in _source_cache_rows(
-                    raw_values["functions"], 6
+                for owner, origins, exposed, yielded, yielded_exposed in _source_cache_rows(
+                    raw_values["functions"], 5
                 )
             ),
             tuple(
@@ -1576,6 +1570,20 @@ def _decode_import_scan_payload(
                     raw_values["classes"], 3
                 )
             ),
+            activation_partitions=tuple(
+                PythonActivationPartition(
+                    decode_python_source_key(owner),
+                    tuple(
+                        None
+                        if item is None
+                        else frozenset(_source_cache_sorted_strings(item))
+                        for item in _source_cache_list(classes)
+                    ),
+                )
+                for owner, classes in _source_cache_rows(
+                    raw_values["activation_partitions"], 2
+                )
+            ),
         )
         if any(
             not origins
@@ -1627,11 +1635,20 @@ def _decode_import_scan_payload(
             return None
         if len({item.owner for item in values.functions}) != len(
             values.functions
+        ) or any(item.owner not in declarations for item in values.functions):
+            return None
+        if admission.source_owner is not None and (
+            values.activation_partitions
+            or any(item.owner != admission.source_owner for item in values.functions)
+            or any(item.owner != admission.source_owner for item in values.declarations)
+        ):
+            return None
+        if len({item.owner for item in values.activation_partitions}) != len(
+            values.activation_partitions
         ) or any(
             item.owner not in declarations
-            or item.literal_classes is not None
-            and len(item.literal_classes) != len(declarations[item.owner].positional)
-            for item in values.functions
+            or len(item.classes) != len(declarations[item.owner].positional)
+            for item in values.activation_partitions
         ):
             return None
         if (
@@ -1834,14 +1851,12 @@ def _import_scan_payload(
                     sorted(item.returned_exposed),
                     sorted(item.yielded),
                     sorted(item.yielded_exposed),
-                    None
-                    if item.literal_classes is None
-                    else [
-                        None if literal_class is None else sorted(literal_class)
-                        for literal_class in item.literal_classes
-                    ],
                 )
                 for item in scan.source_values.functions
+            ],
+            "activation_partitions": [
+                (owner, [None if item is None else sorted(item) for item in classes])
+                for owner, classes in scan.source_values.activation_partitions
             ],
             "bases": [
                 (owner, sorted(origins)) for owner, origins in scan.source_values.bases

@@ -13,7 +13,7 @@ from molt.python_private_names import python_import_binding
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from threading import RLock
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
@@ -31,6 +31,10 @@ from molt.compiler_analysis.static_truth import (
     static_test_truthiness,
     statically_executed_boolop_values,
 )
+
+if TYPE_CHECKING:
+    from molt.compiler_analysis.python_parameter_classes import ParameterLiteralPlan
+
 
 LexicalDefinitionNode: TypeAlias = (
     ast.FunctionDef
@@ -1177,6 +1181,7 @@ class PythonDependencyAuthority:
         self._declarations: dict[ast.AST, PythonScopeDeclarations] = {}
         self.summaries: dict[ast.AST, PythonDefinitionDependencies] = {}
         self._module_read_names: dict[ast.Module, tuple[str, ...]] = {}
+        self._parameter_plans: dict[ast.AST, ParameterLiteralPlan] = {}
         self._regions: dict[ast.AST, DefinitionLexicalRegions] = {}
         # Per expression: (contains an await, contains a yield or yield from),
         # each counted only where it suspends the evaluating frame.
@@ -1230,6 +1235,23 @@ class PythonDependencyAuthority:
                 frozenset(visitor.globals),
                 visitor.contains_await,
             )
+
+    def parameter_plan(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ) -> ParameterLiteralPlan:
+        plan = self._parameter_plans.get(node)
+        if plan is not None:
+            return plan
+        with self._lock:
+            plan = self._parameter_plans.get(node)
+            if plan is None:
+                from molt.compiler_analysis.python_parameter_classes import (
+                    ParameterLiteralPlan,
+                )
+
+                plan = ParameterLiteralPlan(node)
+                self._parameter_plans[node] = plan
+            return plan
 
     def module_read_names(self, tree: ast.Module) -> tuple[str, ...]:
         """All names a module namespace expiration must be able to reach."""

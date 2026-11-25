@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import contextvars
+from bisect import bisect_left
+from operator import attrgetter
 from collections.abc import Callable
 from molt.python_private_names import (
     python_import_binding,
@@ -51,6 +53,8 @@ from molt.compiler_analysis.static_truth import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     EnclosingBindingDeclarations,
+    PythonFunctionResult,
+    PythonSourceCallableDeclaration,
     PythonParameterRef,
     PythonStringAlternatives,
 )
@@ -843,6 +847,21 @@ def _scan_nodes_for_import_mode(
     )
 
 
+_publication_owner = attrgetter("owner")
+
+
+def _publication_at[
+    T: (
+        PythonFunctionResult,
+        PythonSourceCallableDeclaration,
+    )
+](rows: tuple[T, ...], owner: PythonSourceKey) -> tuple[T, ...]:
+    index = bisect_left(rows, owner, key=_publication_owner)
+    if index < len(rows) and rows[index].owner == owner:
+        return rows[index : index + 1]
+    return ()
+
+
 def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
@@ -925,12 +944,31 @@ def _collect_imports(
                 binding_index.source_elements,
                 binding_index.source_calls,
                 binding_index.source_callable_declarations,
-                binding_index.source_function_results,
+                binding_index.source_function_results
+                if _purpose is SourceImportPurpose.INVENTORY
+                or _runtime_catalog is not None
+                else (),
                 binding_index.source_bases,
                 binding_index.source_completions,
                 binding_index.source_callables,
                 native_initializers=binding_index.source_native_initializers,
                 classes=binding_index.source_classes,
+                activation_partitions=binding_index.source_activation_partitions,
+            )
+        )
+
+    elif _source_values is not None:
+        assert source_owner is not None
+        # A body outcome becomes available at activation. Its own declaration
+        # keeps the persisted body scan independently decodable.
+        _source_values.append(
+            _SourceValueSummary(
+                declarations=_publication_at(
+                    binding_index.source_callable_declarations, source_owner
+                ),
+                functions=_publication_at(
+                    binding_index.source_function_results, source_owner
+                ),
             )
         )
 

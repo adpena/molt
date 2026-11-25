@@ -87,6 +87,7 @@ def test_binding_revisions_share_admitted_lexical_work() -> None:
     assert actual.source_namespaces == expected.source_namespaces
     assert actual.source_callable_declarations == expected.source_callable_declarations
     assert actual.source_function_results == expected.source_function_results
+    assert actual.source_activation_partitions == expected.source_activation_partitions
     assert (
         admission.lexical_plan(tree, target_python=(3, 14)).authority is not authority
     )
@@ -5161,7 +5162,7 @@ def test_annotation_evaluator_does_not_publish_the_source_lambda_signature() -> 
     ]
     (result,) = [item for item in index.source_function_results if item.owner == owner]
     assert declaration.positional == (python_node_source_key(annotation.args.args[0]),)
-    assert result.literal_classes == (None,)
+    assert dict(index.source_activation_partitions)[owner] == (None,)
 
 
 def test_generator_call_result_retains_suspension_not_a_returned_callable():
@@ -6965,10 +6966,7 @@ def test_parameter_literal_classes_admit_only_literal_observation(body, expected
     source = "def hook(name):\n" + body
     index = analyze_python_source_bindings(source)
     hook = python_node_source_key(ast.parse(source).body[0])
-    (parameters,) = [
-        item for item in index.source_function_results if item.owner == hook
-    ]
-    assert parameters.literal_classes == (expected,)
+    assert dict(index.source_activation_partitions)[hook] == (expected,)
 
 
 def test_parameter_literal_classes_message_needs_typed_callee_without_source_reach():
@@ -6984,8 +6982,37 @@ def test_parameter_literal_classes_message_needs_typed_callee_without_source_rea
         tree = ast.parse(source)
         hook = python_node_source_key(tree.body[-1])
         index = analyze_python_source_bindings(source)
-        (parameters,) = [p for p in index.source_function_results if p.owner == hook]
-        assert parameters.literal_classes == (expected,)
+        assert dict(index.source_activation_partitions)[hook] == (expected,)
+
+
+def test_one_literal_plan_resolves_current_call_publication() -> None:
+    from molt.compiler_analysis.python_parameter_classes import (
+        CallEvidence,
+        ParameterLiteralPlan,
+    )
+
+    (node,) = ast.parse(
+        "def hook(name):\n"
+        "    if name == 'a': return 1\n"
+        "    raise AttributeError(f'unknown {name}')\n"
+    ).body
+    assert isinstance(node, ast.FunctionDef)
+    plan = ParameterLiteralPlan(node)
+
+    def builtin(_: ast.Call) -> CallEvidence:
+        return CallEvidence(PythonIdentity.BUILTIN_ATTRIBUTEERROR, False)
+
+    def source(_: ast.Call) -> CallEvidence:
+        return CallEvidence(PythonIdentity.BUILTIN_ATTRIBUTEERROR, True)
+
+    def frame(_: ast.Call) -> CallEvidence:
+        return CallEvidence(PythonIdentity.BUILTIN_VARS, False)
+
+    assert plan.resolve(lambda _: None) == (None,)
+    assert plan.resolve(builtin) == (frozenset({"a"}),)
+    assert plan.resolve(source) == (None,)
+    assert plan.resolve(frame) == (None,)
+    assert plan.resolve(builtin) == (frozenset({"a"}),)
 
 
 def test_parameter_literal_classes_align_with_positional_parameters():
@@ -6995,11 +7022,11 @@ def test_parameter_literal_classes_align_with_positional_parameters():
         "    raise ValueError(f'bad {kind}')\n"
     )
     index = analyze_python_source_bindings(source)
-    (parameters,) = index.source_function_results
+    (partition,) = index.source_activation_partitions
     (declaration,) = index.source_callable_declarations
-    assert declaration.owner == parameters.owner
+    assert declaration.owner == partition.owner
     assert len(declaration.positional) == 2
-    assert parameters.literal_classes == (frozenset({"a", "b"}), None)
+    assert partition.classes == (frozenset({"a", "b"}), None)
 
 
 @pytest.mark.parametrize(

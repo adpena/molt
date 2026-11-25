@@ -60,6 +60,39 @@ def load(path: Path, **kwargs):
     return discovery._load_module_import_scan(path, **options)
 
 
+def test_execution_scan_publishes_only_the_activated_body_result(
+    tmp_path: Path,
+) -> None:
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    text = (
+        "def returned(): pass\n"
+        "def factory(): return returned\n"
+        "def unrelated(): return factory\n"
+    )
+    source = write(tmp_path / "entry.py", text)
+    returned, factory, unrelated = map(python_node_source_key, ast.parse(text).body)
+
+    initialization = load(source).scan.source_values
+    assert {entry.owner for entry in initialization.declarations} == {
+        returned,
+        factory,
+        unrelated,
+    }
+    assert initialization.functions == ()
+
+    active = load(source, source_owner=factory, import_scan_mode="module_init")
+    (result,) = active.scan.source_values.functions
+    assert result.owner == factory
+    assert result.returned == frozenset({returned})
+    assert tuple(row.owner for row in active.scan.source_values.declarations) == (
+        factory,
+    )
+    warm = load(source, source_owner=factory, import_scan_mode="module_init")
+    assert warm.cache_hit
+    assert warm.scan.source_values == active.scan.source_values
+
+
 def test_import_query_records_preserve_python_string_identity(tmp_path: Path) -> None:
     path = write(
         tmp_path / "entry.py",
@@ -583,11 +616,15 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
         "Derived.callback = callback\n"
         "try:\n    Derived.callback()\nexcept Exception:\n    pass\n",
     )
-    cold = load(source)
+    cold = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert cold.scan.source_sites
-    assert load(source).cache_hit
+    assert load(source, purpose=SourceImportPurpose.INVENTORY).cache_hit
     key = records._import_scan_cache_key(
-        source, module_name="entry", is_package=False, import_scan_mode="full"
+        source,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        purpose=SourceImportPurpose.INVENTORY,
     )
     payload = source_records("import-scan")[key]
     values = payload["source_values"]
@@ -644,13 +681,14 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
         is_package=False,
         import_scan_mode="full",
         snapshot=PythonSourceSnapshot.capture(source),
+        purpose=SourceImportPurpose.INVENTORY,
     )
     assert restored is None
-    recovered = load(source)
+    recovered = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert not recovered.cache_hit
     assert recovered.scan.source_sites == cold.scan.source_sites
     assert recovered.scan.source_values == cold.scan.source_values
-    warm = load(source)
+    warm = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert warm.cache_hit
     assert warm.scan.source_sites == cold.scan.source_sites
     assert warm.scan.source_values == cold.scan.source_values
@@ -737,6 +775,10 @@ def test_source_demand_activation_join_emits_only_new_incidences(tmp_path, monke
         module == "entry" and owner == make_owner
         for module, owner, _arguments in queued_bodies
     )
+    assert not engine.value_candidates[value]
+    body = load(source, import_scan_mode="module_init", source_owner=make_owner)
+    engine.accept("entry", body.scan.source_requests)
+    engine.drain()
     expected = {python_node_source_key(node) for node in tree.body[:2]}
     assert {
         candidate.source for candidate in engine.value_candidates[value]
@@ -2230,15 +2272,19 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
         "def delegate():\n    return (yield from values())\n"
         "async def ready(): return 1\nasync def resumed(): return await ready()\n",
     )
-    cold = load(source)
+    cold = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert cold.scan.source_values.functions
     assert {owner[-1] for owner, _ in cold.scan.source_values.completions} == {
         "Await",
         "YieldFrom",
     }
-    assert load(source).cache_hit
+    assert load(source, purpose=SourceImportPurpose.INVENTORY).cache_hit
     key = records._import_scan_cache_key(
-        source, module_name="entry", is_package=False, import_scan_mode="full"
+        source,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        purpose=SourceImportPurpose.INVENTORY,
     )
     payload = source_records("import-scan")[key]
     values = payload["source_values"]
@@ -2257,10 +2303,10 @@ def test_function_completion_cache_rejects_retired_or_incoherent_records(
     else:
         values["awaits"] = values.pop("completions")
     replace_source_record("import-scan", key, payload)
-    recovered = load(source)
+    recovered = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert not recovered.cache_hit
     assert recovered.scan.source_values == cold.scan.source_values
-    warm = load(source)
+    warm = load(source, purpose=SourceImportPurpose.INVENTORY)
     assert warm.cache_hit
     assert warm.scan.source_values == cold.scan.source_values
 
@@ -2312,7 +2358,10 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
         source = "from carrier import Items\nasync def consume():\n    async for value in Items(): pass\n"
     projections = {
         "carrier": _source_import_scan._collect_imports_for_graph(
-            ast.parse(provider_source), "carrier", import_scan_mode="module_init"
+            ast.parse(provider_source),
+            "carrier",
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.INVENTORY,
         ),
         "entry": _source_import_scan._collect_imports_for_graph(
             ast.parse(source), "entry", import_scan_mode="module_init"
@@ -3017,9 +3066,10 @@ def test_late_canonical_provider_activation_retains_application_consumer():
     }
     protocols = set()
     imports = set()
+    queued = []
     engine = PythonSourceDemands(
         admit_imports=lambda _module, names: imports.update(names),
-        queue_body=lambda *_: None,
+        queue_body=lambda *job: queued.append(job),
         require_runtime_import_protocol=protocols.add,
     )
     for module in ("entry", "provider"):
@@ -3035,6 +3085,20 @@ def test_late_canonical_provider_activation_retains_application_consumer():
         engine.drain()
         if module == "entry":
             assert protocols == set()
+    assert not protocols
+    (job,) = queued
+    module, owner, arguments = job
+    assert module == "provider"
+    body = _source_import_scan._collect_imports_for_graph(
+        ast.parse(sources[module]),
+        module,
+        import_scan_mode="module_init",
+        source_owner=owner,
+        source_arguments=arguments,
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+    )
+    engine.accept(module, _ImportScanRequests((), ())._replace(**body._asdict()))
+    engine.drain()
     assert "entry" in protocols
     assert "leaf" in imports
 
@@ -3578,10 +3642,10 @@ def test_argument_class_representative_scans_like_every_member(
         item
         for item in load(
             source, import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM
-        ).scan.source_values.functions
+        ).scan.source_values.activation_partitions
         if item.owner == hook
     ]
-    assert parameters.literal_classes == (literal_class,)
+    assert parameters.classes == (literal_class,)
 
     def record(argument: str):
         return load(
@@ -3665,8 +3729,8 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
         ast_digest_admission=_PythonAstDigestAdmission.for_tree(tree),
     )
     scan = _ImportScanRequests((), ())._replace(**projection._asdict())
-    (parameters,) = scan.source_values.functions
-    assert parameters.literal_classes == (frozenset({"a"}),)
+    (parameters,) = scan.source_values.activation_partitions
+    assert parameters.classes == (frozenset({"a"}),)
     bodies = []
     engine = PythonSourceDemands(
         require_runtime_import_protocol=lambda _module: None,
@@ -3683,7 +3747,7 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
     ]
     shrunk = scan._replace(
         source_values=scan.source_values._replace(
-            functions=(parameters._replace(literal_classes=(None,)),)
+            activation_partitions=(parameters._replace(classes=(None,)),)
         )
     )
     engine.accept("hooked", shrunk)
@@ -3695,12 +3759,19 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
         ("y",),
     ]
 
+    # Another context can prove its partition without erasing the context
+    # that requires exact arguments. A new argument still gets its own body.
+    engine.accept("hooked", scan)
+    engine.demand(("hooked", hook), "call", ("z",))
+    engine.drain()
+    assert bodies[-1] == ("hooked", hook, ("z",))
+
 
 @pytest.mark.parametrize("corruption", [None, "length", "unsorted", "type"])
 def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption):
     source = write(tmp_path / "hooked.py", _CLASSED_HOOK)
     cold = load(source)
-    classes = [item.literal_classes for item in cold.scan.source_values.functions]
+    classes = [item.classes for item in cold.scan.source_values.activation_partitions]
     assert (frozenset({"tasks", "futures", "events"}),) in classes
     if corruption is not None:
         key = records._import_scan_cache_key(
@@ -3709,12 +3780,12 @@ def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption
         payload = source_records("import-scan")[key]
         row = next(
             row
-            for row in payload["source_values"]["functions"]
-            if row[5] not in (None, [None])
+            for row in payload["source_values"]["activation_partitions"]
+            if row[1] and row[1] != [None]
         )
-        row[5] = {
-            "length": row[5] + [None],
-            "unsorted": [sorted(row[5][0], reverse=True)],
+        row[1] = {
+            "length": row[1] + [None],
+            "unsorted": [sorted(row[1][0], reverse=True)],
             "type": [[1]],
         }[corruption]
         replace_source_record("import-scan", key, payload)

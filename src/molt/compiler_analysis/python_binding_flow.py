@@ -72,7 +72,6 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_parameter_classes import (
     CallEvidence,
-    parameter_literal_classes,
 )
 from molt.compiler_analysis.python_namespace_writes import (
     _own_namespace_names,
@@ -99,6 +98,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonCompletionFlow,
     PythonExpressionFact,
     PythonFunctionResult,
+    PythonActivationPartition,
     PythonElementProtocol,
     PythonClassPreparation,
     PythonSourceElement,
@@ -9936,6 +9936,8 @@ class _Analyzer:
         return self._project_analysis()
 
     def _project_analysis(self) -> _BindingAnalysis:
+        lexical = self._dependency_authority
+        assert lexical is not None
         expressions, statements, iterations, flow_required = (
             self._seal_deferred_execution()
         )
@@ -9971,6 +9973,7 @@ class _Analyzer:
             effects & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA)
             for effects in self.transfer.assignment_effects.values()
         )
+        function_results = sorted(self.transfer.source_function_results.items())
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
             class_builder_reads=self.transfer.class_builder_reads,
@@ -10013,18 +10016,14 @@ class _Analyzer:
                     self.transfer.source_callable_declarations.items()
                 )
             ),
-            source_function_results=tuple(
-                value._replace(
-                    literal_classes=parameter_literal_classes(
-                        node, call_evidence=self._call_evidence
-                    )
+            source_function_results=tuple(value for _, value in function_results),
+            source_activation_partitions=tuple(
+                PythonActivationPartition(
+                    owner, lexical.parameter_plan(node).resolve(self._call_evidence)
                 )
+                for owner, _ in function_results
                 if (node := self.transfer.executed_function_nodes.get(owner))
                 is not None
-                else value
-                for owner, value in sorted(
-                    self.transfer.source_function_results.items()
-                )
             ),
             source_completions=tuple(sorted(self.transfer.source_completions.items())),
             target_python=self.policy.target_python,

@@ -271,10 +271,13 @@ receiver behavior.
    argument: a positional parameter that the body observes only through
    string-literal tests, branches those tests narrow, and the message of a raise
    that reaches no source callee shares one scan for every argument outside its
-   literals (`python_parameter_classes`, the `literal_classes` field of
-   `PythonSourceParameters`). The classes read typed call facts (callee identity
-   masks, source reach) after the base fixpoint; the solver keeps each original
-   argument tuple and re-maps it when a rescan changes a class. Literal `getattr`/`hasattr`/`delattr` select real member
+   literals. A source-owned plan captures its syntax once. The generic module
+   scan checks typed call evidence and publishes a `PythonActivationPartition`
+   independently of body outcomes. The solver retains each original argument
+   tuple and combines observed partitions conservatively. Activated scans publish
+   return and yield facts for their own body. An argument-specialized scan cannot
+   revise the generic partition. Inventory and runtime catalogs retain complete
+   outcomes. Literal `getattr`/`hasattr`/`delattr` select real member
    sources; unknown selectors retain protocol and escape effects. Class allocation,
    method folding and unguarded field access additionally require unexposed
    definition/method identities (`class_namespace_closed`). Exposure is not a layout
