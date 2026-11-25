@@ -1243,6 +1243,103 @@ def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "refusal",
+    [None, "provider write", "custom module class", "cycle", "on demand", "arity"],
+)
+def test_reexported_intrinsic_calls_follow_the_actual_initialized_cells(
+    refusal: str | None,
+) -> None:
+    from molt.cli.static_module_cells import prove_init_once_calls
+
+    provider = _function(
+        "pyinit.source",
+        _const("nm", "source"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        _const("sym", "molt_operator_index"),
+        {
+            "kind": "builtin_func",
+            "s_value": "molt_operator_index",
+            "value": 1,
+            "args": ["sym"],
+            "out": "fn",
+        },
+        *_store("published", "fn", 3),
+    )
+    init, caller = _intrinsic_call_program(2 if refusal == "arity" else 1)
+    # The caller's local name differs from the provider's member and symbol.
+    init["ops"][2:4] = [
+        {
+            "kind": "import_name",
+            "import_form": "dunder",
+            "value": 0,
+            "fromlist": ["published"],
+            "s_value": "source",
+            "out": "provider",
+        },
+        _const("key", "published"),
+        {"kind": "module_import_from", "args": ["provider", "key"], "out": "f_intern"},
+    ]
+    if refusal == "custom module class":
+        provider["ops"].extend(_store("__class__", "custom", 4))
+    modules = {"mod": [init, caller], "source": [provider]}
+    functions = [provider, init, caller]
+    namespaces = {
+        "mod": _facts(initializer_bindings=frozenset({"_INTERN", "caller"})),
+        "source": _facts(
+            initializer_bindings=frozenset({"published", "__class__"}),
+            own_names=frozenset({"published"})
+            if refusal == "provider write"
+            else frozenset(),
+        ),
+    }
+    layouts = {
+        m: module_global_layout(f.initializer_bindings) for m, f in namespaces.items()
+    }
+    initializers = {m: summarize_module_initializer(m, fs) for m, fs in modules.items()}
+    dependencies = {"mod": {"mod", "source"}, "source": {"source"}}
+    if refusal == "cycle":
+        dependencies["source"].add("mod")
+    if refusal == "on demand":
+        dependencies["builtins"] = {"builtins", "mod", "source"}
+    plan, _ = plan_module_cells(
+        modules,
+        namespaces,
+        layouts,
+        set(modules),
+        NO_IMPORT_REDIRECTS,
+        program_functions=functions,
+        dep_closures=dependencies,
+        initializers=initializers,
+    )
+    stamp_global_slots(
+        functions,
+        modules,
+        layouts,
+        set(modules),
+        plan.modules,
+        plan.guard_masks,
+        plan.init_dominated,
+    )
+    prove_init_once_calls(
+        functions,
+        modules,
+        plan,
+        initializers=initializers,
+        namespaces=namespaces,
+        dependencies=dependencies,
+    )
+    (call,) = [op for op in functions[-1]["ops"] if op.get("out") == "r"]
+    if refusal is None:
+        assert (call["kind"], call["s_value"], call["args"]) == (
+            "call",
+            "molt_operator_index",
+            ["a0"],
+        )
+    else:
+        assert call["kind"] == "call_func"
+
+
 def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publication() -> (
     None
 ):

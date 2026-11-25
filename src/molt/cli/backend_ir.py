@@ -2864,7 +2864,12 @@ def _prepare_backend_ir(
     # consumes the frontend's func_new shape facts here.
     binding_diagnostics.extend(
         prove_init_once_calls(
-            functions, integration_state.module_functions, static_cells
+            functions,
+            integration_state.module_functions,
+            static_cells,
+            initializers=initializers,
+            namespaces=integration_state.module_namespace_facts,
+            dependencies=integration_state.module_dep_closures,
         )
     )
     # Reads of InitOnce cells holding an immediate constant are that constant:
