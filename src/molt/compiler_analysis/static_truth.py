@@ -602,28 +602,24 @@ def expression_result_without_value_facts(
     """
     if result is UNKNOWN_EXPRESSION_RESULT:
         return result
-    completed: dict[int, StaticExpressionResult] = {}
-    pending: list[
-        tuple[StaticExpressionResult, StaticExpressionResult | None, bool]
-    ] = [(result, None, False)]
-    while pending:
-        current, child, expanded = pending.pop()
-        identity = id(current)
-        if identity in completed:
-            continue
-        if not expanded:
-            child = current.element_result
-            if child is None and current.items is not None:
-                child = sequence_element_result(current.items)
-        if child is not None and id(child) not in completed and not expanded:
-            pending.append((current, child, True))
-            pending.append((child, None, False))
-            continue
-        projected = None if child is None else completed[id(child)]
-        if projected == UNKNOWN_EXPRESSION_RESULT:
-            projected = None
+
+    # Expiry retains at most one joined element summary per value. Follow
+    # that path, then project from the last value back to its owners.
+    enclosing: list[StaticExpressionResult] = []
+    current = result
+    while True:
+        child = current.element_result
+        if child is None and current.items is not None:
+            child = sequence_element_result(current.items)
+        if child is None or child is UNKNOWN_EXPRESSION_RESULT:
+            break
+        enclosing.append(current)
+        current = child
+
+    projected = None
+    while True:
         symbols = current.identities & ~_NON_SYMBOL_IDENTITIES
-        completed[identity] = (
+        widened = (
             UNKNOWN_EXPRESSION_RESULT
             if not symbols
             and not current.exposes_module_globals
@@ -641,7 +637,10 @@ def expression_result_without_value_facts(
                 element_result=projected,
             )
         )
-    return completed[id(result)]
+        if not enclosing:
+            return widened
+        projected = None if widened is UNKNOWN_EXPRESSION_RESULT else widened
+        current = enclosing.pop()
 
 
 class StaticTruthKwargs(TypedDict, total=False):
@@ -1607,70 +1606,69 @@ def join_static_expression_results(
             pending.append((current, True))
             pending.append((child_results, False))
             continue
-        kind: ExpressionKind = (
-            first.kind
-            if all(result.kind == first.kind for result in current)
-            else "unknown"
-        )
-        scalar_kinds = (
-            frozenset().union(*(result.scalar_kinds for result in current))
-            if all(result.is_exact_scalar for result in current)
-            else frozenset()
-        )
-        exact = first.value_known and all(
-            result.value_known
-            and result.kind == first.kind
-            and _same_scalar_value(result.value, first.value)
-            for result in current[1:]
-        )
-        truth = (
-            first.truth
-            if all(result.truth is first.truth for result in current[1:])
-            else None
-        )
+        kind = first.kind
+        scalar_kinds = first.scalar_kinds
+        exact = first.value_known
+        truth = first.truth
+        evaluation_required = first.evaluation_required
+        items = first.items
+        release_may_call = first.release_may_call
+        fresh_container = first.fresh_container
+        length = first.length
+        identities = first.identities
+        exposes_module_globals = first.exposes_module_globals
+        source_origin_union = set(first.source_origins)
+        exposed_source_origin_union = set(first.exposed_source_origins)
+        deferred_union = set(first.deferred)
+        exposed_deferred_union = set(first.exposed_deferred)
+        deferred_complete = first.deferred_complete
+        class_instantiation_inert = first.class_instantiation_inert
+        publication_release_stable = bool(first._publication_release_stable)
+        for alternative in current[1:]:
+            if kind != alternative.kind:
+                kind = "unknown"
+            if scalar_kinds:
+                scalar_kinds = (
+                    scalar_kinds | alternative.scalar_kinds
+                    if alternative.scalar_kinds
+                    else frozenset()
+                )
+            exact = (
+                exact
+                and alternative.value_known
+                and alternative.kind == first.kind
+                and _same_scalar_value(alternative.value, first.value)
+            )
+            if truth is not alternative.truth:
+                truth = None
+            if items != alternative.items:
+                items = None
+            if length != alternative.length:
+                length = None
+            evaluation_required |= alternative.evaluation_required
+            release_may_call |= alternative.release_may_call
+            fresh_container &= alternative.fresh_container
+            exposes_module_globals |= alternative.exposes_module_globals
+            identities |= alternative.identities
+            source_origin_union.update(alternative.source_origins)
+            exposed_source_origin_union.update(alternative.exposed_source_origins)
+            deferred_union.update(alternative.deferred)
+            exposed_deferred_union.update(alternative.exposed_deferred)
+            deferred_complete &= alternative.deferred_complete
+            class_instantiation_inert &= alternative.class_instantiation_inert
+            publication_release_stable &= bool(alternative._publication_release_stable)
+
         value = first.value if exact else None
-        evaluation_required = any(result.evaluation_required for result in current)
-        items = (
-            first.items
-            if all(result.items == first.items for result in current[1:])
-            else None
-        )
-        release_may_call = any(result.release_may_call for result in current)
-        fresh_container = all(result.fresh_container for result in current)
-        length = (
-            first.length
-            if all(result.length == first.length for result in current[1:])
-            else None
-        )
         element_result = None if child_key is None else completed[child_key]
-        identities = 0
-        for result in current:
-            identities |= result.identities
-        exposes_module_globals = any(
-            result.exposes_module_globals for result in current
-        )
-        source_origins = frozenset().union(
-            *(result.source_origins for result in current)
-        )
-        exposed_source_origins = frozenset().union(
-            *(result.exposed_source_origins for result in current)
-        )
-        deferred = frozenset().union(*(result.deferred for result in current))
-        exposed_deferred = frozenset().union(
-            *(result.exposed_deferred for result in current)
-        )
-        deferred_complete = all(result.deferred_complete for result in current)
+        source_origins = frozenset(source_origin_union)
+        exposed_source_origins = frozenset(exposed_source_origin_union)
+        deferred = frozenset(deferred_union)
+        exposed_deferred = frozenset(exposed_deferred_union)
         attribute_hooks = _join_known_deferred_sets(
             result.attribute_hooks for result in current
         )
         instance_attribute_hooks = _join_known_deferred_sets(
             result.instance_attribute_hooks for result in current
-        )
-        class_instantiation_inert = all(
-            result.class_instantiation_inert for result in current
-        )
-        publication_release_stable = all(
-            bool(result._publication_release_stable) for result in current
         )
         semantic_key = _expression_result_semantic_key(
             truth,
