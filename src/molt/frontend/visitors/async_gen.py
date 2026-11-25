@@ -995,43 +995,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 Diagnostic.CONTROL_FLOW, "await outside async function"
             )
         awaitable_slot = self._new_async_internal_slot()
-        awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", awaitable_slot],
-                result=awaitable_cached,
-            )
-        )
-        none_cached = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
-        is_none_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="IS",
-                args=[awaitable_cached, none_cached],
-                result=is_none_cached,
-            )
-        )
-        zero_cached = MoltValue(self.next_var(), type_hint="float")
-        self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
-        is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="IS",
-                args=[awaitable_cached, zero_cached],
-                result=is_zero_cached,
-            )
-        )
-        is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="OR",
-                args=[is_none_cached, is_zero_cached],
-                result=is_empty_cached,
-            )
-        )
-        self.emit(MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none")))
+        # The first entry acquires the awaitable. A pending dispatch enters
+        # at the state label below, where the frame already owns it.
         transformed = self._emit_awaitable_transform(awaitable)
         self.emit(
             MoltOp(
@@ -1040,7 +1005,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.state_count += 1
         pending_state_id = self.state_count
         self.emit(
