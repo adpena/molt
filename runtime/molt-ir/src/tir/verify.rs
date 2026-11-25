@@ -189,6 +189,16 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 errors.push(VerifyError::op(*bid, op_index, error));
                 continue;
             }
+            if op.attrs.contains_key(super::ops::CHECKED_INVOCATION_ATTR)
+                && super::call_targets::bound_invocation(&block.ops[..op_index], op).is_none()
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_index,
+                    "checked invocation must observe its compiled call's physical result",
+                ));
+                continue;
+            }
             if let Some(index) = op.spliced_frame_identity_operand() {
                 let places = identity_places.get_or_insert_with(|| {
                     func.blocks
@@ -855,7 +865,7 @@ fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>)
                 && let Some(AttrValue::Int(label)) = op.attrs.get("value")
                 && let Some(target) = exception_targets.get(label)
             {
-                edges.push((*target, op.operands.clone()));
+                edges.push((*target, op.exception_payload().to_vec()));
             }
         }
         block
@@ -1067,14 +1077,14 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 ));
                 continue;
             };
-            if op.operands.len() != expected {
+            if op.exception_payload().len() != expected {
                 errors.push(VerifyError::op(
                     *bid,
                     op_index,
                     format!(
                         "implicit exception edge to ^{} passes {} args but block expects {}",
                         target,
-                        op.operands.len(),
+                        op.exception_payload().len(),
                         expected
                     ),
                 ));

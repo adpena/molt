@@ -2,7 +2,7 @@ use melior::{
     Context as MlirContext,
     ir::{
         Attribute, Identifier, Type,
-        attribute::{FloatAttribute, IntegerAttribute, StringAttribute},
+        attribute::{ArrayAttribute, FloatAttribute, IntegerAttribute, StringAttribute},
         r#type::IntegerType,
     },
 };
@@ -24,6 +24,14 @@ pub(super) fn mlir_attributes<'c>(
                 AttrValue::RuntimeCandidate(runtime) => {
                     StringAttribute::new(ctx, runtime.symbol()).into()
                 }
+                AttrValue::IntRange(range) => ArrayAttribute::new(
+                    ctx,
+                    &[
+                        IntegerAttribute::new(i64_type, range.lo).into(),
+                        IntegerAttribute::new(i64_type, range.hi).into(),
+                    ],
+                )
+                .into(),
                 AttrValue::Int(value) => IntegerAttribute::new(i64_type, *value).into(),
                 AttrValue::Float(value) => FloatAttribute::new(ctx, f64_type, *value).into(),
                 AttrValue::Str(value) => StringAttribute::new(ctx, value).into(),

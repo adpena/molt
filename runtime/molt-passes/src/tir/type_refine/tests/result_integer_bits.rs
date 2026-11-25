@@ -525,3 +525,58 @@ fn marked_copy_and_malformed_observers_cannot_prove_success() {
         );
     }
 }
+
+#[test]
+fn bound_invocation_identity_is_not_a_physical_use_or_an_extra_handler_argument() {
+    use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
+    let word = ValueId(1);
+    let mut func = checked_runtime_integer(molt_ir::runtime_fn_generated::RuntimeFn::OperatorIndex);
+    let ops = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops;
+    let mut call = TirOp::new(OpCode::Call, vec![], vec![word]);
+    call.callee = Some(molt_ir::FunctionId(0));
+    ops[1] = call;
+    ops[2].set_exception_edge_kind(ExceptionEdgeKind::Unwind);
+    assert!(bind_checked_invocations(&mut func));
+    assert!(!bind_checked_invocations(&mut func));
+    let check = &func.blocks[&func.entry_block].ops[2];
+    assert_eq!(check.checked_invocation_source(), Some(word));
+    assert!(check.exception_payload().is_empty());
+    assert!(checked_successful_call_results(&func).contains(&word));
+
+    let mut scheduled = func.clone();
+    let local = scheduled.fresh_value();
+    scheduled
+        .blocks
+        .get_mut(&scheduled.entry_block)
+        .unwrap()
+        .ops
+        .insert(2, TirOp::new(OpCode::Copy, vec![ValueId(0)], vec![local]));
+    assert!(checked_successful_call_results(&scheduled).contains(&word));
+    let ops = &mut scheduled
+        .blocks
+        .get_mut(&scheduled.entry_block)
+        .unwrap()
+        .ops;
+    ops[3].operands[0] = local;
+    assert!(!checked_successful_call_results(&scheduled).contains(&word));
+
+    let arg = func.fresh_value();
+    func.blocks
+        .get_mut(&BlockId(1))
+        .unwrap()
+        .args
+        .push(TirValue {
+            id: arg,
+            ty: TirType::DynBox,
+        });
+    // A handler can independently receive exactly the same SSA value.
+    func.blocks.get_mut(&func.entry_block).unwrap().ops[2]
+        .operands
+        .insert(0, word);
+    assert!(!checked_successful_call_results(&func).contains(&word));
+    assert!(project_checked_call_results(&mut func, |_| true));
+    let body = &func.blocks[&func.entry_block];
+    assert_eq!(body.ops[2].exception_payload(), &[word]);
+    assert_eq!(body.ops[3].checked_call_result_source(), Some(word));
+    assert_ne!(body.ops[3].results[0], word);
+}

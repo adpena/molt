@@ -98,15 +98,9 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
 /// condition for using an incoming as a phi-narrowing JOIN contributor (see
 /// [`narrow_loop_header_phis`]).
 ///
-/// "Non-FULL" alone is INSUFFICIENT. The transfer functions ([`IntRange::add`],
-/// `sub`, `mul`, `neg`, `shl_const`, …) *saturate* to the i64 endpoints rather
-/// than collapsing to the exact `FULL_I64` sentinel, so a phi-DEPENDENT
-/// computation under the all-phis-FULL sweep can yield a range like
-/// `add(FULL, [1,1]) = [i64::MIN + 1, i64::MAX]` — not `is_full()`, yet
-/// effectively unbounded and entirely a function of the FULL phi's magnitude. An
-/// unbounded counter `i = i + 1` with an opaque loop bound is exactly this
-/// shape, and treating its near-full back-edge range as a "bound" would wrongly
-/// narrow the IV (the `e2e_nonconst_bound_no_nsw_not_proven` soundness gate).
+/// A saturated endpoint can stand for a Python value outside i64. For example,
+/// shifting a finite positive value left can produce `[i64::MAX, i64::MAX]`.
+/// Such an interval cannot supply a finite bound on a loop-carried value.
 ///
 /// A genuine phi-independent re-bound (`x & MASK` ⇒ `[0, MASK]`, `x % c` ⇒
 /// `[0, c-1]`) has bounds that are *constants drawn from the program*, strictly

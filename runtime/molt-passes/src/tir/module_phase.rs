@@ -136,12 +136,13 @@ pub fn run_module_pipeline(
     );
     if report_type_flow {
         let mut text = format!(
-            "[type-flow] module '{}': {} context(s), {} clone(s), {} site(s) specialized, {} result(s) typed\n",
+            "[type-flow] module '{}': {} context(s), {} clone(s), {} site(s) specialized, {} result(s) typed, {} integer result(s) bounded\n",
             module.name,
             flow.contexts,
             flow.clones.len(),
             flow.sites_specialized,
             flow.results_typed,
+            flow.results_bounded,
         );
         for line in &flow.report {
             text.push_str(line);

@@ -41,9 +41,7 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::alias_analysis::{AliasUnionFind, build_alias_union_find};
 use crate::tir::passes::drop_insertion::{DROP_INSERTED_ATTR, frame_clear};
-use crate::tir::passes::liveness::{
-    TirLivenessResult, compute_liveness_in_domain, compute_raw_scalars,
-};
+use crate::tir::passes::liveness::{TirLivenessResult, compute_liveness_in_domain};
 use crate::tir::passes::ownership_lattice_min::owned_alias;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -76,6 +74,7 @@ struct CallerFacts {
     raw: HashSet<ValueId>,
     liveness: TirLivenessResult,
     parameters: HashSet<ValueId>,
+    checked_results: HashSet<ValueId>,
 }
 
 impl Activations {
@@ -131,12 +130,27 @@ impl Activations {
             .or_insert_with(|| prepare_activation(callee, bindings))
             .as_ref()
     }
+
+    /// The driver splices only original sites. A splice can copy its own
+    /// observer onto the callee's unwind path, with the same external
+    /// successor and payload. It cannot introduce a new bypass of another
+    /// original call's observer or use an original value it did not receive.
+    pub(super) fn checked_result_is_success_only(&self, result: ValueId) -> bool {
+        self.caller
+            .as_ref()
+            .is_some_and(|facts| facts.checked_results.contains(&result))
+    }
 }
 
 impl CallerFacts {
     fn compute(caller: &TirFunction) -> Self {
         let aliases = build_alias_union_find(caller);
-        let raw = compute_raw_scalars(caller);
+        let (carriers, checked_results) =
+            crate::representation_facts::analyze_representations_and_checked_calls(caller);
+        let raw = carriers
+            .into_iter()
+            .filter_map(|(id, carrier)| carrier.carrier_refcount_is_noop().then_some(id))
+            .collect();
         let liveness = compute_liveness_in_domain(caller, &aliases, &raw);
         let parameters = caller.blocks[&caller.entry_block]
             .args
@@ -148,6 +162,7 @@ impl CallerFacts {
             raw,
             liveness,
             parameters,
+            checked_results,
         }
     }
 

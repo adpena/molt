@@ -876,6 +876,34 @@ fn shr_range_does_not_narrow_a_saturated_operand() {
 }
 
 #[test]
+fn python_magnitudes_past_i64_stay_unbounded_after_arithmetic() {
+    let (wide, literal, result) = (ValueId(0), ValueId(1), ValueId(2));
+    let block = BlockId(0);
+    let mut ranges = ValueRangeResult::default();
+    ranges.record_global_range(wide, IntRange::new(2, i64::MAX));
+    let almost = ValueId(3);
+    ranges.record_global_range(almost, IntRange::new(2, i64::MAX));
+    ranges.record_const_int(literal, 1 << 40);
+    ranges.record_global_range(literal, IntRange::point(1 << 40));
+    let huge: i128 = 1 << 120;
+    for (opcode, operands, value) in [
+        (OpCode::Sub, vec![wide, literal], huge - (1 << 40)),
+        (OpCode::Neg, vec![wide], -huge),
+        (OpCode::FloorDiv, vec![wide, literal], huge / (1 << 40)),
+        (OpCode::Mod, vec![almost, wide], huge - 1),
+    ] {
+        let range =
+            super::transfer::transfer_op_range(&op(opcode, operands, vec![result]), block, &ranges)
+                .unwrap();
+        assert!(
+            (range.lo == i64::MIN || i128::from(range.lo) <= value)
+                && (range.hi == i64::MAX || value <= i128::from(range.hi)),
+            "{opcode:?} must include the Python result {value}, got {range:?}"
+        );
+    }
+}
+
+#[test]
 fn e2e_unbounded_accumulator_stays_unranged() {
     // The mandatory bigint_accumulator soundness gate: an accumulator phi
     // `total = total + i` whose SCEV is NOT a proven AddRec must keep its

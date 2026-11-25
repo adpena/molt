@@ -2,7 +2,8 @@ use crate::repr::Repr;
 use crate::tir::function::TirFunction;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_passes::representation_facts::analyze_representations_and_checked_calls;
 
 pub use molt_passes::representation_facts::{
     analyze_representations, repr_by_value_for, value_range_for,
@@ -128,6 +129,7 @@ pub struct ProducerCarrierPlan {
     /// unproven accumulators boxed (`MaybeBigInt`/`DynBox`) while preserving
     /// proven raw carriers.
     pub repr_by_value: HashMap<ValueId, Repr>,
+    pub(crate) checked_call_results: HashSet<ValueId>,
 }
 
 impl ProducerCarrierPlan {
@@ -143,8 +145,16 @@ impl ProducerCarrierPlan {
     }
     /// Build carrier facts from the exact TIR function being lowered.
     pub fn build(tir_func: &TirFunction) -> Self {
-        let repr_by_value = analyze_representations(tir_func);
-        Self { repr_by_value }
+        let (repr_by_value, checked_call_results) =
+            analyze_representations_and_checked_calls(tir_func);
+        Self {
+            repr_by_value,
+            checked_call_results,
+        }
+    }
+
+    pub fn is_checked_call_result(&self, value: ValueId) -> bool {
+        self.checked_call_results.contains(&value)
     }
 
     /// Whether the value `id` is an inline-int47-safe raw i64 carrier: the
