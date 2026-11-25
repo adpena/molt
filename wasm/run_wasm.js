@@ -4968,10 +4968,6 @@ const processHostPoll = () => {
 };
 
 
-let outputImports = null;
-let runtimeImportsDesc = null;
-let inputHasRuntimeImports = false;
-let canDirectLink = false;
 
 const mergeLimits = (left, right, label) => {
   if (!left && !right) {
@@ -5111,19 +5107,8 @@ const assertNoUnresolvedNativeImports = (importsDesc, description) => {
   );
 };
 
-const runDirectLink = async () => {
+const runDirectLink = async (outputImports, runtimeImportsDesc) => {
   appInstanceForHostCalls = null;
-  if (!runtimeBuffer) {
-    throw new Error('split-runtime manifest did not resolve a runtime module');
-  }
-  if (!runtimeImportsDesc) {
-    throw new Error('molt runtime import metadata missing for direct-link mode');
-  }
-  if (!canDirectLink) {
-    throw new Error(
-      'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
-    );
-  }
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
@@ -5306,15 +5291,8 @@ const runDirectLink = async () => {
   return exitStatus;
 };
 
-const runLinked = async () => {
+const runLinked = async (linkedImports, hasRuntimeImports) => {
   appInstanceForHostCalls = null;
-  if (!linkedBuffer) {
-    throw new Error(`Linked wasm not found at ${linkedPath}`);
-  }
-  const linkedImports = parseWasmImports(linkedBuffer);
-  const hasRuntimeImports = linkedImports.funcImports.some(
-    (entry) => entry.module === 'molt_runtime'
-  );
   if (hasRuntimeImports) {
     throw new Error('Linked wasm still imports molt_runtime; link step incomplete');
   }
@@ -5481,8 +5459,8 @@ const runMain = async () => {
     const outputMetadata = parseWasmMetadata(wasmBuffer, {
       exportFunctionSignatures: false,
     });
-    outputImports = outputMetadata.imports;
-    inputHasRuntimeImports = outputImports.funcImports.some(
+    const outputImports = outputMetadata.imports;
+    const inputHasRuntimeImports = outputImports.funcImports.some(
       (entry) => entry.module === 'molt_runtime'
     );
     if (traceRun) {
@@ -5497,29 +5475,26 @@ const runMain = async () => {
     if (!useLinked && (!inputHasRuntimeImports || !runtimeBuffer)) {
       throw new Error('split-runtime manifest requires app runtime imports and a runtime module');
     }
-    runtimeImportsDesc = null;
-    canDirectLink = false;
-    if (!useLinked) {
+    let exitStatus;
+    if (useLinked) {
+      traceMark('runMain:runner:linked');
+      if (traceRun) console.error('[molt wasm] runner=linked');
+      exitStatus = await runLinked(outputImports, inputHasRuntimeImports);
+    } else {
       loadRuntimeAssets();
       if (!runtimeBuffer) {
         throw new Error('split-runtime manifest did not resolve a runtime module');
       }
-      runtimeImportsDesc = parseWasmMetadata(runtimeBuffer).imports;
-      canDirectLink = outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory;
-      if (!canDirectLink) {
+      const runtimeImportsDesc = parseWasmMetadata(runtimeBuffer).imports;
+      if (!(outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory)) {
         throw new Error(
           'Direct-link mode is unavailable for this wasm artifact. Use linked output or rebuild with split-runtime env.__indirect_function_table plus runtime env.memory imports.'
         );
       }
+      traceMark('runMain:runner:direct');
+      if (traceRun) console.error('[molt wasm] runner=direct');
+      exitStatus = await runDirectLink(outputImports, runtimeImportsDesc);
     }
-    // Safety-first policy: default to linked execution. Direct-linking is opt-in
-    // and only allowed when the artifact advertises the shared memory/table ABI.
-    const runner = useLinked ? runLinked : runDirectLink;
-    traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
-    if (traceRun) {
-      console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
-    }
-    const exitStatus = await runner();
     traceMark('runMain:runner_completed');
     if (traceRun) {
       console.error('[molt wasm] runner completed');

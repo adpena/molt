@@ -2904,6 +2904,17 @@ On 2026-10-16 the orphaned `codex/v1-wip-integration` lane (46 commits beyond ma
 
 ### Compiler and runtime integration history
 
+2026-11-25 Node linked launch (HF-26), Linux arm64, Node 26.13.0 and the retained
+installed-wheel dev/micro fixture. The Node launcher passes one import observation
+into its selected execution mode. Linked launch no longer parses the same module
+a second time or materializes unused export signatures. The same linked module
+matched isolated CPython throughout 15 alternating before/after pairs. Import setup
+median was 8.62 to 2.68 ms. Whole-process medians were 256.2 and 251.8 ms. A separate
+real split module built from the installed compiler ran on both launchers and matched
+the isolated CPython result. Timing evidence is in
+`evidence/wasm-loader-import-custody-20261125/linked-pairs.json`. This verifies the
+Node host path. Browser, edge and other hosts retain their own release proof cells.
+
 Compiler-record work under HF-266 proceeds in dependency order: borrowed-record
 ownership, canonical backend records and storage, then persisted digest reuse
 and transport. Assembly now replaces changed function/operation paths and
