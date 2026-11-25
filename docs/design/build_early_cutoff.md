@@ -362,7 +362,11 @@ for one of its own stages (the LLVM wasm32 object is staged beside the module
 and a copy is staged for that stage) and every path inside a staged directory
 (the deployment generation is staged in one directory beside the manifest).
 JSON WASM requests and precompiled images still run the pipeline. Deployment source files, tooling closure and admitted link inputs
-are reported on final-link reuse as well as fresh links. The WASM path also
+are reported on final-link reuse as well as fresh links. The compiler's
+stdlib archive is a derived link product, like the application object. Its
+content keys and fences the final link, while the build record binds the inputs
+that produce it. Compiler processes and the link tool read existing Python
+bytecode without writing new cache entries during the build. The WASM path also
 reports three other inputs:
 wasm-opt's PATH search goes through `toolchain_identity.executable_candidates`;
 `tools/wasm_allowed_imports.txt`, which only wasm-ld reads, is a producer-bound

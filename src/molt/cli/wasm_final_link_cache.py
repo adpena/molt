@@ -47,7 +47,7 @@ _DIAGNOSTIC_OPTIONS = frozenset({"--phase-timings-file", "--failure-evidence-dir
 
 
 def final_link_cache_key(
-    link_cmd: Sequence[str],
+    link_args: Sequence[str],
     *,
     cwd: Path,
     tool_facts: Sequence[Mapping[str, object]],
@@ -55,20 +55,18 @@ def final_link_cache_key(
 ) -> str:
     """Key one final link by content: files by digest, outputs by name only.
 
-    ``link_cmd`` is the complete tool invocation (interpreter, tool, options).
+    The tool's source is supplied by the caller in ``tool_facts``.
     Every argument that names an existing regular file contributes its SHA-256,
     so an input added to the command later is keyed without code changes.
     The linked output contributes only its file name, which wasm-ld embeds as
     the module name; private directories and diagnostics contribute nothing.
     """
-    if len(link_cmd) < 2:
-        raise ValueError("final link command must name an interpreter and a tool")
     arguments: list[str] = []
     files: dict[str, StableRegularFileObservation] = {}
     reused: dict[str, StableRegularFileObservation] = {}
     label = "final link input"
     pending: str | None = None
-    for argument in link_cmd[2:]:
+    for argument in link_args:
         if pending is not None:
             if pending in _NAMED_OUTPUT_OPTIONS:
                 arguments.append(f"output:{Path(argument).name}")
