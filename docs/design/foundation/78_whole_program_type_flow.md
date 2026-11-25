@@ -762,6 +762,13 @@ a by-name read (`get_attr_generic_obj`), because class layouts (field name to of
 in the frontend (call_anatomy 4.10, `FieldSlot(ClassId, j)` missing at compile time). A fact
 proven in TIR cannot reach an attribute access the frontend has already lowered by name.
 
+For a resolved call to a body shared by all argument types, a demanded result can still
+inherit a supplied argument's exact type. The body must be available in this document,
+and every successful return must forward the same parameter. The existing call-site
+binding maps that parameter to its argument, including the hidden closure offset. The
+caller keeps the original call and exception path. This projection creates no context
+or code clone, and a runtime type check alone supplies no exact class.
+
 **Order.** Facts first: class layouts as a typed TIR table (one authority, from the frontend's
 class model), so any attribute access on a receiver TIR proves exact becomes a field load or
 store; then call resolution (union dispatch for polymorphic method sites, function-object calls

@@ -135,6 +135,7 @@ pub(crate) struct ExactScalarPlan<'a> {
     incoming: HashMap<BlockId, Vec<Vec<ValueId>>>,
     initial: HashMap<ValueId, TirType>,
     returns: Vec<ValueId>,
+    returned_parameter: std::cell::OnceCell<Option<usize>>,
 }
 
 impl<'a> ExactScalarPlan<'a> {
@@ -168,7 +169,105 @@ impl<'a> ExactScalarPlan<'a> {
             incoming,
             initial,
             returns,
+            returned_parameter: std::cell::OnceCell::new(),
         }
+    }
+
+    /// A parameter whose type is forwarded by every successful value return.
+    /// A frame publication or owned alias can retain and run cleanup; only
+    /// its result type is projected, never its ownership or effects.
+    pub(crate) fn forwarded_return_parameter(&self) -> Option<usize> {
+        *self
+            .returned_parameter
+            .get_or_init(|| self.find_return_parameter())
+    }
+
+    fn find_return_parameter(&self) -> Option<usize> {
+        use crate::tir::passes::value_identity::scalar_value_source;
+        let entry = self.func.entry_block;
+        if self.incoming.contains_key(&entry)
+            || self.handlers.contains(&entry)
+            || self.returns.is_empty()
+        {
+            return None;
+        }
+        let mut parameters: HashMap<ValueId, usize> = self.func.blocks[&entry]
+            .args
+            .iter()
+            .take(self.func.param_names.len())
+            .enumerate()
+            .map(|(i, arg)| (arg.id, i))
+            .collect();
+        let mut has_empty_return = false;
+        for id in &self.order {
+            let block = &self.func.blocks[id];
+            if let Terminator::Return { values } = &block.terminator {
+                match values.len() {
+                    0 => has_empty_return = true,
+                    1 => {}
+                    _ => return None,
+                }
+            }
+            for op in &block.ops {
+                if op.has_valid_shape()
+                    && let Some(source) = scalar_value_source(op)
+                    && let Some(&parameter) = parameters.get(&source)
+                {
+                    parameters.insert(op.results[0], parameter);
+                }
+            }
+        }
+        let parameter = *parameters.get(self.returns.first()?)?;
+        if self
+            .returns
+            .iter()
+            .any(|value| parameters.get(value) != Some(&parameter))
+        {
+            return None;
+        }
+        if has_empty_return && self.may_succeed_without_value() {
+            return None;
+        }
+        Some(parameter)
+    }
+
+    /// An empty return is harmless only on unwind. A handler that just
+    /// pops the frame and returns propagates the pending exception. Any
+    /// other handler may consume it and resume ordinary execution.
+    fn may_succeed_without_value(&self) -> bool {
+        let mut pending = vec![self.func.entry_block];
+        for handler in &self.handlers {
+            let block = &self.func.blocks[handler];
+            if !matches!(&block.terminator, Terminator::Return { values } if values.is_empty())
+                || !block
+                    .ops
+                    .iter()
+                    .all(|op| op.origin == Some(molt_ir::OpKind::TraceExit))
+            {
+                pending.push(*handler);
+            }
+        }
+        let mut seen = HashSet::default();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let block = &self.func.blocks[&id];
+            if block
+                .ops
+                .iter()
+                .rev()
+                .find(|op| op.opcode != OpCode::CheckException)
+                .is_some_and(|op| op.opcode == OpCode::Raise)
+            {
+                continue;
+            }
+            if matches!(&block.terminator, Terminator::Return { values } if values.is_empty()) {
+                return true;
+            }
+            block.terminator.for_each_edge(|id, _| pending.push(id));
+        }
+        false
     }
 
     pub(crate) fn return_values(&self) -> &[ValueId] {

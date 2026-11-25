@@ -54,7 +54,7 @@ impl DemandGraph {
 /// Per body (module index), per parameter: whether its type matters.
 pub(super) fn solve(
     module: &TirModule,
-    sites: &[Vec<Site>],
+    sites: &mut [Vec<Site>],
     body_index: &[Option<usize>],
     participates: &[bool],
 ) -> Vec<Vec<bool>> {
@@ -64,7 +64,7 @@ pub(super) fn solve(
         .ids
         .iter()
         .zip(&module.functions)
-        .zip(sites)
+        .zip(sites.iter())
         .zip(participates)
     {
         if !participates {
@@ -87,6 +87,7 @@ pub(super) fn solve(
                     && let Ok(call) = calls.binary_search_by_key(&(block_id, index), Site::position)
                 {
                     let site = &calls[call];
+                    graph.heads.entry((body, site.result)).or_default();
                     let callee_index =
                         body_index[site.callee.index()].expect("a resolved site names a body");
                     let callee = &module.functions[callee_index];
@@ -117,6 +118,11 @@ pub(super) fn solve(
     // Traverse each requested value once, even when recursion or a loop
     // forwards the value back to itself. A cycle alone creates no demand.
     graph.propagate(&mut pending);
+    for (&body, calls) in module.ids.iter().zip(sites) {
+        for site in calls {
+            site.result_demanded = !graph.heads.contains_key(&(body, site.result));
+        }
+    }
 
     module
         .functions
