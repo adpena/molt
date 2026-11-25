@@ -1410,21 +1410,22 @@ pub unsafe extern "C" fn PyType_GetSlot(tp: *mut PyTypeObject, slot: c_int) -> *
 /// declaration policy, not a second inventory of process-owned type storage.
 fn builtin_slot_is_manually_inherited(tp: *mut PyTypeObject, slot: SlotWrapper) -> bool {
     use crate::abi_types::*;
-    let exception = exc_singleton_name(tp.cast()).and_then(|name| name.strip_prefix("PyExc_"));
+    use molt_lang_obj_model::BuiltinExc;
+    let exception = exc_singleton_kind(tp.cast());
     match slot {
         SlotWrapper::Direct(DirectSlot::Init) => {
             !matches!(
                 exception,
                 Some(
-                    "BaseException"
-                        | "BaseExceptionGroup"
-                        | "ImportError"
-                        | "NameError"
-                        | "OSError"
-                        | "StopIteration"
-                        | "SyntaxError"
-                        | "UnicodeDecodeError"
-                        | "UnicodeEncodeError"
+                    BuiltinExc::BaseException
+                        | BuiltinExc::BaseExceptionGroup
+                        | BuiltinExc::ImportError
+                        | BuiltinExc::NameError
+                        | BuiltinExc::OSError
+                        | BuiltinExc::StopIteration
+                        | BuiltinExc::SyntaxError
+                        | BuiltinExc::UnicodeDecodeError
+                        | BuiltinExc::UnicodeEncodeError
                 )
             ) && ![
                 &raw mut PyBool_Type,
@@ -1442,10 +1443,13 @@ fn builtin_slot_is_manually_inherited(tp: *mut PyTypeObject, slot: SlotWrapper) 
             .contains(&tp)
         }
         SlotWrapper::Direct(DirectSlot::Str) => {
-            matches!(exception, Some("AttributeError" | "NameError"))
+            matches!(
+                exception,
+                Some(BuiltinExc::AttributeError | BuiltinExc::NameError)
+            )
         }
         SlotWrapper::Direct(DirectSlot::LegacyGetAttr | DirectSlot::GetAttr) => {
-            exception == Some("BaseException")
+            exception == Some(BuiltinExc::BaseException)
                 || [
                     &raw mut PyByteArray_Type,
                     &raw mut PyBytes_Type,
@@ -1496,9 +1500,8 @@ unsafe fn builtin_slot_is_inherited(
         // Exception constructor dispatch shares a C adapter across distinct
         // declared layouts. Its schema, not adapter equality, owns declaration.
         if matches!(slot, SlotWrapper::Direct(DirectSlot::Init))
-            && let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
-                .and_then(|name| name.strip_prefix("PyExc_"))
-                .and_then(molt_lang_obj_model::builtin_exception_spec)
+            && let Some(spec) = crate::abi_types::exc_singleton_kind(tp.cast())
+                .map(molt_lang_obj_model::BuiltinExc::spec)
             && spec.introduced_layout_root().is_some()
         {
             return false;
@@ -1532,9 +1535,8 @@ unsafe fn builtin_slot_is_declared(
     wrapped: *mut c_void,
     policy: BuiltinSlotNamespacePolicy,
 ) -> bool {
-    if let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
-        .and_then(|name| name.strip_prefix("PyExc_"))
-        .and_then(molt_lang_obj_model::builtin_exception_spec)
+    if let Some(spec) =
+        crate::abi_types::exc_singleton_kind(tp.cast()).map(molt_lang_obj_model::BuiltinExc::spec)
     {
         let declared = match slot {
             SlotWrapper::Direct(DirectSlot::Repr) => spec.declares_repr(),

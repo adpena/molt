@@ -1169,8 +1169,8 @@ mod tests {
                                 (&raw mut PyExc_NameError, target_minor < 14),
                                 (&raw mut PyExc_Exception, false),
                                 (
-                                    molt_cpython_abi::abi_types::exc_singleton_for_builtin_name(
-                                        "ExceptionGroup",
+                                    molt_cpython_abi::abi_types::exc_singleton_for_kind(
+                                        crate::BuiltinExc::ExceptionGroup,
                                     )
                                     .unwrap()
                                     .cast(),
@@ -1214,8 +1214,8 @@ mod tests {
                                 }
                             }
                         };
-                        let group = molt_cpython_abi::abi_types::exc_singleton_for_builtin_name(
-                            "ExceptionGroup",
+                        let group = molt_cpython_abi::abi_types::exc_singleton_for_kind(
+                            crate::BuiltinExc::ExceptionGroup,
                         )
                         .unwrap()
                         .cast();

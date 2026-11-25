@@ -5868,20 +5868,11 @@ pub(crate) fn prepare_cpython_hooks() -> bool {
         ] {
             unsafe { runtime.bind_static_class(_py, type_object, class_bits, true) };
         }
-        for exception in molt_cpython_abi::abi_types::exc_singleton_ptrs() {
-            let Some(c_name) = molt_cpython_abi::abi_types::exc_singleton_name(exception) else {
-                continue;
-            };
-            let requested_name = c_name.strip_prefix("PyExc_").unwrap_or(c_name);
-            let Some(spec) = molt_obj_model::builtin_exception_spec(requested_name) else {
-                continue;
-            };
-            let class_bits = crate::exception_class_bits(_py, spec.kind());
-            if class_bits == 0 {
-                continue;
+        for (kind, exception) in molt_cpython_abi::abi_types::exc_singletons() {
+            let class_bits = crate::exception_class_bits(_py, kind);
+            if class_bits != 0 {
+                unsafe { runtime.bind_static_class(_py, exception, class_bits, true) };
             }
-            let canonical_view = spec.canonical_name() == requested_name;
-            unsafe { runtime.bind_static_class(_py, exception, class_bits, canonical_view) };
         }
         // These heap singletons belong to the existing per-runtime canonical
         // pool. Bind them before any C callback can otherwise publish a FOREIGN

@@ -90,11 +90,9 @@ pub(super) unsafe fn assert_c_exception_symbols_preserve_pending() {
     }
 
     molt_cpython_abi_test_support::link();
-    let expected: Vec<_> = molt_cpython_abi::abi_types::exc_singleton_ptrs()
-        .filter(|pointer| {
-            molt_cpython_abi::abi_types::exc_singleton_name(*pointer)
-                != Some("PyExc_ExceptionGroup")
-        })
+    let expected: Vec<_> = molt_cpython_abi::abi_types::exc_singletons()
+        .filter(|(kind, _)| *kind != molt_obj_model::BuiltinExc::ExceptionGroup)
+        .map(|(_, pointer)| pointer)
         .collect();
     unsafe {
         let class = OwnedPyObject::from_owned(errors::PyErr_NewException(

@@ -1498,10 +1498,10 @@ unsafe extern "C" fn native_oserror_written_set(
 }
 
 pub(crate) fn native_exception_members_for_builtin(
-    builtin_name: &str,
+    kind: molt_lang_obj_model::BuiltinExc,
     root: molt_lang_obj_model::ExceptionLayoutRoot,
 ) -> *mut PyMemberDef {
-    if builtin_name != root.owner_name() {
+    if kind != root.owner_kind() {
         return ptr::null_mut();
     }
     let entries = &EXCEPTION_DESCRIPTOR_TABLES[root as usize].members;
@@ -1513,10 +1513,10 @@ pub(crate) fn native_exception_members_for_builtin(
 }
 
 pub(crate) fn native_exception_getset_for_builtin(
-    builtin_name: &str,
+    kind: molt_lang_obj_model::BuiltinExc,
     root: molt_lang_obj_model::ExceptionLayoutRoot,
 ) -> *mut PyGetSetDef {
-    if builtin_name != root.owner_name() {
+    if kind != root.owner_kind() {
         return ptr::null_mut();
     }
     let entries = &EXCEPTION_DESCRIPTOR_TABLES[root as usize].getsets;
@@ -1642,8 +1642,9 @@ unsafe fn oserror_use_init(type_: *mut PyTypeObject) -> bool {
 }
 
 unsafe fn oserror_subtype_for_errno(errno: c_int) -> *mut PyTypeObject {
-    let singleton = |name| {
-        crate::abi_types::exc_singleton_for_builtin_name(name)
+    use molt_lang_obj_model::BuiltinExc;
+    let singleton = |kind| {
+        crate::abi_types::exc_singleton_for_kind(kind)
             .expect("OSError errno subtype singleton")
             .cast::<PyTypeObject>()
     };
@@ -1655,7 +1656,7 @@ unsafe fn oserror_subtype_for_errno(errno: c_int) -> *mut PyTypeObject {
     ]
     .contains(&errno)
     {
-        singleton("BlockingIOError")
+        singleton(BuiltinExc::BlockingIOError)
     } else if errno == platform_errno::EPIPE || {
         // CPython adds ESHUTDOWN to the BrokenPipeError map only when the
         // platform exposes that errno. WASI deliberately does not; keeping
@@ -1674,31 +1675,31 @@ unsafe fn oserror_subtype_for_errno(errno: c_int) -> *mut PyTypeObject {
             false
         }
     } {
-        singleton("BrokenPipeError")
+        singleton(BuiltinExc::BrokenPipeError)
     } else if errno == platform_errno::ECHILD {
-        singleton("ChildProcessError")
+        singleton(BuiltinExc::ChildProcessError)
     } else if errno == platform_errno::ECONNABORTED {
-        singleton("ConnectionAbortedError")
+        singleton(BuiltinExc::ConnectionAbortedError)
     } else if errno == platform_errno::ECONNREFUSED {
-        singleton("ConnectionRefusedError")
+        singleton(BuiltinExc::ConnectionRefusedError)
     } else if errno == platform_errno::ECONNRESET {
-        singleton("ConnectionResetError")
+        singleton(BuiltinExc::ConnectionResetError)
     } else if errno == platform_errno::EEXIST {
-        singleton("FileExistsError")
+        singleton(BuiltinExc::FileExistsError)
     } else if errno == platform_errno::ENOENT {
-        singleton("FileNotFoundError")
+        singleton(BuiltinExc::FileNotFoundError)
     } else if errno == platform_errno::EISDIR {
-        singleton("IsADirectoryError")
+        singleton(BuiltinExc::IsADirectoryError)
     } else if errno == platform_errno::ENOTDIR {
-        singleton("NotADirectoryError")
+        singleton(BuiltinExc::NotADirectoryError)
     } else if errno == platform_errno::EINTR {
-        singleton("InterruptedError")
+        singleton(BuiltinExc::InterruptedError)
     } else if errno == platform_errno::EACCES || errno == platform_errno::EPERM {
-        singleton("PermissionError")
+        singleton(BuiltinExc::PermissionError)
     } else if errno == platform_errno::ESRCH {
-        singleton("ProcessLookupError")
+        singleton(BuiltinExc::ProcessLookupError)
     } else if errno == platform_errno::ETIMEDOUT {
-        singleton("TimeoutError")
+        singleton(BuiltinExc::TimeoutError)
     } else {
         (&raw mut crate::abi_types::PyExc_OSError).cast::<PyTypeObject>()
     }
@@ -3444,8 +3445,8 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     // Canonical bootstrap shells need no runtime projection or error-state
     // transaction. This also permits emergency matching before runtime class
     // roots exist, using the same physical subtype authority as heap types.
-    if crate::abi_types::exc_singleton_name(given).is_some()
-        && crate::abi_types::exc_singleton_name(exc).is_some()
+    if crate::abi_types::exc_singleton_kind(given).is_some()
+        && crate::abi_types::exc_singleton_kind(exc).is_some()
     {
         return unsafe { crate::api::typeobj::PyType_IsSubtype(given.cast(), exc.cast()) };
     }

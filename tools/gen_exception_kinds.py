@@ -442,10 +442,13 @@ def render_model(table: dict) -> str:
         if not bases:
             base = "ExceptionBaseSpec::Root"
         elif len(bases) == 1:
-            base = f"ExceptionBaseSpec::One({_rust_str(bases[0])})"
+            base = (
+                f"ExceptionBaseSpec::One(BuiltinExc::{_variant_of(builtins, bases[0])})"
+            )
         else:
             base = (
-                f"ExceptionBaseSpec::Two({_rust_str(bases[0])}, {_rust_str(bases[1])})"
+                f"ExceptionBaseSpec::Two(BuiltinExc::{_variant_of(builtins, bases[0])}, "
+                f"BuiltinExc::{_variant_of(builtins, bases[1])})"
             )
         root = (
             f"Some(ExceptionLayoutRoot::{row['layout_root']})"
@@ -470,7 +473,10 @@ def render_model(table: dict) -> str:
             expr += "\n        .without_name_lookup()"
         out.append(expr + ",\n")
     for row in table["alias"]:
-        expr = f"    exception_alias({_rust_str(row['name'])}, {_rust_str(row['canonical'])})"
+        expr = (
+            f"    exception_alias({_rust_str(row['name'])}, "
+            f"BuiltinExc::{_variant_of(builtins, row['canonical'])})"
+        )
         if row["windows_only"]:
             expr += ".on_windows_only()"
         out.append(expr + ",\n")

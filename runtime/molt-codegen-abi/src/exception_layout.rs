@@ -267,11 +267,6 @@ impl ExceptionLayoutRoot {
             Self::AttributeError => BuiltinExc::AttributeError,
         }
     }
-
-    /// The owner's spelling, for the CPython ABI's `PyExc_*` names.
-    pub const fn owner_name(self) -> &'static str {
-        self.owner_kind().name()
-    }
 }
 
 impl ExceptionLayoutKind {
@@ -554,8 +549,8 @@ const fn max_exception_typed_tail_words() -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExceptionBaseSpec {
     Root,
-    One(&'static str),
-    Two(&'static str, &'static str),
+    One(BuiltinExc),
+    Two(BuiltinExc, BuiltinExc),
 }
 
 /// Declaring builtin string-slot identity, independent of physical layout.
@@ -584,7 +579,7 @@ enum BuiltinExceptionDefinition {
         introduced_layout_root: Option<ExceptionLayoutRoot>,
     },
     Alias {
-        canonical_name: &'static str,
+        canonical: BuiltinExc,
     },
 }
 
@@ -633,11 +628,11 @@ pub(crate) const fn exception_spec(
 
 pub(crate) const fn exception_alias(
     name: &'static str,
-    canonical_name: &'static str,
+    canonical: BuiltinExc,
 ) -> BuiltinExceptionSpec {
     BuiltinExceptionSpec {
         name,
-        definition: BuiltinExceptionDefinition::Alias { canonical_name },
+        definition: BuiltinExceptionDefinition::Alias { canonical },
         minimum_python_minor: 12,
         windows_only: false,
         builtin_binding: true,
@@ -726,8 +721,7 @@ impl BuiltinExceptionSpec {
                     return (string.expect("exception root must declare str"), repr);
                 }
                 ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _) => {
-                    current = builtin_exception_spec(parent)
-                        .expect("exception base must have a schema row");
+                    current = parent.spec();
                 }
             }
         }
@@ -774,27 +768,19 @@ impl BuiltinExceptionSpec {
     }
 
     /// Resolve aliases to the one row that owns hierarchy and storage.
-    fn canonical(&'static self) -> &'static BuiltinExceptionSpec {
+    fn canonical(&self) -> &'static BuiltinExceptionSpec {
+        self.kind().spec()
+    }
+
+    pub const fn canonical_name(&self) -> &'static str {
+        self.kind().name()
+    }
+
+    /// The typed identity of the class this row or alias names.
+    pub const fn kind(&self) -> BuiltinExc {
         match self.definition {
-            BuiltinExceptionDefinition::Canonical { .. } => self,
-            BuiltinExceptionDefinition::Alias { canonical_name } => {
-                builtin_exception_spec(canonical_name)
-                    .expect("builtin exception alias must name a canonical row")
-            }
-        }
-    }
-
-    pub fn canonical_name(&'static self) -> &'static str {
-        self.canonical().name
-    }
-
-    /// The typed identity of the class this row (or alias) names.
-    pub fn kind(&'static self) -> BuiltinExc {
-        match self.canonical().definition {
-            BuiltinExceptionDefinition::Canonical { kind, .. } => kind,
-            BuiltinExceptionDefinition::Alias { .. } => {
-                unreachable!("canonical exception row cannot be an alias")
-            }
+            BuiltinExceptionDefinition::Canonical { kind, .. }
+            | BuiltinExceptionDefinition::Alias { canonical: kind } => kind,
         }
     }
 
@@ -822,9 +808,7 @@ impl BuiltinExceptionSpec {
                 bases: ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _),
                 introduced_layout_root: None,
                 ..
-            } => builtin_exception_spec(parent)
-                .expect("builtin exception parent must remain registered")
-                .layout_root(),
+            } => parent.spec().layout_root(),
             BuiltinExceptionDefinition::Alias { .. } => {
                 unreachable!("canonical exception row cannot be an alias")
             }
@@ -971,7 +955,10 @@ mod tests {
         );
         assert_eq!(builtin_exception_spec("UserException"), None);
         let deadlock = builtin_exception_spec("_DeadlockError").unwrap();
-        assert_eq!(deadlock.bases(), ExceptionBaseSpec::One("RuntimeError"));
+        assert_eq!(
+            deadlock.bases(),
+            ExceptionBaseSpec::One(BuiltinExc::RuntimeError)
+        );
         assert_eq!(deadlock.module(), "_frozen_importlib");
         assert_eq!(deadlock.layout(), ExceptionLayoutKind::Base);
         assert!(deadlock.is_heap_type());
@@ -1074,20 +1061,8 @@ mod tests {
                 );
             }
             assert!(!spec.canonical().is_alias(), "alias chain: {}", spec.name);
-            match spec.bases() {
-                ExceptionBaseSpec::Root => assert_eq!(spec.name, "BaseException"),
-                ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _) => {
-                    assert!(
-                        builtin_exception_spec(parent).is_some(),
-                        "missing parent: {parent}"
-                    );
-                }
-            }
-            if let ExceptionBaseSpec::Two(_, secondary) = spec.bases() {
-                assert!(
-                    builtin_exception_spec(secondary).is_some(),
-                    "missing secondary parent: {secondary}"
-                );
+            if spec.bases() == ExceptionBaseSpec::Root {
+                assert_eq!(spec.kind(), BuiltinExc::BaseException);
             }
         }
         assert_eq!(
@@ -1096,7 +1071,10 @@ mod tests {
         );
         assert_eq!(
             builtin_exception_spec("ExceptionGroup").map(|spec| spec.bases()),
-            Some(ExceptionBaseSpec::Two("BaseExceptionGroup", "Exception"))
+            Some(ExceptionBaseSpec::Two(
+                BuiltinExc::BaseExceptionGroup,
+                BuiltinExc::Exception
+            ))
         );
         assert_eq!(
             builtin_exception_spec("IOError").map(|spec| spec.canonical_name()),
@@ -1108,7 +1086,7 @@ mod tests {
         );
         assert_eq!(
             builtin_exception_spec("StatisticsError").map(|spec| spec.bases()),
-            Some(ExceptionBaseSpec::One("ValueError"))
+            Some(ExceptionBaseSpec::One(BuiltinExc::ValueError))
         );
         let module_exceptions: std::collections::BTreeSet<_> = builtin_exception_specs()
             .iter()
@@ -1150,7 +1128,7 @@ mod tests {
         );
         assert_eq!(
             builtin_exception_spec("IOError").map(|spec| spec.bases()),
-            Some(ExceptionBaseSpec::One("Exception"))
+            Some(ExceptionBaseSpec::One(BuiltinExc::Exception))
         );
         assert_eq!(builtin_exception_spec("NotAnException"), None);
     }

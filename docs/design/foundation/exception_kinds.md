@@ -5,6 +5,13 @@ for every exception class the runtime raises, matches or constructs.
 `tools/gen_exception_kinds.py` renders it; `tests/test_gen_exception_kinds.py`
 proves the closed types equal the table.
 
+The generated hierarchy stores bases and alias destinations as `BuiltinExc`.
+The CPython ABI declares each C exception shell alongside its `BuiltinExc`.
+Bootstrap and retirement walk those typed entries in declaration order.
+Subtype, layout, and slot logic use the identity carried by each shell.
+C symbol spelling and Python names remain available for diagnostics and
+public lookup.
+
 ## The defect class
 
 The runtime used to name an exception by its spelling:
