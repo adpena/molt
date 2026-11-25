@@ -15,10 +15,10 @@
 //!    only an explicit provenance-attribute set may accompany it.
 //! 3. Block arguments are never replaced (they represent phi merges).
 
-use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::deterministic_hash::HashSet;
 
 use super::PassStats;
-use crate::tir::blocks::Terminator;
+use super::value_identity::{build_forwarding_map, resolve_copy};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::values::ValueId;
@@ -64,179 +64,33 @@ fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
     Some(source)
 }
 
-/// Build a copy chain map: for every pure Copy(src) → dst, map dst → src.
-/// Transitively resolves chains: if a → b → c, then a → c.
-fn build_copy_map(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
-
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if let Some(source) = removable_copy_source(op) {
-                copy_of.insert(op.results[0], source);
-            }
-        }
-    }
-
-    // Resolve transitive chains: if dst → mid → src, flatten to dst → src.
-    // Iterate until fixpoint (max 20 rounds to avoid pathological cases).
-    for _ in 0..20 {
-        let mut changed = false;
-        let keys: Vec<ValueId> = copy_of.keys().copied().collect();
-        for k in keys {
-            let v = copy_of[&k];
-            if let Some(&deeper) = copy_of.get(&v)
-                && deeper != v
-            {
-                copy_of.insert(k, deeper);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    copy_of
-}
-
-/// Resolve a value through the copy map to its root source.
-#[inline]
-fn resolve(val: ValueId, copy_map: &HashMap<ValueId, ValueId>) -> ValueId {
-    copy_map.get(&val).copied().unwrap_or(val)
-}
-
-/// Replace all uses of copy results with their root source values.
-///
-/// Iterates to fixpoint: after replacement, some Copy ops may become
-/// identity copies (src == dst) which are cleaned up by DCE.
+/// Replace uses of removable copies with their canonical sources, then retire unused copies.
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "copy_prop",
         ..Default::default()
     };
 
-    let copy_map = build_copy_map(func);
+    let copy_map = build_forwarding_map(func, removable_copy_source);
     if copy_map.is_empty() {
         return stats;
     }
 
-    // Replace all operand references in ops and terminators.
+    let mut substitute = |value: &mut ValueId| {
+        let root = resolve_copy(&copy_map, *value);
+        if root != *value {
+            *value = root;
+            stats.values_changed += 1;
+        }
+    };
     for block in func.blocks.values_mut() {
         for op in &mut block.ops {
-            for operand in &mut op.operands {
-                let resolved = resolve(*operand, &copy_map);
-                if resolved != *operand {
-                    *operand = resolved;
-                    stats.values_changed += 1;
-                }
-            }
+            op.operands.iter_mut().for_each(&mut substitute);
         }
-
-        // Replace in terminators.
-        match &mut block.terminator {
-            Terminator::Branch { args, .. } => {
-                for arg in args.iter_mut() {
-                    let resolved = resolve(*arg, &copy_map);
-                    if resolved != *arg {
-                        *arg = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-            }
-            Terminator::CondBranch {
-                cond,
-                then_args,
-                else_args,
-                ..
-            } => {
-                let resolved_cond = resolve(*cond, &copy_map);
-                if resolved_cond != *cond {
-                    *cond = resolved_cond;
-                    stats.values_changed += 1;
-                }
-                for arg in then_args.iter_mut() {
-                    let resolved = resolve(*arg, &copy_map);
-                    if resolved != *arg {
-                        *arg = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-                for arg in else_args.iter_mut() {
-                    let resolved = resolve(*arg, &copy_map);
-                    if resolved != *arg {
-                        *arg = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-            }
-            Terminator::Switch {
-                value,
-                cases,
-                default_args,
-                ..
-            } => {
-                let resolved_val = resolve(*value, &copy_map);
-                if resolved_val != *value {
-                    *value = resolved_val;
-                    stats.values_changed += 1;
-                }
-                for (_, _, args) in cases.iter_mut() {
-                    for arg in args.iter_mut() {
-                        let resolved = resolve(*arg, &copy_map);
-                        if resolved != *arg {
-                            *arg = resolved;
-                            stats.values_changed += 1;
-                        }
-                    }
-                }
-                for arg in default_args.iter_mut() {
-                    let resolved = resolve(*arg, &copy_map);
-                    if resolved != *arg {
-                        *arg = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-            }
-            // `StateDispatch` has no condition value (the saved state is read
-            // from the frame header at codegen time); only its per-edge args.
-            Terminator::StateDispatch {
-                cases,
-                default_args,
-                ..
-            } => {
-                for (_, _, args) in cases.iter_mut() {
-                    for arg in args.iter_mut() {
-                        let resolved = resolve(*arg, &copy_map);
-                        if resolved != *arg {
-                            *arg = resolved;
-                            stats.values_changed += 1;
-                        }
-                    }
-                }
-                for arg in default_args.iter_mut() {
-                    let resolved = resolve(*arg, &copy_map);
-                    if resolved != *arg {
-                        *arg = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-            }
-            Terminator::Return { values } => {
-                for val in values.iter_mut() {
-                    let resolved = resolve(*val, &copy_map);
-                    if resolved != *val {
-                        *val = resolved;
-                        stats.values_changed += 1;
-                    }
-                }
-            }
-            Terminator::Unwind | Terminator::Unreachable => {}
-        }
+        block.terminator.for_each_value_mut(&mut substitute);
     }
 
-    // Retire only copies whose exact SSA result no longer has a use. A long
-    // chain that did not fully collapse remains valid; semantic Copy carriers
-    // and mutable-slot transports never enter this admission.
+    // Retire only copies whose exact SSA result no longer has a use.
     let mut used = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -433,6 +287,7 @@ mod tests {
 #[cfg(test)]
 mod final_projection_tests {
     use super::*;
+    use crate::tir::blocks::Terminator;
     use crate::tir::ops::{AttrDict, Dialect, OpCode};
     use crate::tir::types::TirType;
 

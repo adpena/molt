@@ -491,3 +491,131 @@ fn none_excluded_from_live_sets() {
     assert!(res.is_raw_scalar(n));
     assert!(!res.live_in[&entry].contains(&n));
 }
+
+#[test]
+fn exceptional_demand_uses_its_observation_and_normal_arcs_union_payloads() {
+    use molt_ir::deterministic_hash::{HashMap, HashSet};
+
+    let mut func = TirFunction::new(
+        "point_demand".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = func.entry_block;
+    let dispatch = func.fresh_block();
+    let a = func.fresh_block();
+    let b = func.fresh_block();
+    let normal = func.fresh_block();
+    let dead = func.fresh_block();
+    let selector = func.fresh_value();
+    func.value_types.insert(selector, TirType::I64);
+    let mut selector_def = op(OpCode::ConstInt, vec![], vec![selector]);
+    selector_def.attrs.insert("value".into(), AttrValue::Int(0));
+    let [
+        kept,
+        ordinary,
+        payload,
+        alias,
+        late,
+        first_arg,
+        second_arg,
+        phi,
+    ] = [(); 8].map(|()| {
+        let value = func.fresh_value();
+        func.value_types.insert(value, TirType::DynBox);
+        value
+    });
+    let arg = |id| TirValue {
+        id,
+        ty: TirType::DynBox,
+    };
+    let observe = |label, payload| {
+        let mut check = op(OpCode::CheckException, payload, vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(label));
+        check
+    };
+    let entry_block = func.blocks.get_mut(&entry).unwrap();
+    entry_block.ops = [kept, ordinary, payload]
+        .into_iter()
+        .map(const_str)
+        .chain([op(OpCode::Copy, vec![payload], vec![alias]), selector_def])
+        .collect();
+    entry_block.terminator = Terminator::Branch {
+        target: dispatch,
+        args: vec![],
+    };
+    func.blocks.insert(
+        dispatch,
+        TirBlock {
+            id: dispatch,
+            args: vec![],
+            ops: vec![
+                observe(31, vec![]),
+                const_str(late),
+                observe(32, vec![alias, payload]),
+                observe(31, vec![]),
+            ],
+            terminator: Terminator::Switch {
+                value: selector,
+                cases: vec![(1, normal, vec![ordinary]), (2, normal, vec![late])],
+                default: normal,
+                default_args: vec![payload],
+            },
+        },
+    );
+    for (block, args, returned) in [
+        (a, vec![], kept),
+        (b, vec![arg(first_arg), arg(second_arg)], late),
+        (normal, vec![arg(phi)], phi),
+        (dead, vec![], kept),
+    ] {
+        func.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args,
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![returned],
+                },
+            },
+        );
+    }
+    func.label_id_map.extend([(a.0, 31), (b.0, 32)]);
+
+    let live = compute_liveness(&func);
+    assert_eq!(
+        live.live_in[&dispatch],
+        HashSet::from_iter([kept, ordinary, payload])
+    );
+    assert_eq!(
+        live.live_out[&dispatch],
+        HashSet::from_iter([ordinary, payload, late])
+    );
+    assert_eq!(live.live_in[&b], HashSet::from_iter([late]));
+    assert!(live.live_in[&dead].is_empty());
+
+    // Follow the continuations by hand. The first check cannot abandon
+    // `late`, which is still undefined there. B keeps `late` through its
+    // body and `payload` through both inputs, including the borrowed alias.
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(&func);
+    let mut abandoned = HashMap::default();
+    super::visit_exception_liveness(
+        &func,
+        &aliases,
+        &live.raw_scalars,
+        |block, index, target, demand| {
+            assert_eq!(block, dispatch);
+            abandoned.insert((index, target), demand.abandoned().collect::<HashSet<_>>());
+        },
+    );
+    assert_eq!(
+        abandoned,
+        HashMap::from_iter([
+            ((0, a), HashSet::from_iter([ordinary, payload])),
+            ((2, b), HashSet::from_iter([kept, ordinary])),
+            ((3, a), HashSet::from_iter([ordinary, payload, late])),
+        ]),
+    );
+}

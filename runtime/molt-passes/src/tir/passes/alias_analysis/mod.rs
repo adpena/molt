@@ -64,6 +64,7 @@ mod tests;
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use super::value_identity::{build_forwarding_map, no_heap_alias_source, resolve_copy};
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
@@ -95,42 +96,24 @@ use copy_kind::{copy_kind_is_memory_inert, copy_original_kind};
 // AliasUnionFind — transparent-copy alias roots
 // ===========================================================================
 
-/// Union-find over transparent SSA aliases (pure `Copy` moves). Two values share a root iff they provably name the same heap
-/// object through a chain of transparent copies. Promoted verbatim from
-/// `dead_store_elim`'s former inline `AliasState`, now the single home for
-/// SSA-copy alias roots.
-/// Build the transparent-alias union-find for `func` via a single forward scan
-/// over every op (Phase A of [`AliasAnalysisResult::compute`]). Exposed so the
-/// liveness analysis (RC drop-insertion substrate, design 20) can canonicalize
-/// values to their alias root WITHOUT computing the (heavier) escape/points-to
-/// half: a `Copy` borrow alias holds no new reference, so ownership
-/// — and therefore drop placement — is per alias root, not per SSA value.
+/// Build the transparent-alias roots used by liveness and drop placement
+/// independently of the more expensive escape analysis.
 pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
-    let mut aliases = AliasUnionFind::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            aliases.record_transparent_aliases(op);
-        }
+    AliasUnionFind {
+        roots: build_forwarding_map(func, no_heap_alias_source),
     }
-    aliases
 }
 
+/// Each transparent borrow maps directly to the SSA value whose owner it shares.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AliasUnionFind {
-    parent: HashMap<ValueId, ValueId>,
+    roots: HashMap<ValueId, ValueId>,
 }
 
 impl AliasUnionFind {
-    /// The representative root of `value` (follows the transparent-alias chain).
+    /// The ultimate source of `value`, or the value itself for independent roots.
     pub fn root(&self, value: ValueId) -> ValueId {
-        let mut root = value;
-        while let Some(next) = self.parent.get(&root).copied() {
-            if next == root {
-                break;
-            }
-            root = next;
-        }
-        root
+        resolve_copy(&self.roots, value)
     }
 
     /// True if any operand of `op` shares the alias root `root`.
@@ -139,22 +122,6 @@ impl AliasUnionFind {
             .iter()
             .any(|operand| self.root(*operand) == root)
     }
-
-    /// If `op` is a transparent alias-producing op, union its results into the
-    /// alias root of its source operand.
-    fn record_transparent_aliases(&mut self, op: &TirOp) {
-        let Some(root) = transparent_alias_root(op, self) else {
-            return;
-        };
-        for result in &op.results {
-            self.parent.insert(*result, root);
-        }
-    }
-}
-
-/// Preserve the guarded object's root without unioning the expected-tag read.
-fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueId> {
-    super::value_identity::no_heap_alias_source(op).map(|source| aliases.root(source))
 }
 
 fn aliasing_op_may_observe_slot(
@@ -172,7 +139,7 @@ fn aliasing_op_may_observe_slot(
             }
         }
         AliasSlotObservation::TypedSlotStore => true,
-        AliasSlotObservation::TransparentAlias => transparent_alias_root(op, aliases).is_none(),
+        AliasSlotObservation::TransparentAlias => no_heap_alias_source(op).is_none(),
         AliasSlotObservation::NeverObserver => false,
     }
 }
@@ -200,13 +167,12 @@ impl AliasAnalysisResult {
         &self.exact_scalar_types
     }
 
-    /// Compute the result for `func`. Builds the alias union-find by a single
-    /// forward scan, then folds the (now alias-aware) escape analysis on top.
+    /// Compute the result for `func`. Resolves transparent aliases, then
+    /// folds the escape analysis on top.
     /// `pub(crate)` so module-phase transforms (which have no per-function
     /// `AnalysisManager`) can compute it directly; per-function passes go
     /// through `am.get::<AliasAnalysis>()` for caching.
     pub fn compute(func: &TirFunction) -> Self {
-        // Phase A: build the transparent-alias union-find with a forward scan.
         let aliases = build_alias_union_find(func);
 
         // Phase B: the escape / points-to map. This is the former
@@ -402,7 +368,7 @@ impl AliasAnalysisResult {
 
     /// True if the shared `no_heap_alias_source` fact proves that the result
     /// names the same heap object as its source. This is exactly the operation
-    /// set [`record_transparent_aliases`] unions into one root, so callers that
+    /// set [`build_alias_union_find`] resolves to one root, so callers that
     /// already route values through [`root`](Self::root) can preserve identity.
     ///
     /// Runtime guards retain their checks and exceptions; alias identity grants
@@ -411,7 +377,7 @@ impl AliasAnalysisResult {
     /// rather than reconstructing the alias contract.
     #[inline]
     pub fn is_transparent_alias_op(&self, op: &TirOp) -> bool {
-        transparent_alias_root(op, &self.aliases).is_some()
+        no_heap_alias_source(op).is_some()
     }
 }
 

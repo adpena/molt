@@ -88,16 +88,7 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
 /// This map retains the existing identity/alias contract. Numeric-only clients
 /// that need effectful scalar forwarding use `ScalarFacts::forwarding` instead.
 pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if let Some(src) = copy_value_source(op) {
-                copy_of.insert(op.results[0], src);
-            }
-        }
-    }
-    flatten_copy_map(&mut copy_of);
-    copy_of
+    build_forwarding_map(func, copy_value_source)
 }
 
 /// A Python object is identical to every unchanged SSA copy of itself, even
@@ -269,44 +260,53 @@ fn build_scalar_value_map(
     // immutable scalar may cross an effectful publication: its displaced
     // owner's finalizer could mutate a forwarded container. The exact solver
     // calls forwarded_python_value_source, not this map, so this query is non-recursive.
-    let mut scalar_of = HashMap::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            // A checked success may have a narrower range than the physical
-            // call word. Sharing a numeric root would publish that range back
-            // into exceptional cleanup, where the word may be a sentinel.
-            if op.checked_call_result_source().is_some() {
-                continue;
-            }
-            let source = copy_value_source(op).or_else(|| {
-                forwarded_python_value_source(op).filter(|source| exact.contains_key(source))
-            });
-            if let Some(source) = source {
-                scalar_of.insert(op.results[0], source);
-            }
+    build_forwarding_map(func, |op| {
+        // A checked success may have a narrower range than the physical
+        // call word on the exception edge.
+        if op.checked_call_result_source().is_some() {
+            return None;
         }
-    }
-    flatten_copy_map(&mut scalar_of);
-    scalar_of
+        copy_value_source(op).or_else(|| {
+            forwarded_python_value_source(op).filter(|source| exact.contains_key(source))
+        })
+    })
 }
 
-fn flatten_copy_map(copy_of: &mut HashMap<ValueId, ValueId>) {
-    for _ in 0..64 {
-        let mut changed = false;
-        let keys: Vec<ValueId> = copy_of.keys().copied().collect();
-        for key in keys {
-            let value = copy_of[&key];
-            if let Some(&deeper) = copy_of.get(&value)
-                && deeper != value
-            {
-                copy_of.insert(key, deeper);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
+/// Resolve each admitted single-result SSA definition to its terminal source.
+/// Callers select the identity being proved. The sparse map contains exactly
+/// their admitted results, independent of block order or the largest ValueId.
+pub(super) fn build_forwarding_map(
+    func: &TirFunction,
+    source: impl Fn(&TirOp) -> Option<ValueId>,
+) -> HashMap<ValueId, ValueId> {
+    let mut roots = HashMap::default();
+    for op in func.blocks.values().flat_map(|block| &block.ops) {
+        if let Some(value) = source(op) {
+            roots.insert(op.results[0], value);
         }
     }
+    let keys: Vec<_> = roots.keys().copied().collect();
+    let mut path = Vec::new();
+    for key in keys {
+        let mut root = roots[&key];
+        while let Some(&next) = roots.get(&root) {
+            if next == root {
+                break;
+            }
+            path.push(root);
+            // A valid path visits at most every other result before its root.
+            assert!(path.len() < roots.len(), "cyclic SSA forwarding at {root}");
+            root = next;
+        }
+        if !path.is_empty() {
+            // A later walk can cross at most one already-compressed link.
+            roots.insert(key, root);
+            for intermediate in path.drain(..) {
+                roots.insert(intermediate, root);
+            }
+        }
+    }
+    roots
 }
 
 /// Resolve `value` through a copy map to its root source.

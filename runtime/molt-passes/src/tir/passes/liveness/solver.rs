@@ -1,154 +1,203 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
-use std::collections::VecDeque;
 
-use crate::tir::blocks::{BlockId, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::AttrValue;
+use crate::tir::ops::TirOp;
 use crate::tir::passes::alias_analysis::{AliasUnionFind, build_alias_union_find};
 use crate::tir::values::ValueId;
 
 use super::api::TirLivenessResult;
-use super::flow::{live_out_of, terminator_direct_uses};
 use super::raw::compute_raw_scalars;
 
-/// One representation/alias domain for block and instruction-point liveness.
-/// Exceptional successors enter the backward transfer at the actual observation,
-/// never at the block terminator: definitions after a check cannot kill a value
-/// needed by its handler.
+/// Normal demand crosses the terminator. Exceptional demand crosses only
+/// the prefix through the observation, including its own definitions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Exit {
+    Normal,
+    Observation(usize),
+}
+
+struct DemandEdge {
+    source: BlockId,
+    exit: Exit,
+}
+
 struct LivenessProblem<'a> {
     func: &'a TirFunction,
     aliases: &'a AliasUnionFind,
     raw: &'a HashSet<ValueId>,
-    block_args: HashMap<BlockId, HashSet<ValueId>>,
-    exception_targets: HashMap<(BlockId, usize), BlockId>,
-    reachable: HashSet<BlockId>,
+    labels: HashMap<i64, BlockId>,
 }
 
 impl<'a> LivenessProblem<'a> {
     fn new(func: &'a TirFunction, aliases: &'a AliasUnionFind, raw: &'a HashSet<ValueId>) -> Self {
-        let labels = dominators::exception_label_to_block(func);
-        let mut exception_targets = HashMap::default();
-        for (&bid, block) in &func.blocks {
-            for (index, op) in block.ops.iter().enumerate() {
-                if dominators::is_exception_transfer_edge(op.opcode)
-                    && let Some(AttrValue::Int(label)) = op.attrs.get("value")
-                    && let Some(&target) = labels.get(label)
-                {
-                    exception_targets.insert((bid, index), target);
-                }
-            }
-        }
         Self {
             func,
             aliases,
             raw,
-            block_args: func
-                .blocks
-                .iter()
-                .map(|(&bid, block)| (bid, block.args.iter().map(|arg| arg.id).collect()))
-                .collect(),
-            exception_targets,
-            reachable: dominators::reachable_blocks_with(func, CfgEdgePolicy::Full),
+            labels: dominators::exception_label_to_block(func),
         }
     }
 
-    fn add_use(&self, values: &mut HashSet<ValueId>, value: ValueId) {
+    fn root(&self, value: ValueId) -> Option<ValueId> {
         let root = self.aliases.root(value);
-        if !self.raw.contains(&root) {
-            values.insert(root);
-        }
+        (!self.raw.contains(&root)).then_some(root)
     }
 
-    fn normal_live_out(
-        &self,
-        block: &TirBlock,
-        live_in: &HashMap<BlockId, HashSet<ValueId>>,
-    ) -> HashSet<ValueId> {
-        live_out_of(
-            block,
-            live_in,
-            &self.block_args,
-            &|v| !self.raw.contains(&self.aliases.root(v)),
-            &|v| self.aliases.root(v),
-        )
+    fn definitions<'b>(&'b self, op: &'b TirOp) -> impl Iterator<Item = ValueId> + 'b {
+        op.results
+            .iter()
+            .copied()
+            // An alias names its owner's existing lifetime.
+            .filter(|&result| self.root(result) == Some(result))
     }
 
-    fn transfer(
+    fn replay(
         &self,
         block: &TirBlock,
-        mut live: HashSet<ValueId>,
-        live_in: &HashMap<BlockId, HashSet<ValueId>>,
-        mut observe: impl FnMut(usize, BlockId, &HashSet<ValueId>, &HashSet<ValueId>),
-    ) -> HashSet<ValueId> {
-        for value in terminator_direct_uses(&block.terminator) {
-            self.add_use(&mut live, value);
-        }
+        live: &mut HashSet<ValueId>,
+        mut observe: impl FnMut(usize, &TirOp, &mut HashSet<ValueId>),
+        mut kill: impl FnMut(ValueId, usize),
+    ) {
+        let term_uses = match &block.terminator {
+            Terminator::CondBranch { cond, .. } => std::slice::from_ref(cond),
+            Terminator::Switch { value, .. } => std::slice::from_ref(value),
+            term => term.exit_values().unwrap_or_default(),
+        };
+        live.extend(term_uses.iter().filter_map(|&value| self.root(value)));
         for (index, op) in block.ops.iter().enumerate().rev() {
-            if let Some(&target) = self.exception_targets.get(&(block.id, index)) {
-                let mut exceptional = live_in[&target].clone();
-                exceptional.retain(|value| !self.block_args[&target].contains(value));
-                for &value in &op.operands {
-                    self.add_use(&mut exceptional, value);
-                }
-                // Separate normal and exceptional demands without a quadratic
-                // table of per-instruction live sets.
-                observe(index, target, &live, &exceptional);
-                live.extend(exceptional);
+            observe(index, op, live);
+            for result in self.definitions(op) {
+                kill(result, index + 1);
+                live.remove(&result);
             }
-            for &result in &op.results {
-                // A transparent copy names the same owner; it does not define
-                // (and must not kill) that owner's lifetime.
-                if self.aliases.root(result) == result {
-                    live.remove(&result);
-                }
-            }
-            for &operand in &op.operands {
-                self.add_use(&mut live, operand);
-            }
+            live.extend(op.operands.iter().filter_map(|&value| self.root(value)));
         }
         for arg in &block.args {
-            live.remove(&self.aliases.root(arg.id));
+            if let Some(root) = self.root(arg.id) {
+                kill(root, 0);
+                live.remove(&root);
+            }
         }
-        live
     }
 
-    fn solve(&self) -> TirLivenessResult {
-        let mut live_in: HashMap<_, _> = self
-            .func
-            .blocks
-            .keys()
-            .map(|&bid| (bid, HashSet::default()))
-            .collect();
-        let mut live_out = live_in.clone();
-        let predecessors = dominators::build_pred_map_with(self.func, CfgEdgePolicy::Full);
-        let mut order: Vec<_> = self.reachable.iter().copied().collect();
-        order.sort_unstable_by_key(|bid| std::cmp::Reverse(bid.0));
-        let mut pending: VecDeque<_> = order.into();
-        let mut queued = self.reachable.clone();
-        while let Some(bid) = pending.pop_front() {
-            queued.remove(&bid);
-            let block = &self.func.blocks[&bid];
-            let new_out = self.normal_live_out(block, &live_in);
-            let new_in = self.transfer(block, new_out.clone(), &live_in, |_, _, _, _| {});
-            live_out.insert(bid, new_out);
-            if live_in[&bid] == new_in {
-                continue;
-            }
-            live_in.insert(bid, new_in);
-            if let Some(preds) = predecessors.get(&bid) {
-                for &pred in preds {
-                    if self.reachable.contains(&pred) && queued.insert(pred) {
-                        pending.push_back(pred);
+    fn solve(&self) -> Solution {
+        let reachable = dominators::reverse_postorder_with(self.func, CfgEdgePolicy::Full);
+        let mut live = TirLivenessResult {
+            live_in: self
+                .func
+                .blocks
+                .keys()
+                .map(|&id| (id, HashSet::default()))
+                .collect(),
+            live_out: self
+                .func
+                .blocks
+                .keys()
+                .map(|&id| (id, HashSet::default()))
+                .collect(),
+            raw_scalars: self.raw.clone(),
+        };
+        let mut predecessors: HashMap<BlockId, Vec<DemandEdge>> = HashMap::default();
+        let mut kills = HashMap::default();
+        let mut pending = Vec::new();
+        let mut observations = Vec::new();
+        for &source in reachable.iter().rev() {
+            let block = &self.func.blocks[&source];
+            let out = live.live_out.get_mut(&source).unwrap();
+            block.terminator.for_each_edge(|target, args| {
+                out.extend(args.iter().filter_map(|&value| self.root(value)));
+                let edges = predecessors.entry(target).or_default();
+                if !edges.last().is_some_and(|edge| edge.source == source) {
+                    edges.push(DemandEdge {
+                        source,
+                        exit: Exit::Normal,
+                    });
+                }
+            });
+            // The first observation to a particular handler admits every root
+            // that any later observation to that handler could propagate to
+            // entry. Point replay still visits each observation individually.
+            // Seed local reads. Dependencies propagate the remaining demands;
+            // there is no need to replay these operations after any update.
+            let mut first_observations = HashMap::default();
+            let mut has_observation = false;
+            let input = live.live_in.get_mut(&source).unwrap();
+            input.clone_from(out);
+            // The walk is backwards, so each insertion leaves the earliest
+            // observation or kill, including a kill on entry at a block arg.
+            self.replay(
+                block,
+                input,
+                |index, op, _| {
+                    if let Some(target) = dominators::exception_transfer_target(op, &self.labels) {
+                        first_observations.insert(target, index + 1);
+                        has_observation |=
+                            dominators::exception_edge_binds_handler_arguments(op.opcode);
                     }
+                },
+                |root, position| {
+                    kills.insert((source, root), position);
+                },
+            );
+            if has_observation {
+                observations.push(source);
+            }
+            for (target, position) in first_observations {
+                predecessors.entry(target).or_default().push(DemandEdge {
+                    source,
+                    exit: Exit::Observation(position),
+                });
+            }
+            pending.extend(input.iter().map(|&root| (source, root)));
+        }
+
+        while let Some((target, root)) = pending.pop() {
+            let Some(edges) = predecessors.get(&target) else {
+                continue;
+            };
+            for &DemandEdge { source, exit } in edges {
+                let position = match exit {
+                    Exit::Normal => {
+                        live.live_out.get_mut(&source).unwrap().insert(root);
+                        usize::MAX
+                    }
+                    Exit::Observation(position) => position,
+                };
+                if kills
+                    .get(&(source, root))
+                    .is_none_or(|&kill| kill > position)
+                    && live.live_in.get_mut(&source).unwrap().insert(root)
+                {
+                    pending.push((source, root));
                 }
             }
         }
-        TirLivenessResult {
-            live_in,
-            live_out,
-            raw_scalars: self.raw.clone(),
-        }
+        Solution { live, observations }
+    }
+}
+
+struct Solution {
+    live: TirLivenessResult,
+    observations: Vec<BlockId>,
+}
+
+/// The normal continuation may keep a root that the exceptional path
+/// abandons. The exceptional roots come from the handler and this check's
+/// operands, each already in the canonical owner domain.
+pub(crate) struct ExceptionDemand<'a> {
+    normal: &'a HashSet<ValueId>,
+    handler: &'a HashSet<ValueId>,
+    operands: &'a HashSet<ValueId>,
+}
+
+impl ExceptionDemand<'_> {
+    pub(crate) fn abandoned(&self) -> impl Iterator<Item = ValueId> + '_ {
+        self.normal
+            .difference(self.handler)
+            .copied()
+            .filter(|root| !self.operands.contains(root))
     }
 }
 
@@ -169,33 +218,63 @@ pub(crate) fn compute_liveness_in_domain(
     aliases: &AliasUnionFind,
     raw: &HashSet<ValueId>,
 ) -> TirLivenessResult {
-    LivenessProblem::new(func, aliases, raw).solve()
+    LivenessProblem::new(func, aliases, raw).solve().live
 }
 
-/// Visit final exceptional ownership boundaries using the same transfer function
-/// as the cached analysis. The caller may reuse the representation/alias domain
-/// only across edits that preserve value definitions and transparent aliases (such as
-/// inserting RC operations and argument-free edge blocks). No per-operation
-/// live-set table is materialized.
+/// Replay only blocks containing exceptional observations. Each handler's
+/// entry demand stays borrowed, and one buffer collects the current operands.
 pub(crate) fn visit_exception_liveness(
     func: &TirFunction,
     aliases: &AliasUnionFind,
     raw: &HashSet<ValueId>,
-    mut observe: impl FnMut(BlockId, usize, BlockId, &HashSet<ValueId>, &HashSet<ValueId>),
+    mut observe: impl FnMut(BlockId, usize, BlockId, ExceptionDemand<'_>),
 ) {
     let problem = LivenessProblem::new(func, aliases, raw);
-    if problem.exception_targets.is_empty() {
+    if problem.labels.is_empty()
+        || !func.blocks.values().any(|block| {
+            block.ops.iter().any(|op| {
+                dominators::exception_edge_binds_handler_arguments(op.opcode)
+                    && dominators::exception_transfer_target(op, &problem.labels).is_some()
+            })
+        })
+    {
         return;
     }
-    let live = problem.solve();
-    let mut blocks: Vec<_> = problem.reachable.iter().copied().collect();
-    blocks.sort_unstable_by_key(|bid| bid.0);
-    for bid in blocks {
-        problem.transfer(
-            &func.blocks[&bid],
-            live.live_out[&bid].clone(),
-            &live.live_in,
-            |index, target, normal, exceptional| observe(bid, index, target, normal, exceptional),
+    let Solution {
+        mut live,
+        mut observations,
+    } = problem.solve();
+    observations.sort_unstable_by_key(|block| block.0);
+    let mut operands = HashSet::default();
+    for block in observations {
+        let mut normal = live.live_out.remove(&block).unwrap();
+        problem.replay(
+            &func.blocks[&block],
+            &mut normal,
+            |index, op, normal| {
+                let Some(target) = dominators::exception_transfer_target(op, &problem.labels)
+                else {
+                    return;
+                };
+                // Live-in already crossed the handler's argument definitions.
+                let handler = &live.live_in[&target];
+                if dominators::exception_edge_binds_handler_arguments(op.opcode) {
+                    operands.clear();
+                    operands.extend(op.operands.iter().filter_map(|&value| problem.root(value)));
+                    observe(
+                        block,
+                        index,
+                        target,
+                        ExceptionDemand {
+                            normal,
+                            handler,
+                            operands: &operands,
+                        },
+                    );
+                }
+                normal.extend(handler);
+            },
+            |_, _| {},
         );
     }
 }

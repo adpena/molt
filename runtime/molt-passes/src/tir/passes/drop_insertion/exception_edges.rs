@@ -12,7 +12,6 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::LabelAllocator;
-use crate::tir::dominators::exception_edge_binds_handler_arguments;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::passes::alias_analysis::AliasUnionFind;
@@ -93,68 +92,65 @@ pub(super) fn insert_exception_edge_releases(
     raw: &HashSet<ValueId>,
     retains: &HashMap<(BlockId, usize), Vec<usize>>,
 ) -> usize {
-    let points = PointAvailability::compute(func, root_facts);
+    let points = std::cell::OnceCell::new();
     let mut plans = Vec::new();
     let mut tails = Vec::new();
     let mut tail_identities = HashMap::default();
     let mut retaining_observations = 0;
-    visit_exception_liveness(
-        func,
-        aliases,
-        raw,
-        |block, index, target, normal, exceptional| {
-            let op = &func.blocks[&block].ops[index];
-            if !exception_edge_binds_handler_arguments(op.opcode) {
-                return;
-            }
-            let retained = retains.get(&(block, index)).cloned().unwrap_or_default();
-            if !retained.is_empty() {
-                retaining_observations += 1;
-            }
-            let mut releases: Vec<_> = normal
-                .difference(exceptional)
-                .copied()
-                .filter(|&root| {
-                    eligibility.is_droppable(root) && points.available_before(root, block, index)
-                })
-                .collect();
-            releases.sort_unstable_by_key(|value| std::cmp::Reverse(value.0));
-            if releases.is_empty() && retained.is_empty() {
-                return;
-            }
-            let types = op
-                .operands
-                .iter()
-                .map(|value| {
-                    func.value_types
-                        .get(value)
-                        .cloned()
-                        .expect("exception handler payload must have a representation")
-                })
-                .collect();
-            let mut tail = intern_tail(
+    visit_exception_liveness(func, aliases, raw, |block, index, target, demand| {
+        let op = &func.blocks[&block].ops[index];
+        let retained = retains.get(&(block, index)).cloned().unwrap_or_default();
+        if !retained.is_empty() {
+            retaining_observations += 1;
+        }
+        let mut releases: Vec<_> = demand
+            .abandoned()
+            .filter(|&root| {
+                eligibility.is_droppable(root)
+                    && points
+                        .get_or_init(|| PointAvailability::compute(func, root_facts))
+                        .available_before(root, block, index)
+            })
+            .collect();
+        releases.sort_unstable_by_key(|value| std::cmp::Reverse(value.0));
+        if releases.is_empty() && retained.is_empty() {
+            return;
+        }
+        let types = op
+            .operands
+            .iter()
+            .map(|value| {
+                func.value_types
+                    .get(value)
+                    .cloned()
+                    .expect("exception handler payload must have a representation")
+            })
+            .collect();
+        let mut tail = intern_tail(
+            &mut tails,
+            &mut tail_identities,
+            TailKey::Handler { target, types },
+        );
+        // Intern oldest first: each node points to an already allocated suffix.
+        // The identity includes the exact value and complete continuation,
+        // so it cannot reorder releases or merge distinct handler routes.
+        for &value in releases.iter().rev() {
+            tail = intern_tail(
                 &mut tails,
                 &mut tail_identities,
-                TailKey::Handler { target, types },
+                TailKey::Release { value, next: tail },
             );
-            // Intern oldest first: each node points to an already allocated suffix.
-            // The identity includes the exact value and complete continuation,
-            // so it cannot reorder releases or merge distinct handler routes.
-            for &value in releases.iter().rev() {
-                tail = intern_tail(
-                    &mut tails,
-                    &mut tail_identities,
-                    TailKey::Release { value, next: tail },
-                );
-            }
-            plans.push((block, index, op.operands.clone(), retained, tail));
-        },
-    );
+        }
+        plans.push((block, index, op.operands.clone(), retained, tail));
+    });
     assert_eq!(
         retaining_observations,
         retains.len(),
         "DropInsertion planned landing retains for an observation it did not visit"
     );
+    if plans.is_empty() {
+        return 0;
+    }
 
     let mut labels = LabelAllocator::for_function(func);
     let mut inserted = 0;

@@ -1114,7 +1114,8 @@ fn run_planned(
         if exceptional_entries.contains(&bid) {
             continue;
         }
-        let block_args: HashSet<ValueId> = func.blocks[&bid].args.iter().map(|a| a.id).collect();
+        let block_args: HashSet<ValueId> =
+            func.blocks[&bid].args.iter().map(|a| canon(a.id)).collect();
         // A root that an incoming arc moves into one of THIS block's args is not
         // dying on entry, even though liveness reports it dead-in to `B` (its
         // successor-side identity is the block arg, a distinct SSA value). The
@@ -1132,29 +1133,20 @@ fn run_planned(
         // so a root that transfers or dies on only some incoming arcs is
         // released per arc by §3b or by the exceptional landings; only
         // genuinely path-specific ownership allocates an edge block.
-        let mut candidates: HashSet<ValueId> = HashSet::default();
-        for p in preds {
-            if let Some(set) = live.live_out.get(p) {
-                candidates.extend(set.iter().copied());
-            }
-        }
-        // Root-level live-in to B: any alias member of the root is live-in.
-        let root_live_in = |root: ValueId| -> bool {
-            live.live_in
-                .get(&bid)
-                .is_some_and(|set| set.iter().any(|&m| canon(m) == root))
-        };
-        // Roots already scheduled to drop at this block's entry (dedup by root,
-        // not raw value — two aliases of the same group must drop once).
-        let mut entry_root_seen: HashSet<ValueId> = HashSet::default();
-        for v in candidates {
-            if !drop_eligibility.is_droppable(v) {
+        // An entry release requires the intersection of predecessor demands.
+        // Start with the smallest set. Liveness already contains unique roots.
+        let candidates = preds
+            .iter()
+            .map(|p| &live.live_out[p])
+            .min_by_key(|set| set.len())
+            .unwrap();
+        for &root in candidates {
+            if !drop_eligibility.is_droppable(root) {
                 continue;
             }
             // A conditionally-valid iterator value is dropped here only where it
             // is initialized: the availability guard below never admits its
             // exhaustion edge, whose slot holds stale bits (review P0 #2(b)).
-            let root = canon(v);
             // Python lifetime boundaries are path-conditioned release
             // authorities. The single at-entry edge-dying form would run on every
             // path into `bid`, so pairing it with a body-only statement/rebind
@@ -1166,33 +1158,23 @@ fn run_planned(
             {
                 continue;
             }
-            if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
+            if block_args.contains(&root) {
                 continue;
             }
             // Dead on entry to B (root-level — no alias member live-in).
-            if root_live_in(root) {
+            if live.is_live_in(bid, root) {
                 continue;
             }
-            // Must die on ALL incoming paths: every predecessor delivers the root
-            // group live-out (some alias member live-out of each predecessor), so
-            // the single drop here releases it exactly once on every path. A
+            // Every predecessor must deliver the root live-out. A
             // predecessor without the root live-out would mean that path never
             // owned it → a spurious drop on that path.
-            let all_preds_deliver = preds.iter().all(|p| {
-                live.live_out
-                    .get(p)
-                    .is_some_and(|s| s.iter().any(|&m| canon(m) == root))
-            });
+            let all_preds_deliver = preds.iter().all(|&p| live.is_live_out(p, root));
             if !all_preds_deliver {
                 continue;
             }
             // AVAILABILITY GUARD (fail-closed; see above): defined, initialized
             // and still owned on every entry.
-            if !points.available_at_entry(v, bid) {
-                continue;
-            }
-            // One drop per root group at this entry.
-            if !entry_root_seen.insert(root) {
+            if !points.available_at_entry(root, bid) {
                 continue;
             }
             plans
@@ -1205,7 +1187,7 @@ fn run_planned(
                     before_term_incref: Vec::new(),
                 })
                 .at_entry
-                .push(v);
+                .push(root);
         }
     }
     emit_drop_inner_stage_audit(
@@ -1288,18 +1270,14 @@ fn run_planned(
             let pred_planned_roots = before_term_planned_roots_by_block.get(&pred);
             let transferred_roots: HashSet<ValueId> =
                 arc.args.iter().map(|&value| canon(value)).collect();
-            let mut arc_root_seen: HashSet<ValueId> = HashSet::default();
-
-            for &value in &candidates {
-                let root = canon(value);
-                if !arc_root_seen.insert(root)
-                    || entry_planned_roots.is_some_and(|roots| roots.contains(&root))
+            for &root in &candidates {
+                if entry_planned_roots.is_some_and(|roots| roots.contains(&root))
                     || pred_planned_roots.is_some_and(|roots| roots.contains(&root))
                     || transferred_roots.contains(&root)
                     || points.lives_into_body(root, arc.target)
                     || boundary_held_roots.contains(&root)
                     || statement_release_plan.contains_released_root(root)
-                    || !drop_eligibility.is_droppable(value)
+                    || !drop_eligibility.is_droppable(root)
                 {
                     continue;
                 }
@@ -1307,9 +1285,9 @@ fn run_planned(
                 // `pred`, exceptional ones included, and for a conditional
                 // result initialized at `pred`'s exit or by this very arc.
                 let available = if arcs.len() == 1 {
-                    points.available_at_exit(value, pred)
+                    points.available_at_exit(root, pred)
                 } else {
-                    points.available_on_arc(value, pred, arc.target)
+                    points.available_on_arc(root, pred, arc.target)
                 };
                 if !available {
                     continue;
@@ -1326,7 +1304,7 @@ fn run_planned(
                             before_term_incref: Vec::new(),
                         })
                         .before_term
-                        .push(value);
+                        .push(root);
                 } else {
                     push_edge_split(
                         &mut edge_splits,
@@ -1335,7 +1313,7 @@ fn run_planned(
                         arc.target,
                         arc.args.clone(),
                         vec![],
-                        vec![value],
+                        vec![root],
                     );
                 }
             }
@@ -1686,12 +1664,13 @@ fn run_planned(
     // Only no-result RC operations and argument-free edge blocks were added
     // since this domain was computed; definitions, aliases and representations
     // are unchanged. Reuse it instead of repeating carrier/value-range analysis.
+    drop(live);
     inserted += super::exception_edges::insert_exception_edge_releases(
         func,
         &drop_eligibility,
         &ownership_root_facts,
         &aliases,
-        &live.raw_scalars,
+        &raw_scalars,
         &observation_retains,
     );
 
@@ -1744,7 +1723,7 @@ fn run_planned(
                         format!(
                             "{}:{}",
                             o.0,
-                            if live.is_raw_scalar(*o) {
+                            if raw_scalars.contains(o) {
                                 "raw"
                             } else {
                                 "heap"
