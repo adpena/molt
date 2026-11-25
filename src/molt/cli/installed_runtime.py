@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence, cast
 import uuid
 
+from molt import input_report
 from molt.native_target import resolve_native_target_spec
 from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_names
 from molt.cli import installed_runtime_contract as _runtime_contract
@@ -72,7 +73,7 @@ from molt.cli.runtime_wasm_generation import (
 )
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
-    artifact_content_identity,
+    capture_archive_artifact_identity,
 )
 from molt.compiler_distribution import (
     NATIVE_CALLABLE_PROJECTION_ROLE,
@@ -94,7 +95,6 @@ from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
     open_stable_regular_file,
-    stable_regular_file_handle_identity,
     stable_regular_file_identity,
     stable_regular_file_version,
     verify_stable_regular_file_identity,
@@ -543,7 +543,9 @@ def _require_features(
 
 
 def _native_link_facts(
-    cell: InstalledRuntimeCell, archive: StableRegularFileIdentity
+    cell: InstalledRuntimeCell,
+    archive: StableRegularFileIdentity,
+    archive_content: Mapping[str, object],
 ) -> tuple[NativeLinkProductFacts, StableRegularFileIdentity]:
     """Observe the canonical receipt against the already-admitted archive."""
     receipt, payload = cell.member_json("native_link_manifest")
@@ -553,7 +555,7 @@ def _native_link_facts(
         )
     facts = validate_native_link_product_manifest(
         cast(Mapping[str, object], payload),
-        runtime_identity=artifact_content_identity(archive.path, observed=archive),
+        runtime_identity=archive_content,
         context=str(receipt.path),
         target_triple=cell.target_triple,
         cargo_profile=cast(str, cell.key["cargo_profile"]),
@@ -572,7 +574,6 @@ def _native_link_facts(
         raise _runtime_contract.InstalledRuntimeError(
             "installed custody archive differs from its native-link manifest"
         )
-    verify_stable_regular_file_identity(archive, label="installed native archive")
     verify_stable_regular_file_identity(receipt, label="installed native receipt")
     return facts, receipt
 
@@ -592,22 +593,23 @@ def _read_native_runtime_product(cell: InstalledRuntimeCell) -> _NativeRuntimePr
     role = "runtime_archive"
     try:
         path = resolve_owned_path(cell.members_root / cell.file_record(role)["name"])
-        with open_stable_regular_file(path, label="installed native runtime") as opened:
-            archive = cell.require_signed_member(
-                role,
-                stable_regular_file_handle_identity(
-                    opened, label="installed native runtime"
-                ),
-            )
-            facts, manifest = _native_link_facts(cell, archive)
-            projection = _admit_native_callable_projection(cell, archive, opened)
-            return _NativeRuntimeProduct(
-                archive,
-                manifest,
-                projection.identity,
-                facts,
-                projection.semantic_digest,
-            )
+        with input_report.capture_read(path) as consumed:
+            with open_stable_regular_file(
+                path, label="installed native runtime"
+            ) as opened:
+                consumed.opened()
+                identity, archive_content = capture_archive_artifact_identity(opened)
+                archive = cell.require_signed_member(role, identity)
+                facts, manifest = _native_link_facts(cell, archive, archive_content)
+                projection = _admit_native_callable_projection(cell, archive, opened)
+            consumed.complete(archive.stat_token(), archive.sha256)
+        return _NativeRuntimeProduct(
+            archive,
+            manifest,
+            projection.identity,
+            facts,
+            projection.semantic_digest,
+        )
     except (OSError, ValueError) as exc:
         raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} native product is missing or damaged: {exc}"

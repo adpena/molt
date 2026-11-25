@@ -426,6 +426,14 @@ without retaining the archive. The build record uses its existing consumed
 read receipt and validates the checksum on reuse. A separate raw read still
 retains its independent obligation.
 
+Installed native runtime admission derives the whole-file release digest and
+the canonical ordered archive-member digest from one bounded payload pass
+under the same stable handle. Framing, indexes and padding enter only the
+whole-file digest. Both original receipt comparisons remain in force. The
+same handle stays open through callable projection admission, and the recorder
+binds that read only after the closing mutation fences succeed. Separate
+retention, linking and other readers retain their own obligations.
+
 **Racy rule.** Except for files proven exclusively consumed as above,
 `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over
 `content_change_time_ns` (ctime on POSIX, NTFS ChangeTime converted to

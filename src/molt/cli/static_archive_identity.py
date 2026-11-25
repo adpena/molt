@@ -115,15 +115,26 @@ def _decimal_field(raw: bytes, *, field: str) -> int:
     return parsed
 
 
-def _hash_exact(stream: BinaryIO, size: int) -> str:
-    digest = hashlib.sha256()
+def _exact_chunks(stream: BinaryIO, size: int) -> Generator[bytes]:
+    if size < 0:
+        raise StaticArchiveIdentityError("archive extents overlap")
     remaining = size
     while remaining:
         block = stream.read(min(8 * 1024 * 1024, remaining))
         if not block:
             raise StaticArchiveIdentityError("truncated archive member payload")
-        digest.update(block)
+        yield block
         remaining -= len(block)
+
+
+def _hash_exact(
+    stream: BinaryIO, size: int, *, whole_update: Callable[[bytes], None] | None = None
+) -> str:
+    digest = hashlib.sha256()
+    for block in _exact_chunks(stream, size):
+        digest.update(block)
+        if whole_update is not None:
+            whole_update(block)
     return digest.hexdigest()
 
 
@@ -275,13 +286,23 @@ def _static_archive_stream_identity(
     *,
     archive_size: int,
     visit_member: StaticArchiveMemberVisitor | None = None,
+    whole_update: Callable[[bytes], None] | None = None,
 ) -> dict[str, object]:
     members = _static_archive_stream_members(stream, archive_size=archive_size)
+    if whole_update is not None:
+        assert visit_member is None
+        stream.seek(0)
     digest = hashlib.sha256()
     digest.update((_IDENTITY_SCHEMA + "\n").encode("ascii"))
     for ordinal, member in enumerate(members):
-        stream.seek(member.content_offset)
-        content_digest = _hash_exact(stream, member.size)
+        if whole_update is None:
+            stream.seek(member.content_offset)
+            content_digest = _hash_exact(stream, member.size)
+        else:
+            # Framing and indexes contribute only to the whole-file digest.
+            for block in _exact_chunks(stream, member.content_offset - stream.tell()):
+                whole_update(block)
+            content_digest = _hash_exact(stream, member.size, whole_update=whole_update)
         if visit_member is not None:
             visit_member(member, stream)
         canonical_name = _canonical_member_name(member.name).encode("utf-8")
@@ -290,6 +311,9 @@ def _static_archive_stream_identity(
         digest.update(canonical_name)
         digest.update(member.size.to_bytes(8, "big"))
         digest.update(bytes.fromhex(content_digest))
+    if whole_update is not None:
+        for block in _exact_chunks(stream, archive_size - stream.tell()):
+            whole_update(block)
     return {
         "schema": _IDENTITY_SCHEMA,
         "semantic_sha256": digest.hexdigest(),
@@ -389,6 +413,28 @@ def artifact_bytes_identity(identity: StableRegularFileIdentity) -> dict[str, ob
         "sha256": identity.sha256,
         "size_bytes": identity.size,
     }
+
+
+def capture_archive_artifact_identity(
+    opened: StableRegularFileHandle,
+) -> tuple[StableRegularFileIdentity, dict[str, object]]:
+    """Derive the raw and canonical member digests in one payload pass."""
+    stream = opened.stream
+    stream.seek(0)
+    prefix = stream.read(len(_ARCHIVE_MAGIC))
+    if opened.path.suffix.lower() not in {".a", ".lib"} or prefix not in {
+        _ARCHIVE_MAGIC,
+        _THIN_ARCHIVE_MAGIC,
+    }:
+        identity = stable_regular_file_handle_identity(opened, label="runtime artifact")
+        return identity, artifact_bytes_identity(identity)
+    stream.seek(0)
+    whole = hashlib.sha256()
+    content = _static_archive_stream_identity(
+        stream, archive_size=opened.stat.st_size, whole_update=whole.update
+    )
+    identity = opened.consumed_identity(whole.hexdigest(), label="static archive")
+    return identity, content
 
 
 def artifact_content_identity(

@@ -348,8 +348,16 @@ def test_warm_native_admits_only_the_consumed_member_bytes(
     monkeypatch.setattr(
         installed_runtime, "capture_stable_regular_file", capture_member
     )
+    capture_archive = installed_runtime.capture_archive_artifact_identity
+
+    def capture_native_member(
+        opened: StableRegularFileHandle,
+    ) -> tuple[StableRegularFileIdentity, dict[str, object]]:
+        reads.append(opened.path)
+        return capture_archive(opened)
+
     monkeypatch.setattr(
-        installed_runtime, "stable_regular_file_handle_identity", hash_member
+        installed_runtime, "capture_archive_artifact_identity", capture_native_member
     )
     second = installed_runtime.admit_installed_native_runtime(cell)
     assert second == first
@@ -401,7 +409,7 @@ def test_retained_generation_damage_fails_readmission(bundle):
     cell = _cell(bundle)
     runtime_lib = installed_runtime.admit_installed_native_runtime(cell).runtime_lib
     runtime_lib.write_bytes(runtime_lib.read_bytes() + b"x")
-    with pytest.raises(InstalledRuntimeError, match="differs"):
+    with pytest.raises(InstalledRuntimeError, match="archive header is invalid"):
         installed_runtime.installed_native_runtime_identity(cell, runtime_lib)
 
 
@@ -1066,7 +1074,7 @@ def _forbid_readmission(monkeypatch) -> None:
             installed_runtime,
             (
                 "verify_runtime_member",
-                "artifact_content_identity",
+                "capture_archive_artifact_identity",
                 "stable_regular_file_identity",
             ),
         ),
