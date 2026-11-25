@@ -148,42 +148,10 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_object_constructor(py, args, ObjectConstructorCall::New)
             }));
         }
-        #[cfg(feature = "stdlib_serial")]
-        if matches_builtin!(molt_binascii_a2b_base64) {
-            return Some(BuiltinCallBinding::Arguments(|py, _, args, storage| {
-                use crate::builtins::native_arguments::{NativeKeywords, bind_named};
-                if args.pos.len() != 1 {
-                    return raise_exception(
-                        py,
-                        BuiltinExc::TypeError,
-                        &format!(
-                            "a2b_base64() takes exactly 1 positional argument ({} given)",
-                            args.pos.len()
-                        ),
-                    );
-                }
-                let bound = bind_named(
-                    py,
-                    "a2b_base64",
-                    args.pos,
-                    NativeKeywords::vector(args.kw_names, args.kw_values),
-                    ["", "strict_mode"],
-                    1,
-                )?;
-                let (slots, owners) = bound.into_parts();
-                if storage.owners.try_reserve(owners.len()).is_err() {
-                    return raise_exception(
-                        py,
-                        BuiltinExc::MemoryError,
-                        "binascii argument custody allocation failed",
-                    );
-                }
-                storage.owners.extend(owners);
-                Some(vec![
-                    slots[0]?,
-                    slots[1].unwrap_or_else(|| MoltObject::from_bool(false).bits()),
-                ])
-            }));
+        if let Some(binding) =
+            crate::intrinsics::intrinsic_argument_binding!(identity, BuiltinCallBinding::Arguments)
+        {
+            return Some(binding);
         }
         if matches_builtin!(molt_int_to_bytes) {
             return Some(BuiltinCallBinding::Arguments(
@@ -456,16 +424,6 @@ pub(super) unsafe fn builtin_call_binding(
         if matches_builtin!(molt_frozenset_issuperset) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_set_single(_py, args, "issuperset", "frozenset", TYPE_ID_FROZENSET)
-            }));
-        }
-        if matches_builtin!(molt_memoryview_cast) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_memoryview_cast(_py, args)
-            }));
-        }
-        if matches_builtin!(molt_file_reconfigure) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_file_reconfigure(_py, args)
             }));
         }
         if matches_builtin!(molt_bytes_maketrans) {
@@ -1472,9 +1430,52 @@ unsafe fn bind_builtin_string_format<'guard>(
     }
 }
 
+#[cfg(feature = "stdlib_serial")]
+unsafe fn bind_builtin_binascii_a2b_base64<'guard>(
+    py: &'guard PyToken<'guard>,
+    _function: *mut u8,
+    args: &CallArgumentView<'_>,
+    storage: &mut BuiltinArgumentStorage<'guard>,
+) -> Option<Vec<u64>> {
+    use crate::builtins::native_arguments::{NativeKeywords, bind_named};
+    if args.pos.len() != 1 {
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            &format!(
+                "a2b_base64() takes exactly 1 positional argument ({} given)",
+                args.pos.len()
+            ),
+        );
+    }
+    let bound = bind_named(
+        py,
+        "a2b_base64",
+        args.pos,
+        NativeKeywords::vector(args.kw_names, args.kw_values),
+        ["", "strict_mode"],
+        1,
+    )?;
+    let (slots, owners) = bound.into_parts();
+    if storage.owners.try_reserve(owners.len()).is_err() {
+        return raise_exception(
+            py,
+            BuiltinExc::MemoryError,
+            "binascii argument custody allocation failed",
+        );
+    }
+    storage.owners.extend(owners);
+    Some(vec![
+        slots[0]?,
+        slots[1].unwrap_or_else(|| MoltObject::from_bool(false).bits()),
+    ])
+}
+
 unsafe fn bind_builtin_memoryview_cast(
     _py: &PyToken<'_>,
+    _function: *mut u8,
     args: &CallArgumentView<'_>,
+    _storage: &mut BuiltinArgumentStorage<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(
@@ -1534,7 +1535,9 @@ unsafe fn bind_builtin_memoryview_cast(
 
 unsafe fn bind_builtin_file_reconfigure(
     _py: &PyToken<'_>,
+    _function: *mut u8,
     args: &CallArgumentView<'_>,
+    _storage: &mut BuiltinArgumentStorage<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         return raise_exception::<_>(

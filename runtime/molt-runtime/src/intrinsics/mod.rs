@@ -8,6 +8,7 @@ pub(crate) mod registry;
 
 #[allow(unused_imports)]
 pub(crate) use capabilities::*;
+pub(crate) use generated::intrinsic_argument_binding;
 #[allow(unused_imports)]
 pub(crate) use generated::{INTRINSIC_MANIFEST_FINGERPRINT, INTRINSICS, resolve_symbol};
 pub(crate) use registry::install_into_builtins;

@@ -9,6 +9,9 @@ restrictions, spelled exactly as the generated ``#[cfg(...)]`` spells them.
 The declaration is the only availability fact for the symbol (HF-487). The
 generated resolvers prove at compile time that the definition's ``cfg`` equals
 it, and reachability selects or refuses the feature from it.
+
+An optional ``# argument-binder: ...`` names the native adapter that maps
+Python arguments to the intrinsic ABI. The compiler and runtime both use it.
 """
 
 from __future__ import annotations
@@ -174,6 +177,7 @@ class IntrinsicEntry:
         "cfg",
         "parameter_names",
         "runtime_roots",
+        "argument_binder",
     )
 
     def __init__(
@@ -187,6 +191,7 @@ class IntrinsicEntry:
         *,
         parameter_names: tuple[str, ...],
         runtime_roots: tuple[str, ...] = (),
+        argument_binder: str | None = None,
     ) -> None:
         if (
             len(parameter_names) != arity
@@ -205,6 +210,7 @@ class IntrinsicEntry:
         # bedrock design §13 D6); a root's body is admitted when admitted
         # code references a declaring intrinsic.
         self.runtime_roots = runtime_roots
+        self.argument_binder = argument_binder
 
 
 def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
@@ -236,9 +242,10 @@ def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
                     raise ValueError("duplicate runtime-roots declaration")
                 metadata["runtime-roots"] = match.group(1)
                 continue
-            if line.startswith("# runtime-symbol"):
+            if line.startswith(("# runtime-symbol", "# argument-binder")):
                 match = re.fullmatch(
-                    r"# (runtime-symbol): ([A-Za-z_][A-Za-z0-9_]*)", line
+                    r"# (runtime-symbol|argument-binder): ([A-Za-z_][A-Za-z0-9_]*)",
+                    line,
                 )
                 if match is None:
                     raise ValueError("invalid intrinsic metadata declaration")
@@ -359,11 +366,13 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
         if name in entries:
             raise ValueError(f"duplicate intrinsic name: {name}")
         params = _split_params(match["params"])
-        if "cfg" in metadata and "runtime-symbol" in metadata:
-            raise ValueError(
-                f"{name} shares an executable; its cfg belongs to the canonical "
-                "declaration"
-            )
+        if "runtime-symbol" in metadata:
+            for key in ("cfg", "argument-binder"):
+                if key in metadata:
+                    raise ValueError(
+                        f"{name} shares an executable; its {key} belongs to the canonical "
+                        "declaration"
+                    )
         try:
             cfg = parse_runtime_cfg(metadata["cfg"]) if "cfg" in metadata else None
         except ValueError as exc:
@@ -380,6 +389,7 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
                 param.split(":", 1)[0].split("=", 1)[0].strip() for param in params
             ),
             runtime_roots=_runtime_roots(name, metadata.get("runtime-roots")),
+            argument_binder=metadata.get("argument-binder"),
         )
         signatures[name] = (tuple(params), match["ret"].strip())
     for entry in entries.values():
@@ -393,4 +403,5 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
         if signatures[entry.name] != signatures[target.name]:
             raise ValueError(f"runtime-symbol signature mismatch for {entry.name}")
         entry.cfg = target.cfg
+        entry.argument_binder = target.argument_binder
     return list(entries.values())

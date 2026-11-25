@@ -867,7 +867,6 @@ PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {
     "builtins.any": "molt_any_builtin",
     "builtins.ascii": "molt_ascii_from_obj",
     "builtins.bin": "molt_bin_builtin",
-    "binascii.a2b_base64": "molt_binascii_a2b_base64",
     "binascii.a2b_hex": "molt_binascii_a2b_hex",
     "binascii.a2b_qp": "molt_binascii_a2b_qp",
     "binascii.a2b_uu": "molt_binascii_a2b_uu",
