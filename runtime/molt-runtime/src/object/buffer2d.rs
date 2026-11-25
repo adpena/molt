@@ -73,6 +73,7 @@ fn dimension_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<u64> 
     })
 }
 
+#[inline]
 fn index_from_i64(_py: &PyToken<'_>, value: i64, len: u64) -> Option<usize> {
     let len_i64 = i64::try_from(len).expect("Buffer2D dimensions are bounded by i64::MAX");
     let normalized = if value < 0 { value + len_i64 } else { value };
@@ -88,7 +89,15 @@ fn index_from_i64(_py: &PyToken<'_>, value: i64, len: u64) -> Option<usize> {
     })
 }
 
+#[inline]
 fn index_from_bits(_py: &PyToken<'_>, bits: u64, len: u64) -> Option<usize> {
+    if let Some(value) = obj_from_bits(bits).as_int() {
+        return index_from_i64(_py, value, len);
+    }
+    index_from_object(_py, bits, len)
+}
+
+fn index_from_object(_py: &PyToken<'_>, bits: u64, len: u64) -> Option<usize> {
     if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
         return index_from_i64(_py, value, len);
     }
@@ -115,7 +124,15 @@ fn index_from_bits(_py: &PyToken<'_>, bits: u64, len: u64) -> Option<usize> {
     })
 }
 
+#[inline]
 fn integer_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<ExactInt> {
+    if let Some(value) = obj_from_bits(bits).as_int() {
+        return Some(ExactInt::I64(value));
+    }
+    integer_from_object(_py, bits, name)
+}
+
+fn integer_from_object(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<ExactInt> {
     if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
         return Some(ExactInt::I64(value));
     }
@@ -180,7 +197,15 @@ fn owned_int_bits(_py: &PyToken<'_>, value: BigInt) -> Option<u64> {
     }
 }
 
+#[inline]
 fn owned_i64_bits(_py: &PyToken<'_>, value: i64) -> Option<u64> {
+    if let Some(inline) = crate::builtins::numbers::inline_int_from_i128(i128::from(value)) {
+        return (!exception_pending(_py)).then(|| MoltObject::from_int(inline).bits());
+    }
+    owned_wide_i64_bits(_py, value)
+}
+
+fn owned_wide_i64_bits(_py: &PyToken<'_>, value: i64) -> Option<u64> {
     let bits = crate::builtins::numbers::int_bits_from_i64(_py, value);
     if exception_pending(_py) {
         dec_ref_bits(_py, bits);

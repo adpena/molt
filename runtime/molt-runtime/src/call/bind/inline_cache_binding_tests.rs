@@ -478,9 +478,7 @@ fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                compiled_identity_returns_owned_arg as *const (),
-            ),
+            test_fn_ref!(compiled_identity_returns_owned_arg),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -493,19 +491,9 @@ fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
             &[],
         )
         .expect("an argument vector");
-        let entry = CallBindIcEntry {
-            fn_ptr: crate::provenance::abi::expose_function_address(
-                compiled_identity_returns_owned_arg as *const (),
-            ),
-            target_bits: 0,
-            class_bits: 0,
-            class_version: 0,
-            type_version: crate::global_type_version(),
-            function_version: 0,
-            cached_alloc_size: 0,
-            arity: 1,
-            kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
-        };
+        let entry =
+            unsafe { call_bind_ic_entry_for_call(_py, func_bits) }.expect("cacheable exact call");
+        assert_eq!(entry.kind, CALL_BIND_IC_KIND_DIRECT_FUNC);
         for _ in 0..64 {
             assert_eq!(
                 unsafe { try_call_bind_ic_fast(_py, entry, func_bits, &mut args) },
