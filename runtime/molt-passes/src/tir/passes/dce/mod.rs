@@ -12,3 +12,4 @@ mod uses;
 mod tests;
 
 pub use engine::run;
+pub(super) use uses::build_use_counts;

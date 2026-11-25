@@ -105,6 +105,7 @@ class InitOnce:
     # producer is found by this name, never by an op index.
     value: str | None = None
     producer: Mapping[str, Any] | None = field(default=None, compare=False, repr=False)
+    class_definition: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,6 +268,7 @@ def _init_once_facts(
             store.line,
             store.value,
             producer,
+            store.class_definition if value_kind == "class" else None,
         )
     return found
 
@@ -891,10 +893,56 @@ def _intrinsic_call(
     return direct
 
 
+def _imported_cell(
+    module: str,
+    row: InitOnce,
+    initializers: Mapping[str, ModuleInitializerFacts],
+    namespaces: Mapping[str, ModuleNamespaceFacts],
+    dependencies: Mapping[str, Collection[str]],
+    on_demand: frozenset[str],
+) -> tuple[str, str] | None:
+    """The source cell of a completed, canonical from-import into this cell."""
+    op = row.producer
+    if op is None or op.get("kind") != "module_import_from":
+        return None
+    args = op.get("args") or ()
+    body = initializers.get(module)
+    namespace = namespaces.get(module)
+    if len(args) != 2 or body is None or namespace is None or namespace.premise is None:
+        return None
+    provider = body.import_results.get((row.function, args[0]))
+    name = body.producers.get((row.function, args[1]), {})
+    if (
+        provider is None
+        or provider not in dependencies.get(module, ())
+        or module in dependencies.get(provider, (module,))
+        or module in on_demand
+        or provider in namespace.premise.noncanonical_imports
+        or name.get("kind") != "const_str"
+        or not isinstance(member := name.get("s_value"), str)
+    ):
+        return None
+    # Only an ordinary module's lookup reads its stored binding directly.
+    provider_namespace = namespaces.get(provider)
+    provider_init = initializers.get(provider)
+    if (
+        provider_namespace is None
+        or provider_init is None
+        or provider_namespace.stable_reason("__class__") is not None
+        or "__class__" in provider_init.stores
+    ):
+        return None
+    return provider, member
+
+
 def prove_init_once_calls(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
     plan: StaticCellPlan,
+    *,
+    initializers: Mapping[str, ModuleInitializerFacts] | None = None,
+    namespaces: Mapping[str, ModuleNamespaceFacts] | None = None,
+    dependencies: Mapping[str, Collection[str]] | None = None,
 ) -> list[str]:
     """Mark each ``call_guarded`` whose callee is an ``init_once`` read of an
     ``InitOnce(function)`` cell holding its target's object ``proven_target``
@@ -905,6 +953,41 @@ def prove_init_once_calls(
     (``_intrinsic_call``). Return a diagnostic for each such call that keeps
     its guards or stays generic."""
     position, views = _init_once_views(functions, module_functions)
+    from molt.cli.frontend_integration import on_demand_initialized_modules
+
+    imported: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+    on_demand = (
+        on_demand_initialized_modules(dependencies) if dependencies else frozenset()
+    )
+
+    def intrinsic_origin(key: tuple[str, str]) -> Mapping[str, Any] | None:
+        # Resolve only cells actually called, memoizing shared reexport tails.
+        path: set[tuple[str, str]] = set()
+        result = None
+        while key not in path:
+            if key in imported:
+                result = imported[key]
+                break
+            path.add(key)
+            owner, name = key
+            row = plan.init_once.get(owner, {}).get(name)
+            if row is None:
+                break
+            if row.value_kind == "intrinsic":
+                result = row.producer
+                break
+            if initializers is None or namespaces is None or dependencies is None:
+                break
+            source = _imported_cell(
+                owner, row, initializers, namespaces, dependencies, on_demand
+            )
+            if source is None:
+                break
+            key = source
+        for visited in path:
+            imported[visited] = result
+        return result
+
     diagnostics: list[str] = []
     rewritten: dict[str, dict[str, Any]] = {}
     for module, current in views.items():
@@ -941,10 +1024,10 @@ def prove_init_once_calls(
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
                 if (
                     fact is not None
-                    and fact.value_kind == "intrinsic"
                     and kind == "call_func"
+                    and (producer := intrinsic_origin(read)) is not None
                 ):
-                    direct = _intrinsic_call(op, fact.producer)
+                    direct = _intrinsic_call(op, producer)
                     if isinstance(direct, str):
                         diagnostics.append(
                             f"{module}:{op.get('source_line')} {global_name}(): "
@@ -1005,23 +1088,19 @@ def prove_init_once_calls(
 _IMMEDIATE_CONSTANTS = frozenset({"const", "const_bool", "const_none", "const_float"})
 
 
-def fold_init_once_constants(
+def propagate_init_once_values(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
     plan: StaticCellPlan,
 ) -> int:
-    """Replace each ``init_once`` read of a cell whose one store binds an
-    immediate constant with that constant (copy-on-write).
+    """Carry the cell's unique publication to each init-dominated read.
 
-    The InitOnce fact proves the store runs before the read and that no code in
-    the program writes or deletes the global afterward (closed world,
-    call_anatomy.md 4.5a), so the read always finds the value the store bound.
-    An immediate constant's copy is indistinguishable from it, so the read is
-    the constant: no cell load, no type test, and a typed value the optimizer
-    can use. Returns the number of reads folded."""
+    Immediate values can replace the read. A class keeps its real object
+    identity and carries the definition as a value fact. Returns the number
+    of reads updated."""
     position, views = _init_once_views(functions, module_functions)
     rewritten: dict[str, dict[str, Any]] = {}
-    folded = 0
+    propagated = 0
     for current in views.values():
         for name, func in current.items():
             ops = func.get("ops", ())
@@ -1039,7 +1118,12 @@ def fold_init_once_constants(
                     continue
                 cell_module, global_name = read
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
-                if fact is None or fact.value_kind != "other":
+                if fact is None:
+                    continue
+                if fact.class_definition is not None:
+                    changed[index] = {**op, "class_definition": fact.class_definition}
+                    continue
+                if fact.value_kind != "other":
                     continue
                 producer = fact.producer
                 if producer is None or producer.get("kind") not in _IMMEDIATE_CONSTANTS:
@@ -1056,13 +1140,13 @@ def fold_init_once_constants(
                 }
                 changed[index] = {**constant, **source, "out": op["out"]}
             if changed:
-                folded += len(changed)
+                propagated += len(changed)
                 rewritten[name] = {
                     **func,
                     "ops": [changed.get(index, op) for index, op in enumerate(ops)],
                 }
     _write_back(functions, module_functions, position, rewritten)
-    return folded
+    return propagated
 
 
 # Function cells (design 78, 5.9).
@@ -1216,6 +1300,7 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
                             "module": module,
                             "index": plan.cells[module][symbol],
                             "cell": True,
+                            "init_once": True,
                         },
                     }
                 )

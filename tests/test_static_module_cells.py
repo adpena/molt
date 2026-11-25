@@ -1104,7 +1104,7 @@ def _constant_program(
 
 def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     from molt.cli.frontend_integration import stamp_global_slots
-    from molt.cli.static_module_cells import fold_init_once_constants
+    from molt.cli.static_module_cells import propagate_init_once_values
 
     plan = _dominance_plan(funcs, funcs)
     functions = list(funcs)
@@ -1118,7 +1118,7 @@ def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         plan.guard_masks,
         plan.init_dominated,
     )
-    folded = fold_init_once_constants(functions, module_functions, plan)
+    folded = propagate_init_once_values(functions, module_functions, plan)
     assert functions == module_functions["mod"], "both views see the rewrite"
     return functions, folded
 
@@ -1178,6 +1178,31 @@ def test_a_read_that_is_not_a_proven_immediate_constant_keeps_the_cell(
     functions, folded = _fold(_constant_program(producer, **change))
     assert folded == 0
     assert _scale_read(functions)["kind"] == "module_get_global"
+
+
+def test_a_dominated_read_carries_the_class_object_published_by_the_initializer() -> (
+    None
+):
+    funcs = _constant_program({"kind": "class_def"})
+    ops = funcs[0]["ops"]
+    maker = next(i for i, op in enumerate(ops) if op.get("out") == "v_scale")
+    stamp = {
+        "kind": "class_set_definition",
+        "args": ["v_scale"],
+        "class_definition": "class:mod:Scale",
+    }
+    ops.insert(maker + 1, stamp)
+    functions, propagated = _fold(funcs)
+    assert propagated == 1
+    read = _scale_read(functions)
+    assert read["kind"] == "module_get_global"
+    assert read["class_definition"] == stamp["class_definition"]
+
+    # The class is available but the initializer publishes some other object.
+    ops[maker + 1] = {**stamp, "args": ["different"]}
+    functions, propagated = _fold(funcs)
+    assert propagated == 0
+    assert "class_definition" not in _scale_read(functions)
 
 
 def _intrinsic_call_program(supplied: int) -> list[dict[str, Any]]:
@@ -1241,6 +1266,103 @@ def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
         "generic intrinsic call: the call passes 2 of 1 parameters" in line
         for line in diagnostics
     )
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [None, "provider write", "custom module class", "cycle", "on demand", "arity"],
+)
+def test_reexported_intrinsic_calls_follow_the_actual_initialized_cells(
+    refusal: str | None,
+) -> None:
+    from molt.cli.static_module_cells import prove_init_once_calls
+
+    provider = _function(
+        "pyinit.source",
+        _const("nm", "source"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        _const("sym", "molt_operator_index"),
+        {
+            "kind": "builtin_func",
+            "s_value": "molt_operator_index",
+            "value": 1,
+            "args": ["sym"],
+            "out": "fn",
+        },
+        *_store("published", "fn", 3),
+    )
+    init, caller = _intrinsic_call_program(2 if refusal == "arity" else 1)
+    # The caller's local name differs from the provider's member and symbol.
+    init["ops"][2:4] = [
+        {
+            "kind": "import_name",
+            "import_form": "dunder",
+            "value": 0,
+            "fromlist": ["published"],
+            "s_value": "source",
+            "out": "provider",
+        },
+        _const("key", "published"),
+        {"kind": "module_import_from", "args": ["provider", "key"], "out": "f_intern"},
+    ]
+    if refusal == "custom module class":
+        provider["ops"].extend(_store("__class__", "custom", 4))
+    modules = {"mod": [init, caller], "source": [provider]}
+    functions = [provider, init, caller]
+    namespaces = {
+        "mod": _facts(initializer_bindings=frozenset({"_INTERN", "caller"})),
+        "source": _facts(
+            initializer_bindings=frozenset({"published", "__class__"}),
+            own_names=frozenset({"published"})
+            if refusal == "provider write"
+            else frozenset(),
+        ),
+    }
+    layouts = {
+        m: module_global_layout(f.initializer_bindings) for m, f in namespaces.items()
+    }
+    initializers = {m: summarize_module_initializer(m, fs) for m, fs in modules.items()}
+    dependencies = {"mod": {"mod", "source"}, "source": {"source"}}
+    if refusal == "cycle":
+        dependencies["source"].add("mod")
+    if refusal == "on demand":
+        dependencies["builtins"] = {"builtins", "mod", "source"}
+    plan, _ = plan_module_cells(
+        modules,
+        namespaces,
+        layouts,
+        set(modules),
+        NO_IMPORT_REDIRECTS,
+        program_functions=functions,
+        dep_closures=dependencies,
+        initializers=initializers,
+    )
+    stamp_global_slots(
+        functions,
+        modules,
+        layouts,
+        set(modules),
+        plan.modules,
+        plan.guard_masks,
+        plan.init_dominated,
+    )
+    prove_init_once_calls(
+        functions,
+        modules,
+        plan,
+        initializers=initializers,
+        namespaces=namespaces,
+        dependencies=dependencies,
+    )
+    (call,) = [op for op in functions[-1]["ops"] if op.get("out") == "r"]
+    if refusal is None:
+        assert (call["kind"], call["s_value"], call["args"]) == (
+            "call",
+            "molt_operator_index",
+            ["a0"],
+        )
+    else:
+        assert call["kind"] == "call_func"
 
 
 def test_a_foreign_call_through_the_object_starts_no_earlier_than_its_publication() -> (
@@ -1360,7 +1482,12 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
     init_ops, run_ops = funcs[0]["ops"], funcs[1]["ops"]
     store = next(op for op in init_ops if op["kind"] == "static_cell_set")
     assert store["args"][1] == "method0"
-    assert store["global_slot"] == {"module": "mod", "index": index, "cell": True}
+    assert store["global_slot"] == {
+        "module": "mod",
+        "index": index,
+        "cell": True,
+        "init_once": True,
+    }
     # The store follows the maker; the load becomes one cell read.
     assert [op["kind"] for op in init_ops[3:6]] == [
         maker_kind,

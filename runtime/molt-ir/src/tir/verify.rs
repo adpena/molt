@@ -265,9 +265,16 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
             }
             match original_kind.or(kind) {
                 Some(kind) => {
-                    if let Err(error) =
-                        crate::ir_schema::validate_class_definition_symbol(kind, class_definition)
-                    {
+                    let init_once_cell = class_definition.is_some()
+                        && matches!(op.opcode, OpCode::ModuleGetGlobal | OpCode::StaticCellLoad)
+                        && op
+                            .global_slot()
+                            .is_some_and(|slot| slot.cell && slot.init_once);
+                    if let Err(error) = crate::ir_schema::validate_class_definition_symbol(
+                        kind,
+                        class_definition,
+                        init_once_cell,
+                    ) {
                         errors.push(VerifyError::op(*bid, op_index, error.to_string()));
                         continue;
                     }

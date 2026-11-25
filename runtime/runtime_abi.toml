@@ -2746,6 +2746,7 @@ callable_arity = 1
 
 [[import]]
 name = "operator_index"
+python_success_type = "int"
 type = 2
 
 [[import]]
@@ -3365,12 +3366,14 @@ runtime_poll = true
 
 [[import]]
 name = "buffer2d_cols"
+python_success_type = "int"
 type = 2
 runtime_name = "molt_buffer2d_cols"
 callable_arity = 1
 
 [[import]]
 name = "buffer2d_get"
+python_success_type = "int"
 type = 4
 runtime_name = "molt_buffer2d_get"
 callable_arity = 3
@@ -3389,6 +3392,7 @@ callable_arity = 3
 
 [[import]]
 name = "buffer2d_rows"
+python_success_type = "int"
 type = 2
 runtime_name = "molt_buffer2d_rows"
 callable_arity = 1

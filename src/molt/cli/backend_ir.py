@@ -74,7 +74,7 @@ from molt.cli.static_module_cells import (
     StaticCellPlan,
     apply_function_cells,
     plan_module_cells,
-    fold_init_once_constants,
+    propagate_init_once_values,
     prove_init_once_calls,
 )
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
@@ -2864,12 +2864,16 @@ def _prepare_backend_ir(
     # consumes the frontend's func_new shape facts here.
     binding_diagnostics.extend(
         prove_init_once_calls(
-            functions, integration_state.module_functions, static_cells
+            functions,
+            integration_state.module_functions,
+            static_cells,
+            initializers=initializers,
+            namespaces=integration_state.module_namespace_facts,
+            dependencies=integration_state.module_dep_closures,
         )
     )
-    # Reads of InitOnce cells holding an immediate constant are that constant:
-    # no code in the program can write the global (closed world, 4.5a).
-    fold_init_once_constants(
+    # A dominated read carries the value published by the cell (4.5a).
+    propagate_init_once_values(
         functions, integration_state.module_functions, static_cells
     )
     try:

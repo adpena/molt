@@ -702,11 +702,9 @@ pub struct OpIR {
     /// statically known module attribute/import. Target admission checks this
     /// acquisition fact before source generation; it does not imply execution.
     pub runtime_symbol: Option<String>,
-    /// Program slot symbol of one class statement (HF-220), carried only by
-    /// the generated `simpleir_kind_carries_class_definition` kinds: the stamp
-    /// that marks the class the statement created, and each layout guard that
-    /// trusts the statement's field offsets. The program's code-slot bindings
-    /// resolve it to the slot whose identity the class carries.
+    /// Program slot symbol of one class statement (HF-220). A class stamp or
+    /// layout operation uses it to resolve the class's code slot. An
+    /// init-dominated cell read uses it to identify the one class it loads.
     pub class_definition: Option<String>,
     /// The closed program has no writer of an instance's `__class__`. Only
     /// such an allocation can supply a class type valid throughout SSA life.
@@ -821,7 +819,8 @@ pub struct OpIR {
 /// emission, as `module_slot` does, so reusable objects carry no dense id.
 /// `cell` names the storage: the k-th word of the module's static cell block
 /// (a cell-eligible module, call_anatomy.md 4.5a) or slot k of its namespace
-/// dictionary's slot table. `init_once` marks a read of a cell whose one
+/// dictionary's slot table. On a static cell set, `init_once` certifies the
+/// program's sole run-once publication. On a read, it marks a cell whose one
 /// store, at initialization, dominates the read (HF-846): the cell is bound
 /// and never written again, so the read is one load (`StaticCellLoad`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]

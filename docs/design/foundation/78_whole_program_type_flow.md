@@ -230,8 +230,10 @@ and the diagnostic names the writer.
 
 The stdlib is compiled once into a cached partition and must not be recompiled per build.
 
-- Intrinsics declare result types as functions of argument types in the intrinsics manifest,
-  as generated typed signatures.
+- The runtime ABI declares semantic result facts for typed intrinsic calls.
+  The shared exact scalar solver accepts a successful integer result when the
+  call's exception check dominates every use. The integer may need heap
+  storage, so the representation planner still checks the required width.
 - A Python-source stdlib function participates in the flow through its cached TIR (read-only).
   A context the user program needs is cloned into the user unit and cached by
   content address: the stdlib body digest plus the key. A key compiles once across builds and
@@ -670,6 +672,13 @@ stays private when the bound declaration used the builtin class builder, has met
 edges. In `bench_matrix_math`, these two source proofs preserve the class through all twelve
 qualified `molt_buffer.get` and `set` calls and recover exact receivers for both buffer methods.
 
+An init-dominated module cell read can identify the actual class object it
+loads. Initialization proves that the unique store publishes the object of a
+stamped class statement that runs once. Shared TIR folds `isinstance` to true
+when this class object matches the subject's exact, lifetime-stable class.
+Python handles this exact match before subtype and metaclass checks. Other
+queries keep the runtime protocol.
+
 **Exact `self`.** `PythonSourceDemands.exact_receivers(module)` lists each function whose every
 entry binds its first parameter to an instance one class statement of the module built: every
 `_bind_receiver` receiver came from that one statement, no call entered it without a receiver,
@@ -819,6 +828,15 @@ object). A proven `load_method` whose call targets `S`, in `M`'s own code that r
 the store (`init_dominance`), becomes a `static_cell_load` of the cell: one load, no guard, no
 site record, no retain. Every other site keeps `load_method`, and the build diagnostics name
 why (cross-module read, undominated read, non-top-level class).
+
+An ordinary method resolved later by TIR can read the same published function cell.
+The `static_cell_set` carries the planner's `init_once` fact. TIR checks that the stored SSA
+value is the exact method maker, the cell has a single store, and that store dominates
+the class stamp, including exceptional paths. The receiver's exact class then witnesses
+that this generation's function has been published. For a complete positional call that
+alone consumes the pair, the original lookup becomes a cell read and owned aliases of
+the callable and receiver, captured before argument evaluation. Methods without a
+previously allocated function cell keep their lookup.
 
 **Measured** (2026-11-21, release, macOS arm64; instructions retired, slope of 1M and 2M
 iterations, best of 3; main fdfb075361 against the slice). A `method_call`-shaped probe (an exact

@@ -964,25 +964,27 @@ fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
     );
 }
 
+fn method_fixture_function(name: &str, params: &[&str], ops: serde_json::Value) -> TirFunction {
+    use crate::tir::lower_from_simple::lower_to_tir;
+    use molt_ir::FunctionIR;
+    lower_to_tir(&FunctionIR {
+        name: name.into(),
+        params: params.iter().map(|p| p.to_string()).collect(),
+        ops: serde_json::from_value(ops).unwrap(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ..Default::default()
+    })
+}
+
 #[test]
 fn exact_method_uses_the_original_load_pair_and_checks_physical_binding() {
-    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::lower_to_simple::lower_to_simple_ir;
-    use molt_ir::{FunctionIR, OpKind, ParameterCustody};
+    use molt_ir::{OpKind, ParameterCustody};
     use serde_json::json;
 
     let definition = "class:m:Reader";
     let class = TirType::Class(molt_ir::ClassId::of_definition(definition));
-    let make = |name: &str, params: &[&str], ops| {
-        lower_to_tir(&FunctionIR {
-            name: name.into(),
-            params: params.iter().map(|p| p.to_string()).collect(),
-            ops: serde_json::from_value(ops).unwrap(),
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            ..Default::default()
-        })
-    };
-    let mut factory = make(
+    let mut factory = method_fixture_function(
         "factory",
         &["cls", "cells"],
         json!([
@@ -1008,7 +1010,7 @@ fn exact_method_uses_the_original_load_pair_and_checks_physical_binding() {
     let binding = publication.exact_method.as_ref().unwrap();
     assert_eq!((&*binding.0, &*binding.1), (definition, "read"));
 
-    let mut target = make(
+    let mut target = method_fixture_function(
         "reader_body",
         &[molt_ir::MOLT_CLOSURE_PARAM_NAME, "self", "arg"],
         json!([{"kind":"ret","args":["arg"]}]),
@@ -1018,7 +1020,7 @@ fn exact_method_uses_the_original_load_pair_and_checks_physical_binding() {
         ParameterCustody::Transferred,
         ParameterCustody::Transferred,
     ]);
-    let mut caller = make(
+    let mut caller = method_fixture_function(
         "reader",
         &["receiver", "other", "callback"],
         json!([
@@ -1096,5 +1098,139 @@ fn exact_method_uses_the_original_load_pair_and_checks_physical_binding() {
             exact_receiver_fields::run(&mut caller.clone(), &entries(&inconsistent)),
             0
         );
+    }
+}
+
+#[test]
+fn late_exact_method_reads_its_published_object_before_arguments() {
+    use crate::tir::lower_to_simple::lower_to_simple_ir;
+    use molt_ir::{OpKind, ParameterCustody};
+    use serde_json::json;
+    let definition = "class:m:Reader";
+    let class = TirType::Class(molt_ir::ClassId::of_definition(definition));
+    #[derive(Debug, PartialEq)]
+    enum Case {
+        Published,
+        Overwritten,
+        Uncertified,
+        LateStore,
+        MissingArgument,
+        AdditionalConsumer,
+    }
+    use Case::*;
+    for case in [
+        Published,
+        Overwritten,
+        Uncertified,
+        LateStore,
+        MissingArgument,
+        AdditionalConsumer,
+    ] {
+        let once = case != Uncertified;
+        let slot = json!({"module":"m","index":4,"cell":true,"init_once":once});
+        let stamp =
+            json!({"kind":"class_set_definition","args":["cls"],"class_definition":definition});
+        let store = json!({"kind":"static_cell_set","args":["base","fn"],"global_slot":slot});
+        let (first, second) = if case != LateStore {
+            (store, stamp)
+        } else {
+            (stamp, store)
+        };
+        let later = if case == Overwritten {
+            json!({"kind":"static_cell_set","args":["base","env"],"global_slot":{"module":"m","index":4,"cell":true}})
+        } else {
+            json!({"kind":"nop"})
+        };
+        let mut factory = method_fixture_function(
+            "factory",
+            &["cls", "env"],
+            json!([
+                {"kind":"func_new_closure","value":2,"args":["env"],"out":"fn","exact_method":[definition,"read"]},
+                {"kind":"static_cell_base","s_value":"m","out":"base"},
+                first, second, later, {"kind":"ret","args":["fn"]}
+            ]),
+        );
+        factory
+            .blocks
+            .values_mut()
+            .flat_map(|b| &mut b.ops)
+            .find(|op| op.origin == Some(OpKind::FuncNewClosure))
+            .unwrap()
+            .callee = Some(FunctionId(1));
+        let mut target = method_fixture_function(
+            "read",
+            &[molt_ir::MOLT_CLOSURE_PARAM_NAME, "self", "arg"],
+            json!([{"kind":"ret","args":["arg"]}]),
+        );
+        target.set_parameter_custody(&[
+            ParameterCustody::Borrowed,
+            ParameterCustody::Transferred,
+            ParameterCustody::Transferred,
+        ]);
+        let other_use = if case == AdditionalConsumer {
+            json!({"kind":"tuple_new","args":["fn"],"out":"held"})
+        } else {
+            json!({"kind":"nop"})
+        };
+        let args = if case == MissingArgument {
+            vec!["fn", "self_arg"]
+        } else {
+            vec!["fn", "self_arg", "arg"]
+        };
+        let mut caller = method_fixture_function(
+            "use",
+            &["receiver", "callback"],
+            json!([
+                {"kind":"load_method","args":["receiver"],"s_value":"read","var":"fn","out":"self_arg"},
+                {"kind":"call_indirect","args":["callback"],"out":"arg"},
+                other_use,
+                {"kind":"call_loaded_method","args":args,"out":"answer","argument_custody":vec!["transferred";args.len()]},
+                {"kind":"ret","args":["answer"]}
+            ]),
+        );
+        caller.exact_param_types = vec![class.clone(), TirType::DynBox];
+        let module = TirModule::with_own_table("m", vec![factory, target, caller.clone()]);
+        let members = exact_receiver_fields::exact_members(&module, &module.body_index());
+        exact_receiver_fields::run(&mut caller, &members);
+        molt_ir::tir::verify::verify_function(&caller).unwrap();
+        let ops = &caller.blocks[&caller.entry_block].ops;
+        assert_eq!(
+            ops.iter().any(|op| op.opcode == OpCode::LoadMethod),
+            case != Published,
+            "{case:?}"
+        );
+        if case == Published {
+            let load = ops
+                .iter()
+                .position(|op| op.opcode == OpCode::StaticCellLoad)
+                .unwrap();
+            let chosen = ops
+                .iter()
+                .find(|op| op.origin == Some(OpKind::CallGuarded))
+                .unwrap();
+            let callback = ops
+                .iter()
+                .position(|op| op.origin == Some(OpKind::CallIndirect))
+                .unwrap();
+            assert!(load + 2 < callback);
+            let slot = ops[load].global_slot().unwrap();
+            assert_eq!(
+                (slot.module.as_str(), slot.index, slot.cell, slot.init_once),
+                ("m", 4, true, true)
+            );
+            let callable = &ops[load + 1];
+            let receiver = &ops[load + 2];
+            assert_eq!(callable.origin, Some(OpKind::BindingAlias));
+            assert_eq!(receiver.origin, Some(OpKind::BindingAlias));
+            assert_eq!(callable.operands, ops[load].results);
+            assert_eq!(
+                chosen.operands[..2],
+                [callable.results[0], receiver.results[0]]
+            );
+            assert_eq!(chosen.callee, Some(FunctionId(1)));
+            let emitted = lower_to_simple_ir(&caller);
+            assert!(emitted.iter().any(|op| op.kind == OpKind::StaticCellLoad));
+            assert!(!emitted.iter().any(|op| op.kind == OpKind::LoadMethod));
+        }
     }
 }

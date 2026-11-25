@@ -261,3 +261,103 @@ fn shift_integer_result_provenance_does_not_elide_count_or_magnitude_guards() {
         Repr::MaybeBigInt,
     );
 }
+
+fn checked_runtime_integer(runtime: molt_ir::runtime_fn_generated::RuntimeFn) -> TirFunction {
+    let big = ValueId(0);
+    let result = ValueId(1);
+    let mut call = make_op(
+        OpCode::Call,
+        vec![big; runtime.params()],
+        vec![result],
+        Default::default(),
+    );
+    call.runtime = Some(runtime);
+    call.origin = Some(molt_ir::OpKind::Call);
+    let mut func = single_block_func(
+        vec![
+            integer_constant(0, &TirType::BigInt),
+            call,
+            make_op(OpCode::CheckException, vec![], vec![], int_attr(70)),
+            make_op(
+                OpCode::BitOr,
+                vec![big, result],
+                vec![ValueId(2)],
+                Default::default(),
+            ),
+        ],
+        3,
+    );
+    func.return_abi = molt_ir::FunctionReturnAbi::Value;
+    func.return_type = TirType::DynBox;
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Return {
+        values: vec![ValueId(2)],
+    };
+    let handler = BlockId(1);
+    func.has_exception_handling = true;
+    func.next_block = 2;
+    func.label_id_map.insert(handler.0, 70);
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func
+}
+
+#[test]
+fn checked_runtime_integer_success_flows_to_arithmetic_and_keeps_promoted_storage() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    for runtime in [
+        RuntimeFn::OperatorIndex,
+        RuntimeFn::Buffer2dGet,
+        RuntimeFn::Buffer2dRows,
+        RuntimeFn::Buffer2dCols,
+    ] {
+        let func = checked_runtime_integer(runtime);
+        let types = extract_exact_scalar_map(&func);
+        let ranges = crate::representation_facts::value_range_for(&func);
+        let reprs = crate::representation_facts::repr_by_value_for(&func, Some(&ranges));
+        for id in [ValueId(1), ValueId(2)] {
+            assert_eq!(types.get(&id), Some(&TirType::I64), "{runtime:?}");
+            assert_eq!(reprs[&id], crate::repr::Repr::MaybeBigInt);
+        }
+    }
+}
+
+#[test]
+fn checked_runtime_integer_requires_the_actual_target_check_and_only_successful_uses() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    for change in [
+        "handler use",
+        "late check",
+        "wrong label",
+        "wrong arity",
+        "callable object",
+        "other target",
+        "compiled target",
+    ] {
+        let mut func = checked_runtime_integer(RuntimeFn::OperatorIndex);
+        let body = func.blocks.get_mut(&func.entry_block).unwrap();
+        match change {
+            "handler use" => {
+                func.blocks.get_mut(&BlockId(1)).unwrap().terminator = Terminator::Return {
+                    values: vec![ValueId(1)],
+                }
+            }
+            "late check" => body.ops.swap(2, 3),
+            "wrong label" => body.ops[2].attrs = int_attr(71),
+            "wrong arity" => body.ops[1].operands.clear(),
+            "callable object" => body.ops[1].origin = Some(molt_ir::OpKind::BuiltinFunc),
+            "other target" => body.ops[1].runtime = Some(RuntimeFn::SysIntern),
+            "compiled target" => body.ops[1].callee = Some(molt_ir::FunctionId(0)),
+            _ => unreachable!(),
+        }
+        let types = extract_exact_scalar_map(&func);
+        assert!(!types.contains_key(&ValueId(1)), "{change}");
+        assert!(!types.contains_key(&ValueId(2)), "{change}");
+    }
+}

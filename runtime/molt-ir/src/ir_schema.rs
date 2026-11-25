@@ -266,16 +266,23 @@ pub fn validate_program_slot_symbol(
     Ok(())
 }
 
-/// One rule for class statement identity (HF-220): every generated carrier
-/// names a nonempty class statement symbol, and no other operation names one.
-/// `kind` is the wire spelling (a TIR carrier passes its original spelling).
+/// Generated carriers require a class statement symbol. An init-dominated
+/// static cell read may also name the class object it loads.
 pub fn validate_class_definition_symbol(
     kind: crate::OpKind,
     symbol: Option<&str>,
+    init_once_cell: bool,
 ) -> Result<(), OpShapeDiagnostic> {
-    let violation = match (kind.carries_class_definition(), symbol) {
-        (true, None | Some("")) => OpShapeViolation::ClassDefinitionSymbol,
-        (false, Some(_)) => OpShapeViolation::ForbiddenClassDefinition,
+    let required = kind.carries_class_definition();
+    let optional = init_once_cell
+        && matches!(
+            kind,
+            crate::OpKind::ModuleGetGlobal | crate::OpKind::StaticCellLoad
+        );
+    let violation = match symbol {
+        None if required => OpShapeViolation::ClassDefinitionSymbol,
+        Some("") if required || optional => OpShapeViolation::ClassDefinitionSymbol,
+        Some(_) if !required && !optional => OpShapeViolation::ForbiddenClassDefinition,
         _ => return Ok(()),
     };
     Err(OpShapeDiagnostic {
@@ -318,7 +325,13 @@ fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     }
     validate_op_shape(op.kind, op.args.as_ref().map(Vec::len), op.value)?;
     validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
-    validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
+    validate_class_definition_symbol(
+        op.kind,
+        op.class_definition.as_deref(),
+        op.global_slot
+            .as_ref()
+            .is_some_and(|slot| slot.cell && slot.init_once),
+    )?;
     validate_exact_field_slots(op.kind, op.exact_field_slots.as_deref())?;
     if op.stable_instance_class && op.kind != crate::OpKind::ObjectNewBound {
         return Err(OpShapeDiagnostic {
@@ -650,14 +663,16 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.global_slot.is_some() && !GLOBAL_SLOT_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry global_slot", op.kind));
     }
-    // An init-dominated read (HF-846) is a read of a static cell.
+    // A static cell can certify its one initialization store or a dominated read.
     if let Some(slot) = &op.global_slot
         && (slot.init_once || op.kind == crate::OpKind::StaticCellLoad)
         && !(slot.cell
             && slot.init_once
             && matches!(
                 op.kind,
-                crate::OpKind::ModuleGetGlobal | crate::OpKind::StaticCellLoad
+                crate::OpKind::ModuleGetGlobal
+                    | crate::OpKind::StaticCellLoad
+                    | crate::OpKind::StaticCellSet
             ))
     {
         return Err(format!(
@@ -1049,10 +1064,10 @@ mod op_shape_tests {
     fn class_statement_symbols_belong_to_their_generated_carriers_only() {
         use crate::tir::op_kinds_generated::SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS;
         for &kind in SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS {
-            assert!(validate_class_definition_symbol(kind, Some("class:m:P")).is_ok());
+            assert!(validate_class_definition_symbol(kind, Some("class:m:P"), false).is_ok());
             for symbol in [None, Some("")] {
                 assert_eq!(
-                    validate_class_definition_symbol(kind, symbol)
+                    validate_class_definition_symbol(kind, symbol, false)
                         .unwrap_err()
                         .violation,
                     OpShapeViolation::ClassDefinitionSymbol
@@ -1060,13 +1075,21 @@ mod op_shape_tests {
             }
         }
         for kind in [crate::OpKind::GetAttrGenericPtr, crate::OpKind::CodeSlotSet] {
-            assert!(validate_class_definition_symbol(kind, None).is_ok());
+            assert!(validate_class_definition_symbol(kind, None, false).is_ok());
             assert_eq!(
-                validate_class_definition_symbol(kind, Some("class:m:P"))
+                validate_class_definition_symbol(kind, Some("class:m:P"), false)
                     .unwrap_err()
                     .violation,
                 OpShapeViolation::ForbiddenClassDefinition
             );
+        }
+        for kind in [
+            crate::OpKind::ModuleGetGlobal,
+            crate::OpKind::StaticCellLoad,
+        ] {
+            assert!(validate_class_definition_symbol(kind, Some("class:m:P"), true).is_ok());
+            assert!(validate_class_definition_symbol(kind, Some("class:m:P"), false).is_err());
+            assert!(validate_class_definition_symbol(kind, Some(""), true).is_err());
         }
         let mut guard = OpIR {
             kind: crate::OpKind::GuardLayout,
