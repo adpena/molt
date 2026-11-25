@@ -24,16 +24,27 @@ PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
 
 
 def decode_python_source_key(value: object) -> PythonSourceKey:
+    if not isinstance(value, (list, tuple)) or len(value) != 5:
+        raise ValueError("invalid source-owner identity")
+    line, column, end_line, end_column, kind = value
     if (
-        not isinstance(value, (list, tuple))
-        or len(value) != 5
-        or not all(type(part) is int for part in value[:4])
-        or not isinstance(value[4], str)
+        type(line) is not int
+        or type(column) is not int
+        or type(end_line) is not int
+        or type(end_column) is not int
+        or not isinstance(kind, str)
     ):
         raise ValueError("invalid source-owner identity")
-    if min(value[:4]) < 0 or tuple(value[:2]) > tuple(value[2:4]) or not value[4]:
+    if (
+        line < 0
+        or column < 0
+        or end_line < line
+        or end_column < 0
+        or (end_line == line and end_column < column)
+        or not kind
+    ):
         raise ValueError("invalid source-owner span")
-    return tuple(value)
+    return (line, column, end_line, end_column, kind)
 
 
 class PythonSourceProjection(StrEnum):
