@@ -584,7 +584,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     # The WASM toolchain authority selects wasm-ld (MOLT_WASM_LD, WASI_SDK_PATH
     # or the provisioned wasi-sdk); its error names the provisioning command.
     try:
-        wasm_ld_detail = wasm_toolchain.resolve_wasm_linker().diagnostic
+        wasm_ld_detail = wasm_toolchain.resolve_wasm_linker(root).diagnostic
         wasm_ld_ok = True
     except wasm_toolchain.WasmLinkerContractError as exc:
         wasm_ld_detail = str(exc)
@@ -592,7 +592,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     record("wasm-ld", wasm_ld_ok, wasm_ld_detail, level="warning")
 
     try:
-        wasm_tools = require_pinned_tool("wasm-tools")
+        wasm_tools = require_pinned_tool("wasm-tools", root)
         wasm_tools_path = str(wasm_tools.executable)
         wasm_tools_detail = (
             f"{wasm_tools_path} version={wasm_tools.release.version} "

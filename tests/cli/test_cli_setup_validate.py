@@ -778,11 +778,12 @@ def test_raw_wasm_readiness_requires_attested_validator(
     monkeypatch.setattr(
         SETUP_READINESS.wasm_toolchain,
         "resolve_wasm_linker",
-        lambda: SimpleNamespace(diagnostic="admitted linker"),
+        lambda _compiler_root: SimpleNamespace(diagnostic="admitted linker"),
     )
 
-    def require(name):
+    def require(name: str, compiler_root: Path) -> SimpleNamespace:
         assert name == "wasm-tools"
+        assert compiler_root == ROOT
         if not available:
             raise ToolReleaseError("missing attested validator; provision wasm-tools")
         return SimpleNamespace(

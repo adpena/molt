@@ -27,6 +27,7 @@ from molt.dx import (
     scratch_root,
 )
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
+from molt.source_root import compiler_source_root
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
 
@@ -158,7 +159,7 @@ def wasm_test_cargo_target_dir(
 def wasm_ld_unavailable_reason() -> str | None:
     """Why the WASM toolchain authority selects no wasm-ld, or None."""
     try:
-        wasm_toolchain.resolve_wasm_linker()
+        wasm_toolchain.resolve_wasm_linker(compiler_source_root())
     except wasm_toolchain.WasmLinkerContractError as exc:
         return str(exc)
     return None
@@ -167,7 +168,7 @@ def wasm_ld_unavailable_reason() -> str | None:
 def selected_wasm_ld() -> Path:
     """The wasm-ld the WASM toolchain authority selects, or a precise skip."""
     try:
-        return wasm_toolchain.resolve_wasm_linker().path
+        return wasm_toolchain.resolve_wasm_linker(compiler_source_root()).path
     except wasm_toolchain.WasmLinkerContractError as exc:
         pytest.skip(f"wasm-ld is required: {exc}")
 
