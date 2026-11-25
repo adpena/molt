@@ -484,13 +484,10 @@ def test_a3_run_frontend_layer_isolates_failed_module_and_keeps_parallel(
     details: dict[str, Any] = {}
     runtime_hooks = _make_runtime_hooks(warnings, details)
 
-    class _FakeExecutor:
-        pass
-
     result, error = cli_frontend_execution._run_frontend_layer(
         ["a", "b", "c"],
         layer_index=0,
-        executor=_FakeExecutor(),
+        submit=lambda _: pytest.fail("mocked batch must own submission"),
         execution_context=execution_context,
         runtime_hooks=runtime_hooks,
         frontend_parallel_config=_make_config(),
@@ -582,7 +579,7 @@ def test_a4_run_frontend_layer_surrenders_pool_only_when_broken(
     result, error = cli_frontend_execution._run_frontend_layer(
         ["a", "b", "c"],
         layer_index=0,
-        executor=object(),
+        submit=lambda _: pytest.fail("mocked batch must own submission"),
         execution_context=execution_context,
         runtime_hooks=runtime_hooks,
         frontend_parallel_config=_make_config(),

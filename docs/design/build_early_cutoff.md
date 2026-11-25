@@ -418,6 +418,14 @@ are products, but an explicitly consumed source inside their namespace still
 invalidates the build. `dx.backend_ir_lease_dir` is the single namespace used by
 the producer and projection; transport, scratch selection and cleanup are unchanged.
 
+The frontend admits cached lowerings before filling worker batches. In independent
+module layers, only misses occupy slots, and a single remaining miss runs in the
+compiler process with the same lowering payload and source-generation check.
+The first batch with multiple misses starts the pool. Cyclic groups still
+lower serially with each member's facts visible to the next. Each completed
+lowering is published before layer integration. [Go's build action](https://go.dev/src/cmd/go/internal/work/exec.go)
+similarly checks package dependencies and cached products before admitting work.
+
 The installed manifest operation shares source inventory rows containing only
 validated scalar data. The admitted raw manifest generation owns one canonical
 release fingerprint, with the existing JSON encoding at the identity boundary.

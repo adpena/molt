@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Collection, Mapping, cast
+from typing import Any, Collection, Mapping, Sequence, cast
 
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
@@ -600,7 +600,7 @@ def _run_serial_frontend_lower_with_context(
 
 
 def _prepare_frontend_parallel_batch(
-    batch: list[str],
+    batch: Sequence[str],
     *,
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
@@ -633,7 +633,6 @@ def _prepare_frontend_parallel_batch(
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
     dict[str, str],
-    str | None,
 ]:
     cached_results: dict[str, dict[str, Any]] = {}
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
@@ -790,7 +789,7 @@ def _prepare_frontend_parallel_batch(
                 ),
             )
         )
-    return cached_results, worker_payloads, context_digest_by_module, None
+    return cached_results, worker_payloads, context_digest_by_module
 
 
 def _inject_async_exc(thread_id: int, exc_type: type | None) -> None:

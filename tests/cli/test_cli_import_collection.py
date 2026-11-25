@@ -17352,7 +17352,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         scan_authority=None,
     )
 
-    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+    cached_results, worker_payloads, context_digest_by_module = (
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
@@ -17380,7 +17380,6 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         )
     )
 
-    assert batch_error is None
     assert worker_payloads == []
     assert cached_results == {
         "alpha": {
@@ -17452,7 +17451,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         scan_authority=None,
     )
 
-    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+    cached_results, worker_payloads, context_digest_by_module = (
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
@@ -17480,7 +17479,6 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         )
     )
 
-    assert batch_error is None
     assert worker_payloads == []
     assert cached_results == {
         "alpha": {
@@ -18078,7 +18076,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         scan_authority=None,
     )
 
-    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+    cached_results, worker_payloads, context_digest_by_module = (
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["main", "alpha"],
             module_graph=module_graph,
@@ -18115,7 +18113,6 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         )
     )
 
-    assert batch_error is None
     assert cached_results == {}
     assert len(worker_payloads) == 2
     assert set(context_digest_by_module) == {"main", "alpha"}
@@ -18145,7 +18142,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
         scan_authority=None,
     )
 
-    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+    cached_results, worker_payloads, context_digest_by_module = (
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["main"],
             module_graph=module_graph,
@@ -18174,7 +18171,6 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
         )
     )
 
-    assert batch_error is None
     assert cached_results == {}
     assert set(context_digest_by_module) == {"main"}
     assert len(worker_payloads) == 1
@@ -19387,6 +19383,13 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
 
     alpha.write_text("VALUE = 10\n", encoding="utf-8")
 
+    def forbidden_executor(**_: object) -> None:
+        pytest.fail("a single cache miss must not start a frontend worker pool")
+
+    monkeypatch.setattr(
+        cli_frontend_execution, "ProcessPoolExecutor", forbidden_executor
+    )
+
     second_stdout = io.StringIO()
     with contextlib.redirect_stdout(second_stdout):
         rc = cli_build_command.build(
@@ -19409,7 +19412,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
     }
 
-    assert worker_modes_by_module["alpha"] == "parallel"
+    assert worker_modes_by_module["alpha"] == "serial"
     assert worker_modes_by_module["main"] == "parallel_cache_hit"
 
 
