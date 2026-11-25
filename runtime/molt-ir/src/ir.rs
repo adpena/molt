@@ -1063,15 +1063,76 @@ fn function_row<'a>(
     })
 }
 
-/// The operands at a compiled call site. Guarded binding and its admitted
-/// direct arm both carry the callable in the first operand.
+/// The dispatch contract for a call that carries the captured callable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuardedDispatch {
+    /// Python binding can follow the captured object or admit the candidate.
+    Speculative,
+    /// The captured object proves the compiled declaration and its binding.
+    Required,
+}
+
+impl GuardedDispatch {
+    pub fn from_proof(proven: bool) -> Self {
+        if proven {
+            Self::Required
+        } else {
+            Self::Speculative
+        }
+    }
+}
+
+/// The operand layout at a call with a compiled declaration.
 pub enum CompiledCallArguments {
     /// Python source arguments. A closure receives its implicit environment.
     Positional(usize),
     /// Final, physical parameters, including any lexical environment.
     Parameters(usize),
-    Guarded(usize),
+    /// Captured callable followed by Python arguments, before legalization.
+    Captured(usize, GuardedDispatch),
+    /// Captured callable followed by the complete argument list after legalization.
     Direct(usize),
+}
+
+impl CompiledCallArguments {
+    /// Count machine parameters, or defer argument binding to Python for a
+    /// speculative call. The captured callable is carried separately.
+    pub fn parameter_count(self, has_closure: bool) -> Result<Option<usize>, &'static str> {
+        let closure = usize::from(has_closure);
+        let count = match self {
+            Self::Positional(n) => n + closure,
+            Self::Parameters(n) => n,
+            Self::Captured(0, _) => return Err("has no callable operand"),
+            Self::Captured(_, GuardedDispatch::Speculative) => return Ok(None),
+            Self::Captured(n, GuardedDispatch::Required) => n - 1 + closure,
+            Self::Direct(n) if n > closure => n - 1,
+            Self::Direct(_) => {
+                return Err("requires a callable operand and any closure environment");
+            }
+        };
+        Ok(Some(count))
+    }
+
+    fn validate(
+        self,
+        signature: ExternFunctionSignature,
+        caller: &str,
+        target: &str,
+        boundary: &str,
+    ) -> Result<(), String> {
+        let count = self.parameter_count(signature.has_closure).map_err(|reason| {
+            format!("{boundary} call ABI mismatch: caller `{caller}` {reason} for declaration `{target}`")
+        })?;
+        if let Some(count) = count
+            && count != signature.arity
+        {
+            return Err(format!(
+                "{boundary} call ABI mismatch: caller `{caller}` supplies {count} parameter(s) to declaration `{target}`, which requires {}",
+                signature.arity
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl FunctionIR {
@@ -1098,32 +1159,7 @@ impl FunctionIR {
             ));
         }
 
-        let caller_arity = match arguments {
-            CompiledCallArguments::Positional(n) => n + usize::from(signature.has_closure),
-            CompiledCallArguments::Parameters(n) => n,
-            CompiledCallArguments::Guarded(0) => {
-                return Err(format!(
-                    "extern call ABI mismatch: guarded caller `{caller}` has no callable operand for declaration `{target}`"
-                ));
-            }
-            // Python binding owns defaults, surplus arguments and closure extraction.
-            CompiledCallArguments::Guarded(_) => return Ok(()),
-            // The callable is handed off, not passed; a closure target's
-            // environment follows it as its first parameter (design 78 5.10).
-            CompiledCallArguments::Direct(n) if n > usize::from(signature.has_closure) => n - 1,
-            CompiledCallArguments::Direct(_) => {
-                return Err(format!(
-                    "extern call ABI mismatch: direct caller `{caller}` requires a callable operand, and an environment operand for closure declaration `{target}`"
-                ));
-            }
-        };
-        if caller_arity != signature.arity {
-            return Err(format!(
-                "extern call ABI mismatch: caller `{caller}` supplies {caller_arity} parameter(s) to declaration `{target}`, which requires {}",
-                signature.arity
-            ));
-        }
-        Ok(())
+        arguments.validate(signature, caller, target, "extern")
     }
 }
 
@@ -1144,20 +1180,26 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
                 continue;
             };
             let declaration = function_row(&ir.functions, callee, &caller.name)?;
-            if !declaration.is_extern {
-                continue;
-            }
             let count = op.args.as_ref().map_or(0, Vec::len);
-            let arguments = if op.kind == crate::OpKind::CallGuarded {
-                CompiledCallArguments::Guarded(count)
-            } else {
-                CompiledCallArguments::Positional(count)
-            };
-            declaration.validate_extern_call(
-                &caller.name,
-                arguments,
-                op.passes_execution_context,
-            )?;
+            let guarded = (op.kind == crate::OpKind::CallGuarded)
+                .then(|| GuardedDispatch::from_proof(op.proven_target));
+            let arguments = guarded.map_or(CompiledCallArguments::Positional(count), |dispatch| {
+                CompiledCallArguments::Captured(count, dispatch)
+            });
+            if declaration.is_extern {
+                declaration.validate_extern_call(
+                    &caller.name,
+                    arguments,
+                    op.passes_execution_context,
+                )?;
+            } else if guarded == Some(GuardedDispatch::Required) {
+                arguments.validate(
+                    declaration.signature_metadata(),
+                    &caller.name,
+                    &declaration.name,
+                    "required compiled",
+                )?;
+            }
         }
     }
     Ok(())
@@ -2916,6 +2958,25 @@ mod json_parse_tests {
                     3 + usize::from(has_closure),
                     "binding must not rewrite the callee's raw ABI"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn proven_guarded_calls_require_the_exact_compiled_arguments_at_admission() {
+        for extern_target in [false, true] {
+            for has_closure in [false, true] {
+                let mut ir = extern_call_contract_ir(crate::OpKind::CallGuarded, has_closure, 3);
+                ir.functions[0].ops[0].proven_target = true;
+                ir.functions[1].is_extern = extern_target;
+                super::validate_extern_call_abis(&ir).expect("exact physical binding");
+                ir.functions[0].ops[0].args.as_mut().unwrap().pop();
+                let message = super::validate_extern_call_abis(&ir)
+                    .expect_err("a proven call cannot defer missing arguments to Python");
+                assert!(message.contains(&format!(
+                    "supplies {} parameter(s)",
+                    2 + usize::from(has_closure)
+                )));
             }
         }
     }

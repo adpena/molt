@@ -442,7 +442,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.bind_owned(b, op, result);
             return;
         }
-        use molt_ir::tir::call_targets::{GuardedDispatch, guarded_dispatch};
+        use molt_ir::ir::GuardedDispatch;
+        use molt_ir::tir::call_targets::guarded_dispatch;
         match guarded_dispatch(op) {
             Some(GuardedDispatch::Required) => {
                 self.fatal(format!(
