@@ -318,6 +318,27 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     ),
                 ));
             }
+            if op
+                .attrs
+                .contains_key(super::call_targets::RUNTIME_CANDIDATE_ATTR)
+                && !(op.opcode == OpCode::Call
+                    && op.origin == Some(crate::OpKind::CallFunc)
+                    && op.argument_custody().is_some()
+                    && super::call_targets::runtime_candidate(op)
+                        .and_then(|candidate| {
+                            super::call_targets::positional_runtime_candidate(
+                                candidate,
+                                op.operands.len(),
+                            )
+                        })
+                        .is_some())
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "invalid runtime candidate on owned positional call",
+                ));
+            }
             match (op.opcode, op.runtime) {
                 (OpCode::CallRuntime, None) => errors.push(VerifyError::op(
                     *bid,

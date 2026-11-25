@@ -168,6 +168,63 @@ def test_a_proven_site_becomes_one_direct_intrinsic_call() -> None:
 
 
 @pytest.mark.parametrize(
+    ("target", "literal", "arity", "expected"),
+    [
+        (
+            "py._intrinsics.require_intrinsic",
+            "molt_buffer2d_get",
+            3,
+            "molt_buffer2d_get",
+        ),
+        ("py._intrinsics.require_intrinsic", "molt_buffer2d_get", 2, None),
+        ("py._intrinsics.require_intrinsic", "unknown_symbol", 3, None),
+        ("py.replacement.require_intrinsic", "molt_buffer2d_get", 3, None),
+    ],
+)
+def test_conditional_intrinsic_lookup_suggests_a_target_on_the_live_call(
+    target: str, literal: str, arity: int, expected: str | None
+) -> None:
+    producer: list[dict[str, Any]] = [
+        {"kind": "const_str", "out": "name", "s_value": literal},
+        {"kind": "const_str", "out": "binding", "s_value": "access"},
+        {"kind": "if", "args": ["active"]},
+        {
+            "kind": "call_guarded",
+            "args": ["live_resolver", "name"],
+            "s_value": target,
+            "out": "resolved",
+        },
+        {"kind": "module_set_attr", "args": [M, "binding", "resolved"]},
+        {"kind": "end_if"},
+    ]
+    chunk = {"name": "py.user.chunk", "params": [M], "ops": producer}
+    call = {
+        "kind": "call_func",
+        "args": ["loaded", *[f"a{i}" for i in range(arity)]],
+        "argument_custody": ["transferred"] * (arity + 1),
+        "out": "r",
+    }
+    consumer = {
+        "name": "py.user.read",
+        "ops": [
+            {"kind": "const_str", "out": "name", "s_value": "access"},
+            {"kind": "module_get_global", "args": ["module", "name"], "out": "loaded"},
+            call,
+        ],
+    }
+    funcs = [_init("user", chunk), chunk, consumer]
+    modules = {"user": funcs.copy()}
+    initializers = summarize_program_initializers(modules)
+    assert not initializers["user"].stores["access"][0].unconditional
+    bind_closed_world_calls(funcs, modules, {}, {}, NO_IMPORT_REDIRECTS, initializers)
+    assert funcs[1]["ops"] == producer
+    assert funcs[2]["ops"][:-1] == consumer["ops"][:-1]
+    assert funcs[2]["ops"][-1] == (
+        {**call, "runtime_candidate": expected} if expected is not None else call
+    )
+
+
+@pytest.mark.parametrize(
     "user",
     [
         _user(import_name="math.sub"),

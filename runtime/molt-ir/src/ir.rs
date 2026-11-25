@@ -734,6 +734,10 @@ pub struct OpIR {
     /// TIR-to-SimpleIR projection. Backends read only this field (HF-821 B1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
+    /// A possible identity of the captured callable of an owned positional call.
+    /// The runtime must admit the live object before bypassing Python binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_candidate: Option<crate::runtime_fn_generated::RuntimeFn>,
     /// Role-preserving eval-breaker marker for observations that cannot use the
     /// established `async_work_poll` CheckException wire alias. A marked
     /// `exception_finally_pending_observer` polls before returning the pending
@@ -893,6 +897,7 @@ impl OpIR {
             class_definition: Default::default(),
             stable_instance_class: false,
             exact_field_slots: Default::default(),
+            runtime_candidate: None,
             exact_method: Default::default(),
             runtime_requirement_bits: Default::default(),
             passes_execution_context: Default::default(),
@@ -2412,6 +2417,7 @@ mod json_parse_tests {
             class_definition: Some("class:module:Owner".to_string()),
             exact_field_slots: None,
             stable_instance_class: false,
+            runtime_candidate: None,
             exact_method: None,
             runtime_requirement_bits: 3,
             passes_execution_context: true,

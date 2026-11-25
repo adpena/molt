@@ -680,6 +680,11 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             op.kind
         ));
     }
+    if op.runtime_candidate.is_some()
+        && (op.kind != crate::OpKind::CallFunc || op.argument_custody.is_none())
+    {
+        return Err("runtime_candidate requires an owned call_func".into());
+    }
     if op.method_site.is_some() && !METHOD_SITE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry method_site", op.kind));
     }

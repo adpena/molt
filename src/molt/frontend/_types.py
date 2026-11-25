@@ -107,6 +107,7 @@ class SimpleIROp(TypedDict):
     native_callable_symbol: NotRequired[Any]
     out: NotRequired[Any]
     passes_execution_context: NotRequired[Any]
+    runtime_candidate: NotRequired[str]
     runtime_requirement_bits: NotRequired[Any]
     runtime_symbol: NotRequired[Any]
     s_value: NotRequired[Any]

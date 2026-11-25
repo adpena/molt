@@ -456,6 +456,7 @@ pub enum AttrValue {
     Str(String),
     Bool(bool),
     Bytes(Vec<u8>),
+    RuntimeCandidate(crate::runtime_fn_generated::RuntimeFn),
 }
 
 /// Attribute dictionary attached to an operation.

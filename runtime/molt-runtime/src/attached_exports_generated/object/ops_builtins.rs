@@ -109,12 +109,12 @@ pub unsafe extern "C" fn molt_call_func_owned(
     func_bits: u64,
     args_ptr_bits: u64,
     nargs: u64,
-    code_id: u64,
+    runtime_candidate: u64,
 ) -> u64 {
     molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_call_func_owned);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_call_func_owned_attached_body(_py, func_bits, args_ptr_bits, nargs, code_id)
+    molt_call_func_owned_attached_body(_py, func_bits, args_ptr_bits, nargs, runtime_candidate)
 }
 #[unsafe(export_name = "molt_call_class_candidate_owned__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

@@ -7,9 +7,9 @@ use crate::builtins::functions::BuiltinBindingPolicy;
 use crate::call::function::{
     FunctionBindingField, call_function_obj_moved, function_bits_adopt_arguments,
 };
-use crate::call::type_policy::{
-    callable_matches_runtime_symbol, resolved_new_is_default_object_new,
-};
+#[cfg(test)]
+use crate::call::type_policy::callable_matches_runtime_symbol;
+use crate::call::type_policy::resolved_new_is_default_object_new;
 use crate::call::{
     StaticmethodCallTarget, lookup_call_attr, require_call_attr, resolve_staticmethod_call_target,
 };
@@ -507,7 +507,7 @@ pub(crate) unsafe fn call_bind_with_receiver(
                 "call expects function object",
             );
         }
-        if callable_matches_runtime_symbol(Some(func_bits), fn_key!(molt_type_call)) {
+        if is_default_type_call(_py, func_bits) {
             let Some(self_bits) = self_bits else {
                 // The unbound slot wrapper `type.__call__(cls, *args)`: its
                 // first positional is the receiver, and `cls` is constructed
@@ -605,6 +605,42 @@ unsafe fn call_with_adopted_callable<'a, 'py>(
         let result = dispatch(callable_bits, args);
         dec_ref_bits(py, callable_bits);
         result
+    }
+}
+
+/// Resolve a possible runtime target against the captured object after every
+/// argument has been evaluated. A replacement or a contextualized wrapper
+/// resumes ordinary CALL with all owners intact.
+pub(crate) unsafe fn admits_runtime_candidate(
+    py: &PyToken<'_>,
+    callable: u64,
+    supplied: usize,
+    candidate_key: u64,
+) -> bool {
+    use crate::builtins::functions::CallableIdentity;
+    use crate::object::function_metadata::FunctionMetadataField;
+    unsafe {
+        let Some(ptr) =
+            crate::object::ops_builtins::direct_call_function(py, callable, supplied, false, false)
+        else {
+            return false;
+        };
+        // direct_call_function reads the exact binder flag, whose publisher
+        // includes every builtin_call_binding policy. type.__call__ is
+        // dispatched here before that binder, as is a C-extension wrapper.
+        object_class_bits(ptr) == builtin_classes(py).builtin_function_or_method
+            && CallableIdentity::of_function(ptr).is(candidate_key)
+            && function_trampoline_ptr(ptr) == 0
+            && !is_default_type_call(py, callable)
+            && !crate::cpython_abi_hooks::is_cext_callable(ptr)
+            && [
+                FunctionMetadataField::SelfValue,
+                FunctionMetadataField::Owner,
+                FunctionMetadataField::ArgumentNames,
+                FunctionMetadataField::BindKind,
+            ]
+            .into_iter()
+            .all(|field| field.load(ptr).is_none())
     }
 }
 

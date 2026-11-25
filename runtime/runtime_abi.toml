@@ -1500,6 +1500,8 @@ type = 6
 # spilled argument references belong to the call, which ends a temporary bound
 # method before its function runs, moves the arguments into an adopting entry
 # or releases them after a borrowing callee, and releases the callable last.
+# Final word: a possible runtime callable key, or zero. A mismatch binds
+# the captured callable normally.
 [[import]]
 name = "call_func_owned"
 return_contract = "owned_object"

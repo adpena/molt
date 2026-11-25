@@ -35,7 +35,9 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from molt._public_objects_generated import PUBLIC_DIRECT_CALL_BINDINGS
+from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
 from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -52,6 +54,11 @@ MODULE_ATTRIBUTE_FIELD = "module_attribute"
 # ``stamp_global_slots`` turns it into a read of ``M``'s static cell when
 # ``M`` keeps one for ``f`` (HF-845), and consumes it; never on the wire.
 FOREIGN_GLOBAL_FIELD = "foreign_global"
+
+_INTRINSIC_RESOLVERS = frozenset(
+    compiled_symbols.module_function_symbol(module, "require_intrinsic")
+    for module in ("_intrinsics", "molt.stdlib._intrinsics")
+)
 
 
 def imported_module_of(op: Mapping[str, Any]) -> str | None:
@@ -395,6 +402,41 @@ class ModuleInitializerFacts:
 _EMPTY_INITIALIZER = ModuleInitializerFacts({}, set(), False, {}, {}, {}, {})
 
 
+def _intrinsic_result_candidates(
+    initializer: ModuleInitializerFacts,
+) -> dict[str, tuple[str, int]]:
+    """Identify useful guesses from the initializer's stored values.
+
+    A resolver call and its literal suggest a runtime target. The resolver
+    still runs normally and can return a replacement. A candidate does not
+    prove initialization, stability, or even the type of the value read.
+    """
+    candidates: dict[str, tuple[str, int]] = {}
+    for name, stores in initializer.stores.items():
+        if len(stores) != 1:
+            continue
+        (store,) = stores
+        call = initializer.producers.get((store.function, store.value or ""), {})
+        args = call.get("args") or ()
+        if (
+            call.get("kind") != "call_guarded"
+            or call.get("s_value") not in _INTRINSIC_RESOLVERS
+            or len(args) != 2
+        ):
+            continue
+        literal = initializer.producers.get((store.function, args[1]), {})
+        if literal.get("kind") != "const_str":
+            continue
+        value = literal.get("s_value")
+        signature = INTRINSIC_SIGNATURES.get(value) if isinstance(value, str) else None
+        if (
+            signature is not None
+            and signature[0] not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+        ):
+            candidates[name] = signature
+    return candidates
+
+
 def summarize_module_initializer(
     module: str, funcs: Sequence[Mapping[str, Any]]
 ) -> ModuleInitializerFacts:
@@ -514,6 +556,7 @@ class ClosedWorldBinder:
         self.dep_closures = dep_closures
         self.import_redirects = import_redirects
         self.diagnostics: list[str] = []
+        self._intrinsic_candidates: dict[str, dict[str, tuple[str, int]]] = {}
 
     def _body(self, module: str) -> ModuleInitializerFacts:
         return self.initializers.get(module, _EMPTY_INITIALIZER)
@@ -583,8 +626,13 @@ class ClosedWorldBinder:
         """The function with its proven sites rewritten, or None if unchanged.
         Every op loses the frontend's module guess."""
         ops = func.get("ops", ())
+        replaced = self._runtime_call_candidates(user, func)
         if not any(MODULE_ATTRIBUTE_FIELD in op for op in ops):
-            return None
+            return (
+                {**func, "ops": [replaced.get(id(op), op) for op in ops]}
+                if replaced
+                else None
+            )
         uses = Counter(arg for op in ops for arg in op.get("args") or ())
         defs = {op.get("out"): op for op in ops if isinstance(op.get("out"), str)}
         own_modules = {
@@ -601,7 +649,6 @@ class ClosedWorldBinder:
             for op in ops
             if op.get("kind") == "call_func" and op.get("args")
         }
-        replaced: dict[int, dict[str, Any] | None] = {}
         for op in ops:
             module = op.get(MODULE_ATTRIBUTE_FIELD)
             if module is None:
@@ -650,6 +697,38 @@ class ClosedWorldBinder:
             replaced.get(id(op), op) if id(op) in replaced else op for op in ops
         ]
         return {**func, "ops": [op for op in rewritten if op is not None]}
+
+    def _runtime_call_candidates(
+        self, user: str, func: Mapping[str, Any]
+    ) -> dict[int, dict[str, Any] | None]:
+        """Attach a runtime candidate to an ordinary call of its live load."""
+        if user not in self._intrinsic_candidates:
+            self._intrinsic_candidates[user] = _intrinsic_result_candidates(
+                self._body(user)
+            )
+        candidates = self._intrinsic_candidates[user]
+        if not candidates:
+            return {}
+        from molt.cli.frontend_integration import _global_name_sites
+
+        reads = {
+            op["out"]: candidates[name]
+            for op, name in _global_name_sites([func])
+            if op.get("kind") == "module_get_global"
+            and isinstance(op.get("out"), str)
+            and name in candidates
+        }
+        rewritten: dict[int, dict[str, Any] | None] = {}
+        for op in func.get("ops", ()):
+            args = op.get("args") or ()
+            if op.get("kind") != "call_func" or not args or args[0] not in reads:
+                continue
+            symbol, arity = reads[args[0]]
+            if len(args) == arity + 1 and op.get("argument_custody") == [
+                "transferred"
+            ] * len(args):
+                rewritten[id(op)] = {**op, "runtime_candidate": symbol}
+        return rewritten
 
     def _site_reason(
         self,

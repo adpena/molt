@@ -86,6 +86,30 @@ pub fn ingest_runtime_target(op: &crate::OpIR) -> Option<RuntimeFn> {
     RuntimeFn::from_symbol(op.s_value.as_deref()?)
 }
 
+pub const RUNTIME_CANDIDATE_ATTR: &str = "runtime_candidate";
+
+/// A runtime candidate can bypass binding only for its boxed, borrowing
+/// positional ABI. Frame trampolines and machine helpers keep generic CALL.
+pub fn positional_runtime_candidate(runtime: RuntimeFn, operands: usize) -> Option<u64> {
+    use crate::runtime_callable_abi_generated::{
+        RuntimeCallableTrampolineAbi, RuntimeExecutionContext,
+    };
+    use crate::runtime_fn_generated::RuntimeBoxedReturn;
+    let callable = runtime.callable()?;
+    (runtime.context() == RuntimeExecutionContext::Attached
+        && callable.trampoline == Some(RuntimeCallableTrampolineAbi::UnpackArgs)
+        && runtime.boxed_abi()?.result == RuntimeBoxedReturn::OwnedValue
+        && runtime.params().checked_add(1) == Some(operands))
+    .then_some(callable.key)
+}
+
+pub fn runtime_candidate(op: &TirOp) -> Option<RuntimeFn> {
+    match op.attrs.get(RUNTIME_CANDIDATE_ATTR)? {
+        AttrValue::RuntimeCandidate(candidate) => Some(*candidate),
+        _ => None,
+    }
+}
+
 /// Whether `op` is a direct call by its preserved source role. Absent
 /// transport metadata denotes a canonical first-class TIR `Call`. Preserved
 /// SimpleIR spellings must prove a direct role through the generated schema.
