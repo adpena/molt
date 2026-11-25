@@ -578,7 +578,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     monkeypatch.setattr(
         WASM_TOOLCHAIN,
         "resolve_wasm_linker",
-        lambda: WASM_TOOLCHAIN.WasmLinkerIdentity(
+        lambda _compiler_root: WASM_TOOLCHAIN.WasmLinkerIdentity(
             Path("wasm-ld"), "22.1.8", None, "a" * 64
         ),
         raising=True,
@@ -729,7 +729,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     monkeypatch.setattr(
         WASM_TOOLCHAIN,
         "resolve_wasm_linker",
-        lambda: WASM_TOOLCHAIN.WasmLinkerIdentity(
+        lambda _compiler_root: WASM_TOOLCHAIN.WasmLinkerIdentity(
             Path("/usr/bin/wasm-ld"), "22.1.8", None, "a" * 64
         ),
     )

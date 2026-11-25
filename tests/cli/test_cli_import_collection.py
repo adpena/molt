@@ -23106,7 +23106,7 @@ def _install_fake_wasm_link_runner(
     monkeypatch.setattr(
         cli_non_native_output.wasm_toolchain,
         "resolve_wasm_linker",
-        lambda: linker_identity,
+        lambda _compiler_root: linker_identity,
     )
     from molt.toolchain_identity import stable_regular_file_identity
 

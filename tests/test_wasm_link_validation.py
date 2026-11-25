@@ -650,7 +650,9 @@ def test_linker_tool_and_sdk_generation_share_request_cwd(tmp_path, monkeypatch)
         lambda *_a, **_k: pytest.fail("managed receipt owns tool identity"),
     )
     actual = wasm_toolchain.resolve_wasm_linker(
-        env={"MOLT_TARGET_ROOT": "relative-tools/toolchains"}, cwd=cwd
+        Path(__file__).resolve().parents[1],
+        env={"MOLT_TARGET_ROOT": "relative-tools/toolchains"},
+        cwd=cwd,
     )
     assert actual.path.parent == prefix / "sdk/bin"
     assert actual.wasi_sdk_llvm_version == installation.asset.llvm_version
