@@ -332,3 +332,83 @@ def test_cache_eviction_sees_each_blob_and_index_file(tmp_path: Path) -> None:
     assert expected <= collected
     root = records.frontend_record_files_root(tmp_path)
     assert root not in collected and root.parent not in collected
+
+
+def test_fragmented_index_skips_proven_absences_and_seeks_prefix_collisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(records, "_MERGE_INDEX_FILES", 1)
+    monkeypatch.setattr(records, "_PREFIX_AFTER_MISSES", 2)
+    writer = FrontendRecordFiles(tmp_path)
+    assert writer.put("import-scan", _KEY, b"a")
+    assert writer.put("module-analysis", _OTHER, b"b")
+    reader = FrontendRecordFiles(tmp_path)
+    calls = 0
+    seek = records._seek_index
+
+    def counted(path: Path, prefix: bytes) -> records._RecordLocation | None:
+        nonlocal calls
+        calls += 1
+        return seek(path, prefix)
+
+    monkeypatch.setattr(records, "_seek_index", counted)
+    assert _read(reader, "import-scan", _KEY, max_bytes=_LIMIT) == b"a"
+    assert reader._key_prefixes is None
+    for char in "cd":
+        assert reader.digest("import-scan", char * 24) is None
+    prior = calls
+    assert reader.digest("import-scan", "e" * 24) is None
+    assert calls == prior
+    assert reader._key_prefixes is not None
+    # Prefix collisions for another key or kind go through the usual search.
+    assert reader.digest("import-scan", "aaaaaa" + "1" * 18) is None
+    assert calls > prior
+    assert _read(reader, "module-analysis", _OTHER, max_bytes=_LIMIT) == b"b"
+    assert reader.digest("import-scan", _OTHER) is None
+    # The peer can add precisely the key this generation ruled out.
+    assert writer.put("import-scan", "e" * 24, b"new")
+    assert _read(reader, "import-scan", "e" * 24, max_bytes=_LIMIT) == b"new"
+
+
+def test_index_prefix_absence_observes_a_publication_racing_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(records, "_MERGE_INDEX_FILES", 1)
+    monkeypatch.setattr(records, "_PREFIX_AFTER_MISSES", 1)
+    writer = FrontendRecordFiles(tmp_path)
+    assert writer.put("import-scan", _KEY, b"a")
+    assert writer.put("import-scan", _OTHER, b"b")
+    reader = FrontendRecordFiles(tmp_path)
+    assert reader.digest("import-scan", "c" * 24) is None
+    new = "d" * 24
+    scan = records._index_key_prefixes
+
+    def publish_after_scan(indices: tuple[Path, ...]) -> bytearray | None:
+        prefixes = scan(indices)
+        assert prefixes is not None
+        assert writer.put("import-scan", new, b"fresh")
+        return prefixes
+
+    monkeypatch.setattr(records, "_index_key_prefixes", publish_after_scan)
+    assert _read(reader, "import-scan", new, max_bytes=_LIMIT) == b"fresh"
+
+
+def test_unverified_index_or_input_limit_falls_back_to_ordinary_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(records, "_MERGE_INDEX_FILES", 1)
+    monkeypatch.setattr(records, "_PREFIX_AFTER_MISSES", 1)
+    writer = FrontendRecordFiles(tmp_path)
+    assert writer.put("import-scan", _KEY, b"a")
+    assert writer.put("import-scan", _OTHER, b"b")
+    indices = tuple(_index_files(tmp_path))
+    # A concurrent repair can replace a damaged file. Its bytes cannot seal
+    # a negative proof for that immutable name.
+    damaged = indices[0].with_name("0" * 64 + records.INDEX_SUFFIX)
+    damaged.write_bytes(indices[0].read_bytes())
+    reader = FrontendRecordFiles(tmp_path)
+    assert reader.digest("import-scan", "c" * 24) is None
+    assert _read(reader, "import-scan", _KEY, max_bytes=_LIMIT) == b"a"
+    assert reader._key_prefixes is None
+    monkeypatch.setattr(records, "_PREFIX_INPUT_LIMIT", 1)
+    assert records._index_key_prefixes(indices) is None
