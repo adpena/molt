@@ -3929,31 +3929,33 @@ class _Analyzer:
                 | identities
             )
 
-    def _plain_class_base(self, base: ast.expr) -> bool:
-        """Whether a class statement's base is, on every execution, the class
-        one plain class statement created: its metaclass is `type`, and no
-        class in its base chain defines `__init_subclass__`, so building a
-        subclass runs no Python before or after its body.
-
-        The read is a class statement's value when its binding is not
-        invalidated and its one source origin is that statement, as a source
-        callable's read is its own origin (`exact_builtin_name`)."""
-        fact = self.transfer.expressions.get(self._node_key(base))
+    def _plain_class_value(self, node: ast.expr) -> PythonSourceKey | None:
+        """Resolve a bound local class declaration whose metaclass is type."""
+        fact = self.transfer.expressions.get(self._node_key(node))
         if (
             fact is None
             or fact.binding_invalidated
             or fact.star_export_lookup
             or fact.name_lookup not in {"global", "lexical"}
         ):
-            return False
+            return None
         result = fact.result
         if result.identities & ~(
             possible_identity(PythonIdentity.USER_CLASS) | UNBOUND_IDENTITY
         ) or not result.identities & int(PythonIdentity.USER_CLASS):
-            return False
+            return None
         if len(result.source_origins) != 1:
+            return None
+        owner = next(iter(result.source_origins))
+        cls = self.transfer.source_classes.get(owner)
+        return owner if cls is not None and cls.plain_metaclass else None
+
+    def _plain_class_base(self, base: ast.expr) -> bool:
+        """Whether subclassing the class in this binding runs no Python."""
+        owner = self._plain_class_value(base)
+        if owner is None:
             return False
-        pending = list(result.source_origins)
+        pending = [owner]
         seen: set[PythonSourceKey] = set()
         while pending:
             owner = pending.pop()
@@ -5424,6 +5426,31 @@ class _Analyzer:
                     )
         elif (
             exact
+            and callee == int(PythonIdentity.BUILTIN_ISINSTANCE)
+            and len(node.args) == 2
+            and not node.keywords
+            and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            and self._plain_class_value(node.args[1]) is not None
+        ):
+            # The default instance check reads the real type and may look up
+            # the subject's __class__. The class operand has no custom
+            # __instancecheck__, so this call does not publish either operand.
+            # Keep callback and retirement effects, including the subject's
+            # attribute hooks on a miss.
+            result_fact = StaticExpressionResult(kind="bool")
+            effects |= UNKNOWN_EFFECTS
+            argument_protocol_indices = frozenset()
+            selected_deferred |= _operand_dispatch_deferred(
+                INVOKES_DESCRIPTOR | _RELEASE_CALLBACK_EFFECTS, argument_results[0]
+            ) | _operand_dispatch_deferred(
+                _RELEASE_CALLBACK_EFFECTS, argument_results[1]
+            )
+            if argument_results[0].exposes_module_globals:
+                selected_deferred |= frozenset(
+                    {DeferredExecution(self._module_source, "escape")}
+                )
+        elif (
+            exact
             and callee == int(PythonIdentity.BUILTIN_TYPE)
             and len(node.args) == 1
             and not node.keywords
@@ -6153,6 +6180,26 @@ class _Analyzer:
                 if fallback_operand is not None
                 else None
             )
+            argument_call = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and (
+                    receiver_fact := self.transfer.expressions.get(
+                        self._node_key(node.func.value)
+                    )
+                )
+                is not None
+                and receiver_fact.name_lookup == "global"
+                and not receiver_fact.star_export_lookup
+                and not receiver_fact.binding_invalidated
+                and callee_result.result.source_origins
+                == {python_node_source_key(node.func)}
+                and python_node_source_key(node) in self.transfer.source_calls
+                and not node.keywords
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                argument_call = python_node_source_key(node)
             for argument_index, argument in enumerate(
                 () if deferred_factory_only else argument_results
             ):
@@ -6187,7 +6234,7 @@ class _Analyzer:
                     # exposure as deferred objects. The scanner must not repeat
                     # this transfer for proven builtin/source callees.
                     deferred_execution |= frozenset(
-                        DeferredExecution(source, "expose")
+                        DeferredExecution(source, "expose", argument_call)
                         for source in argument.exposed_source_origins
                     )
                     if argument.exposes_module_globals:
@@ -8785,6 +8832,10 @@ class _Analyzer:
                 self.transfer.source_classes[owner_key] = PythonSourceClass(
                     owner_key,
                     plain_preparation
+                    # Preparation describes the namespace. A replaced
+                    # builder or decorator may publish a different class.
+                    and builder == int(PythonIdentity.BUILTIN_BUILD_CLASS)
+                    and not node.decorator_list
                     and (prior_class is None or prior_class.plain_metaclass),
                     tuple(
                         name

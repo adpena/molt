@@ -52,7 +52,10 @@ from molt.compiler_analysis.python_import_scan import (
 )
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
+    PythonModulePublications,
+    python_namespace_stability_reason,
     PythonGraphNamespaceIndex,
+    python_module_publications,
     UNKNOWN_GRAPH_NAMESPACE_WRITES,
     graph_python_namespace_writes,
     join_python_namespace_premises,
@@ -1427,7 +1430,78 @@ def _discovery_pass(
     demands.drain()
     refresh_namespace_premises(demands.drain_opaque_activation_changes())
 
-    while queue or scan_revisions or deferred_bodies:
+    source_publications: dict[str, PythonModulePublications] = {}
+
+    def publications(
+        module: str,
+    ) -> tuple[PythonModulePublications, _ModuleSourceScanAuthority] | None:
+        authority = scan_sources.get(module)
+        snapshot = source_generations.get(module, (None, None))[1]
+        if (
+            authority is None
+            or snapshot is None
+            or authority.body_selection.kind != "complete_source"
+        ):
+            return None
+        premise = authority.namespace_premise
+        if (
+            premise is None
+            or premise.code_rebinding
+            or premise.namespace_reflected
+            or premise.instance_class_writer is not None
+            or authority.namespace_own_line != 0
+        ):
+            return None
+        if module not in source_publications:
+            source_publications[module] = python_module_publications(snapshot.tree)
+        return source_publications[module], authority
+
+    def call_binds_arguments(user: str, site: PythonSourceKey) -> bool:
+        # A singleton source candidate is may-provenance. Require exhaustive
+        # publications on both sides of the load and an actual formal transfer.
+        caller = publications(user)
+        if caller is None or (qualified := caller[0].qualified_calls.get(site)) is None:
+            return False
+        binding, member = qualified
+        # Import machinery may publish callable special members (for example
+        # __loader__) before any of the provider's statements execute.
+        if member.startswith("__") or binding.startswith("__"):
+            return False
+        module = caller[0].leading_imports.get(binding)
+        authority = caller[1]
+        premise = authority.namespace_premise
+        if (
+            module is None
+            or premise is None
+            or module in premise.noncanonical_imports
+            or namespace_index.import_redirects.redirect(module)
+            or python_namespace_stability_reason(
+                authority.namespace_own_names, premise, binding
+            )
+            is not None
+        ):
+            return False
+        target = publications(module)
+        if target is None or target[0].module_getattr:
+            return False
+        definition = target[0].functions.get(member)
+        if definition is None or any(
+            python_namespace_stability_reason(
+                target[1].namespace_own_names, target[1].namespace_premise, name
+            )
+            is not None
+            for name in (member, "__getattr__", "__class__")
+        ):
+            return False
+        return demands.binds_positional_arguments(user, site, module, definition)
+
+    while True:
+        if not queue and not scan_revisions and not deferred_bodies:
+            if not demands.resolve_argument_exposures(call_binds_arguments):
+                break
+            demands.drain()
+            refresh_namespace_premises(demands.drain_opaque_activation_changes())
+            continue
         if not queue and not scan_revisions:
             # Nothing else can settle these modules: scan each waiting body
             # once against its module's final premise.

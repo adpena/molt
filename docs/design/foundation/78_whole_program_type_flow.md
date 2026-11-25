@@ -658,6 +658,18 @@ member, `__dict__`, or `super()` above a class with unknown bases. `type(x)`, `v
 enclosing function's first argument to the member above its class. So `Counter()` in
 `kernel` constructs inline and its result is exact.
 
+**Closed calls across modules.** A qualified positional call records possible argument exposure
+at its own source site. Once discovery settles, the existing argument-to-formal transfer
+discharges that exposure if the caller's import and the provider's function have exhaustive
+source publications. Missing publication proof or a reachable writer releases the generic
+exposure. The proof also rechecks held sites when discovery admits more code.
+
+The default `isinstance` protocol can inspect the subject's `__class__`. Its class operand
+stays private when the bound declaration used the builtin class builder, has metaclass
+`type`, and has no class decorators. The compiler retains the subject's lookup and retirement
+edges. In `bench_matrix_math`, these two source proofs preserve the class through all twelve
+qualified `molt_buffer.get` and `set` calls and recover exact receivers for both buffer methods.
+
 **Exact `self`.** `PythonSourceDemands.exact_receivers(module)` lists each function whose every
 entry binds its first parameter to an instance one class statement of the module built: every
 `_bind_receiver` receiver came from that one statement, no call entered it without a receiver,

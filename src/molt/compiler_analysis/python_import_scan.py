@@ -2092,10 +2092,10 @@ def _collect_imports(
         iteration = binding_index.iteration_fact(node)
         if iteration is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase, None, None)
+                _SourceValueDemand(ref.source, ref.phase, None, None, ref.argument_call)
                 for ref in sorted(
                     iteration.deferred_execution,
-                    key=lambda ref: (ref.source, ref.phase),
+                    key=lambda ref: (ref.source, ref.phase, ref.argument_call or ()),
                 )
                 if ref.phase != "call"
             )
@@ -2377,9 +2377,10 @@ def _collect_imports(
         )
         if fact is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase, None, None)
+                _SourceValueDemand(ref.source, ref.phase, None, None, ref.argument_call)
                 for ref in sorted(
-                    fact.deferred_execution, key=lambda ref: (ref.source, ref.phase)
+                    fact.deferred_execution,
+                    key=lambda ref: (ref.source, ref.phase, ref.argument_call or ()),
                 )
                 # Aggregate call effects have lost their argument count. The
                 # explicit call visitor below owns the invocation demand;
