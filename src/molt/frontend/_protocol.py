@@ -1437,6 +1437,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         callee: MoltValue,
         args: list[MoltValue],
         result: MoltValue,
+        *,
+        defines_del: bool = ...,
     ) -> None: ...
 
     def _emit_proven_builtin_value(self, node: ast.Name) -> MoltValue | None: ...
