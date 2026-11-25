@@ -674,20 +674,10 @@ impl RuntimeExecutionGuard {
         }
         loop {
             let held_before = execution_is_nested();
-            if !held_before
-                && initialize_runtime
-                && !crate::state::runtime_state::runtime_is_ready()
-            {
-                #[cfg(test)]
-                crate::test_support::require_custody_to_start_runtime();
-                assert_ne!(
-                    crate::state::runtime_state::molt_runtime_init(),
-                    0,
-                    "runtime execution entry attempted after permanent shutdown"
-                );
-            }
             if !held_before {
-                crate::state::runtime_state::wait_for_runtime_execution_admission();
+                crate::state::runtime_state::prepare_runtime_execution_admission(
+                    initialize_runtime,
+                );
             }
 
             let active_lifecycle_lease =

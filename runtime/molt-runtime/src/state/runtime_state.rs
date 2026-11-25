@@ -1346,10 +1346,10 @@ pub(crate) fn runtime_execution_lease_acquire_attempts() -> usize {
     RUNTIME_EXECUTION_LEASE_ACQUIRE_ATTEMPTS.load(AtomicOrdering::Relaxed)
 }
 
-/// Wait for a lifecycle transition owner before taking the GIL. Ready,
-/// Uninitialized, and terminal Shutdown are all stable entry observations;
-/// individual operations decide whether they require a live RuntimeState.
-pub(crate) fn wait_for_runtime_execution_admission() {
+/// Prepare an outer entry before acquiring the GIL or a counted lease. The
+/// initialization owner can use its private state directly. Other threads wait
+/// for the transition before attempting to enter.
+pub(crate) fn prepare_runtime_execution_admission(requires_runtime: bool) {
     if runtime_ready_ptr().is_some() {
         return;
     }
@@ -1357,26 +1357,42 @@ pub(crate) fn wait_for_runtime_execution_admission() {
     loop {
         #[cfg(test)]
         wait_for_runtime_test_restart(owner);
-        if runtime_ready_ptr().is_some() {
-            return;
-        }
         let lifecycle = runtime_lifecycle();
         let mut phase = lifecycle.phase.lock().unwrap();
-        let transitioning = matches!(
-            *phase,
+        match *phase {
+            RuntimeLifecyclePhase::Ready { .. } => return,
             RuntimeLifecyclePhase::Initializing { owner: active }
-                | RuntimeLifecyclePhase::Finalizing { owner: active, .. }
-                if active != owner
-        );
-        if !transitioning {
-            return;
+            | RuntimeLifecyclePhase::Finalizing { owner: active, .. }
+                if active != owner =>
+            {
+                assert!(
+                    !gil_held(),
+                    "runtime lifecycle admission wait attempted while holding the GIL"
+                );
+                phase = lifecycle.changed.wait(phase).unwrap();
+                drop(phase);
+            }
+            RuntimeLifecyclePhase::Initializing { .. } if runtime_state_tls().is_some() => {
+                return;
+            }
+            #[cfg(panic = "unwind")]
+            RuntimeLifecyclePhase::Failed => {
+                drop(phase);
+                panic!("runtime execution entry attempted after lifecycle failure");
+            }
+            _ if !requires_runtime => return,
+            _ => {
+                drop(phase);
+                #[cfg(test)]
+                crate::test_support::require_custody_to_start_runtime();
+                assert_ne!(
+                    molt_runtime_init(),
+                    0,
+                    "runtime execution entry attempted after permanent shutdown"
+                );
+                return;
+            }
         }
-        assert!(
-            !gil_held(),
-            "runtime lifecycle admission wait attempted while holding the GIL"
-        );
-        phase = lifecycle.changed.wait(phase).unwrap();
-        drop(phase);
     }
 }
 
@@ -2806,6 +2822,13 @@ mod tests {
             assert!(!runtime_is_ready());
             assert!(!runtime_is_initialized());
             assert!(!runtime_execution_is_admitted_for_current_thread(false));
+            assert!(
+                std::panic::catch_unwind(|| {
+                    drop(crate::concurrency::RuntimeExecutionGuard::enter_without_runtime());
+                })
+                .is_err(),
+                "a raw entry must refuse Failed instead of waiting for admission"
+            );
             assert_eq!(molt_runtime_init(), 0, "a failed lifecycle never restarts");
             assert_eq!(molt_runtime_shutdown(), 0);
             assert_eq!(
