@@ -60,7 +60,11 @@ The existing daily collector and pressure pass share this policy. Pressure
 collection includes the historical `retired/` backlog and checks actual free
 space after each deletion against the configured target. Payload-size estimates
 do not establish reclaimed capacity, and deletion does not require an extra
-recursive size census.
+recursive size census. If eligible roots leave the selected volume below
+the target, the same pressure pass returns already-free SQLite source-record
+pages in bounded batches. It uses the existing cache and namespace locks,
+checks actual free space after each checkpoint, and stops at the target,
+deadline or first lock contention. Live cache records remain reusable.
 
 Historical retirement records have a strict reader, with no current writer.
 An explicit bounded, resumable backlog pass uses the same typed ownership,

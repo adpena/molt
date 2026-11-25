@@ -575,18 +575,20 @@ class SourceRecordMaintenance:
             _close_connection(self._connection, self._pid, None)
             self._snapshot_closed = True
 
-    def reclaim(self) -> None:
+    def reclaim(self, *, pages: int = _PAGE_SIZE) -> int:
+        if pages < 1:
+            raise ValueError("source record reclamation requires a positive page limit")
         self.close_snapshot()
+        reclaimed = 0
         if not self._dry_run:
             try:
                 # Bound maintenance; peers keep their pages without a retry.
                 with self._cursor(
-                    f"PRAGMA incremental_vacuum({_PAGE_SIZE})", current=True
+                    f"PRAGMA incremental_vacuum({pages})", current=True
                 ) as cursor:
                     # SQLite emits one result per step; closing early abandons
                     # the remaining bounded page work.
-                    for _ in cursor:
-                        pass
+                    reclaimed = sum(1 for _ in cursor)
                 with self._cursor(
                     "PRAGMA wal_checkpoint(TRUNCATE)", current=True
                 ) as cursor:
@@ -594,6 +596,7 @@ class SourceRecordMaintenance:
                     self.checkpoint_busy = bool(row[0])
             except SourceRecordBusy:
                 self.checkpoint_busy = True
+        return reclaimed
 
 
 class SourceRecordStore:
