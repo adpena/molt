@@ -107,6 +107,21 @@ fn has_direct_role(op: &TirOp) -> bool {
     }
 }
 
+/// The boxed runtime entry a direct call executes, with its physical arity.
+pub fn direct_boxed_runtime(op: &TirOp) -> Option<RuntimeFn> {
+    let runtime = op.runtime?;
+    if op.callee.is_some()
+        || !has_direct_role(op)
+        || op.origin.is_some_and(|kind| {
+            simpleir_call_target_role(kind) != Some(SimpleIrCallTargetRole::ExternalOrRuntime)
+        })
+        || runtime.params() != op.operands.len()
+    {
+        return None;
+    }
+    runtime.boxed_abi().map(|_| runtime)
+}
+
 /// The compiled function a direct call enters (HF-847 slice 1): its typed
 /// callee, never a spelling. An opaque call never has one.
 pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {

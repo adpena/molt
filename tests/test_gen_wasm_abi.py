@@ -380,6 +380,21 @@ def test_runtime_fn_names_every_runtime_entry_once() -> None:
         manifest.runtime_fn_specs(drifted)
 
 
+@pytest.mark.parametrize(
+    ("name", "success_type"),
+    [("is_truthy", "int"), ("operator_index", "i64")],
+)
+def test_python_success_type_needs_an_owned_object_and_a_semantic_type(
+    name: str,
+    success_type: str,
+) -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    entry = next(entry for entry in data["import"] if entry["name"] == name)
+    entry["python_success_type"] = success_type
+    with pytest.raises(manifest.WasmAbiManifestError, match="owned Python integer"):
+        manifest.runtime_fn_specs(data)
+
+
 def test_errno_protocols_are_separate_and_preserve_alias_order() -> None:
     data = copy.deepcopy(gen_wasm_abi.load_manifest())
     raw = manifest.wasi_errno_table(data)

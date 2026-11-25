@@ -134,6 +134,7 @@ pub(crate) struct ExactScalarPlan<'a> {
     handlers: HashSet<BlockId>,
     incoming: HashMap<BlockId, Vec<Vec<ValueId>>>,
     initial: HashMap<ValueId, TirType>,
+    successful_integers: HashSet<ValueId>,
     returns: Vec<ValueId>,
     returned_parameter: std::cell::OnceCell<Option<usize>>,
 }
@@ -145,12 +146,30 @@ impl<'a> ExactScalarPlan<'a> {
         let mut initial = HashMap::default();
         let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::default();
         let mut returns = Vec::new();
+        let mut integer_checks = HashMap::default();
+        let labels = std::cell::OnceCell::new();
         for id in &order {
             let block = &func.blocks[id];
             for arg in &block.args {
                 initial.insert(arg.id, TirType::Never);
             }
-            for op in &block.ops {
+            for (index, op) in block.ops.iter().enumerate() {
+                if let [result] = op.results.as_slice()
+                    && crate::tir::call_targets::direct_boxed_runtime(op)
+                        .is_some_and(|entry| entry.returns_exact_int_on_success())
+                    && let Some(check) = block.ops.get(index + 1)
+                    && check.opcode == OpCode::CheckException
+                    && matches!(check.origin, None | Some(molt_ir::OpKind::CheckException))
+                    && check.has_valid_shape()
+                    && crate::tir::dominators::exception_transfer_target(
+                        check,
+                        labels
+                            .get_or_init(|| crate::tir::dominators::exception_label_to_block(func)),
+                    )
+                    .is_some()
+                {
+                    integer_checks.insert(*result, (*id, index + 1));
+                }
                 for &result in &op.results {
                     initial.insert(result, TirType::Never);
                 }
@@ -162,8 +181,33 @@ impl<'a> ExactScalarPlan<'a> {
                 returns.extend(values);
             }
         }
+        // A runtime result may physically hold the exception sentinel. Only
+        // publish an SSA-wide exact type if normal continuation of its own
+        // observer dominates every use, including handler and phi-edge uses.
+        if !integer_checks.is_empty() {
+            let points = crate::tir::dominators::ProgramPointDominance::compute_executable(func);
+            for id in &order {
+                let block = &func.blocks[id];
+                let mut observe = |value, index| {
+                    if let Some(&(site, check)) = integer_checks.get(&value)
+                        && !points.definition_available(site, Some(check), *id, index)
+                    {
+                        integer_checks.remove(&value);
+                    }
+                };
+                for (index, op) in block.ops.iter().enumerate() {
+                    for &operand in &op.operands {
+                        observe(operand, index);
+                    }
+                }
+                block
+                    .terminator
+                    .for_each_value(|value| observe(value, block.ops.len()));
+            }
+        }
         Self {
             func,
+            successful_integers: integer_checks.into_keys().collect(),
             order,
             handlers,
             incoming,
@@ -359,6 +403,9 @@ impl<'a> ExactScalarPlan<'a> {
                     } else if let Some(proven) = op.exact_result_proof() {
                         // The late stage replaced an op whose result was exact.
                         vec![proven; op.results.len()]
+                    } else if self.successful_integers.contains(&op.results[0]) {
+                        // Semantic Python int, including a heap-backed BigInt.
+                        vec![TirType::I64]
                     } else if let Some(source) = scalar_source {
                         vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
                     } else if let Some(class) = super::result_inference::exact_allocation_class(op)

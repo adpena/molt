@@ -1090,6 +1090,20 @@ def runtime_fn_specs(data: dict) -> list[dict]:
         machine_result = signature["results"][0] if signature["results"] else None
         params = len(machine_params)
         result = contracts[entry["name"]]
+        if "python_success_type" in entry:
+            if (
+                entry["python_success_type"] != "int"
+                or result != "owned_object"
+                or machine_result != "i64"
+            ):
+                raise WasmAbiManifestError(
+                    f"runtime entry {symbol!r} needs an owned Python integer success result"
+                )
+            if symbol not in rows:
+                raise WasmAbiManifestError(
+                    f"runtime entry {symbol!r} needs a boxed call for its Python success result"
+                )
+            rows[symbol]["python_success_type"] = entry["python_success_type"]
         form = "raw_call" if symbol in raw else "helper"
         prior = rows.get(symbol)
         if prior is None:

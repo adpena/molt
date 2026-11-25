@@ -5866,6 +5866,14 @@ impl RuntimeFn {
     pub const fn result(self) -> RuntimeReturnContract {
         self.abi().result
     }
+    /// Whether successful return guarantees an exact, arbitrary-precision Python integer.
+    /// An exceptional return can carry a different boxed sentinel.
+    pub const fn returns_exact_int_on_success(self) -> bool {
+        matches!(
+            self,
+            Self::Buffer2dCols | Self::Buffer2dGet | Self::Buffer2dRows | Self::OperatorIndex
+        )
+    }
     /// The entry's runtime callable identity and trampoline ABI; a
     /// callable's arity is `params()`.
     pub const fn callable(self) -> Option<RuntimeCallableFacts> {

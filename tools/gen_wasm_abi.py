@@ -453,6 +453,11 @@ def render_runtime_fn_rs(data: dict) -> str:
     variants = [
         _wire_kind_variant(spec["runtime_name"].removeprefix("molt_")) for spec in specs
     ]
+    success_integers = [
+        f"Self::{variant}"
+        for variant, spec in zip(variants, specs, strict=True)
+        if spec.get("python_success_type") == "int"
+    ]
     if len(set(variants)) != len(variants):
         raise ValueError("RuntimeFn variant spellings collide")
     lines.extend(f"    {variant},\n" for variant in variants)
@@ -478,6 +483,15 @@ def render_runtime_fn_rs(data: dict) -> str:
             "    pub const fn param_types(self) -> &'static [RuntimeMachineType] { self.abi().param_types }\n",
             "    pub const fn result_type(self) -> Option<RuntimeMachineType> { self.abi().result_type }\n",
             "    pub const fn result(self) -> RuntimeReturnContract { self.abi().result }\n",
+            "    /// Whether successful return guarantees an exact, arbitrary-precision Python integer.\n",
+            "    /// An exceptional return can carry a different boxed sentinel.\n",
+            "    pub const fn returns_exact_int_on_success(self) -> bool {\n",
+            (
+                f"        matches!(self, {' | '.join(success_integers)})\n"
+                if success_integers
+                else "        false\n"
+            ),
+            "    }\n",
             "    /// The entry's runtime callable identity and trampoline ABI; a\n",
             "    /// callable's arity is `params()`.\n",
             "    pub const fn callable(self) -> Option<RuntimeCallableFacts> {\n",
