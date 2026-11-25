@@ -6020,6 +6020,21 @@ def test_synthetic_intrinsic_from_keeps_immutable_reader_under_import_hooks():
     assert result.value_known and result.value == "posix" and result.evaluation_required
 
 
+@pytest.mark.parametrize("molt_runtime_linked", [False, True])
+def test_runtime_probe_result_depends_on_execution_model(
+    molt_runtime_linked: bool,
+) -> None:
+    source = "from _intrinsics import runtime_active as selected\nselected()\n"
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(molt_runtime_linked=molt_runtime_linked)
+    )
+    call = ast.parse(source).body[-1].value
+    result = index.expression_result(call)
+    assert result.value_known is molt_runtime_linked
+    if molt_runtime_linked:
+        assert result.value is True and not result.evaluation_required
+
+
 @pytest.mark.parametrize(
     "source",
     [

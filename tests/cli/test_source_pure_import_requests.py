@@ -182,6 +182,27 @@ def test_warm_inventory_and_execution_requests_stay_disjoint(tmp_path, inventory
     }
 
 
+def test_linked_runtime_prunes_host_fallback_import_on_cold_and_warm_scan(
+    tmp_path: Path,
+) -> None:
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import runtime_active as available\n"
+        "if available():\n"
+        "    import guest_runtime\n"
+        "else:\n"
+        "    import host_fallback\n",
+    )
+    write(tmp_path / "guest_runtime.py")
+    write(tmp_path / "host_fallback.py")
+    cold = load(entry)
+    warm = load(entry)
+    assert not cold.cache_hit and warm.cache_hit
+    assert cold.scan == warm.scan
+    assert "guest_runtime" in warm.scan.imports
+    assert "host_fallback" not in warm.scan.imports
+
+
 def test_intrinsic_evidence_only_warms_inventory_requests(tmp_path: Path) -> None:
     source = write(tmp_path / "entry.py", "def deferred():\n    import leaf\n")
     write(tmp_path / "leaf.py")

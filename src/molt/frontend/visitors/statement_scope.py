@@ -254,6 +254,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 PythonBindingPolicy(
                     target_python=self.target_python,
                     class_preparation=PythonClassPreparation.MOLT_NATIVE,
+                    molt_runtime_linked=True,
                     target_sys_platform=self.target_sys_platform,
                     module_name=self.module_name,
                     module_spec_name=self.module_spec_name,

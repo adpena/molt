@@ -458,6 +458,9 @@ class PythonBindingFlowPolicy:
     declaration_only: tuple[PythonSourceKey, ...] = ()
     # Exact intrinsics whose only normal result on the linked runtime is None.
     normal_none_intrinsics: IdentityMask = 0
+    # Analysis can also describe hosted Python, where the loader reports
+    # whether it actually found a runtime.
+    molt_runtime_linked: bool = False
 
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
@@ -499,6 +502,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             frame_locals_writer=self.frame_locals_writer,
             declaration_only=self.declaration_only,
             normal_none_intrinsics=self.normal_none_intrinsics,
+            molt_runtime_linked=self.molt_runtime_linked,
         )
 
 
@@ -5004,6 +5008,18 @@ class _Analyzer:
             effects |= UNKNOWN_EFFECTS
             source_result_projected = True
         elif (
+            self.policy.molt_runtime_linked
+            and callee == int(PythonIdentity.INTRINSICS_RUNTIME_ACTIVE)
+            and not node.args
+            and not node.keywords
+        ):
+            # The compiler-owned callable returns the immediate True value
+            # without consulting Python namespaces or allocating. Ordinary
+            # module attribute lookup does not establish this identity.
+            result_fact = StaticExpressionResult.scalar(True)
+            result = result_fact.identities
+            specialization_valid = True
+        elif (
             (target_property := INTRINSIC_TARGET_PROPERTIES.get(callee)) is not None
             and not node.args
             and not node.keywords
@@ -6334,6 +6350,10 @@ class _Analyzer:
                     result_override, preserve_owner=result_override.fresh_container
                 )
             effects = evaluation_effects | invocation_effects | cleanup_effects
+            if effects and not result_override.evaluation_required:
+                # A result proof can prune successors but never erase work
+                # required to acquire or invoke the callee or retire operands.
+                result_override = replace(result_override, evaluation_required=True)
             key = self._node_key(node)
             previous_call = self.transfer.calls.get(key)
             builtin_specializations = NO_IDENTITIES

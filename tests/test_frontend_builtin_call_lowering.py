@@ -1792,6 +1792,93 @@ def test_intrinsic_require_lowers_to_public_runtime_symbol(runtime_name: str) ->
     assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
 
 
+def test_exact_linked_runtime_probe_is_folded_into_initialization() -> None:
+    source = (
+        "from _intrinsics import runtime_active as selected\n"
+        "active = selected()\n"
+        "if active:\n"
+        "    result = 'compiled runtime'\n"
+        "else:\n"
+        "    result = 'host fallback'\n"
+    )
+    gen = SimpleTIRGenerator(namespace_premise=WHOLE_PROGRAM)
+    gen.visit(ast.parse(source))
+    ops = next(
+        fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
+    )
+    assert any(
+        op["kind"] == "const_bool" and op.get("source_line") == 2 and op["value"] == 1
+        for op in ops
+    )
+    assert not any(
+        op["kind"].startswith("call") and op.get("source_line") == 2 for op in ops
+    )
+    assert any(op.get("s_value") == "compiled runtime" for op in ops)
+    assert not any(op.get("s_value") == "host fallback" for op in ops)
+
+
+def test_known_call_condition_keeps_an_argument_store() -> None:
+    gen = SimpleTIRGenerator(namespace_premise=WHOLE_PROGRAM)
+    gen.visit(
+        ast.parse(
+            "if bool(observed := True):\n"
+            "    result = 'live arm'\n"
+            "else:\n"
+            "    result = 'dead arm'\n"
+            "print(observed)\n"
+        )
+    )
+    ops = next(
+        fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
+    )
+    assert _module_attr_accesses(ops, "module_set_attr", "observed")
+    assert any(op.get("s_value") == "live arm" for op in ops)
+    assert not any(op.get("s_value") == "dead arm" for op in ops)
+
+
+@pytest.mark.parametrize(
+    ("setup", "call"),
+    [
+        ("from _intrinsics import runtime_active as selected", "selected(*arguments)"),
+        (
+            "from _intrinsics import runtime_active as selected\nselected = other",
+            "selected()",
+        ),
+        (
+            "import _intrinsics as provider\nprovider.runtime_active = other",
+            "provider.runtime_active()",
+        ),
+        ("import _intrinsics as provider", "provider.runtime_active()"),
+    ],
+)
+def test_runtime_probe_keeps_unproved_calls(setup: str, call: str) -> None:
+    source = f"{setup}\nresult = {call}\n"
+    gen = SimpleTIRGenerator(namespace_premise=WHOLE_PROGRAM)
+    gen.visit(ast.parse(source))
+    ops = next(
+        fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
+    )
+    line = len(source.splitlines())
+    call_results = {
+        op["out"]
+        for op in ops
+        if op.get("source_line") == line
+        and op["kind"]
+        in {"call_bind", "call_func", "call_loaded_method", "call_guarded"}
+    }
+    keys = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "const_str" and op["s_value"] == "result"
+    }
+    assert any(
+        op["kind"] == "module_set_attr"
+        and op["args"][1] in keys
+        and op["args"][2] in call_results
+        for op in ops
+    )
+
+
 @pytest.mark.parametrize("name", ["globals", "locals", "vars", "__import__"])
 @pytest.mark.parametrize("chunked", [False, True])
 def test_invalidated_builtin_acquisition_keeps_mutable_lookup_name(

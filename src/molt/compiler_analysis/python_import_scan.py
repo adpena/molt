@@ -130,6 +130,7 @@ def _source_binding_policy(
     return python_namespace_binding_policy(
         PythonBindingPolicy(
             class_preparation=PythonClassPreparation.MOLT_NATIVE,
+            molt_runtime_linked=True,
             target_python=target_python.feature_version,
             target_sys_platform=target_sys_platform,
             module_name=module_name,
