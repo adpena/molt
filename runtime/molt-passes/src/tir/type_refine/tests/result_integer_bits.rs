@@ -361,3 +361,58 @@ fn checked_runtime_integer_requires_the_actual_target_check_and_only_successful_
         assert!(!types.contains_key(&ValueId(2)), "{change}");
     }
 }
+
+#[test]
+fn compiled_return_evidence_requires_successful_uses_in_checked_bodies() {
+    let result = ValueId(1);
+    for opcode in [OpCode::Call, OpCode::DirectCall] {
+        for mode in ["success", "handler", "before check", "no observer"] {
+            let mut func =
+                checked_runtime_integer(molt_ir::runtime_fn_generated::RuntimeFn::OperatorIndex);
+            let ops = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops;
+            let mut call = TirOp::new(opcode, vec![ValueId(0)], vec![result]);
+            call.callee = Some(molt_ir::FunctionId(0));
+            assert!(call.mark_exact_result_proof(&TirType::F64));
+            ops[1] = call;
+            if mode == "before check" {
+                ops.swap(2, 3);
+            } else if mode == "no observer" {
+                ops.remove(2);
+            }
+            if opcode == OpCode::DirectCall {
+                ops.insert(2, TirOp::new(OpCode::RecursionRelease, vec![], vec![]));
+            }
+            if mode == "handler" {
+                func.blocks.get_mut(&BlockId(1)).unwrap().terminator = Terminator::Return {
+                    values: vec![result],
+                };
+            }
+            let expected = if mode == "success" {
+                TirType::F64
+            } else {
+                TirType::DynBox
+            };
+            assert_eq!(
+                solve_exact_scalars(&func, ExactSeeds::default())[&result],
+                expected,
+                "{opcode:?} {mode}"
+            );
+            if opcode == OpCode::Call {
+                func.blocks.get_mut(&func.entry_block).unwrap().ops[1].clear_exact_result_proof();
+                let sites = HashMap::from_iter([(result, 0)]);
+                let seeds = ExactSeeds {
+                    call_results: Some(ExactCallResults {
+                        sites: &sites,
+                        types: &[TirType::F64],
+                    }),
+                    ..ExactSeeds::default()
+                };
+                assert_eq!(
+                    solve_exact_scalars(&func, seeds)[&result],
+                    expected,
+                    "seeded {mode}"
+                );
+            }
+        }
+    }
+}
