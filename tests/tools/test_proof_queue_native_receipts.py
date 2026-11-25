@@ -257,10 +257,12 @@ def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifact
     def execute(command: list[str]) -> None:
         run_custody_subject_process(command, check=True)
 
+    # The harness selects storage for its capability probe. The subject's
+    # policy still receives only the required environment plus fixture input.
     binary = _native_supervisor_binary()
     try:
         required_environment = supervisor_custody.required_execution_environment(
-            binary=binary, mode="leaf", cwd=tmp_path, env={}
+            binary=binary, mode="leaf", cwd=tmp_path, env=os.environ
         )
     except supervisor_custody.SupervisorPrelaunchRefused as refusal:
         # An actual planner refusal proves only prelaunch ineligibility, never
@@ -287,7 +289,7 @@ def test_native_verifier_binds_consumer_to_raw_receipt_generation(
     binary = _native_supervisor_binary()
     try:
         required = supervisor_custody.required_execution_environment(
-            binary=binary, mode="leaf", cwd=tmp_path, env={}
+            binary=binary, mode="leaf", cwd=tmp_path, env=os.environ
         )
     except supervisor_custody.SupervisorPrelaunchRefused as refusal:
         assert refusal.capability["admission"]["state"] == "ineligible"
@@ -337,7 +339,7 @@ def test_native_verifier_binds_consumer_to_raw_receipt_generation(
             policy_path=policy_path,
             receipt_path=receipt_path,
             cwd=tmp_path,
-            env=required,
+            env=os.environ,
         )
     assert len(observed) == 1
     assert receipt_path.read_bytes() == original
