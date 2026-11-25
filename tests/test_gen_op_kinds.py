@@ -5193,7 +5193,7 @@ def test_python_value_forwarding_is_generated_without_effect_or_custody_changes(
         ["frame_home_store", "frame_home_store"],
     ],
 )
-def test_python_value_forwarding_rejects_invalid_declarations(members) -> None:
+def test_python_value_forwarding_rejects_invalid_declarations(members: object) -> None:
     gen = _gen()
     data = json.loads(json.dumps(gen.load_table()))
     data["classifier_python_value_forward"] = members
@@ -5202,7 +5202,7 @@ def test_python_value_forwarding_rejects_invalid_declarations(members) -> None:
 
 
 @pytest.mark.parametrize("arity", [0, 2, True, "one"])
-def test_python_value_forwarding_requires_a_unary_shape(arity) -> None:
+def test_python_value_forwarding_requires_a_unary_shape(arity: int | str) -> None:
     gen = _gen()
     data = json.loads(json.dumps(gen.load_table()))
     for row in data["simpleir_op_shape"]:
