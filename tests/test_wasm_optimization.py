@@ -532,17 +532,30 @@ class TestWasmOptReduction:
         find_wasm_opt() is None,
         reason="wasm-opt not installed (Binaryen)",
     )
-    def test_optimize_reduces_size(self, hello_wasm_path: Path, tmp_path: Path) -> None:
-        """wasm-opt -O2 should reduce the module size."""
+    def test_o2_reduces_size_and_preserves_module(
+        self, hello_wasm_path: Path, tmp_path: Path
+    ) -> None:
+        output = tmp_path / "optimized.wasm"
         original_size = hello_wasm_path.stat().st_size
 
-        result = optimize(hello_wasm_path, output_path=tmp_path / "optimized.wasm")
+        result = optimize(hello_wasm_path, output_path=output)
         assert result["ok"], f"wasm-opt failed: {result['error']}"
         assert result["output_bytes"] > 0
         assert result["output_bytes"] < original_size, (
             f"Expected size reduction: {original_size} -> {result['output_bytes']}"
         )
         assert result["reduction_pct"] > 0
+
+        with output.open("rb") as stream:
+            header = stream.read(8)
+        assert header[:4] == b"\x00asm", "Missing WASM magic bytes after optimisation"
+        assert header[4:] == b"\x01\x00\x00\x00", (
+            "Unexpected WASM version after optimisation"
+        )
+
+        code = [section for section in parse_sections(output) if section.name == "code"]
+        assert code, "Optimised module has no code section"
+        assert code[0].size > 0, "Code section is empty after optimisation"
 
     @pytest.mark.skipif(
         find_wasm_opt() is None,
@@ -931,48 +944,6 @@ class TestWasmOptAtomicPublication:
         assert destination.read_bytes() == b"previous-output"
         assert len(staged) == 1
         assert not staged[0].exists()
-
-
-# ---------------------------------------------------------------------------
-# Tests: optimised module correctness
-# ---------------------------------------------------------------------------
-
-
-class TestOptimisedModuleCorrectness:
-    """After wasm-opt the module should still be valid WASM."""
-
-    @pytest.mark.skipif(
-        find_wasm_opt() is None,
-        reason="wasm-opt not installed (Binaryen)",
-    )
-    def test_optimised_module_has_wasm_header(
-        self, hello_wasm_path: Path, tmp_path: Path
-    ) -> None:
-        opt_path = tmp_path / "optimized.wasm"
-        result = optimize(hello_wasm_path, output_path=opt_path)
-        assert result["ok"]
-
-        data = opt_path.read_bytes()
-        assert data[:4] == b"\x00asm", "Missing WASM magic bytes after optimisation"
-        assert data[4:8] == b"\x01\x00\x00\x00", (
-            "Unexpected WASM version after optimisation"
-        )
-
-    @pytest.mark.skipif(
-        find_wasm_opt() is None,
-        reason="wasm-opt not installed (Binaryen)",
-    )
-    def test_optimised_module_has_code_section(
-        self, hello_wasm_path: Path, tmp_path: Path
-    ) -> None:
-        opt_path = tmp_path / "optimized.wasm"
-        result = optimize(hello_wasm_path, output_path=opt_path)
-        assert result["ok"]
-
-        sections = parse_sections(opt_path)
-        code_sections = [s for s in sections if s.name == "code"]
-        assert len(code_sections) >= 1, "Optimised module has no code section"
-        assert code_sections[0].size > 0, "Code section is empty after optimisation"
 
 
 # ---------------------------------------------------------------------------
