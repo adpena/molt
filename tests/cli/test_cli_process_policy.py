@@ -9,6 +9,7 @@ once through ``exit_process``, and requires the same status and output.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 import textwrap
 
@@ -96,6 +97,21 @@ def test_cli_entry_matches_interpreter_shutdown() -> None:
         )
         oracle = _run(normal)
         assert _run(entry) == oracle
+
+
+def test_compiler_process_does_not_generate_import_bytecode(tmp_path: Path) -> None:
+    module = tmp_path / "compiler_import.py"
+    module.write_text("answer = 42\n", encoding="utf-8")
+    setup = f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
+    status, stdout, stderr = _run(
+        setup
+        + "from molt import compiler_process; "
+        + "sys.pycache_prefix = None; sys.dont_write_bytecode = False; "
+        + "compiler_process.configure(); "
+        + "import compiler_import; print(compiler_import.answer)"
+    )
+    assert (status, stdout, stderr) == (0, "42\n", "")
+    assert not tuple(tmp_path.rglob("*.pyc"))
 
 
 def _worker_process_observation() -> dict[str, object]:

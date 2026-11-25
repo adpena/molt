@@ -1150,9 +1150,8 @@ def _prepare_non_native_build_result_in_generation(
             runtime_admission_args = RuntimeWasmTrust.of(runtime_generation).arguments(
                 runtime_generation.manifest
             )
-            link_cmd = [
-                sys.executable,
-                str(tool),
+            link_command_prefix = [sys.executable, "-B", str(tool)]
+            link_args = [
                 "--runtime",
                 str(runtime_reloc_wasm),
                 "--input",
@@ -1161,12 +1160,12 @@ def _prepare_non_native_build_result_in_generation(
                 str(wasm_facts_scanner),
             ]
             if resolved_linked_output is not None:
-                link_cmd.extend(["--output", str(resolved_linked_output)])
-            link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
+                link_args.extend(["--output", str(resolved_linked_output)])
+            link_args.extend(["--app-export-contract", str(app_export_contract_path)])
             if stdlib_archive is not None:
                 # The shared stdlib archive the wasm32 application object was
                 # partitioned from; the link loads every member.
-                link_cmd.extend(["--stdlib-archive", str(stdlib_archive)])
+                link_args.extend(["--stdlib-archive", str(stdlib_archive)])
             native_link_plan_bytes = canonical_json_bytes(
                 {
                     "link_requirements": wasm_link_requirements.manifest_payload(),
@@ -1175,7 +1174,7 @@ def _prepare_non_native_build_result_in_generation(
             if _split_runtime:
                 assert runtime_wasm is not None
                 split_dir = output_wasm.parent
-                link_cmd.extend(
+                link_args.extend(
                     [
                         "--split-runtime",
                         "--runtime-shared",
@@ -1185,11 +1184,11 @@ def _prepare_non_native_build_result_in_generation(
                     ]
                 )
             if is_wasm_freestanding:
-                link_cmd.append("--freestanding")
+                link_args.append("--freestanding")
             if linked_opt_level is not None:
-                link_cmd.extend(["--optimize", "--optimize-level", linked_opt_level])
+                link_args.extend(["--optimize", "--optimize-level", linked_opt_level])
             if profile == "dev":
-                link_cmd.append("--preserve-debug-sections")
+                link_args.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             try:
                 linker_identity = wasm_toolchain.resolve_wasm_linker()
@@ -1233,7 +1232,7 @@ def _prepare_non_native_build_result_in_generation(
                         identity.sha256,
                     )
                 ]
-                link_cmd.extend(expected_input_args)
+                link_args.extend(expected_input_args)
                 if linked_opt_level is not None:
                     optimizer_cache_fact = wasm_optimizer_cache_fact()
                 deploy_asset_root = molt_root / "wasm"
@@ -1333,6 +1332,11 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm.resolve(),
                         app_export_contract_path.resolve(),
                     }
+                    # The backend's stdlib archive is derived from the same
+                    # recorded compiler and program inputs as the app object.
+                    # Its exact bytes still key and fence the final link.
+                    if stdlib_archive is not None:
+                        internal_inputs.add(stdlib_archive.resolve())
                     for identity in (*admitted_link_inputs, *runtime_link_members):
                         if identity.path not in internal_inputs:
                             input_report.report_captured_file(
@@ -1358,7 +1362,7 @@ def _prepare_non_native_build_result_in_generation(
                     *((Path(host_binary),) if host_binary is not None else ()),
                     app_export_contract_path,
                 ],
-                link_cmd=link_cmd,
+                link_cmd=link_args,
                 observed_inputs=observed_link_inputs,
                 tool_facts=(
                     *(
@@ -1460,7 +1464,10 @@ def _prepare_non_native_build_result_in_generation(
                     link_skipped = False
             if link_skipped:
                 link_process = subprocess.CompletedProcess(
-                    [*link_cmd, *runtime_admission_args], 0, "", ""
+                    [*link_command_prefix, *link_args, *runtime_admission_args],
+                    0,
+                    "",
+                    "",
                 )
                 artifacts.update(deployment_plan.artifacts())
                 if _split_runtime:
@@ -1468,10 +1475,10 @@ def _prepare_non_native_build_result_in_generation(
             else:
                 native_link_plan_path: Path | None = None
                 link_timings_path: Path | None = None
-                link_run_cmd = link_cmd.copy()
+                link_run_args = link_args.copy()
                 # Rejected bytes outlive both linker scratch and the private
                 # deployment generation, even when final publication fails.
-                link_run_cmd.extend(
+                link_run_args.extend(
                     [
                         "--failure-evidence-dir",
                         str(deployment_plan.root / "wasm-link-evidence"),
@@ -1486,11 +1493,11 @@ def _prepare_non_native_build_result_in_generation(
                         WasmDeploymentGeneration.prepare(deployment_plan)
                     )
                     if "linked" in link_outputs:
-                        link_run_cmd[link_run_cmd.index("--output") + 1] = str(
+                        link_run_args[link_run_args.index("--output") + 1] = str(
                             deployment.outputs["linked"]
                         )
                     if _split_runtime:
-                        link_run_cmd[link_run_cmd.index("--split-output-dir") + 1] = (
+                        link_run_args[link_run_args.index("--split-output-dir") + 1] = (
                             str(deployment.root)
                         )
                     deployment_entry = deployment.outputs[
@@ -1500,10 +1507,10 @@ def _prepare_non_native_build_result_in_generation(
                         deployment_entry, purpose="native-link-plan"
                     )
                     native_link_plan_path.write_bytes(native_link_plan_bytes)
-                    link_run_cmd.extend(
+                    link_run_args.extend(
                         ["--native-link-plan", str(native_link_plan_path)]
                     )
-                    link_run_cmd.extend(
+                    link_run_args.extend(
                         [
                             "--expected-input",
                             str(native_link_plan_path.resolve()),
@@ -1514,7 +1521,7 @@ def _prepare_non_native_build_result_in_generation(
                         link_timings_path = staged_file_path(
                             deployment_entry, purpose="link-timings"
                         )
-                        link_run_cmd.extend(
+                        link_run_args.extend(
                             ["--phase-timings-file", str(link_timings_path)]
                         )
                     # The runtime pair already owns the shared member. Cache
@@ -1526,7 +1533,7 @@ def _prepare_non_native_build_result_in_generation(
                     }
                     link_result_entry = final_link_cache_entry(
                         final_link_cache_key(
-                            link_run_cmd,
+                            link_run_args,
                             cwd=molt_root,
                             observed_inputs=observed_link_inputs,
                             tool_facts=(
@@ -1547,7 +1554,11 @@ def _prepare_non_native_build_result_in_generation(
                             ),
                         )
                     )
-                    link_run_cmd.extend(runtime_admission_args)
+                    link_run_cmd = [
+                        *link_command_prefix,
+                        *link_run_args,
+                        *runtime_admission_args,
+                    ]
                     link_process = subprocess.CompletedProcess(link_run_cmd, 0, "", "")
 
                     def admit_link_result() -> None:

@@ -23306,7 +23306,14 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from molt import build_record
+    from molt.default_paths import shared_stdlib_cache_entry
     from molt.toolchain_identity import stable_regular_file_identity
+
+    archive_dir, _lock = shared_stdlib_cache_entry(isolated_molt_cache, "a" * 64)
+    archive_dir.mkdir(parents=True)
+    stdlib_archive = archive_dir / "stdlib.a"
+    stdlib_archive.write_bytes(b"!<arch>\n")
 
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23413,7 +23420,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "precompile": False,
         "wasm_facts_scanner": tmp_path / "molt-wasm-facts",
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
-        "stdlib_archive": None,
+        "stdlib_archive": stdlib_archive,
     }
 
     # A checkout cannot borrow deployment source from another tree.
@@ -23429,8 +23436,18 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     monkeypatch.setattr(cli_non_native_output, "__file__", str(deployment_source))
 
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
-    first, first_err = cli_non_native_output._prepare_non_native_build_result(
-        validate_inputs=lambda: None, **common_kwargs, phase_starts=first_phase_starts
+    with build_record.recording(tmp_path / "recording") as ledger:
+        first, first_err = cli_non_native_output._prepare_non_native_build_result(
+            validate_inputs=lambda: None,
+            **common_kwargs,
+            phase_starts=first_phase_starts,
+        )
+    build_record.resolve_observed(ledger, (isolated_molt_cache,))
+    assert str(stdlib_archive) not in ledger.files
+    allowlist = wasm_link.with_name("wasm_allowed_imports.txt")
+    assert (
+        ledger.files[str(allowlist)].sha256
+        == hashlib.sha256(allowlist.read_bytes()).hexdigest()
     )
     assert first_err is None
     assert first is not None
@@ -23445,11 +23462,21 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         <= first_phase_starts["wasm_publish"]
     )
     first_cmd = link_calls[0]
-    assert first_cmd[:4] == [
+    assert first_cmd[:5] == [
         sys.executable,
+        "-B",
         str(wasm_link),
         "--runtime",
         str(runtime_reloc_wasm),
+    ]
+    assert first_cmd[first_cmd.index("--stdlib-archive") + 1] == str(stdlib_archive)
+    assert [
+        str(stdlib_archive),
+        hashlib.sha256(stdlib_archive.read_bytes()).hexdigest(),
+    ] in [
+        first_cmd[index + 1 : index + 3]
+        for index, argument in enumerate(first_cmd)
+        if argument == "--expected-input"
     ]
     assert "--runtime-shared" not in first_cmd
     assert first_cmd[first_cmd.index("--runtime-generation") + 1] == str(

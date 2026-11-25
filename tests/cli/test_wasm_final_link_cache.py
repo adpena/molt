@@ -17,12 +17,8 @@ from molt.cli import wasm_final_link_cache as cache
 from molt.cli import wasm_link_cache
 
 
-def _link_cmd(
-    tmp_path: Path, *, out_dir: Path, app: Path, timings: str, split_dir: str
-) -> list[str]:
+def _link_args(*, out_dir: Path, app: Path, timings: str, split_dir: str) -> list[str]:
     return [
-        sys.executable,
-        str(tmp_path / "wasm_link.py"),
         "--input",
         str(app),
         "--output",
@@ -54,8 +50,7 @@ def test_key_ignores_private_locations_and_follows_input_content(
 
     def key(out: str, timings: str, split: str) -> str:
         return cache.final_link_cache_key(
-            _link_cmd(
-                tmp_path,
+            _link_args(
                 out_dir=tmp_path / out,
                 app=app,
                 timings=timings,
@@ -92,7 +87,7 @@ def test_repeated_input_uses_one_exact_capture_and_rejects_replacement(
     obs = toolchain_identity.StableRegularFileObservation.capture(app, label="app")
     observations = {str(app): obs} if admit_before_key else None
     reads.clear()
-    cmd = _link_cmd(tmp_path, out_dir=tmp_path, app=app, timings="t", split_dir="s")
+    cmd = _link_args(out_dir=tmp_path, app=app, timings="t", split_dir="s")
     cmd.extend(
         ("--expected-input", app.name, hashlib.sha256(app.read_bytes()).hexdigest())
     )
@@ -118,7 +113,7 @@ def test_key_keeps_the_embedded_module_name_and_hashes_relative_inputs(
 ) -> None:
     app = _inputs(tmp_path)
     facts = ({"role": "wasm-link-source-closure", "content_digest": "a" * 64},)
-    base = _link_cmd(tmp_path, out_dir=tmp_path, app=app, timings="t", split_dir="s")
+    base = _link_args(out_dir=tmp_path, app=app, timings="t", split_dir="s")
     renamed = list(base)
     renamed[renamed.index("--output") + 1] = str(tmp_path / "other_linked.wasm")
     relative = list(base)
@@ -248,7 +243,7 @@ def test_failure_evidence_destination_is_not_a_link_content_input(
     tmp_path: Path,
 ) -> None:
     app = _inputs(tmp_path)
-    command = _link_cmd(tmp_path, out_dir=tmp_path, app=app, timings="t", split_dir="s")
+    command = _link_args(out_dir=tmp_path, app=app, timings="t", split_dir="s")
     facts = ({"role": "wasm-link-source-closure", "content_digest": "a" * 64},)
     expected = cache.final_link_cache_key(command, cwd=tmp_path, tool_facts=facts)
     for destination in (tmp_path / "first", tmp_path / "second"):

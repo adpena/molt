@@ -36,16 +36,12 @@ _MONITORING_TOOL_IDS = range(6)
 
 
 def configure() -> None:
-    """Pace CPython's cyclic collector for a compiler-sized heap."""
+    """Configure a dedicated compiler process before it loads the compiler."""
     if sys.implementation.name == "cpython":
         gc.set_threshold(*GC_THRESHOLDS)
-
-    from molt.source_root import packaged_distribution_root
-
-    if packaged_distribution_root() is not None:
-        # The wheel may import tools from its immutable distribution source.
-        # Archive bootstrap already selects the same no-write lifecycle.
-        sys.dont_write_bytecode = True
+    # Compiler imports must not change the inputs of a recorded build.
+    # Python may still load bytecode already installed by the environment.
+    sys.dont_write_bytecode = True
 
 
 def worker_context() -> BaseContext:
