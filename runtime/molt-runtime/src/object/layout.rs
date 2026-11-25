@@ -1767,7 +1767,14 @@ pub(crate) struct CodeCallableIdentity {
 }
 
 /// Code word 27: the executable target published with the callable identity.
-const CODE_CALL_TARGET_WORD: usize = 27;
+pub(crate) const CODE_CALL_TARGET_WORD: usize = 27;
+pub(crate) const CODE_PAYLOAD_WORDS: usize = CODE_CALL_TARGET_WORD + 1;
+
+unsafe fn code_call_target_slot(ptr: *mut u8) -> *mut *const () {
+    // Code metadata is laid out in u64 words even on wasm32. Index the
+    // payload first, then load or store the target with pointer provenance.
+    unsafe { ptr.cast::<u64>().add(CODE_CALL_TARGET_WORD).cast() }
+}
 
 pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallableIdentity> {
     unsafe {
@@ -1787,7 +1794,7 @@ pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallable
             arity: code_callable_arity(ptr),
             call_abi,
             custody,
-            call_target: *ptr.cast::<*const ()>().add(CODE_CALL_TARGET_WORD),
+            call_target: *code_call_target_slot(ptr),
         })
     }
 }
@@ -2344,7 +2351,7 @@ unsafe fn code_publish_callable_identity_unchecked(ptr: *mut u8, identity: CodeC
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
         *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) =
             call_abi_word(identity.call_abi, identity.custody);
-        *ptr.cast::<*const ()>().add(CODE_CALL_TARGET_WORD) = identity.call_target;
+        *code_call_target_slot(ptr) = identity.call_target;
     }
 }
 

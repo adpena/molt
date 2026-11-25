@@ -2046,7 +2046,8 @@ pub(crate) fn alloc_code_obj(
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
     // Word 25 owns an optional immutable dataclass initialization plan. It
     // contains indices only; Python defaults/factories remain function owners.
-    let total = std::mem::size_of::<MoltHeader>() + 28 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>()
+        + crate::object::layout::CODE_PAYLOAD_WORDS * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -2081,7 +2082,8 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *(ptr.add(27 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *ptr.cast::<u64>()
+            .add(crate::object::layout::CODE_CALL_TARGET_WORD) = 0;
         crate::object::layout::code_set_scope_kind(
             ptr,
             if crate::object::ops::exact_string_bytes(_py, name_bits)
