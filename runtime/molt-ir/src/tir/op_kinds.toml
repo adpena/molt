@@ -3353,6 +3353,7 @@ result_absorbs_operands = false
 # inline window (RawI64Safe); it allocates nothing and cannot raise.
 [[opcode]]
 name = "IsInlineInt"
+proves_immediate_on_true = true
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["bool"]
@@ -3377,6 +3378,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "IsBoolWord"
+proves_immediate_on_true = true
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["bool"]
@@ -3405,6 +3407,7 @@ result_absorbs_operands = false
 # inverse is BoxVal of an f64 (runtime spec 2.1.1), which cannot raise.
 [[opcode]]
 name = "IsFloatWord"
+proves_immediate_on_true = true
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["bool"]

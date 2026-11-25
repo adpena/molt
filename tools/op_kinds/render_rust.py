@@ -430,6 +430,19 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append(_render_opcode_bool_arms(opcodes, polyhedral_affine_body))
     out.append("    }\n}\n\n")
+    out.append(
+        "/// A true result proves the sole operand carries no heap reference.\n"
+        "#[inline]\n"
+        "pub fn opcode_proves_immediate_on_true(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(
+        _render_opcode_bool_arms(
+            opcodes,
+            [row["name"] for row in opcodes if row.get("proves_immediate_on_true")],
+        )
+    )
+    out.append("    }\n}\n\n")
     out.append(_render_refcount_balance_role(opcodes, data))
     out.append("\n")
 

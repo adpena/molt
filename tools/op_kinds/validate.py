@@ -253,6 +253,13 @@ def load_table(table_path: Path = TABLE) -> dict:
             if result_types is not None and len(result_types) == 1
             else None
         )
+        immediate_test = row.get("proves_immediate_on_true", False)
+        if type(immediate_test) is not bool or (
+            immediate_test and (operand_arity != 1 or result_types != ["bool"])
+        ):
+            raise OpKindTableError(
+                f"opcode {name}: proves_immediate_on_true requires one operand and one bool result"
+            )
         comparison = row.get("predicate_semantics")
         exact_scalar = row.get("exact_scalar_result_type")
         if exact_scalar is not None and (
