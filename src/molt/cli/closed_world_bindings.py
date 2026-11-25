@@ -37,7 +37,10 @@ from typing import Any
 
 from molt._public_objects_generated import PUBLIC_DIRECT_CALL_BINDINGS
 from molt.compiler_analysis.python_import_redirects import ImportRedirects
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    python_namespace_stability_reason,
+)
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM, _intrinsic_signature
 from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
@@ -86,22 +89,7 @@ class ModuleNamespaceFacts:
     isolate_spawn_line: int | None = None
 
     def stable_reason(self, name: str) -> str | None:
-        """Why code may rebind ``name`` after initialization, or None."""
-        if self.own_names is None:
-            return "its module reflects its own namespace dynamically"
-        if name in self.own_names:
-            return "deferred code in its module writes it (global declaration)"
-        if self.premise is None or self.premise.foreign_writes is None:
-            return (
-                "the program writes some module namespace by a computed name "
-                "or mapping, so no module's foreign writers are known"
-            )
-        writer = self.premise.escape_writer(name)
-        if writer is not None:
-            return f"written at {writer} through an escaped module value"
-        if name in self.premise.foreign_writes:
-            return "another module writes it by name"
-        return None
+        return python_namespace_stability_reason(self.own_names, self.premise, name)
 
 
 @dataclass(frozen=True)

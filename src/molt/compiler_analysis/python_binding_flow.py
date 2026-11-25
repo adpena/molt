@@ -6137,6 +6137,26 @@ class _Analyzer:
                 if fallback_operand is not None
                 else None
             )
+            argument_call = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and (
+                    receiver_fact := self.transfer.expressions.get(
+                        self._node_key(node.func.value)
+                    )
+                )
+                is not None
+                and receiver_fact.name_lookup == "global"
+                and not receiver_fact.star_export_lookup
+                and not receiver_fact.binding_invalidated
+                and callee_result.result.source_origins
+                == {python_node_source_key(node.func)}
+                and python_node_source_key(node) in self.transfer.source_calls
+                and not node.keywords
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                argument_call = python_node_source_key(node)
             for argument_index, argument in enumerate(
                 () if deferred_factory_only else argument_results
             ):
@@ -6171,7 +6191,7 @@ class _Analyzer:
                     # exposure as deferred objects. The scanner must not repeat
                     # this transfer for proven builtin/source callees.
                     deferred_execution |= frozenset(
-                        DeferredExecution(source, "expose")
+                        DeferredExecution(source, "expose", argument_call)
                         for source in argument.exposed_source_origins
                     )
                     if argument.exposes_module_globals:

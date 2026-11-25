@@ -934,7 +934,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # Completed projections from older schemas are never admitted as source requests.
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 55
+# 56: generic positional argument exposure retains its qualified call site.
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 56
 
 
 def _import_scan_cache_key(
@@ -1322,11 +1323,16 @@ def _decode_import_scan_payload(
                 phase,
                 argument_count,
                 _decode_optional_source_key(owner),
+                _decode_optional_source_key(argument_call),
             )
-            for source, phase, argument_count, owner in rows("source_demands", 4)
+            for source, phase, argument_count, owner, argument_call in rows(
+                "source_demands", 5
+            )
         )
         if any(
             item.phase not in get_args(SourceDemandPhase)
+            or item.argument_call is not None
+            and (item.phase != "expose" or item.argument_call[-1] != "Call")
             or item.argument_count is not None
             and (
                 type(item.argument_count) is not int
@@ -1758,6 +1764,7 @@ def _import_scan_payload(
                 item.phase,
                 item.argument_count,
                 item.owner,
+                item.argument_call,
             ]
             for item in scan.source_demands
         ],

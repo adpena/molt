@@ -3622,3 +3622,127 @@ def test_archive_feature_switch_separates_persisted_scan_results(
         cached = scan(premise)
         assert cached.cache_hit
         assert cached.scan.source_requests == expected.scan.source_requests
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "ordinary",
+        "import_alias",
+        "effectful_body",
+        "provider_rebind",
+        "consumer_rebind",
+        "reflected_write",
+        "partial_import",
+        "decorator",
+        "same_statement_writer",
+        "unknown_result",
+        "cache_redirect",
+        "callee_before_arguments",
+        "late_writer",
+    ],
+)
+def test_qualified_argument_exposure_follows_publication(
+    tmp_path: Path, case: str
+) -> None:
+    # Box has ordinary construction and one observable member. Passing an
+    # instance to an exhaustively bound source function transfers it to its
+    # formal. Every other callable can publish the object or shadow its member.
+    provider = (
+        "class Box:\n    def __init__(self, n): self.n = n\n    def value(self):\n        import used_leaf\n        return self.n\n"
+        "def make(): return Box(7)\n"
+        "def inspect_box(obj): return obj.value()\n"
+    )
+    entry = "import lib as api\ndef run(): return api.inspect_box(api.make())\nrun()\n"
+    if case == "ordinary":
+        entry = entry.replace("lib as api", "lib").replace("api.", "lib.")
+    if case == "effectful_body":
+        provider = provider.replace("return obj.value()", "return obj.__dict__")
+    elif case == "provider_rebind":
+        provider += "inspect_box = print\n"
+    elif case == "consumer_rebind":
+        entry = entry.replace(
+            "run()\n",
+            "api = type('Other', (), {'make': api.make, 'inspect_box': print})\nrun()\n",
+        )
+    elif case == "reflected_write":
+        entry = entry.replace("run()\n", "vars(api)['inspect_box'] = print\nrun()\n")
+    elif case == "partial_import":
+        provider = provider.replace(
+            "def inspect_box",
+            "def __getattr__(name): return print\nimport cycle\ndef inspect_box",
+        )
+        (tmp_path / "cycle.py").write_text(
+            "import lib\nlib.inspect_box(lib.make())\n", encoding="utf-8"
+        )
+    elif case == "decorator":
+        provider = provider.replace(
+            "def inspect_box",
+            "def decorate(f): return print\n@decorate\ndef inspect_box",
+        )
+    elif case == "same_statement_writer":
+        provider = provider.replace(
+            "inspect_box(obj)", "inspect_box(obj, hidden=(inspect_box := print))"
+        )
+    elif case == "unknown_result":
+        provider += "if __name__ != 'hidden': inspect_box = type('Callable', (), {'__call__': print})()\n"
+    elif case == "cache_redirect":
+        entry = "import sys\n" + entry.replace(
+            "def run", "sys.modules['lib'] = api\ndef run"
+        )
+    elif case == "callee_before_arguments":
+        entry = (
+            "import lib as api\n"
+            "def replace_target():\n    api.inspect_box = print\n    return api.make()\n"
+            "api.inspect_box(replace_target())\n"
+        )
+    (tmp_path / "used_leaf.py").write_text("", encoding="utf-8")
+    (tmp_path / "lib.py").write_text(provider, encoding="utf-8")
+    root = tmp_path / "entry.py"
+    root.write_text(entry, encoding="utf-8")
+    key = python_node_source_key(ast.parse(provider).body[0])
+
+    def discover(
+        path: Path,
+        continuation: module_graph_discovery._ModuleGraphDiscovery | None = None,
+    ) -> _DiscoveredModuleGraph:
+        return module_graph_discovery._discover_module_graph_from_paths(
+            (path,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=False,
+            discovery=continuation,
+        )
+
+    first = discover(root)
+
+    def opaque(result: _DiscoveredModuleGraph) -> bool:
+        assert result.discovery is not None
+        premise = result.discovery.scan_sources["lib"].namespace_premise
+        assert premise is not None and premise.opaque_activation_sources is not None
+        return key in premise.opaque_activation_sources
+
+    assert opaque(first) == (case not in {"ordinary", "import_alias", "late_writer"})
+    if case in {"ordinary", "import_alias"}:
+        assert "used_leaf" in first.graph
+    if case in {"ordinary", "reflected_write"}:
+        from molt.frontend import SimpleTIRGenerator
+
+        frontend = SimpleTIRGenerator(
+            module_name="lib",
+            namespace_premise=first.scan_authority.by_module["lib"].namespace_premise,
+        )
+        frontend.visit(ast.parse(provider))
+        factory = {op.kind for op in frontend.funcs_map["py.lib.make"]["ops"]}
+        assert ("OBJECT_NEW_BOUND" in factory, "CALL_BIND" in factory) == (
+            case == "ordinary",
+            case == "reflected_write",
+        )
+    if case == "late_writer":
+        writer = tmp_path / "writer.py"
+        writer.write_text("import lib\nlib.inspect_box = print\n", encoding="utf-8")
+        assert opaque(discover(writer, first.discovery))

@@ -24,6 +24,7 @@ from molt.compiler_analysis.python_imports import (
     SourceDemandPhase,
     _ImportScanRequests,
     _SourceImportBinding,
+    _SourceValueDemand,
     SourceImportCall,
     normalize_stdlib_module_name,
 )
@@ -185,7 +186,10 @@ class PythonSourceDemands:
         self.modules: set[str] = set()
         self.owner_demands: dict[
             tuple[str, PythonSourceKey],
-            set[tuple[PythonSourceKey, SourceDemandPhase, int | None]],
+            set[_SourceValueDemand],
+        ] = {}
+        self.argument_exposures: dict[
+            tuple[str, PythonSourceKey], set[PythonSourceKey]
         ] = {}
         self.imported_modules: set[str] = set()
         self.value_candidates: dict[SourceValue, set[SourceCandidate]] = {}
@@ -557,18 +561,72 @@ class PythonSourceDemands:
         for request in scan.source_demands:
             if request.owner is not None:
                 self.owner_demands.setdefault((module_name, request.owner), set()).add(
-                    (request.source, request.phase, request.argument_count)
+                    request
                 )
                 if (module_name, request.owner) not in self.body_jobs:
                     continue
-            self.demand(
-                (module_name, request.source),
-                request.phase,
-                argument_count=request.argument_count,
-                consumer=module_name,
-            )
+            self._request(module_name, request)
         for value in self.pending_modules.pop(module_name, ()):
             self.queue_value(value)
+
+    def _request(self, module: str, request: _SourceValueDemand) -> None:
+        if request.argument_call is not None:
+            self.argument_exposures.setdefault(
+                (module, request.argument_call), set()
+            ).add(request.source)
+            return
+        self.demand(
+            (module, request.source),
+            request.phase,
+            argument_count=request.argument_count,
+            consumer=module,
+        )
+
+    def binds_positional_arguments(
+        self,
+        module: str,
+        site: PythonSourceKey,
+        provider: str,
+        definition: PythonSourceKey,
+    ) -> bool:
+        """The existing call/formal transfer entered exactly the witnessed definition."""
+        target = (provider, definition)
+        call = self.calls.get((module, site))
+        formals = self.parameters.get(target)
+        if (
+            call is None
+            or formals is None
+            or target not in self.body_jobs
+            or (module, site) in self.import_bindings
+            or len(call.arguments) > len(formals.positional)
+            or definition in self._opaque_activation_sources.get(provider, ())
+        ):
+            return False
+        if not self.argument_exposures[module, site].issubset(
+            origin for _, _, exposed in call.arguments for origin in exposed
+        ):
+            return False
+        selected = set().union(
+            *(
+                self.value_candidates.get((module, callee), ())
+                for callee in call.callees
+            )
+        )
+        return selected == {SourceCandidate(provider, definition)}
+
+    def resolve_argument_exposures(
+        self, closed: Callable[[str, PythonSourceKey], bool]
+    ) -> bool:
+        """Release fallback demands at graph quiescence and recheck held sites on extension."""
+        released = False
+        for (module, site), origins in tuple(self.argument_exposures.items()):
+            if closed(module, site):
+                continue
+            for source in origins:
+                self.demand((module, source), "expose", consumer=module)
+            del self.argument_exposures[module, site]
+            released = True
+        return released
 
     def opaque_activation_sources(
         self, module_name: str
@@ -1506,15 +1564,8 @@ class PythonSourceDemands:
         if arguments in body_arguments:
             return
         body_arguments.add(arguments)
-        for source, requested_phase, count in self.owner_demands.get(
-            (module_name, owner), ()
-        ):
-            self.demand(
-                (module_name, source),
-                requested_phase,
-                argument_count=count,
-                consumer=module_name,
-            )
+        for request in self.owner_demands.get((module_name, owner), ()):
+            self._request(module_name, request)
         self.queue_body(module_name, cast(PythonSourceKey, owner), arguments)
 
     def process_value(self, value: SourceValue) -> None:
