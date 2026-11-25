@@ -119,8 +119,9 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
+use molt_ir::ir::{CompiledCallArguments, GuardedDispatch};
 use molt_ir::repr::Repr;
-use molt_ir::tir::call_targets::{GuardedDispatch, guarded_dispatch};
+use molt_ir::tir::call_targets::guarded_dispatch;
 
 /// Expand every eligible op of `func`. Requires: the module phase is complete
 /// and drops are not inserted; `func` belongs to a target whose backend
@@ -862,9 +863,11 @@ fn expansion_of(
                 // linkage row must agree, or the wiring is broken. A closure
                 // target's arity counts its environment, which the call
                 // takes from that function object (design 78 5.10).
-                let parameters = op.operands.len() - usize::from(!facts.has_closure);
+                let parameters =
+                    CompiledCallArguments::Captured(op.operands.len(), GuardedDispatch::Required)
+                        .parameter_count(facts.has_closure);
                 assert!(
-                    boxed_callee && facts.arity == parameters,
+                    boxed_callee && parameters == Ok(Some(facts.arity)),
                     "proven call of function #{} disagrees with its linkage row",
                     guarded_target(op).map_or(u32::MAX, |id| id.0)
                 );

@@ -1,6 +1,7 @@
 use super::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
+use crate::ir::GuardedDispatch;
 use crate::runtime_fn_generated::RuntimeFn;
 
 /// One identity/result authority for lifting and every TIR GPU call consumer.
@@ -152,23 +153,9 @@ pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {
     op.callee.filter(|_| has_direct_role(op))
 }
 
-/// The dispatch contract of a captured-callable operation before legalization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GuardedDispatch {
-    /// Admit the candidate at runtime or dispatch through the captured value.
-    Speculative,
-    /// Enter the compiled declaration. A surviving call is a lowering error.
-    Required,
-}
-
 pub fn guarded_dispatch(op: &TirOp) -> Option<GuardedDispatch> {
-    (op.opcode == OpCode::Call && op.origin == Some(crate::OpKind::CallGuarded)).then(|| {
-        if op.proven_target() {
-            GuardedDispatch::Required
-        } else {
-            GuardedDispatch::Speculative
-        }
-    })
+    (op.opcode == OpCode::Call && op.origin == Some(crate::OpKind::CallGuarded))
+        .then(|| GuardedDispatch::from_proof(op.proven_target()))
 }
 
 /// The declaration and argument layout validated at a terminal call site.
@@ -180,8 +167,8 @@ pub fn final_call_arguments(
     use crate::ir::CompiledCallArguments;
     let callee = op.callee?;
     let count = op.operands.len();
-    let arguments = if guarded_dispatch(op).is_some() {
-        CompiledCallArguments::Guarded(count)
+    let arguments = if let Some(dispatch) = guarded_dispatch(op) {
+        CompiledCallArguments::Captured(count, dispatch)
     } else if op.opcode == OpCode::DirectCall {
         CompiledCallArguments::Direct(count)
     } else {
