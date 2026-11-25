@@ -95,7 +95,7 @@ fn old_dse_may_observe(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> b
         };
     }
     if OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS.contains(&op.opcode)
-        && transparent_alias_root(op, aliases).is_some()
+        && no_heap_alias_source(op).is_some()
     {
         return false;
     }
@@ -514,6 +514,71 @@ fn transparent_copy_chain_resolves_to_root() {
     let res = AliasAnalysisResult::compute(&func);
     assert_eq!(res.root(b), obj, "b aliases obj through the copy chain");
     assert_eq!(res.root(a), obj);
+}
+
+#[test]
+fn sparse_aliases_resolve_across_reverse_block_order() {
+    let mut func = TirFunction::new(
+        "reverse_aliases".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let owner = func.blocks[&func.entry_block].args[0].id;
+    for _ in 0..128 {
+        let id = func.fresh_block();
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    // The definitions dominate their uses, but the body map visits each use
+    // before its definition. Two copies per block share each predecessor.
+    let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+    blocks.retain(|&id| id != func.entry_block);
+    func.next_value = 1_000_000_000;
+    let mut predecessor = func.entry_block;
+    let mut previous = owner;
+    for block in blocks.into_iter().rev() {
+        func.blocks.get_mut(&predecessor).unwrap().terminator = Terminator::Branch {
+            target: block,
+            args: vec![],
+        };
+        let next = func.fresh_value();
+        let sibling = func.fresh_value();
+        let ops = &mut func.blocks.get_mut(&block).unwrap().ops;
+        ops.push(op(OpCode::Copy, vec![previous], vec![next]));
+        ops.push(op(OpCode::Copy, vec![previous], vec![sibling]));
+        previous = next;
+        predecessor = block;
+    }
+    let aliases = build_alias_union_find(&func);
+    assert_eq!(aliases.roots.len(), 256);
+    assert!(aliases.roots.values().all(|&source| source == owner));
+    assert_eq!(aliases.root(ValueId(u32::MAX)), ValueId(u32::MAX));
+}
+
+#[test]
+#[should_panic(expected = "cyclic SSA forwarding")]
+fn transparent_alias_cycle_has_no_ownership_root() {
+    let mut func = TirFunction::new(
+        "cyclic_aliases".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let a = func.fresh_value();
+    let b = func.fresh_value();
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
+        op(OpCode::Copy, vec![a], vec![b]),
+        op(OpCode::Copy, vec![b], vec![a]),
+    ];
+    build_alias_union_find(&func);
 }
 
 #[test]

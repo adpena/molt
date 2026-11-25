@@ -150,10 +150,10 @@ impl PhiTransport {
         labels: &HashMap<i64, BlockId>,
         reachable: &HashSet<BlockId>,
     ) -> Self {
-        let canon = |value: ValueId| eligibility.root(value);
         let mut sources: Vec<BlockId> = reachable.iter().copied().collect();
         sources.sort_unstable_by_key(|block| block.0);
         let mut transport = Self::default();
+        let canon = |value: ValueId| eligibility.root(value);
         for source in sources {
             let block = &func.blocks[&source];
             for (index, op) in block.ops.iter().enumerate() {
@@ -188,15 +188,10 @@ impl PhiTransport {
                 if matches!(arc.site, ArcSite::Registration(_)) {
                     continue;
                 }
-                let body_live = transport.body_live.entry(arc.target).or_insert_with(|| {
-                    live.live_in
-                        .get(&arc.target)
-                        .into_iter()
-                        .flatten()
-                        .filter(|value| target.args.iter().all(|arg| arg.id != **value))
-                        .map(|&value| canon(value))
-                        .collect()
-                });
+                let body_live = transport
+                    .body_live
+                    .entry(arc.target)
+                    .or_insert_with(|| live.live_in.get(&arc.target).cloned().unwrap_or_default());
                 if target.args.is_empty() {
                     continue;
                 }
@@ -344,8 +339,7 @@ impl<'a> PointAvailability<'a> {
             }
         }
         for arc in exception_arcs_for_block(labels, block) {
-            for &value in live.live_in.get(&arc.target).into_iter().flatten() {
-                let root = canon(value);
+            for &root in live.live_in.get(&arc.target).into_iter().flatten() {
                 if self.available_before(root, id, arc.op_index) {
                     let read = last.entry(root).or_insert(arc.op_index);
                     *read = (*read).max(arc.op_index);
