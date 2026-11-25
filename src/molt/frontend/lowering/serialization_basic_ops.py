@@ -755,7 +755,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     and member.shape.params == arity
                     and self._instance_class_writer() is None
                 ):
-                    entry["exact_method"] = (definition, name)
+                    entry["exact_method"] = [definition, name]
             if metadata.get("direct_shape") is True:
                 entry["direct_shape"] = True
             if "task_kind" in metadata or "task_closure_size" in metadata:

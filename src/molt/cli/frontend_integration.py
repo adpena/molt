@@ -85,8 +85,11 @@ def _plan_module_code_slots(
                     )
                 code_symbols.setdefault(symbol, None)
             if (method := op.get("exact_method")) is not None and (
-                not isinstance(method, (tuple, list))
+                not isinstance(method, list)
                 or len(method) != 2
+                or not isinstance(method[0], str)
+                or not isinstance(method[1], str)
+                or not method[1]
                 or method[0] not in class_definitions
                 or op.get("s_value") not in local_symbols
             ):

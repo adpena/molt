@@ -78,7 +78,8 @@ class SimpleIROp(TypedDict):
     bytes: NotRequired[Any]
     class_definition: NotRequired[Any]
     stable_instance_class: NotRequired[bool]
-    exact_method: NotRequired[tuple[str, str]]
+    # Wire array containing the class statement identity and method name.
+    exact_method: NotRequired[list[str]]
     exact_field_slots: NotRequired[list[list[object]]]
     col_offset: NotRequired[Any]
     container_type: NotRequired[Any]
