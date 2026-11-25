@@ -14,6 +14,7 @@ from molt.frontend._types import (
     SyncContextExit,
     TryScope,
 )
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
 
 def _function_ops(source: str, suffix: str = ".f_poll") -> list[MoltOp]:
@@ -363,27 +364,24 @@ def test_async_context_capture_is_cleared_on_failed_entry_and_both_exit_paths() 
 
 
 @pytest.mark.parametrize("body", ["await value", "async with value:\n        pass"])
-def test_await_result_carriers_are_consumed_before_pending_dispatch(body: str) -> None:
+def test_awaitable_owner_is_released_after_origin_capture(body: str) -> None:
     ops = _function_ops(f"async def f(value):\n    {body}\n")
-    constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST"}
-    for index, op in enumerate(ops):
-        if op.kind != "STATE_TRANSITION":
-            continue
-        slot = constants[op.args[1].name]
+    transitions = [i for i, op in enumerate(ops) if op.kind == "STATE_TRANSITION"]
+    assert transitions
+    for index in transitions:
+        future, _, _ = ops[index].args
+        acquisition = next(op for op in ops[:index] if op.result == future)
+        assert acquisition.kind == "LOAD_CLOSURE"
+        frame, slot = acquisition.args
         tail = ops[index + 1 :]
-        load = next(
-            i
-            for i, item in enumerate(tail)
-            if item.kind == "LOAD_CLOSURE" and item.args == ["self", slot]
-        )
-        clear = next(
-            i
-            for i, item in enumerate(tail)
-            if item.kind == "STORE_CLOSURE" and item.args[1] == slot
-        )
-        assert load < clear
-        assert tail[clear].args[-1].type_hint == "None"
-        assert not any(item.kind == "CHECK_EXCEPTION" for item in tail[:clear])
+        reload, clear, transfer = tail[0], tail[2], tail[3]
+        assert reload.kind == "LOAD_CLOSURE"
+        assert reload.args == [frame, slot]
+        assert clear.kind == "STORE_CLOSURE"
+        assert clear.args[:2] == [frame, slot]
+        assert clear.args[-1].type_hint == "None"
+        assert transfer.kind == "CHECK_EXCEPTION"
+        assert transfer.exception_edge is ExceptionEdgeKind.ORIGIN
 
 
 def test_async_context_lowering_is_repeatable() -> None:

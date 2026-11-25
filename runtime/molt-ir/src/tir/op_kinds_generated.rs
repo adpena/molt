@@ -14657,6 +14657,12 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
+        kind: OpKind::StateTransition,
+        family: "suspension",
+        operands: 2,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
         kind: OpKind::FrameContextSet,
         family: "execution_frame",
         operands: 3,
@@ -15198,7 +15204,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::StateLabel
         | OpKind::StateSet
         | OpKind::StateSwitch
-        | OpKind::StateTransition
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellLoad
@@ -15271,30 +15276,31 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,
-        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[21]),
-        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[22]),
-        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[20]),
+        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[22]),
+        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[23]),
+        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[21]),
         OpKind::CallargsPushMethodReceiver => Some(&SIMPLEIR_OP_SHAPES[0]),
-        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[17]),
-        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[14]),
-        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[15]),
-        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[18]),
-        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[4]),
-        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[7]),
-        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[11]),
-        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[9]),
-        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[8]),
-        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[6]),
-        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[10]),
-        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[5]),
-        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[16]),
-        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[12]),
+        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[18]),
+        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[15]),
+        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[16]),
+        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[19]),
+        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[5]),
+        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[8]),
+        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[12]),
+        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[10]),
+        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[9]),
+        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[7]),
+        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[11]),
+        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[6]),
+        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[17]),
+        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[13]),
         OpKind::Pos => Some(&SIMPLEIR_OP_SHAPES[1]),
-        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[13]),
-        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[19]),
+        OpKind::StateTransition => Some(&SIMPLEIR_OP_SHAPES[4]),
+        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[14]),
+        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[20]),
         OpKind::UnaryPos => Some(&SIMPLEIR_OP_SHAPES[2]),
-        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[23]),
-        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[24]),
+        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[24]),
+        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[25]),
         OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[3]),
     }
 }
@@ -31327,7 +31333,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::ForIter => count == 1,
         OpCode::AllocTask => true,
         OpCode::StateSwitch => true,
-        OpCode::StateTransition => true,
+        OpCode::StateTransition => count == 2,
         OpCode::StateSet => count == 0,
         OpCode::IsPending => count == 1,
         OpCode::TaskWait => count == 1,

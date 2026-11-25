@@ -1060,29 +1060,18 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=coro,
             )
         )
-        result_slot = self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
-        result_storage = ScratchCell(
-            value=None, async_slot=result_slot, type_hint="Any"
-        )
-        result_slot_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CONST", args=[result_slot.offset], result=result_slot_val)
-        )
         self.state_count += 1
         next_state_id = self.state_count
-        res_placeholder = MoltValue(self.next_var(), type_hint="Any")
+        result = MoltValue(self.next_var(), type_hint="Any")
         with self._suppress_check_exception():
             self.emit(
                 MoltOp(
                     kind="STATE_TRANSITION",
                     exception_source=ExceptionEdgeKind.ORIGIN,
-                    args=[coro, result_slot_val, pending_state_val, next_state_id],
-                    result=res_placeholder,
+                    args=[coro, pending_state_val, next_state_id],
+                    result=result,
                 )
             )
-            # The transition owns this carrier only until resumption. Loading
-            # retains the result before clearing its hidden frame reference.
-            res = self._consume_scratch_cell(result_storage)
             # Acquire a fresh owner after resumption. Clearing the hidden slot
             # cannot finalize the awaited task while this owner remains live
             # through Origin capture; pre-suspension SSA values are unavailable
@@ -1104,7 +1093,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
             if handler is None:
                 raise AssertionError("await resumption requires an exception handler")
-            # Carrier consumption precedes every transfer. The Origin targets
+            # The Ready result belongs to this invocation. The Origin targets
             # the lexical handler directly, just like awaitable acquisition.
             self.emit(
                 MoltOp(
@@ -1118,7 +1107,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             # capture when the handler wins; this is its normal-path boundary.
             self._emit_drop_owned_value(completed)
             self._emit_raise_if_pending()
-        return res
+        return result
 
     def _emit_state_yield_resume_try_starts(self) -> None:
         if not self.in_generator:

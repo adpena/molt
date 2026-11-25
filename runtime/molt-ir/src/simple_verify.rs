@@ -1686,47 +1686,42 @@ mod tests {
     #[test]
     fn explicit_maps_reject_reachable_omitted_suspension_states() {
         for targets in [vec![], vec![(8, 70)], vec![(7, 70)]] {
-            for slot in [None, Some("slot")] {
-                let mut args = vec!["future".into()];
-                args.extend(slot.map(str::to_string));
-                args.push("pending".into());
-                let ops = vec![
-                    OpIR {
-                        value: Some(7),
-                        out: Some("pending".into()),
-                        ..op(crate::OpKind::Const)
-                    },
-                    OpIR {
-                        state_targets: Some(targets.clone()),
-                        ..op(crate::OpKind::StateSwitch)
-                    },
-                    OpIR {
-                        value: Some(70),
-                        ..op(crate::OpKind::Label)
-                    },
-                    OpIR {
-                        value: Some(8),
-                        args: Some(args),
-                        out: Some("polled".into()),
-                        ..op(crate::OpKind::StateTransition)
-                    },
-                    OpIR {
-                        args: Some(vec!["polled".into()]),
-                        ..op(crate::OpKind::Ret)
-                    },
-                ];
-                let admitted = targets.iter().any(|&(state, _)| state == 7);
-                let validation = crate::ir_schema::validate_state_dispatch(&ops);
-                assert_eq!(validation.is_ok(), admitted, "{validation:?}");
-                if !admitted {
-                    assert!(validation.unwrap_err().contains("saves state 7 absent"));
-                }
-                let report = verify(&["future", "slot"], ops);
-                assert_eq!(report.is_ok(), admitted, "{report:?}");
-                if !admitted {
-                    assert_eq!(report.errors.len(), 1);
-                    assert_eq!(report.errors[0].kind, "invalid-state-dispatch");
-                }
+            let ops = vec![
+                OpIR {
+                    value: Some(7),
+                    out: Some("pending".into()),
+                    ..op(crate::OpKind::Const)
+                },
+                OpIR {
+                    state_targets: Some(targets.clone()),
+                    ..op(crate::OpKind::StateSwitch)
+                },
+                OpIR {
+                    value: Some(70),
+                    ..op(crate::OpKind::Label)
+                },
+                OpIR {
+                    value: Some(8),
+                    args: Some(vec!["future".into(), "pending".into()]),
+                    out: Some("polled".into()),
+                    ..op(crate::OpKind::StateTransition)
+                },
+                OpIR {
+                    args: Some(vec!["polled".into()]),
+                    ..op(crate::OpKind::Ret)
+                },
+            ];
+            let admitted = targets.iter().any(|&(state, _)| state == 7);
+            let validation = crate::ir_schema::validate_state_dispatch(&ops);
+            assert_eq!(validation.is_ok(), admitted, "{validation:?}");
+            if !admitted {
+                assert!(validation.unwrap_err().contains("saves state 7 absent"));
+            }
+            let report = verify(&["future"], ops);
+            assert_eq!(report.is_ok(), admitted, "{report:?}");
+            if !admitted {
+                assert_eq!(report.errors.len(), 1);
+                assert_eq!(report.errors[0].kind, "invalid-state-dispatch");
             }
         }
         // A declared first resume case exposes a second suspension whose state

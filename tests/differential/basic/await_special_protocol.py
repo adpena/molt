@@ -167,6 +167,20 @@ except StopIteration as error:
     print("send-result", error.value, events[-1])
 
 
+# The Ready value can be the same heap object that was sent into the
+# suspended awaitable. The outer continuation must receive that owner.
+payload = object()
+coroutine = use(Steps())
+assert coroutine.send(None) == "pause"
+try:
+    coroutine.send(payload)
+except StopIteration as error:
+    assert error.value is payload
+    print("send-owner", error.value is payload, events[-1])
+else:
+    raise AssertionError("resumed awaitable produced no result")
+
+
 class ThrowSteps:
     def __await__(self):
         try:
