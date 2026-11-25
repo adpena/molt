@@ -33,7 +33,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import BinaryIO, cast
 
 import pytest
 from molt._wasm_abi_generated import runtime_execution_abi
@@ -2494,9 +2494,9 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     assert ctx.generation_rejection_details() == report.details()
 
 
-@pytest.mark.parametrize("consumer", ["facts", "linking", "structure"])
+@pytest.mark.parametrize("field", ["shared_member_identity", "reloc_member_identity"])
 def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
     from dataclasses import replace
     from molt import toolchain_identity
@@ -2506,21 +2506,25 @@ def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
     monkeypatch.setattr(
         runtime_wasm_validation, "_validate_wasm_structural", lambda path: None
     )
-    if consumer == "facts":
-        consume = generation.facts
-        field = "shared_member_identity"
-    elif consumer == "linking":
-
-        def consume():
-            return generation.linking_names({_physical("molt_add"): "function"})
-
-        field = "reloc_member_identity"
-    else:
-        consume = generation.validate_structure
-        field = "shared_member_identity"
-    consume()
+    assert runtime_wasm_validation.runtime_wasm_generation_admission(
+        generation, {"add"}
+    ).accepted
     old = getattr(generation, field)
     before = old.path.stat()
+    hashed_extents: list[int] = []
+    hash_stream = toolchain_identity._sha256_stream
+
+    def count_hash(stream: BinaryIO, *, max_bytes: int) -> str:
+        if os.path.samestat(os.fstat(stream.fileno()), before):
+            hashed_extents.append(max_bytes)
+        return hash_stream(stream, max_bytes=max_bytes)
+
+    with monkeypatch.context() as measure:
+        measure.setattr(toolchain_identity, "_sha256_stream", count_hash)
+        assert runtime_wasm_validation.runtime_wasm_generation_admission(
+            generation, {"add"}
+        ).accepted
+    assert hashed_extents == [before.st_size]
     data = bytearray(old.path.read_bytes())
     data[-1] ^= 1
     old.path.write_bytes(data)
@@ -2531,8 +2535,12 @@ def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
     # Keep the old digest and cached facts while modeling a permitted equal
     # metadata observation. Rejection must come from the actual bytes.
     object.__setattr__(generation, field, replace(current, sha256=old.sha256))
-    with pytest.raises(ValueError, match="content changed"):
-        consume()
+    refused = runtime_wasm_validation.runtime_wasm_generation_admission(
+        generation, {"add"}
+    )
+    assert not refused.accepted
+    assert refused.issues[0].reason == "observation"
+    assert "content changed" in refused.issues[0].detail
 
 
 def test_generation_diagnostic_preserves_failed_observation(

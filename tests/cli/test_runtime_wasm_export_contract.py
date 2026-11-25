@@ -16,14 +16,10 @@ from molt.wasm_artifact import (
 
 
 def _typed_exports(path: Path, expected: dict[str, str]) -> set[str]:
-    from molt.toolchain_identity import stable_regular_file_identity
-    from molt.wasm_artifact import read_wasm_runtime_facts
+    from molt.wasm_artifact import parse_wasm_runtime_facts
 
     direct = _runtime_wasm_typed_export_names(path, expected)
-    facts = read_wasm_runtime_facts(
-        stable_regular_file_identity(path, label="export fixture"),
-        relocatable=False,
-    )
+    facts = parse_wasm_runtime_facts(path.read_bytes(), relocatable=False)
     assert _runtime_wasm_typed_export_names(path, expected, facts=facts) == direct
     return direct
 
