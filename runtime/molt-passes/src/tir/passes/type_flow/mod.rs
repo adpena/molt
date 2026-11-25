@@ -52,7 +52,7 @@ use crate::tir::values::ValueId;
 use analysis::{Analysis, ContextId, Inputs, Key, seeds_of};
 use sites::{ArgKind, Site, SiteKind, Unspecializable};
 
-use super::exact_receiver_fields::{self, ClassFieldSlots};
+use super::exact_receiver_fields::{self, ExactMembers};
 
 /// A specialized clone the pass appended to the module's document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,9 +100,9 @@ pub fn run(
         .iter()
         .map(|func| sites::sites_of(func, &body_index, module))
         .collect();
-    let slots = exact_receiver_fields::class_field_slots(module);
+    let members = exact_receiver_fields::exact_members(module, &body_index);
     if sites.iter().all(Vec::is_empty) {
-        optimize_bodies(module, tti, &slots, &mut outcome);
+        optimize_bodies(module, tti, &members, &mut outcome);
         return outcome;
     }
     let final_tir = tti.lowering.final_lowering == FinalLowering::FinalTir;
@@ -197,7 +197,7 @@ pub fn run(
         outcome.changed.insert(id);
     }
 
-    optimize_bodies(module, tti, &slots, &mut outcome);
+    optimize_bodies(module, tti, &members, &mut outcome);
 
     merge_identical(
         module,
@@ -211,16 +211,16 @@ pub fn run(
     outcome
 }
 
-/// Lower class fields before clone comparison: the generic body and its
-/// specialized version can differ solely in the receiver's field offsets.
+/// Resolve fields and methods before clone comparison. A specialization can
+/// differ from its generic body solely in a field offset or selected callee.
 fn optimize_bodies(
     module: &mut TirModule,
     tti: &TargetInfo,
-    slots: &ClassFieldSlots,
+    members: &ExactMembers,
     outcome: &mut TypeFlowOutcome,
 ) {
     for (func, &id) in module.functions.iter_mut().zip(&module.ids) {
-        if exact_receiver_fields::run(func, slots) > 0 {
+        if exact_receiver_fields::run(func, members) > 0 {
             outcome.changed.insert(id);
         }
         if outcome.changed.contains(&id) {

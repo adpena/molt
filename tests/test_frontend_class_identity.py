@@ -889,3 +889,50 @@ def test_static_super_needs_its_cell_and_an_exact_receiver(case: str) -> None:
     else:
         assert not calls
         assert "CALL_LOADED_METHOD" in {op.kind for op in ops}
+
+
+def test_exact_method_publication_uses_the_final_binding_and_graph_premise() -> None:
+    source = """class Plain:
+    def read(self, index): return index
+    def default(self, value=0): return value
+    @property
+    def property(self): return 1
+class Rebound:
+    def rebound(self): return 1
+    rebound = 1
+    def repeated(self): return 1
+    def repeated(self): return 2
+class Shadow:
+    def __init__(self): self.shadow = 2
+    def shadow(self): return 1
+class Hook:
+    def read(self): return 1
+    def __getattribute__(self, key): return 2
+"""
+    for code_writer, class_writer, exposed, expected in (
+        (False, None, False, {"read"}),
+        (True, None, False, set()),
+        (False, "callback:1", False, set()),
+        (False, None, True, set()),
+    ):
+        tree = ast.parse(source)
+        premise = PythonNamespacePremise(
+            (),
+            0,
+            0,
+            (),
+            (python_node_source_key(tree.body[0]),) if exposed else (),
+            code_rebinding=code_writer,
+            instance_class_writer=class_writer,
+        )
+        generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+        generator.visit(tree)
+        publications = {
+            (tuple(op["exact_method"]), op["s_value"], op["value"])
+            for function in generator.to_json()["functions"]
+            for op in function["ops"]
+            if "exact_method" in op and op["exact_method"][1] != "__init__"
+        }
+        assert publications == {
+            (("class:mod:Plain", name), f"py.mod.Plain_{name}", 2) for name in expected
+        }

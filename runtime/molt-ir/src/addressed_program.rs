@@ -454,6 +454,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         class_definition,
         exact_field_slots,
         stable_instance_class: _,
+        exact_method,
         runtime_requirement_bits: _,
         passes_execution_context: _,
         runtime: _,
@@ -493,6 +494,9 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         + text(builtin_name)
         + text(runtime_symbol)
         + text(class_definition)
+        + exact_method
+            .as_ref()
+            .map_or(0, |m| m.0.capacity() + m.1.capacity())
         + exact_field_slots.as_ref().map_or(0, |slots| {
             slots.capacity() * std::mem::size_of::<(String, i64)>()
                 + slots.iter().map(|(name, _)| name.capacity()).sum::<usize>()

@@ -1676,6 +1676,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _exact_field_slots(self, class_id: ClassId) -> dict[str, int] | None: ...
 
+    def _exact_positional_method(
+        self, class_id: ClassId, method_name: str
+    ) -> Member | None: ...
+
     def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None: ...
 
     def _exit_python_frame_context_scope(

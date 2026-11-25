@@ -84,6 +84,15 @@ def _plan_module_code_slots(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
                 code_symbols.setdefault(symbol, None)
+            if (method := op.get("exact_method")) is not None and (
+                not isinstance(method, (tuple, list))
+                or len(method) != 2
+                or method[0] not in class_definitions
+                or op.get("s_value") not in local_symbols
+            ):
+                raise ValueError(
+                    f"Invalid method publication {method!r} in module {module_name}"
+                )
             definition = op.get("class_definition")
             if definition is not None:
                 # A stamp names its own module's statement; a layout guard may

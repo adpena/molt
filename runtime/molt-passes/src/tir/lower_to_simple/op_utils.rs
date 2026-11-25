@@ -60,6 +60,8 @@ pub(super) fn annotate_lowered_op(
         opir.release_plan =
             Some(u16::try_from(words).expect("a release plan's field words come from a u16"));
     }
+    opir.exact_method = molt_ir::class_identity::ExactMethod::from_tir(tir_op)
+        .expect("verified method publication");
     // A class definition stamp's exact field slots ride with its class.
     if let Some(AttrValue::Bytes(bytes)) = tir_op
         .attrs
