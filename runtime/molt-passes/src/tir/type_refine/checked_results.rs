@@ -105,6 +105,16 @@ pub(crate) struct CheckedResults {
 }
 
 impl CheckedResults {
+    /// Results a handler reads directly, outside the check's explicit payload.
+    /// Recursion refusal must define their word before the common observation.
+    pub(crate) fn implicit_handler_call_results(&self) -> HashSet<ValueId> {
+        self.sites
+            .iter()
+            .filter_map(|(&word, site)| {
+                (site.compiled && site.implicit_handler_use).then_some(word)
+            })
+            .collect()
+    }
     pub fn collect(func: &TirFunction, order: &[BlockId]) -> Self {
         let labels = OnceCell::new();
         let mut sites = HashMap::default();
@@ -277,12 +287,8 @@ pub fn checked_successful_call_results(func: &TirFunction) -> HashSet<ValueId> {
 /// Results a handler reads directly, outside the check's explicit payload.
 /// Recursion refusal must define their word before the common observation.
 pub(crate) fn implicit_handler_call_results(func: &TirFunction) -> HashSet<ValueId> {
-    let order = executable_reverse_postorder(func);
-    CheckedResults::collect(func, &order)
-        .sites
-        .into_iter()
-        .filter_map(|(word, site)| (site.compiled && site.implicit_handler_use).then_some(word))
-        .collect()
+    CheckedResults::collect(func, &executable_reverse_postorder(func))
+        .implicit_handler_call_results()
 }
 
 /// Split only mixed-use compiled results. Single-domain uses already have

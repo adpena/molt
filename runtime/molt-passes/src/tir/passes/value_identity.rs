@@ -8,7 +8,7 @@
 
 use std::{borrow::Cow, cell::OnceCell};
 
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
 use crate::tir::function::TirFunction;
@@ -239,6 +239,10 @@ impl<'f> ScalarFacts<'f> {
 
     pub(crate) fn checked_call_results(&self) -> molt_ir::deterministic_hash::HashSet<ValueId> {
         self.checked_calls().1.successful_call_results(self.body)
+    }
+
+    pub(crate) fn implicit_handler_call_results(&self) -> HashSet<ValueId> {
+        self.checked_calls().1.implicit_handler_call_results()
     }
 
     pub(crate) fn checked_call_ranges(&self) -> &[(ValueId, crate::tir::numeric_facts::IntRange)] {

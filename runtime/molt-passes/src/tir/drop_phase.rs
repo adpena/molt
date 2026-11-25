@@ -59,6 +59,7 @@
 use super::function::{TirFunction, TirModule};
 use super::ops::AttrValue;
 use super::passes::drop_insertion::DROP_INSERTED_ATTR;
+use super::passes::fast_path_expansion::{self, GuardedTargets};
 use super::target_info::TargetInfo;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::time::Instant;
@@ -88,7 +89,8 @@ impl<'a> FinalizationCache<'a> {
         &self,
         func: &TirFunction,
         table: &molt_ir::FunctionTable,
-        linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+        targets: &GuardedTargets,
+        linkage_present: bool,
     ) -> String {
         let mut key =
             molt_ir::content_digest::CompilationCacheKey::new(b"molt-post-admission-final-tir-v2");
@@ -100,19 +102,20 @@ impl<'a> FinalizationCache<'a> {
         let body = super::serialize::serialize_tir_function(func, table)
             .unwrap_or_else(|error| panic!("final TIR input serialization: {error}"));
         key.field(b"post-admission-body", &body);
-        key.field(b"linkage-present", &[u8::from(linkage.is_some())]);
-        // This projection also retains the compiler error for a supplied table
-        // missing a guarded target. Document ids never enter the durable key.
-        let targets = super::passes::fast_path_expansion::guarded_targets(func, linkage);
+        key.field(b"linkage-present", &[u8::from(linkage_present)]);
+        // Document ids never enter the durable key.
         let mut targets: Vec<_> = targets
-            .into_iter()
-            .map(|(id, facts)| (table.symbol(id), facts))
+            .iter()
+            .map(|(&id, facts)| (table.symbol(id), facts))
             .collect();
         targets.sort_unstable_by_key(|(symbol, _)| *symbol);
         for (symbol, facts) in targets {
             key.field(b"guarded-target", symbol.as_bytes());
             key.field(b"guarded-arity", &(facts.arity as u64).to_be_bytes());
             key.field(b"guarded-closure", &[u8::from(facts.has_closure)]);
+            if facts.callback_free {
+                key.field(b"guarded-callback-free", &[1]);
+            }
         }
         key.finish_hex()
     }
@@ -124,9 +127,11 @@ impl<'a> FinalizationCache<'a> {
         symbol_ids: &molt_ir::deterministic_hash::HashMap<&str, molt_ir::FunctionId>,
         tti: &TargetInfo,
         linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+        leaves: &molt_ir::FunctionSet,
     ) -> bool {
         assert_before_terminal_drops(func);
-        let key = self.key(func, table, linkage);
+        let targets = fast_path_expansion::guarded_targets(func, linkage, leaves);
+        let key = self.key(func, table, &targets, linkage.is_some());
         if let Some(bytes) = self.store.get(&key)
             && let Some(payload) = bytes.strip_prefix(FINAL_TIR_CACHE_MAGIC)
             && let Some((&effect, body)) = payload.split_first()
@@ -154,7 +159,7 @@ impl<'a> FinalizationCache<'a> {
             *func = restored;
             return effect != 0;
         }
-        let changed = finalize_function_drops(func, tti, linkage);
+        let changed = finalize_with_guarded_targets(func, tti, &targets);
         let mut bytes = Vec::from(FINAL_TIR_CACHE_MAGIC);
         bytes.push(u8::from(changed));
         bytes.extend(
@@ -630,6 +635,15 @@ pub fn finalize_function_drops(
     tti: &TargetInfo,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
 ) -> bool {
+    let targets = fast_path_expansion::guarded_targets(func, linkage, &Default::default());
+    finalize_with_guarded_targets(func, tti, &targets)
+}
+
+fn finalize_with_guarded_targets(
+    func: &mut TirFunction,
+    tti: &TargetInfo,
+    targets: &GuardedTargets,
+) -> bool {
     assert_before_terminal_drops(func);
     let mut lowering_changed = prepare_final_backend_lowering(func, tti);
     lowering_changed |= super::pass_manager::run_global_slot_sites(func, tti);
@@ -680,7 +694,7 @@ pub fn finalize_function_drops(
     // call) would re-derive the original result's type as DynBox and widen
     // every value downstream of it, such as a loop-carried int (HF-821).
     if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
-        lowering_changed |= super::pass_manager::run_late_lowering(func, tti, linkage);
+        lowering_changed |= super::pass_manager::run_late_lowering_with_targets(func, tti, targets);
     }
     emit_drop_function_audit(
         "before-drop-pass",
@@ -763,10 +777,9 @@ pub fn finalize_module_drops(
     )
 }
 
-/// Finalize bodies in their document's identity space. A body without a static
-/// compiled call can be finished first. Only after its lifetime releases are
-/// visible may callers omit recursion admission for that target. A body with
-/// such a call already has a synchronous call edge and cannot certify a leaf.
+/// Finalize bodies in their document's identity space. Only after a target's
+/// lifetime releases are visible may callers omit admission. Bodies with
+/// compiled call edges already cannot certify a leaf, so finish them second.
 pub fn finalize_document_drops<'a>(
     bodies: impl Iterator<Item = (molt_ir::FunctionId, &'a mut TirFunction)>,
     tti: &TargetInfo,
@@ -792,7 +805,10 @@ pub fn finalize_document_drops<'a>(
                     .blocks
                     .values()
                     .flat_map(|block| &block.ops)
-                    .filter_map(super::call_targets::direct_callee)
+                    .filter_map(|op| {
+                        super::call_targets::direct_callee(op)
+                            .or_else(|| fast_path_expansion::guarded_target(op))
+                    })
                 {
                     targets.insert(target);
                     caller = true;
@@ -819,11 +835,10 @@ pub fn finalize_document_drops<'a>(
             );
             if *caller {
                 if let Some(signatures) = linkage {
-                    *changed = super::passes::fast_path_expansion::lower_static_call_arguments(
-                        func, *id, signatures,
-                    );
+                    *changed =
+                        fast_path_expansion::lower_static_call_arguments(func, *id, signatures);
                 }
-                *changed |= super::passes::fast_path_expansion::charge_static_calls(func, &leaves);
+                *changed |= fast_path_expansion::charge_static_calls(func, &leaves);
             }
             *changed |= match cache.as_deref_mut() {
                 Some(cache) => cache.finalize(
@@ -834,8 +849,12 @@ pub fn finalize_document_drops<'a>(
                         .expect("cache has its decode projection"),
                     tti,
                     linkage,
+                    &leaves,
                 ),
-                None => finalize_function_drops(func, tti, linkage),
+                None => {
+                    let targets = fast_path_expansion::guarded_targets(func, linkage, &leaves);
+                    finalize_with_guarded_targets(func, tti, &targets)
+                }
             };
             if !*caller
                 && targets.contains(*id)
@@ -999,7 +1018,14 @@ mod tests {
                 assert_eq!(uses_bounds, !disabled);
                 let mut cache = FinalizationCache::new(&mut store, "split-field-test-target");
                 assert_eq!(
-                    cache.finalize(&mut memoized, &table, &symbol_ids, &target, None),
+                    cache.finalize(
+                        &mut memoized,
+                        &table,
+                        &symbol_ids,
+                        &target,
+                        None,
+                        &Default::default()
+                    ),
                     expected_change,
                 );
                 let bytes = |body: &TirFunction| {
@@ -1067,7 +1093,14 @@ mod tests {
         );
         let mut seeded = source.clone();
         assert_eq!(
-            cache.finalize(&mut seeded, &table, &symbol_ids, &target, Some(&signatures)),
+            cache.finalize(
+                &mut seeded,
+                &table,
+                &symbol_ids,
+                &target,
+                Some(&signatures),
+                &Default::default()
+            ),
             effect
         );
         let canonical = |body: &TirFunction, table: &molt_ir::FunctionTable| {
@@ -1088,7 +1121,8 @@ mod tests {
                 &moved,
                 &moved_ids,
                 &target,
-                Some(&moved_signatures)
+                Some(&moved_signatures),
+                &Default::default(),
             ),
             effect
         );
@@ -1100,7 +1134,14 @@ mod tests {
             let mut expected = source.clone();
             finalize_function_drops(&mut expected, &target, Some(&changed));
             let mut restored = source.clone();
-            cache.finalize(&mut restored, &table, &symbol_ids, &target, Some(&changed));
+            cache.finalize(
+                &mut restored,
+                &table,
+                &symbol_ids,
+                &target,
+                Some(&changed),
+                &Default::default(),
+            );
             assert!(
                 !restored
                     .blocks
@@ -1111,7 +1152,14 @@ mod tests {
             assert_eq!(canonical(&restored, &table), canonical(&expected, &table));
         }
         let missing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cache.key(&source, &table, Some(&Vec::new()))
+            cache.finalize(
+                &mut source,
+                &table,
+                &symbol_ids,
+                &target,
+                Some(&Vec::new()),
+                &Default::default(),
+            );
         }));
         assert!(
             missing.is_err(),
@@ -1122,6 +1170,12 @@ mod tests {
 
     #[test]
     fn final_cache_recharges_an_unchanged_caller_when_its_target_can_finalize() {
+        for mode in [None, Some(true), Some(false)] {
+            check_caller_admission_cache(mode);
+        }
+    }
+
+    fn check_caller_admission_cache(guarded: Option<bool>) {
         use crate::tir::blocks::Terminator;
         use crate::tir::ops::{OpCode, TirOp};
         use crate::tir::types::TirType;
@@ -1141,39 +1195,72 @@ mod tests {
         let mut callee = TirFunction::new(
             "callee".into(),
             vec![TirType::DynBox],
-            TirType::None,
-            molt_ir::FunctionReturnAbi::Void,
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         callee
             .blocks
             .get_mut(&callee.entry_block)
             .unwrap()
-            .terminator = Terminator::Return { values: vec![] };
-        let mut caller = callee.clone();
-        caller.name = "caller".into();
-        let mut call = TirOp::new(OpCode::Call, vec![ValueId(0)], vec![]);
+            .terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let mut caller = TirFunction::new(
+            "caller".into(),
+            vec![TirType::DynBox; 2],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = caller.fresh_value();
+        caller.value_types.insert(result, TirType::DynBox);
+        let mut args = vec![ValueId(1)];
+        if guarded.is_some() {
+            args.insert(0, ValueId(0));
+        }
+        let mut call = TirOp::new(OpCode::Call, args, vec![result]);
         call.callee = Some(molt_ir::FunctionId(1));
-        caller
-            .blocks
-            .get_mut(&caller.entry_block)
-            .unwrap()
-            .ops
-            .push(call);
+        if let Some(proven) = guarded {
+            call.origin = Some(molt_ir::OpKind::CallGuarded);
+            call.set_proven_target(proven);
+        }
+        let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+        entry.ops.push(call);
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let signature = |arity| molt_ir::ir::ExternFunctionSignature {
+            arity,
+            has_closure: false,
+            returns_value: true,
+            execution_context: molt_ir::ExecutionContextPolicy::None,
+        };
+        let signatures = vec![signature(2), signature(1)];
         let source = vec![caller, callee];
         let finish = |functions: Vec<TirFunction>, cache: Option<&mut FinalizationCache<'_>>| {
             let mut module = TirModule::with_own_table("leaf-cache", functions);
-            finalize_module_drops(&mut module, &target, None, cache);
+            finalize_module_drops(&mut module, &target, Some(&signatures), cache);
             module
         };
         let first = finish(source.clone(), Some(&mut cache));
-        let charged = |module: &TirModule| {
+        let has_op = |module: &TirModule, predicate: fn(&TirOp) -> bool| {
             module.functions[0]
                 .blocks
                 .values()
                 .flat_map(|b| &b.ops)
-                .any(|op| op.opcode == OpCode::RecursionAdmits)
+                .any(predicate)
         };
+        let charged =
+            |module: &TirModule| has_op(module, |op| op.opcode == OpCode::RecursionAdmits);
         assert!(!charged(&first));
+        assert_eq!(
+            has_op(&first, |op| op.opcode == OpCode::DirectCall),
+            guarded.is_some()
+        );
+        assert_eq!(
+            has_op(&first, |op| fast_path_expansion::guarded_target(op)
+                .is_some()),
+            guarded == Some(false),
+        );
         let mut releasing = source.clone();
         // A DynBox release can call a Python finalizer, even without a direct
         // compiled call. Early ABI metadata cannot certify this target a leaf.

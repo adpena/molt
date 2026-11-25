@@ -1630,6 +1630,47 @@ def test_a_proven_load_after_its_callees_one_maker_reads_a_function_cell(
     }
 
 
+@pytest.mark.parametrize("pair_site", ["unused", "before", "after", "uncalled"])
+def test_method_cell_selection_orders_calls_and_observes_all_pair_uses(
+    pair_site: Literal["unused", "before", "after", "uncalled"],
+) -> None:
+    funcs = _method_program()
+    ops = funcs[1]["ops"]
+    # A call before the load cannot supply its target, and a later call
+    # cannot replace the first following one. Both name an unmade function.
+    unrelated = {
+        "kind": "call_guarded",
+        "s_value": "mod__unmade",
+        "args": ["callable", "receiver"],
+        "out": "unrelated",
+        "proven_target": True,
+    }
+    ops.insert(0, unrelated)
+    if pair_site == "uncalled":
+        ops.pop()
+    else:
+        ops.append(dict(unrelated, out="later"))
+    if pair_site != "unused":
+        use = {"kind": "load_attr", "args": ["pair"], "out": "leak"}
+        if pair_site == "before":
+            ops.insert(0, use)
+        else:
+            ops.append(use)
+    cells, _layouts = _function_cells(funcs)
+    if pair_site == "unused":
+        assert cells.reads == {"mod__run": {"callable": ("mod", "mod__C_m")}}
+        assert cells.diagnostics == ()
+    else:
+        assert cells.reads == {}
+        if pair_site == "uncalled":
+            # No consuming call means no candidate and hence no escape
+            # diagnostic, even though the pair has a reader.
+            assert cells.diagnostics == ()
+        else:
+            assert len(cells.diagnostics) == 1
+            assert "its bound pair is read" in cells.diagnostics[0]
+
+
 @pytest.mark.parametrize(
     ("program", "reason"),
     [
