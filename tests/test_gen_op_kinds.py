@@ -334,6 +334,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     data = gen.load_table()
     shapes = {row["kind"]: row for row in data["simpleir_op_shape"]}
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
+        "state_transition": 2,
         "callargs_push_method_receiver": 2,
         "pos": 1,
         "warn_stderr": 1,
@@ -3250,7 +3251,6 @@ def test_drop_insertion_exposes_activation_exits_before_ownership_analysis() -> 
     assert "values: op.operands" in body
     assert "values: vec![result]" in body
     assert "make_op(OpCode::IsPending, vec![result])" in body
-    assert "make_op(OpCode::ClosureStore, vec![frame, result])" in body
     assert "OpCode::IncRef" not in body
     assert "OpCode::DecRef" not in body
 

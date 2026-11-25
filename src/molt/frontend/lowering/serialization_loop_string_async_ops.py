@@ -564,19 +564,11 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             (frame_size,) = op.args
             ctx.json_ops.append({"kind": "state_switch", "value": frame_size})
         elif op.kind == FrontendKinds.STATE_TRANSITION:
-            if len(op.args) == 3:
-                future, pending_state, next_state = op.args
-                slot_arg = None
-            else:
-                future, slot_arg, pending_state, next_state = op.args
-            args = [future.name]
-            if slot_arg is not None:
-                args.append(slot_arg.name)
-            args.append(pending_state.name)
+            future, pending_state, next_state = op.args
             ctx.json_ops.append(
                 {
                     "kind": "state_transition",
-                    "args": args,
+                    "args": [future.name, pending_state.name],
                     "value": next_state,
                     "out": op.result.name,
                 }

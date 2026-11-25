@@ -2021,6 +2021,14 @@ family = "diagnostic_output"
 operands = 1
 value_rule = "unconstrained"
 
+# A repoll takes the future and pending-state constant. Its result is only
+# available on the Ready continuation; `value` is its running state.
+[[simpleir_op_shape]]
+kind = "state_transition"
+family = "suspension"
+operands = 2
+value_rule = "unconstrained"
+
 [[simpleir_op_shape]]
 kind = "frame_context_set"
 family = "execution_frame"
@@ -3796,6 +3804,7 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "StateTransition"
+operand_arity = 2
 may_call_python = false
 may_throw = true
 side_effecting = true

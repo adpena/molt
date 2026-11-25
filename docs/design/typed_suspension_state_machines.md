@@ -182,6 +182,16 @@ Sources: [.NET 11 runtime](https://learn.microsoft.com/en-us/dotnet/core/whats-n
 
 ## Design
 
+The shared repoll operation takes the awaitable and pending-state constant. Its
+running state is an attribute and its Ready result is an owned SSA value. A
+pending invocation returns without retaining that SSA value. The next dispatch
+repolls the saved awaitable, so its Ready continuation receives a fresh result
+from that invocation. Terminal ownership exposes both exits before lowering
+and owns release of the result, including the exception path. One frame slot
+still holds the awaitable itself across polls. Its reloaded owner stays live
+through the lexical exception-origin test even after that slot is cleared.
+
+
 1. **One TIR transform for every backend**, after the main optimizer, so live sets are small and
    facts are final. A suspension becomes: store the live slots, set the state, return. A resume
    becomes: switch on the state, load the slots. The frontend's scratch cells and

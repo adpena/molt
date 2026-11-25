@@ -86,13 +86,8 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
             continue;
         }
 
-        let (future, slot, pending) = match op.operands.as_slice() {
-            [future, pending] => (*future, None, *pending),
-            [future, slot, pending] => (*future, Some(*slot), *pending),
-            _ => panic!(
-                "{}: wait expects future, optional slot, and resume state",
-                func.name
-            ),
+        let &[future, pending] = op.operands.as_slice() else {
+            panic!("{}: wait expects its future and pending state", func.name);
         };
         let pending_state = *constants
             .get(&pending)
@@ -150,21 +145,9 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
                 },
             },
         );
-        let mut ready_ops = Vec::new();
-        if let Some(slot) = slot {
-            let offset = *constants
-                .get(&slot)
-                .unwrap_or_else(|| panic!("{}: wait result slot must be a constant", func.name));
-            let frame = func.blocks[&func.entry_block]
-                .args
-                .first()
-                .expect("poll invocation requires its frame argument")
-                .id;
-            let mut store = make_op(OpCode::ClosureStore, vec![frame, result]);
-            store.attrs.insert("value".into(), AttrValue::Int(offset));
-            ready_ops.push(store);
-        }
-        ready_ops.push(state_set(next_state, &op));
+        // Ready stays in this invocation, so the poll result already dominates
+        // its uses. A dispatch into the pending state polls again.
+        let mut ready_ops = vec![state_set(next_state, &op)];
         ready_ops.extend(suffix);
         func.blocks.insert(
             ready_block,

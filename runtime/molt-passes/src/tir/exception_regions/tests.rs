@@ -144,9 +144,9 @@ fn state_yield(state: i64) -> TirOp {
     op
 }
 
-fn state_transition(awaitable: ValueId, slot: ValueId, pending_state: ValueId) -> TirOp {
+fn state_transition(awaitable: ValueId, pending_state: ValueId) -> TirOp {
     let mut op = op(OpCode::StateTransition);
-    op.operands = vec![awaitable, slot, pending_state];
+    op.operands = vec![awaitable, pending_state];
     op
 }
 
@@ -935,7 +935,6 @@ fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
     let handler_pop = func.fresh_block();
     func.label_id_map.insert(handler.0, 46);
     let awaitable = func.fresh_value();
-    let slot = func.fresh_value();
     let pending = func.fresh_value();
     let exc = func.fresh_value();
 
@@ -951,9 +950,8 @@ fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
             args: vec![],
             ops: vec![
                 try_start(46),
-                const_int(slot, 64),
                 const_int(pending, 47),
-                state_transition(awaitable, slot, pending),
+                state_transition(awaitable, pending),
             ],
             terminator: Terminator::Branch {
                 target: resume,
@@ -2165,9 +2163,8 @@ fn repoll_loop_custody_survives_target_optimization() {
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
                 {"kind": "check_exception","exception_edge":"origin", "value": 310},
                 {"kind": "const", "value": 313, "out": "pending"},
-                {"kind": "const", "value": 152, "out": "slot"},
                 {"kind": "state_transition", "value": 314,
-                 "args": ["awaitable", "slot", "pending"], "out": "ready"},
+                 "args": ["awaitable", "pending"], "out": "ready"},
                 {"kind": "check_exception","exception_edge":"origin", "value": 310},
                 {"kind": "try_end", "value": 310},
                 {"kind": "jump", "value": 311},
@@ -2246,7 +2243,6 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
     let outer_cleanup = func.fresh_block();
     let condition = func.fresh_value();
     let awaitable = func.fresh_value();
-    let slot = func.fresh_value();
     let pending = func.fresh_value();
     func.label_id_map.insert(resume.0, 313);
     func.label_id_map.insert(inner_handler.0, 310);
@@ -2289,8 +2285,7 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
             vec![
                 original(molt_ir::OpKind::Call, vec![]),
                 const_int(pending, 313),
-                const_int(slot, 152),
-                state_transition(awaitable, slot, pending),
+                state_transition(awaitable, pending),
                 check_exception(310),
                 try_end(310),
             ],
@@ -2390,7 +2385,6 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
         let sibling = func.fresh_block();
         let exc = func.fresh_value();
         let awaitable = func.fresh_value();
-        let slot = func.fresh_value();
         func.label_id_map.insert(handler.0, 94);
         func.blocks.get_mut(&func.entry_block).unwrap().ops =
             vec![try_start(94), check_exception(94), try_end(94)];
@@ -2450,7 +2444,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
                     8
                 };
                 ops.push(const_int(pending, saved_state));
-                ops.push(state_transition(awaitable, slot, pending));
+                ops.push(state_transition(awaitable, pending));
             }
             ops.push(original(molt_ir::OpKind::ExceptionPop, vec![]));
             func.blocks.insert(
@@ -2548,7 +2542,6 @@ fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
         let first = func.fresh_block();
         let second = func.fresh_block();
         let awaitable = func.fresh_value();
-        let slot = func.fresh_value();
         let pending = func.fresh_value();
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
             cases: vec![(7, first, vec![]), (8, second, vec![])],
@@ -2564,10 +2557,7 @@ fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
             (initial, initial_ops),
             (
                 first,
-                vec![
-                    const_int(pending, 8),
-                    state_transition(awaitable, slot, pending),
-                ],
+                vec![const_int(pending, 8), state_transition(awaitable, pending)],
             ),
             (
                 second,
@@ -2750,9 +2740,8 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
                 {"kind": "jump", "value": 93},
                 {"kind": "state_label", "value": 113},
                 {"kind": "const", "value": 113, "out": "pending"},
-                {"kind": "const", "value": 152, "out": "slot"},
                 {"kind": "state_transition", "value": 114,
-                 "args": ["awaitable", "slot", "pending"], "out": "ready"},
+                 "args": ["awaitable", "pending"], "out": "ready"},
                 {"kind": "check_exception","exception_edge":"origin", "value": 94},
                 {"kind": "try_end", "value": 94},
                 {"kind": "jump", "value": 95},

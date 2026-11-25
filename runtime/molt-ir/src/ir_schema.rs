@@ -1006,6 +1006,26 @@ mod op_shape_tests {
     }
 
     #[test]
+    fn state_transition_rejects_the_retired_frame_result_operand() {
+        let mut op = OpIR {
+            kind: crate::OpKind::StateTransition,
+            args: Some(vec!["future".into(), "pending".into()]),
+            value: Some(1),
+            out: Some("ready".into()),
+            ..OpIR::new(crate::OpKind::StateTransition)
+        };
+        validate_simple_op_shape(&op).unwrap();
+        op.args.as_mut().unwrap().insert(1, "result_slot".into());
+        assert_eq!(
+            validate_simple_op_shape(&op).unwrap_err().violation,
+            OpShapeViolation::OperandCount {
+                expected: 2,
+                actual: Some(3),
+            },
+        );
+    }
+
+    #[test]
     fn executable_symbols_reject_numeric_identity_without_erasing_dynamic_diagnostics() {
         for (kind, operands) in [
             (crate::OpKind::Call, 0),
