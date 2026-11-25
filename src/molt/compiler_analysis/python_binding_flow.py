@@ -837,6 +837,11 @@ class _BindingEntryState:
         return pool, 1
 
 
+type _BindingUpdate = tuple[
+    int, IdentityMask, PythonStaticValue, StaticExpressionResult, int
+]
+
+
 class _StatePool:
     def __init__(self) -> None:
         initial = _BindingState()
@@ -1630,9 +1635,7 @@ class _StatePool:
     def set_bindings(
         self,
         state_id: int,
-        bindings: Sequence[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
-        ],
+        bindings: Sequence[_BindingUpdate],
         *,
         record_writes: bool = False,
     ) -> int:
@@ -3384,30 +3387,25 @@ class _Analyzer:
             ),
         )
 
-    def _widen_activation_inputs(
+    def _activation_input_updates(
         self,
         state_id: int,
         lexical_bindings: Sequence[tuple[int, IdentityMask]],
-    ) -> int:
+    ) -> list[_BindingUpdate]:
         """Admit arbitrary or empty compatible cells at one activation entry."""
-
-        return self.states.set_bindings(
-            state_id,
-            tuple(
+        updates: list[_BindingUpdate] = []
+        for slot, _base_binding in lexical_bindings:
+            binding = self.states._binding_resolution(state_id, slot)
+            updates.append(
                 (
                     slot,
-                    self.states._binding_resolution(state_id, slot).identities
-                    | OTHER_IDENTITY
-                    | UNBOUND_IDENTITY,
+                    binding.identities | OTHER_IDENTITY | UNBOUND_IDENTITY,
                     None,
-                    expression_result_without_value_facts(
-                        self.states._binding_resolution(state_id, slot).result
-                    ),
+                    expression_result_without_value_facts(binding.result),
                     0,
                 )
-                for slot, _base_binding in lexical_bindings
-            ),
-        )
+            )
+        return updates
 
     def _queue_annotation_expression(
         self,
@@ -7079,8 +7077,11 @@ class _Analyzer:
             first_iterable.state_id, first_iteration.effects
         )
         immediate_observation = self._namespace_observation_epoch
-        entry = self._widen_activation_inputs(
-            immediate_state, activation_lexical_bindings
+        entry = self.states.set_bindings(
+            immediate_state,
+            self._activation_input_updates(
+                immediate_state, activation_lexical_bindings
+            ),
         )
         keys = AccumulatedKeyEffects()
 
@@ -9443,12 +9444,14 @@ class _Analyzer:
         )
         # Free cells are activation inputs, not source-owned locals. A later
         # nonlocal write can still establish fresh exact facts until a callback.
-        state_id = self._widen_activation_inputs(state_id, job.lexical_base_bindings)
+        updates = self._activation_input_updates(state_id, job.lexical_base_bindings)
         parameter_defaults = dict(job.parameter_defaults)
-        for local_name in scope.locals:
-            state_id = self.states.set_binding(
-                state_id, scope.slots[local_name], UNBOUND_IDENTITY
-            )
+        # No Python can observe a partly initialized frame. Publish its
+        # captures, parameter bindings and empty local slots in one state.
+        locals_at_entry: dict[int, _BindingUpdate] = {
+            slot: (slot, UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, 0)
+            for slot in scope.slots.values()
+        }
         for parameter, parameter_node in zip(parameters, parameter_nodes, strict=True):
             slot = scope.slots.get(parameter)
             if slot is not None:
@@ -9465,8 +9468,7 @@ class _Analyzer:
                 if argument_value is not None:
                     default_result = StaticExpressionResult.scalar(argument_value)
                     identities = int(PythonIdentity.INERT_VALUE)
-                state_id = self.states.set_binding(
-                    state_id,
+                locals_at_entry[slot] = (
                     slot,
                     identities,
                     PythonParameterRef(parameter)
@@ -9479,7 +9481,10 @@ class _Analyzer:
                         source_origins=default_result.source_origins
                         | {parameter_source},
                     ),
+                    0,
                 )
+        updates.extend(locals_at_entry.values())
+        state_id = self.states.set_bindings(state_id, updates)
         observed: list[int] = [state_id]
         self._observed_stack.append(_ObservedStateFrame(observed))
         previous_history = self._active_lexical_history

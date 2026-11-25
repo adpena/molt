@@ -129,6 +129,10 @@ class SourceReturn(NamedTuple):
     callee: SourceValue
 
 
+class SourceCallArguments(NamedTuple):
+    site: PythonSourceKey
+
+
 class SourceAwait(NamedTuple):
     value: SourceValue
 
@@ -143,6 +147,7 @@ SourceValue = tuple[
     | SourceMember
     | SourceCacheItem
     | SourceReturn
+    | SourceCallArguments
     | SourceAwait
     | SourceGeneratorCompletion
     | None,
@@ -194,6 +199,10 @@ class PythonSourceDemands:
         self.imported_modules: set[str] = set()
         self.value_candidates: dict[SourceValue, set[SourceCandidate]] = {}
         self.value_users: dict[SourceValue, set[SourceValue]] = {}
+        # Operand transfers read candidate membership and callable shape.
+        # Outcome facts such as a growing return set have their own users.
+        self.candidate_users: dict[SourceValue, set[SourceValue]] = {}
+        self.declaration_users: dict[SourceValue, set[SourceValue]] = {}
         self.value_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.pending_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.elements: dict[SourceValue, PythonSourceElement] = {}
@@ -299,6 +308,15 @@ class PythonSourceDemands:
 
     def watch(self, origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
         self.value_users.setdefault(origin, set()).add(user)
+        return self._ensure_value(origin)
+
+    def _watch_candidates(
+        self, origin: SourceValue, user: SourceValue
+    ) -> set[SourceCandidate]:
+        self.candidate_users.setdefault(origin, set()).add(user)
+        return self._ensure_value(origin)
+
+    def _ensure_value(self, origin: SourceValue) -> set[SourceCandidate]:
         if origin not in self.value_candidates:
             self.value_candidates[origin] = set()
             self.queue_value(origin)
@@ -438,7 +456,14 @@ class PythonSourceDemands:
                         )
                     ),
                 )
-            self._publish(self.calls, value, call)
+            if self._publish(self.calls, value, call) and (
+                previous is None
+                or call.callees != previous.callees
+                or call.arguments != previous.arguments
+            ):
+                operands = (module_name, SourceCallArguments(call.owner))
+                if operands in self.value_candidates:
+                    self.queue_value(operands)
         for initializer in scan.source_values.native_initializers:
             value = (module_name, initializer.owner)
             previous = self.native_initializers.get(value)
@@ -474,9 +499,10 @@ class PythonSourceDemands:
                 self.completions.get(value, frozenset()) | origins,
             )
         for declaration in scan.source_values.declarations:
-            self._publish(
-                self.declarations, (module_name, declaration.owner), declaration
-            )
+            owner = (module_name, declaration.owner)
+            if self._publish(self.declarations, owner, declaration):
+                for user in self.declaration_users.get(owner, ()):
+                    self.queue_value(user)
         for owner, classes in scan.source_values.activation_partitions:
             value = (module_name, owner)
             previous_classes = self.activation_partitions.get(value)
@@ -536,6 +562,9 @@ class PythonSourceDemands:
                 )
             if not self._publish(self.import_bindings, key, binding):
                 continue
+            operands = (module_name, SourceCallArguments(binding.source))
+            if operands in self.value_candidates:
+                self.queue_value(operands)
             if binding.attribute == "*":
                 self.star_aliases.setdefault(module_name, set()).add(binding.source)
                 for incidence in self.escaped_modules.get(module_name, ()):
@@ -837,6 +866,7 @@ class PythonSourceDemands:
             incidence.phase == "mutate" for incidence in self.value_phases.get(user, ())
         )
         selected: set[SourceCandidate] = set()
+        binding_changed = False
         for candidate in tuple(self.watch(owner_value, user)):
             source_class = self._source_class_candidate(candidate)
             if strict:
@@ -871,9 +901,12 @@ class PythonSourceDemands:
                 ):
                     self.watch(member.value, user)
                     self._bind_receiver(member, candidate)
-                    bound.add(member)
-                else:
+                    if member not in bound:
+                        bound.add(member)
+                        binding_changed = True
+                elif member not in unbound:
                     unbound.add(member)
+                    binding_changed = True
             selected.update(members)
             if source_class and (
                 # The instance mapping is a writer no member store names.
@@ -897,6 +930,10 @@ class PythonSourceDemands:
                 )
             ):
                 self.activate(candidate, "escape")
+        # The callable can remain the same while it gains a receiver.
+        if binding_changed:
+            for dependent in self.candidate_users.get(user, ()):
+                self.queue_value(dependent)
         return selected
 
     def _bind_receiver(
@@ -1620,6 +1657,8 @@ class PythonSourceDemands:
                         item._replace(contained=True)
                         for item in self.watch((module_name, default), value)
                     )
+        elif isinstance(source, SourceCallArguments):
+            self._route_call_arguments(module_name, source, value)
         elif isinstance(source, SourceReturn):
             for callee in tuple(self.watch(source.callee, value)):
                 candidates.update(self._returned_values(callee, value))
@@ -1773,6 +1812,8 @@ class PythonSourceDemands:
                 )
         elif value in self.calls and value not in self.import_bindings:
             call = self.calls[value]
+            if any(exposed for _, _, exposed in call.arguments):
+                self._ensure_value((module_name, SourceCallArguments(call.owner)))
             for callee in call.callees:
                 for candidate in tuple(self.watch((module_name, callee), value)):
                     if candidate.contained:
@@ -1835,11 +1876,6 @@ class PythonSourceDemands:
                         attribute, ()
                     ):
                         self._direct_entries.add(candidate.value)
-                        self._bind_call_arguments(call, candidate, value)
-                    if receiver_bound:
-                        self._bind_call_arguments(
-                            call, candidate, value, receiver_bound=True
-                        )
                     if candidate.kind in {
                         "native_initializer",
                         "bound_native_initializer",
@@ -1899,8 +1935,9 @@ class PythonSourceDemands:
         added = candidates - known
         known.update(added)
         if added:
-            for user in self.value_users.get(value, ()):
-                self.queue_value(user)
+            for users in (self.value_users, self.candidate_users):
+                for user in users.get(value, ()):
+                    self.queue_value(user)
         # Incremental join: each candidate/demand incidence is emitted once.
         # A namespace dependency wake with neither delta performs no old product.
         new_phases = self.pending_phases.pop(value, set())
@@ -1925,23 +1962,63 @@ class PythonSourceDemands:
                         consumer=incidence.consumer,
                     )
 
+    def _route_call_arguments(
+        self, module: str, inputs: SourceCallArguments, user: SourceValue
+    ) -> None:
+        # Return values can grow without changing a call's actuals. Watch
+        # operand and declaration changes from the argument transfer alone.
+        site = (module, inputs.site)
+        if site in self.import_bindings:
+            return
+        call = self.calls[site]
+        seen: set[tuple[SourceValue, bool]] = set()
+        actuals: dict[tuple[int, bool], set[SourceCandidate]] = {}
+        for origin in call.callees:
+            selection = (module, origin)
+            for candidate in self._watch_candidates(selection, user):
+                if (
+                    candidate.contained
+                    or candidate.identity is not None
+                    or candidate.source is None
+                    or candidate.kind.startswith("namespace")
+                ):
+                    continue
+                bound = candidate in self.receiver_bound_members.get(selection, ())
+                unbound = not bound or candidate in self.unbound_members.get(
+                    selection, ()
+                )
+                offsets = (
+                    (True,)
+                    if candidate.kind == "bound_class_method" or not unbound
+                    else (False, True)
+                    if bound
+                    else (False,)
+                )
+                for offset in offsets:
+                    route = (candidate.value, offset)
+                    if route not in seen:
+                        seen.add(route)
+                        self._bind_call_arguments(
+                            call, candidate.value, user, offset, actuals
+                        )
+
     def _bind_call_arguments(
         self,
         call: PythonSourceCall,
-        callee: SourceCandidate,
+        callee: SourceValue,
         user: SourceValue,
-        *,
-        receiver_bound: bool = False,
+        receiver_bound: bool,
+        actuals: dict[tuple[int, bool], set[SourceCandidate]],
     ) -> None:
         """Transport argument origins through the existing formal-value worklist."""
-        self.watch(callee.value, user)
-        parameters = self.declarations.get(callee.value)
+        self.declaration_users.setdefault(callee, set()).add(user)
+        parameters = self.declarations.get(callee)
         if parameters is None:
             return
         keywords = dict(parameters.keywords)
-        for name, origins, exposed in call.arguments:
+        for index, (name, origins, exposed) in enumerate(call.arguments):
             if isinstance(name, int):
-                if callee.kind == "bound_class_method" or receiver_bound:
+                if receiver_bound:
                     name += 1
                 targets = (
                     ((parameters.positional[name], False),)
@@ -1986,18 +2063,31 @@ class PythonSourceDemands:
                     )
                 )
                 origins = exposed
-            for target, contained in targets:
-                formal = (callee.module, target)
-                known = self.arguments.setdefault(formal, set())
-                for source in exposed:
-                    for candidate in tuple(self.watch((user[0], source), user)):
-                        argument = candidate._replace(
-                            contained=contained
-                            or (source not in origins and name is not None)
+            for target, packed in targets:
+                # Each selection reads the same operand candidates. Project
+                # them once even when several formals accept that operand.
+                key = (index, packed)
+                values = actuals.get(key)
+                if values is None:
+                    values = set()
+                    for source in exposed:
+                        contained = packed or source not in origins
+                        values.update(
+                            candidate
+                            if candidate.contained == contained
+                            else candidate._replace(contained=contained)
+                            for candidate in self._watch_candidates(
+                                (user[0], source), user
+                            )
                         )
-                        if argument not in known:
-                            known.add(argument)
-                            self.queue_value(formal)
+                    actuals[key] = values
+                if not values:
+                    continue
+                formal = (callee[0], target)
+                known = self.arguments.setdefault(formal, set())
+                if added := values - known:
+                    known.update(added)
+                    self.queue_value(formal)
 
     def _bind_native_call(self, site: SourceValue, callee: SourceCandidate) -> None:
         uses = self.native_calls.setdefault(callee.value, set())

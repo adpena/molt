@@ -265,9 +265,16 @@ receiver behavior.
    writes, entry member uncertainty, noncanonical providers and opaque source activations.
    Unknown opaque custody is distinct from a proved empty set. Source bodies whose
    real function/class values escape, are recreated or have visible attribute mutations
-   retain conservative activation. Exact callees transfer arguments through their
-   existing formal-parameter worklist; merely passing an argument does not expose
-   its whole namespace. A body is scanned once per argument class, not once per
+   retain conservative activation. Exact callees transfer arguments through the
+   formal-parameter worklist. A call's argument transfer subscribes to actual and
+   callee candidate growth, receiver binding, and callable declarations. Its
+   result can grow independently. Each transfer projects an actual's provenance
+   once per packing mode even if many candidate callees accept it. The dependency
+   split follows the fixed-point work savings of
+   [differential dataflow](https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf).
+   Frame entry similarly publishes captures, parameters, and empty local slots as
+   one abstract state before executing user statements. A body is scanned once
+   per argument class, not once per
    argument: a positional parameter that the body observes only through
    string-literal tests, branches those tests narrow, and the message of a raise
    that reaches no source callee shares one scan for every argument outside its

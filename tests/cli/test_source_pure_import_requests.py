@@ -3052,6 +3052,90 @@ def test_canonical_callable_cache_preserves_strict_new_rows(tmp_path):
     assert not load(entry).cache_hit
 
 
+def test_call_argument_transfer_observes_actuals_without_replaying_return_wakes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_imports import _ImportScanRequests
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCallArguments,
+        SourceCandidate,
+        SourceValue,
+    )
+    from molt.compiler_analysis.python_source_keys import (
+        PythonSourceKey,
+        python_node_source_key,
+    )
+
+    tree = ast.parse(
+        "def payload(): pass\n"
+        "def result(): pass\n"
+        "def make(): return payload\n"
+        "def receive(callback): return result\n"
+        "receive(callback=make())\n"
+    )
+    premise = PythonNamespacePremise((), 0, 0, ())
+    projection = _source_import_scan._collect_imports_for_graph(
+        tree,
+        "entry",
+        namespace_premise=premise,
+        purpose=SourceImportPurpose.INVENTORY,
+    )
+    inventory = _ImportScanRequests((), ())._replace(**projection._asdict())
+    initial = inventory._replace(
+        source_values=inventory.source_values._replace(functions=())
+    )
+    payload, result, make, receive, call = tree.body
+    assert isinstance(make, ast.FunctionDef)
+    assert isinstance(receive, ast.FunctionDef)
+    assert isinstance(call, ast.Expr)
+    site = python_node_source_key(call.value)
+    formal = ("entry", python_node_source_key(receive.args.args[0]))
+    outcomes = {row.owner: row for row in inventory.source_values.functions}
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    engine.accept("entry", initial)
+    engine.demand(("entry", site), "read")
+    engine.drain()
+    assert not engine.arguments.get(formal)
+
+    def publish_outcome(definition: ast.FunctionDef) -> None:
+        body = _source_import_scan._collect_imports_for_graph(
+            tree,
+            "entry",
+            source_owner=python_node_source_key(definition),
+            namespace_premise=premise,
+        )
+        assert body.source_values.functions == (
+            outcomes[python_node_source_key(definition)],
+        )
+        engine.accept("entry", _ImportScanRequests((), ())._replace(**body._asdict()))
+        engine.drain()
+
+    publish_outcome(make)
+    assert engine.arguments[formal] == {
+        SourceCandidate("entry", python_node_source_key(payload))
+    }
+
+    routed: list[PythonSourceKey] = []
+    route = engine._route_call_arguments
+
+    def observe(module: str, inputs: SourceCallArguments, user: SourceValue) -> None:
+        routed.append(inputs.site)
+        route(module, inputs, user)
+
+    monkeypatch.setattr(engine, "_route_call_arguments", observe)
+    publish_outcome(receive)
+    assert engine.value_candidates[("entry", site)] == {
+        SourceCandidate("entry", python_node_source_key(result))
+    }
+    assert site not in routed
+
+
 def test_late_canonical_provider_activation_retains_application_consumer():
     from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_source_demands import PythonSourceDemands
