@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from tests.wasm_execution_manifest import wasm_execution_launch
 
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_reference_evidence,
+    synthetic_workload,
+)
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
@@ -292,18 +295,8 @@ def _scoreboard_cell(
         "build_ok": True,
         "run_blocked": False,
         "molt_ok": True,
-        "cpython_ok": True,
-        "warm_speedup": 2.0,
-        "verdict": gate.pa.perf_schema.VERDICT_GREEN,
-        "classification": gate.pa.perf_schema.CLASS_GREEN,
         "stable": True,
-        "repeat_stability": "STABLE_ABOVE",
-        "repeat_ci_lo": 1.5,
-        "repeat_ci_hi": 2.5,
-        "output_parity": gate.pa.perf_schema.output_parity_evidence(
-            reference_observations=[("cpython:cold", "result\n", "", 0)],
-            molt_observations=[("molt:cold", "result\n", "", 0)],
-        ),
+        **synthetic_reference_evidence(benchmark),
         "repeat_passes": int(gate.pa.CANONICAL_PERF_REPEAT),
         "measured_quiescent": True,
     }

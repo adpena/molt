@@ -17,6 +17,42 @@ from tools.perf_scoreboard_build_profiles import profile_selection_for_backend
 from tools.bench_evidence import AdmittedBenchmarkWorkload
 
 
+def synthetic_reference_evidence(benchmark: str) -> dict[str, object]:
+    """Build fixture witnesses for the workload's declared reference contract."""
+    from tools import perf_schema
+    from tools.bench_metadata import benchmark_reference_contract
+
+    contract = benchmark_reference_contract(benchmark)
+    if not contract.external_baselines:
+        expected = contract.expected_stdout
+        assert expected is not None
+        return {
+            "cpython_ok": False,
+            "warm_speedup": None,
+            "verdict": perf_schema.VERDICT_CPY_INCOMPAT,
+            "classification": None,
+            "repeat_stability": None,
+            "repeat_ci_lo": None,
+            "repeat_ci_hi": None,
+            "output_parity": perf_schema.molt_contract_parity_evidence(
+                expected, [("molt:cold", expected, "", 0)]
+            ),
+        }
+    return {
+        "cpython_ok": True,
+        "warm_speedup": 2.0,
+        "verdict": perf_schema.VERDICT_GREEN,
+        "classification": perf_schema.CLASS_GREEN,
+        "repeat_stability": "STABLE_ABOVE",
+        "repeat_ci_lo": 1.5,
+        "repeat_ci_hi": 2.5,
+        "output_parity": perf_schema.output_parity_evidence(
+            reference_observations=[("cpython:cold", "result\n", "", 0)],
+            molt_observations=[("molt:cold", "result\n", "", 0)],
+        ),
+    }
+
+
 def write_synthetic_build_observation(
     artifact: Path, *, backend: str, profile: str
 ) -> dict[str, Any]:

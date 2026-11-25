@@ -13,6 +13,7 @@ of truth:
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_reference_evidence
 from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
 import math
@@ -27,7 +28,6 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 from tools import perf_authority as pa  # noqa: E402
 from tools import check_perf_freshness as freshness  # noqa: E402
-from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 
 
 # --- safe_speedup: a build failure can never become a ratio ------------------
@@ -179,7 +179,9 @@ def _canonical_scoreboard_doc(
     suite = benchmarks or pa.CANONICAL_PERF_BENCHMARKS
 
     def cell_for(benchmark: str, backend: str) -> dict[str, object]:
-        cell: dict[str, object] = {
+        reference = synthetic_reference_evidence(benchmark)
+        has_cpython = reference["cpython_ok"] is True
+        return {
             "benchmark": benchmark,
             "workload": synthetic_workload(benchmark),
             "target": "native",
@@ -197,15 +199,12 @@ def _canonical_scoreboard_doc(
             },
             "run_blocked": False,
             "molt_ok": True,
-            "cpython_ok": True,
             "cold_molt_s": 0.12,
-            "cold_cpython_s": 0.24,
+            "cold_cpython_s": 0.24 if has_cpython else None,
             "warm_molt_s": 0.10,
-            "warm_cpython_s": 0.20,
-            "warm_speedup": 2.0,
-            "cold_speedup": 2.0,
-            "startup_tax_ms": 5.0,
-            "verdict": "GREEN",
+            "warm_cpython_s": 0.20 if has_cpython else None,
+            "cold_speedup": 2.0 if has_cpython else None,
+            "startup_tax_ms": 5.0 if has_cpython else None,
             "binary_size_kib": 512.0,
             "molt_peak_rss_mib": 18.0,
             "compile_time_s": 0.4,
@@ -213,41 +212,12 @@ def _canonical_scoreboard_doc(
             "pypy_ratio": None,
             "codon_ratio": None,
             "codon_equivalent": None,
-            "cpython_peak_rss_mib": 15.0,
-            "output_parity": pa.perf_schema.output_parity_evidence(
-                reference_observations=[("cpython:cold", "result\n", "", 0)],
-                molt_observations=[("molt:cold", "result\n", "", 0)],
-            ),
+            "cpython_peak_rss_mib": 15.0 if has_cpython else None,
+            **reference,
             "log_artifact": f"bench/scoreboard/logs/{Path(benchmark).stem}-{backend}.log",
-            "classification": "GREEN_STABLE",
             "repeat_passes": 5,
-            "repeat_ci_lo": 1.5,
-            "repeat_ci_hi": 2.5,
-            "repeat_stability": "STABLE_ABOVE",
             "measured_quiescent": True,
         }
-        contract = benchmark_reference_contract(benchmark)
-        if not contract.external_baselines:
-            expected = contract.expected_stdout
-            assert expected is not None
-            cell.update(
-                cpython_ok=False,
-                cold_cpython_s=None,
-                warm_cpython_s=None,
-                warm_speedup=None,
-                cold_speedup=None,
-                startup_tax_ms=None,
-                cpython_peak_rss_mib=None,
-                verdict=pa.perf_schema.VERDICT_CPY_INCOMPAT,
-                output_parity=pa.perf_schema.molt_contract_parity_evidence(
-                    expected, [("molt:cold", expected, "", 0)]
-                ),
-                classification=None,
-                repeat_ci_lo=None,
-                repeat_ci_hi=None,
-                repeat_stability=None,
-            )
-        return cell
 
     return {
         "summary": {"classify_active": classify_active},
