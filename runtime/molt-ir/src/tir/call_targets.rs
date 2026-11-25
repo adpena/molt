@@ -158,6 +158,46 @@ pub fn guarded_dispatch(op: &TirOp) -> Option<GuardedDispatch> {
         .then(|| GuardedDispatch::from_proof(op.proven_target()))
 }
 
+pub fn is_compiled_invocation(op: &TirOp) -> bool {
+    op.runtime.is_none()
+        && (matches!(op.opcode, OpCode::CallLoadedMethod | OpCode::DirectCall)
+            || static_call(op).is_some()
+            || guarded_dispatch(op).is_some())
+}
+
+/// The compiled invocation whose pending state reaches this observation.
+/// Releasing an admitted recursion slot preserves that state.
+pub fn invocation_before_observer(preceding: &[TirOp]) -> Option<(usize, &TirOp)> {
+    let (last, prefix) = preceding.split_last()?;
+    let (index, call) = if last.opcode == OpCode::RecursionRelease && last.has_valid_shape() {
+        (prefix.len().checked_sub(1)?, prefix.last()?)
+    } else {
+        (prefix.len(), last)
+    };
+    (call.results.len() == 1 && call.has_valid_shape() && is_compiled_invocation(call))
+        .then_some((index, call))
+}
+
+/// Both operations leave the pending state and the call's SSA identity intact.
+pub fn preserves_invocation_observation(op: &TirOp) -> bool {
+    (op.opcode == OpCode::RecursionRelease && op.has_valid_shape()) || op.is_plain_value_copy()
+}
+
+/// Validate the invocation operand before either backend allocates machine IR.
+pub(super) fn bound_invocation(
+    preceding: &[TirOp],
+    observer: &TirOp,
+) -> Option<(usize, super::values::ValueId)> {
+    let word = observer.checked_invocation_source()?;
+    let (index, call) = preceding
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, op)| !preserves_invocation_observation(op))?;
+    (call.results.as_slice() == [word] && call.has_valid_shape() && is_compiled_invocation(call))
+        .then_some((index, word))
+}
+
 /// The declaration and argument layout validated at a terminal call site.
 /// A guarded candidate still needs its callable even before admission proves
 /// that the compiled target will run.

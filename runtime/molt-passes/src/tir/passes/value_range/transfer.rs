@@ -14,7 +14,7 @@ use super::ValueRangeResult;
 /// A false (too-tight) range feeds `fits_inline_int47` → `RawI64Safe` promotion,
 /// so an unsound bound is a silent BigInt-truncation miscompile. When in doubt,
 /// return `FULL_I64`.
-pub(super) fn transfer_op_range(
+pub(in crate::tir::passes) fn transfer_op_range(
     op: &TirOp,
     block: BlockId,
     result: &ValueRangeResult,
@@ -27,25 +27,33 @@ pub(super) fn transfer_op_range(
             .unwrap_or(IntRange::FULL_I64)
     };
     let c = |i: usize| -> Option<i64> { op.operands.get(i).and_then(|&v| result.const_int_of(v)) };
+    // At a saturated endpoint the actual Python magnitude can exceed i64.
+    // Only a literal can prove that an extreme denotes precisely MIN or MAX.
+    let finite = |i| {
+        let range = r(i);
+        if range.is_bounded() {
+            Some(range)
+        } else {
+            c(i).map(IntRange::point)
+        }
+    };
+    let finite_binary = |transfer: fn(IntRange, IntRange) -> IntRange| {
+        finite(0)
+            .zip(finite(1))
+            .map_or(IntRange::FULL_I64, |(a, b)| transfer(a, b))
+    };
     match opcode_value_range_transfer_rule_table(op.opcode) {
         // ModuleRegistry admission bounds the dense row count to u32. The
         // actual final-application ID remains unknown to reusable functions.
         ValueRangeTransferRule::ModuleSlot if op.operands.is_empty() => {
             Some(IntRange::new(0, i64::from(u32::MAX)))
         }
-        ValueRangeTransferRule::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
-        ValueRangeTransferRule::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),
-        ValueRangeTransferRule::Mul if op.operands.len() == 2 => {
-            let (a, b) = (r(0), r(1));
-            // A FULL operand makes the product FULL; guard to avoid i64::MIN ·
-            // huge corner-product noise (still sound, just no information).
-            if a.is_full() || b.is_full() {
-                Some(IntRange::FULL_I64)
-            } else {
-                Some(a.mul(b))
-            }
+        ValueRangeTransferRule::Add if op.operands.len() == 2 => Some(finite_binary(IntRange::add)),
+        ValueRangeTransferRule::Sub if op.operands.len() == 2 => Some(finite_binary(IntRange::sub)),
+        ValueRangeTransferRule::Mul if op.operands.len() == 2 => Some(finite_binary(IntRange::mul)),
+        ValueRangeTransferRule::Neg if op.operands.len() == 1 => {
+            Some(finite(0).map_or(IntRange::FULL_I64, IntRange::neg))
         }
-        ValueRangeTransferRule::Neg if op.operands.len() == 1 => Some(r(0).neg()),
         ValueRangeTransferRule::BitAnd if op.operands.len() == 2 => {
             Some(r(0).bit_and(r(1), c(0), c(1)))
         }
@@ -65,7 +73,7 @@ pub(super) fn transfer_op_range(
                     Some(IntRange::mod_const(cd))
                 }
             } else {
-                Some(IntRange::mod_range(r(1)))
+                Some(finite(1).map_or(IntRange::FULL_I64, IntRange::mod_range))
             }
         }
         ValueRangeTransferRule::FloorDiv if op.operands.len() == 2 => {
@@ -73,23 +81,24 @@ pub(super) fn transfer_op_range(
             // sign-of-divisor floor semantics; else a sign-uniform, non-zero
             // divisor range. `//` rounds toward -inf, so the dividend's whole
             // range — not just its magnitude — drives the bound.
+            let Some(dividend) = finite(0) else {
+                return Some(IntRange::FULL_I64);
+            };
             if let Some(cd) = c(1) {
                 if cd == 0 {
                     Some(IntRange::FULL_I64) // ZeroDivisionError — no value.
                 } else {
-                    Some(r(0).floordiv_const(cd))
+                    Some(dividend.floordiv_const(cd))
                 }
             } else {
-                Some(r(0).floordiv_range(r(1)))
+                Some(finite(1).map_or(IntRange::FULL_I64, |divisor| {
+                    dividend.floordiv_range(divisor)
+                }))
             }
         }
         ValueRangeTransferRule::Shr if op.operands.len() == 2 => {
-            let value = match c(0) {
-                Some(value) => IntRange::point(value),
-                None if r(0).is_bounded() => r(0),
-                // Right shift can move a saturated endpoint back inside i64
-                // even when the actual Python integer is still too wide.
-                None => return Some(IntRange::FULL_I64),
+            let Some(value) = finite(0) else {
+                return Some(IntRange::FULL_I64);
             };
             let count = c(1).map_or_else(|| r(1), IntRange::point);
             Some(value.shr_range(count))

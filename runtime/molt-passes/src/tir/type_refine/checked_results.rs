@@ -6,7 +6,10 @@ use std::cell::OnceCell;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
-use crate::tir::call_targets::{direct_boxed_runtime, guarded_dispatch, static_call};
+use crate::tir::call_targets::{
+    direct_boxed_runtime, invocation_before_observer, is_compiled_invocation,
+    preserves_invocation_observation, static_call,
+};
 use crate::tir::dominators::{
     ProgramPointDominance, checked_exception_observer, exception_label_to_block,
     executable_reverse_postorder,
@@ -66,14 +69,39 @@ pub(crate) fn checked_result_observer(
     .filter(|target| {
         func.blocks
             .get(target)
-            .is_some_and(|block| block.args.len() == op.operands.len())
+            .is_some_and(|block| block.args.len() == op.exception_payload().len())
     })
 }
 
-pub(super) struct CheckedResults {
-    pub sites: HashMap<ValueId, Site>,
-    pub unproven: HashSet<ValueId>,
-    pub projections: HashMap<ValueId, ValueId>,
+/// Materialize the verified association after ownership and final lowering.
+/// Subsequent rewrites remap the bound word with the other SSA operands.
+pub(crate) fn bind_checked_invocations(func: &mut TirFunction) -> bool {
+    let labels = OnceCell::new();
+    let mut bindings = Vec::new();
+    for body in func.blocks.values() {
+        for (index, check) in body.ops.iter().enumerate() {
+            if check.opcode == OpCode::CheckException
+                && !check.has_checked_invocation_binding()
+                && check.exception_edge_kind().is_some()
+                && let Some((_, call)) = invocation_before_observer(&body.ops[..index])
+                && checked_result_observer(func, &labels, check).is_some()
+            {
+                bindings.push((body.id, index, call.results[0]));
+            }
+        }
+    }
+    let changed = !bindings.is_empty();
+    for (block, index, word) in bindings {
+        func.blocks.get_mut(&block).unwrap().ops[index].bind_checked_invocation(word);
+    }
+    changed
+}
+
+#[derive(Clone)]
+pub(crate) struct CheckedResults {
+    pub(super) sites: HashMap<ValueId, Site>,
+    pub(super) unproven: HashSet<ValueId>,
+    pub(super) projections: HashMap<ValueId, ValueId>,
 }
 
 impl CheckedResults {
@@ -83,47 +111,82 @@ impl CheckedResults {
         let mut unproven = HashSet::default();
         for &block in order {
             let ops = &func.blocks[&block].ops;
-            for (call, op) in ops.iter().enumerate() {
-                let [word] = op.results[..] else { continue };
-                let compiled = matches!(op.opcode, OpCode::CallLoadedMethod | OpCode::DirectCall)
-                    || static_call(op).is_some()
-                    || guarded_dispatch(op).is_some();
-                if !compiled
-                    && !direct_boxed_runtime(op)
-                        .is_some_and(|entry| entry.returns_exact_int_on_success())
-                {
+            let mut pending_call = None;
+            for (check, op) in ops.iter().enumerate() {
+                if op.opcode != OpCode::CheckException {
+                    if let [word] = op.results[..]
+                        && is_compiled_invocation(op)
+                    {
+                        pending_call = op.has_valid_shape().then_some((word, check));
+                        if func.has_exception_handling && !op.has_nothrow_proof() {
+                            unproven.insert(word);
+                        }
+                    } else if !preserves_invocation_observation(op) {
+                        pending_call = None;
+                    }
                     continue;
                 }
-                let mut check = call + 1;
-                if compiled
-                    && ops.get(check).is_some_and(|op| {
-                        op.opcode == OpCode::RecursionRelease && op.has_valid_shape()
-                    })
-                {
-                    check += 1;
+                let pending = pending_call.take();
+                if check == 0 {
+                    continue;
                 }
-                if op.has_valid_shape()
-                    && ops
-                        .get(check)
-                        .and_then(|op| checked_result_observer(func, &labels, op))
-                        .is_some()
-                {
-                    sites.insert(
-                        word,
-                        Site {
-                            block,
-                            call,
-                            check,
-                            compiled,
-                            normal_use: false,
-                            physical_use: false,
-                            implicit_handler_use: false,
-                            projected: false,
-                        },
-                    );
-                } else if compiled && func.has_exception_handling && !op.has_nothrow_proof() {
-                    unproven.insert(word);
-                }
+                let (call, word, compiled) = if op.has_checked_invocation_binding() {
+                    let labels = labels.get_or_init(|| exception_label_to_block(func));
+                    let Some(edge) = crate::tir::dominators::checked_invocation(
+                        &func.blocks[&block],
+                        check,
+                        labels,
+                    ) else {
+                        continue;
+                    };
+                    let Some((physical, call)) = pending else {
+                        continue;
+                    };
+                    if physical != edge.physical
+                        || !func
+                            .blocks
+                            .get(&edge.exceptional)
+                            .is_some_and(|handler| handler.args.len() == edge.payload.len())
+                    {
+                        continue;
+                    }
+                    (call, edge.physical, true)
+                } else {
+                    let (call, word, compiled) =
+                        if let Some((call, producer)) = invocation_before_observer(&ops[..check]) {
+                            (call, producer.results[0], true)
+                        } else {
+                            let producer = &ops[check - 1];
+                            let [word] = producer.results[..] else {
+                                continue;
+                            };
+                            if !producer.has_valid_shape()
+                                || !direct_boxed_runtime(producer)
+                                    .is_some_and(|entry| entry.returns_exact_int_on_success())
+                            {
+                                continue;
+                            }
+                            (check - 1, word, false)
+                        };
+                    if checked_result_observer(func, &labels, op).is_none() {
+                        continue;
+                    }
+                    (call, word, compiled)
+                };
+                unproven.remove(&word);
+                sites.insert(
+                    word,
+                    Site {
+                        block,
+                        call,
+                        check,
+                        compiled,
+                        normal_use: false,
+                        physical_use: false,
+                        implicit_handler_use: false,
+                        projected: false,
+                    },
+                );
             }
         }
 
@@ -150,7 +213,9 @@ impl CheckedResults {
                 };
                 for (index, op) in body.ops.iter().enumerate() {
                     let projection = op.checked_call_result_source().map(|_| op.results[0]);
-                    for &word in &op.operands {
+                    // The bound result identifies the observation. Only a
+                    // handler argument is a physical use on the failure arm.
+                    for &word in op.exception_payload() {
                         observe(word, index, projection);
                     }
                 }
@@ -169,24 +234,44 @@ impl CheckedResults {
             projections,
         }
     }
+
+    pub(crate) fn successful_call_results(&self, func: &TirFunction) -> HashSet<ValueId> {
+        self.sites
+            .iter()
+            .filter_map(|(&word, site)| {
+                let op = &func.blocks[&site.block].ops[site.call];
+                (site.compiled
+                    && !site.physical_use
+                    && (static_call(op).is_some()
+                        || (op.opcode == OpCode::DirectCall && op.callee.is_some())))
+                .then_some(word)
+            })
+            .collect()
+    }
+
+    pub(crate) fn call_range_values(
+        &self,
+        func: &TirFunction,
+        range_of: impl Fn(&TirOp) -> Option<crate::tir::numeric_facts::IntRange>,
+    ) -> Vec<(ValueId, crate::tir::numeric_facts::IntRange)> {
+        let range = |site: &Site| range_of(&func.blocks[&site.block].ops[site.call]);
+        self.sites
+            .iter()
+            .filter(|(_, site)| site.compiled && !site.physical_use)
+            .filter_map(|(&word, site)| Some((word, range(site)?)))
+            .chain(
+                self.projections
+                    .iter()
+                    .filter_map(|(&success, word)| Some((success, range(&self.sites[word])?))),
+            )
+            .collect()
+    }
 }
 
 /// Physical results whose own checked continuation dominates every use.
 pub fn checked_successful_call_results(func: &TirFunction) -> HashSet<ValueId> {
     let order = executable_reverse_postorder(func);
-    CheckedResults::collect(func, &order)
-        .sites
-        .into_iter()
-        .filter_map(|(word, site)| {
-            let op = &func.blocks[&site.block].ops[site.call];
-            (site.compiled
-                && !site.physical_use
-                && op.runtime.is_none()
-                && (static_call(op).is_some()
-                    || (op.opcode == OpCode::DirectCall && op.callee.is_some())))
-            .then_some(word)
-        })
-        .collect()
+    CheckedResults::collect(func, &order).successful_call_results(func)
 }
 
 /// Results a handler reads directly, outside the check's explicit payload.

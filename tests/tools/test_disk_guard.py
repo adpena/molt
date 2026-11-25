@@ -182,6 +182,54 @@ def _registered_worktree_scope(
 # --- 1. ensure_free reclaims stale dirs and STOPS at the target -------------
 
 
+def test_pressure_reclaims_free_database_pages_and_preserves_live_rows(
+    tmp_path: Path,
+) -> None:
+    from contextlib import closing
+    from molt.cli.source_record_store import SourceRecordStore
+
+    cache = tmp_path / ".molt_cache"
+    store = SourceRecordStore(cache)
+    assert store.put("module-lowering", "expired", b"x" * (3 << 20), generation="g")
+    assert store.put("module-lowering", "live", b"reusable", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        rows = {row.key: row for row in maintenance.iter_lru(maintenance.inventory())}
+        assert maintenance.remove([rows["expired"]]) == ("removed",)
+        # Leave a backlog after the routine retention batch.
+        maintenance.reclaim()
+    before = store.path.stat().st_size
+
+    def free_bytes() -> int:
+        return before - store.path.stat().st_size
+
+    def pressure(*, root: Path, apply: bool) -> dg.ReclaimResult:
+        return dg.ensure_free(
+            root=root,
+            env={"MOLT_CACHE": str(cache)},
+            config=_cfg(high_water_bytes=1 << 20, target_bytes=2 << 20),
+            free_bytes_fn=free_bytes,
+            log=False,
+            apply=apply,
+        )
+
+    other_root = tmp_path / "other-artifacts"
+    other_root.mkdir()
+    assert pressure(root=other_root, apply=True).free_after == 0
+    preview = pressure(root=tmp_path, apply=False)
+    assert preview.free_after == 0
+    assert store.path.stat().st_size == before
+
+    result = pressure(root=tmp_path, apply=True)
+    assert result.free_after >= 2 << 20
+    assert "source-record-compaction" in result.phase_elapsed_s
+    assert result.reclaimed == []
+    assert result.errors == []
+    connection = store._connect()
+    assert connection is not None
+    with closing(connection.execute("SELECT key, payload FROM records")) as rows:
+        assert rows.fetchall() == [("live", b"reusable")]
+
+
 def test_ensure_free_reclaims_stale_and_stops_at_target(tmp_path):
     now = 2_000_000.0
     sessions = tmp_path / "target" / "sessions"

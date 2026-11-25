@@ -31,6 +31,14 @@ def checked_flag(depth, flag):
     return not checked_flag(depth - 1, flag)
 
 
+def checked_count(depth, flag):
+    if depth < 0:
+        raise ValueError("negative count")
+    if depth == 0:
+        return -2 if flag else 3
+    return (checked_count(depth - 1, flag) + 1) & 15
+
+
 def checked_path(depth):
     try:
         print("checked", depth, checked_flag(depth, False))
@@ -38,6 +46,10 @@ def checked_path(depth):
         print("checked error", str(error))
     finally:
         print("checked finally", depth)
+    try:
+        print("count", depth, checked_count(depth, True) + 5)
+    except ValueError as error:
+        print("count error", str(error))
 
 
 print(fib(20), fact(25), type(fact(25)).__name__)
@@ -50,7 +62,7 @@ except RecursionError:
     print("RecursionError")
 print(sys.getrecursionlimit() == limit)
 
-for depth in (0, 1, -1, 2):
+for depth in (0, 1, -1, 2, 23):
     checked_path(depth)
 escaped = (checked_flag,)
 print("escaped", escaped[0](0, True))

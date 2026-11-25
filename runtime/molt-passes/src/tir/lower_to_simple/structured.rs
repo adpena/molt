@@ -667,7 +667,7 @@ pub(super) fn emit_block_ops_inner(
             && let Some(orig_id) = attr_int(&op.attrs, "value")
             && let Some(&handler_block) = original_label_to_block.get(&orig_id)
         {
-            emit_block_arg_stores(handler_block, &op.operands, block_param_vars, out);
+            emit_block_arg_stores(handler_block, op.exception_payload(), block_param_vars, out);
         }
         for mut opir in lower_op_many(op) {
             annotate_lowered_op(&mut opir, op, original_to_new_label);

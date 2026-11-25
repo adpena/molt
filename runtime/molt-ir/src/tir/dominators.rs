@@ -162,6 +162,30 @@ pub fn checked_exception_observer(
     super::clone_support::exception_label_of(op).and_then(resolve_label)
 }
 
+/// The two executable continuations of a bound invocation observation.
+/// `normal` names the position before the next operation (or terminator).
+#[derive(Debug, PartialEq, Eq)]
+pub struct CheckedInvocation<'a> {
+    pub physical: super::values::ValueId,
+    pub normal: (BlockId, usize),
+    pub exceptional: BlockId,
+    pub payload: &'a [super::values::ValueId],
+}
+
+pub fn checked_invocation<'a>(
+    block: &'a TirBlock,
+    index: usize,
+    labels: &HashMap<i64, BlockId>,
+) -> Option<CheckedInvocation<'a>> {
+    let op = block.ops.get(index)?;
+    Some(CheckedInvocation {
+        physical: op.checked_invocation_source()?,
+        normal: (block.id, index + 1),
+        exceptional: exception_transfer_target(op, labels)?,
+        payload: op.exception_payload(),
+    })
+}
+
 /// Whether an op's label-valued `value` attr is an exception-transfer CFG edge.
 ///
 /// `TryEnd` is intentionally excluded even though it has a label-valued `value`

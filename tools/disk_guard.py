@@ -1475,6 +1475,30 @@ def ensure_free(
         )
         free_now = free_fn() if apply else free_before
     result.phase_elapsed_s["retirement"] = _elapsed_since(phase_started)
+    if apply and free_now < target and time.monotonic() < deadline:
+        from molt.cache_eviction import reclaim_source_record_backlog
+        from molt.cli.source_record_store import SourceRecordUnavailable
+        from molt.default_paths import _default_molt_cache
+
+        cache_root = _default_molt_cache(
+            environ={**env, "MOLT_EXT_ROOT": str(resolved_root)}
+        )
+        phase_started = time.monotonic()
+        try:
+            compacted = reclaim_source_record_backlog(
+                cache_root,
+                owned_roots=scope_roots,
+                device=pressure_device,
+                deadline=deadline,
+                needs_space=lambda: free_fn() < target,
+            )
+        except (OSError, SourceRecordUnavailable) as error:
+            compacted = True
+            result.errors.append(f"{cache_root}: source-record compaction: {error}")
+        if compacted:
+            result.phase_elapsed_s["source-record-compaction"] = _elapsed_since(
+                phase_started
+            )
     result.free_after = free_fn() if apply else free_now
     result.elapsed_s = _elapsed_since(started)
     if log:

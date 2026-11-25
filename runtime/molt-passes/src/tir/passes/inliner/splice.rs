@@ -1,8 +1,9 @@
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::dominators::{checked_exception_observer, executable_reachable_blocks};
+use crate::tir::dominators::executable_reachable_blocks;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::owned_alias;
+use crate::tir::type_refine::checked_result_observer;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
@@ -118,6 +119,8 @@ pub(super) fn splice_call_site(
         // frame clear.
         bindings.insert(0, Binding::Owned);
     }
+    let success_only =
+        call_result.is_none_or(|result| activations.checked_result_is_success_only(result));
     let callee = activations.prepare(callee, &bindings)?;
 
     // A value call requires one result from a reachable ordinary return.
@@ -131,7 +134,7 @@ pub(super) fn splice_call_site(
             checked_unwind_observer(
                 caller,
                 caller.blocks[&block_id].ops.get(op_index + 1),
-                call_result,
+                success_only,
             )
         })
         .flatten();
@@ -352,16 +355,17 @@ fn callee_return_value_type(callee: &TirFunction) -> Option<TirType> {
 fn checked_unwind_observer(
     caller: &TirFunction,
     first: Option<&TirOp>,
-    call_result: Option<ValueId>,
+    success_only: bool,
 ) -> Option<TirOp> {
-    let check = first.filter(|op| {
-        op.results.is_empty() && !call_result.is_some_and(|result| op.operands.contains(&result))
-    })?;
-    checked_exception_observer(check, |label| {
-        caller
-            .label_id_map
-            .iter()
-            .find_map(|(&block, &value)| (value == label).then_some(BlockId(block)))
-    })
-    .map(|_| check.clone())
+    let check = first?;
+    checked_result_observer(caller, &std::cell::OnceCell::new(), check)?;
+    // Splicing defines the result only on the ordinary continuation. An
+    // unwind copies this observer into a block that never enters that
+    // continuation, so neither its payload nor any handler/merged cleanup
+    // may read the physical call word. Reuse the checked-result use census:
+    // inspecting only the observer's operands misses direct downstream reads.
+    if !success_only {
+        return None;
+    }
+    Some(check.clone())
 }

@@ -12,7 +12,8 @@
 //!    origin stays generic for every other caller, a function object that
 //!    escapes and a computed-name read alike, so no reader fact is needed.
 //! 2. Dispatch retargets each such site to its clone and records the callee
-//!    context's exact return type on the call (`exact_result_proof`). A
+//!    context's exact return type and any proven integer interval on the call.
+//!    Range consumers validate which SSA value sees its success. A
 //!    proven guarded call keeps its callee word, which the late stage hands
 //!    the entry as the invocation, so the clone's frame record holds the
 //!    original function and code: `f.__code__`, `__qualname__`, line numbers
@@ -34,6 +35,7 @@
 
 mod analysis;
 mod class_tests;
+mod ranges;
 mod relevance;
 mod sites;
 
@@ -46,6 +48,7 @@ use std::collections::BTreeSet;
 use molt_ir::FunctionId;
 
 use crate::tir::function::{TirFunction, TirModule};
+use crate::tir::numeric_facts::IntRange;
 use crate::tir::target_info::{FinalLowering, TargetInfo};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -78,6 +81,8 @@ pub struct TypeFlowOutcome {
     pub sites_specialized: usize,
     /// Resolved sites whose result gained an exact type.
     pub results_typed: usize,
+    /// Resolved sites whose result gained a finite integer interval.
+    pub results_bounded: usize,
     /// One line per function and per resolved site that stays generic.
     pub report: Vec<String>,
 }
@@ -180,6 +185,7 @@ pub(in crate::tir) fn run_with_registry(
     outcome.contexts = analysis.contexts.len();
 
     let reached = analysis.reachable();
+    let return_ranges = ranges::solve(&inputs, &analysis, &reached);
 
     // One clone per reached specialized context, in context order.
     let mut clone_of_context = vec![None; outcome.contexts];
@@ -203,13 +209,21 @@ pub(in crate::tir) fn run_with_registry(
     for body in 0..module.functions.len() {
         let decisions = analysis
             .generic(body)
-            .map(|id| decide(&inputs, &analysis, id, &clone_of_context))
+            .map(|id| decide(&inputs, &analysis, id, &clone_of_context, &return_ranges))
             .unwrap_or_default();
         proofs.push(decisions);
     }
     let clone_decisions: Vec<Vec<SiteDecision>> = clones
         .iter()
-        .map(|(context, _)| decide(&inputs, &analysis, *context, &clone_of_context))
+        .map(|(context, _)| {
+            decide(
+                &inputs,
+                &analysis,
+                *context,
+                &clone_of_context,
+                &return_ranges,
+            )
+        })
         .collect();
     if report_sites {
         describe(
@@ -311,6 +325,8 @@ struct SiteDecision {
     method_origin: Option<FunctionId>,
     /// The exact type of the call's result, when one is proven.
     result: Option<TirType>,
+    /// The hull of every successful Python integer return in this context.
+    range: Option<IntRange>,
 }
 
 fn decide(
@@ -318,6 +334,7 @@ fn decide(
     analysis: &Analysis,
     context: ContextId,
     clone_of_context: &[Option<FunctionId>],
+    return_ranges: &[Option<IntRange>],
 ) -> Vec<SiteDecision> {
     let caller = analysis.context(context);
     inputs.sites[caller.body]
@@ -346,6 +363,7 @@ fn decide(
                     None
                 },
                 result,
+                range: target.and_then(|id| return_ranges[id.0]),
             }
         })
         .collect()
@@ -386,6 +404,10 @@ fn apply(
             } else {
                 changed |= op.clear_exact_result_proof();
             }
+        }
+        if op.set_exact_result_range(decision.range) {
+            changed = true;
+            outcome.results_bounded += usize::from(op.exact_result_range().is_some());
         }
     }
     (changed, method_targets)

@@ -58,11 +58,13 @@ fn checked_private_entry_requires_every_incoming_reference_to_check_its_result()
     call.callee = Some(id);
     let entry = caller.entry_block;
     caller.blocks.get_mut(&entry).unwrap().ops.insert(0, call);
-    let mut consumer = ProducerCarrierPlan::default();
-    consumer
-        .repr_by_value
-        .insert(result, molt_ir::repr::Repr::Bool);
     let plan = |body: &crate::tir::TirFunction| {
+        let mut consumer = ProducerCarrierPlan::build(body);
+        // Force the same carrier in the positive and exceptional-use cases,
+        // so only the checked-call fact distinguishes them here.
+        consumer
+            .repr_by_value
+            .insert(result, molt_ir::repr::Repr::Bool);
         super::super::module_metadata::checked_private_returns(
             [Some((body, &consumer)), Some((&callee, &provider))],
             [id],
