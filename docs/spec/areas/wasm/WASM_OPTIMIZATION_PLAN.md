@@ -548,8 +548,10 @@ split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name
 stripping, requests Binaryen debug output, and partitions optimizer caches.
 Final publication removes any remaining debug/name sections under the default
 policy; optimization without preservation may discard them earlier.
-The debug-stripped side-module link also compresses relocated instruction
-operands. Its placement and target metadata travel with the app.
+Debug-stripped linked and side modules both use wasm-ld relocation
+compression to write shorter instruction operands. Debug-preserving links keep
+the original operand widths so DWARF offsets remain valid. The side module's
+placement and target metadata travel with the app.
 The side link binds the selected WASI SDK's libc and compiler-rt archives by
 digest. It extracts only members demanded by the app, including `fmod` for
 LLVM's floating remainder. App imports still pass the split host ABI check.

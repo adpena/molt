@@ -252,6 +252,12 @@ def freestanding_import_error(data: bytes) -> str | None:
     return None
 
 
+def _debug_section_link_args(preserve_debug: bool) -> tuple[str, ...]:
+    # Shortening relocated LEBs changes instruction offsets. Keep relocations
+    # padded when the output must retain DWARF offsets.
+    return () if preserve_debug else ("--strip-debug", "--compress-relocations")
+
+
 def standard_object_link_command(
     *,
     wasm_ld: str,
@@ -275,7 +281,7 @@ def standard_object_link_command(
         "--stack-first",
         "-z",
         f"stack-size={SHADOW_STACK_BYTES}",
-        *(() if preserve_debug else ("--strip-debug",)),
+        *_debug_section_link_args(preserve_debug),
         f"--export={main}",
         *(f"--export-if-defined={name}" for name in exports if name != main),
         "-o",
@@ -430,9 +436,7 @@ def side_module_link_command(
         "--no-export-dynamic",
         "--gc-sections",
         "--error-limit=0",
-        # Shorten the relocated LEBs. Relocation compression changes code
-        # offsets and requires the linker to discard DWARF.
-        *(() if preserve_debug else ("--strip-debug", "--compress-relocations")),
+        *_debug_section_link_args(preserve_debug),
         f"--export={main}",
         *(f"--export-if-defined={name}" for name in exports if name != main),
         "-o",
