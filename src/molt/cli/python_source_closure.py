@@ -58,7 +58,7 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
     unknown_relative_sources="local_inventory",
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
-_GRAPH_CACHE_SCHEMA_VERSION = 22
+_GRAPH_CACHE_SCHEMA_VERSION = 23
 _StoredGraphEntries = dict[str, dict[str, object]]
 _StoredAnalysisGroup = tuple[list[str], object]
 _GraphDomainKey = tuple[
@@ -247,7 +247,7 @@ def _restore_graph_variants(groups: object) -> dict[str, object] | None:
 
 
 def _group_graph_variants(variants: Mapping[str, object]) -> list[_StoredAnalysisGroup]:
-    """Intern equal records while preserving every exact namespace premise key."""
+    """Intern equal records while preserving their analysis keys."""
     encoded_by_node: dict[int, str] = {}
     groups: dict[str, _StoredAnalysisGroup] = {}
     for policy_key, analysis in sorted(variants.items()):
@@ -359,7 +359,7 @@ def _analysis_policy_digest(
     module: str,
     is_package: bool,
     policy: PythonImportPolicy,
-    premise: PythonNamespacePremise,
+    premise: PythonNamespacePremise | None,
 ) -> str:
     # These records contain immutable JSON values. Give the encoder their
     # fields directly to preserve the durable key without copying the tuples.
@@ -370,9 +370,11 @@ def _analysis_policy_digest(
             "policy": {
                 item.name: getattr(policy, item.name) for item in fields(policy)
             },
-            "namespace_premise": {
-                item.name: getattr(premise, item.name) for item in fields(premise)
-            },
+            "namespace_premise": (
+                {item.name: getattr(premise, item.name) for item in fields(premise)}
+                if premise is not None
+                else None
+            ),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -390,6 +392,7 @@ def _analysis_payload(
 ) -> dict[str, object]:
     return {
         "namespace_writes": [python_namespace_write_payload(write) for write in writes],
+        "reads_namespace_premise": analysis.reads_namespace_premise,
         "requests": [
             {**asdict(request), "candidates": list(request.candidates)}
             for request in analysis.requests
@@ -419,13 +422,19 @@ def _cached_namespace_writes(rows: object) -> tuple[PythonNamespaceWrite, ...] |
 
 
 def _cached_analysis(
-    value: object, source_digest: str, contract_digest: str, analysis_digest: str
+    value: object,
+    source_digest: str,
+    contract_digest: str,
+    analysis_digest: str,
+    *,
+    reads_namespace_premise: bool,
 ) -> tuple[LocalPythonImportAnalysis, tuple[PythonNamespaceWrite, ...]] | None:
     if (
         not isinstance(value, dict)
         or value.get("source_sha256") != source_digest
         or value.get("dynamic_contract_sha256") != contract_digest
         or value.get("analysis_authority_sha256") != analysis_digest
+        or value.get("reads_namespace_premise") is not reads_namespace_premise
     ):
         return None
     writes = _cached_namespace_writes(value.get("namespace_writes"))
@@ -517,6 +526,7 @@ def _cached_analysis(
             tuple(unresolved),
             tuple(requests[len(rows) :]),
             tuple(relative_obligations),
+            reads_namespace_premise=reads_namespace_premise,
         ),
         writes,
     )
@@ -784,24 +794,36 @@ def local_python_import_closure(
                     package_children[source] = python_package_child_names(
                         (source.parent,), import_topology=resolver.import_topology
                     )
-                premise = graph_writes.premise(
-                    source, package_children.get(source, frozenset())
-                )
                 cache_key = domain.relative_key(source)
                 snapshot = capture(source)
-                policy_digest = _analysis_policy_digest(
-                    module, is_package, policy, premise
-                )
+                lexical_key = _analysis_policy_digest(module, is_package, policy, None)
                 contract_digest = _dynamic_contract_digest(
                     expected_dynamic_imports, dynamic_targets
                 )
-                variants = next_entries.get(cache_key)
+                variants = next_entries.get(cache_key, {})
                 cached = _cached_analysis(
-                    variants.get(policy_digest) if variants is not None else None,
+                    variants.get(lexical_key),
                     snapshot.sha256,
                     contract_digest,
                     analysis_digest,
+                    reads_namespace_premise=False,
                 )
+                premise = None
+                policy_digest = lexical_key
+                if cached is None:
+                    premise = graph_writes.premise(
+                        source, package_children.get(source, frozenset())
+                    )
+                    policy_digest = _analysis_policy_digest(
+                        module, is_package, policy, premise
+                    )
+                    cached = _cached_analysis(
+                        variants.get(policy_digest),
+                        snapshot.sha256,
+                        contract_digest,
+                        analysis_digest,
+                        reads_namespace_premise=True,
+                    )
                 analysis_missed = cached is None
                 if cached is not None:
                     analysis, writes = cached
@@ -837,8 +859,13 @@ def local_python_import_closure(
                     # A validated hit already owns its serialized storage.
                     # Rebuild only misses, merging aliases without mutating
                     # cached_entries.
-                    variants = dict(variants or {})
-                    variants[policy_digest] = {
+                    variants = dict(variants)
+                    result_key = (
+                        policy_digest
+                        if analysis.reads_namespace_premise
+                        else lexical_key
+                    )
+                    variants[result_key] = {
                         "source_sha256": snapshot.sha256,
                         "dynamic_contract_sha256": contract_digest,
                         "analysis_authority_sha256": analysis_digest,

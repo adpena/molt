@@ -157,6 +157,7 @@ class LocalPythonImportAnalysis:
     # product import sealing, or intrinsic-provider status.
     discovery_requests: tuple[LocalPythonImportRequest, ...] = ()
     relative_source_obligations: tuple[LocalPythonRelativeImportObligation, ...] = ()
+    reads_namespace_premise: bool = field(kw_only=True)
 
     def requests_for(
         self, policy: PythonImportPolicy
@@ -977,6 +978,7 @@ def analyze_local_imports(
         tuple(diagnostics),
         tuple(dict.fromkeys(discovery_requests)),
         tuple(dict.fromkeys(relative_obligations)),
+        reads_namespace_premise=binding_index is not None,
     )
     analysis.validate_dynamic_contract(
         path, policy, expected_nonliteral_dynamic_imports
