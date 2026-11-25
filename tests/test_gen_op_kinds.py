@@ -5152,25 +5152,25 @@ def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
         raise AssertionError(f"source_call_kind row {bad} must be rejected")
 
 
-def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes() -> (
+def test_python_value_forwarding_is_generated_without_effect_or_custody_changes() -> (
     None
 ):
     gen = _gen()
     data = gen.load_table()
-    assert data["classifier_scalar_value_forward"] == [
+    assert data["classifier_python_value_forward"] == [
         "frame_home_store",
         "binding_alias",
     ]
-    gen._validate_scalar_value_forwarding(data)
+    gen._validate_python_value_forwarding(data)
     rendered = gen.render_rs(data)
-    decisions = _enum_match_decisions(rendered, "copy_kind_forwards_scalar_value_table")
+    decisions = _enum_match_decisions(rendered, "copy_kind_forwards_python_value_table")
     assert decisions["FrameHomeStore"] == "true"
     assert decisions["BindingAlias"] == "true"
     assert decisions["FrameHomeLoad"] == "false"
     without = json.loads(json.dumps(data))
-    without["classifier_scalar_value_forward"] = []
+    without["classifier_python_value_forward"] = []
     unforwarded = gen.render_rs(without)
-    # The mathematical-value declaration cannot change ownership or purity.
+    # Forwarding the input Python value does not grant ownership or purity.
     for function in (
         "copy_kind_is_explicit_no_heap_move_table",
         "copy_kind_is_binding_view_table",
@@ -5193,23 +5193,23 @@ def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes(
         ["frame_home_store", "frame_home_store"],
     ],
 )
-def test_scalar_value_forwarding_rejects_invalid_declarations(members) -> None:
+def test_python_value_forwarding_rejects_invalid_declarations(members) -> None:
     gen = _gen()
     data = json.loads(json.dumps(gen.load_table()))
-    data["classifier_scalar_value_forward"] = members
-    with pytest.raises(gen.OpKindTableError, match="classifier_scalar_value_forward"):
-        gen._validate_scalar_value_forwarding(data)
+    data["classifier_python_value_forward"] = members
+    with pytest.raises(gen.OpKindTableError, match="classifier_python_value_forward"):
+        gen._validate_python_value_forwarding(data)
 
 
 @pytest.mark.parametrize("arity", [0, 2, True, "one"])
-def test_scalar_value_forwarding_requires_a_unary_shape(arity) -> None:
+def test_python_value_forwarding_requires_a_unary_shape(arity) -> None:
     gen = _gen()
     data = json.loads(json.dumps(gen.load_table()))
     for row in data["simpleir_op_shape"]:
         if row["kind"] == "frame_home_store":
             row["operands"] = arity
     with pytest.raises(gen.OpKindTableError, match="declared unary binding view"):
-        gen._validate_scalar_value_forwarding(data)
+        gen._validate_python_value_forwarding(data)
 
 
 @pytest.mark.parametrize(
@@ -5220,7 +5220,7 @@ def test_scalar_value_forwarding_requires_a_unary_shape(arity) -> None:
         ("binding_alias", "classifier_owned_alias", "role"),
     ],
 )
-def test_scalar_value_forwarding_requires_its_existing_contract(
+def test_python_value_forwarding_requires_its_existing_contract(
     missing, kind, contract
 ) -> None:
     gen = _gen()
@@ -5232,7 +5232,7 @@ def test_scalar_value_forwarding_requires_its_existing_contract(
     else:
         data[contract].remove(kind)
     with pytest.raises(gen.OpKindTableError, match="declared unary binding view"):
-        gen._validate_scalar_value_forwarding(data)
+        gen._validate_python_value_forwarding(data)
 
 
 def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:

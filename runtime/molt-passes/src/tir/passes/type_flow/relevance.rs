@@ -10,7 +10,7 @@ use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::TirModule;
 use crate::tir::ops::OpCode;
-use crate::tir::passes::value_identity::scalar_value_source;
+use crate::tir::passes::value_identity::forwarded_python_value_source;
 use crate::tir::values::ValueId;
 
 use super::sites::Site;
@@ -79,7 +79,7 @@ pub(super) fn solve(
         }
         for (&block_id, block) in &func.blocks {
             for (index, op) in block.ops.iter().enumerate() {
-                if let Some(source) = scalar_value_source(op) {
+                if let Some(source) = forwarded_python_value_source(op) {
                     for &result in &op.results {
                         graph.forward((body, result), (body, source));
                     }

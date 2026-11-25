@@ -719,6 +719,31 @@ fn shared_return_preserves_the_supplied_argument_type_without_a_clone() {
 }
 
 #[test]
+fn an_unobserved_raise_can_be_cleared_before_an_empty_return() {
+    use crate::tir::lower_from_simple::lower_to_tir;
+    let ir: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name":"recover", "params":["x","test"], "return_abi":"value",
+        "ops":[
+            {"kind":"if","args":["test"]},
+            {"kind":"ret","args":["x"]},
+            {"kind":"end_if"},
+            {"kind":"raise","args":["x"]},
+            {"kind":"check_exception"},
+            {"kind":"jump","value":7},
+            {"kind":"label","value":7},
+            {"kind":"exception_clear"},
+            {"kind":"ret_void"}
+        ]
+    }))
+    .unwrap();
+    let body = lower_to_tir(&ir);
+    assert_eq!(
+        crate::tir::type_refine::ExactScalarPlan::new(&body).forwarded_return_parameter(),
+        None
+    );
+}
+
+#[test]
 fn clones_that_compile_alike_fold_into_their_origin() {
     // def keep(x): opaque(x); return None. The opaque use makes x relevant
     // by rule, but the body compiles the same for every argument type.

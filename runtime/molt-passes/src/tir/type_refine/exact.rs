@@ -183,7 +183,7 @@ impl<'a> ExactScalarPlan<'a> {
     }
 
     fn find_return_parameter(&self) -> Option<usize> {
-        use crate::tir::passes::value_identity::scalar_value_source;
+        use crate::tir::passes::value_identity::forwarded_python_value_source;
         let entry = self.func.entry_block;
         if self.incoming.contains_key(&entry)
             || self.handlers.contains(&entry)
@@ -210,7 +210,7 @@ impl<'a> ExactScalarPlan<'a> {
             }
             for op in &block.ops {
                 if op.has_valid_shape()
-                    && let Some(source) = scalar_value_source(op)
+                    && let Some(source) = forwarded_python_value_source(op)
                     && let Some(&parameter) = parameters.get(&source)
                 {
                     parameters.insert(op.results[0], parameter);
@@ -235,14 +235,14 @@ impl<'a> ExactScalarPlan<'a> {
     /// pops the frame and returns propagates the pending exception. Any
     /// other handler may consume it and resume ordinary execution.
     fn may_succeed_without_value(&self) -> bool {
+        let labels = crate::tir::dominators::exception_label_to_block(self.func);
         let mut pending = vec![self.func.entry_block];
         for handler in &self.handlers {
             let block = &self.func.blocks[handler];
             if !matches!(&block.terminator, Terminator::Return { values } if values.is_empty())
-                || !block
-                    .ops
-                    .iter()
-                    .all(|op| op.origin == Some(molt_ir::OpKind::TraceExit))
+                || !block.ops.iter().all(|op| {
+                    op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::TraceExit)
+                })
             {
                 pending.push(*handler);
             }
@@ -253,16 +253,24 @@ impl<'a> ExactScalarPlan<'a> {
                 continue;
             }
             let block = &self.func.blocks[&id];
-            if block
-                .ops
-                .iter()
-                .rev()
-                .find(|op| op.opcode != OpCode::CheckException)
-                .is_some_and(|op| op.opcode == OpCode::Raise)
-            {
+            // Raise sets pending state. Only an executable targeted check
+            // transfers control: an untargeted observer permits a successor
+            // to clear the exception and return normally.
+            if block.ops.windows(2).any(|ops| {
+                ops[0].opcode == OpCode::Raise
+                    && ops[1].opcode == OpCode::CheckException
+                    && crate::tir::dominators::exception_transfer_target(&ops[1], &labels).is_some()
+            }) {
                 continue;
             }
             if matches!(&block.terminator, Terminator::Return { values } if values.is_empty()) {
+                if block
+                    .ops
+                    .last()
+                    .is_some_and(|op| op.opcode == OpCode::Raise)
+                {
+                    continue;
+                }
                 return true;
             }
             block.terminator.for_each_edge(|id, _| pending.push(id));
@@ -338,7 +346,8 @@ impl<'a> ExactScalarPlan<'a> {
                         || crate::tir::op_kinds_generated::opcode_effects_table(op.opcode),
                         |facts| facts.effects,
                     );
-                    let scalar_source = crate::tir::passes::value_identity::scalar_value_source(op);
+                    let scalar_source =
+                        crate::tir::passes::value_identity::forwarded_python_value_source(op);
                     let transfers_exact =
                         op.opcode != OpCode::Copy && effects.consistent && effects.effect_free;
                     let valid_shape = op.has_valid_shape();

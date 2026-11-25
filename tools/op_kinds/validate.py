@@ -992,7 +992,7 @@ def load_table(table_path: Path = TABLE) -> dict:
     # structural kill for a typo'd consume override silently doing nothing — the
     # very C6 double-free this column retires).
     _validate_binding_views(data)
-    _validate_scalar_value_forwarding(data)
+    _validate_python_value_forwarding(data)
     _validate_consuming_kinds(data, owner)
     _validate_source_call_kinds(data, owner)
     _validate_absorbing_kinds(data, owner)
@@ -2427,23 +2427,23 @@ def _validate_binding_views(data: dict) -> None:
                 )
 
 
-def _validate_scalar_value_forwarding(data: dict) -> None:
-    """Scalar forwarding is a unary mathematical-value fact, never custody.
+def _validate_python_value_forwarding(data: dict) -> None:
+    """Every successful result represents the supplied Python value and its exact type.
 
     Runtime admission additionally requires exactly one result. The retained
     Copy carrier has variable result arity, so the registry's operand shape
     cannot grant a fact to malformed zero/multiple-result operations.
     Owned aliases already require one semantic source at wire admission (args
-    or var); their normalized TIR shape is checked by scalar_value_source.
+    or var); their normalized TIR shape is checked by forwarded_python_value_source.
     """
-    members = data.get("classifier_scalar_value_forward", [])
+    members = data.get("classifier_python_value_forward", [])
     if (
         not isinstance(members, list)
         or any(not isinstance(member, str) for member in members)
         or len(set(members)) != len(members)
     ):
         raise OpKindTableError(
-            "classifier_scalar_value_forward requires unique string spellings"
+            "classifier_python_value_forward requires unique string spellings"
         )
     shapes = {row["kind"]: row for row in data.get("simpleir_op_shape", [])}
     views = set(data.get("classifier_binding_view", []))
@@ -2459,7 +2459,7 @@ def _validate_scalar_value_forwarding(data: dict) -> None:
             or shape["operands"] != 1
         ):
             raise OpKindTableError(
-                f"classifier_scalar_value_forward {member!r} requires a declared unary binding view or owned alias"
+                f"classifier_python_value_forward {member!r} requires a declared unary binding view or owned alias"
             )
 
 

@@ -809,7 +809,7 @@ impl<'f> Solver<'f> {
         if let Some(source) = value_identity::copy_value_source(op) {
             return self.forwarded(source, Forwarding::Value);
         }
-        if let Some(source) = value_identity::scalar_value_source(op) {
+        if let Some(source) = value_identity::forwarded_python_value_source(op) {
             return self.forwarded(source, Forwarding::ImmutableScalar);
         }
         // A result that is not one constant still carries its producer's facts.
@@ -1052,7 +1052,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 enum Forwarding {
     /// A value copy (`value_identity::copy_value_source`): any state crosses.
     Value,
-    /// An effectful publication or a guard (`value_identity::scalar_value_source`):
+    /// An effectful publication or a guard (`value_identity::forwarded_python_value_source`):
     /// only an immutable scalar constant crosses; anything else is Overdefined.
     ImmutableScalar,
 }

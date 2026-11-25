@@ -74,7 +74,7 @@ use crate::tir::op_kinds_generated::{
     opcode_is_exception_handler_region_table, opcode_is_state_machine_table,
 };
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::passes::value_identity::{copy_value_source, scalar_value_source};
+use crate::tir::passes::value_identity::{copy_value_source, forwarded_python_value_source};
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::ssa_update::{self, RepairRefusal, Variable};
 use crate::tir::types::TirType;
@@ -610,7 +610,8 @@ fn select(
                 // A loop versioned before (a type-flow clone of a versioned
                 // body) already checks this op; its result is a raw carrier.
                 checked_before.push((bid, index, *result, [*lhs, *rhs]));
-            } else if let Some(source) = copy_value_source(op).or_else(|| scalar_value_source(op))
+            } else if let Some(source) =
+                copy_value_source(op).or_else(|| forwarded_python_value_source(op))
                 && let [result] = op.results[..]
                 && is_int(&result)
             {
