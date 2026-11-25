@@ -704,6 +704,12 @@ integration gives a proven module call (HF-846 slice 2). So the call is a static
 call graph, the type flow and the inliner, and the late stage enters the target (or its
 clone) directly, handing it the loaded function for its frame record.
 
+Method selection reads the fact on the evaluated receiver value. A fresh
+allocation used immediately in `C().m(args)` has the same class proof as a
+local holding that allocation. The method load captures its function before
+arguments execute. A factory or a custom `__new__` whose result has no exact
+value proof keeps ordinary lookup.
+
 **The load.** The callee's frame record needs the function object (`generate_frame_push`
 validates the handoff). A first version called the method's symbol with no handoff: every call
 took the runtime's frame entry (`molt_frame_record_enter`), and `method_call` rose from 404 to

@@ -207,40 +207,20 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             self._emit_guarded_setattr(receiver, name, value, class_id)
         return True
 
-    def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
-        """Phase 1 (frontend variant) — direct call for monomorphic user methods.
+    def _try_emit_user_method_static_call(
+        self,
+        node: ast.Call,
+        attr_node: ast.Attribute,
+        receiver: MoltValue,
+        obj_name: str | None,
+    ) -> MoltValue | None:
+        """Select the ordinary method of an already evaluated exact instance.
 
-        Pattern: ``obj.method(args)`` where ``obj`` is a local with a
-        statically-known concrete class registered in ``exact_locals``,
-        the class is non-dynamic and non-dataclass, and ``method`` is a
-        regular function descriptor on that class with a clean signature
-        (no closure / vararg / varkw / kwonly / defaults).
-
-        Bypasses the bound-method allocation that the general dispatch
-        path performs at every call site.  In a tight loop this saves
-        N heap allocations + N IC dispatches (the allocation is the
-        dominant cost on bench_class_hierarchy, ~4.5s of the 5s
-        single-class-call overhead measured experimentally).
-
-        Bails out on any condition that would change the observable
-        binding semantics (descriptors, properties, dataclass, dynamic
-        class layout, kwargs, *args spread, default-spec evaluation).
-
-        Returns ``None`` on bail to signal the caller to fall through to
-        the general path.
+        The allocation's value carries the same proof as a local holding it.
+        A constructor through a replaceable binding, a custom __new__, or a
+        return annotation alone supplies no such proof.
         """
-        if not isinstance(node.func, ast.Attribute):
-            return None
-        attr_node = node.func
-        if not isinstance(attr_node.value, ast.Name):
-            return None
-        obj_name = attr_node.value.id
-        # A durable fact (one that survived a callback) proves the class. On a
-        # namespace-closed class it also proves the member: the source demands
-        # expose a class whose instance gets an attribute that shadows a
-        # member, or whose instance mapping some code reaches (design 78,
-        # 5.6), so no callback can have shadowed ``method`` on this instance.
-        class_id = self._exact_class_for_name(obj_name, fields=True)
+        class_id = self._exact_class_for_value(receiver, obj_name, fields=True)
         if class_id is None:
             return None
         view = self.classes.get(class_id)
@@ -266,18 +246,19 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         shape = member.shape
         if shape is None or shape.vararg or shape.varkw:
             return None
-        # Honour __getattribute__ overrides: the runtime path goes
-        # through the override and could observe the bound-method
-        # construction.  Skip the fold for those.
-        getattribute_member, _ = self._resolve_member(class_id, "__getattribute__")
-        if getattribute_member is not None:
-            return None
-        # Same for __getattr__ (only fires when normal lookup misses,
-        # but a fold that bypasses the BoundMethod allocation could
-        # observably skip the lookup ordering).
-        getattr_member, _ = self._resolve_member(class_id, "__getattr__")
-        if getattr_member is not None:
-            return None
+        # A lookup hook assigned as data can intercept the selection just
+        # as a def can. Every class on the MRO must use ordinary lookup.
+        for owner in self._class_mro(class_id):
+            if owner == OBJECT_CLASS:
+                continue
+            owner_view = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if (
+                owner_view is None
+                or not namespace_closed(owner_view)
+                or defines(owner_view, "__getattribute__")
+                or defines(owner_view, "__getattr__")
+            ):
+                return None
         if node.keywords:
             return None
         for arg in node.args:
@@ -300,26 +281,16 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         if not self._entry_adopts_symbol(method_symbol):
             return None
 
-        # No eligibility fallback is permitted after evaluating Python operands.
-        receiver = self.visit(attr_node.value)
-        if receiver is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported method receiver"
-            )
-        call_args = self._emit_call_args(list(node.args))
-        inlined = self._try_inline_method_call(member, receiver, call_args)
-        if inlined is not None:
-            return inlined
-        # The method's function object, which the entry's frame record holds:
-        # the late stage hands it through the thread record. Loading it after
-        # the arguments is unobservable, since resolving a proven member runs
-        # no code.
+        # Capture the method before an argument can change the receiver's
+        # class. This selection itself runs no Python code and cannot fail.
         callable_value = self._emit_method_load(receiver, method_name)
-        # The load runs no code and cannot fail: when the call it feeds is
-        # inlined, nothing reads it and it is deleted.
         load_metadata = self._op_by_result[callable_value.name].metadata
         assert load_metadata is not None
         load_metadata["proven_target"] = True
+        call_args = self._emit_call_args(node.args)
+        inlined = self._try_inline_method_call(member, receiver, call_args)
+        if inlined is not None:
+            return inlined
 
         # A proven call of the resolved method (design 78, 3.8): the call graph,
         # the type flow and the inliner read it as a static edge, and the late

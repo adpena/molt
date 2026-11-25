@@ -2558,8 +2558,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_split_call(self, node: ast.Call) -> Any: ...
 
     def _try_emit_user_method_static_call(
-        self, node: ast.Call
-    ) -> "MoltValue | None": ...
+        self,
+        node: ast.Call,
+        attr_node: ast.Attribute,
+        receiver: MoltValue,
+        obj_name: str | None,
+    ) -> MoltValue | None: ...
 
     @staticmethod
     def _try_extract_const_str(node: ast.expr) -> str | None: ...

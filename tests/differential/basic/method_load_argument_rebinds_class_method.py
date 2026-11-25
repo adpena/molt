@@ -63,3 +63,33 @@ def loop():
 
 
 print(loop())
+
+
+class Declared:
+    def evaluate(self, value):
+        return value + 10
+
+
+class Alternate:
+    @property
+    def evaluate(self):
+        print("lookup")
+        return lambda value: value + 20
+
+
+class Factory:
+    def __new__(cls):
+        return Alternate()
+
+
+def argument():
+    print("argument")
+    return 1
+
+
+print(Declared().evaluate(argument()))
+print(Factory().evaluate(argument()))
+try:
+    object().evaluate(argument())
+except AttributeError:
+    print("missing")

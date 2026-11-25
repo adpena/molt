@@ -1050,3 +1050,76 @@ class Captured:
     )
     assert not model.layout.static
     assert guarded_initializer_candidate(model) is None
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "",
+        "obj.read = lambda n: n - 10",
+        "obj.__dict__['read'] = lambda n: n - 10",
+        "Base.read = property(lambda self: lambda n: n + 7)",
+        "Base.__getattribute__ = lambda self, name: lambda n: n + 42",
+    ],
+    ids=["closed", "instance-shadow", "instance-dict", "descriptor", "lookup-hook"],
+)
+def test_fresh_method_receiver_uses_only_the_captured_exact_value(
+    tmp_path: Path, writer: str
+) -> None:
+    from molt.cli import module_graph_discovery, module_resolution, module_stdlib_policy
+    from tools.check_ir_structure import verify_frontend_tir
+
+    source = (
+        """class Base:
+    def read(self, n):
+        return n + 1
+class Subject(Base):
+    pass
+def use(argument):
+    return Subject().read(argument())
+obj = Subject()
+"""
+        + writer
+        + "\nprint(use(lambda: 3))\n"
+    )
+    entry = tmp_path / "subject.py"
+    entry.write_text(source, encoding="utf-8")
+    stdlib = module_resolution._stdlib_root_path()
+    graph = module_graph_discovery._discover_module_graph(
+        entry,
+        [tmp_path, stdlib],
+        [tmp_path],
+        stdlib,
+        tmp_path,
+        module_stdlib_policy._stdlib_allowlist(),
+    )
+    assert graph.discovery is not None
+    (scan,) = [
+        s for s in graph.discovery.scan_sources.values() if s.source_path == entry
+    ]
+    compiler = SimpleTIRGenerator(
+        module_name="mod", namespace_premise=scan.namespace_premise
+    )
+    compiler.visit(ast.parse(source))
+    ir = compiler.to_json()
+    verified = verify_frontend_tir(ir)
+    assert verified.ok, verified.errors
+    ops = next(f["ops"] for f in ir["functions"] if f["name"] == "py.mod.use")
+    (load,) = [op for op in ops if op["kind"] == "load_method"]
+    if writer:
+        assert not load.get("proven_target")
+        assert not any(
+            op["kind"] == "call_guarded" and op.get("proven_target") for op in ops
+        )
+        (fallback,) = [op for op in ops if op["kind"] == "call_loaded_method"]
+        assert fallback["args"][:2] == [load["var"], load["out"]]
+    else:
+        (allocation,) = [op for op in ops if op["kind"] == "object_new_bound"]
+        (argument,) = [op for op in ops if op["kind"] == "call_func"]
+        (fast,) = [op for op in ops if op["kind"] == "call_guarded"]
+        assert load["proven_target"] and fast["proven_target"]
+        assert load["args"] == [allocation["out"]]
+        assert fast["s_value"] == "py.mod.Base_read"
+        assert fast["args"] == [load["var"], allocation["out"], argument["out"]]
+        assert fast["argument_custody"] == ["transferred"] * 3
+        assert ops.index(load) < ops.index(argument) < ops.index(fast)
