@@ -1173,6 +1173,10 @@ impl TirOp {
         true
     }
 
+    pub fn clear_exact_result_proof(&mut self) -> bool {
+        self.attrs.remove(EXACT_RESULT_PROOF_ATTR).is_some()
+    }
+
     /// Whether lowering this operation reads the thread's pending-work word:
     /// a poll, or the `AsyncWorkPending` test. A function with such an
     /// operation materializes the word's address once, at entry.

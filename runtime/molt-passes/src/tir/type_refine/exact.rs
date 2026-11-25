@@ -13,6 +13,11 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::call_targets::{direct_boxed_runtime, static_call};
+use crate::tir::dominators::{
+    ProgramPointDominance, checked_exception_observer, exception_label_to_block,
+    executable_reverse_postorder,
+};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     comparison_scalar_domain, opcode_exact_scalar_result_tir_type,
@@ -142,18 +147,20 @@ pub(crate) struct ExactScalarPlan<'a> {
     incoming: HashMap<BlockId, Vec<Vec<ValueId>>>,
     initial: HashMap<ValueId, TirType>,
     successful_integers: HashSet<ValueId>,
+    unproven_compiled_results: HashSet<ValueId>,
     returns: Vec<ValueId>,
     returned_parameter: std::cell::OnceCell<Option<usize>>,
 }
 
 impl<'a> ExactScalarPlan<'a> {
     pub(crate) fn new(func: &'a TirFunction) -> Self {
-        let order = crate::tir::dominators::executable_reverse_postorder(func);
+        let order = executable_reverse_postorder(func);
         let handlers = handler_entry_blocks(func);
         let mut initial = HashMap::default();
         let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::default();
         let mut returns = Vec::new();
-        let mut integer_checks = HashMap::default();
+        let mut checked_results = HashMap::default();
+        let mut unproven_compiled_results = HashSet::default();
         let labels = std::cell::OnceCell::new();
         for id in &order {
             let block = &func.blocks[id];
@@ -161,20 +168,39 @@ impl<'a> ExactScalarPlan<'a> {
                 initial.insert(arg.id, TirType::Never);
             }
             for (index, op) in block.ops.iter().enumerate() {
-                if let [result] = op.results.as_slice()
-                    && crate::tir::call_targets::direct_boxed_runtime(op)
-                        .is_some_and(|entry| entry.returns_exact_int_on_success())
-                    && let Some(check) = block.ops.get(index + 1)
-                    && matches!(check.origin, None | Some(molt_ir::OpKind::CheckException))
-                    && crate::tir::dominators::checked_exception_observer(check, |label| {
-                        labels
-                            .get_or_init(|| crate::tir::dominators::exception_label_to_block(func))
-                            .get(&label)
-                            .copied()
-                    })
-                    .is_some()
-                {
-                    integer_checks.insert(*result, (*id, index + 1));
+                if let [result] = op.results.as_slice() {
+                    let compiled =
+                        matches!(op.opcode, OpCode::CallLoadedMethod | OpCode::DirectCall)
+                            || static_call(op).is_some();
+                    let runtime_int = !compiled
+                        && direct_boxed_runtime(op)
+                            .is_some_and(|entry| entry.returns_exact_int_on_success());
+                    if compiled || runtime_int {
+                        let mut observer = index + 1;
+                        // The late call expansion balances recursion before observing failure.
+                        if compiled
+                            && block.ops.get(observer).is_some_and(|op| {
+                                op.opcode == OpCode::RecursionRelease && op.has_valid_shape()
+                            })
+                        {
+                            observer += 1;
+                        }
+                        if let Some(check) = block.ops.get(observer)
+                            && matches!(check.origin, None | Some(molt_ir::OpKind::CheckException))
+                            && checked_exception_observer(check, |label| {
+                                labels
+                                    .get_or_init(|| exception_label_to_block(func))
+                                    .get(&label)
+                                    .copied()
+                            })
+                            .is_some()
+                        {
+                            checked_results.insert(*result, (*id, observer, compiled));
+                        } else if compiled && func.has_exception_handling && !op.has_nothrow_proof()
+                        {
+                            unproven_compiled_results.insert(*result);
+                        }
+                    }
                 }
                 for &result in &op.results {
                     initial.insert(result, TirType::Never);
@@ -187,18 +213,28 @@ impl<'a> ExactScalarPlan<'a> {
                 returns.extend(values);
             }
         }
-        // A runtime result may physically hold the exception sentinel. Only
-        // publish an SSA-wide exact type if normal continuation of its own
-        // observer dominates every use, including handler and phi-edge uses.
-        if !integer_checks.is_empty() {
-            let points = crate::tir::dominators::ProgramPointDominance::compute_executable(func);
+        // The physical result may be the unwind sentinel. A success fact is
+        // SSA-wide only when its normal continuation dominates every use.
+        if !checked_results.is_empty() {
+            let points = std::cell::OnceCell::new();
             for id in &order {
                 let block = &func.blocks[id];
                 let mut observe = |value, index| {
-                    if let Some(&(site, check)) = integer_checks.get(&value)
-                        && !points.definition_available(site, Some(check), *id, index)
-                    {
-                        integer_checks.remove(&value);
+                    let Some(&(site, check, compiled)) = checked_results.get(&value) else {
+                        return;
+                    };
+                    let available = if site == *id {
+                        index > check
+                    } else {
+                        points
+                            .get_or_init(|| ProgramPointDominance::compute_executable(func))
+                            .definition_available(site, Some(check), *id, index)
+                    };
+                    if !available {
+                        checked_results.remove(&value);
+                        if compiled {
+                            unproven_compiled_results.insert(value);
+                        }
                     }
                 };
                 for (index, op) in block.ops.iter().enumerate() {
@@ -213,7 +249,11 @@ impl<'a> ExactScalarPlan<'a> {
         }
         Self {
             func,
-            successful_integers: integer_checks.into_keys().collect(),
+            successful_integers: checked_results
+                .into_iter()
+                .filter_map(|(value, (_, _, compiled))| (!compiled).then_some(value))
+                .collect(),
+            unproven_compiled_results,
             order,
             handlers,
             incoming,
@@ -360,7 +400,9 @@ impl<'a> ExactScalarPlan<'a> {
                     } else {
                         None
                     };
-                    let types = if !valid_shape {
+                    let types = if !valid_shape
+                        || self.unproven_compiled_results.contains(&first_result)
+                    {
                         vec![TirType::DynBox; op.results.len()]
                     } else if let Some(seeded) = seeded {
                         // The callee context's return type (design 78, 3.3).
