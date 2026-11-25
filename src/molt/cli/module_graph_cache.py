@@ -10,7 +10,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonElementProtocol,
     PythonFunctionResult,
     PythonSourceCall,
-    PythonSourceParameters,
+    PythonSourceCallableDeclaration,
     PythonSourceElement,
     PythonNativeInitializerSource,
     PythonSourceClass,
@@ -935,7 +935,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 56
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 57
 
 
 def _import_scan_cache_key(
@@ -1373,7 +1373,7 @@ def _decode_import_scan_payload(
                 "attributes",
                 "elements",
                 "calls",
-                "parameters",
+                "declarations",
                 "functions",
                 "bases",
                 "completions",
@@ -1440,8 +1440,9 @@ def _decode_import_scan_payload(
                 )
             ),
             tuple(
-                PythonSourceParameters(
+                PythonSourceCallableDeclaration(
                     decode_python_source_key(owner),
+                    FunctionKind(kind),
                     tuple(
                         decode_python_source_key(arg)
                         for arg in _source_cache_list(positional)
@@ -1452,32 +1453,28 @@ def _decode_import_scan_payload(
                         for name, arg in _source_cache_rows(keywords, 2)
                     ),
                     _decode_optional_source_key(kwarg),
-                    tuple(
+                )
+                for owner, kind, positional, vararg, keywords, kwarg in _source_cache_rows(
+                    raw_values["declarations"], 6
+                )
+            ),
+            tuple(
+                PythonFunctionResult(
+                    decode_python_source_key(owner),
+                    _source_cache_origins(origins),
+                    _source_cache_origins(exposed),
+                    _source_cache_origins(yielded),
+                    _source_cache_origins(yielded_exposed),
+                    None
+                    if literal_classes is None
+                    else tuple(
                         None
                         if literal_class is None
                         else frozenset(_source_cache_sorted_strings(literal_class))
                         for literal_class in _source_cache_list(literal_classes)
                     ),
                 )
-                for (
-                    owner,
-                    positional,
-                    vararg,
-                    keywords,
-                    kwarg,
-                    literal_classes,
-                ) in _source_cache_rows(raw_values["parameters"], 6)
-            ),
-            tuple(
-                PythonFunctionResult(
-                    decode_python_source_key(owner),
-                    FunctionKind(factory),
-                    _source_cache_origins(origins),
-                    _source_cache_origins(exposed),
-                    _source_cache_origins(yielded),
-                    _source_cache_origins(yielded_exposed),
-                )
-                for owner, factory, origins, exposed, yielded, yielded_exposed in _source_cache_rows(
+                for owner, origins, exposed, yielded, yielded_exposed, literal_classes in _source_cache_rows(
                     raw_values["functions"], 6
                 )
             ),
@@ -1603,8 +1600,12 @@ def _decode_import_scan_payload(
             return None
         if len({item.owner for item in values.elements}) != len(values.elements):
             return None
-        if any(
-            owner[-1] not in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
+        declarations = {item.owner: item for item in values.declarations}
+        if len(declarations) != len(values.declarations) or any(
+            owner[-1]
+            not in {"FunctionDef", "AsyncFunctionDef", "Lambda", "GeneratorExp"}
+            or owner[-1] == "GeneratorExp"
+            and (positional or vararg is not None or keywords or kwarg is not None)
             or any(arg[-1] != "arg" for arg in positional)
             or vararg is not None
             and vararg[-1] != "arg"
@@ -1614,16 +1615,17 @@ def _decode_import_scan_payload(
             or kwarg is not None
             and kwarg[-1] != "arg"
             or len({name for name, _ in keywords}) != len(keywords)
-            or len(literal_classes) != len(positional)
-            for (
-                owner,
-                positional,
-                vararg,
-                keywords,
-                kwarg,
-                literal_classes,
-            ) in values.parameters
-        ) or len({item.owner for item in values.parameters}) != len(values.parameters):
+            for owner, _, positional, vararg, keywords, kwarg in values.declarations
+        ):
+            return None
+        if len({item.owner for item in values.functions}) != len(
+            values.functions
+        ) or any(
+            item.owner not in declarations
+            or item.literal_classes is not None
+            and len(item.literal_classes) != len(declarations[item.owner].positional)
+            for item in values.functions
+        ):
             return None
         if (
             any(item.owner[-1] != "Call" for item in values.calls)
@@ -1817,28 +1819,20 @@ def _import_scan_payload(
                 )
                 for transfer in scan.source_values.call_imports
             ],
-            "parameters": [
-                (
-                    item.owner,
-                    item.positional,
-                    item.vararg,
-                    item.keywords,
-                    item.kwarg,
-                    [
-                        None if literal_class is None else sorted(literal_class)
-                        for literal_class in item.literal_classes
-                    ],
-                )
-                for item in scan.source_values.parameters
-            ],
+            "declarations": [tuple(item) for item in scan.source_values.declarations],
             "functions": [
                 (
                     item.owner,
-                    item.kind,
                     sorted(item.returned),
                     sorted(item.returned_exposed),
                     sorted(item.yielded),
                     sorted(item.yielded_exposed),
+                    None
+                    if item.literal_classes is None
+                    else [
+                        None if literal_class is None else sorted(literal_class)
+                        for literal_class in item.literal_classes
+                    ],
                 )
                 for item in scan.source_values.functions
             ],

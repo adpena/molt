@@ -924,7 +924,7 @@ def _collect_imports(
                 binding_index.source_attributes,
                 binding_index.source_elements,
                 binding_index.source_calls,
-                binding_index.source_parameters,
+                binding_index.source_callable_declarations,
                 binding_index.source_function_results,
                 binding_index.source_bases,
                 binding_index.source_completions,

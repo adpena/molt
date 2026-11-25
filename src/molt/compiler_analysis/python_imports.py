@@ -15,7 +15,7 @@ if TYPE_CHECKING:
         PythonFunctionResult,
         PythonSourceElement,
         PythonSourceCall,
-        PythonSourceParameters,
+        PythonSourceCallableDeclaration,
         PythonNativeInitializerSource,
         PythonSourceClass,
     )
@@ -2577,7 +2577,7 @@ class _SourceValueSummary(NamedTuple):
     attributes: tuple[tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...] = ()
     elements: tuple[PythonSourceElement, ...] = ()
     calls: tuple[PythonSourceCall, ...] = ()
-    parameters: tuple[PythonSourceParameters, ...] = ()
+    declarations: tuple[PythonSourceCallableDeclaration, ...] = ()
     functions: tuple[PythonFunctionResult, ...] = ()
     bases: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
     completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()

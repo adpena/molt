@@ -95,7 +95,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceCall,
     PythonNativeInitializerSource,
     PythonSourceClass,
-    PythonSourceParameters,
+    PythonSourceCallableDeclaration,
     PythonBindingIndex,
     PythonBindingTelemetry,
     PythonCallSiteFact,
@@ -2952,7 +2952,10 @@ class _BindingTransferFacts:
     source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = field(
         default_factory=dict
     )
-    source_parameter_owners: dict[
+    source_callable_declarations: dict[
+        PythonSourceKey, PythonSourceCallableDeclaration
+    ] = field(default_factory=dict)
+    executed_function_nodes: dict[
         PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ] = field(default_factory=dict)
     source_function_results: dict[PythonSourceKey, PythonFunctionResult] = field(
@@ -3241,6 +3244,8 @@ class _Analyzer:
         *,
         annotation_scope: bool = False,
     ) -> None:
+        if not annotation_scope:
+            self._declare_function(node)
         if (
             self.policy.declaration_only
             and not annotation_scope
@@ -4131,18 +4136,15 @@ class _Analyzer:
     def _deferred_function_result(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ) -> StaticExpressionResult:
-        assert self._dependency_authority is not None
-        factory = (
-            isinstance(node, ast.AsyncFunctionDef)
-            or self._dependency_authority.summary(node).contains_yield
-        )
+        declaration = self._declare_function(node)
         return StaticExpressionResult(
             identities=int(PythonIdentity.USER_FUNCTION),
-            source_origins=frozenset({python_node_source_key(node)}),
+            source_origins=frozenset({declaration.owner}),
             deferred=frozenset(
                 {
                     DeferredExecution(
-                        python_node_source_key(node), "factory" if factory else "call"
+                        declaration.owner,
+                        "call" if declaration.kind is FunctionKind.SYNC else "factory",
                     )
                 }
             ),
@@ -5552,7 +5554,7 @@ class _Analyzer:
             or scope.kind != "function"
         ):
             return frozenset()
-        owner = self.transfer.source_parameter_owners.get(scope.source)
+        owner = self.transfer.executed_function_nodes.get(scope.source)
         if owner is None:
             return frozenset()
         positional = (*owner.args.posonlyargs, *owner.args.args)
@@ -7016,15 +7018,14 @@ class _Analyzer:
                 or self._dependency_authority.summary(node).contains_await
             ):
                 generator_kind = FunctionKind.ASYNC_GENERATOR
+            source = python_node_source_key(node)
+            self.transfer.source_callable_declarations[source] = (
+                PythonSourceCallableDeclaration(source, generator_kind)
+            )
             self.transfer.source_function_results.setdefault(
-                python_node_source_key(node),
+                source,
                 PythonFunctionResult(
-                    python_node_source_key(node),
-                    generator_kind,
-                    frozenset(),
-                    frozenset(),
-                    frozenset(),
-                    frozenset(),
+                    source, frozenset(), frozenset(), frozenset(), frozenset()
                 ),
             )
         scope = self._new_scope(
@@ -7121,7 +7122,6 @@ class _Analyzer:
                     source,
                     PythonFunctionResult(
                         source,
-                        generator_kind,
                         frozenset(),
                         frozenset(),
                         frozenset(),
@@ -9376,19 +9376,23 @@ class _Analyzer:
             )
         return flow
 
-    def _source_parameters(
-        self,
-        owner: PythonSourceKey,
-        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    ) -> PythonSourceParameters:
-        """Project a function's parameter facts after the fixpoint.
-
-        Literal classes read final call facts (callee identities and source
-        reach), so a premise that changes them republishes the classes.
-        """
+    def _declare_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ) -> PythonSourceCallableDeclaration:
+        owner = python_node_source_key(node)
+        known = self.transfer.source_callable_declarations.get(owner)
+        if known is not None:
+            return known
+        assert self._dependency_authority is not None
+        yields = self._dependency_authority.summary(node).contains_yield
+        if isinstance(node, ast.AsyncFunctionDef):
+            kind = FunctionKind.ASYNC_GENERATOR if yields else FunctionKind.ASYNC
+        else:
+            kind = FunctionKind.GENERATOR if yields else FunctionKind.SYNC
         arguments = node.args
-        return PythonSourceParameters(
+        declaration = PythonSourceCallableDeclaration(
             owner,
+            kind,
             tuple(
                 python_node_source_key(arg)
                 for arg in (*arguments.posonlyargs, *arguments.args)
@@ -9403,8 +9407,9 @@ class _Analyzer:
             python_node_source_key(arguments.kwarg)
             if arguments.kwarg is not None
             else None,
-            parameter_literal_classes(node, call_evidence=self._call_evidence),
         )
+        self.transfer.source_callable_declarations[owner] = declaration
+        return declaration
 
     def _call_evidence(self, call: ast.Call) -> CallEvidence | None:
         fact = self.transfer.calls.get(PythonNodeKey.from_node(call))
@@ -9420,7 +9425,9 @@ class _Analyzer:
         arguments = node.args
         parameters = function_parameter_names(arguments)
         parameter_nodes = function_parameter_nodes(arguments)
-        self.transfer.source_parameter_owners[python_node_source_key(node)] = node
+        source = python_node_source_key(node)
+        if not job.annotation_scope:
+            self.transfer.executed_function_nodes[source] = node
         body = (
             node.body
             if isinstance(node.body, list)
@@ -9463,8 +9470,12 @@ class _Analyzer:
                     parameter, UNKNOWN_EXPRESSION_RESULT
                 )
                 identities = OTHER_IDENTITY | default_result.identities
-                source = python_node_source_key(parameter_node)
-                argument_value = self._activation_argument_values.get(source)
+                parameter_source = python_node_source_key(parameter_node)
+                argument_value = (
+                    None
+                    if job.annotation_scope
+                    else self._activation_argument_values.get(parameter_source)
+                )
                 if argument_value is not None:
                     default_result = StaticExpressionResult.scalar(argument_value)
                     identities = int(PythonIdentity.INERT_VALUE)
@@ -9479,7 +9490,8 @@ class _Analyzer:
                         expression_result_without_value_facts(default_result)
                         if argument_value is None
                         else default_result,
-                        source_origins=default_result.source_origins | {source},
+                        source_origins=default_result.source_origins
+                        | {parameter_source},
                     ),
                 )
         observed: list[int] = [state_id]
@@ -9488,18 +9500,14 @@ class _Analyzer:
         self._active_lexical_history = observed
         try:
             self.exec_statements(body, state_id, scope)
-            source = python_node_source_key(node)
-            has_yield = self._dependency_authority.summary(node).contains_yield
-            function_kind = (
-                (FunctionKind.ASYNC_GENERATOR if has_yield else FunctionKind.ASYNC)
-                if isinstance(node, ast.AsyncFunctionDef)
-                else (FunctionKind.GENERATOR if has_yield else FunctionKind.SYNC)
-            )
+            if job.annotation_scope:
+                # Annotation evaluators execute through their lexical scope.
+                # The synthetic lambda does not own a source callable result.
+                return
             previous = self.transfer.source_function_results.get(
                 source,
                 PythonFunctionResult(
                     source,
-                    function_kind,
                     frozenset(),
                     frozenset(),
                     frozenset(),
@@ -10024,13 +10032,22 @@ class _Analyzer:
                 value for _, value in sorted(self.transfer.source_classes.items())
             ),
             source_callables=tuple(sorted(self.transfer.source_callables.items())),
-            source_parameters=tuple(
-                self._source_parameters(owner, node)
-                for owner, node in sorted(self.transfer.source_parameter_owners.items())
+            source_callable_declarations=tuple(
+                value
+                for _, value in sorted(
+                    self.transfer.source_callable_declarations.items()
+                )
             ),
             source_function_results=tuple(
-                value
-                for _owner, value in sorted(
+                value._replace(
+                    literal_classes=parameter_literal_classes(
+                        node, call_evidence=self._call_evidence
+                    )
+                )
+                if (node := self.transfer.executed_function_nodes.get(owner))
+                is not None
+                else value
+                for owner, value in sorted(
                     self.transfer.source_function_results.items()
                 )
             ),
@@ -10678,7 +10695,7 @@ class _BindingRevisions:
                 # arguments. A revised parameter in a pending job is safe.
                 if any(
                     python_node_source_key(parameter) in changed_arguments
-                    for owner in prefix.transfer.source_parameter_owners.values()
+                    for owner in prefix.transfer.executed_function_nodes.values()
                     for parameter in function_parameter_nodes(owner.args)
                 ):
                     continue
