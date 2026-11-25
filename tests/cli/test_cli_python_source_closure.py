@@ -2388,25 +2388,68 @@ def test_operation_keeps_alias_and_policy_analysis_contexts(
 
 @pytest.mark.parametrize("writer_first", [False, True])
 def test_operation_queries_converge_independent_writer_premises(
-    tmp_path: Path, writer_first: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer_first: bool
 ) -> None:
-    clean, dirty, reader, writer, selected = (
+    from unittest.mock import Mock
+
+    clean, dirty, reader, writer, selected, plain, payload = (
         tmp_path / name
-        for name in ("clean.py", "dirty.py", "reader.py", "writer.py", "selected.py")
+        for name in (
+            "clean.py",
+            "dirty.py",
+            "reader.py",
+            "writer.py",
+            "selected.py",
+            "plain.py",
+            "payload.py",
+        )
     )
-    clean.write_text("import reader\n", encoding="utf-8")
-    dirty.write_text("import writer\nimport reader\n", encoding="utf-8")
+    clean.write_text("import reader\nimport plain\n", encoding="utf-8")
+    dirty.write_text("import writer\nimport reader\nimport plain\n", encoding="utf-8")
     reader.write_text(
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import selected\n",
         encoding="utf-8",
     )
     writer.write_text("import typing\ntyping.TYPE_CHECKING = True\n", encoding="utf-8")
     selected.write_text("VALUE = 1\n", encoding="utf-8")
+    plain.write_text("import payload\n", encoding="utf-8")
+    payload.write_text("VALUE = 2\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "lexical-cache"))
+    graph._PROCESS_GRAPH_ENTRIES.pop(tmp_path.resolve(), None)
+    analyze = Mock(wraps=graph.analyze_local_imports)
+    monkeypatch.setattr(graph, "analyze_local_imports", analyze)
+
+    def eager(seed: Path) -> set[Path]:
+        return set(
+            graph.local_python_import_closure(
+                tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY
+            ).paths
+        )
+
     order = (dirty, clean) if writer_first else (clean, dirty)
     with graph.local_python_import_graph_transaction():
-        results = {seed: _eager_closure(tmp_path, seed) for seed in order}
-    assert results[clean] == {clean, reader}
-    assert results[dirty] == {dirty, writer, reader, selected}
+        results = {seed: eager(seed) for seed in order}
+    assert results[clean] == {clean, reader, plain, payload}
+    assert results[dirty] == {dirty, writer, reader, selected, plain, payload}
+    paths = [call.args[0].path for call in analyze.call_args_list]
+    assert paths.count(reader) >= 2
+    assert paths.count(plain) == paths.count(payload) == 1
+
+    # A new process can reuse the serialized lexical proof. Replacing the
+    # source invalidates it and the namespace-sensitive edge is discovered.
+    graph._PROCESS_GRAPH_ENTRIES.pop(tmp_path.resolve(), None)
+    analyze.reset_mock()
+    assert eager(dirty) == results[dirty]
+    analyze.assert_not_called()
+    plain.write_bytes(reader.read_bytes())
+    assert eager(clean) == {clean, reader, plain}
+    assert eager(dirty) == {
+        dirty,
+        writer,
+        reader,
+        selected,
+        plain,
+    }
 
 
 @pytest.mark.parametrize("change", ["bytes", "add", "remove", "rename"])

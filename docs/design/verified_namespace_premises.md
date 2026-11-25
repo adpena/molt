@@ -225,6 +225,14 @@ receiver behavior.
    current planner. No Cargo command or second test runner is introduced.
    This follows [rustc's explicit query-input and invalidation model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
    every fact that changes a query's result must participate in its authority.
+   Tooling graph cache schema 23 records whether import analysis invoked its
+   binding query. An analysis that never asked for binding facts shares one
+   result across namespace rounds and sibling roots. The cache still binds the
+   source bytes, module execution identity, import policy, manifest contract and
+   analysis authority. An analysis that asked for bindings keeps its exact
+   namespace premise key. Both paths validate the dynamic contract and resolve
+   grouped requests against live topology. Namespace-write discovery continues
+   to contribute each reached module's summary to the fixpoint.
    Further premise slicing must account for implicit module metadata, export
    protocols such as `__all__` and `__getattr__`, dynamic namespace reads and
    published source-value facts. Lexical name reads alone do not prove that
