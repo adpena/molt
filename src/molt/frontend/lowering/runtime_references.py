@@ -31,6 +31,29 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
 
+INTRINSIC_RESOLVER_PARAMETERS = ("name", "namespace")
+
+
+def bind_intrinsic_resolver_arguments(
+    node: ast.Call, parameters: tuple[str, ...]
+) -> tuple[ast.expr, ast.expr | None] | None:
+    """Bind the resolver's required selector and optional namespace."""
+    if len(node.args) > len(parameters) or any(
+        isinstance(arg, ast.Starred) for arg in node.args
+    ):
+        return None
+    bound = dict(zip(parameters, node.args))
+    for keyword in node.keywords:
+        key = keyword.arg
+        if key is None or key not in parameters or key in bound:
+            return None
+        bound[key] = keyword.value
+    name = bound.get(parameters[0])
+    if name is None:
+        return None
+    return name, bound.get(parameters[1]) if len(parameters) == 2 else None
+
+
 def _callable_intrinsic_signature(runtime_name: str) -> tuple[str, int]:
     # The WASM ABI generator imports frontend types while regenerating this
     # fact; importing it on first use avoids a generated-source bootstrap cycle.
@@ -186,18 +209,22 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="CALL", args=[runtime_name, *args], result=res))
         return res
 
-    @staticmethod
-    def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool:
+    def _is_safe_intrinsic_namespace_expr(self, expr: ast.expr) -> bool:
         if isinstance(expr, ast.Constant) and expr.value is None:
             return True
-        if isinstance(expr, ast.Name):
-            return True
+        if isinstance(expr, ast.Name) and self.python_binding_index is not None:
+            fact = self.python_binding_index.expression_fact(expr)
+            return (
+                fact is not None
+                and fact.name_lookup in {"global", "lexical"}
+                and fact.binding_is_bound
+                and not fact.binding_invalidated
+            )
         return (
             isinstance(expr, ast.Call)
-            and isinstance(expr.func, ast.Name)
-            and expr.func.id == "globals"
             and not expr.args
             and not expr.keywords
+            and self._proven_builtin_name(expr.func) == "globals"
         )
 
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None:
@@ -285,40 +312,23 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
             imported_from = self.imported_names.get(ret.func.id)
             if not is_compiler_intrinsics_module(imported_from):
                 return
-        param_name = node.args.args[0].arg
-        namespace_param = node.args.args[1].arg if len(node.args.args) == 2 else None
-        if not ret.args or not isinstance(ret.args[0], ast.Name):
+        parameters = tuple(argument.arg for argument in node.args.args)
+        operands = bind_intrinsic_resolver_arguments(ret, INTRINSIC_RESOLVER_PARAMETERS)
+        if operands is None:
             return
-        if ret.args[0].id != param_name or len(ret.args) > 2:
+        name, namespace = operands
+        if not isinstance(name, ast.Name) or name.id != parameters[0]:
             return
-        if len(ret.args) == 2:
-            namespace_expr = ret.args[1]
-            if namespace_param is not None:
-                if not (
-                    isinstance(namespace_expr, ast.Name)
-                    and namespace_expr.id == namespace_param
-                ):
-                    return
-            elif not self._is_safe_intrinsic_namespace_expr(namespace_expr):
-                return
-        if any(kw.arg is None for kw in ret.keywords):
+        if namespace is not None and not (
+            self._is_safe_intrinsic_namespace_expr(namespace)
+            or (
+                len(parameters) == 2
+                and isinstance(namespace, ast.Name)
+                and namespace.id == parameters[1]
+            )
+        ):
             return
-        for kw in ret.keywords:
-            if kw.arg == "name":
-                if not isinstance(kw.value, ast.Name) or kw.value.id != param_name:
-                    return
-            elif kw.arg == "namespace":
-                if namespace_param is not None:
-                    if not (
-                        isinstance(kw.value, ast.Name)
-                        and kw.value.id == namespace_param
-                    ):
-                        return
-                elif not self._is_safe_intrinsic_namespace_expr(kw.value):
-                    return
-            else:
-                return
-        self.local_intrinsic_wrappers.add(node.name)
+        self.local_intrinsic_wrappers[node.name] = parameters
 
     def _name_resolves_to_builtin(self, name: str) -> bool:
         """True if `name` names a builtin type/function/exception.
