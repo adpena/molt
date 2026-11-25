@@ -955,6 +955,7 @@ pub(crate) struct PtrSlot(pub(crate) *mut u8);
 unsafe impl Send for PtrSlot {}
 unsafe impl Sync for PtrSlot {}
 
+#[repr(C)]
 pub(crate) struct Buffer2D {
     pub(crate) rows: u64,
     pub(crate) cols: u64,
@@ -4916,10 +4917,10 @@ unsafe fn dec_ref_ptr_terminal_body(
                     let buffer = buffer2d_ptr(ptr);
                     if !buffer.is_null() {
                         match &mut (*buffer).data {
-                            buffer2d::Buffer2DStorage::I64(data) => {
+                            buffer2d::Buffer2DStorage::I64(data, ..) => {
                                 drop(backing::tracked_vec_box_from_raw(*data));
                             }
-                            buffer2d::Buffer2DStorage::Boxed(data) => {
+                            buffer2d::Buffer2DStorage::Boxed(data, ..) => {
                                 drop(backing::tracked_vec_box_from_raw(*data));
                             }
                         }

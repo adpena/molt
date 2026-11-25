@@ -213,6 +213,78 @@ fn a_branching_accumulator_loop_is_versioned() {
 }
 
 #[test]
+fn the_inline_result_guard_resumes_after_the_call_and_its_exception_check() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
+    let Fixture { mut func, .. } = branching_loop(false);
+    let param = func.blocks[&func.entry_block].args[0].id;
+    let result = int(&mut func);
+    let failure = func.fresh_block();
+    let label = 70;
+    func.label_id_map.insert(failure.0, label);
+    func.blocks.insert(
+        failure,
+        block(failure, vec![], vec![], Terminator::Unreachable),
+    );
+    let mut call = op(OpCode::Call, vec![param], vec![result]);
+    let entry = RuntimeFn::OperatorIndex;
+    call.runtime = Some(entry);
+    call.origin = Some(OpKind::Call);
+    call.attrs
+        .insert("s_value".into(), AttrValue::Str(entry.symbol().into()));
+    let mut check = op(OpCode::CheckException, vec![], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(label));
+    check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+    let body = func
+        .blocks
+        .values_mut()
+        .find(|block| block.ops.iter().any(|op| op.opcode == OpCode::InplaceAdd))
+        .unwrap();
+    body.ops[0].operands[1] = result;
+    body.ops.splice(0..0, [call, check]);
+
+    verify_function(&func).expect("fixture verifies before specialization");
+    assert_eq!(
+        crate::tir::type_refine::extract_exact_scalar_map(&func).get(&result),
+        Some(&TirType::I64)
+    );
+    let stats = run(&mut func, &mut AnalysisManager::new(), true);
+    assert!(stats.ops_added > 0);
+    verify_function(&func).expect("checked call and arithmetic preserve SSA");
+    assert_eq!(count(&func, OpCode::Call), 2, "one call in each loop");
+    assert_eq!(count(&func, OpCode::CheckedAdd), 1);
+    let guarded = func
+        .blocks
+        .values()
+        .find(|block| {
+            block.ops.iter().map(|op| op.opcode).eq([
+                OpCode::Call,
+                OpCode::CheckException,
+                OpCode::IsInlineInt,
+            ])
+        })
+        .expect("the call is observed before its value is specialized");
+    let Terminator::CondBranch {
+        then_block,
+        else_block,
+        ..
+    } = guarded.terminator
+    else {
+        panic!("the call result chooses a continuation");
+    };
+    assert_eq!(
+        func.blocks[&then_block].ops[0].opcode,
+        OpCode::UnboxInlineInt
+    );
+    assert!(
+        func.blocks[&else_block]
+            .ops
+            .iter()
+            .all(|op| op.opcode != OpCode::Call)
+    );
+}
+
+#[test]
 fn the_overflow_path_reads_the_exact_result() {
     let Fixture { mut func, .. } = branching_loop(false);
     run(&mut func, &mut AnalysisManager::new(), false);

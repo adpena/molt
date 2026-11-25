@@ -187,6 +187,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             ));
             return;
         }
+        if self.packed_buffer_call(b, op, abi.function) {
+            return;
+        }
         let callee = b.runtime_callee(abi.function);
         self.positional_runtime_call(
             b,

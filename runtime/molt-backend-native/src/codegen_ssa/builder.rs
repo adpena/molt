@@ -346,6 +346,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         charge: RecursionCharge,
         thread: Self::Word,
     ) -> Option<Self::Predicate>;
+    /// Load one unsigned 32-bit field and zero-extend it to a word.
+    fn load_u32(&mut self, address: Self::Word, offset: i32) -> Self::Word;
     /// Load one unsigned thread-local byte at a fixed byte offset.
     fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
     /// A call in a cold block, with the usual execution-context ABI.

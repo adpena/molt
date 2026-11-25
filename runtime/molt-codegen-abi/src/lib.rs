@@ -535,6 +535,13 @@ pub const fn refcount_word_with_owners(word: u32, owners: u32) -> u32 {
     }
 }
 
+/// Buffer2D payload words, checked next to the runtime storage definition.
+pub const BUFFER2D_ROWS_OFFSET: i32 = 0;
+pub const BUFFER2D_COLS_OFFSET: i32 = 8;
+pub const BUFFER2D_STORAGE_TAG_OFFSET: i32 = 16;
+pub const BUFFER2D_STORAGE_PTR_OFFSET: i32 = 24;
+pub const BUFFER2D_STORAGE_PACKED: u64 = 0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedObjectAbiFacts {
     pub header_size: i32,
@@ -611,10 +618,16 @@ pub struct GeneratedObjectAbiFacts {
     pub attached_context_thread_record_offset: i32,
     pub flag_has_instance_dict: u32,
     pub runtime_callable_key_scheme: u64,
+    pub buffer2d_type_id: u32,
+    pub buffer2d_rows_offset: i32,
+    pub buffer2d_cols_offset: i32,
+    pub buffer2d_storage_tag_offset: i32,
+    pub buffer2d_storage_ptr_offset: i32,
+    pub buffer2d_storage_packed: u64,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 74] {
+    pub const fn words(self) -> [u64; 80] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -690,6 +703,12 @@ impl GeneratedObjectAbiFacts {
             self.attached_context_thread_record_offset as i64 as u64,
             self.flag_has_instance_dict as u64,
             self.runtime_callable_key_scheme,
+            self.buffer2d_type_id as u64,
+            self.buffer2d_rows_offset as u64,
+            self.buffer2d_cols_offset as u64,
+            self.buffer2d_storage_tag_offset as u64,
+            self.buffer2d_storage_ptr_offset as u64,
+            self.buffer2d_storage_packed,
         ]
     }
 
@@ -788,6 +807,12 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     attached_context_thread_record_offset: ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
     flag_has_instance_dict: HEADER_FLAG_HAS_INSTANCE_DICT,
     runtime_callable_key_scheme: RUNTIME_CALLABLE_KEY_SCHEME,
+    buffer2d_type_id: TYPE_ID_BUFFER2D,
+    buffer2d_rows_offset: BUFFER2D_ROWS_OFFSET,
+    buffer2d_cols_offset: BUFFER2D_COLS_OFFSET,
+    buffer2d_storage_tag_offset: BUFFER2D_STORAGE_TAG_OFFSET,
+    buffer2d_storage_ptr_offset: BUFFER2D_STORAGE_PTR_OFFSET,
+    buffer2d_storage_packed: BUFFER2D_STORAGE_PACKED,
 };
 
 /// The runtime callable identity scheme that generated code embeds (HF-881):
@@ -833,15 +858,16 @@ pub const RUNTIME_CALLABLE_KEY_SCHEME: u64 = runtime_callable_key("molt_func_new
 /// runtime callable's identity is its catalog key, and compiled `builtin_func`
 /// passes the key with its target, so an older object that passes a code
 /// address as identity, or three constructor arguments, cannot link.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V15: u64 = 0x0c8a_b1e4_646c_cd7a;
+/// Revision 16 binds the packed Buffer2D header and storage words.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V16: u64 = 0x5120_6194_566f_5b22;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V15,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V16,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_0c8ab1e4646ccd7a_gil_v15";
+    "molt_generated_object_abi_51206194566f5b22_gil_v16";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_0c8ab1e4646ccd7a_free_threaded_v15";
+    "molt_generated_object_abi_51206194566f5b22_free_threaded_v16";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1877,14 +1903,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V15
+            GENERATED_OBJECT_ABI_FINGERPRINT_V16
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V15,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V16,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1892,13 +1918,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V15);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V16);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v15"), "{symbol}");
+            assert!(symbol.ends_with("_v16"), "{symbol}");
         }
     }
 

@@ -346,6 +346,16 @@ pub(crate) mod tests {
             };
             SLOT_BASE + 8 * slot as u64
         }
+        fn load_u32(&mut self, address: u64, offset: i32) -> u64 {
+            let at = address
+                .checked_add_signed(i64::from(offset))
+                .expect("test address");
+            let bytes = self.word(at).to_ne_bytes();
+            let start = (at % 8) as usize;
+            u64::from(u32::from_ne_bytes(
+                bytes[start..start + 4].try_into().unwrap(),
+            ))
+        }
         fn load_byte(&mut self, address: u64, offset: i32) -> Value {
             let at = address
                 .checked_add_signed(i64::from(offset))

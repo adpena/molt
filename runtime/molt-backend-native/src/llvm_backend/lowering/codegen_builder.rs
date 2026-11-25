@@ -669,6 +669,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .build_ptr_to_int(record, self.words.context.i64_type(), "thread_record_word")
             .unwrap()
     }
+    fn load_u32(&mut self, address: IntValue<'ctx>, offset: i32) -> Self::Word {
+        let pointer = self.words.address(address, offset);
+        let field = self
+            .words
+            .builder
+            .build_load(self.words.context.i32_type(), pointer, "object_field")
+            .unwrap()
+            .into_int_value();
+        self.words
+            .builder
+            .build_int_z_extend(field, self.words.context.i64_type(), "object_field_word")
+            .unwrap()
+    }
     fn load_byte(&mut self, address: IntValue<'ctx>, offset: i32) -> Self::Value {
         let pointer = self.words.address(address, offset);
         self.words

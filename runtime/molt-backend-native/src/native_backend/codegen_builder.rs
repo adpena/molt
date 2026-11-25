@@ -432,6 +432,12 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     fn thread_record_word(&mut self) -> Value {
         self.imports.thread_record(self.words.builder)
     }
+    fn load_u32(&mut self, address: Value, offset: i32) -> Value {
+        let field = self
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), address, offset);
+        self.ins().uextend(types::I64, field)
+    }
     fn load_byte(&mut self, address: Value, offset: i32) -> Value {
         self.ins()
             .load(types::I8, MemFlagsData::trusted(), address, offset)
