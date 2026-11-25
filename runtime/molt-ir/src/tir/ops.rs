@@ -596,6 +596,7 @@ pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 /// result. Records the result of closed-world call analysis, or preserves a
 /// proof when a rewrite replaces the original producer.
 pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
+const CHECKED_CALL_RESULT_ATTR: &str = "checked_call_result";
 /// The linker symbol of a `NativeSymbolAddr` or `CallNative`: a source
 /// extension's exported name, taken verbatim from its manifest.
 pub const NATIVE_SYMBOL_ATTR: &str = "native_symbol";
@@ -1175,6 +1176,26 @@ impl TirOp {
 
     pub fn clear_exact_result_proof(&mut self) -> bool {
         self.attrs.remove(EXACT_RESULT_PROOF_ATTR).is_some()
+    }
+
+    /// Project a call's physical result on its successful continuation. The
+    /// exact solver checks the observation and placement before using it.
+    pub fn checked_call_result(physical: ValueId, success: ValueId) -> Self {
+        let mut op = Self::new(OpCode::Copy, vec![physical], vec![success]);
+        op.attrs
+            .insert(CHECKED_CALL_RESULT_ATTR.into(), AttrValue::Bool(true));
+        op
+    }
+
+    pub fn checked_call_result_source(&self) -> Option<ValueId> {
+        let [source] = self.operands.as_slice() else {
+            return None;
+        };
+        (self.opcode == OpCode::Copy
+            && self.origin.is_none()
+            && self.results.len() == 1
+            && self.attrs.get(CHECKED_CALL_RESULT_ATTR) == Some(&AttrValue::Bool(true)))
+        .then_some(*source)
     }
 
     /// Whether lowering this operation reads the thread's pending-work word:

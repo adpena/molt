@@ -217,6 +217,12 @@ fn build_scalar_value_map(
     let mut scalar_of = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
+            // A checked success may have a narrower range than the physical
+            // call word. Sharing a numeric root would publish that range back
+            // into exceptional cleanup, where the word may be a sentinel.
+            if op.checked_call_result_source().is_some() {
+                continue;
+            }
             let source = copy_value_source(op).or_else(|| {
                 forwarded_python_value_source(op).filter(|source| exact.contains_key(source))
             });

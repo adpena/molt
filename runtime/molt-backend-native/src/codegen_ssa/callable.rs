@@ -259,6 +259,10 @@ pub(crate) fn plain_trampoline<B: CodegenBuilder>(
     abi: &NativeFunctionLinkageAbi,
     has_closure: bool,
 ) -> B::Callee {
+    assert!(
+        !abi.checked_raw_return(),
+        "a callable trampoline needs an every-exit return"
+    );
     let name = Trampoline::name(symbol, abi.param_types.len(), has_closure);
     b.define_helper(
         &name,
@@ -823,6 +827,7 @@ mod tests {
             parameter_custody: custody,
             param_types: params,
             return_type: result,
+            return_availability: Default::default(),
         };
         std::collections::BTreeMap::from([(symbol.to_owned(), abi)])
     }

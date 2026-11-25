@@ -41,7 +41,13 @@ impl SimpleBackend {
                 let abi = functions.linkage(id, self.module_context.as_ref());
                 rows.insert(name.to_owned(), abi.clone());
                 let signature = super::super::codegen_builder::linkage_signature(&self.module, abi);
-                let linkage = if definition {
+                let linkage = if abi.checked_raw_return() {
+                    assert!(
+                        definition,
+                        "checked return entry must be defined in this object"
+                    );
+                    Linkage::Local
+                } else if definition {
                     Linkage::Export
                 } else {
                     Linkage::Import
@@ -348,6 +354,19 @@ impl SimpleBackend {
                     facts.linkage_abi(body, signature, custody),
                 );
                 llvm.function_repr_facts.insert(body.name.clone(), facts);
+            }
+            let checked = super::module_metadata::checked_private_returns(
+                tir_funcs.iter().map(|(is_extern, body)| {
+                    (!is_extern).then(|| (body, &llvm.function_repr_facts[&body.name]))
+                }),
+                owned.clones.iter().map(|clone| clone.id),
+            );
+            for (id, ty) in checked {
+                let body = &tir_funcs[id.index()].1;
+                llvm.function_linkage_abis
+                    .get_mut(&body.name)
+                    .expect("checked clone linkage")
+                    .set_checked_raw_return(ty);
             }
             // Independently compiled callers and providers share the frozen row.
             if let Some(module_context) = self.module_context.as_ref() {

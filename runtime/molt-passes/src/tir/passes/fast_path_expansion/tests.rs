@@ -2248,3 +2248,53 @@ fn sqrt_does_not_admit_unknown_or_integer_arguments() {
         assert!(ops(&func, OpCode::FloatSqrt).is_empty());
     }
 }
+
+#[test]
+fn recursion_refusal_defines_the_physical_word_for_a_direct_handler_read() {
+    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+
+    for dispatch in [None, Some(false), Some(true)] {
+        let (mut func, word) = guarded_call(true);
+        func.has_exception_handling = true;
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 40);
+        func.blocks.insert(
+            handler,
+            super::new_block(handler, vec![], Terminator::Return { values: vec![word] }),
+        );
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        if let Some(proven) = dispatch {
+            entry.ops[0].set_proven_target(proven);
+        } else {
+            entry.ops[0].origin = Some(molt_ir::OpKind::CallInternal);
+        }
+        let mut check = TirOp::new(OpCode::CheckException, vec![], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(40));
+        check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        entry.ops.push(check);
+        assert_valid(&func);
+
+        if dispatch.is_some() {
+            assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
+        } else {
+            assert!(super::charge_static_calls(&mut func, &Default::default()));
+        }
+        assert_valid(&func);
+        let observers = ops(&func, OpCode::CheckException);
+        assert_eq!(observers.len(), 1);
+        let joint = observers[0].0;
+        assert_eq!(func.blocks[&joint].args[0].id, word);
+        let refusal = ops(&func, OpCode::CallRuntime)
+            .into_iter()
+            .find(|(_, op)| op.runtime == Some(RuntimeFn::RaiseRecursionError))
+            .unwrap()
+            .0;
+        let failure = &func.blocks[&refusal];
+        let none = failure.ops.last().unwrap();
+        assert_eq!(none.opcode, OpCode::ConstNone);
+        assert!(
+            matches!(&failure.terminator, Terminator::Branch { target, args }
+            if *target == joint && args == &none.results)
+        );
+    }
+}

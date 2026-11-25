@@ -793,7 +793,13 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 call_sites: &call_sites,
             };
             super::frame::lend_homes(b, slot, |b| {
-                returns::emit_return(&mut cx, b, own, None, frame.as_ref())
+                returns::emit_return(
+                    &mut cx,
+                    b,
+                    own,
+                    returns::FunctionExit::EntryAbort,
+                    frame.as_ref(),
+                )
             });
             Some(slot)
         }
@@ -864,10 +870,22 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         }
         match &block.terminator {
             Terminator::Return { values: returned } => {
-                returns::emit_return(&mut cx, b, own, returned.first().copied(), frame.as_ref());
+                returns::emit_return(
+                    &mut cx,
+                    b,
+                    own,
+                    returns::FunctionExit::Return(returned.first().copied()),
+                    frame.as_ref(),
+                );
             }
             Terminator::Unwind => {
-                returns::emit_return(&mut cx, b, own, None, frame.as_ref());
+                returns::emit_return(
+                    &mut cx,
+                    b,
+                    own,
+                    returns::FunctionExit::Unwind,
+                    frame.as_ref(),
+                );
             }
             Terminator::StateDispatch {
                 cases,
@@ -940,6 +958,7 @@ mod tests {
             parameter_custody: Vec::new(),
             param_types: vec![TirType::DynBox; func.param_types.len()],
             return_type: Some(TirType::DynBox),
+            return_availability: Default::default(),
         };
         BTreeMap::from([(func.name.clone(), abi)])
     }

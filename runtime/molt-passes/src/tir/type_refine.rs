@@ -9,6 +9,7 @@ use super::types::TirType;
 use super::values::ValueId;
 
 mod cfg_edges;
+mod checked_results;
 mod exact;
 mod facts;
 mod hints;
@@ -18,6 +19,10 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
+pub use self::checked_results::checked_successful_call_results;
+pub(crate) use self::checked_results::{
+    checked_result_observer, implicit_handler_call_results, project_checked_call_results,
+};
 pub(crate) use self::exact::ExactScalarPlan;
 pub use self::exact::{
     ExactCallResults, ExactScalarWitness, ExactSeeds, exact_scalar_witnesses,

@@ -13,11 +13,7 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::call_targets::{direct_boxed_runtime, static_call};
-use crate::tir::dominators::{
-    ProgramPointDominance, checked_exception_observer, exception_label_to_block,
-    executable_reverse_postorder,
-};
+use crate::tir::dominators::executable_reverse_postorder;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     comparison_scalar_domain, opcode_exact_scalar_result_tir_type,
@@ -148,6 +144,7 @@ pub(crate) struct ExactScalarPlan<'a> {
     initial: HashMap<ValueId, TirType>,
     successful_integers: HashSet<ValueId>,
     unproven_compiled_results: HashSet<ValueId>,
+    projected_calls: HashMap<ValueId, &'a crate::tir::ops::TirOp>,
     returns: Vec<ValueId>,
     returned_parameter: std::cell::OnceCell<Option<usize>>,
 }
@@ -159,49 +156,21 @@ impl<'a> ExactScalarPlan<'a> {
         let mut initial = HashMap::default();
         let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::default();
         let mut returns = Vec::new();
-        let mut checked_results = HashMap::default();
-        let mut unproven_compiled_results = HashSet::default();
-        let labels = std::cell::OnceCell::new();
+        let checked = super::checked_results::CheckedResults::collect(func, &order);
+        let projected_calls = checked
+            .projections
+            .iter()
+            .map(|(&projection, word)| {
+                let site = checked.sites[word];
+                (projection, &func.blocks[&site.block].ops[site.call])
+            })
+            .collect();
         for id in &order {
             let block = &func.blocks[id];
             for arg in &block.args {
                 initial.insert(arg.id, TirType::Never);
             }
-            for (index, op) in block.ops.iter().enumerate() {
-                if let [result] = op.results.as_slice() {
-                    let compiled =
-                        matches!(op.opcode, OpCode::CallLoadedMethod | OpCode::DirectCall)
-                            || static_call(op).is_some();
-                    let runtime_int = !compiled
-                        && direct_boxed_runtime(op)
-                            .is_some_and(|entry| entry.returns_exact_int_on_success());
-                    if compiled || runtime_int {
-                        let mut observer = index + 1;
-                        // The late call expansion balances recursion before observing failure.
-                        if compiled
-                            && block.ops.get(observer).is_some_and(|op| {
-                                op.opcode == OpCode::RecursionRelease && op.has_valid_shape()
-                            })
-                        {
-                            observer += 1;
-                        }
-                        if let Some(check) = block.ops.get(observer)
-                            && matches!(check.origin, None | Some(molt_ir::OpKind::CheckException))
-                            && checked_exception_observer(check, |label| {
-                                labels
-                                    .get_or_init(|| exception_label_to_block(func))
-                                    .get(&label)
-                                    .copied()
-                            })
-                            .is_some()
-                        {
-                            checked_results.insert(*result, (*id, observer, compiled));
-                        } else if compiled && func.has_exception_handling && !op.has_nothrow_proof()
-                        {
-                            unproven_compiled_results.insert(*result);
-                        }
-                    }
-                }
+            for op in &block.ops {
                 for &result in &op.results {
                     initial.insert(result, TirType::Never);
                 }
@@ -213,47 +182,15 @@ impl<'a> ExactScalarPlan<'a> {
                 returns.extend(values);
             }
         }
-        // The physical result may be the unwind sentinel. A success fact is
-        // SSA-wide only when its normal continuation dominates every use.
-        if !checked_results.is_empty() {
-            let points = std::cell::OnceCell::new();
-            for id in &order {
-                let block = &func.blocks[id];
-                let mut observe = |value, index| {
-                    let Some(&(site, check, compiled)) = checked_results.get(&value) else {
-                        return;
-                    };
-                    let available = if site == *id {
-                        index > check
-                    } else {
-                        points
-                            .get_or_init(|| ProgramPointDominance::compute_executable(func))
-                            .definition_available(site, Some(check), *id, index)
-                    };
-                    if !available {
-                        checked_results.remove(&value);
-                        if compiled {
-                            unproven_compiled_results.insert(value);
-                        }
-                    }
-                };
-                for (index, op) in block.ops.iter().enumerate() {
-                    for &operand in &op.operands {
-                        observe(operand, index);
-                    }
-                }
-                block
-                    .terminator
-                    .for_each_value(|value| observe(value, block.ops.len()));
-            }
-        }
         Self {
             func,
-            successful_integers: checked_results
+            successful_integers: checked
+                .sites
                 .into_iter()
-                .filter_map(|(value, (_, _, compiled))| (!compiled).then_some(value))
+                .filter_map(|(word, site)| (!site.compiled && !site.physical_use).then_some(word))
                 .collect(),
-            unproven_compiled_results,
+            unproven_compiled_results: checked.unproven,
+            projected_calls,
             order,
             handlers,
             incoming,
@@ -390,11 +327,16 @@ impl<'a> ExactScalarPlan<'a> {
                         }
                         continue;
                     }
-                    let seeded = if matches!(op.opcode, OpCode::Call | OpCode::CallLoadedMethod) {
+                    let call = self
+                        .projected_calls
+                        .get(&first_result)
+                        .copied()
+                        .unwrap_or(op);
+                    let seeded = if matches!(call.opcode, OpCode::Call | OpCode::CallLoadedMethod) {
                         seeds.call_results.and_then(|results| {
                             results
                                 .sites
-                                .get(&first_result)
+                                .get(&call.results[0])
                                 .map(|&index| &results.types[index])
                         })
                     } else {
@@ -407,7 +349,9 @@ impl<'a> ExactScalarPlan<'a> {
                     } else if let Some(seeded) = seeded {
                         // The callee context's return type (design 78, 3.3).
                         vec![seeded.clone(); op.results.len()]
-                    } else if let Some(proven) = op.exact_result_proof() {
+                    } else if let Some(proven) = call.exact_result_proof()
+                        && call.checked_call_result_source().is_none()
+                    {
                         // The late stage replaced an op whose result was exact.
                         vec![proven; op.results.len()]
                     } else if self.successful_integers.contains(&first_result) {

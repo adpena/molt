@@ -3,6 +3,91 @@ use molt_ir::OpKind;
 use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 
 #[test]
+fn checked_private_entry_requires_every_incoming_reference_to_check_its_result() {
+    use crate::representation_plan::ProducerCarrierPlan;
+    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::ops::{AttrValue, OpCode, TirOp};
+    use crate::tir::types::TirType;
+    use molt_ir::{FunctionId, FunctionReturnAbi};
+
+    let make_body = |name: &str| {
+        let mut body = crate::tir::TirFunction::new(
+            name.into(),
+            Vec::new(),
+            TirType::Bool,
+            FunctionReturnAbi::Value,
+        );
+        let handler = body.fresh_block();
+        body.label_id_map.insert(handler.0, 42);
+        body.has_exception_handling = true;
+        body.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: Terminator::Unwind,
+            },
+        );
+        let result = body.fresh_value();
+        let entry = body.blocks.get_mut(&body.entry_block).unwrap();
+        let mut check = TirOp::new(OpCode::CheckException, vec![], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(42));
+        entry.ops.push(check);
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        (body, handler, result)
+    };
+    let (mut callee, _, result) = make_body("private");
+    let mut constant = TirOp::new(OpCode::ConstBool, vec![], vec![result]);
+    constant.attrs.insert("value".into(), AttrValue::Bool(true));
+    callee
+        .blocks
+        .get_mut(&callee.entry_block)
+        .unwrap()
+        .ops
+        .push(constant);
+    let provider = ProducerCarrierPlan::build(&callee);
+    assert_eq!(provider.checked_return_type(&callee), Some(TirType::Bool));
+    assert_ne!(provider.effective_return_type(&callee), TirType::Bool);
+
+    let (mut caller, handler, result) = make_body("caller");
+    let id = FunctionId(1);
+    let mut call = TirOp::new(OpCode::Call, vec![], vec![result]);
+    call.callee = Some(id);
+    let entry = caller.entry_block;
+    caller.blocks.get_mut(&entry).unwrap().ops.insert(0, call);
+    let mut consumer = ProducerCarrierPlan::default();
+    consumer
+        .repr_by_value
+        .insert(result, molt_ir::repr::Repr::Bool);
+    let plan = |body: &crate::tir::TirFunction| {
+        super::super::module_metadata::checked_private_returns(
+            [Some((body, &consumer)), Some((&callee, &provider))],
+            [id],
+        )
+    };
+    assert_eq!(plan(&caller), BTreeMap::from([(id, TirType::Bool)]));
+    let mixed = caller.blocks.get_mut(&handler).unwrap();
+    mixed.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    assert!(
+        plan(&caller).is_empty(),
+        "handler reads the physical result"
+    );
+    caller.blocks.get_mut(&handler).unwrap().terminator = Terminator::Unwind;
+    let mut address = TirOp::new(OpCode::CodeIs, vec![], vec![]);
+    address.callee = Some(id);
+    caller.blocks.get_mut(&entry).unwrap().ops.push(address);
+    assert!(
+        plan(&caller).is_empty(),
+        "the entry's address escapes the call contract"
+    );
+}
+
+#[test]
 fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
     let function = FunctionIR {
         name: "caller".into(),
@@ -62,6 +147,7 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         parameter_custody: Vec::new(),
         param_types: Vec::new(),
         return_type: Some(crate::tir::types::TirType::DynBox),
+        return_availability: Default::default(),
     };
     let mut context = NativeBackendModuleContext {
         function_linkage_abis: BTreeMap::from([
