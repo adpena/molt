@@ -238,6 +238,10 @@ fn factory_result_specializes_a_field_only_clone() {
     let mut new = field_op(OpKind::ObjectNewBound, vec![class_object], vec![allocated]);
     new.attrs
         .insert("class_definition".into(), AttrValue::Str(symbol.into()));
+    new.attrs.insert(
+        molt_ir::class_identity::STABLE_INSTANCE_CLASS_ATTR.into(),
+        AttrValue::Bool(true),
+    );
     push(&mut factory, entry, new);
     observe(&mut factory, entry);
     factory.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {

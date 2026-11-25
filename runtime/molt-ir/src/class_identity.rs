@@ -61,6 +61,23 @@ pub fn check_class_identities(functions: &[FunctionIR]) -> Result<(), String> {
     Ok(())
 }
 
+/// A positive proof that an allocation retains its class for its lifetime.
+pub const STABLE_INSTANCE_CLASS_ATTR: &str = "stable_instance_class";
+
+/// The class of a stable allocation, shared by SSA lift and type refinement.
+pub fn stable_allocation_class(attrs: &crate::tir::ops::AttrDict) -> Option<ClassId> {
+    use crate::tir::ops::AttrValue;
+    match (
+        attrs.get(STABLE_INSTANCE_CLASS_ATTR),
+        attrs.get("class_definition"),
+    ) {
+        (Some(AttrValue::Bool(true)), Some(AttrValue::Str(symbol))) => {
+            Some(ClassId::of_definition(symbol))
+        }
+        _ => None,
+    }
+}
+
 /// The TIR attribute that carries a class definition stamp's exact field
 /// slots (`OpIR::exact_field_slots`).
 pub const EXACT_FIELD_SLOTS_ATTR: &str = "exact_field_slots";

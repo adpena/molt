@@ -453,6 +453,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         runtime_symbol,
         class_definition,
         exact_field_slots,
+        stable_instance_class: _,
         runtime_requirement_bits: _,
         passes_execution_context: _,
         runtime: _,
