@@ -27,7 +27,7 @@ from contextlib import ExitStack
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, assert_never
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from heapq import nlargest
 from pathlib import Path
@@ -80,11 +80,11 @@ REQUEST_SCHEMA = "molt.landing-request.v2"
 RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
 TESTED_SCHEMA = "molt.landing-tested.v1"
-# Batching pays only when most candidates pass: at a per-candidate pass rate p
-# a batch of k passes with probability p**k. On 2026-11-02 p was about 0.2 and
-# 24 failed batch blocks cost 7.6 h of bisection. Raise this only while p holds
-# at 0.85 or better.
-MAX_BATCH = 1
+# At a pass rate near 0.2, 24 failed batches cost 7.6 h of bisection
+# on 2026-11-02. A small pair limits that cost when queue health changes.
+_BATCH_HEALTH_WINDOW = 20
+_BATCH_HEALTH_MIN_LANDED = 17
+_BATCH_HEALTH_MAX_AGE = timedelta(days=1)
 # Retention: finished runner logs beyond the newest RUNNER_LOGS_KEPT, and
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
@@ -800,6 +800,22 @@ def _order_rank(order: RequestOrder) -> int:
     )
 
 
+def _fresh_batch_limit(paths: QueuePaths) -> int:
+    try:
+        recent = recorded_results(paths, limit=_BATCH_HEALTH_WINDOW)
+        cutoff = datetime.now(UTC) - _BATCH_HEALTH_MAX_AGE
+        if (
+            len(recent) == _BATCH_HEALTH_WINDOW
+            and datetime.fromisoformat(recent[0]["recorded_at"]) >= cutoff
+            and sum(result["status"] == LandingStatus.LANDED for result in recent)
+            >= _BATCH_HEALTH_MIN_LANDED
+        ):
+            return 2
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        _warn(f"batch health unavailable; testing one request: {exc}")
+    return 1
+
+
 def next_batch(
     paths: QueuePaths,
     ready: Sequence[LandingRequest],
@@ -813,7 +829,7 @@ def next_batch(
     ``order`` is never consulted for a planned batch. A fresh batch takes the
     first request in queue order (non-closing ledger requests first, then the
     rest, each in enqueue order) and the run of requests behind it with the
-    same ``LandingClass``, up to ``MAX_BATCH``.
+    same ``LandingClass``, bounded by recent landing health.
     """
 
     by_id = {request.id: request for request in ready}
@@ -836,7 +852,9 @@ def next_batch(
         return []
     kind = order[ranked[0].id].landing_class
     batch = [ranked[0]]
-    for request in ranked[1:MAX_BATCH]:
+    if len(ranked) == 1 or order[ranked[1].id].landing_class is not kind:
+        return batch
+    for request in ranked[1 : _fresh_batch_limit(paths)]:
         if order[request.id].landing_class is not kind:
             break
         batch.append(request)
