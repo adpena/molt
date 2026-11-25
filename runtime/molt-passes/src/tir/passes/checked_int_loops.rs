@@ -29,7 +29,11 @@
 //! Selection is an optimistic fixpoint over the loop: an exact-int `Add` or
 //! `Mul` is selected when both operands are raw-capable (inline-safe by the
 //! representation authority, a constant, a selected result, or a loop phi
-//! whose incomings are all raw-capable). The representation plan then makes
+//! whose incomings are all raw-capable). An exact-int call can also seed a
+//! raw lane when its boxed result carries the inline-int tag. A tag miss
+//! transfers the original result into the slow loop after the call: calls,
+//! side effects, and exception checks keep their original order.
+//! The representation plan then makes
 //! each selected result and accumulator phi a checked full-range raw carrier
 //! (`Repr::RawI64FullDeopt`), and codegen emits a machine add with an
 //! overflow branch.
@@ -74,7 +78,9 @@ use crate::tir::op_kinds_generated::{
     opcode_is_exception_handler_region_table, opcode_is_state_machine_table,
 };
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::passes::value_identity::{copy_value_source, forwarded_python_value_source};
+use crate::tir::passes::value_identity::{
+    ScalarFacts, copy_value_source, forwarded_python_value_source,
+};
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::ssa_update::{self, RepairRefusal, Variable};
 use crate::tir::types::TirType;
@@ -92,8 +98,12 @@ const MAX_VERSIONED_OPS: usize = 2048;
 /// Why a loop was left unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    /// No exact-int add or multiply with raw-capable operands feeds a loop phi.
-    NoAccumulator,
+    /// No loop-carried SSA value is proven to be an exact Python int.
+    NoExactAccumulator,
+    /// The exact accumulator cannot be fed by raw-capable definitions.
+    BoxedAccumulatorInput,
+    /// The loop's integer work already fits its current carriers.
+    NoProfitableRewrite,
     /// The loop holds a try/except region; its handler labels would need a clone.
     HandlerRegion,
     /// The loop holds a suspension point of a generator or coroutine.
@@ -148,7 +158,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) ->
             am.invalidate_cfg();
             ranges = None;
         }
-        report.push((header, outcome));
+        if debug {
+            report.push((header, outcome));
+        }
     }
     if debug {
         write_report(func, &report);
@@ -164,49 +176,40 @@ fn try_version_loop(
     final_tir: bool,
 ) -> Result<usize, Refusal> {
     check_loop_shape(func, body)?;
-    let snapshot = func.clone();
     if final_tir && let Some(ascii) = short_ascii::ShortAscii::admit(func, header, body, vr) {
-        let outcome = version(func, body, &Selection::default(), None, Some(&ascii));
-        if outcome.is_err() {
-            *func = snapshot;
-        }
-        return outcome;
+        return commit_version(func, |candidate| {
+            version(candidate, body, &Selection::default(), None, Some(&ascii))
+        });
     }
+
+    let facts = ScalarFacts::new(func);
     let guard = if final_tir {
-        invariant_guard(func, header, body, vr)
+        invariant_guard(func, header, body, vr, &facts)
     } else {
         None
     };
-    // With a guard, selection reads the ranges of the fast loop as it will
-    // be: the invariants replaced by their payloads, whose range is the
-    // inline window. The rewrite keeps every block and op index of the loop.
-    let selection = match &guard {
-        Some(guard) => {
-            let mut fast = func.clone();
-            guard.rewrite(&mut fast, body);
-            fast.blocks
-                .get_mut(&guard.preheader)
-                .expect("preheader exists")
-                .ops
-                .extend(guard.unbox_ops());
-            let fast_vr = <ValueRange as crate::tir::analysis::Analysis>::compute(&fast);
-            select(&fast, header, body, &fast_vr, final_tir)
-        }
-        None => select(func, header, body, vr, final_tir),
+    // Only a guard that has work to do needs a speculative analysis body.
+    let selection = if let Some(guard) = &guard {
+        let mut fast = func.clone();
+        guard.install_payloads(&mut fast);
+        guard.rewrite(&mut fast, body);
+        fast.blocks
+            .get_mut(&guard.preheader)
+            .expect("preheader exists")
+            .ops
+            .extend(guard.unbox_ops());
+        let fast_facts = ScalarFacts::new(&fast);
+        let fast_vr = crate::tir::passes::value_range::compute_with_scalar_facts(&fast_facts);
+        select(&fast, header, body, &fast_vr, &fast_facts, final_tir)?
+    } else {
+        select(func, header, body, vr, &facts, final_tir)?
     };
-    let selection = match selection {
-        Ok(selection) => selection,
-        Err(refusal) => {
-            *func = snapshot;
-            return Err(refusal);
-        }
-    };
+
     if guard.is_none() && selection.is_empty() {
-        *func = snapshot;
-        return Err(Refusal::NoAccumulator);
+        return Err(Refusal::NoProfitableRewrite);
     }
-    // Proofs alone need no second loop: they hold where the ops are.
-    if guard.is_none() && selection.checked.is_empty() {
+    // Proofs alone need no second loop and cannot fail.
+    if guard.is_none() && selection.checked.is_empty() && selection.projections.is_empty() {
         for &(block, index) in &selection.exact {
             func.blocks
                 .get_mut(&block)
@@ -219,13 +222,24 @@ fn try_version_loop(
         }
         return Ok(0);
     }
-    match version(func, body, &selection, guard.as_ref(), None) {
-        Ok(added) => Ok(added),
-        Err(refusal) => {
-            *func = snapshot;
-            Err(refusal)
+    commit_version(func, |candidate| {
+        if let Some(guard) = &guard {
+            guard.install_payloads(candidate);
         }
-    }
+        version(candidate, body, &selection, guard.as_ref(), None)
+    })
+}
+
+/// SSA repair may fail after editing the CFG. Build only admitted versions
+/// speculatively and publish a replacement only after its repair succeeds.
+fn commit_version(
+    func: &mut TirFunction,
+    build: impl FnOnce(&mut TirFunction) -> Result<usize, Refusal>,
+) -> Result<usize, Refusal> {
+    let mut candidate = func.clone();
+    let added = build(&mut candidate)?;
+    *func = candidate;
+    Ok(added)
 }
 
 /// The loop-invariant boxed exact ints the fast loop reads as inline
@@ -243,6 +257,13 @@ struct InvariantGuard {
 }
 
 impl InvariantGuard {
+    fn install_payloads(&self, func: &mut TirFunction) {
+        for &(_, raw) in &self.payloads {
+            assert_eq!(func.fresh_value(), raw, "invariant payload reservation");
+            func.value_types.insert(raw, TirType::I64);
+        }
+    }
+
     /// Read each invariant's payload in the numeric ops of `body`.
     fn rewrite(&self, func: &mut TirFunction, body: &HashSet<BlockId>) {
         let payload = &self.reads;
@@ -348,14 +369,15 @@ fn takes_inline_payload(opcode: OpCode) -> bool {
     )
 }
 
-/// Find the invariants of the loop at `header` and allocate their payloads.
+/// Find the invariants of the loop at `header` and reserve their payload IDs.
 /// `None` when no numeric op of the loop takes a boxed exact int defined
 /// outside it, or the loop has no single plain entry edge.
 fn invariant_guard(
-    func: &mut TirFunction,
+    func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
+    facts: &ScalarFacts<'_>,
 ) -> Option<InvariantGuard> {
     let preheader = plain_preheader(func, header, body)?;
     let mut defined: HashSet<ValueId> = HashSet::default();
@@ -364,8 +386,8 @@ fn invariant_guard(
         defined.extend(block.args.iter().map(|arg| arg.id));
         defined.extend(block.ops.iter().flat_map(|op| op.results.iter().copied()));
     }
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
-    let repr = crate::representation_facts::repr_by_value_for(func, Some(vr));
+    let exact = facts.types();
+    let repr = std::cell::OnceCell::new();
     let carried = header_invariants(func, header, body, preheader, &defined);
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
@@ -389,7 +411,10 @@ fn invariant_guard(
                 // `for i in range(n)` is `n.__index__()`.
                 if matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
                     && matches!(
-                        repr.get(&operand),
+                        repr.get_or_init(|| {
+                            crate::representation_facts::repr_by_value_from(facts, Some(vr))
+                        })
+                        .get(&operand),
                         Some(molt_ir::repr::Repr::DynBox | molt_ir::repr::Repr::MaybeBigInt)
                     )
                     && !reads.iter().any(|(read, _)| *read == operand)
@@ -408,8 +433,7 @@ fn invariant_guard(
         let raw = match payloads.iter().find(|(boxed, _)| *boxed == tested) {
             Some(&(_, raw)) => raw,
             None => {
-                let raw = func.fresh_value();
-                func.value_types.insert(raw, TirType::I64);
+                let raw = ValueId(func.next_value + u32::try_from(payloads.len()).ok()?);
                 payloads.push((tested, raw));
                 raw
             }
@@ -559,21 +583,26 @@ fn checked_opcode(opcode: OpCode) -> Option<OpCode> {
     }
 }
 
-/// Select the loop's raw-capable arithmetic. `NoAccumulator` when no header
-/// phi of the loop is raw-capable.
+/// Select raw-capable loop arithmetic and its required input proofs.
 fn select(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
+    facts: &ScalarFacts<'_>,
     final_tir: bool,
 ) -> Result<Selection, Refusal> {
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let exact = facts.types();
     let is_int = |value: &ValueId| exact.get(value) == Some(&TirType::I64);
-    let inline_safe = crate::representation_facts::raw_i64_safe_values_for(func, vr);
+    let header_args = &func.blocks[&header].args;
+    if !header_args.iter().any(|arg| is_int(&arg.id)) {
+        return Err(Refusal::NoExactAccumulator);
+    }
+    let inline_safe = crate::representation_facts::raw_i64_safe_values_from(facts, vr);
     let mut constants: HashSet<ValueId> = HashSet::default();
     let mut arithmetic: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut checked_before: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
+    let mut call_results = HashMap::default();
     let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
     let mut phis: Vec<(BlockId, usize, ValueId)> = Vec::new();
     for (&bid, block) in &func.blocks {
@@ -610,6 +639,13 @@ fn select(
                 // A loop versioned before (a type-flow clone of a versioned
                 // body) already checks this op; its result is a raw carrier.
                 checked_before.push((bid, index, *result, [*lhs, *rhs]));
+            } else if final_tir
+                && matches!(op.opcode, OpCode::Call | OpCode::CallRuntime)
+                && let [result] = op.results[..]
+                && is_int(&result)
+                && !inline_safe.contains(&result)
+            {
+                call_results.insert(result, (bid, index));
             } else if let Some(source) =
                 copy_value_source(op).or_else(|| forwarded_python_value_source(op))
                 && let [result] = op.results[..]
@@ -636,6 +672,7 @@ fn select(
             || inline_safe.contains(value)
             || constants.contains(value)
             || checked_results.contains(value)
+            || call_results.contains_key(value)
     };
     let mut changed = true;
     while changed {
@@ -663,14 +700,17 @@ fn select(
             }
         }
     }
-    let header_args: Vec<ValueId> = func.blocks[&header].args.iter().map(|arg| arg.id).collect();
-    if !header_args.iter().any(|arg| capable.contains(arg)) {
-        return Err(Refusal::NoAccumulator);
+    if !header_args.iter().any(|arg| capable.contains(&arg.id)) {
+        return Err(Refusal::BoxedAccumulatorInput);
     }
     let mut selection = Selection::default();
-    for &(block, index, result, _) in &arithmetic {
+    let mut numeric_inputs = Vec::new();
+    for &(block, index, result, operands) in &arithmetic {
         if !capable.contains(&result) {
             continue;
+        }
+        if !call_results.is_empty() {
+            numeric_inputs.extend(operands);
         }
         if final_tir && vr.range_of(result).is_bounded() {
             selection.exact.push((block, index));
@@ -686,6 +726,34 @@ fn select(
             && operands.iter().all(|v| raw(v, &capable))
         {
             selection.unchecked.push((block, index));
+            if !call_results.is_empty() {
+                numeric_inputs.extend(operands);
+            }
+        }
+    }
+    // Project only call results reaching selected numerical work. Copies and
+    // phis may forward the same value through more than one block.
+    if !call_results.is_empty() {
+        let mut sources: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
+        for (result, source) in copies {
+            sources.entry(result).or_default().push(source);
+        }
+        for (block, index, phi) in phis {
+            if let Some(inputs) = incomings.get(&(block, index)) {
+                sources.entry(phi).or_default().extend(inputs);
+            }
+        }
+        let mut seen = HashSet::default();
+        while let Some(value) = numeric_inputs.pop() {
+            if !seen.insert(value) {
+                continue;
+            }
+            if let Some(&site) = call_results.get(&value) {
+                selection.projections.push(site);
+            }
+            if let Some(inputs) = sources.get(&value) {
+                numeric_inputs.extend(inputs);
+            }
         }
     }
     selection
@@ -705,6 +773,8 @@ fn select(
 struct Selection {
     /// Ops the fast loop checks for overflow.
     checked: Vec<(BlockId, usize)>,
+    /// Exact-int calls whose fast successors consume the inline payload.
+    projections: Vec<(BlockId, usize)>,
     /// Ops whose exact result the ranges place inside i64: a plain machine op.
     exact: Vec<(BlockId, usize)>,
     /// Checked ops of an earlier versioning whose exact result the ranges
@@ -716,6 +786,12 @@ impl Selection {
     fn is_empty(&self) -> bool {
         self.checked.is_empty() && self.exact.is_empty() && self.unchecked.is_empty()
     }
+}
+
+#[derive(Clone, Copy)]
+enum FastCheck {
+    Overflow,
+    CallResult,
 }
 
 /// A checked op: its first result is the wrapped value, its second the
@@ -784,7 +860,6 @@ fn version(
     guard: Option<&InvariantGuard>,
     ascii: Option<&short_ascii::ShortAscii>,
 ) -> Result<usize, Refusal> {
-    let selected = &selection.checked[..];
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
 
@@ -879,10 +954,15 @@ fn version(
         guard.rewrite(func, body);
     }
 
-    // 3. Check each selected op; split its block in both loops after it.
-    let mut by_block: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for &(block, index) in selected {
-        by_block.entry(block.0).or_default().push(index);
+    // 3. Split after each checked operation in both loops.
+    let mut by_block: BTreeMap<u32, Vec<(usize, FastCheck)>> = BTreeMap::new();
+    for (checks, kind) in [
+        (&selection.checked, FastCheck::Overflow),
+        (&selection.projections, FastCheck::CallResult),
+    ] {
+        for &(block, index) in checks {
+            by_block.entry(block.0).or_default().push((index, kind));
+        }
     }
     let mut variables: HashMap<ValueId, Vec<ValueId>> = defined
         .iter()
@@ -892,46 +972,30 @@ fn version(
     for (block, mut indices) in by_block {
         let fast = BlockId(block);
         let slow = block_map[&fast];
-        indices.sort_unstable_by(|a, b| b.cmp(a));
-        for index in indices {
-            let original = func.blocks[&fast].ops[index].clone();
+        indices.sort_unstable_by_key(|&(index, _)| std::cmp::Reverse(index));
+        for (index, check) in indices {
+            let ops = &func.blocks[&fast].ops;
+            let original = ops[index].clone();
+            // Keep the exception observation adjacent to its call on both
+            // paths. The inline lane only speculates on a successful result.
+            let split = index
+                + 1
+                + usize::from(
+                    matches!(check, FastCheck::CallResult)
+                        && ops
+                            .get(index + 1)
+                            .is_some_and(|op| op.opcode == OpCode::CheckException),
+                );
             let result = original.results[0];
             let flag = func.fresh_value();
             func.value_types.insert(flag, TirType::Bool);
-            let exact = func.fresh_value();
-            func.value_types.insert(exact, TirType::I64);
+            let alternate = func.fresh_value();
+            func.value_types.insert(alternate, TirType::I64);
             let fast_rest = func.fresh_block();
             let slow_rest = func.fresh_block();
-            let transfer = func.fresh_block();
-
-            let fast_block = func.blocks.get_mut(&fast).expect("selected block exists");
-            let rest_ops = fast_block.ops.split_off(index + 1);
-            let checked = &mut fast_block.ops[index];
-            checked.opcode = checked_opcode(original.opcode).expect("selected op is arithmetic");
-            checked.results.push(flag);
-            let rest_terminator = std::mem::replace(
-                &mut fast_block.terminator,
-                Terminator::CondBranch {
-                    cond: flag,
-                    then_block: transfer,
-                    then_args: vec![],
-                    else_block: fast_rest,
-                    else_args: vec![],
-                },
-            );
-            func.blocks.insert(
-                fast_rest,
-                TirBlock {
-                    id: fast_rest,
-                    args: vec![],
-                    ops: rest_ops,
-                    terminator: rest_terminator,
-                },
-            );
-            func.move_loop_terminator(fast, fast_rest);
 
             let slow_block = func.blocks.get_mut(&slow).expect("cloned block exists");
-            let slow_ops = slow_block.ops.split_off(index + 1);
+            let slow_ops = slow_block.ops.split_off(split);
             let slow_terminator = std::mem::replace(
                 &mut slow_block.terminator,
                 Terminator::Branch {
@@ -949,27 +1013,76 @@ fn version(
                 },
             );
 
-            func.blocks.insert(
-                transfer,
-                TirBlock {
-                    id: transfer,
-                    args: vec![],
-                    ops: vec![TirOp {
-                        results: vec![exact],
-                        attrs: clone_attrs_without_simple_names(&original.attrs),
-                        ..original.clone()
-                    }],
-                    terminator: Terminator::Branch {
-                        target: slow_rest,
-                        args: vec![],
-                    },
+            let (on_true, on_false) = match check {
+                FastCheck::Overflow => {
+                    let transfer = func.fresh_block();
+                    func.blocks.insert(
+                        transfer,
+                        TirBlock {
+                            id: transfer,
+                            args: vec![],
+                            ops: vec![TirOp {
+                                results: vec![alternate],
+                                attrs: clone_attrs_without_simple_names(&original.attrs),
+                                ..original.clone()
+                            }],
+                            terminator: Terminator::Branch {
+                                target: slow_rest,
+                                args: vec![],
+                            },
+                        },
+                    );
+                    added += 1;
+                    (transfer, fast_rest)
+                }
+                FastCheck::CallResult => (fast_rest, slow_rest),
+            };
+            let fast_block = func.blocks.get_mut(&fast).expect("selected block exists");
+            let mut rest_ops = fast_block.ops.split_off(split);
+            let checked = &mut fast_block.ops[index];
+            match check {
+                FastCheck::Overflow => {
+                    checked.opcode = checked_opcode(original.opcode).expect("selected arithmetic");
+                    checked.results.push(flag);
+                }
+                FastCheck::CallResult => {
+                    checked.results[0] = alternate;
+                    fast_block.ops.push(TirOp::new(
+                        OpCode::IsInlineInt,
+                        vec![alternate],
+                        vec![flag],
+                    ));
+                    rest_ops.insert(
+                        0,
+                        TirOp::new(OpCode::UnboxInlineInt, vec![alternate], vec![result]),
+                    );
+                    added += 2;
+                }
+            };
+            let rest_terminator = std::mem::replace(
+                &mut fast_block.terminator,
+                Terminator::CondBranch {
+                    cond: flag,
+                    then_block: on_true,
+                    then_args: vec![],
+                    else_block: on_false,
+                    else_args: vec![],
                 },
             );
+            func.blocks.insert(
+                fast_rest,
+                TirBlock {
+                    id: fast_rest,
+                    args: vec![],
+                    ops: rest_ops,
+                    terminator: rest_terminator,
+                },
+            );
+            func.move_loop_terminator(fast, fast_rest);
             variables
                 .get_mut(&result)
                 .expect("selected result is a loop value")
-                .push(exact);
-            added += 1;
+                .push(alternate);
         }
     }
 

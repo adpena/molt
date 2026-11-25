@@ -9,16 +9,53 @@ use crate::{
     raise_exception,
 };
 
+// The payload word of each variant is readable by generated code.
+#[repr(C, u64)]
 pub(crate) enum Buffer2DStorage {
-    I64(*mut crate::object::molt_vec::MoltVec<i64>),
-    Boxed(*mut crate::object::molt_vec::MoltVec<u64>),
+    I64(
+        *mut crate::object::molt_vec::MoltVec<i64>,
+        #[cfg(target_pointer_width = "32")] u32,
+    ) = molt_codegen_abi::BUFFER2D_STORAGE_PACKED,
+    Boxed(
+        *mut crate::object::molt_vec::MoltVec<u64>,
+        #[cfg(target_pointer_width = "32")] u32,
+    ) = 1,
 }
+
+impl Buffer2DStorage {
+    fn packed(ptr: *mut crate::object::molt_vec::MoltVec<i64>) -> Self {
+        Self::I64(
+            ptr,
+            #[cfg(target_pointer_width = "32")]
+            0,
+        )
+    }
+
+    fn boxed(ptr: *mut crate::object::molt_vec::MoltVec<u64>) -> Self {
+        Self::Boxed(
+            ptr,
+            #[cfg(target_pointer_width = "32")]
+            0,
+        )
+    }
+}
+
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    use molt_codegen_abi::*;
+    assert!(offset_of!(Buffer2D, rows) == BUFFER2D_ROWS_OFFSET as usize);
+    assert!(offset_of!(Buffer2D, cols) == BUFFER2D_COLS_OFFSET as usize);
+    assert!(offset_of!(Buffer2D, data) == BUFFER2D_STORAGE_TAG_OFFSET as usize);
+    assert!(offset_of!(Buffer2D, data) + size_of::<u64>() == BUFFER2D_STORAGE_PTR_OFFSET as usize);
+    assert!(size_of::<Buffer2DStorage>() == 16);
+    assert!(size_of::<Buffer2D>() == 32);
+};
 
 pub(crate) unsafe fn visit_owned_values(buffer: *mut Buffer2D, mut visit: impl FnMut(u64)) {
     if buffer.is_null() {
         return;
     }
-    if let Buffer2DStorage::Boxed(values) = unsafe { &(*buffer).data }
+    if let Buffer2DStorage::Boxed(values, ..) = unsafe { &(*buffer).data }
         && !values.is_null()
     {
         for &bits in unsafe { &**values } {
@@ -31,7 +68,7 @@ pub(crate) unsafe fn detach_owned_values(buffer: *mut Buffer2D, mut detach: impl
     if buffer.is_null() {
         return;
     }
-    if let Buffer2DStorage::Boxed(values) = unsafe { &mut (*buffer).data }
+    if let Buffer2DStorage::Boxed(values, ..) = unsafe { &mut (*buffer).data }
         && !values.is_null()
     {
         for bits in unsafe { &mut **values } {
@@ -164,8 +201,8 @@ unsafe fn drop_boxed_storage(_py: &PyToken<'_>, ptr: *mut crate::object::molt_ve
 
 unsafe fn drop_staged(_py: &PyToken<'_>, storage: Buffer2DStorage) {
     match storage {
-        Buffer2DStorage::I64(ptr) => unsafe { drop_i64_storage(ptr) },
-        Buffer2DStorage::Boxed(ptr) => unsafe { drop_boxed_storage(_py, ptr) },
+        Buffer2DStorage::I64(ptr, ..) => unsafe { drop_i64_storage(ptr) },
+        Buffer2DStorage::Boxed(ptr, ..) => unsafe { drop_boxed_storage(_py, ptr) },
     }
 }
 
@@ -250,11 +287,11 @@ fn allocate_boxed_storage(
 
 fn allocate_storage(_py: &PyToken<'_>, len: usize, init: ExactInt) -> Option<Buffer2DStorage> {
     if len == 0 {
-        return allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::I64);
+        return allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::packed);
     }
     match init {
-        ExactInt::I64(value) => allocate_i64_storage(_py, len, value).map(Buffer2DStorage::I64),
-        ExactInt::Big(value) => allocate_boxed_storage(_py, len, value).map(Buffer2DStorage::Boxed),
+        ExactInt::I64(value) => allocate_i64_storage(_py, len, value).map(Buffer2DStorage::packed),
+        ExactInt::Big(value) => allocate_boxed_storage(_py, len, value).map(Buffer2DStorage::boxed),
     }
 }
 
@@ -311,8 +348,8 @@ fn checked_buffer(_py: &PyToken<'_>, bits: u64) -> Option<*mut Buffer2D> {
 
 unsafe fn exact_at(storage: &Buffer2DStorage, index: usize) -> ExactInt {
     match storage {
-        Buffer2DStorage::I64(ptr) => ExactInt::I64(unsafe { (&**ptr)[index] }),
-        Buffer2DStorage::Boxed(ptr) => {
+        Buffer2DStorage::I64(ptr, ..) => ExactInt::I64(unsafe { (&**ptr)[index] }),
+        Buffer2DStorage::Boxed(ptr, ..) => {
             let bits = unsafe { (&**ptr)[index] };
             ExactInt::Big(
                 crate::builtins::numbers::index_bigint_integral_bits(bits)
@@ -441,9 +478,9 @@ pub(crate) fn molt_buffer2d_get_attached_body(
         let cols = usize::try_from(cols).expect("non-empty Buffer2D columns fit usize");
         let index = row * cols + col;
         match unsafe { &(*buf_ptr).data } {
-            Buffer2DStorage::I64(ptr) => owned_i64_bits(_py, unsafe { (&**ptr)[index] })
+            Buffer2DStorage::I64(ptr, ..) => owned_i64_bits(_py, unsafe { (&**ptr)[index] })
                 .unwrap_or_else(|| MoltObject::none().bits()),
-            Buffer2DStorage::Boxed(ptr) => {
+            Buffer2DStorage::Boxed(ptr, ..) => {
                 let bits = unsafe { (&**ptr)[index] };
                 inc_ref_bits(_py, bits);
                 bits
@@ -497,7 +534,7 @@ pub(crate) fn molt_buffer2d_set_attached_body(
         let index = row * cols + col;
         let mut promoted = None;
         match unsafe { &mut (*buf_ptr).data } {
-            Buffer2DStorage::I64(ptr) => match value {
+            Buffer2DStorage::I64(ptr, ..) => match value {
                 ExactInt::I64(value) => {
                     unsafe { (&mut **ptr)[index] = value };
                 }
@@ -516,7 +553,7 @@ pub(crate) fn molt_buffer2d_set_attached_body(
                     promoted = Some((old_ptr, boxed_ptr));
                 }
             },
-            Buffer2DStorage::Boxed(ptr) => {
+            Buffer2DStorage::Boxed(ptr, ..) => {
                 let Some(bits) = owned_exact_bits(_py, value) else {
                     return MoltObject::none().bits();
                 };
@@ -526,7 +563,7 @@ pub(crate) fn molt_buffer2d_set_attached_body(
         }
         if let Some((old_ptr, boxed_ptr)) = promoted {
             unsafe {
-                (*buf_ptr).data = Buffer2DStorage::Boxed(boxed_ptr);
+                (*buf_ptr).data = Buffer2DStorage::boxed(boxed_ptr);
                 drop_i64_storage(old_ptr);
             }
         }
@@ -558,7 +595,7 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
             return memory_error(_py);
         };
         if len == 0 {
-            let Some(storage) = allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::I64) else {
+            let Some(storage) = allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::packed) else {
                 return MoltObject::none().bits();
             };
             return publish_buffer(_py, a.rows, b.cols, storage);
@@ -573,15 +610,15 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
         let Some(i64_ptr) = tracked_vec_box_with_capacity::<i64>(len) else {
             return memory_error(_py);
         };
-        let mut staged = Buffer2DStorage::I64(i64_ptr);
+        let mut staged = Buffer2DStorage::packed(i64_ptr);
         for row in 0..rows {
             for col in 0..b_cols {
                 let value = unsafe { compute_cell(a, b, row, col, a_cols, b_cols) };
                 match (&mut staged, value) {
-                    (Buffer2DStorage::I64(ptr), ExactInt::I64(value)) => unsafe {
+                    (Buffer2DStorage::I64(ptr, ..), ExactInt::I64(value)) => unsafe {
                         (**ptr).push(value);
                     },
-                    (Buffer2DStorage::I64(ptr), ExactInt::Big(value)) => {
+                    (Buffer2DStorage::I64(ptr, ..), ExactInt::Big(value)) => {
                         let old_ptr = *ptr;
                         let values = unsafe { &*old_ptr }
                             .iter()
@@ -595,9 +632,9 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
                         unsafe {
                             drop_i64_storage(old_ptr);
                         }
-                        staged = Buffer2DStorage::Boxed(boxed_ptr);
+                        staged = Buffer2DStorage::boxed(boxed_ptr);
                     }
-                    (Buffer2DStorage::Boxed(ptr), value) => {
+                    (Buffer2DStorage::Boxed(ptr, ..), value) => {
                         let Some(bits) = owned_exact_bits(_py, value) else {
                             unsafe { drop_boxed_storage(_py, *ptr) };
                             return MoltObject::none().bits();
@@ -615,6 +652,23 @@ include!("../attached_exports_generated/object/buffer2d.rs");
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packed_storage_pointer_matches_generated_layout() {
+        let buffer = Buffer2D {
+            rows: 1,
+            cols: 1,
+            data: Buffer2DStorage::packed(std::ptr::null_mut()),
+        };
+        let Buffer2DStorage::I64(ref pointer, ..) = buffer.data else {
+            unreachable!();
+        };
+        let offset = std::ptr::from_ref(pointer).addr() - std::ptr::from_ref(&buffer).addr();
+        assert_eq!(
+            offset,
+            molt_codegen_abi::BUFFER2D_STORAGE_PTR_OFFSET as usize
+        );
+    }
+
     use super::*;
     use crate::resource::{OperationEstimate, ResourceError, ResourceTracker, set_tracker};
     use std::{cell::Cell, rc::Rc};
@@ -735,7 +789,7 @@ mod tests {
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::I64(_)
+                Buffer2DStorage::I64(..)
             ));
 
             let large = BigInt::from(1u8) << 90usize;
@@ -753,7 +807,7 @@ mod tests {
             dec_ref_bits(_py, large_bits);
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::Boxed(_)
+                Buffer2DStorage::Boxed(..)
             ));
 
             let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(1));
@@ -800,7 +854,7 @@ mod tests {
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
-                Buffer2DStorage::I64(_)
+                Buffer2DStorage::I64(..)
             ));
             let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(0));
             let result_ptr = obj_from_bits(result)
@@ -860,7 +914,8 @@ mod tests {
             let buffer_bits = molt_buffer2d_new_attached_body(_py, inline(1), inline(3), max_bits);
             dec_ref_bits(_py, max_bits);
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
-            let Buffer2DStorage::I64(original_storage) = (unsafe { &(*buffer_ptr).data }) else {
+            let Buffer2DStorage::I64(original_storage, ..) = (unsafe { &(*buffer_ptr).data })
+            else {
                 panic!("small Buffer2D must start in packed storage");
             };
             let original_storage = *original_storage;
@@ -889,7 +944,7 @@ mod tests {
                 assert_eq!(usage.used_allocations.get(), baseline_allocations);
                 assert_eq!(usage.used_bytes.get(), baseline_bytes);
 
-                let Buffer2DStorage::I64(values) = (unsafe { &(*buffer_ptr).data }) else {
+                let Buffer2DStorage::I64(values, ..) = (unsafe { &(*buffer_ptr).data }) else {
                     panic!("failed promotion must leave packed storage authoritative");
                 };
                 assert_eq!(*values, original_storage);
@@ -899,7 +954,7 @@ mod tests {
             usage.max_allocations.set(Some(baseline_allocations + 4));
             molt_buffer2d_set_attached_body(_py, buffer_bits, inline(0), inline(1), large_bits);
             assert!(!exception_pending(_py));
-            let Buffer2DStorage::Boxed(values) = (unsafe { &(*buffer_ptr).data }) else {
+            let Buffer2DStorage::Boxed(values, ..) = (unsafe { &(*buffer_ptr).data }) else {
                 panic!("successful promotion must publish boxed storage");
             };
             assert_eq!(
@@ -956,10 +1011,10 @@ mod tests {
                 crate::clear_exception(_py);
                 assert_eq!(usage.used_allocations.get(), baseline_allocations);
                 assert_eq!(usage.used_bytes.get(), baseline_bytes);
-                let Buffer2DStorage::I64(left_values) = (unsafe { &(*left_ptr).data }) else {
+                let Buffer2DStorage::I64(left_values, ..) = (unsafe { &(*left_ptr).data }) else {
                     panic!("matmul must not promote its left input");
                 };
-                let Buffer2DStorage::I64(right_values) = (unsafe { &(*right_ptr).data }) else {
+                let Buffer2DStorage::I64(right_values, ..) = (unsafe { &(*right_ptr).data }) else {
                     panic!("matmul must not promote its right input");
                 };
                 assert_eq!(unsafe { &***left_values }, &[i64::MAX]);
@@ -1005,7 +1060,7 @@ mod tests {
                         crate::builtins::numbers::index_i64_integral_bits(cols).unwrap() as u64,
                     )
                 );
-                let Buffer2DStorage::I64(values) = (unsafe { &(*buffer_ptr).data }) else {
+                let Buffer2DStorage::I64(values, ..) = (unsafe { &(*buffer_ptr).data }) else {
                     panic!("empty storage must stay packed");
                 };
                 let cells = unsafe { &**values };

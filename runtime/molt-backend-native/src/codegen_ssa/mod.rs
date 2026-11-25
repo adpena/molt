@@ -4,6 +4,7 @@
 //! converts, and how the walk visits a function, lives here once for every
 //! native backend.
 
+mod buffer;
 pub(crate) mod builder;
 pub(crate) mod callable;
 pub(crate) mod calls;

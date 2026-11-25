@@ -855,8 +855,15 @@ pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    let value_types = value_type_by_id_for(&ScalarFacts::new(tir_func));
-    raw_i64_safe_values_for_with_types(tir_func, vr, &value_types)
+    raw_i64_safe_values_from(&ScalarFacts::new(tir_func), vr)
+}
+
+pub(crate) fn raw_i64_safe_values_from(
+    facts: &ScalarFacts<'_>,
+    vr: &crate::tir::ValueRangeResult,
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    let value_types = value_type_by_id_for(facts);
+    raw_i64_safe_values_for_with_types(facts.body(), vr, &value_types)
 }
 
 fn raw_i64_safe_values_for_with_types(
