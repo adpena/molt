@@ -676,12 +676,7 @@ fn shared_return_preserves_the_supplied_argument_type_without_a_clone() {
     for keep_operand in [false, true] {
         let mut changed = validator.clone();
         for block in changed.blocks.values_mut() {
-            if block
-                .ops
-                .last()
-                .is_some_and(|op| op.opcode == OpCode::Raise)
-            {
-                let raise = block.ops.pop().unwrap();
+            if let Some(raise) = block.ops.pop_if(|op| op.opcode == OpCode::Raise) {
                 block.terminator = Terminator::Return {
                     values: if keep_operand {
                         raise.operands
