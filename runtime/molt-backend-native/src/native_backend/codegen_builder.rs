@@ -946,14 +946,6 @@ impl crate::codegen_ssa::frame::RecordPlacement for NativeCodegen<'_, '_> {
 }
 
 impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
-    fn poll_parameter(&self) -> Option<Value> {
-        let function = &self.words.builder.func;
-        let params = function.dfg.block_params(function.layout.entry_block()?);
-        match params {
-            [_, frame] => Some(*frame),
-            _ => None,
-        }
-    }
     fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
         load_stateful_frame_size(self.module, self.words.builder, symbol)
     }

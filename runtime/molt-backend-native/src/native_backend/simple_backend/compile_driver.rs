@@ -98,6 +98,13 @@ impl SimpleBackend {
     ) -> Result<Function, Vec<String>> {
         use super::super::codegen_builder::NativeCodegen;
         let body = &definition.tir;
+        let prepared = crate::codegen_ssa::walk::PreparedFunction::new(body)?;
+        let own_abi = linkage.get(&body.name).ok_or_else(|| {
+            vec![format!(
+                "{}: the function has no exact native linkage ABI",
+                body.name
+            )]
+        })?;
         let trace_start = env_setting(BackendEnv::MOLT_TRACE_COMPILE_FUNC)
             .as_deref()
             .is_some_and(parse_truthy_env)
@@ -151,8 +158,10 @@ impl SimpleBackend {
                 imports: &mut imports,
             },
             crate::codegen_ssa::walk::FunctionInput {
-                func: body,
+                body: prepared,
+                own_abi,
                 plan: &definition.carriers,
+                physical_entry: entry,
                 entry: &parameters,
                 linkage,
                 functions: table,

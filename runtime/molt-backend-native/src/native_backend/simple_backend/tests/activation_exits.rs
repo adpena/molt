@@ -310,7 +310,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
 }
 
 #[test]
-#[should_panic(expected = "must expose it as explicit activation exits")]
+#[should_panic(expected = "StateYield must lower to explicit activation exits")]
 fn drop_inserted_codegen_rejects_a_hidden_suspension() {
     let function = poll_function(
         "hidden_suspension",

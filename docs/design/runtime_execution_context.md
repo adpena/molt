@@ -61,7 +61,7 @@ Who takes the record, and when:
   checks, direct Python calls or async polls, and keeps the result in a stack slot
   (`function_compiler.rs:493-537`, `:664-679`).
 - **LLVM** materializes it in the entry block on first use, today only for async polls
-  (`async_poll_context`, `llvm_backend/lowering/value_materialization.rs:1821`).
+  (the typed poll parameter in `codegen_ssa/state.rs` and the state dispatch in `codegen_ssa/walk.rs`).
 - **WASM** calls the `thread_record` import in the prologue of a function with async polls
   (`emit_entry_initializers`, `wasm/function_frame/emission.rs:149`) and keeps it in the
   `__thread_record` local.

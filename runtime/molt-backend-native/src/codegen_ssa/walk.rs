@@ -1,8 +1,6 @@
 //! The walk over a function's final TIR (design:
 //! `docs/design/foundation/codegen_walker.md`, W2 and W3): the one dispatch
-//! table from each opcode the walker owns to its lowering. A backend's own
-//! walk asks it first and lowers only what it answers `false` for, until the
-//! last family moves and both native backends walk through it alone.
+//! table from terminal TIR to the codegen builder on every target.
 
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
@@ -31,6 +29,8 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 /// for the ops that end their block with an edge.
 pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) source: BlockId,
+    /// A compiled poll's raw frame address from its physical parameter.
+    pub(crate) poll_frame: Option<B::Word>,
     pub(crate) blocks: &'a HashMap<BlockId, B::Block>,
     /// Each exceptional successor label's block, from the one shared
     /// resolver (`exception_labels_to_blocks`), which refuses an ambiguous
@@ -39,15 +39,14 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
 }
 
 impl<B: RecordPlacement> FunctionCx<'_, B> {
-    /// Lower `op`, at `at`, when the walker owns its opcode, and answer
-    /// whether it did. An opcode it does not own yet is left to the backend.
-    pub(crate) fn walker_owned_op(
+    /// Lower one operation, or diagnose a violated terminal TIR invariant.
+    pub(crate) fn lower_op(
         &mut self,
         b: &mut B,
         at: &Position<'_, B>,
         op: &TirOp,
         frame: Option<returns::OwnedFrame<B::Slot>>,
-    ) -> bool {
+    ) {
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
             OpCode::SplicedFrameSlot => {
@@ -74,7 +73,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                     self.bind(result, pending, HeldCarrier::RawBool);
                 }
             }
-            OpCode::CheckException => return self.check_exception_op(b, at, op),
+            OpCode::CheckException => self.check_exception_op(b, at, op),
             OpCode::Copy if op.origin == Some(molt_ir::OpKind::CallAsync) => {
                 if !self.call_async(b, op) {
                     self.fatal("call_async requires a result and a valid task constructor");
@@ -84,12 +83,12 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             OpCode::FrameContextSet => self.frame_context_set(b, op),
             OpCode::IsPending => self.is_pending(b, op),
             OpCode::StateSet | OpCode::TaskWait => {
-                let Some(frame) = super::state::poll_frame(b) else {
+                let Some(frame) = at.poll_frame else {
                     self.fatal(format!(
                         "{:?} requires exactly one word-sized poll frame parameter",
                         op.opcode
                     ));
-                    return true;
+                    return;
                 };
                 if op.opcode == OpCode::StateSet {
                     self.state_set(b, op, frame);
@@ -261,9 +260,6 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 self.invoke_ffi_op(b, op)
             }
             OpCode::Call | OpCode::CallClassCandidate => self.call_op(b, op),
-            OpCode::StateYield => {
-                self.fatal("terminal drop insertion must expose it as explicit activation exits")
-            }
             // DeleteVar defines the local's new SSA value as the missing
             // sentinel; the drop fact plane owns the previous occupant.
             OpCode::DeleteVar => self.delete_var_op(b, op),
@@ -305,9 +301,11 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
-            OpCode::FrameSetLocation => return self.frame_op(b, op, frame),
+            OpCode::FrameSetLocation => {
+                self.frame_op(b, op, frame, at.poll_frame);
+            }
             OpCode::Copy => {
-                if !self.frame_op(b, op, frame)
+                if !self.frame_op(b, op, frame, at.poll_frame)
                     && !self.preserved_op(b, op)
                     && !op
                         .origin
@@ -331,18 +329,24 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             // Region markers: control flow already carries their meaning.
             OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
             }
-            // The families the backends still lower themselves, until each
-            // moves here.
-            OpCode::ScfFor
-            | OpCode::ScfIf
-            | OpCode::ScfWhile
-            | OpCode::ScfYield
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::Yield
-            | OpCode::YieldFrom => return false,
+            OpCode::ScfFor | OpCode::ScfIf | OpCode::ScfWhile | OpCode::ScfYield => {
+                self.fatal(format!(
+                    "{:?} must lower to CFG before code generation",
+                    op.opcode
+                ));
+            }
+            OpCode::StateSwitch => {
+                self.fatal("StateSwitch must lower to a StateDispatch terminator")
+            }
+            OpCode::StateYield | OpCode::StateTransition => self.fatal(format!(
+                "{:?} must lower to explicit activation exits before code generation",
+                op.opcode
+            )),
+            OpCode::Yield | OpCode::YieldFrom => self.fatal(format!(
+                "{:?} must lower to explicit poll/resume blocks before code generation",
+                op.opcode
+            )),
         }
-        true
     }
 }
 
@@ -372,11 +376,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// origin edge first publishes the site's location and captures the
     /// frame's traceback entry (`molt_exception_frame_origin`), which reads
     /// the frame's homes, or none when the function has none.
-    fn check_exception_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
+    fn check_exception_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) {
         use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
         let Some(&AttrValue::Int(label)) = op.attrs.get("value") else {
             self.fatal("check_exception requires an explicit exceptional successor label");
-            return true;
+            return;
         };
         let pending = if op.is_async_work_poll() {
             self.async_work_poll(b, false, op.frame_location())
@@ -393,13 +397,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.fatal(format!(
                 "check_exception target label {label} has no unique block in the label map"
             ));
-            return true;
+            return;
         };
         let Some(&target_block) = at.blocks.get(&target) else {
             self.fatal(format!(
                 "check_exception target block {target:?} is not present in the block map"
             ));
-            return true;
+            return;
         };
         let edge = op
             .exception_edge_kind()
@@ -454,7 +458,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             self.fatal(diagnostic);
         }
         b.switch_to_block(continued);
-        true
     }
 
     /// The edges of the function being walked, at `at`.
@@ -593,10 +596,38 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 }
 
+/// Validate the body before either backend allocates its machine function.
+pub(crate) struct PreparedFunction<'a> {
+    func: &'a TirFunction,
+    frame: super::frame::FrameLayout,
+}
+
+impl<'a> PreparedFunction<'a> {
+    pub(crate) fn new(func: &'a TirFunction) -> Result<Self, Vec<String>> {
+        crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| format!("{}: {error}", func.name))
+                .collect::<Vec<_>>()
+        })?;
+        if !func.blocks.contains_key(&func.entry_block) {
+            return Err(vec![format!(
+                "{}: entry block {:?} is missing from TIR block map",
+                func.name, func.entry_block
+            )]);
+        }
+        let frame =
+            super::frame::FrameLayout::for_function(func).map_err(|message| vec![message])?;
+        Ok(Self { func, frame })
+    }
+}
+
 /// What a backend lends the walk for one function.
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
-    pub(crate) func: &'a TirFunction,
+    pub(crate) body: PreparedFunction<'a>,
+    pub(crate) own_abi: &'a NativeFunctionLinkageAbi,
     pub(crate) plan: &'a ProducerCarrierPlan,
+    pub(crate) physical_entry: B::Block,
     /// The function's physical parameters after the execution context, in
     /// its linkage row's order.
     pub(crate) entry: &'a [B::Value],
@@ -631,66 +662,65 @@ fn trace_stride(name: &str) -> Option<usize> {
     )
 }
 
-/// Lower `input.func` through `b`, which stands in the function's empty
-/// physical entry block. The physical entry converts each parameter from
-/// its linkage carrier to the TIR entry's carrier and jumps to the TIR
-/// entry, so the TIR entry may have predecessors on every backend. Blocks
+/// Lower the prepared function through `b`, which stands in the function's empty
+/// physical entry block. The physical entry converts parameters from their
+/// linkage carriers. A TIR entry with incoming edges receives them through
+/// block parameters; a predecessor-free entry uses them directly. Blocks
 /// are walked in reverse postorder; each takes its parameters before any
-/// branch to it is built. An op the walker does not own refuses the
-/// function with a diagnostic naming its opcode, as does any other refusal.
+/// branch to it is built. Invalid terminal operations refuse the function.
 pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     b: &mut B,
     input: FunctionInput<'_, B>,
 ) -> Result<(), Vec<String>> {
     let FunctionInput {
-        func,
+        body: PreparedFunction {
+            func,
+            frame: layout,
+        },
+        own_abi: own,
         plan,
+        physical_entry,
         entry,
         linkage,
         functions,
         runtime,
     } = input;
-    // A refusal before the walk still leaves a well-formed function: its
-    // physical entry ends on a path that never executes.
-    let refuse = |b: &mut B, diagnostics: Vec<String>| {
-        b.unreachable();
-        Err(diagnostics)
+    use crate::tir::dominators::{
+        exception_labels_to_blocks, exception_transfer_target, executable_reverse_postorder,
     };
-    if let Err(errors) = crate::tir::verify::verify_operation_shapes(func) {
-        let diagnostics = errors
-            .into_iter()
-            .map(|error| format!("{}: {error}", func.name))
-            .collect();
-        return refuse(b, diagnostics);
-    }
-    let layout = match super::frame::FrameLayout::for_function(func) {
-        Ok(layout) => layout,
-        Err(message) => return refuse(b, vec![message]),
-    };
-    if !func.blocks.contains_key(&func.entry_block) {
-        let message = format!(
-            "{}: entry block {:?} is missing from TIR block map",
-            func.name, func.entry_block
-        );
-        return refuse(b, vec![message]);
-    }
-    let Some(own) = linkage.get(&func.name) else {
-        let message = format!(
-            "{}: the function has no exact native linkage ABI",
-            func.name
-        );
-        return refuse(b, vec![message]);
-    };
+    let entry_id = func.entry_block;
+    let rpo = executable_reverse_postorder(func);
+    let exception_targets = exception_labels_to_blocks(&func.label_id_map);
+    let exceptional_entry = exception_targets.values().any(|&target| target == entry_id);
+    let entry_has_predecessor = rpo.iter().any(|id| {
+        let block = &func.blocks[id];
+        block.terminator.has_successor(entry_id)
+            || exceptional_entry
+                && block
+                    .ops
+                    .iter()
+                    .any(|op| exception_transfer_target(op, &exception_targets) == Some(entry_id))
+    });
+
     // The TIR entry first, then every other block by id.
     let mut ids: Vec<BlockId> = func.blocks.keys().copied().collect();
-    ids.sort_by_key(|id| (*id != func.entry_block, id.0));
+    ids.sort_by_key(|id| (*id != entry_id, id.0));
     let blocks: HashMap<BlockId, B::Block> = ids
         .iter()
-        .map(|&id| (id, b.create_block(&format!("bb{}", id.0))))
+        .map(|&id| {
+            let block = if id == entry_id && !entry_has_predecessor {
+                physical_entry
+            } else {
+                b.create_block(&format!("bb{}", id.0))
+            };
+            (id, block)
+        })
         .collect();
-    let rpo = crate::tir::dominators::executable_reverse_postorder(func);
     let mut values = ValueTable::with_capacity(func.next_value);
     for &id in &rpo {
+        if id == entry_id && !entry_has_predecessor {
+            continue;
+        }
         for arg in &func.blocks[&id].args {
             let held = HeldCarrier::of(&plan.effective_value_type(arg.id, &arg.ty));
             let value = b.append_block_param(blocks[&id], control::carrier_kind(held));
@@ -705,16 +735,12 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             .push(format!("{}: {message}", func.name))
     };
     // The physical entry: each parameter in the TIR entry's carrier.
-    let entry_block = &func.blocks[&func.entry_block];
-    let resume_phis = entry_block.args.len() > entry.len()
-        && func
-            .blocks
-            .values()
-            .any(|block| block.terminator.has_successor(func.entry_block));
-    let mut entry_args = Vec::with_capacity(entry_block.args.len());
+    let entry_block = &func.blocks[&entry_id];
+    let mut entry_args = Vec::new();
     for (index, arg) in entry_block.args.iter().enumerate() {
         let effective = plan.effective_value_type(arg.id, &arg.ty);
-        let kind = control::carrier_kind(HeldCarrier::of(&effective));
+        let held = HeldCarrier::of(&effective);
+        let kind = control::carrier_kind(held);
         let value = match (entry.get(index), own.param_types.get(index)) {
             (Some(&param), Some(ty)) => {
                 control::coerce(b, plan, param, HeldCarrier::of(ty), None, &effective)
@@ -728,7 +754,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             }
             // Initial invocation has no predecessor value for these resume
             // phis. Each real backedge passes its own typed values.
-            (None, None) if resume_phis => b.placeholder(kind),
+            (None, None) if entry_has_predecessor => b.placeholder(kind),
             _ => {
                 fatal(format!(
                     "entry block argument %{} at index {index} has no corresponding function parameter",
@@ -737,12 +763,21 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 b.placeholder(kind)
             }
         };
-        entry_args.push(value);
+        if entry_has_predecessor {
+            entry_args.push(value);
+        } else {
+            values.set_value(arg.id, value);
+            values.set_repr(arg.id, held);
+        }
     }
     let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
         layout.entry.kind()
     });
     let call_sites = Cell::new(0);
+    let poll_frame = match entry {
+        [value] if b.kind(*value) == MachineKind::Word => Some(b.expect_word(*value)),
+        _ => None,
+    };
     let homes = match (layout.homes, layout.entry) {
         (None, _) => None,
         (Some(_), super::frame::FrameEntry::Absent) => {
@@ -776,13 +811,17 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         (stride, verbose, name, len)
     });
     let mut op_index = 0usize;
-    b.jump(blocks[&func.entry_block], &entry_args);
-    let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
+    if entry_has_predecessor {
+        b.jump(blocks[&entry_id], &entry_args);
+    }
     for &id in &rpo {
-        b.switch_to_block(blocks[&id]);
+        if id != entry_id || entry_has_predecessor {
+            b.switch_to_block(blocks[&id]);
+        }
         let block = &func.blocks[&id];
         let at = Position {
             source: id,
+            poll_frame,
             blocks: &blocks,
             exception_targets: &exception_targets,
         };
@@ -810,9 +849,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 b.call_runtime(RuntimeFn::DebugTrace, &[name, len, index]);
             }
             op_index += 1;
-            if !cx.walker_owned_op(b, &at, op, frame) {
-                cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
-            }
+            cx.lower_op(b, &at, op, frame);
         }
         let mut edge_diagnostics = Vec::new();
         let edges = Edges {
@@ -833,7 +870,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 cases,
                 default,
                 default_args,
-            } => match super::state::poll_frame(b) {
+            } => match poll_frame {
                 Some(frame) => {
                     edges.dispatch_state(
                         b,
@@ -854,10 +891,13 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         diagnostics.borrow_mut().extend(edge_diagnostics);
     }
     // A block the walk never reaches still ends in a terminator.
-    for id in &ids {
-        if !rpo.contains(id) {
-            b.switch_to_block(blocks[id]);
-            b.unreachable();
+    if rpo.len() != ids.len() {
+        let reachable: molt_ir::deterministic_hash::HashSet<_> = rpo.into_iter().collect();
+        for id in &ids {
+            if !reachable.contains(id) {
+                b.switch_to_block(blocks[id]);
+                b.unreachable();
+            }
         }
     }
     let diagnostics = diagnostics.into_inner();
@@ -919,11 +959,14 @@ mod tests {
         let runtime = crate::codegen_ssa::differential::every_runtime_entry();
         let functions = molt_ir::FunctionTable::default();
         run_function_in(args, state, |b, params| {
+            let physical_entry = b.words.builder.current_block().unwrap();
             lower_function(
                 b,
                 FunctionInput {
-                    func,
+                    body: PreparedFunction::new(func).unwrap(),
+                    own_abi: &linkage[&func.name],
                     plan: &plan,
+                    physical_entry,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -1111,11 +1154,14 @@ mod tests {
         let functions = molt_ir::FunctionTable::default();
         // A refused function is never called; it must still verify.
         let run = run_function(&[OBJECT], |b, params| {
+            let physical_entry = b.words.builder.current_block().unwrap();
             lower_function(
                 b,
                 FunctionInput {
-                    func: &func,
+                    body: PreparedFunction::new(&func).unwrap(),
+                    own_abi: &linkage[&func.name],
                     plan: &plan,
+                    physical_entry,
                     entry: params,
                     linkage: &linkage,
                     functions: &functions,
@@ -1128,7 +1174,7 @@ mod tests {
         };
         assert_eq!(
             diagnostics,
-            ["walk_refused: the walker does not lower ScfYield yet"]
+            ["walk_refused: ScfYield must lower to CFG before code generation"]
         );
     }
 

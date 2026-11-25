@@ -277,14 +277,9 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
     // The ordinary lowering builder has no insertion point. The trampoline
     // must allocate and store its argument transport in its own function.
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+    let lowering = make_op_fixture(&backend, &dummy);
     let abi = backend.function_linkage_abis["helper_raw"].clone();
     let trampoline = crate::codegen_ssa::callable::plain_trampoline(
         &mut lowering.codegen(),
@@ -333,12 +328,7 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+    let lowering = make_op_fixture(&backend, &dummy);
     let abi = backend.function_linkage_abis["helper_bool"].clone();
     let trampoline = crate::codegen_ssa::callable::plain_trampoline(
         &mut lowering.codegen(),
@@ -381,12 +371,7 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+    let lowering = make_op_fixture(&backend, &dummy);
     let abi = backend.function_linkage_abis["helper_f64"].clone();
     let trampoline = crate::codegen_ssa::callable::plain_trampoline(
         &mut lowering.codegen(),

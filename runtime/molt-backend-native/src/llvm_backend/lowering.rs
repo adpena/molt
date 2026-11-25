@@ -9,8 +9,9 @@
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
-use molt_ir::deterministic_hash::HashMap;
 use std::cell::RefCell;
+
+use crate::tir::ops::{AttrValue, TirOp};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::prepend_execution_context;
@@ -35,17 +36,8 @@ use crate::llvm_backend::types::lower_type;
 use inkwell::attributes::AttributeLoc;
 
 #[cfg(feature = "llvm")]
-use crate::tir::blocks::{BlockId, Terminator};
-#[cfg(feature = "llvm")]
 use crate::tir::function::TirFunction;
 #[cfg(feature = "llvm")]
-#[cfg(feature = "llvm")]
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
-#[cfg(feature = "llvm")]
-use crate::tir::types::TirType;
-#[cfg(feature = "llvm")]
-use crate::tir::values::ValueId;
-
 #[cfg(feature = "llvm")]
 fn require_function_linkage_abi<'a>(
     func: &TirFunction,
@@ -84,7 +76,6 @@ fn require_function_linkage_abi<'a>(
 }
 
 #[cfg(feature = "llvm")]
-#[cfg(feature = "llvm")]
 mod codegen_builder;
 #[cfg(feature = "llvm")]
 pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
@@ -101,17 +92,9 @@ mod numeric_ops;
 #[cfg(feature = "llvm")]
 mod object_lifecycle;
 #[cfg(feature = "llvm")]
-mod op_dispatch;
-#[cfg(feature = "llvm")]
 mod refcount;
 #[cfg(feature = "llvm")]
-mod runtime_helpers;
-#[cfg(feature = "llvm")]
-mod state_machine_ops;
-#[cfg(feature = "llvm")]
 mod task_site;
-#[cfg(feature = "llvm")]
-mod value_materialization;
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,42 +286,6 @@ fn has_attr(op: &TirOp, key: &str) -> bool {
 }
 
 /// Holds state during lowering of a single TIR function.
-#[cfg(feature = "llvm")]
-struct FunctionLowering<'ctx, 'func> {
-    backend: &'func LlvmBackend<'ctx>,
-    func: &'func TirFunction,
-    llvm_fn: FunctionValue<'ctx>,
-    /// When the TIR entry block has predecessors, LLVM gets a synthetic
-    /// trampoline block as the true function entry. The original TIR entry
-    /// then behaves like a normal phi block and must receive parameter
-    /// incoming values from this trampoline.
-    entry_trampoline_bb: Option<BasicBlock<'ctx>>,
-    /// Maps TIR BlockId -> LLVM BasicBlock.
-    block_map: HashMap<BlockId, BasicBlock<'ctx>>,
-    /// Every TIR value's lowered LLVM value and its type: one slot per value.
-    values: crate::codegen_ssa::ValueTable<BasicValueEnum<'ctx>>,
-    /// The phis that stand for each block's parameters; every emitted edge
-    /// adds its incoming values when its branch is built.
-    block_params: codegen_builder::BlockParams<'ctx>,
-    /// Deterministic per-function call-site numbering for IC lanes.
-    call_site_counter: std::cell::Cell<usize>,
-    /// Fatal lowering diagnostics collected before exposing the LLVM function to
-    /// verification, optimization, or emission.
-    diagnostics: RefCell<Vec<String>>,
-    /// The terminal body's SSA carrier plan.
-    repr_facts: crate::representation_plan::ProducerCarrierPlan,
-    /// The entry slot holding the base of the frame record this invocation
-    /// entered, zero until it does.
-    owned_frame_entered:
-        Option<crate::codegen_ssa::returns::OwnedFrame<inkwell::values::PointerValue<'ctx>>>,
-    /// Per-function instruction-selection state (refcount sites).
-    state: codegen_builder::LlvmFunctionState<'ctx>,
-    /// Exceptional successor labels resolved to blocks once per function by
-    /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
-    /// an ambiguous label instead of picking one in hash order.
-    exception_targets: std::cell::OnceCell<molt_ir::deterministic_hash::HashMap<i64, BlockId>>,
-}
-
 /// Lower a TIR function to LLVM IR.
 ///
 /// Returns the LLVM function value. The function is added to `backend.module`.
@@ -356,26 +303,12 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
-    crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
-        LlvmLoweringError::new(
-            errors
-                .into_iter()
-                .map(|error| format!("{}: {error}", func.name))
-                .collect(),
-        )
-    })?;
-    if !func.blocks.contains_key(&func.entry_block) {
-        return Err(LlvmLoweringError::new(vec![format!(
-            "{}: entry block {:?} is missing from TIR block map",
-            func.name, func.entry_block
-        )]));
-    }
+    use crate::codegen_ssa::walk::{FunctionInput, PreparedFunction, lower_function};
+    use crate::representation_plan::ProducerCarrierPlan;
 
-    let frame_layout = crate::codegen_ssa::frame::FrameLayout::for_function(func)
-        .map_err(|message| LlvmLoweringError::new(vec![message]))?;
-
-    // 1. Build or reuse the LLVM function signature.
-    let llvm_fn = declare_tir_function(func, backend);
+    let body = PreparedFunction::new(func).map_err(LlvmLoweringError::new)?;
+    let abi = require_function_linkage_abi(func, backend);
+    let llvm_fn = declare_tir_function_with_abi(func, backend, &abi);
     // A split activation publishes its frame size; task constructors read it.
     if let Some(AttrValue::Int(frame_size)) = func
         .attrs
@@ -383,123 +316,45 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     {
         backend.define_stateful_frame_size(&func.name, *frame_size);
     }
-    let repr_facts = backend
-        .function_repr_facts
-        .get(&func.name)
-        .cloned()
-        .unwrap_or_default();
-    let mut lowering = FunctionLowering {
-        backend,
-        func,
-        llvm_fn,
-        entry_trampoline_bb: None,
-        block_map: HashMap::default(),
-        values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
-        block_params: RefCell::new(HashMap::default()),
-        call_site_counter: std::cell::Cell::new(0),
-        diagnostics: RefCell::new(Vec::new()),
-        repr_facts,
-        owned_frame_entered: None,
-        state: codegen_builder::LlvmFunctionState::new(
-            molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
-        ),
-        exception_targets: std::cell::OnceCell::new(),
+    let plan = backend.function_repr_facts.get(&func.name);
+    let default_plan;
+    let plan = match plan {
+        Some(plan) => plan,
+        None => {
+            default_plan = ProducerCarrierPlan::default();
+            &default_plan
+        }
     };
-
-    // 2. Create LLVM basic blocks for each TIR block.
-    //    The entry block MUST be created first so that LLVM treats it as the
-    //    function entry point. HashMap iteration order is non-deterministic,
-    //    so we explicitly create the entry block before all others.
-    {
-        let entry_bb = backend
-            .context
-            .append_basic_block(llvm_fn, &format!("bb{}", func.entry_block.0));
-        lowering.block_map.insert(func.entry_block, entry_bb);
-    }
-    let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
-    block_ids.sort_by_key(|block| block.0);
-    for block_id in &block_ids {
-        if *block_id == func.entry_block {
-            continue; // already created above
-        }
-        let bb = backend
-            .context
-            .append_basic_block(llvm_fn, &format!("bb{}", block_id.0));
-        lowering.block_map.insert(*block_id, bb);
-    }
-
-    // 2b. LLVM requires the entry block to have no predecessors.  If any TIR
-    //     block branches back to the entry, insert a trampoline block that
-    //     becomes the real LLVM entry and immediately jumps to the TIR entry.
-    {
-        let entry_id = func.entry_block;
-        let entry_has_predecessors = func
-            .blocks
-            .values()
-            .any(|block| block.terminator.has_successor(entry_id));
-        if entry_has_predecessors {
-            let old_entry_bb = lowering.block_map[&entry_id];
-            let trampoline_bb = backend
-                .context
-                .prepend_basic_block(old_entry_bb, "entry_trampoline");
-            lowering.entry_trampoline_bb = Some(trampoline_bb);
-        }
-    }
-
-    // 3. Compute reverse-post-order (RPO) ordering of the CFG.
-    //    RPO emits each block before its non-back-edge successors, so each
-    //    block sees its operand definitions already lowered.
-    let rpo = lowering.compute_rpo();
-
-    // 3b. Every walked block takes its arguments as block parameters before
-    //     any branch to it is built; each edge then passes its own.
-    lowering.declare_block_params(&rpo);
-    backend
-        .builder
-        .position_at_end(llvm_fn.get_first_basic_block().expect("physical entry"));
-    lowering.initialize_owned_execution_frame(frame_layout);
-    if let Some(trampoline_bb) = lowering.entry_trampoline_bb {
-        lowering.enter_through_trampoline(trampoline_bb);
-    }
-
-    // 4. Lower each block.
-    for block_id in &rpo {
-        lowering.lower_block(*block_id);
-    }
-
-    // 5. Emit `unreachable` terminators for any LLVM basic blocks that lack
-    //    a terminator instruction.  This covers:
-    //    - TIR blocks not visited during RPO traversal (dead/unreachable)
-    //    - Synthetic blocks created by CheckException or ScfIf that ended up
-    //      without a terminator (e.g., all ops after the split were in the
-    //      original block's op list but the block was split mid-stream)
-    //    Without this, LLVM verification fails on "basic block does not have
-    //    terminator" errors.
-    {
-        // First pass: dead TIR blocks.
-        let rpo_set: molt_ir::deterministic_hash::HashSet<BlockId> = rpo.iter().copied().collect();
-        for (block_id, llvm_bb) in &lowering.block_map {
-            if !rpo_set.contains(block_id) && llvm_bb.get_terminator().is_none() {
-                backend.builder.position_at_end(*llvm_bb);
-                backend.builder.build_unreachable().unwrap();
-            }
-        }
-        // Second pass: ALL LLVM blocks (including synthetic).  Any block
-        // without a terminator gets an `unreachable` instruction.
-        let mut bb_opt = llvm_fn.get_first_basic_block();
-        while let Some(bb) = bb_opt {
-            if bb.get_terminator().is_none() {
-                backend.builder.position_at_end(bb);
-                backend.builder.build_unreachable().unwrap();
-            }
-            bb_opt = bb.get_next_basic_block();
-        }
-    }
-
-    let diagnostics = lowering.diagnostics.borrow().clone();
-    if !diagnostics.is_empty() {
-        return Err(LlvmLoweringError::new(diagnostics));
-    }
+    let physical_entry = backend.context.append_basic_block(llvm_fn, "entry");
+    backend.builder.position_at_end(physical_entry);
+    let parameters: Vec<_> = llvm_fn.get_param_iter().skip(1).collect();
+    let params = RefCell::new(Default::default());
+    let state = codegen_builder::LlvmFunctionState::new(
+        molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
+    );
+    let mut codegen = LlvmCodegen {
+        words: LlvmWords {
+            context: backend.context,
+            builder: &backend.builder,
+        },
+        backend,
+        params: &params,
+        state: &state,
+    };
+    lower_function(
+        &mut codegen,
+        FunctionInput {
+            body,
+            own_abi: &abi,
+            plan,
+            physical_entry,
+            entry: &parameters,
+            linkage: &backend.function_linkage_abis,
+            functions: &backend.function_table,
+            runtime: &backend.runtime_callable_symbols,
+        },
+    )
+    .map_err(LlvmLoweringError::new)?;
 
     // Cold code is optimized for size (`CodeTemperature`).
     if molt_ir::ir::CodeTemperature::of_function(&func.name).optimize_for_size() {
@@ -581,7 +436,15 @@ pub fn declare_tir_function<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> FunctionValue<'ctx> {
-    let linkage_abi = require_function_linkage_abi(func, backend);
+    declare_tir_function_with_abi(func, backend, &require_function_linkage_abi(func, backend))
+}
+
+#[cfg(feature = "llvm")]
+fn declare_tir_function_with_abi<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+    linkage_abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+) -> FunctionValue<'ctx> {
     assert_eq!(
         linkage_abi.param_types.len(),
         func.param_types.len(),
@@ -716,199 +579,13 @@ pub fn declare_extern_tir_function<'ctx>(
     llvm_fn
 }
 
-#[cfg(feature = "llvm")]
-impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// The word builder at the current insertion point, for the shared
-    /// NaN-box generators.
-    pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
-        LlvmWords {
-            context: self.backend.context,
-            builder: &self.backend.builder,
-        }
-    }
-
-    /// The walker's builder at the current insertion point.
-    pub(super) fn codegen(&self) -> LlvmCodegen<'_, 'ctx> {
-        LlvmCodegen {
-            words: self.words(),
-            backend: self.backend,
-            params: &self.block_params,
-            state: &self.state,
-        }
-    }
-
-    fn emit_return(&mut self, value: Option<ValueId>) {
-        use crate::codegen_ssa::returns::emit_return;
-        let abi = require_function_linkage_abi(self.func, self.backend);
-        let frame = self.owned_frame_entered;
-        let (mut cx, mut b) = self.walker();
-        emit_return(&mut cx, &mut b, &abi, value, frame.as_ref());
-    }
-
-    fn record_fatal(&self, message: impl Into<String>) {
-        self.diagnostics
-            .borrow_mut()
-            .push(format!("{}: {}", self.func.name, message.into()));
-    }
-
-    fn record_unlowered_structured_op(&mut self, op: &TirOp, structural_path: &str) {
-        self.record_fatal(format!(
-            "{:?} reached LLVM lowering with no runtime delegate; {structural_path}",
-            op.opcode
-        ));
-        let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();
-        for &result_id in &op.results {
-            self.values.set_value(result_id, undef);
-            self.values.set_repr(
-                result_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-        }
-    }
-
-    /// Compute a reverse-post-order (RPO) traversal of the CFG starting from
-    /// the function's entry block.
-    ///
-    /// Uses the same executable-node and edge authority as TIR analysis.
-    fn compute_rpo(&self) -> Vec<BlockId> {
-        crate::tir::dominators::executable_reverse_postorder(self.func)
-    }
-
-    /// Give every walked block that is not the function's own entry its
-    /// arguments as block parameters, in the walk's order, before any branch
-    /// is built. Each parameter holds the plan's carrier for its value.
-    fn declare_block_params(&mut self, rpo: &[BlockId]) {
-        for &block_id in rpo {
-            if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
-                continue;
-            }
-            let bb = self.block_map[&block_id];
-            for arg in &self.func.blocks[&block_id].args {
-                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
-                let held = crate::codegen_ssa::HeldCarrier::of(&effective_ty);
-                let value = self
-                    .codegen()
-                    .append_block_param(bb, crate::codegen_ssa::control::carrier_kind(held));
-                self.values.set_value(arg.id, value);
-                self.values.set_repr(arg.id, held);
-            }
-        }
-    }
-
-    /// The function's parameters, each converted from its linkage type to
-    /// the carrier the entry block's argument holds, at the current position.
-    fn entry_param_values(&mut self) -> Vec<(BasicValueEnum<'ctx>, TirType)> {
-        let linkage = require_function_linkage_abi(self.func, self.backend);
-        let entry = &self.func.blocks[&self.func.entry_block];
-        let mut values = Vec::with_capacity(entry.args.len());
-        for (i, arg) in entry.args.iter().enumerate() {
-            // Entry values use the same exact-producer carrier decision as
-            // callers and the frozen provider signature. An annotation cannot
-            // decode an arbitrary object as a machine scalar.
-            let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
-            let kind = crate::codegen_ssa::control::carrier_kind(
-                crate::codegen_ssa::HeldCarrier::of(&effective_ty),
-            );
-            let mut codegen = self.codegen();
-            let value = match (self.llvm_fn.get_nth_param(i as u32 + 1), linkage.param_types.get(i)) {
-                (Some(param), Some(linkage_ty)) => crate::codegen_ssa::control::coerce(
-                    &mut codegen,
-                    &self.repr_facts,
-                    param,
-                    crate::codegen_ssa::HeldCarrier::of(linkage_ty),
-                    None,
-                    &effective_ty,
-                )
-                .unwrap_or_else(|| {
-                    self.record_fatal(format!(
-                        "entry parameter {i} of linkage type {linkage_ty:?} cannot hold %{} as {effective_ty:?}",
-                        arg.id.0
-                    ));
-                    codegen.placeholder(kind)
-                }),
-                // A resume entry's arguments past the arity are phi values
-                // that start undefined on the initial call.
-                (None, _) if self.entry_trampoline_bb.is_some() => codegen.placeholder(kind),
-                (None, _) => {
-                    self.record_fatal(format!(
-                        "entry block argument %{} at index {i} has no corresponding function parameter",
-                        arg.id.0
-                    ));
-                    codegen.placeholder(kind)
-                }
-                (Some(_), None) => panic!(
-                    "LLVM definition `{}` linkage ABI omitted parameter {i}",
-                    self.func.name
-                ),
-            };
-            values.push((value, effective_ty));
-        }
-        values
-    }
-
-    /// LLVM forbids predecessors of a function's entry block, so a TIR entry
-    /// that is a branch target sits behind `trampoline_bb`, whose jump passes
-    /// the function's parameters to the entry's block parameters.
-    fn enter_through_trampoline(&mut self, trampoline_bb: BasicBlock<'ctx>) {
-        self.backend.builder.position_at_end(trampoline_bb);
-        let args: Vec<BasicValueEnum<'ctx>> = self
-            .entry_param_values()
-            .into_iter()
-            .map(|(value, _)| value)
-            .collect();
-        let entry_bb = self.block_map[&self.func.entry_block];
-        self.codegen().jump(entry_bb, &args);
-    }
-
-    fn lower_block(&mut self, block_id: BlockId) {
-        let block = self.func.blocks.get(&block_id).unwrap().clone();
-        let bb = self.block_map[&block_id];
-        self.backend.builder.position_at_end(bb);
-
-        // Entry block without a trampoline: its arguments are the function's
-        // parameters. Every other block took its parameters before the walk.
-        if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
-            let entry = self.entry_param_values();
-            for (arg, (value, effective_ty)) in block.args.iter().zip(entry) {
-                self.values.set_value(arg.id, value);
-                self.values
-                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
-            }
-        }
-
-        if block_id == self.func.entry_block {
-            // A split chunk borrows its frame's homes before its first op.
-            self.lend_chunk_frame_homes();
-        }
-
-        // Lower each operation.
-        for op in &block.ops {
-            self.lower_op(block_id, op);
-            let terminated = self
-                .backend
-                .builder
-                .get_insert_block()
-                .and_then(|bb| bb.get_terminator())
-                .is_some();
-            if terminated {
-                break;
-            }
-        }
-
-        // Lower terminator.
-        let current_terminated = self
-            .backend
-            .builder
-            .get_insert_block()
-            .and_then(|bb| bb.get_terminator())
-            .is_some();
-        if !current_terminated {
-            self.lower_terminator(block_id, &block.terminator);
-        }
-    }
-}
-
-// ?? Tests ??
+// Every staged call materializes its generic runtime entry on LLVM.
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::Llvm
+    ),
+    "a staged runtime call is not runtime-realized on LLVM"
+);
 
 #[cfg(all(test, feature = "llvm"))]
 mod tests;

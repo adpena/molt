@@ -47,41 +47,47 @@ fn removed_runtime_delegates_fail_before_phantom_imports() {
             Dialect::Molt,
             1usize,
             "molt_yield",
-            "explicit state-machine poll/resume",
+            "explicit poll/resume blocks",
         ),
         (
             OpCode::YieldFrom,
             Dialect::Molt,
             1,
             "molt_yield_from",
-            "generator delegation",
+            "explicit poll/resume blocks",
         ),
-        (OpCode::ScfIf, Dialect::Scf, 1, "molt_call_0", "LLVM CFG"),
+        (
+            OpCode::ScfIf,
+            Dialect::Scf,
+            1,
+            "molt_call_0",
+            "CFG before code generation",
+        ),
         (
             OpCode::ScfFor,
             Dialect::Scf,
             4,
             "molt_scf_for",
-            "loops into LLVM CFG",
+            "CFG before code generation",
         ),
         (
             OpCode::ScfWhile,
             Dialect::Scf,
             2,
             "molt_scf_while",
-            "while regions",
+            "CFG before code generation",
         ),
         (
             OpCode::ScfYield,
             Dialect::Scf,
             1,
             "molt_scf_yield",
-            "phi nodes",
+            "CFG before code generation",
         ),
     ] {
         let (err, backend) =
             lowering_error_for_single_op("removed_runtime_delegate", dialect, opcode, operands);
-        assert_lowering_error_contains(&err, "no runtime delegate");
+        assert_lowering_error_contains(&err, &format!("{opcode:?}"));
         assert_lowering_error_contains(&err, message);
         assert!(
             backend.module.get_compiled_function(symbol).is_none(),

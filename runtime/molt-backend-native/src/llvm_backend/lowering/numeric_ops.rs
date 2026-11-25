@@ -3,7 +3,9 @@
 #[cfg(test)]
 mod numeric_family_tests {
     use super::super::*;
+    use crate::tir::blocks::Terminator;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
 
     #[test]

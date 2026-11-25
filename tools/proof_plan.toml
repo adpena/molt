@@ -7054,8 +7054,7 @@ description = "The pending-call authority test reads these sources in other crat
 globs = [
   "include/molt/Python.h",
   "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
-  "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs",
-  "runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
   "runtime/molt-backend-native/src/codegen_ssa/pending.rs",
   "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
   "runtime/molt-ir/src/tir/op_kinds.toml",

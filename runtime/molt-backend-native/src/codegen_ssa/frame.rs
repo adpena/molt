@@ -308,6 +308,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         b: &mut B,
         op: &crate::tir::ops::TirOp,
         owned: Option<super::returns::OwnedFrame<B::Slot>>,
+        poll_frame: Option<B::Word>,
     ) -> bool {
         use super::value_table::HeldCarrier;
         use crate::tir::ops::{AttrValue, OpCode};
@@ -336,7 +337,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
                     return true;
                 };
                 let payload = if owned.kind == Some(FrameEntryKind::Stateful) {
-                    let Some(parameter) = super::state::poll_frame(b) else {
+                    let Some(parameter) = poll_frame else {
                         self.fatal("stateful frame entry needs its poll payload");
                         return true;
                     };

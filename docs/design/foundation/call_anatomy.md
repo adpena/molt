@@ -114,6 +114,12 @@ and 7 consume its facts; stages 1 and 2 remove the per-call costs that remain af
 
 ## Backend lowering: what is shared, what is not, and the order to fix it
 
+Cranelift AOT/JIT and LLVM native/wasm32 share the terminal TIR function walker.
+Entry arguments, frame ownership, operation dispatch and CFG edges use one authority.
+The builders select instructions and materialize the target ABI.
+
+The following survey describes the original state and the migration it motivated.
+
 The TIR, the SimpleIR passes, the module phase, the runtime, the refcount algorithm and the
 generated ABI tables are shared. Op lowering is not: Cranelift (57k lines) and WASM (100k) lower a
 SimpleIR copy rebuilt from TIR; LLVM (27k) lowers TIR. Each writes its own guarded call, NaN-box

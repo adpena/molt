@@ -371,7 +371,7 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
         refusal
             .diagnostics()
             .iter()
-            .any(|message| message.contains("must expose it as explicit activation exits")),
+            .any(|message| message.contains("StateYield must lower to explicit activation exits")),
         "{refusal}"
     );
 }
@@ -394,7 +394,7 @@ fn pointer_decode_constant_folding_preserves_unsigned_high_addresses() {
     backend
         .builder
         .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
-    let lowering = make_dummy_lowering(&backend, &function, llvm_fn);
+    let lowering = make_op_fixture(&backend, &function);
     // Literal encoded words and addresses are independent of the ABI helpers.
     // These are arithmetic probes; synthetic addresses are never dereferenced.
     for (boxed, expected) in [
@@ -403,7 +403,11 @@ fn pointer_decode_constant_folding_preserves_unsigned_high_addresses() {
         (0x7ffc_fa89_0c6a_ca20, 0x0000_fa89_0c6a_ca20),
         (0x7ffc_ffff_ffff_ffff, 0x0000_ffff_ffff_ffff),
     ] {
-        let decoded = lowering.unbox_ptr_bits(ctx.i64_type().const_int(boxed, false));
+        let decoded = molt_codegen_abi::word::WordBuilder::and(
+            &mut lowering.codegen().words,
+            ctx.i64_type().const_int(boxed, false),
+            molt_codegen_abi::POINTER_MASK,
+        );
         assert_eq!(decoded.get_zero_extended_constant(), Some(expected));
     }
     backend.builder.build_return(None).unwrap();

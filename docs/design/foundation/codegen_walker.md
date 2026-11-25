@@ -1,7 +1,12 @@
 # One codegen walker over final TIR
 
-Status: W1, W1b and the W2 families are built. W3 switches Cranelift AOT and JIT to terminal TIR (2026-11-19). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
-2026-11-11): the codegen foundation", item 2. Row: HF-821.
+Cranelift AOT and JIT, native LLVM, and LLVM wasm32 use one whole-function walk over
+terminal TIR. `codegen_ssa::walk` owns body admission, entry argument conversion, frame ownership,
+block/edge traversal, and opcode dispatch. LLVM's adapter declares the physical function, applies
+LLVM attributes, and implements block parameters with phis. Cranelift implements the same parameters
+directly. Functions whose TIR entry has no incoming edges reuse the physical block. Entries with incoming edges receive typed block parameters from a dedicated physical entry. The physical parameter also supplies the poll frame. The shared path walks borrowed TIR blocks and carrier facts.
+
+Owner: integrator. Parent: `call_anatomy.md`, "Backend lowering". Rows: HF-821 and HF-889.
 
 ## Problem (measured, origin/main fe2c2896f3, 2026-11-12)
 

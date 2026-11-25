@@ -142,7 +142,7 @@ fn refcount_uses_lowered_carriers_without_boxing() {
         backend
             .builder
             .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
-        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        let mut lowering = make_op_fixture(&backend, &func);
         let value: BasicValueEnum<'_> = match ty {
             TirType::F64 => ctx.f64_type().const_float(-0.0).into(),
             TirType::Bool => ctx.bool_type().const_int(1, false).into(),
@@ -207,7 +207,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     backend
         .builder
         .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
-    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let mut lowering = make_op_fixture(&backend, &func);
     lowering
         .values
         .set_value(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
@@ -237,7 +237,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     lowering.walker_op(|cx, b| cx.unbox_op(b, &op));
     backend
         .builder
-        .build_return(Some(&lowering.resolve(ValueId(2))))
+        .build_return(Some(&lowering.values.value(ValueId(2)).unwrap()))
         .unwrap();
     backend.module.verify().unwrap();
     let ir = llvm_fn.print_to_string().to_string();
@@ -273,7 +273,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
         backend
             .builder
             .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
-        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        let mut lowering = make_op_fixture(&backend, &func);
         lowering
             .values
             .set_value(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
@@ -340,7 +340,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     );
     let entry = ctx.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(entry);
-    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let mut lowering = make_op_fixture(&backend, &func);
     let raw = llvm_fn.get_nth_param(1).unwrap().into_int_value();
     lowering.values.set_value(ValueId(0), raw.into());
     lowering.values.set_repr(
@@ -442,7 +442,7 @@ fn heap_literals_load_one_cell_and_fill_it_cold() {
         );
         let entry = ctx.append_basic_block(llvm_fn, "entry");
         backend.builder.position_at_end(entry);
-        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        let mut lowering = make_op_fixture(&backend, &func);
         let mut attrs = AttrDict::default();
         attrs.insert("bytes".into(), AttrValue::Bytes(payload.clone()));
         for result in [ValueId(0), ValueId(1)] {
@@ -528,7 +528,7 @@ fn repeated_attribute_names_share_one_immortal_literal_cell() {
     );
     let entry = ctx.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(entry);
-    let lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let lowering = make_op_fixture(&backend, &func);
     let mut results = Vec::new();
     for _ in 0..2 {
         let mut b = lowering.codegen();
@@ -656,14 +656,7 @@ fn synthesized_name_consumers_run_only_with_a_filled_name_cell() {
             .verify()
             .expect("checked name CFG must verify");
         let ir = llvm_fn.print_to_string().to_string();
-        let entry_name = format!("bb{}", func.entry_block.0);
-        let source = block_text(
-            llvm_fn
-                .get_basic_blocks()
-                .into_iter()
-                .find(|block| block.get_name().to_bytes() == entry_name.as_bytes())
-                .unwrap(),
-        );
+        let source = block_text(llvm_fn.get_first_basic_block().unwrap());
         let block = |name: &[u8]| {
             block_text(
                 llvm_fn
@@ -841,7 +834,7 @@ fn lower_unary_carrier_fixture(
     );
     let entry = ctx.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(entry);
-    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let mut lowering = make_op_fixture(&backend, &func);
     let operand = ValueId(0);
     let result = ValueId(1);
     let value: BasicValueEnum<'_> = match operand_ty {
@@ -1627,7 +1620,7 @@ fn identity_uses_canonical_object_words() {
                 backend
                     .builder
                     .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
-                let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+                let mut lowering = make_op_fixture(&backend, &func);
                 for (id, ty, bits) in [
                     (ValueId(0), left_ty.clone(), left_bits),
                     (ValueId(1), right_ty.clone(), right_bits),

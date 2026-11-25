@@ -440,7 +440,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
-| `pending-call-source-authority` | 18 | 1 |
+| `pending-call-source-authority` | 17 | 1 |
 | `compression-stream-state` | 1 | 1 |
 | `release-work-state` | 5 | 0 |
 | `runtime-name-registry` | 4 | 0 |

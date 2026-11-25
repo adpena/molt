@@ -1574,7 +1574,7 @@ authorities instead of their historical monolith paths or line numbers.
 - A replaced result keeps its owner: `runtime/molt-passes/src/tir/passes/ownership_lattice_min/replacement.rs`
 - Effect and alias consumers: `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/alias_analysis/`
 - Pipeline: `runtime/molt-passes/src/tir/pass_manager.rs`
-- LLVM dispatch: `runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs`
+- Shared dispatch: `runtime/molt-backend-native/src/codegen_ssa/walk.rs`
 - SimpleIR transport: `runtime/molt-passes/src/tir/lower_to_simple/`
 - Cranelift RC emission: `runtime/molt-backend-native/src/native_backend/simple_backend/refcount.rs`
 - Future reuse/FBIP design: `docs/design/foundation/27_perceus_borrow_inference.md`

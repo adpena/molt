@@ -1,6 +1,6 @@
 use super::*;
 use crate::llvm_backend::LlvmBackend;
-use crate::tir::blocks::{Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -9,6 +9,7 @@ use inkwell::attributes::Attribute;
 use inkwell::context::Context;
 use inkwell::values::AnyValue;
 use molt_ir::OpKind;
+use molt_ir::deterministic_hash::HashMap;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 /// Admit the runtime entry a test fixture names into the selected runtime
@@ -274,28 +275,94 @@ fn const_int_def(result: ValueId, value: i64) -> TirOp {
     }
 }
 
-fn make_dummy_lowering<'ctx, 'func>(
+/// A fixture for isolated builder operations with explicit carrier facts.
+struct OpLoweringFixture<'ctx, 'func> {
     backend: &'func LlvmBackend<'ctx>,
     func: &'func TirFunction,
-    llvm_fn: FunctionValue<'ctx>,
-) -> FunctionLowering<'ctx, 'func> {
-    FunctionLowering {
+    values: crate::codegen_ssa::value_table::ValueTable<BasicValueEnum<'ctx>>,
+    block_params: codegen_builder::BlockParams<'ctx>,
+    call_sites: std::cell::Cell<usize>,
+    diagnostics: RefCell<Vec<String>>,
+    repr_facts: crate::representation_plan::ProducerCarrierPlan,
+    state: codegen_builder::LlvmFunctionState<'ctx>,
+}
+
+impl<'ctx> OpLoweringFixture<'ctx, '_> {
+    fn codegen(&self) -> LlvmCodegen<'_, 'ctx> {
+        LlvmCodegen {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &self.backend.builder,
+            },
+            backend: self.backend,
+            params: &self.block_params,
+            state: &self.state,
+        }
+    }
+
+    fn walker_op<'a>(
+        &'a mut self,
+        lower: impl FnOnce(
+            &mut crate::codegen_ssa::function::FunctionCx<'a, LlvmCodegen<'a, 'ctx>>,
+            &mut LlvmCodegen<'a, 'ctx>,
+        ),
+    ) {
+        let backend = self.backend;
+        let mut builder = LlvmCodegen {
+            words: LlvmWords {
+                context: backend.context,
+                builder: &backend.builder,
+            },
+            backend,
+            params: &self.block_params,
+            state: &self.state,
+        };
+        let mut context = crate::codegen_ssa::function::FunctionCx {
+            func: self.func,
+            plan: &self.repr_facts,
+            values: &mut self.values,
+            diagnostics: &self.diagnostics,
+            runtime: &backend.runtime_callable_symbols,
+            linkage: &backend.function_linkage_abis,
+            functions: &backend.function_table,
+            call_sites: &self.call_sites,
+        };
+        lower(&mut context, &mut builder);
+    }
+
+    fn lower_op(&mut self, source: crate::tir::blocks::BlockId, op: &TirOp) {
+        let at = crate::codegen_ssa::walk::Position {
+            source,
+            poll_frame: None,
+            blocks: &HashMap::default(),
+            exception_targets: &HashMap::default(),
+        };
+        self.walker_op(|context, builder| context.lower_op(builder, &at, op, None));
+    }
+
+    fn ensure_i64(&self, value: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        crate::codegen_ssa::scalar::word_of(&mut self.codegen(), value)
+    }
+}
+
+fn make_op_fixture<'ctx, 'func>(
+    backend: &'func LlvmBackend<'ctx>,
+    func: &'func TirFunction,
+) -> OpLoweringFixture<'ctx, 'func> {
+    OpLoweringFixture {
         backend,
         func,
-        llvm_fn,
-        entry_trampoline_bb: None,
-        block_map: HashMap::default(),
         // Fixture functions name values directly instead of numbering them.
-        values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value.max(256)),
+        values: crate::codegen_ssa::value_table::ValueTable::with_capacity(
+            func.next_value.max(256),
+        ),
         block_params: RefCell::new(HashMap::default()),
-        call_site_counter: std::cell::Cell::new(0),
+        call_sites: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
-        state: super::codegen_builder::LlvmFunctionState::new(
+        state: codegen_builder::LlvmFunctionState::new(
             molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
         ),
-        exception_targets: std::cell::OnceCell::new(),
-        owned_frame_entered: None,
     }
 }
 
