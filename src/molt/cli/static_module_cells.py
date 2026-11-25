@@ -63,7 +63,10 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Literal
 
-from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
+from molt._intrinsic_symbols import (
+    INTRINSIC_SIGNATURES,
+    INTRINSICS_WITH_ARGUMENT_BINDERS,
+)
 from molt._public_objects_generated import (
     PUBLIC_DIRECT_CALL_BINDINGS,
     PUBLIC_OBJECTS,
@@ -922,6 +925,8 @@ def _captured_intrinsic_abi(
         declaration = declaration[1:]
     if INTRINSIC_SIGNATURES.get(declaration) != (symbol, arity):
         return "the name operand does not select the declared intrinsic and arity"
+    if declaration in INTRINSICS_WITH_ARGUMENT_BINDERS:
+        return "the intrinsic uses a native Python argument binder"
     public = PUBLIC_OBJECTS.get(declaration)
     if (
         public is not None

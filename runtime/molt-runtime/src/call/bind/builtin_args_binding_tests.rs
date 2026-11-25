@@ -337,6 +337,17 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
                 ),
                 ("molt_object_init", fn_ref!(molt_object_init), 1),
                 ("molt_object_new_bound", fn_ref!(molt_object_new_bound), 1),
+                ("molt_file_reconfigure", fn_ref!(molt_file_reconfigure), 6),
+                ("molt_memoryview_cast", fn_ref!(molt_memoryview_cast), 4),
+                #[cfg(feature = "stdlib_serial")]
+                (
+                    "molt_binascii_a2b_base64",
+                    crate::builtins::functions::RuntimeCallableRef {
+                        key: fn_key!(molt_binascii_a2b_base64),
+                        target: crate::molt_binascii_a2b_base64 as *const (),
+                    },
+                    2,
+                ),
                 ("dict_update_method", fn_ref!(dict_update_method), 2),
                 (
                     "molt_exception_init_owned",

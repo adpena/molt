@@ -4,6 +4,23 @@ mod generated_resolvers;
 
 pub(crate) use generated_resolvers::resolve_symbol;
 
+macro_rules! intrinsic_argument_binding {
+    ($identity:expr, $wrap:path) => {
+        match $identity {
+            id if id.is(fn_key!(molt_file_reconfigure)) => {
+                Some($wrap(bind_builtin_file_reconfigure))
+            }
+            #[cfg(feature = "stdlib_serial")]
+            id if id.is(fn_key!(molt_binascii_a2b_base64)) => {
+                Some($wrap(bind_builtin_binascii_a2b_base64))
+            }
+            id if id.is(fn_key!(molt_memoryview_cast)) => Some($wrap(bind_builtin_memoryview_cast)),
+            _ => None,
+        }
+    };
+}
+pub(crate) use intrinsic_argument_binding;
+
 #[derive(Clone, Copy)]
 pub(crate) enum IntrinsicDefaultValue {
     None,

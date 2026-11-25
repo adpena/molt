@@ -1749,7 +1749,6 @@ pub(crate) const DIRECT_CALL_PUBLIC_OBJECTS: &[PublicObjectId] = &[
     PublicObjectId::AnyBuiltin,
     PublicObjectId::AsciiFromObj,
     PublicObjectId::BinBuiltin,
-    PublicObjectId::BinasciiA2BBase64,
     PublicObjectId::BinasciiA2BHex,
     PublicObjectId::BinasciiA2BQp,
     PublicObjectId::BinasciiA2BUu,

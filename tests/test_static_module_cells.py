@@ -1286,6 +1286,9 @@ def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
         ("molt_sys_intern", "molt_operator_index", 1),
         ("molt_math_prod", "molt_math_prod", 2),
         ("molt_math_isclose", "molt_math_isclose", 4),
+        ("molt_binascii_a2b_base64", "molt_binascii_a2b_base64", 2),
+        ("molt_memoryview_cast", "molt_memoryview_cast", 4),
+        ("molt_file_reconfigure", "molt_file_reconfigure", 6),
     ],
 )
 def test_cell_capture_requires_the_executed_intrinsic_declaration(

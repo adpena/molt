@@ -2360,6 +2360,13 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_itertools_batched_new_312": ("molt_itertools_batched_new_312", 3),
 }
 
+# Declarations whose Python binder must run before the raw entry.
+INTRINSICS_WITH_ARGUMENT_BINDERS = frozenset({
+    "molt_file_reconfigure",
+    "molt_binascii_a2b_base64",
+    "molt_memoryview_cast",
+})
+
 
 # The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
 RUNTIME_ROOTS: tuple[str, ...] = ("_warnings", "asyncio.futures", "copyreg", "datetime", "importlib.machinery", "importlib.util", "molt.gpu.tensor", "select", "socketserver", "sys", "zipimport")

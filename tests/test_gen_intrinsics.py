@@ -734,6 +734,7 @@ def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:
 def test_intrinsic_signature_projection_counts_slots_not_required_arguments() -> None:
     entries = parse_intrinsic_manifest(
         "def molt_zero() -> Any: ...\n"
+        "# argument-binder: bind_probe\n"
         "def molt_target(\n"
         "    value: tuple[int, int],\n"
         "    limit: int = 0,\n"
@@ -750,6 +751,10 @@ def test_intrinsic_signature_projection_counts_slots_not_required_arguments() ->
         "molt_zero": ("molt_zero", 0),
         "molt_target": ("molt_target", 2),
         "molt_alias": ("molt_target", 2),
+    }
+    assert namespace["INTRINSICS_WITH_ARGUMENT_BINDERS"] == {
+        "molt_target",
+        "molt_alias",
     }
     assert namespace["intrinsic_runtime_symbol_name"]("molt_alias") == "molt_target"
     assert namespace["intrinsic_runtime_symbol_name"]("absent") == "absent"

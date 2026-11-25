@@ -12,6 +12,7 @@ buffer of single bytes, never `str`.
 import array
 import base64
 import binascii
+from binascii import a2b_base64
 
 
 # Memoryview distinguishes a missing buffer slot from a real exporter failure.
@@ -428,6 +429,7 @@ show("pure native guard", base64.b64decode, BufferWithMetaclass())
 show("binascii no positional", lambda _: binascii.a2b_base64(), None)
 show("binascii data keyword", lambda _: binascii.a2b_base64(data=b"AA=="), None)
 show("binascii extra positional", lambda _: binascii.a2b_base64(b"AA==", True), None)
+show("binascii imported extra positional", lambda _: a2b_base64(b"AA==", True), None)
 show(
     "binascii unknown keyword", lambda _: binascii.a2b_base64(b"AA==", other=True), None
 )
