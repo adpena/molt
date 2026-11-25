@@ -97,6 +97,9 @@ def test_installed_doctor_reports_shipped_cells_without_rust(bundle, monkeypatch
     assert runtime["ok"], runtime
     assert report.backends["llvm"] == report.backends["native"]
     assert "llvm-backend-toolchain" not in names
+    validator = next(check for check in report.checks if check["name"] == "wasm-tools")
+    assert not validator["ok"]
+    assert f'--repo-root "{bundle / "source"}"' in validator["detail"]
     # The fixture ships one dev-profile native cell and no WASM cells.
     assert report.profiles == {"dev": True, "release": False}
     assert report.backends["wasm"] is False

@@ -204,7 +204,10 @@ def _wasm_linker_binary_identity(
 
 
 def resolve_wasm_linker(
-    *, env: Mapping[str, str] | None = None, cwd: Path | None = None
+    compiler_root: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> WasmLinkerIdentity:
     """Attest the one wasm-ld the WebAssembly toolchain authority selects.
 
@@ -219,18 +222,17 @@ def resolve_wasm_linker(
         resolve_wasi_sdk_tool,
         selected_wasi_sdk_installation,
     )
-    from molt.source_root import compiler_source_root
 
     environment = ProcessEnvironment(os.environ if env is None else env)
     try:
         linker = resolve_wasi_sdk_tool(
-            compiler_source_root(), "wasm-ld", environ=environment, cwd=cwd
+            compiler_root, "wasm-ld", environ=environment, cwd=cwd
         )
     except LlvmToolchainConfigError as exc:
         raise WasmLinkerContractError(str(exc)) from exc
     try:
         installation = selected_wasi_sdk_installation(
-            compiler_source_root(), environ=environment, cwd=cwd
+            compiler_root, environ=environment, cwd=cwd
         )
         if installation is None:
             raise ValueError("the selected WASI SDK is not provisioned")

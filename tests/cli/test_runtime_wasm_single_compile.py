@@ -2157,7 +2157,7 @@ def _prepare_host_precompile_routing(
     monkeypatch.setattr(
         nno.wasm_toolchain,
         "resolve_wasm_linker",
-        lambda: nno.wasm_toolchain.WasmLinkerIdentity(
+        lambda _compiler_root: nno.wasm_toolchain.WasmLinkerIdentity(
             hermetic_linker,
             "22.1.0",
             None,

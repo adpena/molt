@@ -1214,7 +1214,7 @@ def _prepare_non_native_build_result_in_generation(
                 link_args.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             try:
-                linker_identity = wasm_toolchain.resolve_wasm_linker()
+                linker_identity = wasm_toolchain.resolve_wasm_linker(molt_root)
                 # wasm-ld reads the tool's import allowlist directly; neither
                 # the tool's Python closure nor any argument names it. As a
                 # producer-bound input it keys the final link and the build

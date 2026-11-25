@@ -102,7 +102,7 @@ def test_link_cli_requires_shared_bytes_only_for_split(
     monkeypatch.setattr(
         wasm_link.wasm_toolchain,
         "resolve_wasm_linker",
-        lambda: SimpleNamespace(path="wasm-ld"),
+        lambda _compiler_root: SimpleNamespace(path="wasm-ld"),
     )
     handoffs: list[
         tuple[

@@ -390,7 +390,7 @@ def main() -> int:
             print(f"Invalid native WASM link plan: {exc}", file=sys.stderr)
             return 1
     try:
-        wasm_ld = str(wasm_toolchain.resolve_wasm_linker().path)
+        wasm_ld = str(wasm_toolchain.resolve_wasm_linker(_REPO_ROOT).path)
     except wasm_toolchain.WasmLinkerContractError as exc:
         print(f"WASM linker is unavailable: {exc}", file=sys.stderr)
         return 1

@@ -2123,7 +2123,8 @@ def test_managed_wasm_linker_ancestor_alias_uses_receipt_without_probe(
         lambda *a, **kw: pytest.fail("managed alias probed"),
     )
     identity = wasm_toolchain.resolve_wasm_linker(
-        env={"WASI_SDK_PATH": str(installation.sdk), "MOLT_WASM_LD": str(selected)}
+        Path(__file__).resolve().parents[2],
+        env={"WASI_SDK_PATH": str(installation.sdk), "MOLT_WASM_LD": str(selected)},
     )
     assert identity.path == selected
     assert identity.sha256 == installation.tool_fact("wasm-ld")["sha256"]

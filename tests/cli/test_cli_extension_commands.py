@@ -271,7 +271,7 @@ def test_resolve_wasm_linker_never_searches_path_and_names_provisioning(
     )
 
     with pytest.raises(cli_wasm_toolchain.WasmLinkerContractError) as raised:
-        cli_wasm_toolchain.resolve_wasm_linker(env={"PATH": str(ambient)})
+        cli_wasm_toolchain.resolve_wasm_linker(ROOT, env={"PATH": str(ambient)})
 
     message = str(raised.value)
     assert "tools/provision_wasi_sdk.py" in message
@@ -290,7 +290,7 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     )
 
     with pytest.raises(cli_wasm_toolchain.WasmLinkerContractError) as raised:
-        cli_wasm_toolchain.resolve_wasm_linker()
+        cli_wasm_toolchain.resolve_wasm_linker(ROOT)
     assert f"requires LLVM {plan.llvm_version}" in str(raised.value)
     assert "21.1.8" in str(raised.value)
 
@@ -312,7 +312,7 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
         lambda _path, **_kwargs: plan.llvm_version,
     )
 
-    identity = cli_wasm_toolchain.resolve_wasm_linker()
+    identity = cli_wasm_toolchain.resolve_wasm_linker(ROOT)
 
     assert identity is not None
     assert identity.path == alias.absolute()
@@ -331,7 +331,7 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
         cli_wasm_toolchain.WasmLinkerContractError,
         match="does not select a wasm-ld entrypoint",
     ):
-        cli_wasm_toolchain.resolve_wasm_linker()
+        cli_wasm_toolchain.resolve_wasm_linker(ROOT)
 
 
 def test_manifest_source_resolver_never_guesses_relocation_roots(
