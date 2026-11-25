@@ -1009,10 +1009,15 @@ cover content isolation, source symlinks, read-only preparation, corruption,
 collision refusal and partial-copy cleanup. These are developer/build costs;
 they add no generated-program work and establish no full-build timing claim.
 
-Source builds publish the runtime WASM pair into the host's product store
-(`molt.cli.product_store`, kind `wasm-runtime`; design 56, section 2.8): one
-entry per pair family digest, one immutable variant per observed Cargo
-environment, staged inside the entry and published by one exclusive rename.
+Source builds publish the WASM runtime members selected by the output mode in
+the host's product store (`molt.cli.product_store`, kind `wasm-runtime`; design
+56, section 2.8). A monolithic build selects a Cargo staticlib and retains only
+the relocatable module. Split builds select the staticlib and cdylib in one
+Cargo transaction and retain both runtime modules. The selected crate types
+and member publication actions contribute to the family digest. Each family
+has one immutable variant per observed Cargo environment, staged inside the
+entry and published by one exclusive rename. Installed cells ship their
+signed pair and give linked builds an exact projection of its relocatable member.
 A build never writes runtime outputs into the source tree or the working
 directory. A hit reads the store without a lock; a miss builds once under the
 family's build lock, so checkouts with identical inputs share one compile.

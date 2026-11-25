@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from molt.cli.models import _RuntimeArtifactState
-    from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration
+    from molt.cli.runtime_wasm_generation import RuntimeWasmRelocGeneration
 from pathlib import Path
 
 from molt._wasm_runtime_exports import (
@@ -24,6 +24,10 @@ from molt.tool_releases import (
     run_pinned_tool,
 )
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
+    RuntimeWasmGeneration,
+)
 from molt.wasm_artifact import (
     WasmRuntimeFacts,
     _wasm_import_minima,
@@ -310,10 +314,12 @@ class RuntimeWasmAdmissionReport:
 
 
 def runtime_wasm_generation_admission(
-    generation: RuntimeWasmGeneration,
+    generation: RuntimeWasmRelocGeneration,
     required_exports: set[str] | frozenset[str] | None,
+    *,
+    use: RuntimeWasmCodegenUse = RuntimeWasmCodegenUse.DEPLOYED_RUNTIME,
 ) -> RuntimeWasmAdmissionReport:
-    """One decision and diagnostic authority for every runtime-pair consumer.
+    """Admit the runtime members selected by the application's output mode.
 
     Required names are request policy. Successful member facts and structural
     checks belong to this physical generation; every reuse still checks its
@@ -324,21 +330,26 @@ def runtime_wasm_generation_admission(
     shared_missing: tuple[str, ...] = ()
     reloc_missing: tuple[str, ...] = ()
     try:
-        generation.verify_members()
-        shared = generation.facts()
+        generation.verify_members(use=use)
+        pair = generation if isinstance(generation, RuntimeWasmGeneration) else None
+        shared = (
+            pair.facts()
+            if use is RuntimeWasmCodegenUse.DEPLOYED_RUNTIME and pair is not None
+            else None
+        )
         reloc = generation.facts(relocatable=True)
     except (OSError, UnicodeError, ValueError, IndexError) as exc:
         return RuntimeWasmAdmissionReport(
             (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
         )
     for member, facts in (("shared", shared), ("reloc", reloc)):
-        if facts.code_functions == 0:
+        if facts is not None and facts.code_functions == 0:
             issues.append(
                 RuntimeWasmAdmissionIssue(
                     member, "empty-code", "artifact has no non-empty code section"
                 )
             )
-    if not shared.shared_import_abi:
+    if shared is not None and not shared.shared_import_abi:
         issues.append(
             RuntimeWasmAdmissionIssue(
                 "shared",
@@ -347,21 +358,25 @@ def runtime_wasm_generation_admission(
             )
         )
     try:
-        generation.validate_structure()
+        generation.validate_structure(use=use)
     except (OSError, ValueError) as exc:
         issues.append(RuntimeWasmAdmissionIssue("generation", "structure", str(exc)))
-    shared_missing = tuple(
-        sorted(
-            wasm_split_runtime_missing_required_exports(
-                _runtime_wasm_typed_export_names(
-                    generation.shared,
-                    wasm_split_runtime_required_export_symbol_kinds(required_exports),
-                    facts=shared,
-                ),
-                required_exports,
+    if shared is not None:
+        assert pair is not None
+        shared_missing = tuple(
+            sorted(
+                wasm_split_runtime_missing_required_exports(
+                    _runtime_wasm_typed_export_names(
+                        pair.shared,
+                        wasm_split_runtime_required_export_symbol_kinds(
+                            required_exports
+                        ),
+                        facts=shared,
+                    ),
+                    required_exports,
+                )
             )
         )
-    )
     try:
         available = generation.linking_names(
             wasm_runtime_required_export_symbol_kinds(required_exports)
@@ -372,7 +387,7 @@ def runtime_wasm_generation_admission(
     except (OSError, UnicodeError, ValueError) as exc:
         issues.append(RuntimeWasmAdmissionIssue("reloc", "linking", str(exc)))
     try:
-        generation.verify_members()
+        generation.verify_members(use=use)
     except (OSError, ValueError) as exc:
         issues.append(RuntimeWasmAdmissionIssue("generation", "observation", str(exc)))
     return RuntimeWasmAdmissionReport(tuple(issues), shared_missing, reloc_missing)

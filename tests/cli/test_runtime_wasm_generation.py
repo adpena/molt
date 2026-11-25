@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
-
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -14,9 +13,11 @@ from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.process_environment import ProcessEnvironment
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
     RuntimeWasmReceiptRole,
     RuntimeWasmGeneration,
     RuntimeWasmTrust,
+    SourceLinkedRuntimeWasmGeneration,
     SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
     _generation_receipts,
@@ -26,6 +27,7 @@ from molt.cli.runtime_wasm_generation import (
     read_runtime_wasm_generation,
     read_runtime_wasm_product,
     read_trusted_runtime_wasm_generation,
+    read_trusted_runtime_wasm_reloc,
     runtime_wasm_generation_identities,
     runtime_wasm_product_identities,
     runtime_wasm_generation_path,
@@ -33,6 +35,7 @@ from molt.cli.runtime_wasm_generation import (
 )
 from tests.runtime_build_identity_helper import (
     runtime_build_identity,
+    runtime_cargo_environment_inputs,
 )
 from molt.toolchain_identity import StableRegularFileError, stable_regular_file_identity
 
@@ -141,9 +144,19 @@ def test_codegen_identity_tracks_member_bytes_separately_from_provenance(
         tmp_path, pair_seed="new-provenance", shared=shared, reloc=reloc
     )
     second = bind_runtime_wasm_codegen(republished, {"PyTuple_New"})
+    linked_first = bind_runtime_wasm_codegen(
+        generation, {"PyTuple_New"}, use=RuntimeWasmCodegenUse.LINKED
+    )
+    linked_second = bind_runtime_wasm_codegen(
+        republished, {"PyTuple_New"}, use=RuntimeWasmCodegenUse.LINKED
+    )
     assert first.generation.manifest != second.generation.manifest
     assert first.generation.manifest == generation.manifest
     assert (first.semantic_digest == second.semantic_digest) == (change == "provenance")
+    assert linked_first.semantic_digest != first.semantic_digest
+    assert (linked_first.semantic_digest == linked_second.semantic_digest) == (
+        change in {"provenance", "shared"}
+    )
     # Equal app inputs never authorize an old source/toolchain claim.
     assert (
         read_runtime_wasm_generation(
@@ -671,13 +684,14 @@ def test_store_admits_only_its_own_environment_variant(tmp_path: Path) -> None:
         admit(second_env)
 
 
-def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
+def test_trusted_link_admission_binds_the_exact_receipt_family_and_role(
     tmp_path: Path,
 ) -> None:
     generation, shared, _reloc = _publish_pair(tmp_path)
     trust = RuntimeWasmTrust.of(generation)
+    receipt_sha256 = hashlib.sha256(generation.manifest.read_bytes()).hexdigest()
     assert trust == RuntimeWasmTrust(
-        shared.family_digest, RuntimeWasmReceiptRole.SOURCE_BUILD
+        shared.family_digest, RuntimeWasmReceiptRole.SOURCE_BUILD, receipt_sha256
     )
     assert trust.arguments(generation.manifest) == [
         "--runtime-generation",
@@ -686,6 +700,8 @@ def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
         shared.family_digest,
         "--runtime-receipt-role",
         "source-build",
+        "--runtime-receipt-sha256",
+        receipt_sha256,
     ]
     assert read_trusted_runtime_wasm_generation(generation.manifest, trust) == (
         generation
@@ -700,6 +716,53 @@ def test_trusted_link_admission_is_keyed_by_family_digest_and_role(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("source_build", [False, True])
+def test_linked_runtime_admits_exact_reloc_without_shared(
+    tmp_path: Path, source_build: bool
+) -> None:
+    if source_build:
+        generation, _, _ = _publish_pair(tmp_path)
+    else:
+        generation = _publish_retained_product(tmp_path, "pair", b"shared", b"reloc")
+    trust = RuntimeWasmTrust.of(generation)
+    generation.shared.unlink()
+
+    binding = bind_runtime_wasm_codegen(
+        generation, None, use=RuntimeWasmCodegenUse.LINKED
+    )
+    binding.verify()
+    with pytest.raises(ValueError):
+        bind_runtime_wasm_codegen(generation, None)
+    admitted = read_trusted_runtime_wasm_reloc(generation.manifest, trust)
+    assert admitted is not None
+    assert admitted.reloc_member_identity == generation.reloc_member_identity
+    assert admitted.receipt_identity == generation.receipt_identity
+    assert read_trusted_runtime_wasm_generation(generation.manifest, trust) is None
+    assert (
+        read_trusted_runtime_wasm_reloc(
+            generation.manifest, replace(trust, family_digest="0" * 64)
+        )
+        is None
+    )
+
+    receipt_bytes = generation.manifest.read_bytes()
+    generation.manifest.write_bytes(receipt_bytes + b"\n")
+    with pytest.raises(ValueError):
+        binding.verify()
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    generation.manifest.write_bytes(receipt_bytes)
+    generation.reloc.write_bytes(b"other")
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    rebound = replace(
+        generation,
+        receipt_identity=stable_regular_file_identity(
+            generation.manifest, label="test receipt"
+        ),
+    )
+    with pytest.raises(ValueError):
+        bind_runtime_wasm_codegen(rebound, None, use=RuntimeWasmCodegenUse.LINKED)
 
 
 def test_codegen_binding_pins_the_immutable_receipt_in_place(tmp_path: Path) -> None:
@@ -719,6 +782,70 @@ def test_codegen_binding_pins_the_immutable_receipt_in_place(tmp_path: Path) -> 
         binding.verify()
     with pytest.raises(ValueError):
         bind_runtime_wasm_codegen(generation, None)
+
+
+def test_source_store_keeps_reloc_only_receipt_out_of_deployment_admission(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "reloc.wasm"
+    source.write_bytes(b"selected reloc bytes")
+    store = _store(tmp_path)
+    identity = runtime_build_identity("reloc", "linked", reloc_only=True)
+    environment, observed = _environment("linked")
+    generation = publish_stored_runtime_wasm_generation(
+        store,
+        shared_identity=None,
+        reloc_identity=identity,
+        cargo_environment=observed,
+        source_shared=None,
+        source_reloc=source,
+    )
+    assert isinstance(generation, SourceLinkedRuntimeWasmGeneration)
+    assert set(generation.manifest.parent.iterdir()) == {
+        generation.manifest,
+        generation.reloc,
+    }
+    assert generation.reloc.read_bytes() == source.read_bytes()
+    assert (
+        stored_runtime_wasm_generation(
+            store,
+            shared_identity=None,
+            reloc_identity=identity,
+            environment=environment,
+        )
+        == generation
+    )
+    assert runtime_wasm_generation_identities(
+        json.loads(generation.manifest.read_bytes())
+    ) == (None, identity)
+    trust = RuntimeWasmTrust.of(generation)
+    admitted = read_trusted_runtime_wasm_reloc(generation.manifest, trust)
+    assert admitted is not None
+    assert admitted.reloc_member_identity == generation.reloc_member_identity
+    assert admitted.shared_path is None
+    assert read_trusted_runtime_wasm_generation(generation.manifest, trust) is None
+    assert (
+        read_trusted_runtime_wasm_reloc(
+            generation.manifest,
+            replace(trust, receipt_role=RuntimeWasmReceiptRole.INSTALLED_PRODUCT),
+        )
+        is None
+    )
+    linked = bind_runtime_wasm_codegen(
+        generation, None, use=RuntimeWasmCodegenUse.LINKED
+    )
+    linked.verify()
+    with pytest.raises(ValueError, match="requires a paired runtime"):
+        bind_runtime_wasm_codegen(generation, None)
+    generation.reloc.write_bytes(b"corrupt")
+    assert read_trusted_runtime_wasm_reloc(generation.manifest, trust) is None
+    with pytest.raises(ProductStoreError, match="its receipt or members do not admit"):
+        stored_runtime_wasm_generation(
+            store,
+            shared_identity=None,
+            reloc_identity=identity,
+            environment=environment,
+        )
 
 
 def _ensure_process(root: str, seed: str, builds: str) -> None:

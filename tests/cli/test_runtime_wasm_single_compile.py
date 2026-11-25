@@ -33,7 +33,6 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -78,6 +77,7 @@ from molt.cli.product_store import ProductStore
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_build_spec import _RuntimeWasmBuildSpec
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenUse,
     SourceRuntimeWasmGeneration,
     publish_stored_runtime_wasm_generation,
 )
@@ -216,9 +216,14 @@ def test_disabled_pair_build_still_admits_stored_generation(
 
     # Generation identity and content admission remain real. These fixtures
     # contain synthetic module bytes, so only format/export validation is stubbed.
-    def synthetic_exports(generation, _required):
+    def synthetic_exports(
+        generation: SourceRuntimeWasmGeneration,
+        _required: set[str] | frozenset[str] | None,
+        *,
+        use: RuntimeWasmCodegenUse,
+    ) -> RuntimeWasmAdmissionReport:
         try:
-            generation.verify_members()
+            generation.verify_members(use=use)
         except ValueError as exc:
             return RuntimeWasmAdmissionReport(
                 (RuntimeWasmAdmissionIssue("generation", "observation", str(exc)),)
@@ -534,12 +539,17 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
         "missing-export",
         "member-corrupt",
         "receipt-damaged",
+        "mode-change",
     ],
+)
+@pytest.mark.parametrize(
+    "use", [RuntimeWasmCodegenUse.LINKED, RuntimeWasmCodegenUse.DEPLOYED_RUNTIME]
 )
 def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     outcome: str,
+    use: RuntimeWasmCodegenUse,
 ) -> None:
     monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "before-codegen")
     shared_identity = make_runtime_build_identity("shared", "bound")
@@ -552,7 +562,13 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     shared_spec, reloc_spec = _specs(tmp_path)
 
     def prepare(runtime_state, **kwargs):
-        plans.append((kwargs["required_exports"], kwargs["full_export_surface"]))
+        plans.append(
+            (
+                kwargs["required_exports"],
+                kwargs["full_export_surface"],
+                kwargs["codegen_use"],
+            )
+        )
         current_shared, current_reloc = shared_identity, reloc_identity
         if len(plans) > 1 and outcome == "source-drift":
             current_shared = make_runtime_build_identity("shared", "changed")
@@ -568,7 +584,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             )
             current_shared_spec = shared_spec.with_cargo_plan(plan)
             current_reloc_spec = reloc_spec.with_cargo_plan(plan)
-        return _pair_ctx(
+        ctx = _pair_ctx(
             tmp_path,
             runtime_state,
             current_shared_spec,
@@ -577,6 +593,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             current_reloc,
             required_exports=kwargs["required_exports"],
         )
+        ctx.codegen_use = kwargs["codegen_use"]
+        return ctx
 
     def ensure_stored(ctx: runtime_wasm_pair_build._RuntimeWasmPairBuild) -> bool:
         builds.append("admit-before-codegen")
@@ -586,14 +604,20 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         assert ctx.accept_generation(generation)
         return True
 
-    def shared_exports(generation, required):
-        generation.verify_members()
+    def runtime_exports(
+        generation: SourceRuntimeWasmGeneration,
+        required: set[str] | frozenset[str] | None,
+        *,
+        use: RuntimeWasmCodegenUse,
+    ) -> RuntimeWasmAdmissionReport:
+        generation.verify_members(use=use)
         admissions.append(required)
-        return RuntimeWasmAdmissionReport(
-            shared_missing_exports=("molt_hash_builtin",)
-            if outcome == "missing-export" and required == {"add", "hash_builtin"}
-            else ()
-        )
+        if outcome == "missing-export" and required == {"add", "hash_builtin"}:
+            missing = ("molt_hash_builtin",)
+            if use is RuntimeWasmCodegenUse.LINKED:
+                return RuntimeWasmAdmissionReport(reloc_missing_symbols=missing)
+            return RuntimeWasmAdmissionReport(shared_missing_exports=missing)
+        return RuntimeWasmAdmissionReport()
 
     monkeypatch.setattr(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
@@ -604,7 +628,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch.setattr(
         runtime_wasm_pair_build,
         "runtime_wasm_generation_admission",
-        shared_exports,
+        runtime_exports,
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build._RuntimeWasmPairBuild,
@@ -620,7 +644,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         freestanding=False,
     )
     assert runtime_wasm_pair_build._ensure_runtime_wasm_both(
-        state, build_profile="release", bind_for_codegen=True, **kwargs
+        state, build_profile="release", bind_for_codegen=True, codegen_use=use, **kwargs
     )
     binding = state.runtime_wasm_codegen_binding
     assert binding is not None
@@ -629,14 +653,25 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     if outcome == "receipt-damaged":
         # A store variant is immutable: damage to the pinned receipt is caught.
         generation.manifest.write_text("{}", encoding="utf-8")
+    final_use = None
+    if outcome == "mode-change":
+        final_use = (
+            RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+            if use is RuntimeWasmCodegenUse.LINKED
+            else RuntimeWasmCodegenUse.LINKED
+        )
     passed = runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
         build_profile="release",
         required_exports={"add", "hash_builtin"},
+        codegen_use=final_use,
         **kwargs,
     )
-    assert passed == (outcome == "stable")
-    assert plans == [(None, True), (None, True)]
+    assert passed == (
+        outcome == "stable"
+        or (outcome == "member-corrupt" and use is RuntimeWasmCodegenUse.LINKED)
+    )
+    assert plans == [(None, True, use)] * (1 if outcome == "mode-change" else 2)
     assert builds == ["admit-before-codegen"]
     assert state.runtime_wasm_codegen_binding is binding
     assert state.runtime_wasm_pair is generation
@@ -1230,7 +1265,7 @@ def _test_pair_context(
     )
 
 
-@pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
+@pytest.mark.parametrize("producer", ["pair", "linked", "cpython-abi"])
 def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     producer, tmp_path, monkeypatch, _synthetic_cargo_plan
 ):
@@ -1260,8 +1295,16 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     }
     for owner in (runtime_wasm_build_spec, runtime_wasm_build_support):
         monkeypatch.setattr(owner, "_cargo_build_env", lambda: generator_environment)
-    if producer == "pair":
+    if producer != "cpython-abi":
         captured = _test_pair_identity()
+        if producer == "linked":
+            captured = replace(
+                captured,
+                shared=None,
+                reloc=make_runtime_build_identity(
+                    "reloc", "test-family", reloc_only=True
+                ),
+            )
         monkeypatch.setattr(
             runtime_wasm_pair_build,
             "resolve_runtime_wasm_pair_identity",
@@ -1273,17 +1316,33 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
             project_root=root,
             json_output=True,
             cargo_timeout=5,
+            codegen_use=(
+                RuntimeWasmCodegenUse.LINKED
+                if producer == "linked"
+                else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+            ),
             **_COMMON,
         )
         assert ctx is not None
-        assert ctx.shared_spec.cargo_plan is ctx.reloc_spec.cargo_plan
-        plan = ctx.shared_spec.cargo_plan
+        plan = ctx.reloc_spec.cargo_plan
+        assert plan is not None
+        if producer == "linked":
+            assert ctx.shared_spec is None
+            assert plan.command[plan.command.index("--crate-type") + 1] == "staticlib"
+            assert plan.partition_command()[1] == ()
+        else:
+            assert ctx.shared_spec is not None
+            assert ctx.shared_spec.cargo_plan is plan
         with pytest.raises(AtExecutor):
-            runtime_wasm_build_support._run_runtime_wasm_cargo_build(
-                cargo_plan=plan,
-                cargo_timeout=5,
-                profile_dir=ctx.shared_spec.profile_dir,
-                json_output=True,
+            runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+                runtime_state=ctx.runtime_state,
+                shared_spec=ctx.shared_spec,
+                reloc_spec=ctx.reloc_spec,
+                project_root=ctx.project_root,
+                json_output=ctx.json_output,
+                cargo_timeout=ctx.cargo_timeout,
+                simd_enabled=ctx.simd_enabled,
+                freestanding=ctx.freestanding,
             )
         assert observed[0] is plan
     else:
@@ -1512,17 +1571,34 @@ def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
     assert "--export-if-defined" not in env.get("RUSTFLAGS", "")
 
 
-@pytest.mark.parametrize("report_staticlib", [True, False])
-def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
+@pytest.mark.parametrize(
+    "use, report_staticlib, report_cdylib, accepted",
+    [
+        (RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, True, True, True),
+        (RuntimeWasmCodegenUse.DEPLOYED_RUNTIME, False, True, False),
+        (RuntimeWasmCodegenUse.LINKED, True, False, True),
+        (RuntimeWasmCodegenUse.LINKED, False, False, False),
+        (RuntimeWasmCodegenUse.LINKED, True, True, False),
+    ],
+)
+def test_runtime_build_fingerprints_only_selected_reported_crate_types(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    use: RuntimeWasmCodegenUse,
     report_staticlib: bool,
+    report_cdylib: bool,
+    accepted: bool,
 ) -> None:
     root = _compiler_root()
     shared, reloc = _specs(root)
     target_root = tmp_path / "target"
     shared = shared._replace(target_root=target_root)
     reloc = reloc._replace(target_root=target_root)
+    linked = use is RuntimeWasmCodegenUse.LINKED
+    if linked:
+        _, reloc = runtime_wasm_build_spec._resolve_runtime_wasm_cargo_specs(
+            root, None, reloc, simd_enabled=True, freestanding=False
+        )
     profile_root = target_root / "wasm32-wasip1" / shared.profile_dir
     deps = profile_root / "build" / "molt-runtime" / "feedfacefeedface" / "out"
     stale_cdylib = profile_root / "molt_runtime.wasm"
@@ -1538,20 +1614,27 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
 
-    reported_filenames = [str(reported_cdylib)]
+    reported_filenames = [str(reported_cdylib)] if report_cdylib else []
     if report_staticlib:
         reported_filenames.append(str(reported_staticlib))
-    cargo_stdout = runtime_cargo_stdout(
-        root,
-        tuple(Path(path) for path in reported_filenames),
-        shared.cargo_plan.environment,
+    cargo_stdout = (
+        runtime_cargo_stdout(
+            root,
+            tuple(Path(path) for path in reported_filenames),
+            reloc.cargo_plan.environment,
+        )
+        if reported_filenames
+        else json.dumps({"reason": "build-finished", "success": True}) + "\n"
     )
 
     def _fake_build(**kwargs):  # noqa: ANN003
         cmd = kwargs["cargo_plan"].command
+        assert cmd[cmd.index("--crate-type") + 1] == (
+            "staticlib" if linked else "staticlib,cdylib"
+        )
         return (
             subprocess.CompletedProcess(cmd, 0, cargo_stdout, ""),
-            reported_cdylib,
+            reported_staticlib if linked else reported_cdylib,
         )
 
     state_root = tmp_path / ".molt_state"
@@ -1580,7 +1663,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     assert (
         runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
             runtime_state=_RuntimeArtifactState(),
-            shared_spec=shared,
+            shared_spec=None if linked else shared,
             reloc_spec=reloc,
             json_output=True,
             cargo_timeout=None,
@@ -1589,7 +1672,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
             freestanding=False,
         )
         is not None
-    ) is report_staticlib
+    ) is accepted
 
     def _target_fingerprint(path: Path) -> Path:
         return runtime_artifact_state._runtime_target_fingerprint_path(
@@ -1599,8 +1682,8 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
             target_label="wasm32-wasip1",
         )
 
-    assert _target_fingerprint(reported_cdylib).exists() is report_staticlib
-    assert _target_fingerprint(reported_staticlib).exists() is report_staticlib
+    assert _target_fingerprint(reported_cdylib).exists() is (accepted and not linked)
+    assert _target_fingerprint(reported_staticlib).exists() is accepted
     assert not _target_fingerprint(stale_cdylib).exists()
     assert not _target_fingerprint(stale_staticlib).exists()
 
@@ -1737,11 +1820,9 @@ def _run_app_ensure_routing(
 ) -> list[str]:
     """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
 
-    All ensures record their name; each configured return value is chosen so the
-    function short-circuits (returns a ``_fail``) right after the ensure
-    decision -- either because an ensure returns False, or because the shared
-    runtime artifact path does not exist.  The returned list is the ORDER of
-    ensures actually invoked, which is exactly the routing decision under test.
+    Each ensure records its call. A successful callback leaves no selected
+    generation so the receiver stops before final link. The returned list
+    records which ensure was invoked.
     """
     # Stub the wasm inspection helpers so no real module is parsed.
     monkeypatch.setattr(
@@ -1750,20 +1831,8 @@ def _run_app_ensure_routing(
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda *a, **k: None)
     output_wasm = tmp_path / "app_out.wasm"
     output_wasm.write_bytes(b"\0asm")
-    runtime_reloc = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_reloc.write_bytes(b"\0asm")
-    # Deliberately MISSING so the non-freestanding path _fails at exists() right
-    # after the shared-ensure decision (keeps the test off the real link path).
-    runtime_shared_missing = tmp_path / "molt_runtime.wasm"
-
     log: list[str] = []
-    state = _RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
-            shared=runtime_shared_missing,
-            reloc=runtime_reloc,
-            manifest=tmp_path / "molt_runtime.generation.json",
-        ),
-    )
+    state = _RuntimeArtifactState()
 
     def ensure(required_exports=None):
         log.append("both")
@@ -1920,25 +1989,15 @@ def _prepare_host_precompile_routing(
     manifest_path.write_text('{"previous":"deployment"}\n', encoding="utf-8")
     native_path = tmp_path / "output_linked.molt.cwasm"
     native_path.write_bytes(b"previous native generation")
-    pair_dir = tmp_path / "runtime-pair"
-    pair_dir.mkdir()
-    shared = pair_dir / "molt_runtime.wasm"
-    reloc = pair_dir / "molt_runtime_reloc.wasm"
-    generation = pair_dir / "runtime-generation.json"
-    for path in (shared, reloc):
-        path.write_bytes(output.read_bytes())
-    generation.write_text("{}", encoding="utf-8")
-    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
-
-    state = _RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
-            shared=shared,
-            reloc=reloc,
-            manifest=generation,
-            shared_identity=SimpleNamespace(family_digest="f" * 64),
-            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
-        ),
+    runtime_bytes = output.read_bytes()
+    generation = _publish_stored(
+        tmp_path,
+        make_runtime_build_identity("shared", "precompile"),
+        make_runtime_build_identity("reloc", "precompile"),
+        shared=runtime_bytes,
+        reloc=runtime_bytes,
     )
+    state = _RuntimeArtifactState(runtime_wasm_pair=generation)
     from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 
     source = tmp_path / "app.py"
@@ -2402,18 +2461,28 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
 
 
 @pytest.mark.parametrize("flags, accepted", [(0, True), (2, False), (0x50, False)])
+@pytest.mark.parametrize(
+    "use", [RuntimeWasmCodegenUse.LINKED, RuntimeWasmCodegenUse.DEPLOYED_RUNTIME]
+)
 def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: int, accepted: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: int,
+    accepted: bool,
+    use: RuntimeWasmCodegenUse,
 ) -> None:
     from molt.cli import runtime_wasm_validation
 
     ctx, generation = _observed_pair_fixture(tmp_path, flags=flags)
+    ctx.codegen_use = use
+    if use is RuntimeWasmCodegenUse.LINKED:
+        generation.shared.unlink()
     # Structural wasm-tools execution is outside the observation/admission claim.
     monkeypatch.setattr(
         runtime_wasm_validation, "_validate_wasm_structural", lambda _: None
     )
     report = runtime_wasm_validation.runtime_wasm_generation_admission(
-        generation, {"add"}
+        generation, {"add"}, use=use
     )
     assert report.accepted is accepted
     assert report.shared_missing_exports == ()

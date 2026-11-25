@@ -99,6 +99,7 @@ from molt.cli.runtime_native_codegen import (
     native_runtime_codegen_environment,
 )
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
+from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenUse
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
 from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -390,6 +391,9 @@ def _prepare_backend_setup(
             required_link_features=required_link_features,
             required_exports=native_artifact_plan.runtime_export_symbols() or None,
             bind_for_codegen=True,
+            codegen_use=RuntimeWasmCodegenUse.for_output(
+                linked=linked, split_runtime=split_runtime
+            ),
         ):
             failure = runtime_state.runtime_wasm_build_failure
             return None, _fail(

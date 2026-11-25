@@ -22,10 +22,11 @@ SRC_ROOT = TOOLS_ROOT.parent / "src"
 
 
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
-    RuntimeWasmGeneration,
+    RuntimeWasmRelocAdmission,
     RuntimeWasmReceiptRole,
     RuntimeWasmTrust,
     read_trusted_runtime_wasm_generation,
+    read_trusted_runtime_wasm_reloc,
 )
 from molt.artifact_publication import copy_reconstructible_artifact  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
@@ -62,43 +63,57 @@ def _default_output_path() -> Path:
 def _verify_runtime_generation(
     *,
     reloc: Path,
-    shared: Path,
+    shared: Path | None,
     generation_manifest: Path,
     trust: RuntimeWasmTrust,
-) -> RuntimeWasmGeneration:
-    """Verify both runtime members against the caller's trusted pair."""
-
-    for path in (reloc, shared, generation_manifest):
-        if ".." in path.parts:
-            raise SystemExit(f"Runtime custody path contains '..': {path}")
-    generation = read_trusted_runtime_wasm_generation(generation_manifest, trust)
-    if generation is None:
-        raise SystemExit(
+) -> tuple[RuntimeWasmRelocAdmission, StableRegularFileIdentity | None]:
+    """Verify the runtime inputs selected by the link mode."""
+    for path in (reloc, generation_manifest, shared):
+        if path is not None and ".." in path.parts:
+            raise ValueError(f"Runtime custody path contains '..': {path}")
+    deploy_runtime = None
+    if shared is None:
+        admitted = read_trusted_runtime_wasm_reloc(generation_manifest, trust)
+    else:
+        generation = read_trusted_runtime_wasm_generation(generation_manifest, trust)
+        if generation is None:
+            admitted = None
+        else:
+            assert generation.receipt_identity is not None
+            admitted = RuntimeWasmRelocAdmission(
+                generation.reloc_member_identity,
+                generation.receipt_identity,
+                generation.shared,
+            )
+            deploy_runtime = generation.shared_member_identity
+            if shared.resolve() != deploy_runtime.path.resolve():
+                raise ValueError(
+                    f"Shared runtime input is not selected by {generation_manifest}"
+                )
+    if admitted is None:
+        raise ValueError(
             "Runtime generation does not match the trusted caller identity: "
             f"{generation_manifest}"
         )
-    if reloc.resolve(strict=False) != generation.reloc.resolve(
-        strict=False
-    ) or shared.resolve(strict=False) != generation.shared.resolve(strict=False):
-        raise SystemExit(
-            "Runtime link inputs are not the immutable members selected by "
-            f"{generation_manifest}"
+    if reloc.resolve() != admitted.reloc_member_identity.path.resolve():
+        raise ValueError(
+            f"Relocatable runtime input is not selected by {generation_manifest}"
         )
-    return generation
+    return admitted, deploy_runtime
 
 
 def _link_admitted_standard_object(
     args: argparse.Namespace,
     *,
     wasm_ld: str,
-    runtime: Path,
+    runtime_admission: RuntimeWasmRelocAdmission,
     app_object: Path,
     linked: Path | None,
     split_output_dir: Path | None,
     native_link_requirements: SourceExtensionLinkRequirements | None,
     input_versions: Sequence[StableRegularFileIdentity],
     side_sdk_archives: Sequence[Path],
-    deploy_runtime: StableRegularFileIdentity,
+    deploy_runtime: StableRegularFileIdentity | None,
 ) -> int:
     """Link an admitted LLVM wasm32 application object with wasm-ld.
 
@@ -112,6 +127,7 @@ def _link_admitted_standard_object(
     from molt.temporary_artifacts import OwnedTemporaryDirectory
     from tools.wasm_object_link import resolve_native_link
 
+    runtime = runtime_admission.reloc_member_identity.path
     phase_timings_ms: dict[str, float] = {}
     selection_roles: dict[str, Mapping[str, object]] = {}
     scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
@@ -121,9 +137,12 @@ def _link_admitted_standard_object(
             linked,
             split_output_dir=split_output_dir,
             inputs=(
-                runtime,
                 app_object,
-                deploy_runtime.path,
+                *(
+                    (runtime_admission.shared_path,)
+                    if runtime_admission.shared_path is not None
+                    else ()
+                ),
                 *(identity.path for identity in input_versions),
             ),
             external_selection=bool(
@@ -183,6 +202,7 @@ def _link_admitted_standard_object(
                 phase_timings_ms=phase_timings_ms,
             )
             if status == 0:
+                assert deploy_runtime is not None
                 copy_reconstructible_artifact(deploy_runtime, outputs["runtime"])
         if status == 0 and selection_roles:
             from molt.cli.link_selection_admission import write_link_selection
@@ -212,7 +232,9 @@ def main() -> int:
         description="Link an LLVM wasm32 application object with the Molt runtime.",
     )
     parser.add_argument("--runtime", type=Path, required=True)
-    parser.add_argument("--runtime-shared", type=Path, required=True)
+    parser.add_argument(
+        "--runtime-shared", type=Path, help="Immutable shared member for split output"
+    )
     parser.add_argument("--runtime-generation", type=Path, required=True)
     parser.add_argument("--runtime-family-digest", required=True)
     parser.add_argument(
@@ -220,6 +242,7 @@ def main() -> int:
         required=True,
         choices=[role.value for role in RuntimeWasmReceiptRole],
     )
+    parser.add_argument("--runtime-receipt-sha256", required=True)
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument(
         "--stdlib-archive",
@@ -266,13 +289,6 @@ def main() -> int:
         help="Directory for split-runtime output files",
     )
     parser.add_argument(
-        "--deploy-runtime",
-        type=Path,
-        default=None,
-        dest="deploy_runtime_override",
-        help="Override the deploy runtime wasm path (non-relocatable variant)",
-    )
-    parser.add_argument(
         "--native-link-plan",
         type=Path,
         help="JSON plan containing typed, checksummed native link requirements",
@@ -294,6 +310,10 @@ def main() -> int:
     )
     parser.add_argument("--app-export-contract", type=Path, required=True)
     args = parser.parse_args()
+    if args.split_runtime and args.runtime_shared is None:
+        parser.error("--split-runtime requires --runtime-shared")
+    if not args.split_runtime and args.runtime_shared is not None:
+        parser.error("--runtime-shared requires --split-runtime")
 
     runtime = args.runtime
     output = args.input
@@ -335,28 +355,24 @@ def main() -> int:
         print(f"Invalid producer-bound WASM input: {exc}", file=sys.stderr)
         return 1
 
-    if not runtime.exists():
-        print(f"Runtime wasm not found: {runtime}", file=sys.stderr)
-        return 1
-    generation = _verify_runtime_generation(
-        reloc=runtime,
-        shared=args.runtime_shared,
-        generation_manifest=args.runtime_generation,
-        trust=RuntimeWasmTrust(
-            args.runtime_family_digest,
-            RuntimeWasmReceiptRole(args.runtime_receipt_role),
-        ),
-    )
-    runtime = generation.reloc
-    if args.deploy_runtime_override is not None and (
-        args.deploy_runtime_override.resolve(strict=False)
-        != generation.shared.resolve(strict=False)
-    ):
-        print(
-            "Explicit deploy runtime is not the shared member selected by the "
-            "trusted generation.",
-            file=sys.stderr,
+    try:
+        admitted_runtime, deploy_runtime = _verify_runtime_generation(
+            reloc=runtime,
+            shared=args.runtime_shared,
+            generation_manifest=args.runtime_generation,
+            trust=RuntimeWasmTrust(
+                args.runtime_family_digest,
+                RuntimeWasmReceiptRole(args.runtime_receipt_role),
+                args.runtime_receipt_sha256,
+            ),
         )
+        input_versions.extend(
+            (admitted_runtime.reloc_member_identity, admitted_runtime.receipt_identity)
+        )
+        if deploy_runtime is not None:
+            input_versions.append(deploy_runtime)
+    except (OSError, ValueError) as exc:
+        print(f"Invalid WASM runtime admission: {exc}", file=sys.stderr)
         return 1
     if not output.exists():
         print(f"Output wasm not found: {output}", file=sys.stderr)
@@ -382,14 +398,14 @@ def main() -> int:
     return _link_admitted_standard_object(
         args,
         wasm_ld=wasm_ld,
-        runtime=runtime,
+        runtime_admission=admitted_runtime,
         app_object=output,
         linked=linked,
         split_output_dir=split_output_dir,
         native_link_requirements=native_link_requirements,
         input_versions=input_versions,
         side_sdk_archives=tuple(sdk_versions),
-        deploy_runtime=generation.shared_member_identity,
+        deploy_runtime=deploy_runtime,
     )
 
 

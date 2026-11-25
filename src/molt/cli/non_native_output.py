@@ -907,7 +907,6 @@ def _prepare_non_native_build_result_in_generation(
         staged_runtime_wasm: Path | None = None
         runtime_wasm: Path | None = None
         runtime_reloc_wasm: Path | None = None
-        runtime_wasm_pair: RuntimeWasmGeneration | None = None
         # The split-runtime lane reads the staged artifact set too, so the
         # empty defaults must exist on every path, not just `linked`.
         staged_external_native_artifacts: tuple[
@@ -1052,7 +1051,7 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
-            # Runtime bytes are admitted only as one shared+reloc generation.
+            # Re-admit the selected runtime against the emitted import obligations.
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
                 required_runtime_exports
             ):
@@ -1067,16 +1066,44 @@ def _prepare_non_native_build_result_in_generation(
                     if failure is None
                     else {"runtime_wasm_failure": failure.json_payload()},
                 )
-            runtime_wasm_pair = runtime_state.runtime_wasm_pair
-            if runtime_wasm_pair is not None:
-                runtime_wasm = runtime_wasm_pair.shared
-                runtime_reloc_wasm = runtime_wasm_pair.reloc
-            if runtime_reloc_wasm is None or not runtime_reloc_wasm.is_file():
+            runtime_generation = runtime_state.runtime_wasm_pair
+            if runtime_generation is None:
                 return None, _fail(
-                    "Runtime WASM generation has no selected reloc member",
+                    "Runtime WASM has no admitted generation",
                     json_output,
                     command="build",
                 )
+            runtime_receipt = runtime_generation.receipt_identity
+            if runtime_receipt is None:
+                return None, _fail(
+                    "Runtime WASM link requires its admitted receipt",
+                    json_output,
+                    command="build",
+                )
+            pair = (
+                runtime_generation
+                if isinstance(runtime_generation, RuntimeWasmGeneration)
+                else None
+            )
+            if _split_runtime and pair is None:
+                return None, _fail(
+                    "Split WASM deployment requires an admitted runtime pair",
+                    json_output,
+                    command="build",
+                )
+            runtime_wasm = pair.shared if pair is not None and _split_runtime else None
+            reserved_shared = () if pair is None else (pair.shared,)
+            runtime_reloc_wasm = runtime_generation.reloc
+            runtime_link_members = (
+                runtime_generation.reloc_member_identity,
+                *(
+                    (pair.shared_member_identity,)
+                    if pair is not None and _split_runtime
+                    else ()
+                ),
+            )
+            runtime_link_paths = tuple(member.path for member in runtime_link_members)
+            runtime_custody = (*runtime_link_members, runtime_receipt)
             if linked and resolved_linked_output is None:
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
             linked_opt_level = wasm_opt_level if linked else None
@@ -1097,7 +1124,8 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm,
                         *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
-                        *((runtime_wasm,) if runtime_wasm is not None else ()),
+                        *reserved_shared,
+                        runtime_receipt.path,
                         *side_sdk_paths,
                         *external_native_fingerprint_inputs,
                         *(
@@ -1115,33 +1143,18 @@ def _prepare_non_native_build_result_in_generation(
                 return None, _fail(str(exc), json_output, command="build")
             if resolved_linked_output is not None:
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
-            if not is_wasm_freestanding:
-                if runtime_wasm is None or not runtime_wasm.is_file():
-                    return None, _fail(
-                        "Runtime WASM generation has no selected shared member",
-                        json_output,
-                        command="build",
-                    )
             tool = molt_root / "tools" / "wasm_link.py"
-            if runtime_wasm is None or runtime_wasm_pair is None:
-                return None, _fail(
-                    "Runtime WASM pair has no admitted generation",
-                    json_output,
-                    command="build",
-                )
             # Provenance authorizes these exact runtime members at execution;
             # it does not change the link when their admitted bytes are equal.
             # Keep it separate from the command's code-generating arguments.
-            runtime_admission_args = RuntimeWasmTrust.of(runtime_wasm_pair).arguments(
-                runtime_wasm_pair.manifest
+            runtime_admission_args = RuntimeWasmTrust.of(runtime_generation).arguments(
+                runtime_generation.manifest
             )
             link_cmd = [
                 sys.executable,
                 str(tool),
                 "--runtime",
                 str(runtime_reloc_wasm),
-                "--runtime-shared",
-                str(runtime_wasm),
                 "--input",
                 str(output_wasm),
                 "--wasm-facts-scanner",
@@ -1160,12 +1173,13 @@ def _prepare_non_native_build_result_in_generation(
                 }
             )
             if _split_runtime:
-                if runtime_wasm is not None:
-                    link_cmd.extend(["--deploy-runtime", str(runtime_wasm)])
+                assert runtime_wasm is not None
                 split_dir = output_wasm.parent
                 link_cmd.extend(
                     [
                         "--split-runtime",
+                        "--runtime-shared",
+                        str(runtime_wasm),
                         "--split-output-dir",
                         str(split_dir),
                     ]
@@ -1288,7 +1302,8 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm,
                         *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
-                        runtime_wasm,
+                        *reserved_shared,
+                        runtime_receipt.path,
                         app_export_contract_path,
                         *external_native_fingerprint_inputs,
                         *package_payload_inputs,
@@ -1318,11 +1333,7 @@ def _prepare_non_native_build_result_in_generation(
                         output_wasm.resolve(),
                         app_export_contract_path.resolve(),
                     }
-                    for identity in (
-                        *admitted_link_inputs,
-                        runtime_wasm_pair.shared_member_identity,
-                        runtime_wasm_pair.reloc_member_identity,
-                    ):
+                    for identity in (*admitted_link_inputs, *runtime_link_members):
                         if identity.path not in internal_inputs:
                             input_report.report_captured_file(
                                 identity.path, identity.stat_token(), identity.sha256
@@ -1340,8 +1351,7 @@ def _prepare_non_native_build_result_in_generation(
                 inputs=[
                     output_wasm,
                     *((stdlib_archive,) if stdlib_archive is not None else ()),
-                    runtime_reloc_wasm,
-                    runtime_wasm,
+                    *runtime_link_paths,
                     *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
                     *package_payload_inputs,
@@ -1404,7 +1414,7 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 assert deployment_sources is not None
                 deployment_sources.verify_files()
-                for identity in admitted_link_inputs:
+                for identity in (*admitted_link_inputs, *runtime_custody):
                     verify_stable_regular_file_identity(
                         identity, label="WASM link input"
                     )
@@ -1458,7 +1468,7 @@ def _prepare_non_native_build_result_in_generation(
             else:
                 native_link_plan_path: Path | None = None
                 link_timings_path: Path | None = None
-                link_run_cmd = [*link_cmd, *runtime_admission_args]
+                link_run_cmd = link_cmd.copy()
                 # Rejected bytes outlive both linker scratch and the private
                 # deployment generation, even when final publication fails.
                 link_run_cmd.extend(
@@ -1537,11 +1547,12 @@ def _prepare_non_native_build_result_in_generation(
                             ),
                         )
                     )
+                    link_run_cmd.extend(runtime_admission_args)
                     link_process = subprocess.CompletedProcess(link_run_cmd, 0, "", "")
 
                     def admit_link_result() -> None:
                         nonlocal optimizer_attestation
-                        for identity in admitted_link_inputs:
+                        for identity in (*admitted_link_inputs, *runtime_custody):
                             verify_stable_regular_file_identity(
                                 identity, label="WASM link input"
                             )
@@ -1601,8 +1612,9 @@ def _prepare_non_native_build_result_in_generation(
                     if link_result_reused:
                         admit_link_result()
                         if _split_runtime:
+                            assert pair is not None
                             copy_reconstructible_artifact(
-                                runtime_wasm_pair.shared_member_identity,
+                                pair.shared_member_identity,
                                 deployment.outputs["runtime"],
                             )
                     if (
@@ -1663,7 +1675,9 @@ def _prepare_non_native_build_result_in_generation(
                     command="build",
                 )
             pair = runtime_state.runtime_wasm_pair
-            runtime_wasm = None if pair is None else pair.shared
+            runtime_wasm = (
+                pair.shared if isinstance(pair, RuntimeWasmGeneration) else None
+            )
             if runtime_wasm is None or not runtime_wasm.is_file():
                 return None, _fail(
                     "Runtime WASM generation has no selected shared member",

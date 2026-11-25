@@ -453,8 +453,9 @@ def runtime_build_identity(
     compile_seed: str | None = None,
     member_link_args: dict[str, tuple[str, ...]] | None = None,
     member_publications: dict[str, RuntimePublicationAction] | None = None,
+    reloc_only: bool = False,
 ) -> RuntimeBuildIdentity:
-    if kind not in {"shared", "reloc"}:
+    if kind not in ({"reloc"} if reloc_only else {"shared", "reloc"}):
         raise ValueError("WASM fixture member must be shared or reloc")
     members = tuple(
         RuntimeBuildMemberPlan(
@@ -478,7 +479,7 @@ def runtime_build_identity(
                 )
             ),
         )
-        for name in ("shared", "reloc")
+        for name in (("reloc",) if reloc_only else ("shared", "reloc"))
     )
     identities = _identity(
         target="wasm32-wasip1",
@@ -486,9 +487,11 @@ def runtime_build_identity(
         family_seed=family_seed,
         compile_seed=compile_seed or family_seed,
         members=members,
-        artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
+        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS
+        if reloc_only
+        else RUNTIME_WASM_COMBINED_ARTIFACTS,
     )
-    return identities[0 if kind == "shared" else 1]
+    return identities[0 if kind == "shared" or reloc_only else 1]
 
 
 def native_runtime_staticlib_identity(

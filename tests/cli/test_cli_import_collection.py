@@ -57,7 +57,7 @@ from dataclasses import replace
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Iterator, Literal, Mapping, Sequence, cast
 
 import msgpack
 import pytest
@@ -12718,7 +12718,7 @@ def test_split_link_fingerprint_tracks_deploy_runtime_content(tmp_path: Path) ->
         "wasm_link.py",
         "--runtime",
         str(reloc_runtime),
-        "--deploy-runtime",
+        "--runtime-shared",
         str(deploy_runtime),
     ]
 
@@ -21957,15 +21957,26 @@ def _stub_backend_binary_ensure(
     return backend_bin
 
 
-@pytest.mark.parametrize("is_wasm", [False, True])
+@pytest.mark.parametrize("mode", ["native", "linked", "split"])
 def test_prepare_backend_setup_materializes_backend_before_cache_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    is_wasm: bool,
+    mode: Literal["native", "linked", "split"],
 ) -> None:
     from molt.cli import runtime_wasm_validation
+    from molt.cli.runtime_wasm_generation import (
+        RuntimeWasmCodegenUse,
+        bind_runtime_wasm_codegen,
+    )
     from tests.runtime_build_identity_helper import wasm_validator_discovery
 
+    is_wasm = mode != "native"
+    split_runtime = mode == "split"
+    codegen_use = (
+        RuntimeWasmCodegenUse.LINKED
+        if mode == "linked"
+        else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
+    )
     # Backend/cache ordering assumes the WASM validator prerequisite is admitted.
     discovery = wasm_validator_discovery(tmp_path)
     monkeypatch.setattr(
@@ -21977,9 +21988,12 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     backend_bin = _stub_backend_binary_ensure(monkeypatch, tmp_path, order=call_order)
 
     binding = runtime_wasm_codegen_binding_fixture(tmp_path) if is_wasm else None
+    if binding is not None:
+        binding = bind_runtime_wasm_codegen(binding.generation, None, use=codegen_use)
 
-    def bind_runtime(state, **kwargs):
+    def bind_runtime(state: cli_models._RuntimeArtifactState, **kwargs: object) -> bool:
         assert kwargs["bind_for_codegen"] is True
+        assert kwargs["codegen_use"] is codegen_use
         call_order.append("runtime_binding")
         state.runtime_wasm_codegen_binding = binding
         return True
@@ -22056,7 +22070,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
-            split_runtime=False,
+            split_runtime=split_runtime,
             is_wasm=is_wasm,
             emit_mode="wasm" if is_wasm else "bin",
             molt_root=tmp_path,
@@ -23251,24 +23265,33 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
 def _prepared_runtime_pair_state(
     shared: Path, reloc: Path
 ) -> cli_models._RuntimeArtifactState:
-    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
+    from molt.cli.runtime_wasm_generation import SourceRuntimeWasmGeneration
     from molt.toolchain_identity import stable_regular_file_identity
+    from tests.runtime_build_identity_helper import (
+        runtime_build_identity,
+        runtime_cargo_environment_inputs,
+    )
 
     manifest = shared.with_name("molt_runtime.generation.json")
     manifest.write_text("{}\n", encoding="utf-8")
     return cli_models._RuntimeArtifactState(
-        runtime_wasm_pair=SimpleNamespace(
+        runtime_wasm_pair=SourceRuntimeWasmGeneration(
             shared=shared,
             reloc=reloc,
             manifest=manifest,
-            shared_identity=SimpleNamespace(family_digest="f" * 64),
+            shared_identity=runtime_build_identity("shared", "prepared"),
+            reloc_identity=runtime_build_identity("reloc", "prepared"),
+            receipt_identity=stable_regular_file_identity(
+                manifest, label="fixture runtime receipt"
+            ),
             shared_member_identity=stable_regular_file_identity(
                 shared, label="fixture runtime"
             ),
             reloc_member_identity=stable_regular_file_identity(
                 reloc, label="fixture reloc runtime"
             ),
-            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
+            cargo_environment=runtime_cargo_environment_inputs(),
+            payload={},
         ),
     )
 
@@ -23280,6 +23303,8 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from molt.toolchain_identity import stable_regular_file_identity
+
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
@@ -23349,7 +23374,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         assert "--native-link-plan" not in kwargs["link_cmd"]
         assert "--runtime-generation" not in kwargs["link_cmd"]
         assert "--runtime-family-digest" not in kwargs["link_cmd"]
-        assert runtime_wasm in kwargs["inputs"]
+        assert runtime_wasm not in kwargs["inputs"]
         assert runtime_reloc_wasm in kwargs["inputs"]
         result = real_link_fingerprint(**kwargs)
         assert result is not None
@@ -23423,12 +23448,17 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "--runtime",
         str(runtime_reloc_wasm),
     ]
-    assert first_cmd[first_cmd.index("--runtime-shared") + 1] == str(runtime_wasm)
+    assert "--runtime-shared" not in first_cmd
     assert first_cmd[first_cmd.index("--runtime-generation") + 1] == str(
         runtime_state.runtime_wasm_pair.manifest
     )
-    assert first_cmd[first_cmd.index("--runtime-family-digest") + 1] == "f" * 64
+    assert first_cmd[first_cmd.index("--runtime-family-digest") + 1] == (
+        runtime_state.runtime_wasm_pair.reloc_identity.family_digest
+    )
     assert first_cmd[first_cmd.index("--runtime-receipt-role") + 1] == "source-build"
+    assert first_cmd[first_cmd.index("--runtime-receipt-sha256") + 1] == (
+        runtime_state.runtime_wasm_pair.receipt_identity.sha256
+    )
     assert first_cmd[first_cmd.index("--input") + 1] == str(output_wasm)
     linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
     assert linked_output_arg != linked_wasm
@@ -23457,8 +23487,14 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     prior_admissions = len(admission_calls)
     previous = runtime_state.runtime_wasm_pair.manifest
     current = previous.with_name("republished-" + previous.name)
-    current.write_bytes(previous.read_bytes())
-    runtime_state.runtime_wasm_pair.manifest = current
+    current.write_bytes(previous.read_bytes() + b"\n")
+    runtime_state.runtime_wasm_pair = replace(
+        runtime_state.runtime_wasm_pair,
+        manifest=current,
+        receipt_identity=stable_regular_file_identity(
+            current, label="new fixture runtime receipt"
+        ),
+    )
     republished, republished_err = (
         cli_non_native_output._prepare_non_native_build_result(
             validate_inputs=lambda: None, **common_kwargs
@@ -23531,17 +23567,15 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert fingerprints[-2]["meta_digest"] != fingerprints[-1]["meta_digest"]
     assert fingerprints[-2]["hash"] != fingerprints[-1]["hash"]
 
-    # Both members are byte inputs even for a monolithic linked artifact.
-    for count, member in enumerate((runtime_wasm, runtime_reloc_wasm), start=3):
-        saved = member.stat()
-        old_bytes = member.read_bytes()
-        member.write_bytes(old_bytes[:-1] + bytes([old_bytes[-1] ^ 1]))
-        os.utime(member, ns=(saved.st_atime_ns, saved.st_mtime_ns))
-        changed, changed_err = cli_non_native_output._prepare_non_native_build_result(
+    # The linked deployment reuses its output without the shared file.
+    runtime_wasm.unlink()
+    linked_only, linked_only_err = (
+        cli_non_native_output._prepare_non_native_build_result(
             validate_inputs=lambda: None, **common_kwargs
         )
-        assert changed_err is None and changed is not None
-        assert len(link_calls) == count
+    )
+    assert linked_only_err is None and linked_only is not None
+    assert len(link_calls) == 2
 
     # A fresh output directory with the same inputs reuses the same result.
     relocated_output = tmp_path / "relocated" / "output.wasm"
@@ -23556,8 +23590,31 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         },
     )
     assert relocated_err is None and relocated is not None
-    assert len(link_calls) == 4
+    assert len(link_calls) == 2
     assert relocated_output.with_name(linked_wasm.name).read_bytes() == linked_bytes
+
+    # A change to the accepted reloc bytes forces a new link. A change after
+    # admission fails before the previous output is replaced.
+    saved = runtime_reloc_wasm.stat()
+    reloc_bytes = runtime_reloc_wasm.read_bytes()
+    runtime_reloc_wasm.write_bytes(reloc_bytes[:-1] + bytes([reloc_bytes[-1] ^ 1]))
+    os.utime(runtime_reloc_wasm, ns=(saved.st_atime_ns, saved.st_mtime_ns))
+    changed, changed_err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None, **common_kwargs
+    )
+    assert changed is None and changed_err is not None
+    assert len(link_calls) == 2
+    runtime_state.runtime_wasm_pair = replace(
+        runtime_state.runtime_wasm_pair,
+        reloc_member_identity=stable_regular_file_identity(
+            runtime_reloc_wasm, label="new fixture reloc runtime"
+        ),
+    )
+    relinked, relinked_err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None, **common_kwargs
+    )
+    assert relinked_err is None and relinked is not None
+    assert len(link_calls) == 3
 
 
 @pytest.mark.parametrize(
@@ -24010,7 +24067,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert ("linked_wasm" in prepared.artifacts) is explicit_linked
     assert linked_wasm.exists() is explicit_linked
     assert prepared.consumer_output == output_wasm.parent / "app.wasm"
-    assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
+    assert link_cmd[link_cmd.index("--runtime-shared") + 1] == str(runtime_wasm)
     assert runtime_wasm in link_fingerprint_inputs
     plan_path = Path(link_cmd[link_cmd.index("--native-link-plan") + 1])
     native_plan = native_plans[plan_path]
