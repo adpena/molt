@@ -1273,9 +1273,7 @@ mod task_growth_refusal {
                 py,
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        return_raw_awaitable as *const (),
-                    ),
+                    test_fn_ref!(return_raw_awaitable),
                     1,
                 ))
                 .bits(),
