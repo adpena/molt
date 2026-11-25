@@ -27,6 +27,7 @@ from molt.cli.static_module_cells import (
     StaticCellPlan,
     apply_function_cells,
     plan_module_cells,
+    prove_init_once_calls,
 )
 from molt.compiler_analysis.python_import_redirects import (
     NO_IMPORT_REDIRECTS,
@@ -490,6 +491,94 @@ def test_init_dominance_admits_reads_that_run_after_the_store() -> None:
     assert "mod:60 LIMIT: checked read: mod__shared may run before the store" in checked
     # A conditional store has no InitOnce fact, so its read is not reported.
     assert "COND" not in checked
+
+
+@pytest.mark.parametrize(
+    "case", ["bound", "early", "else", "unknown", "rebound", "skipped"]
+)
+def test_read_proves_a_conditional_store_under_the_same_boolean(case: str) -> None:
+    publication = [
+        _func_new("mod__reader", "reader", 3),
+        *_store("reader", "reader", 3),
+    ]
+    init = _function(
+        "pyinit.mod",
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        {
+            "kind": "call" if case == "unknown" else "const_bool",
+            "out": "active",
+            "value": 1,
+        },
+        *_store("LIMIT", "active", 1),
+        *(publication if case == "early" else ()),
+        {"kind": "if", "args": ["active"]},
+        *([{"kind": "if", "args": ["other"]}] if case == "skipped" else ()),
+        _const("symbol", "molt_buffer2d_get"),
+        {
+            "kind": "builtin_func",
+            "out": "entry",
+            "s_value": "molt_buffer2d_get",
+            "value": 3,
+            "args": ["symbol"],
+        },
+        *_store("COND", "entry", 5),
+        *([{"kind": "end_if"}] if case == "skipped" else ()),
+        {"kind": "end_if"},
+        *(publication if case != "early" else ()),
+    )
+    read = _function(
+        "mod__reader",
+        *_read("LIMIT", "active", 10, "none"),
+        {"kind": "bool", "args": ["active"], "out": "test"},
+        {"kind": "if", "args": ["test"]},
+        *([{"kind": "else"}] if case == "else" else ()),
+        *_read("COND", "v", 11, "none"),
+        {"kind": "call_func", "args": ["v", "buffer", "row", "col"], "out": "result"},
+        {"kind": "end_if"},
+        *_read("COND", "outside", 13, "none"),
+    )
+    facts = _facts(
+        initializer_bindings=frozenset({"LIMIT", "COND", "reader"}),
+        own_names=frozenset({"LIMIT"}) if case == "rebound" else frozenset(),
+    )
+    plan = _plan([init, read], facts)
+    assert "COND" not in plan.init_once["mod"]
+    lines = _lines([init, read], plan.init_dominated.get("mod", frozenset()))
+    assert (11 in lines) is (case == "bound")
+    assert 13 not in lines
+    functions = [init, read]
+    module_functions = {"mod": functions.copy()}
+    stamp_global_slots(
+        functions,
+        module_functions,
+        {"mod": module_global_layout(facts.initializer_bindings)},
+        {"mod"},
+        plan.modules,
+        init_dominated=plan.init_dominated,
+    )
+    prove_init_once_calls(functions, module_functions, plan)
+    ops = functions[1]["ops"]
+    result = next(op for op in ops if op.get("out") == "result")
+    if case == "bound":
+        call = next(op for op in ops if op.get("s_value") == "molt_buffer2d_get")
+        fallback = next(op for op in ops if op["kind"] == "call_func")
+        guard_at = next(i for i, op in enumerate(ops) if op["kind"] == "is")
+        none, test, branch, cold, otherwise, hot, join, merge = ops[
+            guard_at - 1 : guard_at + 7
+        ]
+        assert none["kind"] == "const_none"
+        assert test["args"] == ["v", none["out"]]
+        assert branch["args"] == [test["out"]]
+        assert (cold, hot, merge) == (fallback, call, result)
+        assert (otherwise["kind"], join["kind"]) == ("else", "end_if")
+        assert call["s_value"] == "molt_buffer2d_get"
+        assert call["args"] == ["buffer", "row", "col"]
+        assert fallback["args"] == ["v", "buffer", "row", "col"]
+        assert result["kind"] == "phi"
+        assert result["args"] == [fallback["out"], call["out"]]
+    else:
+        assert result["kind"] == "call_func"
 
 
 def test_a_store_into_the_new_function_does_not_start_it() -> None:

@@ -54,6 +54,11 @@ such name loses the fact; the build diagnostics name the writer site
 that runs only after that store (``init_dominance``) is one load with no
 unbound test and no retain (HF-846); every other read of an InitOnce cell keeps
 the checked read, and the build diagnostics name the failed fact.
+
+A stored Boolean can also prove a conditional publication for a local read.
+The consuming path must test that same immutable Boolean, and the store must
+dominate the read's execution with the true arm selected. The conditional
+proof never extends to foreign imports.
 """
 
 from __future__ import annotations
@@ -85,6 +90,8 @@ from molt.cli.closed_world_bindings import (
     ModuleInitializerFacts,
     ModuleNamespaceFacts,
     _module_body_functions,
+    _ChainOp,
+    _UNMODELED_CONTROL,
     InitChain,
     imported_module_of,
 )
@@ -147,6 +154,11 @@ class StaticCellPlan:
     # Each name stored once at initialization that is not InitOnce because
     # code stores it through an escaped module value, with that writer site.
     escape_written: tuple[str, ...] = ()
+    # Conditional intrinsic ABI by module and name. Only a local read that
+    # already carries its publication proof may use this table.
+    guarded_intrinsics: Mapping[str, Mapping[str, tuple[str, int] | str]] = field(
+        default_factory=dict
+    )
 
     def diagnostics(self) -> dict[str, object]:
         return {
@@ -328,6 +340,7 @@ def plan_module_cells(
     guard_masks: dict[str, int] = {}
     init_once: dict[str, dict[str, InitOnce]] = {}
     init_dominated: dict[str, frozenset[tuple[str, int]]] = {}
+    guarded_intrinsics: dict[str, dict[str, tuple[str, int] | str]] = {}
     checked: list[str] = []
     escape_written: list[str] = []
     cell_indices: dict[str, dict[str, int]] = {}
@@ -390,8 +403,19 @@ def plan_module_cells(
         if rows:
             init_once[module] = rows
             dominance = init_dominance(execution, rows)
-            if dominance.reads:
-                init_dominated[module] = dominance.reads
+            guarded_reads, intrinsic_abis = _guarded_cell_reads(
+                execution,
+                rows,
+                initializers[module],
+                module_facts,
+                global_layouts[module],
+                dominance.reads,
+            )
+            reads = dominance.reads | guarded_reads
+            if intrinsic_abis:
+                guarded_intrinsics[module] = intrinsic_abis
+            if reads:
+                init_dominated[module] = reads
             checked.extend(dominance.diagnostics)
         for name, callable_var, symbol, maker in _proven_method_loads(
             execution, initializers[module], method_diagnostics
@@ -421,6 +445,7 @@ def plan_module_cells(
         init_dominated,
         tuple(checked),
         tuple(escape_written),
+        guarded_intrinsics,
     ), FunctionCells(
         cell_indices, cell_stores, cell_reads, tuple(method_diagnostics), late_makers
     )
@@ -698,6 +723,183 @@ def init_dominance(
     return InitDominance(frozenset(dominated), tuple(diagnostics))
 
 
+def _guarded_cell_reads(
+    execution: _ModuleExecution,
+    rows: Mapping[str, InitOnce],
+    initializer: ModuleInitializerFacts,
+    facts: ModuleNamespaceFacts,
+    layout: Sequence[str],
+    dominated: frozenset[tuple[str, int]],
+) -> tuple[frozenset[tuple[str, int]], dict[str, tuple[str, int] | str]]:
+    """Prove a conditional store under the same immutable Boolean at a read.
+
+    Reuse initialization and entry dominance on the CFG conditioned on the
+    true arm. Each admissible predicate is an actual Boolean producer, so
+    evaluating the same cell again cannot execute a different truth protocol.
+    This is a read-side proof. Conditional cells do not enter `init_once`,
+    which other consumers use across foreign imports without this guard.
+    """
+    from molt.cli.frontend_integration import _global_name_sites
+    from molt.frontend.cfg_analysis import build_cfg
+
+    boolean_values = {
+        (row.function, row.value): name
+        for name, row in rows.items()
+        if row.producer is not None
+        and row.producer.get("kind") in {"bool", "not", "const_bool"}
+    }
+    if not boolean_values:
+        return frozenset(), {}
+    possible = {
+        name: writes[0]
+        for name in layout
+        if name not in rows
+        and name not in initializer.deletes
+        and len(writes := initializer.stores.get(name, ())) == 1
+        and facts.stable_reason(name) is None
+    }
+    if not possible:
+        return frozenset(), {}
+
+    def tested_values(
+        condition: Mapping[str, Any], defs: Mapping[str, Mapping[str, Any]]
+    ) -> tuple[str, ...]:
+        args = condition.get("args") or ()
+        if len(args) != 1:
+            return ()
+        (name,) = args
+        value = defs.get(name, {})
+        operands = value.get("args") or ()
+        if value.get("kind") == "bool" and len(operands) == 1:
+            return name, operands[0]
+        return (name,)
+
+    chain = execution.chain
+    branches: dict[str, list[tuple[int, int, str]]] = {}
+    for function, body in chain.functions.items():
+        defs = {op["out"]: op for op in body.ops if "out" in op}
+        for at, end in body.cfg.control.if_to_end.items():
+            if at in body.cfg.control.if_to_else:
+                continue
+            name = next(
+                (
+                    boolean_values[function, value]
+                    for value in tested_values(body.ops[at], defs)
+                    if (function, value) in boolean_values
+                ),
+                None,
+            )
+            if name is not None and chain.dominates(
+                (rows[name].function, rows[name].index), (function, at)
+            ):
+                branches.setdefault(function, []).append((at, end, name))
+    if not branches:
+        return frozenset(), {}
+
+    conditioned: dict[tuple[str, int, int], InitChain] = {}
+    stores: dict[str, tuple[str, tuple[str, int], InitChain]] = {}
+    indices_by_body: dict[str, dict[int, int]] = {}
+    for name, write in possible.items():
+        body = chain.functions.get(write.function)
+        if body is None or write.function not in branches:
+            continue
+        if write.function not in indices_by_body:
+            indices_by_body[write.function] = {
+                id(op): index for index, op in enumerate(body.ops)
+            }
+        store = (write.function, indices_by_body[write.function][id(write.operation)])
+        if not chain.runs_once(store):
+            continue
+        for at, end, guard in branches.get(write.function, ()):
+            if not at < store[1] < end:
+                continue
+            key = (write.function, at, end)
+            if key not in conditioned:
+                true_arm = list(body.ops)
+                true_arm[at] = true_arm[end] = {"kind": "nop"}
+                conditioned[key] = InitChain(
+                    execution.module,
+                    [
+                        {**func, "ops": true_arm}
+                        if func.get("name") == write.function
+                        else func
+                        for func in execution.functions
+                    ],
+                )
+            stores[name] = (guard, store, conditioned[key])
+            break
+    if not stores:
+        return frozenset(), {}
+
+    proven: set[tuple[str, int]] = set()
+    intrinsic_abis: dict[str, tuple[str, int] | str] = {}
+    for func in execution.functions:
+        function = func.get("name", "")
+        ops = func.get("ops", ())
+        if not any(op.get("kind") == "if" for op in ops) or any(
+            op.get("kind") in _UNMODELED_CONTROL for op in ops
+        ):
+            continue
+        indices = {id(op): i for i, op in enumerate(ops)}
+        reads = {
+            op["out"]: (name, indices[id(op)])
+            for op, name in _global_name_sites([func])
+            if op.get("kind") == "module_get_global" and "out" in op
+        }
+        candidates = [(name, index) for name, index in reads.values() if name in stores]
+        if not candidates:
+            continue
+        defs = {op["out"]: op for op in ops if "out" in op}
+        cfg = build_cfg([_ChainOp(op) for op in ops])
+        true_arms: dict[str, list[int]] = {}
+        for at in cfg.control.if_to_end:
+            read = next(
+                (
+                    reads[value]
+                    for value in tested_values(ops[at], defs)
+                    if value in reads
+                ),
+                None,
+            )
+            if read is None or (function, read[1]) not in dominated:
+                continue
+            branch, arm = cfg.block_for_op(at), cfg.block_for_op(at + 1)
+            if (
+                arm is not None
+                and branch is not None
+                and len(cfg.successors.get(branch, ())) == 2
+                and cfg.predecessors.get(arm) == (branch,)
+            ):
+                true_arms.setdefault(read[0], []).append(arm)
+        for name, index in candidates:
+            guard, store, assumed = stores[name]
+            block = cfg.block_for_op(index)
+            if block is None or not any(
+                cfg.dominance.dominates(arm, block) for arm in true_arms.get(guard, ())
+            ):
+                continue
+            if function in execution.body:
+                ready = assumed.dominates(store, (function, index))
+            else:
+                starts, _ = execution.entries.get(function, (None, ""))
+                ready = starts is not None and all(
+                    assumed.dominates(store, point) and (after or point != store)
+                    for point, after in starts
+                )
+            if ready:
+                proven.add((function, index))
+                if name not in intrinsic_abis:
+                    write = possible[name]
+                    producer = initializer.producers.get(
+                        (write.function, write.value or ""), {}
+                    )
+                    if producer.get("kind") == "builtin_func":
+                        intrinsic_abis[name] = _captured_intrinsic_abi(
+                            producer, initializer, write.function
+                        )
+    return frozenset(proven), intrinsic_abis
+
+
 # Proven direct calls (HF-846 slice 2).
 
 # The frontend's fact on a ``func_new`` of a synchronous def with positional
@@ -957,6 +1159,33 @@ def _intrinsic_call(
     return direct
 
 
+def _guarded_intrinsic_call(
+    original: dict[str, Any],
+    direct: dict[str, Any],
+    temporary: Callable[[str], str],
+) -> list[dict[str, Any]]:
+    """Keep ordinary CALL if shutdown has cleared the captured cell to None."""
+    none = temporary("retired_cell_none")
+    retired = temporary("retired_cell_test")
+    merge: list[dict[str, object]] = []
+    if isinstance(result := original.get("out"), str) and result != "none":
+        cold_result = temporary("retired_cell_cold_result")
+        hot_result = temporary("retired_cell_hot_result")
+        original = {**original, "out": cold_result}
+        direct = {**direct, "out": hot_result}
+        merge.append({"kind": "phi", "args": [cold_result, hot_result], "out": result})
+    return [
+        {"kind": "const_none", "out": none},
+        {"kind": "is", "args": [original["args"][0], none], "out": retired},
+        {"kind": "if", "args": [retired], "type_hint": "bool"},
+        original,
+        {"kind": "else"},
+        direct,
+        {"kind": "end_if"},
+        *merge,
+    ]
+
+
 def _imported_cell(
     module: str,
     row: InitOnce,
@@ -1061,7 +1290,7 @@ def prove_init_once_calls(
             changed: dict[int, list[dict[str, object]]] = {}
             names: set[str] | None = None
 
-            def tuple_name() -> str:
+            def temporary(stem: str) -> str:
                 nonlocal names
                 if names is None:
                     names = set(func.get("params", ()))
@@ -1070,7 +1299,7 @@ def prove_init_once_calls(
                         names.update(
                             instr[key] for key in ("out", "var") if key in instr
                         )
-                candidate = f"__molt_varargs_{index}"
+                candidate = f"__molt_{stem}_{index}"
                 while candidate in names:
                     candidate += "_"
                 names.add(candidate)
@@ -1086,11 +1315,13 @@ def prove_init_once_calls(
                     continue
                 cell_module, global_name = read
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
-                if (
-                    fact is not None
-                    and kind == "call_func"
-                    and (abi := intrinsic_origin(read)) is not None
-                ):
+                abi = None
+                if kind == "call_func":
+                    if fact is not None:
+                        abi = intrinsic_origin(read)
+                    elif cell_module == module:
+                        abi = plan.guarded_intrinsics.get(module, {}).get(global_name)
+                if abi is not None:
                     direct = _intrinsic_call(op, abi)
                     if isinstance(direct, str):
                         diagnostics.append(
@@ -1098,7 +1329,11 @@ def prove_init_once_calls(
                             f"generic intrinsic call: {direct}"
                         )
                     else:
-                        changed[index] = [direct]
+                        changed[index] = (
+                            _guarded_intrinsic_call(op, direct, temporary)
+                            if fact is None
+                            else [direct]
+                        )
                     continue
                 if fact is None or fact.value_kind != "function":
                     continue
@@ -1112,7 +1347,11 @@ def prove_init_once_calls(
                 if kind == "call_func":
                     following = ops[index + 1] if index + 1 < len(ops) else {}
                     task = _task_constructor(
-                        op, producer, position.__contains__, following, tuple_name
+                        op,
+                        producer,
+                        position.__contains__,
+                        following,
+                        lambda: temporary("varargs"),
                     )
                     if isinstance(task, str):
                         diagnostics.append(
